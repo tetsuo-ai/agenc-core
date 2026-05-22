@@ -344,16 +344,14 @@ const measureTextNode = function (
   // Actual tab expansion happens in output.ts based on screen position.
   const text = expandTabs(rawText)
 
+  if (width > 0 && width < 1) {
+    return measureText(text, Number.POSITIVE_INFINITY)
+  }
+
   const dimensions = measureText(text, width)
 
   // Text fits into container, no need to wrap
   if (dimensions.width <= width) {
-    return dimensions
-  }
-
-  // This is happening when <Box> is shrinking child nodes and layout asks
-  // if we can fit this text node in a <1px space, so we just say "no"
-  if (dimensions.width >= 1 && width > 0 && width < 1) {
     return dimensions
   }
 

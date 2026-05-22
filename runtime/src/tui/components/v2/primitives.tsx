@@ -1416,7 +1416,7 @@ export function SlashPalette({
       })}
       {hidden > 0 ? (
         <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={2}>
-          <ThemedText color="inactive">{`+ ${hidden}more · ↓ to scroll`}</ThemedText>
+          <ThemedText color="inactive">{`+ ${hidden} more · ↓ to scroll`}</ThemedText>
           <Box flexGrow={1} />
           <ThemedText color="worker">◆</ThemedText>
           <ThemedText color="inactive"> agenc ·  core</ThemedText>

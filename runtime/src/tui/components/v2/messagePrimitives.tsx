@@ -151,26 +151,37 @@ type ParsedResourceUpdate = {
 
 function parseResourceUpdates(text: string): ParsedResourceUpdate[] {
   const updates: ParsedResourceUpdate[] = []
+  const attr = (attributes: string, name: string): string | undefined =>
+    new RegExp(`${name}="([^"]*)"`, 'u').exec(attributes)?.[1]
+  const reasonFromBody = (body: string): string | undefined =>
+    /<reason>([^<]+)<\/reason>/u.exec(body)?.[1]
+
   const resourceRegex =
-    /<mcp-resource-update\s+server="([^"]+)"\s+uri="([^"]+)"[^>]*>(?:[\s\S]*?<reason>([^<]+)<\/reason>)?/g
+    /<mcp-resource-update\b([^>]*)>([\s\S]*?)<\/mcp-resource-update>/g
   let match: RegExpExecArray | null
   while ((match = resourceRegex.exec(text)) !== null) {
+    const server = attr(match[1] ?? '', 'server')
+    const target = attr(match[1] ?? '', 'uri')
+    if (!server || !target) continue
     updates.push({
       kind: 'resource',
-      server: match[1] ?? '',
-      target: match[2] ?? '',
-      reason: match[3],
+      server,
+      target,
+      reason: reasonFromBody(match[2] ?? ''),
     })
   }
 
   const pollingRegex =
-    /<mcp-polling-update\s+type="([^"]+)"\s+server="([^"]+)"\s+tool="([^"]+)"[^>]*>(?:[\s\S]*?<reason>([^<]+)<\/reason>)?/g
+    /<mcp-polling-update\b([^>]*)>([\s\S]*?)<\/mcp-polling-update>/g
   while ((match = pollingRegex.exec(text)) !== null) {
+    const server = attr(match[1] ?? '', 'server')
+    const target = attr(match[1] ?? '', 'tool')
+    if (!server || !target) continue
     updates.push({
       kind: 'polling',
-      server: match[2] ?? '',
-      target: match[3] ?? '',
-      reason: match[4],
+      server,
+      target,
+      reason: reasonFromBody(match[2] ?? ''),
     })
   }
   return updates

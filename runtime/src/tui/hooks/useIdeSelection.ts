@@ -64,6 +64,11 @@ export function useIdeSelection(
 ): void {
   const handlersRegistered = useRef(false)
   const currentIDERef = useRef<ConnectedMCPServer | null>(null)
+  const onSelectRef = useRef(onSelect)
+
+  useEffect(() => {
+    onSelectRef.current = onSelect
+  }, [onSelect])
 
   useEffect(() => {
     // Find the IDE client from the MCP clients list
@@ -76,7 +81,7 @@ export function useIdeSelection(
       handlersRegistered.current = false
       currentIDERef.current = ideClient || null
       // Reset the selection when the IDE client changes.
-      onSelect({
+      onSelectRef.current({
         lineCount: 0,
         lineStart: undefined,
         text: undefined,
@@ -92,7 +97,7 @@ export function useIdeSelection(
     // Handler function for selection changes
     const selectionChangeHandler = (data: SelectionData) => {
       if (!data.selection?.start || !data.selection?.end) {
-        onSelect({
+        onSelectRef.current({
           lineCount: 0,
           lineStart: undefined,
           text: data.text,
@@ -115,7 +120,7 @@ export function useIdeSelection(
         filePath: data.filePath,
       }
 
-      onSelect(selection)
+      onSelectRef.current(selection)
     }
 
     // Register notification handler for selection_changed events

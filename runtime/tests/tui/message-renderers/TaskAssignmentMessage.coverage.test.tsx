@@ -33,5 +33,11 @@ describe('TaskAssignmentMessage coverage', () => {
     const nonAssignment = JSON.stringify({ type: 'teammate_message' })
     expect(tryRenderTaskAssignmentMessage(nonAssignment)).toBeNull()
     expect(getTaskAssignmentSummary(nonAssignment)).toBeNull()
+    const malformedAssignment = JSON.stringify({
+      type: 'task_assignment',
+      assignedBy: 'lead',
+    })
+    expect(tryRenderTaskAssignmentMessage(malformedAssignment)).toBeNull()
+    expect(getTaskAssignmentSummary(malformedAssignment)).toBeNull()
   })
 })

@@ -959,6 +959,17 @@ export type TaskAssignmentMessage = {
   timestamp: string
 }
 
+const TaskAssignmentMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('task_assignment'),
+    taskId: z.string().min(1),
+    subject: z.string().min(1),
+    description: z.string().default(''),
+    assignedBy: z.string().default(''),
+    timestamp: z.string().default(''),
+  }),
+)
+
 /**
  * Checks if a message text contains a task assignment
  */
@@ -966,10 +977,8 @@ export function isTaskAssignment(
   messageText: string,
 ): TaskAssignmentMessage | null {
   try {
-    const parsed = jsonParse(messageText)
-    if (parsed && parsed.type === 'task_assignment') {
-      return parsed as TaskAssignmentMessage
-    }
+    const result = TaskAssignmentMessageSchema().safeParse(jsonParse(messageText))
+    if (result.success) return result.data
   } catch {
     // Not JSON or not a valid task assignment
   }

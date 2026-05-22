@@ -111,6 +111,10 @@ function getEmojiWidth(grapheme: string): number {
     return count === 1 ? 1 : 2
   }
 
+  if (isTextPresentationSymbol(grapheme)) {
+    return 1
+  }
+
   // Incomplete keycap: digit/symbol + VS16 without U+20E3
   if (grapheme.length === 2) {
     const second = grapheme.codePointAt(1)
@@ -123,6 +127,18 @@ function getEmojiWidth(grapheme: string): number {
   }
 
   return 2
+}
+
+function isTextPresentationSymbol(grapheme: string): boolean {
+  const first = grapheme.codePointAt(0)!
+  if (first < 0x2600 || first > 0x27bf) return false
+  for (const char of grapheme) {
+    const codePoint = char.codePointAt(0)!
+    if (codePoint === 0xfe0f || codePoint === 0x200d || codePoint === 0x20e3) {
+      return false
+    }
+  }
+  return true
 }
 
 function isZeroWidth(codePoint: number): boolean {
@@ -224,5 +240,15 @@ const bunStringWidth =
 const BUN_STRING_WIDTH_OPTS = { ambiguousIsNarrow: true } as const
 
 export const stringWidth: (str: string) => number = bunStringWidth
-  ? str => bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
+  ? str =>
+      typeof str === 'string' && containsTextPresentationSymbol(str)
+        ? stringWidthJavaScript(str)
+        : bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
   : stringWidthJavaScript
+
+function containsTextPresentationSymbol(str: string): boolean {
+  for (const { segment } of getGraphemeSegmenter().segment(str)) {
+    if (isTextPresentationSymbol(segment)) return true
+  }
+  return false
+}
