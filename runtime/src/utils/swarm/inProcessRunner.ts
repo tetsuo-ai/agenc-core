@@ -69,7 +69,6 @@ import { createAbortController } from '../abortController.js'
 import { type AgentContext, runWithAgentContext } from '../agentContext.js'
 import { count } from '../array.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { cloneFileStateCache } from '../fileStateCache.js'
 import {
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
@@ -84,7 +83,6 @@ import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
-import { asSystemPrompt } from '../systemPromptType.js'
 import { claimTask, listTasks, type Task, updateTask } from '../tasks.js'
 import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
@@ -1080,47 +1078,16 @@ export async function runInProcessTeammate(
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,
         )
-        // Create an isolated copy of toolUseContext so that compaction
-        // does not clear the main session's readFileState cache or
-        // trigger the main session's UI callbacks.
-        const isolatedContext: ToolUseContext = {
-          ...toolUseContext,
-          readFileState: cloneFileStateCache(toolUseContext.readFileState),
-          onCompactProgress: undefined,
-          setStreamMode: undefined,
-        }
-        // FIXME: this call uses a stale upstream signature for compactConversation
-        // (6 positional args including forkContextMessages, suppressFollowUpQuestions,
-        // isAutoCompact). The live signature is (messages, context, customInstructions?).
-        // Tracked separately from this @ts-nocheck removal pass.
-        const compactedSummary = await (
-          compactConversation as unknown as (
-            messages: typeof allMessages,
-            context: ToolUseContext,
-            extra: unknown,
-            suppressFollowUpQuestions: boolean,
-            customInstructions: string | undefined,
-            isAutoCompact: boolean,
-          ) => Promise<unknown>
-        )(
-          allMessages,
-          isolatedContext,
-          {
-            systemPrompt: asSystemPrompt([]),
-            userContext: {},
-            systemContext: {},
-            toolUseContext: isolatedContext,
-            forkContextMessages: [],
+        // Build a minimal CompactContext so compaction does not trigger
+        // the main session's UI callbacks.
+        const compactedSummary = await compactConversation(allMessages, {
+          abortController: toolUseContext.abortController,
+          options: {
+            mainLoopModel: toolUseContext.options.mainLoopModel,
+            querySource: toolUseContext.options.querySource,
           },
-          true, // suppressFollowUpQuestions
-          undefined, // customInstructions
-          true, // isAutoCompact
-        )
-        contextMessages = buildPostCompactMessages(
-          // FIXME: matches the stale-signature cast above; once the call is
-          // updated to the live compactConversation contract this cast goes away.
-          compactedSummary as Parameters<typeof buildPostCompactMessages>[0],
-        )
+        })
+        contextMessages = buildPostCompactMessages(compactedSummary)
         // Reset microcompact state since full compact replaces all
         // messages — old tool IDs are no longer relevant
         resetMicrocompactState()

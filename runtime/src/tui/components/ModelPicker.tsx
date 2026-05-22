@@ -18,8 +18,8 @@ import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
-import { Pane } from './design-system/Pane';
 import { effortLevelToSymbol } from './EffortIndicator';
+import { Popup } from './v2/primitives.js';
 export type Props = {
   initial: string | null;
   sessionModel?: ModelSetting;
@@ -38,6 +38,10 @@ export type Props = {
   skipSettingsWrite?: boolean;
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
+const MODEL_PICKER_FOOTER = [
+  { keyName: '↵', label: 'confirm' },
+  { keyName: '←→', label: 'effort' },
+] as const;
 export function ModelPicker(t0) {
   const $ = _c(82);
   const {
@@ -262,7 +266,7 @@ export function ModelPicker(t0) {
   const handleSelect = t14;
   let t15;
   if ($[41] === Symbol.for("react.memo_cache_sentinel")) {
-    t15 = <Text color="remember" bold={true}>Select model</Text>;
+    t15 = <Box height={1} flexShrink={0}><Text bold={true}>Select model</Text></Box>;
     $[41] = t15;
   } else {
     t15 = $[41];
@@ -270,7 +274,7 @@ export function ModelPicker(t0) {
   const t16 = headerText ?? "Switch between AgenC models. Applies to this session and future AgenC sessions. For other/previous model names, specify with --model.";
   let t17;
   if ($[42] !== t16) {
-    t17 = <Text dimColor={true}>{t16}</Text>;
+    t17 = <Box height={1} flexShrink={0}><Text dimColor={true}>{t16}</Text></Box>;
     $[42] = t16;
     $[43] = t17;
   } else {
@@ -278,7 +282,7 @@ export function ModelPicker(t0) {
   }
   let t18;
   if ($[44] !== sessionModel) {
-    t18 = sessionModel && <Text dimColor={true}>Currently using {modelDisplayString(sessionModel)} for this session (set by plan mode). Selecting a model will undo this.</Text>;
+    t18 = sessionModel && <Box height={1} flexShrink={0}><Text dimColor={true}>Currently using {modelDisplayString(sessionModel)} for this session (set by plan mode). Selecting a model will undo this.</Text></Box>;
     $[44] = sessionModel;
     $[45] = t18;
   } else {
@@ -286,7 +290,7 @@ export function ModelPicker(t0) {
   }
   let t19;
   if ($[46] !== t17 || $[47] !== t18) {
-    t19 = <Box marginBottom={1} flexDirection="column">{t15}{t17}{t18}</Box>;
+    t19 = <Box marginBottom={1} flexDirection="column" flexShrink={0}>{t15}{t17}{t18}</Box>;
     $[46] = t17;
     $[47] = t18;
     $[48] = t19;
@@ -374,18 +378,7 @@ export function ModelPicker(t0) {
     t28 = $[79];
   }
   const content = t28;
-  if (!isStandaloneCommand) {
-    return content;
-  }
-  let t29;
-  if ($[80] !== content) {
-    t29 = <Pane color="permission">{content}</Pane>;
-    $[80] = content;
-    $[81] = t29;
-  } else {
-    t29 = $[81];
-  }
-  return t29;
+  return <Popup title="model" footer={MODEL_PICKER_FOOTER} status={hiddenCount > 0 ? `${hiddenCount} more` : focusedModelName ?? 'select model'}>{content}</Popup>;
 }
 function _temp4() {}
 function _temp3(opt_0) {

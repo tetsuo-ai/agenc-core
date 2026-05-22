@@ -235,16 +235,16 @@ describe("FullscreenLayout render branches", () => {
     {
       rows: 1,
       includes: ["budget bottom"],
-      excludes: ["budget scrollable", "agenc · orchestrator", "MODEL", "CTX"],
+      excludes: ["budget scrollable", "agenc · orchestrator", "ctx 0%", "spend"],
     },
     {
       rows: 4,
       includes: ["budget scrollable", "budget bottom"],
-      excludes: ["agenc · orchestrator", "MODEL", "CTX"],
+      excludes: ["agenc · orchestrator", "ctx 0%", "spend"],
     },
     {
       rows: 5,
-      includes: ["budget scrollable", "budget bottom", "MODEL", "CTX"],
+      includes: ["budget scrollable", "budget bottom", "ctx 0%", "spend"],
       excludes: ["agenc · orchestrator"],
     },
   ])(
@@ -266,6 +266,38 @@ describe("FullscreenLayout render branches", () => {
       }
     },
   );
+
+  test("renders the file-tree gutter only for wide fullscreen base scenes", async () => {
+    const wide = await renderFullscreenLayout(
+      <FullscreenLayout
+        scrollable={<Text>wide scrollable</Text>}
+        bottom={<Text>wide bottom</Text>}
+      />,
+      { columns: 148, rows: 40 },
+    );
+    const compact = await renderFullscreenLayout(
+      <FullscreenLayout
+        scrollable={<Text>compact scrollable</Text>}
+        bottom={<Text>compact bottom</Text>}
+      />,
+      { columns: 80, rows: 24 },
+    );
+    const modal = await renderFullscreenLayout(
+      <FullscreenLayout
+        scrollable={<Text>modal scrollable</Text>}
+        bottom={<Text>modal bottom</Text>}
+        modal={<Text>modal branch marker</Text>}
+      />,
+      { columns: 148, rows: 40 },
+    );
+
+    expect(wide).toContain("FILES");
+    expect(wide).toContain("runtime");
+    expect(wide).toContain("wide scrollable");
+    expect(compact).not.toContain("FILES");
+    expect(modal).not.toContain("FILES");
+    expect(modal).toContain("modal branch marker");
+  });
 
   test("provides modal viewport sizing and scroll ref through modal context", async () => {
     const modalScrollRef = { current: null };

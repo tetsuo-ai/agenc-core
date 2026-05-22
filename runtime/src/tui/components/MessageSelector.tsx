@@ -37,7 +37,7 @@ import { COMMAND_MESSAGE_TAG } from '../../constants/xml';
 import { count } from '../../utils/array';
 import { formatRelativeTimeAgo, truncate } from '../../utils/format';
 import type { Theme } from '../../utils/theme';
-import { Divider } from './design-system/Divider';
+import { Popup } from './v2/primitives.js';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {
   return option === 'summarize' || option === 'summarize_up_to';
@@ -84,6 +84,10 @@ type Props = {
   preselectedMessage?: UserMessage;
 };
 const MAX_VISIBLE_MESSAGES = 7;
+const MESSAGE_SELECTOR_FOOTER = [
+  { keyName: '↵', label: 'continue' },
+  { keyName: 'esc', label: 'back' },
+] as const;
 export function computeMessageOptionTextWidth(columns: number, paddingRight?: number): number {
   const safeColumns = Math.max(1, Math.floor(columns || 0));
   const safePadding = Math.max(0, Math.floor(paddingRight || 0));
@@ -338,9 +342,8 @@ export function MessageSelector({
   }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled]);
   const canRestoreCode_0 = isFileHistoryEnabled && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
-  return <Box flexDirection="column" width="100%">
-      <Divider color="suggestion" />
-      <Box flexDirection="column" marginX={1} gap={1}>
+  return <Popup title="rewind" footer={MESSAGE_SELECTOR_FOOTER} status={hasMessagesToSelect ? `${Math.max(0, messageOptions.length - 1)} messages` : 'empty'}>
+      <Box flexDirection="column" gap={1}>
         <Text bold color="suggestion">
           Rewind
         </Text>
@@ -423,7 +426,7 @@ export function MessageSelector({
               </>}
           </Text>}
       </Box>
-    </Box>;
+    </Popup>;
 }
 function getRestoreOptionConversationText(option: RestoreOption): string {
   switch (option) {
@@ -457,7 +460,7 @@ function RestoreOptionDescription(t0) {
   }
   let t2;
   if ($[2] !== t1) {
-    t2 = <Text dimColor={true}>{t1}</Text>;
+    t2 = <Box height={1} flexShrink={0}><Text dimColor={true}>{t1}</Text></Box>;
     $[2] = t1;
     $[3] = t2;
   } else {
@@ -465,7 +468,7 @@ function RestoreOptionDescription(t0) {
   }
   let t3;
   if ($[4] !== diffStatsForRestore || $[5] !== selectedRestoreOption || $[6] !== showCodeRestore) {
-    t3 = !isSummarizeOption(selectedRestoreOption) && (showCodeRestore ? <RestoreCodeConfirmation diffStatsForRestore={diffStatsForRestore} /> : <Text dimColor={true}>The code will be unchanged.</Text>);
+    t3 = !isSummarizeOption(selectedRestoreOption) && (showCodeRestore ? <RestoreCodeConfirmation diffStatsForRestore={diffStatsForRestore} /> : <Box height={1} flexShrink={0}><Text dimColor={true}>The code will be unchanged.</Text></Box>);
     $[4] = diffStatsForRestore;
     $[5] = selectedRestoreOption;
     $[6] = showCodeRestore;
@@ -475,7 +478,7 @@ function RestoreOptionDescription(t0) {
   }
   let t4;
   if ($[8] !== t2 || $[9] !== t3) {
-    t4 = <Box flexDirection="column">{t2}{t3}</Box>;
+    t4 = <Box flexDirection="column" flexShrink={0}>{t2}{t3}</Box>;
     $[8] = t2;
     $[9] = t3;
     $[10] = t4;
@@ -558,7 +561,7 @@ function RestoreCodeConfirmation(t0) {
   }
   let t2;
   if ($[11] !== fileLabel || $[12] !== t1) {
-    t2 = <><Text dimColor={true}>The code will be restored{" "}{t1} in {fileLabel}.</Text></>;
+    t2 = <Box height={1} flexShrink={0}><Text dimColor={true}>The code will be restored{" "}{t1} in {fileLabel}.</Text></Box>;
     $[11] = fileLabel;
     $[12] = t1;
     $[13] = t2;

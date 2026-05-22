@@ -8,8 +8,10 @@ import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
 type StatusRowState = "ok" | "warn" | "error" | "info";
+type StatusRowGroup = "runtime" | "session";
 
 type StatusDashboardRow = {
+  readonly group: StatusRowGroup;
   readonly section: string;
   readonly key: string;
   readonly value: string;
@@ -43,6 +45,20 @@ function compact(value: string, limit = 120): string {
   return `${normalized.slice(0, limit - 3).trimEnd()}...`;
 }
 
+function statusGroup(section: string, key: string): StatusRowGroup {
+  const lower = `${section} ${key}`.toLowerCase();
+  if (
+    lower.includes("git") ||
+    lower.includes("mcp") ||
+    lower.includes("task") ||
+    lower.includes("model") ||
+    lower.includes("provider")
+  ) {
+    return "runtime";
+  }
+  return "session";
+}
+
 function row(
   section: string,
   key: string,
@@ -51,6 +67,7 @@ function row(
   detail: string,
 ): StatusDashboardRow {
   return {
+    group: statusGroup(section, key),
     section,
     key,
     value: compact(scalar(value)),
@@ -163,10 +180,45 @@ function stateGlyph(state: StatusRowState): string {
     case "warn":
       return "!";
     case "error":
-      return "x";
+      return "✕";
     case "info":
       return "·";
   }
+}
+
+function parseStatusNumber(value: string | undefined): number | null {
+  if (!value) return null;
+  const match = value.replace(/,/g, "").match(/\d+(?:\.\d+)?/u);
+  if (!match) return null;
+  const parsed = Number.parseFloat(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function progressBar(ratio: number | null, width = 24): string {
+  if (ratio === null) return "░".repeat(width);
+  const clamped = Math.max(0, Math.min(1, ratio));
+  const filled = Math.round(clamped * width);
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
+}
+
+function costBlock(rows: readonly StatusDashboardRow[]): {
+  readonly cost: string;
+  readonly tokens: string;
+  readonly bar: string;
+  readonly percent: string;
+} {
+  const cost = rows.find(row => row.key.toLowerCase() === "cost")?.value ?? "$0.00";
+  const emitted = parseStatusNumber(rows.find(row => row.key.toLowerCase() === "tokens emitted")?.value);
+  const remaining = parseStatusNumber(rows.find(row => row.key.toLowerCase() === "tokens remaining")?.value);
+  const ratio = emitted !== null && remaining !== null && emitted + remaining > 0
+    ? emitted / (emitted + remaining)
+    : null;
+  return {
+    cost,
+    tokens: emitted === null ? "tokens n/a" : `${emitted.toLocaleString()} emitted`,
+    bar: progressBar(ratio),
+    percent: ratio === null ? "budget open" : `${Math.round(ratio * 100)}% used`,
+  };
 }
 
 function StatusDashboardView({
@@ -194,15 +246,16 @@ function StatusDashboardView({
   });
 
   const selected = rows[Math.max(0, Math.min(activeIndex, rows.length - 1))] ?? rows[0];
+  const costs = costBlock(rows);
 
   return (
     <MenuModal
-      title="status"
+      title="status dashboard"
       count={`${rows.length}`}
       summary={snapshot.summary}
-      headerRight="runtime dashboard"
-      columns={[3, 12, 18, 24, 48]}
-      headers={["", "state", "section", "key", "value"]}
+      headerRight="runtime · session"
+      columns={[3, 12, 22, 28, 46]}
+      headers={["", "section", "label", "value", "detail"]}
       items={rows}
       activeIndex={activeIndex}
       renderRow={(item, _index, active) => {
@@ -211,32 +264,41 @@ function StatusDashboardView({
           <ThemedText key="mark" color={color}>
             {stateGlyph(item.state)}
           </ThemedText>,
-          <ThemedText key="state" color={color} wrap="truncate-end">
-            {item.state}
-          </ThemedText>,
-          <ThemedText key="section" color={active ? "agenc" : "text2"} wrap="truncate-end">
-            {item.section}
+          <ThemedText key="group" color={color} wrap="truncate-end">
+            {item.group}
           </ThemedText>,
           <ThemedText key="key" color="text2" wrap="truncate-end">
             {item.key}
           </ThemedText>,
-          <ThemedText key="value" color="subtle" wrap="truncate-middle">
+          <ThemedText key="value" color={active ? "agenc" : "text2"} wrap="truncate-middle">
             {item.value}
+          </ThemedText>,
+          <ThemedText key="detail" color="muted3" wrap="truncate-end">
+            {item.detail}
           </ThemedText>,
         ];
       }}
       preview={
         <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc">Runtime Status</ThemedText>
+          <ThemedText color="agenc">Runtime / Session</ThemedText>
           <ThemedText color="text2" wrap="wrap">
-            Live session, git, MCP, task, permission, and context counters from the current TUI.
+            {rows.filter(row => row.group === "runtime").length} runtime rows · {rows.filter(row => row.group === "session").length} session rows
           </ThemedText>
-          <ThemedText color="subtle" wrap="wrap">
-            Selected: {selected?.section ?? "status"} / {selected?.key ?? "none"}
+          <ThemedText color="muted3" wrap="wrap">
+            Selected: {selected?.group ?? "status"} / {selected?.key ?? "none"}
           </ThemedText>
-          <ThemedText color="inactive" wrap="wrap">
+          <ThemedText color="text2" wrap="wrap">
             {selected?.detail ?? "No status detail available."}
           </ThemedText>
+          <Box flexDirection="column">
+            <ThemedText color="muted3">COST</ThemedText>
+            <ThemedText color="text2" wrap="truncate-end">
+              {costs.cost} · {costs.tokens}
+            </ThemedText>
+            <ThemedText color="agenc" wrap="truncate-end">
+              {costs.bar} {costs.percent}
+            </ThemedText>
+          </Box>
         </Box>
       }
       footer={[

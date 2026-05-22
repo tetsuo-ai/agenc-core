@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
-import type { Theme } from '../../../utils/theme.js'
+import { AURA_LIFECYCLE_GLYPHS, AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
@@ -82,12 +82,7 @@ const toolColor: Record<ToolKind, ThemeColor> = {
   stake: 'worker',
 }
 
-const toolGlyph: Record<ToolState, string> = {
-  queued: '○',
-  running: '◐',
-  done: '●',
-  failed: '✕',
-}
+const toolGlyph: Readonly<Record<ToolState, string>> = AURA_LIFECYCLE_GLYPHS
 
 function capitalize(value: string): string {
   return value.length > 0 ? value.slice(0, 1).toUpperCase() + value.slice(1) : value
@@ -670,113 +665,97 @@ export function ChatBody({
   )
 }
 
-const wordmarkLines = [
-  '  ▄▄▄▄    ▄▄▄▄▄  ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄  ',
-  ' ▐█▌▐█▌  ▐█ ▄ █ ▐█ ▄▄  ██▐█▌ ▐█ ▄ █ ',
-  ' ▐█▌▐█▌  ▐█▀▀▄█ ▐█▀▀▀  ██▐█▌ ▐█ █▀█ ',
-  ' ▐██▄██▌ ▐█▄▄▄█ ▐█▄▄▄  ██▐█▌ ▐█▄▄▄█ ',
-] as const
+type WelcomeRecentSession = {
+  readonly keyName: string
+  readonly title: string
+  readonly detail: string
+}
 
-const defaultWelcomeStats = [
-  { label: 'IDENTITY', value: 'orchestrator', color: 'agenc' },
-  { label: 'WALLET', value: '7nB4…q2Pe', color: 'text2' },
-  { label: 'STAKE', value: '18.40 ◎', color: 'text2' },
-  { label: 'REP', value: '412', color: 'text2' },
-  { label: 'SLASHED', value: '0', color: 'subtle' },
-] as const satisfies readonly {
+const defaultRecentSessions = [
+  { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
+  { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
+  { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
+] as const satisfies readonly WelcomeRecentSession[]
+
+function defaultWorkspaceLabel(): string {
+  const cwd = process.cwd()
+  const home = process.env.HOME
+  return home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+}
+
+function WelcomeMetaRow({
+  label,
+  value,
+}: {
   readonly label: string
   readonly value: string
-  readonly color: ThemeColor
-}[]
-
-export function WelcomeColdPanel({
-  version = '0.4.2',
-  build = 'a7c1f4e',
-  network = 'mainnet-beta',
-  cwd = '~/work/tetsuo/swap-program',
-  gitBranch = 'main',
-  gitState = 'clean',
-  stats = defaultWelcomeStats,
-}: {
-  readonly version?: string
-  readonly build?: string
-  readonly network?: string
-  readonly cwd?: string
-  readonly gitBranch?: string
-  readonly gitState?: string
-  readonly stats?: readonly {
-    readonly label: string
-    readonly value: string
-    readonly color?: ThemeColor
-  }[]
 }): React.ReactNode {
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="column">
-        {wordmarkLines.map(line => (
-          <ThemedText key={line} color="agenc">
-            {line}
-          </ThemedText>
-        ))}
-      </Box>
+    <Box flexDirection="row" flexWrap="wrap">
+      <ThemedText color="muted3">{label.padEnd(13)}</ThemedText>
+      <ThemedText color="text2" wrap="truncate-middle">
+        {value}
+      </ThemedText>
+    </Box>
+  )
+}
 
+export function WelcomeColdPanel({
+  workspace = defaultWorkspaceLabel(),
+  model = 'default model',
+  lastSession = '12m ago · clean handoff',
+  recentSessions = defaultRecentSessions,
+}: {
+  readonly workspace?: string
+  readonly model?: string
+  readonly lastSession?: string
+  readonly recentSessions?: readonly WelcomeRecentSession[]
+}): React.ReactNode {
+  const visibleSessions = recentSessions.slice(0, 3)
+  return (
+    <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        <Box flexDirection="row" flexWrap="wrap">
-          <ThemedText color="subtle">agenc </ThemedText>
-          <ThemedText color="text">{version}</ThemedText>
-          <ThemedText color="muted3">· build  </ThemedText>
-          <ThemedText color="text">{build}</ThemedText>
-          <ThemedText color="muted3">· solana  </ThemedText>
-          <ThemedText color="text">{network}</ThemedText>
-        </Box>
-        <Box minHeight={1} />
-        <Box flexDirection="row" flexWrap="wrap">
-          <ThemedText color="inactive">cwd </ThemedText>
-          <ThemedText color="subtle" wrap="truncate-middle">
-            {cwd}
-          </ThemedText>
-          <ThemedText color="inactive">· git </ThemedText>
-          <ThemedText color="subtle">{gitBranch}</ThemedText>
-          <ThemedText color="inactive">· {gitState}</ThemedText>
-        </Box>
+        <ThemedText color="agenc" bold>
+          agenc.
+        </ThemedText>
+        <ThemedText color="text2">
+          a netrunner with hands on every file
+        </ThemedText>
       </Box>
 
       <ThemedBox
-        flexDirection="row"
+        flexDirection="column"
         borderStyle="single"
         borderColor="lineSoft"
-        backgroundColor="surfaceBackground"
-        flexWrap="wrap"
+        paddingX={1}
+        paddingY={1}
       >
-        {stats.map((stat, index) => (
-          <ThemedBox
-            key={stat.label}
-            flexDirection="column"
-            minWidth={13}
-            flexGrow={1}
-            paddingLeft={index === stats.length - 1 ? 3 : 1}
-            paddingRight={1}
-            paddingY={1}
-          >
-            <ThemedText color="inactive" wrap="truncate-end">
-              {stat.label}
-            </ThemedText>
-            <ThemedText color={stat.color ?? 'text2'} wrap="truncate-end">
-              {stat.value}
-            </ThemedText>
-          </ThemedBox>
-        ))}
+        <WelcomeMetaRow label="workspace" value={workspace} />
+        <WelcomeMetaRow label="model" value={model} />
+        <WelcomeMetaRow label="last session" value={lastSession} />
       </ThemedBox>
 
       <Box flexDirection="column">
-        <ThemedText color="subtle">ready.</ThemedText>
-        <Box flexDirection="row" flexWrap="wrap">
-          <ThemedText color="inactive">type </ThemedText>
-          <ThemedText color="agenc">/help</ThemedText>
-          <ThemedText color="inactive"> for commands ·  </ThemedText>
-          <ThemedText color="agenc">/claim</ThemedText>
-          <ThemedText color="inactive"> to pick a task off the marketplace</ThemedText>
-        </Box>
+        <ThemedText color="muted3">recent</ThemedText>
+        <ThemedBox
+          flexDirection="column"
+          borderStyle="single"
+          borderColor="lineSoft"
+          paddingX={1}
+          paddingY={1}
+        >
+          {visibleSessions.length > 0 ? visibleSessions.map(session => (
+            <Box key={session.keyName} flexDirection="row" flexWrap="wrap">
+              <ThemedText color="muted3">[</ThemedText>
+              <ThemedText color="agenc">{session.keyName}</ThemedText>
+              <ThemedText color="muted3">] </ThemedText>
+              <ThemedText color="text2">{session.title}</ThemedText>
+              <ThemedText color="muted3"> · {session.detail}</ThemedText>
+            </Box>
+          )) : (
+            <ThemedText color="muted3">no resumable sessions</ThemedText>
+          )}
+        </ThemedBox>
       </Box>
     </Box>
   )
@@ -953,12 +932,7 @@ export function PlanList({
       </ThemedBox>
       <Box flexDirection="column" paddingX={1} paddingY={dense ? 0 : 1}>
         {items.map((item, index) => {
-          const glyph = {
-            done: '✓',
-            active: '▮',
-            pending: '·',
-            failed: '✕',
-          }[item.state]
+          const glyph = AURA_PLAN_GLYPHS[item.state]
           const color: ThemeColor = {
             done: 'success',
             active: 'agenc',
@@ -1064,6 +1038,8 @@ export function ApprovalCard({
   note,
   confirmLabel,
   requireTypedConfirmation = false,
+  typedConfirmationValue = '',
+  typedConfirmationTarget = 'yes',
 }: {
   readonly risk: 'low' | 'high'
   readonly title: string
@@ -1072,28 +1048,40 @@ export function ApprovalCard({
   readonly note?: string
   readonly confirmLabel: string
   readonly requireTypedConfirmation?: boolean
+  readonly typedConfirmationValue?: string
+  readonly typedConfirmationTarget?: string
 }): React.ReactNode {
-  const variant: BadgeVariant = risk === 'high' ? 'error' : 'worker'
+  const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
+  const primaryFact = facts[0]?.value ?? title
+  const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact} · ${command} · ${confirmLabel}`
   return (
-    <ThemedBox
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={variantColor[variant]}
-      backgroundColor={variantWash[variant]}
+    <Popup
+      title={`tool · bash · ${title}`}
+      headerRight={
+        requireTypedConfirmation
+          ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
+          : 'esc to close'
+      }
+      status={`req ${risk === 'high' ? '0x9c14' : '0x47a3'}`}
+      accentColor={variantColor[variant]}
+      bodyBackgroundColor={risk === 'high' ? 'errorWash' : 'successWash'}
+      minHeight={10}
+      footer={[
+        {
+          keyName: requireTypedConfirmation ? 'type' : 'e',
+          label: requireTypedConfirmation ? 'confirmation required' : 'edit command',
+        },
+      ]}
     >
-      <ThemedBox
-        flexDirection="row"
-        borderBottom
-        borderBottomColor={variantColor[variant]}
-        paddingX={1}
-      >
-        <ThemedText color={variantColor[variant]}>▸ tool · bash · {title}</ThemedText>
-        <Box flexGrow={1} />
-        <ThemedText color="subtle">req {risk === 'high' ? '0x9c14' : '0x47a3'}</ThemedText>
-      </ThemedBox>
       <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
+        <ThemedText color="text2" wrap="truncate-end">
+          {approvalSummary}
+        </ThemedText>
+        <ThemedBox width="100%" minHeight={1} backgroundColor={variantColor[variant]}>
+          <ThemedText color={variantColor[variant]}> </ThemedText>
+        </ThemedBox>
         <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
-          <ThemedText color="text" wrap="wrap">
+          <ThemedText color="text2" wrap="wrap">
             $ {command}
           </ThemedText>
         </ThemedBox>
@@ -1104,24 +1092,110 @@ export function ApprovalCard({
               flexDirection="column"
               width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
             >
-              <ThemedText color="inactive">{fact.label.toUpperCase()}</ThemedText>
+              <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
               <ThemedText color={fact.color ?? 'text2'}>{fact.value}</ThemedText>
             </Box>
           ))}
         </Box>
         {note ? (
-          <ThemedText color="subtle" wrap="wrap">
+          <ThemedText color="muted3" wrap="wrap">
             note · {note}
           </ThemedText>
         ) : null}
+        {requireTypedConfirmation ? (
+          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+            <Box flexDirection="row" gap={1}>
+              <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
+                {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
+              </ThemedText>
+              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+            </Box>
+          </ThemedBox>
+        ) : (
+          <ThemedText color="muted3">scope remember option · this session</ThemedText>
+        )}
         <Box flexDirection="row" gap={2}>
           <ThemedBox borderStyle="single" borderColor={variantColor[variant]} paddingX={1}>
-            <ThemedText color={risk === 'high' ? 'text' : 'agenc'}>{confirmLabel}</ThemedText>
+            <ThemedText color="agenc">{confirmLabel}</ThemedText>
           </ThemedBox>
-          <KeyHint k={requireTypedConfirmation ? 'type' : 'e'} label={requireTypedConfirmation ? 'confirmation required' : 'edit command'} />
           <KeyHint k="esc" label="cancel" />
         </Box>
       </Box>
+    </Popup>
+  )
+}
+
+export type PopupFooterItem = {
+  readonly keyName: string
+  readonly label: string
+}
+
+export function Popup({
+  title,
+  headerRight = 'esc to close',
+  status,
+  footer = [],
+  children,
+  accentColor = 'agenc',
+  bodyBackgroundColor,
+  bodyPaddingX = 2,
+  bodyPaddingY = 1,
+  maxHeight,
+  minHeight,
+}: {
+  readonly title: string
+  readonly headerRight?: string
+  readonly status?: string
+  readonly footer?: readonly PopupFooterItem[]
+  readonly children: ReactNode
+  readonly accentColor?: ThemeColor
+  readonly bodyBackgroundColor?: ThemeColor
+  readonly bodyPaddingX?: number
+  readonly bodyPaddingY?: number
+  readonly maxHeight?: number
+  readonly minHeight?: number
+}): React.ReactNode {
+  const resolvedMinHeight = minHeight ?? 18
+  const shouldConstrainHeight = maxHeight !== undefined
+  return (
+    <ThemedBox
+      flexDirection="column"
+      backgroundColor="lineSoft"
+      overflow={shouldConstrainHeight ? 'hidden' : undefined}
+    >
+      <ThemedBox
+        flexDirection="column"
+        borderStyle="single"
+        borderColor="line"
+        backgroundColor="clawd_background"
+        overflow={shouldConstrainHeight ? 'hidden' : undefined}
+        maxHeight={maxHeight}
+        minHeight={resolvedMinHeight}
+      >
+        <ThemedBox flexDirection="row" borderBottom borderBottomColor="lineSoft" paddingX={1} gap={1} flexShrink={0}>
+          <ThemedText color={accentColor}>✳</ThemedText>
+          <ThemedText color="text2" wrap="truncate-end">{title.toUpperCase()}</ThemedText>
+          <Box flexGrow={1} />
+          <ThemedText color="muted3" wrap="truncate-end">{headerRight}</ThemedText>
+        </ThemedBox>
+        <ThemedBox
+          flexDirection="column"
+          backgroundColor={bodyBackgroundColor}
+          paddingX={bodyPaddingX}
+          paddingY={bodyPaddingY}
+          flexShrink={shouldConstrainHeight ? 1 : undefined}
+          overflow={shouldConstrainHeight ? 'hidden' : undefined}
+        >
+          {children}
+        </ThemedBox>
+        <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2} flexShrink={0}>
+          {footer.map(item => (
+            <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
+          ))}
+          <Box flexGrow={1} />
+          {status ? <ThemedText color="muted3" wrap="truncate-end">{status}</ThemedText> : null}
+        </ThemedBox>
+      </ThemedBox>
     </ThemedBox>
   )
 }
@@ -1193,36 +1267,19 @@ export function MenuModal<T>({
       : undefined
   const constrainedMinHeight =
     modalMinHeight === undefined ? undefined : Math.min(modalMinHeight, viewportRows)
+  const popupStatus = [headerRight, scrollStatus, hint].filter(Boolean).join(' · ')
+  const popupTitle = [title, count, summary].filter(Boolean).join(' · ')
 
   return (
-    <ThemedBox
-      flexDirection="column"
-      borderStyle={omitTopBorder ? undefined : 'single'}
-      borderLeft={omitTopBorder}
-      borderRight={omitTopBorder}
-      borderBottom={omitTopBorder}
-      borderColor="agenc"
-      borderLeftColor="agenc"
-      borderRightColor="agenc"
-      borderBottomColor="agenc"
-      backgroundColor="clawd_background"
-      overflow="hidden"
+    <Popup
+      title={popupTitle}
+      status={popupStatus || undefined}
+      footer={footer}
+      bodyPaddingX={paddingX}
+      bodyPaddingY={0}
       maxHeight={viewportRows}
       minHeight={constrainedMinHeight}
     >
-      <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={paddingX} gap={columnGap}>
-        <Box flexShrink={0}>
-          <ThemedText color="agenc" wrap="truncate-end">{title.toUpperCase()}</ThemedText>
-        </Box>
-        {count ? (
-          <Box flexShrink={0}>
-            <ThemedText color="text" wrap="truncate-end">{count}</ThemedText>
-          </Box>
-        ) : null}
-        {summary ? <ThemedText color="subtle" wrap="truncate-end">{summary}</ThemedText> : null}
-        <Box flexGrow={1} />
-        {headerRight ? <ThemedText color="inactive" wrap="truncate-end">{headerRight}</ThemedText> : null}
-      </ThemedBox>
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         <Box
           flexDirection="column"
@@ -1272,16 +1329,7 @@ export function MenuModal<T>({
           </ThemedBox>
         ) : null}
       </Box>
-      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={paddingX} gap={2}>
-        {footer.map(item => (
-          <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
-        ))}
-        {scrollStatus ? <ThemedText color="inactive">{scrollStatus}</ThemedText> : null}
-        <Box flexGrow={1} />
-        {hint ? <ThemedText color="inactive" wrap="truncate-end">{hint}</ThemedText> : null}
-        <KeyHint k="esc" label="dismiss" />
-      </ThemedBox>
-    </ThemedBox>
+    </Popup>
   )
 }
 

@@ -6,6 +6,7 @@ import { Text } from '../../ink.js'
 import {
   MenuModal,
   ModeSwitcher,
+  PlanList,
   SlashPalette,
   StatusSegment,
   TerminalFrame,
@@ -90,12 +91,42 @@ describe('v2 primitives', () => {
     expect(output).toContain('show the current working diff')
   })
 
-  it('keeps welcome command labels separated from surrounding text', async () => {
+  it('renders the AURA cold-start welcome without chain hero state', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
-    expect(output).toContain('type /help for commands ·  /claim to pick a task off the marketplace')
-    expect(output).not.toContain('/helpfor')
-    expect(output).not.toContain('/claimto')
+    expect(output).toContain('agenc.')
+    expect(output).toContain('a netrunner with hands on every file')
+    expect(output).toContain('workspace')
+    expect(output).toContain('model')
+    expect(output).toContain('last session')
+    expect(output).toContain('recent')
+    expect(output).toContain('[1] swap-program')
+    expect(output).toContain('[2] runtime coverage')
+    expect(output).toContain('[3] agent catalog')
+    expect(output).not.toContain('STAKE')
+    expect(output).not.toContain('18.40')
+    expect(output).not.toContain('/claim')
+  })
+
+  it('uses AURA lifecycle glyphs for plan rows', async () => {
+    const output = await renderToString(
+      <PlanList
+        items={[
+          { state: 'done', text: 'read repo state' },
+          { state: 'active', text: 'apply focused patch' },
+          { state: 'pending', text: 'run verification' },
+          { state: 'failed', text: 'surface blocker' },
+        ]}
+      />,
+      96,
+    )
+
+    expect(output).toContain('01 ● read repo state')
+    expect(output).toContain('02 ▮ apply focused patch')
+    expect(output).toContain('03 ○ run verification')
+    expect(output).toContain('04 ✕ surface blocker')
+    expect(output).not.toContain('✓ read repo state')
+    expect(output).not.toContain('· run verification')
   })
 
   it('windows long menus to the active row and exposes scroll position', async () => {

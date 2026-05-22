@@ -11,6 +11,7 @@ import {
   hookDisplayText,
 } from "../hooks/configured-hooks.js";
 import { Box, useInput } from "../tui/ink.js";
+import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { KeyHint, MenuModal } from "../tui/components/v2/primitives.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
@@ -120,6 +121,33 @@ function diagColor(
 
 function firstLine(value: string | undefined): string {
   return (value ?? "").split(/\r?\n/u, 1)[0]?.trim() ?? "";
+}
+
+function compactPath(value: string | undefined): string {
+  const source = value ?? ".agenc/hooks";
+  const marker = source.includes(".agenc/hooks") ? ".agenc/hooks" : source;
+  return marker.length <= 30 ? marker : `…${marker.slice(-29)}`;
+}
+
+function EventChips({
+  selected,
+}: {
+  readonly selected: HookEventName;
+}): React.ReactNode {
+  return (
+    <Box flexDirection="row" gap={1} flexWrap="wrap">
+      {HOOK_EVENT_NAMES.slice(0, 6).map(event => (
+        <ThemedBox
+          key={event}
+          borderStyle="single"
+          borderColor={event === selected ? "agenc" : "lineSoft"}
+          paddingX={1}
+        >
+          <ThemedText color={event === selected ? "agenc" : "muted3"}>{event}</ThemedText>
+        </ThemedBox>
+      ))}
+    </Box>
+  );
 }
 
 function latestForHook(
@@ -402,15 +430,30 @@ function HookEditModal({
       preview={
         <Box flexDirection="column" gap={1}>
           <ThemedText color="agenc">Draft Test</ThemedText>
+          <EventChips selected={hook.event} />
           <ThemedText color="subtle" wrap="wrap">
             {selected?.detail ?? "Choose a field."}
           </ThemedText>
+          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+            <Box flexDirection="column">
+              <ThemedText color="muted3">command</ThemedText>
+              <ThemedText color="text2" wrap="truncate-middle">{form.command || " "}</ThemedText>
+            </Box>
+          </ThemedBox>
+          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+            <Box flexDirection="row" gap={2}>
+              <ThemedText color="muted3">timeout</ThemedText>
+              <ThemedText color="text2">{form.timeoutMs}ms</ThemedText>
+              <ThemedText color="muted3">enabled</ThemedText>
+              <ThemedText color={form.enabled ? "success" : "error"}>{form.enabled ? "true" : "false"}</ThemedText>
+            </Box>
+          </ThemedBox>
           {errors.map(error => (
             <ThemedText key={error} color="error" wrap="wrap">! {error}</ThemedText>
           ))}
           {feedback ? <ThemedText color="worker" wrap="wrap">{feedback}</ThemedText> : null}
-          <ThemedText color="inactive" wrap="wrap">
-            Draft edits are for testing. Save permanent hook changes in config.toml, then reload.
+          <ThemedText color="muted3" wrap="wrap">
+            variables · $AGENC_SESSION_ID $AGENC_TOOL_NAME $AGENC_CWD $AGENC_HOOK_EVENT
           </ThemedText>
         </Box>
       }
@@ -722,7 +765,7 @@ function HooksMenuView({
         summary={`${selectedHooks.length} configured`}
         headerRight="enter detail · t test · e edit-test"
         columns={[3, 18, 18, 9, 46, 28]}
-        headers={["", "event", "matcher", "enabled", "command", "last result"]}
+        headers={["on", "event", "matcher", "enabled", "command", "source"]}
         items={hookRowsForEvent}
         activeIndex={hookIndex}
         renderRow={(hook, _index, active) => {
@@ -744,14 +787,15 @@ function HooksMenuView({
             <ThemedText key="command" color="text2" wrap="truncate-middle">
               {hook.command.command}
             </ThemedText>,
-            <ThemedText key="last" color={diagColor(diag)} wrap="truncate-end">
-              {diag ? formatDiagnostic(diag) : "—"}
+            <ThemedText key="source" color={diagColor(diag)} wrap="truncate-end">
+              {realHook ? compactPath(hook.sourcePath) : "—"}
             </ThemedText>,
           ];
         }}
         preview={
           <Box flexDirection="column" gap={1}>
             <ThemedText color="agenc">{mode.event}</ThemedText>
+            <EventChips selected={mode.event} />
             <ThemedText color="subtle" wrap="wrap">
               {hookEventSummary(mode.event).summary}
             </ThemedText>
@@ -783,8 +827,8 @@ function HooksMenuView({
       count={`${runtime.listHooks().length}`}
       summary={runtime.isDisabled() ? "disabled" : issues.length === 0 ? "validation ok" : `${issues.length} issue(s)`}
       headerRight="enter event · x toggle · r reload"
-      columns={[3, 13, 22, 8, 14, 28, 30]}
-      headers={["", "status", "event", "count", "matcher", "detail", "last result"]}
+      columns={[3, 22, 18, 46, 30]}
+      headers={["on", "event", "matcher", "command", "source"]}
       items={rows}
       activeIndex={activeIndex}
       renderRow={(row, _index, active) => {
@@ -793,37 +837,41 @@ function HooksMenuView({
           <ThemedText key="mark" color={color}>
             {statusGlyph(row.status)}
           </ThemedText>,
-          <ThemedText key="status" color={color} wrap="truncate-end">
-            {row.status}
-          </ThemedText>,
           <ThemedText key="event" color={active ? "agenc" : "text2"} wrap="truncate-end">
             {row.event}
-          </ThemedText>,
-          <ThemedText key="count" color="subtle">
-            {String(row.count)}
           </ThemedText>,
           <ThemedText key="matcher" color="inactive" wrap="truncate-end">
             {row.matcher}
           </ThemedText>,
-          <ThemedText key="detail" color="subtle" wrap="truncate-end">
+          <ThemedText key="command" color="text2" wrap="truncate-end">
             {row.detail}
           </ThemedText>,
-          <ThemedText key="latest" color={diagColor(row.latest)} wrap="truncate-end">
-            {row.latest ? formatDiagnostic(row.latest) : "—"}
+          <ThemedText key="source" color={diagColor(row.latest)} wrap="truncate-end">
+            {compactPath(row.hooks[0]?.sourcePath ?? runtime.sourcePath())}
           </ThemedText>,
         ];
       }}
       preview={
         <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc">Hook Configuration</ThemedText>
-          <ThemedText color="text2" wrap="wrap">
-            Source: {runtime.sourcePath()}
-          </ThemedText>
+          <ThemedText color="agenc">Hook Editor</ThemedText>
+          <EventChips selected={selected?.event ?? "PreToolUse"} />
+          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+            <Box flexDirection="column">
+              <ThemedText color="muted3">matcher</ThemedText>
+              <ThemedText color="text2">{selected?.matcher ?? "-"}</ThemedText>
+            </Box>
+          </ThemedBox>
+          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+            <Box flexDirection="column">
+              <ThemedText color="muted3">command</ThemedText>
+              <ThemedText color="text2" wrap="truncate-end">{selected?.detail ?? ""}</ThemedText>
+            </Box>
+          </ThemedBox>
           <ThemedText color={issues.length === 0 ? "success" : "error"} wrap="wrap">
             Validation: {issues.length === 0 ? "ok" : `${issues.length} issue(s)`}
           </ThemedText>
-          <ThemedText color="subtle" wrap="wrap">
-            Event: {selected?.event ?? "none"}
+          <ThemedText color="muted3" wrap="wrap">
+            variables · $AGENC_SESSION_ID $AGENC_TOOL_NAME $AGENC_CWD $AGENC_HOOK_EVENT
           </ThemedText>
           {(selected?.hooks ?? []).slice(0, 6).map(hook => (
             <ThemedText key={`${hook.event}-${hook.index}`} color="text2" wrap="truncate-end">

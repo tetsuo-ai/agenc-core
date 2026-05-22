@@ -123,11 +123,11 @@ describe("AgentProgressLine coverage", () => {
       </Box>,
     );
 
-    expect(output).toContain("|- reviewer (plan) · 1 tool use · 1.5k tokens");
+    expect(output).toContain("|- reviewer · Agent (plan) · 1 tool use · 1.5k tokens");
     expect(output).toContain("|  |_  Reading source");
-    expect(output).toContain("|- Beta: final checks · 2 tool uses");
+    expect(output).toContain("|- Beta · Agent: final checks · 2 tool uses");
     expect(output).toContain("|  |_  Done");
-    expect(output).toContain("`- background sync");
+    expect(output).toContain("`- background sync · Agent");
     expect(output).toContain("   |_  Indexing repo");
     expect(output).not.toContain("7 tool uses");
     expect(output).not.toContain("9.0k tokens");

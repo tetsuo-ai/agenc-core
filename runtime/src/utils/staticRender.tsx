@@ -56,17 +56,25 @@ const SYNC_START = '\x1B[?2026h';
 const SYNC_END = '\x1B[?2026l';
 
 /**
- * Extracts content from the first complete frame in Ink's output.
+ * Extracts content from the last non-empty complete frame in Ink's output.
  * Ink with non-TTY stdout outputs multiple frames, each wrapped in DEC synchronized
- * update sequences ([?2026h ... [?2026l). We only want the first frame's content.
+ * update sequences ([?2026h ... [?2026l). React/Ink can commit popup-heavy
+ * trees over several frames, so the stable final frame is the useful snapshot.
  */
 function extractFirstFrame(output: string): string {
-  const startIndex = output.indexOf(SYNC_START);
-  if (startIndex === -1) return output;
-  const contentStart = startIndex + SYNC_START.length;
-  const endIndex = output.indexOf(SYNC_END, contentStart);
-  if (endIndex === -1) return output;
-  return output.slice(contentStart, endIndex);
+  let frame: string | null = null;
+  let cursor = 0;
+  while (cursor < output.length) {
+    const startIndex = output.indexOf(SYNC_START, cursor);
+    if (startIndex === -1) break;
+    const contentStart = startIndex + SYNC_START.length;
+    const endIndex = output.indexOf(SYNC_END, contentStart);
+    if (endIndex === -1) break;
+    const nextFrame = output.slice(contentStart, endIndex);
+    if (nextFrame.trim().length > 0) frame = nextFrame;
+    cursor = endIndex + SYNC_END.length;
+  }
+  return frame ?? output;
 }
 
 /**

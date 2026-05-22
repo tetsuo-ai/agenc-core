@@ -146,6 +146,7 @@ describe("CoordinatorTaskPanel rendering", () => {
   test("renders sorted running and terminal agents with names, status, tokens, queues, and selection hints", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(11_000);
+    coordinatorMock.terminalColumns = 120;
     coordinatorMock.appState.footerSelection = "tasks";
     coordinatorMock.appState.coordinatorTaskIndex = 2;
     coordinatorMock.appState.viewingAgentTaskId = "agent-b";
@@ -176,18 +177,26 @@ describe("CoordinatorTaskPanel rendering", () => {
 
     const output = await renderToText(<CoordinatorTaskPanel />);
 
-    expect(output).toContain("AGENTS");
+    expect(output).toContain("AGENT FLEET");
     expect(output).toContain("2 active");
+    expect(output).toContain("name · Role");
+    expect(output).toContain("last action");
     expect(output).toContain("orchestrator");
-    expect(output.indexOf("Fixer:")).toBeLessThan(output.indexOf("Reviewer:"));
-    expect(output).toContain("Fixer:");
+    expect(output.indexOf("Fixer · Runner")).toBeLessThan(output.indexOf("Reviewer · Runner"));
+    expect(output).toContain("Fixer · Runner");
+    expect(output).toContain("◐ running");
     expect(output).toContain("Applying patch");
     expect(output).toContain("12.5k tokens");
     expect(output).toContain("2 queued");
-    expect(output).toContain("Reviewer:");
+    expect(output).toContain("Reviewer · Runner");
+    expect(output).toContain("● completed");
     expect(output).toContain("finished review");
     expect(output).toContain("1 queued");
     expect(output).toContain("x to clear");
+    expect(output).toContain("scope session");
+    expect(output).toContain("worktree current checkout");
+    expect(output).toContain("last output");
+    expect(output).toContain("spend —");
     await expect(renderToText(<CountProbe />)).resolves.toContain("3");
   });
 

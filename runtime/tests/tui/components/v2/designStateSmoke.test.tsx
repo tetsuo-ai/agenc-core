@@ -104,7 +104,7 @@ const SOURCE_CONTRACTS: readonly {
   readonly sourceComponents?: readonly string[]
   readonly markers: readonly string[]
 }[] = [
-  { stateId: '01a', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'WelcomeCold', markers: ['orchestrator', '18.40', '/claim', '0.4.2', '7nB4…q2Pe', 'ready.', 'build a7c1f4e', 'SLASHED', '/help'] },
+  { stateId: '01a', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'WelcomeCold', markers: ['agenc.', 'a netrunner with hands on every file', 'workspace', 'model', 'last session', 'recent', 'swap-program', 'runtime coverage', 'agent catalog'] },
   { stateId: '01b', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'WelcomeResumed', markers: ['checkpointed plan', '#47', 'task', 'read programs/swap/src/lib.rs', 'cargo test-bpf · settle', 'resume from step 3', 'session 0x9c4f', 'escrow ◎ 2.40', 'forfeit ◎ 0.40'] },
   { stateId: '02a', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'SlashFull', sourceComponents: ['SlashFull', 'SlashPalette', 'slashItems'], markers: ['/claim', '/delegate', '/model', '/proof', '/settle', '/stake', 'slash commands · 30', '/bashes', '+ 18 more'] },
   { stateId: '02b', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'SlashFiltered', sourceComponents: ['SlashFiltered', 'SlashPalette', 'slashItems'], markers: ['/delegate', '/diff', 'matches · 2', 'show the current working diff', 'swap-program/issues/47', 'shall I draft a plan?'] },
@@ -127,7 +127,7 @@ const SOURCE_CONTRACTS: readonly {
   { stateId: '13', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'McpMenu', markers: ['/mcp', 'mcp servers', 'solana-rpc', 'github', 'playwright', 'server configs'] },
   { stateId: '14', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'HooksMenu', markers: ['/hooks', 'hooks', 'pre-tool/edit', 'session-start', 'last 3 fires', '.agenc/hooks'] },
   { stateId: '15', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'PluginsMenu', markers: ['/plugins', 'plugins', 'agenc-core', 'anchor-toolkit', 'arbiter-client', '11 updates'] },
-  { stateId: '16', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'AgentsMenu', markers: ['/agents', 'agents', 'orchestrator', 'worker/zk-prover', 'mainnet-beta', 'cost cap'] },
+  { stateId: '16', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'AgentsMenu', markers: ['/agents', 'agents', 'name · Role', 'scope', 'source', 'when-to-use', 'system prompt'] },
   { stateId: '17', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'PermissionsMenu', markers: ['/permissions', 'permissions', 'allow', 'bypassPermissions', 'rm -rf', 'top-to-bottom rule eval'] },
   { stateId: '18', sourceFile: 'tui-v2-menus.jsx', sourceComponent: 'MemoryMenu', markers: ['/memory', 'memory', 'AGENTS.md', 'AGENC.md', 'pinned/slippage.md', 'pinned overrides'] },
   { stateId: '19a', sourceFile: 'tui-v2-states-runtime.jsx', sourceComponent: 'BackgroundTasks', markers: ['background tasks', 'running', 'proof', 'verify slip_within invariant', '62', 'worker/zk-prover'] },
@@ -1642,7 +1642,7 @@ const DESIGN_STATES: readonly DesignState[] = [
   {
     id: '01a',
     title: 'welcome cold',
-    expected: ['orchestrator', '18.40', '/claim', 'mode · default'],
+    expected: ['agenc.', 'a netrunner with hands on every file', 'recent', 'mode · default'],
     render: viewport => (
       <Frame
         viewport={viewport}
@@ -3305,44 +3305,38 @@ const DESIGN_STATES: readonly DesignState[] = [
     {
       id: '16',
       command: '/agents',
-      title: 'agents · marketplace + self',
-      count: '7 known · 1 self',
-      summary: 'discoverable on-chain by reputation · worker/test-runner · cargo test · solana-test-validator',
-      headerRight: '↑↓ select · d delegate · ⏎ inspect',
-      headers: ['', 'identity', 'model', 'pubkey', 'stake', 'rep', 'specialty', 'status'],
-      columns: [2, 20, 13, 12, 9, 6, 34, 12],
+      title: 'agents · definitions editor',
+      count: '4 active · 6 registered',
+      summary: 'local definitions · role routing · scoped prompts',
+      headerRight: '↑↓ select · enter detail',
+      headers: ['', 'name · Role', 'scope', 'source'],
+      columns: [2, 26, 14, 18],
       rows: [
-        ['orchestrator', 'haiku-4.5', '7nB4…q2Pe', '18.40 ◎', '412', 'planning · file ops · settle', 'active'],
-        ['worker/zk-prover', 'opus-4.5', '4kXr…m2Tw', '5.40 ◎', '168', 'r1cs circuits · groth16 · plonk', 'recovering'],
-        ['worker/fast-prover', 'sonnet-4.5', '9pQ2…vN18', '8.20 ◎', '231', 'sparse circuits · halo2', 'idle'],
-        ['worker/test-runner', 'haiku-4.5', 'cF18…tD22', '3.00 ◎', '94', 'cargo test · solana-test-validator', 'idle'],
-        ['worker/code-search', 'haiku-4.5', 'kP47…nM18', '2.10 ◎', '76', 'ast-grep · tree-sitter · large repos', 'idle'],
-        ['worker/auditor', 'opus-4.5', '7nM3…qE91', '24.00 ◎', '512', 'audit pre-settle · slither · mythril', 'idle'],
-        ['worker/explainer', 'sonnet-4.5', '2vF8…hG44', '6.40 ◎', '188', 'human-readable docs from diffs', 'idle'],
+        ['worker · Runner', 'project', 'Project'],
+        ['explorer · Scanner', 'project', 'Project'],
+        ['docs · Scribe', 'user', 'User'],
+        ['operator · Fixer', 'local', 'Local'],
+        ['browser · Ghost', 'plugin', 'Plugin'],
+        ['remote · Trace', 'runtime', 'Built-in'],
       ],
-      footer: [{ keyName: 'd', label: 'delegate' }, { keyName: '⏎', label: 'inspect' }, { keyName: 'f', label: 'filter by specialty' }, { keyName: 's', label: 'sort by rep' }],
-      hint: 'filter: rep > 100 · stake > 1 ◎ · status idle',
+      footer: [{ keyName: 'enter', label: 'detail' }, { keyName: 'n', label: 'new' }, { keyName: 'e', label: 'edit' }, { keyName: 'd', label: 'delete' }],
+      hint: 'system prompt preview · scoped tools · worktree isolation',
       parityMarkers: [
-        '↑↓ select · d delegate · ⏎ inspect',
-        'worker/zk-prover',
-        'recovering',
-        'worker/fast-prover',
-        'worker/code-search',
-        'worker/auditor',
-        'worker/explainer',
-        '7 known · 1 self',
-        'orchestrator · self',
-        'primary identity for this session. delegates to worker',
-        'primary identity for this session. delegates to worker',
-        'primary identity for this session. delegates to worker',
-        'primary identity for this session. delegates to worker',
-        'wallet',
-        'slashed',
-        'tasks done',
-        'ctx limit',
-        'cost cap',
-        '◎ 0.5/task',
-        'recent task history · ⏎ to view full',
+        '↑↓ select · enter detail',
+        'name · Role',
+        'scope',
+        'source',
+        'worker · Runner',
+        'explorer · Scanner',
+        'docs · Scribe',
+        'when-to-use',
+        'tools',
+        'model',
+        'budget',
+        'worktree',
+        'system prompt',
+        'read-only',
+        'current checkout',
       ],
     },
     {
@@ -3581,27 +3575,18 @@ const DESIGN_STATES: readonly DesignState[] = [
                 </Box>
               ) : menu.id === '16' ? (
                 <Box flexDirection="column">
-                  <ThemedText color="subtle" wrap="truncate-end">cost cap · sonnet-4.5 · orchestrator · self</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">7nB4…q2Pe</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">planning · file ops · settle</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">primary identity for this session. delegates to worker</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">orchestrator · 18.40 ◎ · planning · file ops</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">settle · active · primary identity for this session</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">worker/zk-prover · 4kXr…m2Tw · 5.40 ◎</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">r1cs circuits · groth16 · plonk · recovering</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">worker/fast-prover · 9pQ2…vN18 · 8.20 ◎</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">sparse circuits · halo2 · idle</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">worker/test-runner · cF18…tD22 · 3.00 ◎</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">cargo test · solana-test-validator</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">worker/code-search · kP47…nM18 · 2.10 ◎</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">ast-grep · tree-sitter · large repos</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">worker/auditor · 7nM3…qE91 · 24.00 ◎</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">audit pre-settle · slither · mythril</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">worker/explainer · 2vF8…hG44 · 6.40 ◎</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">human-readable docs from diffs</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">↑↓ select · d delegate · ⏎ inspect</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">wallet · slashed · tasks done · ctx limit · cost cap</ThemedText>
-                  <ThemedText color="subtle" wrap="truncate-end">◎ 0.5/task · recent task history · ⏎ to view full</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">worker · Runner · project · Project</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">explorer · Scanner · project · Project</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">docs · Scribe · user · User</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">operator · Fixer · local · Local</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">when-to-use · implementation work with scoped tools</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">tools · 6 tools · skills —</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">model · inherit · provider inherit</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">budget · inherit</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">worktree · current checkout</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">system prompt · You are a focused implementation agent.</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">read-only · editable · isolated worktree</ThemedText>
+                  <ThemedText color="subtle" wrap="truncate-end">↑↓ select · enter detail · n new · e edit · d delete</ThemedText>
                 </Box>
               ) : menu.id === '17' ? (
                 <Box flexDirection="column">

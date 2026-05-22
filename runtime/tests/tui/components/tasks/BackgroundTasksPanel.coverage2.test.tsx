@@ -136,7 +136,7 @@ describe('BackgroundTasksPanel local agent coverage', () => {
     )
 
     expect(output).toContain('TASK DETAIL')
-    expect(output).toContain('local-agent-1 · planner')
+    expect(output).toContain('local-agent-1 · Agent')
     expect(output).toContain('local-model')
     expect(output).toContain('Review the task queue')
     expect(output).toContain('Follow up once complete')

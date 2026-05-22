@@ -32,16 +32,18 @@ describe('Messages welcome state', () => {
   it('renders the v2 cold-start welcome panel for an empty transcript', async () => {
     const output = await renderToString(<Messages {...baseProps} />, 120)
 
-    expect(output).toContain('orchestrator')
-    expect(output).toContain('18.40')
-    expect(output).toContain('/claim')
-    expect(output).toContain('ready.')
+    expect(output).toContain('agenc.')
+    expect(output).toContain('a netrunner with hands on every file')
+    expect(output).toContain('workspace')
+    expect(output).toContain('recent')
+    expect(output).not.toContain('18.40')
+    expect(output).not.toContain('/claim')
   })
 
   it('does not render the welcome panel when hidden by the caller', async () => {
     const output = await renderToString(<Messages {...baseProps} hideLogo={true} />, 120)
 
-    expect(output).not.toContain('orchestrator')
+    expect(output).not.toContain('a netrunner with hands on every file')
     expect(output).not.toContain('/claim')
   })
 })
