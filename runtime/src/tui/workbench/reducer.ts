@@ -47,6 +47,12 @@ export function workbenchReducer(
         activeFilePath: command.path,
         activeFileLine: command.line ?? null,
       };
+    case "openBuffer":
+      return {
+        ...openSurface(state, "buffer", command.focus ?? true),
+        activeFilePath: command.path,
+        activeFileLine: command.line ?? null,
+      };
     case "openSearch":
       return {
         ...openSurface(state, "search"),

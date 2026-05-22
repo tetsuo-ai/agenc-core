@@ -161,6 +161,7 @@ describe("workbench render contract", () => {
     expect(WORKBENCH_SURFACES.map((surface) => surface.mode)).toEqual([
       "transcript",
       "preview",
+      "buffer",
       "diff",
       "shell",
       "test",

@@ -19,7 +19,7 @@ export function WorkbenchFooter(): React.ReactElement {
 }
 
 function hintsForPane(pane: string, surface: string): string {
-  if (pane === "explorer") return "Explorer: j/k move  h/l fold  enter preview  @ attach";
+  if (pane === "explorer") return "Explorer: j/k move  h/l fold  enter preview  e edit  @ attach";
   if (pane === "agents") return "Agents: enter detail  ctrl+w w next";
   if (pane === "composer") return "Composer: write prompt  ctrl+w k surface";
   return footerHintsForSurface(surface as never);

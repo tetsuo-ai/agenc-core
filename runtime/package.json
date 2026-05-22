@@ -84,6 +84,7 @@
     "@ant/computer-use-mcp": "file:local-packages/computer-use-mcp",
     "@anthropic-ai/sandbox-runtime": "0.0.46",
     "@anthropic-ai/sdk": "^0.97.0",
+    "@codemirror/state": "^6.6.0",
     "@growthbook/growthbook": "1.6.5",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@opentelemetry/api": "1.9.1",

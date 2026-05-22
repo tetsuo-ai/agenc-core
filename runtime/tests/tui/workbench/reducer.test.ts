@@ -46,6 +46,34 @@ describe("workbenchReducer", () => {
     expect(next.focusedPane).toBe("explorer");
   });
 
+  it("opens buffers and preserves optional focus behavior", () => {
+    const focusedExplorer = workbenchReducer(undefined, {
+      type: "focus",
+      pane: "explorer",
+    });
+    const focusedBuffer = workbenchReducer(focusedExplorer, {
+      type: "openBuffer",
+      path: "src/index.ts",
+      line: 7,
+    });
+    const keepExplorer = workbenchReducer(focusedExplorer, {
+      type: "openBuffer",
+      path: "src/index.ts",
+      focus: false,
+    });
+
+    expect(focusedBuffer).toMatchObject({
+      activeSurfaceMode: "buffer",
+      focusedPane: "surface",
+      activeFilePath: "src/index.ts",
+      activeFileLine: 7,
+    });
+    expect(keepExplorer).toMatchObject({
+      activeSurfaceMode: "buffer",
+      focusedPane: "explorer",
+    });
+  });
+
   it("cycles through visible panes", () => {
     const explorer = workbenchReducer(undefined, {
       type: "focus",
