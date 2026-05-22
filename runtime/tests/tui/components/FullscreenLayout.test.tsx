@@ -65,6 +65,20 @@ describe("FullscreenLayout modal viewport", () => {
     expect(shouldShowFileTreeGutter(148, 40, true)).toBe(false);
   });
 
+  test("does not render the deprecated static file-tree gutter by default", async () => {
+    const output = await renderToString(
+      <AppStateProvider initialState={getDefaultAppState()}>
+        <FullscreenLayout
+          scrollable={<Text>ready.</Text>}
+          bottom={<Text>prompt row</Text>}
+        />
+      </AppStateProvider>,
+      { columns: 148, rows: 40 },
+    );
+
+    expect(output).not.toContain("FILES");
+  });
+
   test("renders v2 top chrome without fake error and warning labels", async () => {
     const output = await renderToString(
       <DesignTopChrome columns={100} noColor={true} />,

@@ -52,14 +52,23 @@ so the next implementation pass does not need to rediscover them.
 
 5. **Typed confirmation.** The existing `Confirmation` keybinding context has
    `confirm:yes`, `confirm:no`, navigation, toggles, and field traversal, but
-   it does not enforce high-risk typed confirmation by itself. The live daemon
-   permission overlay now renders through the v2 `ApprovalCard` and binds
-   `requireTypedConfirmation` to an input field for high-risk protocol writes;
-   low-risk approvals still use the existing permission-engine allow/reject
-   callbacks and `confirm:yes` shortcut.
+   it does not enforce risk tiers by itself. The live daemon permission
+   overlay now classifies low, medium, and destructive requests. Destructive
+   requests require typed confirmation; low and medium requests still use the
+   existing permission-engine allow/reject callbacks and `confirm:yes`
+   shortcut.
 
 ## Runtime Binding Notes
 
+- Workbench architecture note: `App.tsx` owns `AlternateScreen`.
+  `FullscreenLayout` remains the classic chrome, scrollback, and modal host
+  only when workbench mode is explicitly disabled with
+  `AGENC_TUI_WORKBENCH=0`. `WorkbenchLayout` owns workbench panes and does not
+  mount those panes inside the transcript `ScrollBox`.
+- Workbench is the default fullscreen TUI. The visible behavior changes are:
+  the Explorer pane is interactive, the center pane switches by active work
+  surface, diff approvals jump to full hunk review, and the Agents rail is
+  visible at wide widths.
 - `/context` is registered in the unified slash registry with `/ctx` as the
   short alias and renders through the v2 context-usage modal when the TUI
   bridge is available. Headless dispatch keeps the existing text fallback.

@@ -185,19 +185,19 @@ Rules:
 
 ## Phase 0: Design Contract And Migration Guard
 
-- [ ] Add a `workbenchEnabled` gate.
+- [x] Add a `workbenchEnabled` gate.
   - Candidate: env flag `AGENC_TUI_WORKBENCH=1` while under development.
   - Existing fullscreen shell remains default until Phase 11 terminal and visual gates pass.
-- [ ] Add `runtime/src/tui/workbench/types.ts`.
-- [ ] Add a pure reducer and command enum in `runtime/src/tui/workbench/reducer.ts`.
-- [ ] Add unit tests for reducer defaults and focus transitions.
-- [ ] Add a migration note in `runtime/src/tui/README.md`: `App.tsx` owns `AlternateScreen`, `FullscreenLayout` remains the chrome/scroll/modal host, and `WorkbenchLayout` will own workbench panes once the flag is enabled.
+- [x] Add `runtime/src/tui/workbench/types.ts`.
+- [x] Add a pure reducer and command enum in `runtime/src/tui/workbench/reducer.ts`.
+- [x] Add unit tests for reducer defaults and focus transitions.
+- [x] Add a migration note in `runtime/src/tui/README.md`: `App.tsx` owns `AlternateScreen`, `FullscreenLayout` remains the chrome/scroll/modal host, and `WorkbenchLayout` will own workbench panes once the flag is enabled.
 
 Acceptance:
 
-- [ ] `AppStateStore.getDefaultAppState()` includes stable workbench defaults.
-- [ ] No visible UI change when the flag is off.
-- [ ] `npm run typecheck --workspace=@tetsuo-ai/runtime`.
+- [x] `AppStateStore.getDefaultAppState()` includes stable workbench defaults.
+- [x] No visible UI change when the flag is off.
+- [x] `npm run typecheck --workspace=@tetsuo-ai/runtime`.
 
 Rollback:
 
@@ -212,17 +212,17 @@ Current issue:
 
 Tasks:
 
-- [ ] Move file tree logic out of `FullscreenLayout.tsx`.
-- [ ] Create `ProjectTreeStore` as an external store consumed by `useProjectTree` via `useSyncExternalStore`.
-- [ ] Extract or share project-index logic from `fileSuggestions.ts` where possible; do not depend on that module's private singleton state from the explorer.
-- [ ] Add async git status collection:
+- [x] Move file tree logic out of `FullscreenLayout.tsx`.
+- [x] Create `ProjectTreeStore` as an external store consumed by `useProjectTree` via `useSyncExternalStore`.
+- [x] Extract or share project-index logic from `fileSuggestions.ts` where possible; do not depend on that module's private singleton state from the explorer.
+- [x] Add async git status collection:
   - tracked files
   - untracked files
   - modified/deleted/renamed/unmerged status
   - ignored/hidden toggle support later
-- [ ] Subscribe to `runtime/src/file-watcher/index.ts` or timed refresh fallback.
-- [ ] Store expanded folder paths and cursor path outside render.
-- [ ] Implement row state rendering:
+- [x] Subscribe to `runtime/src/file-watcher/index.ts` or timed refresh fallback.
+- [x] Store expanded folder paths and cursor path outside render.
+- [x] Implement row state rendering:
   - collapsed folder
   - expanded folder
   - selected cursor
@@ -240,7 +240,7 @@ Tasks:
   - attached to prompt
   - search hit indicator
   - worktree root
-- [ ] Delete or deprecate `WorkspaceFileTreeGutter` from `FullscreenLayout.tsx`.
+- [x] Delete or deprecate `WorkspaceFileTreeGutter` from `FullscreenLayout.tsx`.
 
 Target files:
 
@@ -251,17 +251,17 @@ Target files:
 
 Tests:
 
-- [ ] Unit-test tree building from synthetic paths.
-- [ ] Unit-test git status parsing.
-- [ ] Render-test explorer rows at 28, 30, and 44 columns.
-- [ ] Regression-test that React render does not call `execFileSync`, `readdirSync`, or `git`.
+- [x] Unit-test tree building from synthetic paths.
+- [x] Unit-test git status parsing.
+- [x] Render-test explorer rows at 28, 30, and 44 columns.
+- [x] Regression-test that React render does not call `execFileSync`, `readdirSync`, or `git`.
 
 Acceptance:
 
-- [ ] Explorer expands/collapses folders with `h/l`.
-- [ ] `j/k`, `g/G`, page up/down, and reveal active file work.
-- [ ] Tree state survives focus changes.
-- [ ] Narrow popup can display the same tree rows.
+- [x] Explorer expands/collapses folders with `h/l`.
+- [x] `j/k`, `g/G`, page up/down, and reveal active file work.
+- [x] Tree state survives focus changes.
+- [x] Narrow popup can display the same tree rows.
 
 Rollback:
 
@@ -271,23 +271,23 @@ Rollback:
 
 Tasks:
 
-- [ ] Create `WorkbenchLayout`.
-- [ ] Keep `App.tsx` as the `AlternateScreen` owner.
-- [ ] Keep `FullscreenLayout` as the classic chrome/scroll/modal host while the flag is off.
-- [ ] Add a workbench body path that bypasses the transcript `ScrollBox` instead of slotting panes inside the existing scrollable transcript content.
-- [ ] Reuse or extract shared chrome/modal pieces from `FullscreenLayout` only where that does not keep workbench panes coupled to transcript scrolling.
-- [ ] Implement responsive breakpoints:
+- [x] Create `WorkbenchLayout`.
+- [x] Keep `App.tsx` as the `AlternateScreen` owner.
+- [x] Keep `FullscreenLayout` as the classic chrome/scroll/modal host while the flag is off.
+- [x] Add a workbench body path that bypasses the transcript `ScrollBox` instead of slotting panes inside the existing scrollable transcript content.
+- [x] Reuse or extract shared chrome/modal pieces from `FullscreenLayout` only where that does not keep workbench panes coupled to transcript scrolling.
+- [x] Implement responsive breakpoints:
   - `>= 130 cols`: Explorer + Active Surface + Agents + Composer.
   - `100-129 cols`: Explorer + Active Surface + Composer; agents as status/popup.
   - `<= 99 cols`: Active Surface + Composer; Explorer and Agents are popups.
   - `< 24 rows`: collapse footer/chrome, never hide approvals.
-- [ ] Implement root focus state:
+- [x] Implement root focus state:
   - `ctrl+w h` Explorer
   - `ctrl+w l` Surface/Agents cycle
   - `ctrl+w j` Composer
   - `ctrl+w k` Pane above
   - `ctrl+w w` Next visible pane
-- [ ] Add context-sensitive footer hints from the focused pane.
+- [x] Add context-sensitive footer hints from the focused pane.
 
 Target files:
 
@@ -301,15 +301,15 @@ Target files:
 
 Tests:
 
-- [ ] Render smoke at 148x40, 120x30, 80x24.
-- [ ] Footer changes hints based on focus.
-- [ ] Composer remains usable when workbench is on.
-- [ ] Existing fullscreen tests still pass when workbench is off.
+- [x] Render smoke at 148x40, 120x30, 80x24.
+- [x] Footer changes hints based on focus.
+- [x] Composer remains usable when workbench is on.
+- [x] Existing fullscreen tests still pass when workbench is off.
 
 Acceptance:
 
-- [ ] Layout matches the design structure without behavior regressions.
-- [ ] The workbench flag can be toggled without changing non-workbench behavior.
+- [x] Layout matches the design structure without behavior regressions.
+- [x] The workbench flag can be toggled without changing non-workbench behavior.
 
 Rollback:
 
@@ -319,19 +319,19 @@ Rollback:
 
 Tasks:
 
-- [ ] Create `ActiveWorkSurface`.
-- [ ] Define a surface component interface:
+- [x] Create `ActiveWorkSurface`.
+- [x] Define a surface component interface:
   - `mode`
   - `title(state)`
   - `renderBody(state)`
   - `keybindings`
   - `footerHints`
   - `onCommand(command)`
-- [ ] Add `TRANSCRIPT` as the first live mode by wrapping existing `Messages` output.
-- [ ] Move only enough transcript rendering into the surface to prove the contract.
-- [ ] Preserve existing transcript screen behavior and scrollback.
-- [ ] Add `surface.open(mode, payload)` command.
-- [ ] Add `surface.close` command returning to `TRANSCRIPT`.
+- [x] Add `TRANSCRIPT` as the first live mode by wrapping existing `Messages` output.
+- [x] Move only enough transcript rendering into the surface to prove the contract.
+- [x] Preserve existing transcript screen behavior and scrollback.
+- [x] Add `surface.open(mode, payload)` command.
+- [x] Add `surface.close` command returning to `TRANSCRIPT`.
 
 Target files:
 
@@ -342,15 +342,15 @@ Target files:
 
 Tests:
 
-- [ ] Surface mode reducer tests.
-- [ ] `TRANSCRIPT` render parity against current messages in a small fixture.
-- [ ] `q` closes non-transcript surfaces back to transcript.
-- [ ] Surface keybindings only fire when surface holds focus.
+- [x] Surface mode reducer tests.
+- [x] `TRANSCRIPT` render parity against current messages in a small fixture.
+- [x] `q` closes non-transcript surfaces back to transcript.
+- [x] Surface keybindings only fire when surface holds focus.
 
 Acceptance:
 
-- [ ] The center pane is no longer hardcoded as transcript in workbench mode.
-- [ ] Existing transcript still works with workbench disabled.
+- [x] The center pane is no longer hardcoded as transcript in workbench mode.
+- [x] Existing transcript still works with workbench disabled.
 
 Rollback:
 
@@ -360,9 +360,9 @@ Rollback:
 
 Tasks:
 
-- [ ] Create `PreviewSurface`.
-- [ ] Reuse `readFileInRange` for content.
-- [ ] Show:
+- [x] Create `PreviewSurface`.
+- [x] Reuse `readFileInRange` for content.
+- [x] Show:
   - path
   - read-only marker
   - git/dirty marker
@@ -370,13 +370,13 @@ Tasks:
   - syntax highlighting fallback using existing markdown/code primitives where practical
   - LSP diagnostics from `peekLSPDiagnosticsForFile`
   - in-flight agent edit banner
-- [ ] Wire explorer:
+- [x] Wire explorer:
   - `enter`: open file in `PREVIEW` and focus surface.
   - `o`: open file in `PREVIEW` while keeping explorer focus.
   - `@`: attach file to composer context.
   - `R`: reveal active file.
-- [ ] Stop opening external editor from workbench quick-open paths. External editor remains explicit future command only.
-- [ ] Update Quick Open to dispatch `surface.openPreview(path)` in workbench mode.
+- [x] Stop opening external editor from workbench quick-open paths. External editor remains explicit future command only.
+- [x] Update Quick Open to dispatch `surface.openPreview(path)` in workbench mode.
 
 Target files:
 
@@ -387,15 +387,15 @@ Target files:
 
 Tests:
 
-- [ ] Preview renders missing/unreadable file states.
-- [ ] Preview truncates/wraps without overflowing width.
-- [ ] LSP diagnostics appear when registry has pending diagnostics for the file.
-- [ ] Explorer `enter` and `o` dispatch different focus outcomes.
+- [x] Preview renders missing/unreadable file states.
+- [x] Preview truncates/wraps without overflowing width.
+- [x] LSP diagnostics appear when registry has pending diagnostics for the file.
+- [x] Explorer `enter` and `o` dispatch different focus outcomes.
 
 Acceptance:
 
-- [ ] Preview is explicitly read-only.
-- [ ] File open semantics are clear: preview, attach, reveal, ask, later edit.
+- [x] Preview is explicitly read-only.
+- [x] File open semantics are clear: preview, attach, reveal, ask, later edit.
 
 Rollback:
 
@@ -405,10 +405,10 @@ Rollback:
 
 Tasks:
 
-- [ ] Extract a reusable diff view model from `commands/diff-menu.tsx`.
-- [ ] Use `collectDiffSnapshot` for working-tree diff mode.
-- [ ] Add agent-edit proposal mode later when the session can expose pending edit patches directly.
-- [ ] Create `DiffSurface` with:
+- [x] Extract a reusable diff view model from `commands/diff-menu.tsx`.
+- [x] Use `collectDiffSnapshot` for working-tree diff mode.
+- [x] Add agent-edit proposal mode later when the session can expose pending edit patches directly.
+- [x] Create `DiffSurface` with:
   - file rail
   - risk summary
   - queued test summary
@@ -416,18 +416,18 @@ Tasks:
   - hunk/file navigation
   - hunk/file decision state
   - jump to preview
-- [ ] Do not pretend hunk accept/reject applies changes until a real patch application/revert path exists.
-- [ ] For V1, scope decisions to approval responses and working-tree review:
+- [x] Do not pretend hunk accept/reject applies changes until a real patch application/revert path exists.
+- [x] For V1, scope decisions to approval responses and working-tree review:
   - `y/n`: answer current approval when the surface was opened from a pending approval.
   - `Y/N`: answer file-level approval only when backed by a real pending approval.
   - otherwise mark review state locally as non-mutating.
-- [ ] Replace permission overlay summary with a bridge:
+- [x] Replace permission overlay summary with a bridge:
   - inline summary in `TRANSCRIPT`
   - `d` opens `DIFF`
   - pending approval owns focus when required
-- [ ] Add medium-risk classification.
-- [ ] Move destructive classification out of TUI heuristic into permissions/risk logic.
-- [ ] Implement blocked-by-approval overlay for Explorer destructive actions.
+- [x] Add medium-risk classification.
+- [x] Move destructive classification out of TUI heuristic into permissions/risk logic.
+- [x] Implement blocked-by-approval overlay for Explorer destructive actions.
 
 Target files:
 
@@ -442,21 +442,21 @@ Target files:
 
 Tests:
 
-- [ ] Diff view model tests for modified/added/deleted/untracked/conflict files.
-- [ ] Diff surface render tests at 89x28 and narrow widths.
-- [ ] Hunk/file navigation key tests.
-- [ ] Approval bridge tests:
+- [x] Diff view model tests for modified/added/deleted/untracked/conflict files.
+- [x] Diff surface render tests at 89x28 and narrow widths.
+- [x] Hunk/file navigation key tests.
+- [x] Approval bridge tests:
   - low risk allows one-key approval
   - medium risk has no always-allow path
   - destructive requires typed confirmation
   - Explorer file ops are blocked while approval is pending
-- [ ] Existing permission overlay tests still pass or are replaced by workbench-specific tests.
+- [x] Existing permission overlay tests still pass or are replaced by workbench-specific tests.
 
 Acceptance:
 
-- [ ] `DIFF` is the default active surface when an edit approval is pending.
-- [ ] `TRANSCRIPT` shows only a summary and can jump to full hunks.
-- [ ] No destructive action approves from plain `enter`.
+- [x] `DIFF` is the default active surface when an edit approval is pending.
+- [x] `TRANSCRIPT` shows only a summary and can jump to full hunks.
+- [x] No destructive action approves from plain `enter`.
 
 Rollback:
 
@@ -466,18 +466,18 @@ Rollback:
 
 Tasks:
 
-- [ ] Create `ShellSurface`.
-- [ ] Read task output via existing task output paths and `tailFile`.
-- [ ] Bind shell controls to existing task helpers:
+- [x] Create `ShellSurface`.
+- [x] Read task output via existing task output paths and `tailFile`.
+- [x] Bind shell controls to existing task helpers:
   - stop/interrupt
   - restart only where a real command replay exists
   - follow tail
   - scroll
-- [ ] Parse source locations from shell output for `g` jump-to-preview.
-- [ ] Create `TestSurface`.
-- [ ] Start with parsed test output from shell/task output.
-- [ ] Add failure list, selected failure detail, and source jump.
-- [ ] `f/F` should queue an agent prompt only after the command surface can create a well-scoped prompt and the user can see it.
+- [x] Parse source locations from shell output for `g` jump-to-preview.
+- [x] Create `TestSurface`.
+- [x] Start with parsed test output from shell/task output.
+- [x] Add failure list, selected failure detail, and source jump.
+- [x] `f/F` should queue an agent prompt only after the command surface can create a well-scoped prompt and the user can see it.
 
 Target files:
 
@@ -490,16 +490,16 @@ Target files:
 
 Tests:
 
-- [ ] Shell surface renders running/completed/failed task states.
-- [ ] Large output tails without blocking render.
-- [ ] Source-location parser unit tests.
-- [ ] Test failure parser unit tests for Vitest-style output.
-- [ ] `g` opens source preview at expected file/line.
+- [x] Shell surface renders running/completed/failed task states.
+- [x] Large output tails without blocking render.
+- [x] Source-location parser unit tests.
+- [x] Test failure parser unit tests for Vitest-style output.
+- [x] `g` opens source preview at expected file/line.
 
 Acceptance:
 
-- [ ] User can inspect shell/test output without leaving the workbench.
-- [ ] Existing task panel still works until Agents rail replaces it.
+- [x] User can inspect shell/test output without leaving the workbench.
+- [x] Existing task panel still works until Agents rail replaces it.
 
 Rollback:
 
@@ -509,10 +509,10 @@ Rollback:
 
 Tasks:
 
-- [ ] Extract search data model from `GlobalSearchDialog`.
-- [ ] Create `SearchSurface` grouped by file.
-- [ ] Use existing `ripGrepStream` and debounce behavior.
-- [ ] Add key actions:
+- [x] Extract search data model from `GlobalSearchDialog`.
+- [x] Create `SearchSurface` grouped by file.
+- [x] Use existing `ripGrepStream` and debounce behavior.
+- [x] Add key actions:
   - `j/k`: match
   - `J/K`: file group
   - `enter`: open preview
@@ -520,7 +520,7 @@ Tasks:
   - `@`: attach selected match
   - `A`: attach all visible matches
   - `a`: ask agent about matches only after prompt injection is explicit and reviewable
-- [ ] Keep current `GlobalSearchDialog` as compatibility path until surface is stable.
+- [x] Keep current `GlobalSearchDialog` as compatibility path until surface is stable.
 
 Target files:
 
@@ -530,13 +530,13 @@ Target files:
 
 Tests:
 
-- [ ] Search result grouping unit tests.
-- [ ] Render tests for no results, in-progress, truncated results, and errors.
-- [ ] Keybinding tests for attach/open behavior.
+- [x] Search result grouping unit tests.
+- [x] Render tests for no results, in-progress, truncated results, and errors.
+- [x] Keybinding tests for attach/open behavior.
 
 Acceptance:
 
-- [ ] Search results live in the Active Work Surface, not only a transient modal.
+- [x] Search results live in the Active Work Surface, not only a transient modal.
 
 Rollback:
 
@@ -546,9 +546,9 @@ Rollback:
 
 Tasks:
 
-- [ ] Build `AgentsRail` from `AppState.tasks`.
-- [ ] In remote viewer mode, show the existing remote background count/status until detailed remote task events are available.
-- [ ] Include:
+- [x] Build `AgentsRail` from `AppState.tasks`.
+- [x] In remote viewer mode, show the existing remote background count/status until detailed remote task events are available.
+- [x] Include:
   - active/background grouping
   - current status
   - current tool/activity
@@ -556,7 +556,7 @@ Tasks:
   - token/tool count
   - diff count when available
   - approval pending marker
-- [ ] Create `AgentSurface`:
+- [x] Create `AgentSurface`:
   - task identity
   - worktree/path when available
   - plan/progress from `TaskState.progress`
@@ -564,8 +564,8 @@ Tasks:
   - output tail
   - stop/pause/restart only where real helpers exist
   - steer input only where routing to that agent is already supported
-- [ ] Integrate with existing teammate/local-agent view helpers.
-- [ ] Narrow widths use `Agents` popup.
+- [x] Integrate with existing teammate/local-agent view helpers.
+- [x] Narrow widths use `Agents` popup.
 
 Target files:
 
@@ -579,16 +579,16 @@ Target files:
 
 Tests:
 
-- [ ] Agents rail render tests for no agents, one active agent, mixed active/background, failed task, approval pending.
-- [ ] Agent surface render tests for local agent, in-process teammate, remote agent, shell task exclusion.
-- [ ] Remote viewer tests for count-only state when no detailed remote task rows are available.
-- [ ] Stop action routes to existing helpers.
-- [ ] Popup layout at 80/100/120 cols.
+- [x] Agents rail render tests for no agents, one active agent, mixed active/background, failed task, approval pending.
+- [x] Agent surface render tests for local agent, in-process teammate, remote agent, shell task exclusion.
+- [x] Remote viewer tests for count-only state when no detailed remote task rows are available.
+- [x] Stop action routes to existing helpers.
+- [x] Popup layout at 80/100/120 cols.
 
 Acceptance:
 
-- [ ] Background agent state is visible without opening `/tasks`.
-- [ ] Agent detail is steerable only where routing is real.
+- [x] Background agent state is visible without opening `/tasks`.
+- [x] Agent detail is steerable only where routing is real.
 
 Rollback:
 
@@ -598,21 +598,21 @@ Rollback:
 
 Tasks:
 
-- [ ] Define attachment semantics:
+- [x] Define attachment semantics:
   - file path
   - file line range
   - search result
   - diff hunk
   - shell/test error
-- [ ] Reuse existing `@path` parsing and model-turn attachment generation where possible:
+- [x] Reuse existing `@path` parsing and model-turn attachment generation where possible:
   - `runtime/src/prompts/file-mentions.ts`
   - `runtime/src/prompts/attachments/file-mentions.ts`
   - `runtime/src/utils/attachments.ts`
-- [ ] Add explicit composer chip state for workbench-originated attachments; the existing attachment pipeline mostly materializes context at submit time.
-- [ ] Add visible context chips/summary in composer footer.
-- [ ] Implement `@` attach from explorer/preview/search/shell/test.
-- [ ] Clear or retain attachments according to existing prompt submission behavior.
-- [ ] Add `@-` remove behavior only after attachment model supports removal by ID.
+- [x] Add explicit composer chip state for workbench-originated attachments; the existing attachment pipeline mostly materializes context at submit time.
+- [x] Add visible context chips/summary in composer footer.
+- [x] Implement `@` attach from explorer/preview/search/shell/test.
+- [x] Clear or retain attachments according to existing prompt submission behavior.
+- [x] Add `@-` remove behavior only after attachment model supports removal by ID.
 
 Target files:
 
@@ -625,14 +625,14 @@ Target files:
 
 Tests:
 
-- [ ] Attachment creation tests.
-- [ ] Prompt submission includes attached context exactly once.
-- [ ] Attachments render without overflowing prompt footer.
-- [ ] Workbench focus returns correctly after file picker/attach popup closes.
+- [x] Attachment creation tests.
+- [x] Prompt submission includes attached context exactly once.
+- [x] Attachments render without overflowing prompt footer.
+- [x] Workbench focus returns correctly after file picker/attach popup closes.
 
 Acceptance:
 
-- [ ] Composer clearly shows what context will be sent.
+- [x] Composer clearly shows what context will be sent.
 
 Rollback:
 
@@ -642,12 +642,12 @@ Rollback:
 
 Tasks:
 
-- [ ] Decide which existing slash-command menus remain modals and which become surfaces.
-- [ ] Convert `/diff` to open `DIFF` in workbench mode and current modal otherwise.
-- [ ] Convert quick open to open `PREVIEW` in workbench mode and current behavior otherwise.
-- [ ] Convert global search to open `SEARCH` in workbench mode and current modal otherwise.
-- [ ] Keep `/model`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/resume`, and config menus as modals unless a later design covers them.
-- [ ] Ensure `toolJSX` local command preservation still works.
+- [x] Decide which existing slash-command menus remain modals and which become surfaces.
+- [x] Convert `/diff` to open `DIFF` in workbench mode and current modal otherwise.
+- [x] Convert quick open to open `PREVIEW` in workbench mode and current behavior otherwise.
+- [x] Convert global search to open `SEARCH` in workbench mode and current modal otherwise.
+- [x] Keep `/model`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/resume`, and config menus as modals unless a later design covers them.
+- [x] Ensure `toolJSX` local command preservation still works.
 
 Target files:
 
@@ -659,14 +659,14 @@ Target files:
 
 Tests:
 
-- [ ] Workbench mode command tests.
-- [ ] Non-workbench mode command tests.
-- [ ] Local JSX preservation regression tests.
+- [x] Workbench mode command tests.
+- [x] Non-workbench mode command tests.
+- [x] Local JSX preservation regression tests.
 
 Acceptance:
 
-- [ ] No duplicate UI paths for the same workbench action when the flag is on.
-- [ ] Existing command menus remain stable when the flag is off.
+- [x] No duplicate UI paths for the same workbench action when the flag is on.
+- [x] Existing command menus remain stable when the flag is off.
 
 Rollback:
 
@@ -676,16 +676,16 @@ Rollback:
 
 Tasks:
 
-- [ ] Add workbench visual smoke fixtures at:
+- [x] Add workbench visual smoke fixtures at:
   - 148x40
   - 120x30
   - 80x24
   - 60x20
-- [ ] Add exact overflow assertions: no line wider than terminal width.
-- [ ] Add keybinding smoke tests for root focus and per-surface contexts.
-- [ ] Add a runtime startup gate with workbench flag on.
-- [ ] Extend `check:tui-command-visual-smoke` or add `check:tui-workbench-visual-smoke`.
-- [ ] Run full pseudo-terminal validation before enabling by default.
+- [x] Add exact overflow assertions: no line wider than terminal width.
+- [x] Add keybinding smoke tests for root focus and per-surface contexts.
+- [x] Add a runtime startup gate with workbench flag on.
+- [x] Extend `check:tui-command-visual-smoke` or add `check:tui-workbench-visual-smoke`.
+- [x] Run full pseudo-terminal validation before enabling by default.
 
 Commands:
 
@@ -714,21 +714,21 @@ cd runtime && npx vitest run \
 
 Acceptance:
 
-- [ ] Workbench renders nonblank at all target sizes.
-- [ ] No overflow at all target sizes.
-- [ ] `agenc` and `agenc --yolo` start under a pseudo-terminal.
-- [ ] No new typecheck errors.
-- [ ] No branding or public artifact regressions.
+- [x] Workbench renders nonblank at all target sizes.
+- [x] No overflow at all target sizes.
+- [x] `agenc` and `agenc --yolo` start under a pseudo-terminal.
+- [x] No new typecheck errors.
+- [x] No branding or public artifact regressions.
 
 ## Phase 12: Enable By Default
 
 Tasks:
 
-- [ ] Remove or invert the temporary `workbenchEnabled` gate only after Phase 11 passes.
-- [ ] Update `runtime/src/tui/README.md` with final architecture.
-- [ ] Delete dead static gutter code.
-- [ ] Keep compatibility modals only where they still serve a separate command use case.
-- [ ] Add release notes describing behavior changes:
+- [x] Remove or invert the temporary `workbenchEnabled` gate only after Phase 11 passes.
+- [x] Update `runtime/src/tui/README.md` with final architecture.
+- [x] Delete dead static gutter code.
+- [x] Keep compatibility modals only where they still serve a separate command use case.
+- [x] Add release notes describing behavior changes:
   - Explorer is now interactive.
   - Center pane switches by active work surface.
   - Diff approvals open full hunk review.
@@ -736,9 +736,9 @@ Tasks:
 
 Acceptance:
 
-- [ ] Fresh `npm run validate:runtime` passes from repo root.
-- [ ] Full TUI validation passes.
-- [ ] Workbench is on by default in normal fullscreen TUI.
+- [x] Fresh `npm run validate:runtime` passes from repo root.
+- [x] Full TUI validation passes.
+- [x] Workbench is on by default in normal fullscreen TUI.
 
 Rollback:
 
@@ -765,16 +765,16 @@ Until then:
 
 ## Tracking Checklist
 
-- [ ] Phase 0 complete: gated workbench state and reducer.
-- [ ] Phase 1 complete: real Project Explorer store and row states.
-- [ ] Phase 2 complete: responsive Workbench Layout.
-- [ ] Phase 3 complete: Active Work Surface shell and `TRANSCRIPT`.
-- [ ] Phase 4 complete: `PREVIEW`.
-- [ ] Phase 5 complete: `DIFF` and approval bridge.
-- [ ] Phase 6 complete: `TEST` and `SHELL`.
-- [ ] Phase 7 complete: `SEARCH`.
-- [ ] Phase 8 complete: Agents rail and `AGENT`.
-- [ ] Phase 9 complete: Composer attachments.
-- [ ] Phase 10 complete: old modal convergence.
-- [ ] Phase 11 complete: visual and terminal QA.
-- [ ] Phase 12 complete: enabled by default.
+- [x] Phase 0 complete: gated workbench state and reducer.
+- [x] Phase 1 complete: real Project Explorer store and row states.
+- [x] Phase 2 complete: responsive Workbench Layout.
+- [x] Phase 3 complete: Active Work Surface shell and `TRANSCRIPT`.
+- [x] Phase 4 complete: `PREVIEW`.
+- [x] Phase 5 complete: `DIFF` and approval bridge.
+- [x] Phase 6 complete: `TEST` and `SHELL`.
+- [x] Phase 7 complete: `SEARCH`.
+- [x] Phase 8 complete: Agents rail and `AGENT`.
+- [x] Phase 9 complete: Composer attachments.
+- [x] Phase 10 complete: old modal convergence.
+- [x] Phase 11 complete: visual and terminal QA.
+- [x] Phase 12 complete: enabled by default.

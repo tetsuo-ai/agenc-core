@@ -5,6 +5,9 @@ import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useRegisterOverlay } from '../context/overlayContext';
 import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useSetAppState } from '../state/AppState.js';
+import { openPreviewCommand } from '../workbench/commands.js';
+import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Text } from '../ink.js';
 import { logEvent } from '../../services/analytics/index';
@@ -73,6 +76,7 @@ export function GlobalSearchDialog(t0) {
     onDone,
     onInsert
   } = t0;
+  const setAppState = useSetAppState();
   useRegisterOverlay("global-search");
   const {
     columns,
@@ -192,6 +196,16 @@ export function GlobalSearchDialog(t0) {
   let t7;
   if ($[7] !== matches.length || $[8] !== onDone) {
     t7 = m_3 => {
+      if (isWorkbenchEnabled()) {
+        setAppState(prev => applyWorkbenchCommand(prev, openPreviewCommand(m_3.file, m_3.line, true)));
+        logEvent("agenc_global_search_select", {
+          result_count: matches.length,
+          opened_editor: false,
+          workbench: true
+        });
+        onDone();
+        return;
+      }
       const opened = openFileInExternalEditor(resolvePath(getCwd(), m_3.file), m_3.line);
       logEvent("agenc_global_search_select", {
         result_count: matches.length,

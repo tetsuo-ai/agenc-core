@@ -13,6 +13,9 @@ import { ExitFlow } from "./ExitFlow.js";
 import PromptInput from "./PromptInput/PromptInput.js";
 import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
+import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
+import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
+import { applyWorkbenchCommand, isWorkbenchEnabled } from "../workbench/state.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { AlternateScreen } from "../ink/components/AlternateScreen.js";
@@ -1386,6 +1389,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const modalScrollRef = useRef<ScrollBoxHandle | null>(null);
   const fullscreen = isFullscreenEnvEnabled();
+  const workbenchEnabled = fullscreen && isWorkbenchEnabled();
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
   // 50ms animation tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow
   // owns the per-frame clock and reads these refs directly.
@@ -1505,6 +1509,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }));
   }, [setAppState]);
   const permissionRequests = usePermissionRequests(props.session, setModel, setExpandedView, setAppState);
+  const firstPermissionRequestId = permissionRequests[0]?.id ?? null;
+  useEffect(() => {
+    if (!workbenchEnabled || firstPermissionRequestId === null) return;
+    setAppState(prev => applyWorkbenchCommand(prev, {
+      type: "openDiff",
+      diffId: firstPermissionRequestId,
+      focus: true
+    }));
+  }, [firstPermissionRequestId, setAppState, workbenchEnabled]);
   const elicitation = useTuiElicitation(props.session);
   const toolNames = useMemo(() => {
     const names = new Set(transcript.toolNames);
@@ -2331,7 +2344,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
 
   // A permission request owns the overlay while it is pending. Elicitation stays
   // queued behind it so Enter/Escape never have two modal owners.
-  const overlayContent = permissionRequests.length > 0 ? <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} /> : elicitation.prompt !== null ? <ElicitationOverlay prompt={elicitation.prompt} /> : null;
+  const overlayContent = permissionRequests.length > 0 ? <>
+      {workbenchEnabled ? <ApprovalSurfaceBridge request={permissionRequests[0]} /> : null}
+      <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} />
+    </> : elicitation.prompt !== null ? <ElicitationOverlay prompt={elicitation.prompt} /> : null;
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.
@@ -2371,14 +2387,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const body = <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers screen={screen as any} setScreen={setScreen as any} showAllInTranscript={showAllInTranscript} setShowAllInTranscript={setShowAllInTranscript} messageCount={transcript.messages.length} />
-      <ScrollKeybindingHandler scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef} isActive={fullscreen && permissionRequests.length === 0} />
+      <ScrollKeybindingHandler scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef} isActive={fullscreen && !workbenchEnabled && permissionRequests.length === 0} />
       <CancelRequestHandler
     // Daemon-mode no-op: permission requests are owned by the daemon
     // and resolved via session.cancelTurn cascade.
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} />
-      <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />
+      {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} pendingApproval={permissionRequests[0] ?? null} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
       {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}

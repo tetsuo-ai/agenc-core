@@ -22,6 +22,7 @@ import {
   openDiffMenu,
   type DiffMenuSnapshot,
 } from "./diff-menu.js";
+import { applyWorkbenchCommand, isWorkbenchEnabled } from "../tui/workbench/state.js";
 
 const GIT_TIMEOUT_MS = 5_000;
 
@@ -151,6 +152,14 @@ export const diffCommand: SlashCommand = {
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const snapshot = await collectDiffSnapshot(ctx.cwd);
+      if (isWorkbenchEnabled() && ctx.appState?.setAppState) {
+        ctx.appState.setAppState((prev) => applyWorkbenchCommand(prev as never, {
+          type: "openDiff",
+          diffId: "working-tree",
+          focus: true,
+        }) as never);
+        return { kind: "skip" };
+      }
       if (openDiffMenu(ctx, snapshot)) return { kind: "skip" };
       return { kind: "text", text: formatDiffSnapshot(snapshot) };
     }),
