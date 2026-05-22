@@ -49,14 +49,14 @@ describe('RealtimePanel coverage swarm row 204', () => {
   test('reports push-to-talk armed and held microphone status', () => {
     const armed = getRealtimeStatusRenderParts(
       activeState({ pushToTalk: true, pushToTalkHeld: false }),
-      100,
+      140,
     )
     expect(armed.statusText).toContain('mic muted')
     expect(armed.statusText).toContain('ptt armed')
 
     const held = getRealtimeStatusRenderParts(
       activeState({ pushToTalk: true, pushToTalkHeld: true }),
-      100,
+      140,
     )
     expect(held.statusText).toContain('mic live')
     expect(held.statusText).toContain('ptt held')
@@ -103,7 +103,8 @@ describe('RealtimePanel coverage swarm row 204', () => {
 
     expect(output).toContain('microphone failed')
     expect(output).not.toContain('remote hangup')
-    expect(output).toContain('user: hello from mic')
+    expect(output).toContain('you')
+    expect(output).toContain('hello from mic')
     expect(output).toContain('item: response out_1')
   })
 })

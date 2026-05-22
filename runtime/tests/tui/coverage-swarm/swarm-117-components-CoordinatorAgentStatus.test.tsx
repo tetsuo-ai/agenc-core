@@ -243,7 +243,7 @@ describe("CoordinatorAgentStatus coverage swarm row 117", () => {
     try {
       const output = rendered.output();
       const compactOutput = compact(output);
-      expect(output).toContain("AGENTS");
+      expect(compactOutput).toContain("AGENTFLEET");
       expect(compactOutput).toContain("1active");
       expect(output).toContain("orchestrator");
       expect(compactOutput).toContain("Auditthestatuspanel");

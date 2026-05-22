@@ -4,6 +4,7 @@ import { parseBindings } from "./parser.js";
 import { DEFAULT_BINDINGS } from "./defaultBindings.js";
 import { getBindingDisplayText, resolveKeyWithChordState } from "./resolver.js";
 import type { Key } from "../ink.js";
+import type { KeybindingContextName, ParsedKeystroke } from "./types.js";
 
 vi.mock("../ink.js", () => ({
   useInput: () => {},
@@ -41,6 +42,88 @@ function key(overrides: Partial<Key> = {}): Key {
     end: false,
     ...overrides,
   } as Key;
+}
+
+const MENU_CONTEXTS = new Set<KeybindingContextName>([
+  "Autocomplete",
+  "Settings",
+  "Confirmation",
+  "Tabs",
+  "Transcript",
+  "HistorySearch",
+  "ThemePicker",
+  "Help",
+  "Attachments",
+  "Footer",
+  "MessageSelector",
+  "MessageActions",
+  "DiffDialog",
+  "ModelPicker",
+  "Select",
+  "Plugin",
+]);
+
+const NON_MENU_CONTEXTS = new Set<KeybindingContextName>([
+  "Global",
+  "Chat",
+  "Task",
+  "Scroll",
+  "Workbench",
+  "Explorer",
+  "Surface",
+  "Agents",
+  "Composer",
+]);
+
+const WORKBENCH_CONTEXTS: readonly KeybindingContextName[] = [
+  "Workbench",
+  "Explorer",
+  "Surface",
+  "Agents",
+  "Composer",
+];
+
+function eventForStroke(stroke: ParsedKeystroke): {
+  readonly input: string;
+  readonly key: Key;
+} {
+  const overrides: Partial<Key> = {
+    ctrl: stroke.ctrl,
+    shift: stroke.shift,
+    meta: stroke.alt || stroke.meta,
+    super: stroke.super,
+  };
+
+  switch (stroke.key) {
+    case "escape":
+      return { input: "", key: key({ ...overrides, escape: true }) };
+    case "enter":
+      return { input: "", key: key({ ...overrides, return: true }) };
+    case "tab":
+      return { input: "", key: key({ ...overrides, tab: true }) };
+    case "backspace":
+      return { input: "", key: key({ ...overrides, backspace: true }) };
+    case "delete":
+      return { input: "", key: key({ ...overrides, delete: true }) };
+    case "up":
+      return { input: "", key: key({ ...overrides, upArrow: true }) };
+    case "down":
+      return { input: "", key: key({ ...overrides, downArrow: true }) };
+    case "left":
+      return { input: "", key: key({ ...overrides, leftArrow: true }) };
+    case "right":
+      return { input: "", key: key({ ...overrides, rightArrow: true }) };
+    case "pageup":
+      return { input: "", key: key({ ...overrides, pageUp: true }) };
+    case "pagedown":
+      return { input: "", key: key({ ...overrides, pageDown: true }) };
+    case "home":
+      return { input: "", key: key({ ...overrides, home: true }) };
+    case "end":
+      return { input: "", key: key({ ...overrides, end: true }) };
+    default:
+      return { input: stroke.key, key: key(overrides) };
+  }
 }
 
 describe("useKeybinding exports and resolver contract", () => {
@@ -112,5 +195,39 @@ describe("useKeybinding exports and resolver contract", () => {
         null,
       ),
     ).toEqual({ type: "match", action: "footer:openSelected" });
+  });
+
+  test("keeps every default menu binding above workbench pane bindings", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+    const unclassifiedContexts = [
+      ...new Set(DEFAULT_BINDINGS.map((block) => block.context)),
+    ].filter((context) => !MENU_CONTEXTS.has(context) && !NON_MENU_CONTEXTS.has(context));
+    const menuBindings = bindings.filter((binding) =>
+      MENU_CONTEXTS.has(binding.context) &&
+      binding.action !== null &&
+      binding.chord.length === 1
+    );
+
+    expect(unclassifiedContexts).toEqual([]);
+    expect(menuBindings.length).toBeGreaterThan(0);
+
+    for (const binding of menuBindings) {
+      const stroke = binding.chord[0];
+      if (!stroke) throw new Error(`missing stroke for ${binding.context}`);
+      const event = eventForStroke(stroke);
+
+      for (const workbenchContext of WORKBENCH_CONTEXTS) {
+        expect(
+          resolveKeyWithChordState(
+            event.input,
+            event.key,
+            [workbenchContext, binding.context, "Global"],
+            bindings,
+            null,
+          ),
+          `${binding.context}:${binding.action ?? "unbound"} should win over ${workbenchContext}`,
+        ).toEqual({ type: "match", action: binding.action });
+      }
+    }
   });
 });

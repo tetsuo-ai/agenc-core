@@ -72,7 +72,7 @@ describe("AgentProgressLine coverage swarm 068", () => {
       toolUseCount: 0,
     });
 
-    expect(output).toContain("|- planner (queued) · 0 tool uses");
+    expect(output).toContain("|- planner · Agent (queued) · 0 tool uses");
     expect(output).toContain("|  |_  Initializing...");
   });
 
@@ -84,7 +84,7 @@ describe("AgentProgressLine coverage swarm 068", () => {
       hideType: true,
       isResolved: true,
     });
-    expect(descriptionOnly).toContain("|- indexing · 0 tool uses");
+    expect(descriptionOnly).toContain("|- indexing · Runner · 0 tool uses");
     expect(descriptionOnly).toContain("|  |_  Done");
 
     const agentOnly = await renderLine({
@@ -92,7 +92,7 @@ describe("AgentProgressLine coverage swarm 068", () => {
       hideType: true,
       isResolved: true,
     });
-    expect(agentOnly).toContain("|- fallback · 0 tool uses");
+    expect(agentOnly).toContain("|- fallback · Agent · 0 tool uses");
     expect(agentOnly).toContain("|  |_  Done");
   });
 
@@ -119,7 +119,7 @@ describe("AgentProgressLine coverage swarm 068", () => {
 
     const output = await renderToString(<RerenderSameLine />, { columns: 120 });
 
-    expect(output).toContain("`- cache (stable) · 1 tool use · 2.0k tokens");
+    expect(output).toContain("`- cache · Agent (stable) · 1 tool use · 2.0k tokens");
     expect(output).toContain("   |_  Still working");
   });
 });

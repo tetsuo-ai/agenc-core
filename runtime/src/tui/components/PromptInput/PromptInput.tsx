@@ -1278,7 +1278,7 @@ function PromptInput({
     // same "still visible?" derivation as footerItemSelected so a stale
     // selection (pill disappeared) doesn't swallow Enter.
     const state = store.getState();
-    const workbenchAttachments = isWorkbenchEnabled() ? state.workbench.attachments : [];
+    const workbenchAttachments = isWorkbenchEnabled() ? state.workbench?.attachments ?? [] : [];
     const hasWorkbenchAttachments = workbenchAttachments.length > 0;
     if (state.footerSelection && footerItems.includes(state.footerSelection)) {
       return;

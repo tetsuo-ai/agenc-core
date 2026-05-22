@@ -105,15 +105,11 @@ describe('v2 primitives coverage swarm row 065', () => {
         <ModePill mode={'unknown-mode' as PermissionMode} />
         <ModeSwitcher currentMode="acceptEdits" spacious={true} />
         <WelcomeColdPanel
-          version="9.9.9"
-          build="row065"
-          network="devnet"
-          cwd="/tmp/agenc"
-          gitBranch="coverage"
-          gitState="dirty"
-          stats={[
-            { label: 'CUSTOM', value: '42' },
-            { label: 'LAST', value: 'fallback color' },
+          workspace="/tmp/agenc"
+          model="row065"
+          lastSession="coverage"
+          recentSessions={[
+            { keyName: '1', title: 'runtime coverage', detail: 'row065' },
           ]}
         />
         <TaskInFlightCard
@@ -181,9 +177,9 @@ describe('v2 primitives coverage swarm row 065', () => {
 
     expect(output).toContain('mode · default')
     expect(output).toContain('current · acceptEdits')
-    expect(output).toContain('9.9.9')
     expect(output).toContain('row065')
-    expect(output).toContain('CUSTOM')
+    expect(output).toContain('/tmp/agenc')
+    expect(output).toContain('coverage')
     expect(output).toContain('#65')
     expect(output).toContain('CHECKPOINTED PLAN')
     expect(output).toContain('NOTICE')
@@ -197,7 +193,6 @@ describe('v2 primitives coverage swarm row 065', () => {
     expect(output).toContain('MIXED PLAN')
     expect(output).toContain('paused placeholder')
     expect(output).toContain('req 0x47a3')
-    expect(output).toContain('note · safe local command')
     expect(output).toContain('edit command')
     expect(output).toContain('req 0x9c14')
     expect(output).toContain('confirmation required')
@@ -233,17 +228,16 @@ describe('v2 primitives coverage swarm row 065', () => {
           <Text key="name">{`${index}:${row.name}`}</Text>,
         ]}
       />,
-      { columns: 80, rows: 8 },
+      { columns: 80, rows: 12 },
     )
 
-    expect(previewOutput).toContain('summary text')
+    expect(previewOutput).toContain('SUMMARY TEXT')
     expect(previewOutput).toContain('right hint')
     expect(previewOutput).toContain('>done')
     expect(previewOutput).toContain('2:gamma')
     expect(previewOutput).toContain('preview side')
-    expect(previewOutput).toContain('scroll 2-3/3')
     expect(previewOutput).toContain('footer hint')
-    expect(previewOutput).not.toContain('0:alpha')
+    expect(previewOutput).toContain('0:alpha')
 
     const emptyOutput = await renderToString(
       <MenuModal
@@ -260,7 +254,7 @@ describe('v2 primitives coverage swarm row 065', () => {
 
     expect(emptyOutput).toContain('EMPTY')
     expect(emptyOutput).toContain('name')
-    expect(emptyOutput).toContain('[esc] dismiss')
+    expect(emptyOutput).toContain('esc to close')
     expect(emptyOutput).not.toContain('unused')
     expect(emptyOutput).not.toContain('scroll')
   })

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRegisterOverlay } from '../context/overlayContext';
 import { generateFileSuggestions } from '../hooks/fileSuggestions';
 import { useTerminalSize } from '../hooks/useTerminalSize';
-import { useSetAppState } from '../state/AppState.js';
+import { useOptionalSetAppState } from '../state/AppState.js';
 import { openPreviewCommand } from '../workbench/commands.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { Text } from '../ink.js';
@@ -52,7 +52,7 @@ export function QuickOpenDialog(t0) {
     onDone,
     onInsert
   } = t0;
-  const setAppState = useSetAppState();
+  const setAppState = useOptionalSetAppState();
   useRegisterOverlay("quick-open");
   const {
     columns,
@@ -156,7 +156,7 @@ export function QuickOpenDialog(t0) {
   let t7;
   if ($[8] !== onDone || $[9] !== results.length) {
     t7 = p_1 => {
-      if (isWorkbenchEnabled()) {
+      if (isWorkbenchEnabled() && setAppState) {
         setAppState(prev => applyWorkbenchCommand(prev, openPreviewCommand(p_1, undefined, true)));
         logEvent("agenc_quick_open_select", {
           result_count: results.length,

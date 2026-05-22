@@ -183,6 +183,10 @@ export function useSetAppState() {
   return useAppStore().setState;
 }
 
+export function useOptionalSetAppState() {
+  return useContext(AppStoreContext)?.setState;
+}
+
 /**
  * Get the store directly (for passing getState/setState to non-React code).
  */

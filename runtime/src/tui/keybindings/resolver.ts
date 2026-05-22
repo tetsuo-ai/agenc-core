@@ -7,6 +7,50 @@ import type {
   ParsedKeystroke,
 } from './types.js'
 
+const DEFAULT_CONTEXT_PRIORITY = 50
+
+const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
+  Global: 0,
+  Scroll: 5,
+  Workbench: 10,
+  Explorer: 20,
+  Surface: 20,
+  Agents: 20,
+  Composer: 30,
+  Chat: 40,
+  Task: 40,
+  Autocomplete: 100,
+  Settings: 100,
+  Confirmation: 100,
+  Tabs: 100,
+  Transcript: 100,
+  HistorySearch: 100,
+  ThemePicker: 100,
+  Help: 100,
+  Attachments: 100,
+  Footer: 100,
+  MessageSelector: 100,
+  MessageActions: 100,
+  DiffDialog: 100,
+  ModelPicker: 100,
+  Select: 100,
+  Plugin: 100,
+}
+
+function contextPriority(context: KeybindingContextName): number {
+  return CONTEXT_PRIORITY[context] ?? DEFAULT_CONTEXT_PRIORITY
+}
+
+function shouldReplaceBinding(
+  candidate: ParsedBinding,
+  current: ParsedBinding | undefined,
+): boolean {
+  if (!current) return true
+  const candidatePriority = contextPriority(candidate.context)
+  const currentPriority = contextPriority(current.context)
+  return candidatePriority >= currentPriority
+}
+
 export type ResolveResult =
   | { type: 'match'; action: string }
   | { type: 'none' }
@@ -35,7 +79,9 @@ export function resolveKey(
   activeContexts: KeybindingContextName[],
   bindings: ParsedBinding[],
 ): ResolveResult {
-  // Find matching bindings (last one wins for user overrides)
+  // Find matching bindings. Higher-priority UI contexts win across contexts;
+  // within the same priority, later parsed bindings still win so user
+  // overrides for that context keep working.
   let match: ParsedBinding | undefined
   const ctxSet = new Set(activeContexts)
 
@@ -44,7 +90,7 @@ export function resolveKey(
     if (binding.chord.length !== 1) continue
     if (!ctxSet.has(binding.context)) continue
 
-    if (matchesBinding(input, key, binding)) {
+    if (matchesBinding(input, key, binding) && shouldReplaceBinding(binding, match)) {
       match = binding
     }
   }
@@ -193,22 +239,25 @@ export function resolveKeyWithChordState(
   const ctxSet = new Set(activeContexts)
   const contextBindings = bindings.filter(b => ctxSet.has(b.context))
 
-  // Check if this could be a prefix for longer chords. Group by chord
-  // string so a later null-override shadows the default it unbinds —
-  // otherwise null-unbinding `ctrl+x ctrl+k` still makes `ctrl+x` enter
-  // chord-wait and the single-key binding on the prefix never fires.
-  const chordWinners = new Map<string, string | null>()
+  // Check if this could be a prefix for longer chords. Group by chord string
+  // so a same-priority null-override shadows the default it unbinds; higher
+  // priority contexts still win across contexts.
+  const chordWinners = new Map<string, ParsedBinding>()
   for (const binding of contextBindings) {
     if (
       binding.chord.length > testChord.length &&
       chordPrefixMatches(testChord, binding)
     ) {
-      chordWinners.set(chordToString(binding.chord), binding.action)
+      const key = chordToString(binding.chord)
+      const current = chordWinners.get(key)
+      if (shouldReplaceBinding(binding, current)) {
+        chordWinners.set(key, binding)
+      }
     }
   }
   let hasLongerChords = false
-  for (const action of chordWinners.values()) {
-    if (action !== null) {
+  for (const binding of chordWinners.values()) {
+    if (binding.action !== null) {
       hasLongerChords = true
       break
     }
@@ -220,10 +269,14 @@ export function resolveKeyWithChordState(
     return { type: 'chord_started', pending: testChord }
   }
 
-  // Check for exact matches (last one wins)
+  // Check for exact matches. Higher-priority contexts win across contexts;
+  // later parsed bindings win within the same priority.
   let exactMatch: ParsedBinding | undefined
   for (const binding of contextBindings) {
-    if (chordExactlyMatches(testChord, binding)) {
+    if (
+      chordExactlyMatches(testChord, binding) &&
+      shouldReplaceBinding(binding, exactMatch)
+    ) {
       exactMatch = binding
     }
   }

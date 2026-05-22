@@ -1999,6 +1999,8 @@ describe('PromptInput render surface', () => {
   })
 
   test('opens team footer dialog and global search dialog callbacks', async () => {
+    const previousWorkbenchEnv = process.env.AGENC_TUI_WORKBENCH
+    process.env.AGENC_TUI_WORKBENCH = '0'
     harness.isAgentSwarmsEnabled = true
     harness.features.QUICK_SEARCH = true
     harness.appState.teamContext = {
@@ -2046,6 +2048,11 @@ describe('PromptInput render surface', () => {
       )
       expect(onInputChange).toHaveBeenCalledWith('abc @global-result')
     } finally {
+      if (previousWorkbenchEnv === undefined) {
+        delete process.env.AGENC_TUI_WORKBENCH
+      } else {
+        process.env.AGENC_TUI_WORKBENCH = previousWorkbenchEnv
+      }
       await rendered.dispose()
     }
   })

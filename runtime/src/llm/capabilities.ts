@@ -597,7 +597,11 @@ export function markCapabilityVerified(input: {
     lastVerifiedAt: input.verifiedAt ?? Date.now(),
     stale: false,
   });
-  return resolveProviderCapabilityEntry({ provider, model });
+  return resolveProviderCapabilityEntry({
+    provider,
+    model,
+    nowMs: input.verifiedAt,
+  });
 }
 
 export function markCapabilityDrift(input: {

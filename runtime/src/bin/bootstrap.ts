@@ -1105,10 +1105,14 @@ export async function bootstrapLocalRuntimeSession(
     model,
     overrides: providerSettings?.capabilityOverrides,
   });
-  if (shouldProbeCapabilityEntry(capabilityEntry)) {
+  const providerHealthCheck = provider.healthCheck;
+  if (
+    shouldProbeCapabilityEntry(capabilityEntry) &&
+    typeof providerHealthCheck === "function"
+  ) {
     queueMicrotask(() => {
-      void provider
-        .healthCheck()
+      void providerHealthCheck
+        .call(provider)
         .then((healthy) => {
           if (!healthy) return;
           markCapabilityVerified({

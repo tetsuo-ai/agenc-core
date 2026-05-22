@@ -13,7 +13,7 @@ export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.submitSlashCommand("/skills");
-  await session.waitFor(/Skills:/, { timeout: 15_000 });
+  await session.waitFor(/SKILLS\b/i, { timeout: 15_000 });
   await session.waitForIdle({ timeout: 15_000 });
 
   const parts = [
