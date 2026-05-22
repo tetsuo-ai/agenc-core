@@ -1,7 +1,7 @@
 import React from "react";
 
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
-import { Box, Text } from "../../ink.js";
+import { Ansi, Box, Text } from "../../ink.js";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { nextGraphemeOffset, selectionBounds } from "./editing.js";
 import type { BufferVisibleLine, WorkbenchBufferSnapshot } from "./BufferStore.js";
@@ -11,11 +11,13 @@ export function BufferLine({
   snapshot,
   width,
   focused,
+  highlightedText,
 }: {
   readonly line: BufferVisibleLine;
   readonly snapshot: WorkbenchBufferSnapshot;
   readonly width: number;
   readonly focused: boolean;
+  readonly highlightedText?: string;
 }): React.ReactElement {
   const numberWidth = Math.max(3, String(Math.max(1, snapshot.lineCount)).length);
   const prefix = `${String(line.number).padStart(numberWidth, " ")} `;
@@ -33,6 +35,7 @@ export function BufferLine({
           displayTo={displayTo}
           snapshot={snapshot}
           focused={focused}
+          highlightedText={highlightedText}
         />
       </Text>
     </Box>
@@ -45,12 +48,14 @@ function BufferText({
   displayTo,
   snapshot,
   focused,
+  highlightedText,
 }: {
   readonly line: BufferVisibleLine;
   readonly displayText: string;
   readonly displayTo: number;
   readonly snapshot: WorkbenchBufferSnapshot;
   readonly focused: boolean;
+  readonly highlightedText?: string;
 }): React.ReactElement {
   const { from, to } = selectionBounds(snapshot.selection);
   const selected = from !== to;
@@ -62,7 +67,7 @@ function BufferText({
     );
   }
   if (!focused || snapshot.position.line !== line.number) {
-    return <>{displayText}</>;
+    return highlightedText ? <Ansi>{highlightedText}</Ansi> : <>{displayText}</>;
   }
   return <>{renderCursorText(displayText, line.from, snapshot.position.offset)}</>;
 }

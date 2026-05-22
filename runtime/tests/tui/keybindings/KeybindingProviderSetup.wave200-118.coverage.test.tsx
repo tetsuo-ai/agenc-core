@@ -80,6 +80,7 @@ describe("KeybindingProviderSetup wave200-118 coverage", () => {
       handlerRegistryRef: { current: null } as Parameters<
         typeof createChordInputHandler
       >[0]["handlerRegistryRef"],
+      inputCaptureRegistryRef: { current: new Set() },
     });
 
     const ignoredWheelEvent = inputEvent();

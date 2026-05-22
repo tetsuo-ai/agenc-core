@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
-import { WorkbenchBufferStore } from "../../../src/tui/workbench/buffer/BufferStore.js";
+import type { Key } from "../../../src/tui/ink.js";
+import { type BufferVimCommand, WorkbenchBufferStore } from "../../../src/tui/workbench/buffer/BufferStore.js";
 import {
   BufferBinaryFileError,
   BufferFileTooLargeError,
@@ -13,6 +14,32 @@ import {
 } from "../../../src/tui/workbench/buffer/fileSnapshot.js";
 
 let dir: string;
+
+function key(overrides: Partial<Key> = {}): Key {
+  return {
+    ctrl: false,
+    shift: false,
+    fn: false,
+    meta: false,
+    super: false,
+    escape: false,
+    return: false,
+    tab: false,
+    backspace: false,
+    delete: false,
+    upArrow: false,
+    downArrow: false,
+    leftArrow: false,
+    rightArrow: false,
+    pageUp: false,
+    pageDown: false,
+    wheelUp: false,
+    wheelDown: false,
+    home: false,
+    end: false,
+    ...overrides,
+  } as Key;
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agenc-buffer-"));
@@ -74,6 +101,84 @@ describe("WorkbenchBufferStore", () => {
     await store.revert();
     expect(store.getText()).toBe("alpha\n");
     expect(store.getSnapshot().dirty).toBe(false);
+  });
+
+  it("uses the shared vim engine for normal and insert mode buffer edits", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+    expect(store.handleVimInput("q", key(), 80)).toBe(true);
+    expect(store.getText()).toBe("alpha\nomega\n");
+
+    store.handleVimInput("i", key(), 80);
+    store.handleVimInput("X", key({ shift: true }), 80);
+    store.handleVimInput("", key({ escape: true, meta: true }), 80);
+
+    expect(store.getText()).toBe("Xalpha\nomega\n");
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+
+    store.handleVimInput("d", key(), 80);
+    store.handleVimInput("d", key(), 80);
+
+    expect(store.getText()).toBe("omega\n");
+  });
+
+  it("supports vim command-line save and quit commands", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+    const commands: BufferVimCommand[] = [];
+    const handleCommand = (command: BufferVimCommand): void => {
+      commands.push(command);
+    };
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.handleVimInput(":", key({ shift: true }), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBe("");
+    expect(store.handleVimInput("w", key(), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBe("w");
+    expect(store.handleVimInput("", key({ return: true }), 80, handleCommand)).toBe(true);
+    expect(commands.pop()).toEqual({ type: "save", force: false });
+    expect(store.getSnapshot().vimCommandLine).toBeNull();
+
+    store.handleVimInput(":", key({ shift: true }), 80, handleCommand);
+    for (const char of "wq!") {
+      store.handleVimInput(char, key({ shift: char === "!" }), 80, handleCommand);
+    }
+    store.handleVimInput("", key({ return: true }), 80, handleCommand);
+    expect(commands.pop()).toEqual({ type: "saveQuit", force: true, all: false });
+
+    store.handleVimInput(":", key({ shift: true }), 80, handleCommand);
+    for (const char of "qa!") {
+      store.handleVimInput(char, key({ shift: char === "!" }), 80, handleCommand);
+    }
+    store.handleVimInput("", key({ return: true }), 80, handleCommand);
+    expect(commands.pop()).toEqual({ type: "quit", discard: true, all: true });
+  });
+
+  it("keeps unknown vim commands in the buffer status instead of leaking input", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput(":", key({ shift: true }), 80);
+    for (const char of "nope") {
+      store.handleVimInput(char, key(), 80);
+    }
+    store.handleVimInput("", key({ return: true }), 80);
+
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      error: "Unknown Vim command: :nope",
+      vimCommandLine: null,
+    });
   });
 
   it("refuses to overwrite disk changes made after open", async () => {

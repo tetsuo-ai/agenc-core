@@ -58,7 +58,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
     const location = locations[0];
     if (location) {
       dispatch({
-        type: "openPreview",
+        type: "openBuffer",
         path: location.file,
         line: location.line,
         focus: true,
@@ -97,7 +97,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
         follow tail on running tasks{stopAction === "local-shell" ? " - x stop" : ""}
       </Text>
       {locations[0] ? (
-        <Text dimColor wrap="truncate-end">g/enter preview  @ attach: {locations[0].file}:{locations[0].line}</Text>
+        <Text dimColor wrap="truncate-end">g/enter edit  @ attach: {locations[0].file}:{locations[0].line}</Text>
       ) : null}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {(tail || "(no output)").split("\n").slice(-80).map((line, index) => (

@@ -16,7 +16,7 @@ import type { InputEvent } from '../ink/events/input-event.js';
 import { type Key, useInput } from '../ink.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
-import { KeybindingProvider } from './KeybindingContext.js';
+import { KeybindingProvider, type InputCaptureRegistration } from './KeybindingContext.js';
 import { initializeKeybindingWatcher, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
 import { resolveKeyWithChordState } from './resolver.js';
 import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './types.js';
@@ -169,6 +169,7 @@ export function KeybindingSetup({
     context: KeybindingContextName;
     handler: () => void;
   }>>());
+  const inputCaptureRegistryRef = useRef<Set<InputCaptureRegistration>>(new Set());
 
   // Active context tracking for keybinding priority resolution
   // Using a ref instead of state for synchronous updates - input handlers need
@@ -223,8 +224,8 @@ export function KeybindingSetup({
       clearChordTimeout();
     };
   }, [clearChordTimeout]);
-  return <KeybindingProvider bindings={bindings} pendingChordRef={pendingChordRef} pendingChord={pendingChord} setPendingChord={setPendingChord} activeContexts={activeContextsRef.current} registerActiveContext={registerActiveContext} unregisterActiveContext={unregisterActiveContext} handlerRegistryRef={handlerRegistryRef}>
-      <ChordInterceptor bindings={bindings} pendingChordRef={pendingChordRef} setPendingChord={setPendingChord} activeContexts={activeContextsRef.current} handlerRegistryRef={handlerRegistryRef} />
+  return <KeybindingProvider bindings={bindings} pendingChordRef={pendingChordRef} pendingChord={pendingChord} setPendingChord={setPendingChord} activeContexts={activeContextsRef.current} registerActiveContext={registerActiveContext} unregisterActiveContext={unregisterActiveContext} handlerRegistryRef={handlerRegistryRef} inputCaptureRegistryRef={inputCaptureRegistryRef}>
+      <ChordInterceptor bindings={bindings} pendingChordRef={pendingChordRef} setPendingChord={setPendingChord} activeContexts={activeContextsRef.current} handlerRegistryRef={handlerRegistryRef} inputCaptureRegistryRef={inputCaptureRegistryRef} />
       {children}
     </KeybindingProvider>;
 }
@@ -251,6 +252,7 @@ type ChordInputHandlerOptions = {
   setPendingChord: (pending: ParsedKeystroke[] | null) => void;
   activeContexts: Set<KeybindingContextName>;
   handlerRegistryRef: React.RefObject<Map<string, Set<HandlerRegistration>>>;
+  inputCaptureRegistryRef: React.RefObject<Set<InputCaptureRegistration>>;
 };
 
 export function createChordInputHandler({
@@ -258,7 +260,8 @@ export function createChordInputHandler({
   pendingChordRef,
   setPendingChord,
   activeContexts,
-  handlerRegistryRef
+  handlerRegistryRef,
+  inputCaptureRegistryRef
 }: ChordInputHandlerOptions): (input: string, key: Key, event: InputEvent) => void {
   return (input, key, event) => {
     if ((key.wheelUp || key.wheelDown) && pendingChordRef.current === null) {
@@ -321,35 +324,58 @@ export function createChordInputHandler({
         }
       case "none":
     }
+    const stopped = typeof event.didStopImmediatePropagation === "function" && event.didStopImmediatePropagation();
+    if (!stopped && runInputCaptures(input, key, activeContexts, inputCaptureRegistryRef)) {
+      event.stopImmediatePropagation();
+    }
   };
 }
 
+function runInputCaptures(
+  input: string,
+  key: Key,
+  activeContexts: Set<KeybindingContextName>,
+  inputCaptureRegistryRef: React.RefObject<Set<InputCaptureRegistration>>,
+): boolean {
+  const registry = inputCaptureRegistryRef.current;
+  if (!registry || registry.size === 0) return false;
+  for (const registration of registry) {
+    if (activeContexts.has(registration.context) && registration.handler(input, key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function ChordInterceptor(t0: ChordInputHandlerOptions): null {
-  const $ = _c(6);
+  const $ = _c(7);
   const {
     bindings,
     pendingChordRef,
     setPendingChord,
     activeContexts,
-    handlerRegistryRef
+    handlerRegistryRef,
+    inputCaptureRegistryRef
   } = t0;
   let t1;
-  if ($[0] !== activeContexts || $[1] !== bindings || $[2] !== handlerRegistryRef || $[3] !== pendingChordRef || $[4] !== setPendingChord) {
+  if ($[0] !== activeContexts || $[1] !== bindings || $[2] !== handlerRegistryRef || $[3] !== inputCaptureRegistryRef || $[4] !== pendingChordRef || $[5] !== setPendingChord) {
     t1 = createChordInputHandler({
       bindings,
       pendingChordRef,
       setPendingChord,
       activeContexts,
-      handlerRegistryRef
+      handlerRegistryRef,
+      inputCaptureRegistryRef
     });
     $[0] = activeContexts;
     $[1] = bindings;
     $[2] = handlerRegistryRef;
-    $[3] = pendingChordRef;
-    $[4] = setPendingChord;
-    $[5] = t1;
+    $[3] = inputCaptureRegistryRef;
+    $[4] = pendingChordRef;
+    $[5] = setPendingChord;
+    $[6] = t1;
   } else {
-    t1 = $[5];
+    t1 = $[6];
   }
   const handleInput = t1;
   useInput(handleInput);

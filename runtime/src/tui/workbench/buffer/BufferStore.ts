@@ -1,6 +1,28 @@
 import { relative, resolve } from "node:path";
 
 import { getCwd } from "../../../utils/cwd.js";
+import { lastGrapheme } from "../../../utils/intl.js";
+import { TextCursor } from "../../../utils/TextCursor.js";
+import type { VimMode } from "../../../types/textInputTypes.js";
+import type { Key } from "../../ink.js";
+import {
+  executeIndent,
+  executeJoin,
+  executeOpenLine,
+  executeOperatorFind,
+  executeOperatorMotion,
+  executeOperatorTextObj,
+  executeReplace,
+  executeToggleCase,
+  executeX,
+} from "../../vim/operators.js";
+import { transition, type TransitionContext } from "../../vim/transitions.js";
+import {
+  createInitialPersistentState,
+  type PersistentState,
+  type RecordedChange,
+  type VimState,
+} from "../../vim/types.js";
 import {
   bufferText,
   createBufferDocument,
@@ -11,7 +33,10 @@ import {
   insertBufferText,
   moveBufferCursor,
   moveBufferCursorToLine,
+  previousGraphemeOffset,
   redoBufferChange,
+  replaceBufferText,
+  setBufferCursorOffset,
   type BufferDocument,
   type BufferMove,
   type BufferSelection,
@@ -61,9 +86,21 @@ export type WorkbenchBufferSnapshot = {
   readonly encoding: BufferFileEncoding | null;
   readonly lineEndings: BufferLineEndings | null;
   readonly hoverText: string | null;
+  readonly vimMode: VimMode;
+  readonly vimCommandLine: string | null;
 };
 
 type Listener = () => void;
+export type BufferVimCommand =
+  | { readonly type: "save"; readonly force: boolean }
+  | { readonly type: "quit"; readonly discard: boolean; readonly all: boolean }
+  | { readonly type: "saveQuit"; readonly force: boolean; readonly all: boolean };
+
+type BufferVimCommandHandler = (command: BufferVimCommand) => void;
+type VimEditSession = {
+  readonly context: TransitionContext;
+  readonly flush: () => void;
+};
 
 const EMPTY_SELECTION: BufferSelection = { anchor: 0, head: 0 };
 const EMPTY_POSITION: BufferPosition = { line: 1, column: 0, offset: 0 };
@@ -80,6 +117,9 @@ export class WorkbenchBufferStore {
   #scrollLine = 0;
   #viewportRows = DEFAULT_VIEWPORT_ROWS;
   #openGeneration = 0;
+  #vimCommandLine: string | null = null;
+  #vimState: VimState = { mode: "NORMAL", command: { type: "idle" } };
+  #vimPersistentState: PersistentState = createInitialPersistentState();
   #snapshot: WorkbenchBufferSnapshot = this.#createSnapshot();
 
   subscribe = (listener: Listener): (() => void) => {
@@ -130,6 +170,7 @@ export class WorkbenchBufferStore {
     this.#conflictKind = null;
     this.#hoverText = null;
     this.#scrollLine = 0;
+    this.#resetVimState();
     this.#emit();
     return true;
   }
@@ -197,6 +238,60 @@ export class WorkbenchBufferStore {
     this.#edit(deleteForward);
   }
 
+  handleVimInput(input: string, key: Key, columns: number, onCommand?: BufferVimCommandHandler): boolean {
+    if (!this.#document) return false;
+
+    if (this.#vimCommandLine !== null) {
+      return this.#handleVimCommandLineInput(input, key, onCommand);
+    }
+
+    if (key.ctrl || key.super || (key.meta && !key.escape)) return false;
+
+    const state = this.#vimState;
+    if (key.escape && state.mode === "INSERT") {
+      this.#switchToNormalMode();
+      return true;
+    }
+    if (key.escape && state.mode === "NORMAL") {
+      this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+      this.#emit();
+      return true;
+    }
+
+    if (state.mode === "INSERT") {
+      if (isNavigationKey(key)) return false;
+      this.#handleVimInsertInput(input, key);
+      return true;
+    }
+
+    if (input === ":") {
+      this.#vimCommandLine = "";
+      this.#error = null;
+      this.#conflictKind = null;
+      this.#emit();
+      return true;
+    }
+
+    const vimInput = normalizeVimNormalInput(input, key);
+    if (vimInput === null) {
+      return key.return || key.tab || input.length > 0;
+    }
+
+    const session = this.#createVimEditSession(columns);
+    const result = transition(state.command, vimInput, session.context);
+    result.execute?.();
+    session.flush();
+
+    if (this.#vimState.mode === "NORMAL") {
+      this.#vimState = {
+        mode: "NORMAL",
+        command: result.next ?? { type: "idle" },
+      };
+      this.#emit();
+    }
+    return true;
+  }
+
   move(move: BufferMove, options: { readonly extend?: boolean; readonly pageSize?: number } = {}): void {
     this.#replaceDocument((document) => moveBufferCursor(document, move, options), false);
   }
@@ -236,6 +331,224 @@ export class WorkbenchBufferStore {
     if (!target) return false;
     await this.#load(target.path, target.line, false, displayPathForAbsolute(target.path));
     return true;
+  }
+
+  #handleVimCommandLineInput(input: string, key: Key, onCommand?: BufferVimCommandHandler): boolean {
+    if (key.escape) {
+      this.#vimCommandLine = null;
+      this.#emit();
+      return true;
+    }
+
+    if (key.return) {
+      const rawCommand = this.#vimCommandLine ?? "";
+      this.#vimCommandLine = null;
+      const command = parseVimCommand(rawCommand);
+      if (!command) {
+        this.#setProblem("error", `Unknown Vim command: :${rawCommand.trim()}`, null);
+        return true;
+      }
+      this.#emit();
+      onCommand?.(command);
+      return true;
+    }
+
+    if (key.backspace || key.delete) {
+      this.#vimCommandLine = removeLastGrapheme(this.#vimCommandLine ?? "");
+      this.#emit();
+      return true;
+    }
+
+    if (key.ctrl || key.super || key.meta) return true;
+
+    if (input.length > 0) {
+      this.#vimCommandLine = `${this.#vimCommandLine ?? ""}${input}`;
+      this.#emit();
+      return true;
+    }
+
+    return true;
+  }
+
+  #handleVimInsertInput(input: string, key: Key): void {
+    const state = this.#vimState.mode === "INSERT" ? this.#vimState : { mode: "INSERT" as const, insertedText: "" };
+    if (key.return) {
+      this.newline();
+      this.#vimState = { mode: "INSERT", insertedText: `${state.insertedText}\n` };
+      return;
+    }
+    if (key.tab) {
+      this.insert("\t");
+      this.#vimState = { mode: "INSERT", insertedText: `${state.insertedText}\t` };
+      return;
+    }
+    if (key.backspace) {
+      this.backspace();
+      this.#vimState = {
+        mode: "INSERT",
+        insertedText: removeLastGrapheme(state.insertedText),
+      };
+      return;
+    }
+    if (key.delete) {
+      this.deleteForward();
+      this.#vimState = {
+        mode: "INSERT",
+        insertedText: removeLastGrapheme(state.insertedText),
+      };
+      return;
+    }
+    if (input.length > 0) {
+      this.insert(input);
+      this.#vimState = { mode: "INSERT", insertedText: state.insertedText + input };
+      return;
+    }
+    this.#emit();
+  }
+
+  #createVimEditSession(columns: number): VimEditSession {
+    const startDocument = this.#document;
+    const startText = startDocument ? bufferText(startDocument) : "";
+    let nextText = startText;
+    let nextOffset = this.#position().offset;
+    let textChanged = false;
+    let offsetChanged = false;
+    let enteredInsert = false;
+    const clampOffset = (offset: number): number => Math.max(0, Math.min(nextText.length, offset));
+    const applyText = (text: string): void => {
+      nextText = text;
+      textChanged = true;
+      nextOffset = clampOffset(nextOffset);
+    };
+    const applyOffset = (offset: number): void => {
+      nextOffset = clampOffset(offset);
+      offsetChanged = true;
+    };
+    const context: TransitionContext = {
+      get cursor() {
+        return TextCursor.fromText(nextText, columns, nextOffset);
+      },
+      get text() {
+        return nextText;
+      },
+      setText: applyText,
+      setOffset: applyOffset,
+      enterInsert: (offset: number) => {
+        applyOffset(offset);
+        enteredInsert = true;
+      },
+      getRegister: () => this.#vimPersistentState.register,
+      setRegister: (content: string, linewise: boolean) => {
+        this.#vimPersistentState = {
+          ...this.#vimPersistentState,
+          register: content,
+          registerIsLinewise: linewise,
+        };
+      },
+      getLastFind: () => this.#vimPersistentState.lastFind,
+      setLastFind: (type, char) => {
+        this.#vimPersistentState = {
+          ...this.#vimPersistentState,
+          lastFind: { type, char },
+        };
+      },
+      recordChange: (change: RecordedChange) => {
+        this.#vimPersistentState = {
+          ...this.#vimPersistentState,
+          lastChange: change,
+        };
+      },
+      onUndo: () => this.undo(),
+      onDotRepeat: () => this.#replayLastVimChange(columns),
+    };
+    return {
+      context,
+      flush: () => {
+        if (textChanged) {
+          this.#replaceDocument((document) => replaceBufferText(document, nextText, nextOffset), true);
+        } else if (offsetChanged) {
+          this.#replaceDocument((document) => setBufferCursorOffset(document, nextOffset), false);
+        }
+        if (enteredInsert) {
+          this.#vimState = { mode: "INSERT", insertedText: "" };
+        }
+      },
+    };
+  }
+
+  #replayLastVimChange(columns: number): void {
+    const change = this.#vimPersistentState.lastChange;
+    if (!change) return;
+    const session = this.#createVimEditSession(columns);
+    const ctx = session.context;
+
+    switch (change.type) {
+      case "insert":
+        if (change.text) {
+          const cursor = TextCursor.fromText(ctx.text, columns, this.#position().offset);
+          const next = cursor.insert(change.text);
+          ctx.setText(next.text);
+          ctx.setOffset(next.offset);
+        }
+        break;
+      case "x":
+        executeX(change.count, ctx);
+        break;
+      case "replace":
+        executeReplace(change.char, change.count, ctx);
+        break;
+      case "toggleCase":
+        executeToggleCase(change.count, ctx);
+        break;
+      case "indent":
+        executeIndent(change.dir, change.count, ctx);
+        break;
+      case "join":
+        executeJoin(change.count, ctx);
+        break;
+      case "openLine":
+        executeOpenLine(change.direction, ctx);
+        break;
+      case "operator":
+        executeOperatorMotion(change.op, change.motion, change.count, ctx);
+        break;
+      case "operatorFind":
+        executeOperatorFind(change.op, change.find, change.char, change.count, ctx);
+        break;
+      case "operatorTextObj":
+        executeOperatorTextObj(change.op, change.scope, change.objType, change.count, ctx);
+        break;
+    }
+
+    session.flush();
+  }
+
+  #switchToNormalMode(): void {
+    if (this.#vimState.mode === "INSERT" && this.#vimState.insertedText) {
+      this.#vimPersistentState = {
+        ...this.#vimPersistentState,
+        lastChange: {
+          type: "insert",
+          text: this.#vimState.insertedText,
+        },
+      };
+    }
+    const document = this.#document;
+    if (document) {
+      const offset = currentSelection(document).head;
+      const text = bufferText(document);
+      if (offset > 0 && text[offset - 1] !== "\n") {
+        this.#replaceDocument((current) => setBufferCursorOffset(current, previousGraphemeOffset(text, offset)), false);
+      }
+    }
+    this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+    this.#emit();
+  }
+
+  #resetVimState(): void {
+    this.#vimCommandLine = null;
+    this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+    this.#vimPersistentState = createInitialPersistentState();
   }
 
   #edit(update: (document: BufferDocument) => BufferDocument): void {
@@ -290,6 +603,7 @@ export class WorkbenchBufferStore {
     this.#file = null;
     this.#document = null;
     this.#scrollLine = 0;
+    this.#resetVimState();
     this.#emit();
 
     try {
@@ -300,6 +614,7 @@ export class WorkbenchBufferStore {
       if (previousPath && previousPath !== snapshot.absolutePath) notifyBufferLspClosed(previousPath);
       this.#file = snapshot;
       this.#document = createBufferDocument(snapshot.content, line);
+      this.#resetVimState();
       this.#status = "ready";
       this.#error = null;
       this.#conflictKind = null;
@@ -373,6 +688,8 @@ export class WorkbenchBufferStore {
       encoding: file?.encoding ?? null,
       lineEndings: file?.lineEndings ?? null,
       hoverText: this.#hoverText,
+      vimMode: this.#vimState.mode,
+      vimCommandLine: this.#vimCommandLine,
     };
   }
 
@@ -392,6 +709,75 @@ function displayPathForAbsolute(absolutePath: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeVimNormalInput(input: string, key: Key): string | null {
+  if (key.leftArrow) return "h";
+  if (key.rightArrow) return "l";
+  if (key.upArrow) return "k";
+  if (key.downArrow) return "j";
+  if (key.backspace) return "h";
+  if (key.delete) return "x";
+  if (input.length === 1) return input;
+  return null;
+}
+
+function parseVimCommand(rawCommand: string): BufferVimCommand | null {
+  const command = rawCommand.trim().toLowerCase();
+  switch (command) {
+    case "w":
+    case "write":
+      return { type: "save", force: false };
+    case "w!":
+    case "write!":
+      return { type: "save", force: true };
+    case "q":
+    case "quit":
+      return { type: "quit", discard: false, all: false };
+    case "q!":
+    case "quit!":
+      return { type: "quit", discard: true, all: false };
+    case "qa":
+    case "qall":
+    case "quitall":
+      return { type: "quit", discard: false, all: true };
+    case "qa!":
+    case "qall!":
+    case "quitall!":
+      return { type: "quit", discard: true, all: true };
+    case "wq":
+    case "x":
+    case "xit":
+    case "exit":
+      return { type: "saveQuit", force: false, all: false };
+    case "wq!":
+    case "x!":
+    case "xit!":
+    case "exit!":
+      return { type: "saveQuit", force: true, all: false };
+    case "wqa":
+    case "wqall":
+    case "xa":
+    case "xall":
+      return { type: "saveQuit", force: false, all: true };
+    case "wqa!":
+    case "wqall!":
+    case "xa!":
+    case "xall!":
+      return { type: "saveQuit", force: true, all: true };
+    default:
+      return null;
+  }
+}
+
+function isNavigationKey(key: Key): boolean {
+  return key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.pageUp || key.pageDown || key.home || key.end;
+}
+
+function removeLastGrapheme(value: string): string {
+  if (value.length === 0) return value;
+  const last = lastGrapheme(value);
+  return value.slice(0, Math.max(0, value.length - (last.length || 1)));
 }
 
 let singleton: WorkbenchBufferStore | null = null;

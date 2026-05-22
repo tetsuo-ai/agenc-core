@@ -142,6 +142,25 @@ export function insertBufferText(document: BufferDocument, text: string): Buffer
   );
 }
 
+export function replaceBufferText(
+  document: BufferDocument,
+  text: string,
+  cursorOffset = currentSelection(document).head,
+): BufferDocument {
+  const insert = text.normalize("NFC");
+  const offset = Math.max(0, Math.min(insert.length, cursorOffset));
+  return applyChange(
+    document,
+    { from: 0, to: document.state.doc.length, insert },
+    { anchor: offset, head: offset },
+  );
+}
+
+export function setBufferCursorOffset(document: BufferDocument, cursorOffset: number): BufferDocument {
+  const offset = Math.max(0, Math.min(document.state.doc.length, cursorOffset));
+  return setSelection(document, { anchor: offset, head: offset }, null);
+}
+
 export function deleteBackward(document: BufferDocument): BufferDocument {
   const selection = currentSelection(document);
   const { from, to } = selectionBounds(selection);

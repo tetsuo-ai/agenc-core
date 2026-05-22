@@ -130,6 +130,7 @@ describe("KeybindingProviderSetup", () => {
       setPendingChord,
       activeContexts: new Set(["Chat"]),
       handlerRegistryRef: { current: registry },
+      inputCaptureRegistryRef: { current: new Set() },
     });
 
     const prefixEvent = inputEvent();
@@ -143,6 +144,38 @@ describe("KeybindingProviderSetup", () => {
     expect(completionEvent.stopped).toBe(true);
     expect(pendingChordRef.current).toBeNull();
     expect(invoked).toBe(1);
+  });
+
+  test("runs active input captures before child input handlers", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+    const pendingChordRef = { current: null as ParsedKeystroke[] | null };
+    const captured: string[] = [];
+    const handler = createChordInputHandler({
+      bindings,
+      pendingChordRef,
+      setPendingChord: pending => {
+        pendingChordRef.current = pending;
+      },
+      activeContexts: new Set(["Buffer"]),
+      handlerRegistryRef: { current: new Map() },
+      inputCaptureRegistryRef: {
+        current: new Set([
+          {
+            context: "Buffer",
+            handler: input => {
+              captured.push(input);
+              return true;
+            },
+          },
+        ]),
+      },
+    });
+
+    const event = inputEvent();
+    handler("i", key(), event);
+
+    expect(captured).toEqual(["i"]);
+    expect(event.stopped).toBe(true);
   });
 
   test("resolves raw footer x and enter input from terminal bytes", () => {
