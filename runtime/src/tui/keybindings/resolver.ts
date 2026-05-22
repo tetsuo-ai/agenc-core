@@ -15,6 +15,7 @@ const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
   Workbench: 10,
   Explorer: 20,
   Surface: 20,
+  Buffer: 30,
   Agents: 20,
   Composer: 30,
   Chat: 40,

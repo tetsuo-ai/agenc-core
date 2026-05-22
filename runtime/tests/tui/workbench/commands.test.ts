@@ -6,12 +6,22 @@ import {
   attachFileCommand,
   attachFileRangeCommand,
   materializeAttachmentMentions,
+  openBufferCommand,
   attachTaskErrorCommand,
   searchMatchAttachment,
 } from "../../../src/tui/workbench/commands.js";
 import type { WorkbenchCommand } from "../../../src/tui/workbench/types.js";
 
 describe("workbench command helpers", () => {
+  it("creates explicit open-buffer commands", () => {
+    expect(openBufferCommand("src/app.ts", 9, false)).toEqual({
+      type: "openBuffer",
+      path: "src/app.ts",
+      line: 9,
+      focus: false,
+    });
+  });
+
   it("materializes composer attachments as prompt mentions", () => {
     const fileCommand = attachFileCommand("src/app.ts") as Extract<WorkbenchCommand, { type: "attach" }>;
     const rangeCommand = attachFileRangeCommand("src/app.ts", 4, 7) as Extract<WorkbenchCommand, { type: "attach" }>;

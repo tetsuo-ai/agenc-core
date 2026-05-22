@@ -6,7 +6,7 @@ import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
-import { attachFileCommand, openPreviewCommand } from "../commands.js";
+import { attachFileCommand, openBufferCommand, openPreviewCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
@@ -66,6 +66,14 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       "explorer:openKeepFocus": () => {
         const row = store.getCursorRow();
         if (row?.kind === "file" && row.path) dispatch(openPreviewCommand(row.path, undefined, false));
+      },
+      "explorer:edit": () => {
+        const row = store.getCursorRow();
+        if (row?.kind === "file" && row.path) dispatch(openBufferCommand(row.path, undefined, true));
+      },
+      "explorer:editKeepFocus": () => {
+        const row = store.getCursorRow();
+        if (row?.kind === "file" && row.path) dispatch(openBufferCommand(row.path, undefined, false));
       },
       "explorer:attach": () => {
         const row = store.getCursorRow();

@@ -5,6 +5,7 @@ export type WorkbenchPane = "explorer" | "surface" | "agents" | "composer";
 export type ActiveSurfaceMode =
   | "transcript"
   | "preview"
+  | "buffer"
   | "diff"
   | "test"
   | "shell"
@@ -55,6 +56,7 @@ export type WorkbenchCommand =
   | { readonly type: "focusNext"; readonly visiblePanes: readonly WorkbenchPane[] }
   | { readonly type: "openSurface"; readonly mode: ActiveSurfaceMode }
   | { readonly type: "openPreview"; readonly path: string; readonly line?: number; readonly focus?: boolean }
+  | { readonly type: "openBuffer"; readonly path: string; readonly line?: number; readonly focus?: boolean }
   | { readonly type: "openSearch"; readonly query?: string; readonly selectedMatchId?: string | null }
   | { readonly type: "openDiff"; readonly diffId?: string | null; readonly focus?: boolean }
   | { readonly type: "openShell"; readonly taskId: string; readonly focus?: boolean }

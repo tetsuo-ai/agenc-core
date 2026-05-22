@@ -8,6 +8,7 @@ import type { PendingRequest } from "../../permission-requests.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { ActiveSurfaceMode, WorkbenchState } from "../types.js";
 import { AgentSurface } from "./AgentSurface.js";
+import { BufferSurface } from "./BufferSurface.js";
 import { DiffSurface } from "./DiffSurface.js";
 import { PreviewSurface } from "./PreviewSurface.js";
 import { SearchSurface } from "./SearchSurface.js";
@@ -41,9 +42,16 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   {
     mode: "preview",
     title: (state) => state.activeFilePath ?? "PREVIEW",
-    keybindings: ["j", "k", "@", "q"],
-    footerHints: "Preview: j/k scroll  @ attach  q close",
+    keybindings: ["j", "k", "e", "@", "q"],
+    footerHints: "Preview: j/k scroll  e edit  @ attach  q close",
     renderBody: ({ focused }) => <PreviewSurface focused={focused} />,
+  },
+  {
+    mode: "buffer",
+    title: (state) => state.activeFilePath ?? "BUFFER",
+    keybindings: ["ctrl+s", "ctrl+z", "ctrl+y", "ctrl+w q", "ctrl+w x"],
+    footerHints: "Buffer: ctrl+s save  ctrl+z undo  ctrl+y redo  ctrl+w q close  ctrl+w x discard",
+    renderBody: ({ focused }) => <BufferSurface focused={focused} />,
   },
   {
     mode: "diff",
@@ -107,7 +115,7 @@ export function ActiveWorkSurface({
     {
       "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
-    { context: "Surface", isActive: focused },
+    { context: "Surface", isActive: focused && descriptor.mode !== "buffer" },
   );
 
   return (

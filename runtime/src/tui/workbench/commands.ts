@@ -8,6 +8,14 @@ export function openPreviewCommand(
   return { type: "openPreview", path, line, focus };
 }
 
+export function openBufferCommand(
+  path: string,
+  line?: number,
+  focus = true,
+): WorkbenchCommand {
+  return { type: "openBuffer", path, line, focus };
+}
+
 export function attachFileCommand(path: string): WorkbenchCommand {
   return {
     type: "attach",

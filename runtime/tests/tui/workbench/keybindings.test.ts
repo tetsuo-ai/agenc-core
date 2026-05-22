@@ -30,14 +30,22 @@ describe("workbench keybinding contract", () => {
       k: "explorer:up",
       h: "explorer:collapse",
       l: "explorer:expand",
+      e: "explorer:edit",
       "@": "explorer:attach",
     });
     expect(byContext.get("Surface")).toMatchObject({
       q: "workbench:closeSurface",
       enter: "surface:open",
+      e: "surface:edit",
       "@": "surface:attach",
       x: "surface:stop",
     });
+    expect(byContext.get("Buffer")).toMatchObject({
+      "ctrl+s": "buffer:save",
+      "ctrl+w q": "buffer:close",
+      "ctrl+w x": "buffer:closeDiscard",
+    });
+    expect(byContext.get("Buffer")).not.toHaveProperty("q");
     expect(byContext.get("Agents")).toMatchObject({
       enter: "agents:open",
       x: "agents:stop",

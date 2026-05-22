@@ -10,7 +10,7 @@ import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
 import { taskMayReferencePath } from "../agents/activity.js";
-import { attachFileRangeCommand } from "../commands.js";
+import { attachFileRangeCommand, openBufferCommand } from "../commands.js";
 import { collectGitStatus } from "../project-tree/gitStatus.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 
@@ -94,6 +94,9 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
       "surface:attach": () => {
         if (activePath) dispatch(attachFileRangeCommand(activePath, startLine + 1, startLine + Math.max(1, lines.length)));
       },
+      "surface:edit": () => {
+        if (activePath) dispatch(openBufferCommand(activePath, startLine + 1, true));
+      },
       "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },
@@ -126,7 +129,7 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
         })}
       </Box>
       <Box height={1}>
-        <Text dimColor>q transcript  j/k scroll  @ attach range</Text>
+        <Text dimColor>q transcript  j/k scroll  e edit  @ attach range</Text>
         {activePath ? (
           <Text dimColor> </Text>
         ) : null}
