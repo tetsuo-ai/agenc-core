@@ -2,12 +2,14 @@ import { describe, expect, test } from "vitest";
 import React from "react";
 
 import {
+  calculateFileTreeGutterWidth,
   calculateFullscreenLayoutBudget,
   calculateModalViewport,
   FullscreenLayout,
   DesignTopChrome,
   formatDesignBottomChromeLabels,
   isNoColorEnv,
+  shouldShowFileTreeGutter,
 } from "./FullscreenLayout.js";
 import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import { Box, Text } from "../ink.js";
@@ -49,6 +51,18 @@ describe("FullscreenLayout modal viewport", () => {
     expect(isNoColorEnv({ FORCE_COLOR: "0" })).toBe(true);
     expect(isNoColorEnv({ TERM: "dumb" })).toBe(true);
     expect(isNoColorEnv({ TERM: "xterm-256color" })).toBe(false);
+  });
+
+  test("sizes and gates the optional file-tree gutter for wide fullscreen sessions", () => {
+    expect(calculateFileTreeGutterWidth(80)).toBe(0);
+    expect(calculateFileTreeGutterWidth(112)).toBe(22);
+    expect(calculateFileTreeGutterWidth(148)).toBe(26);
+    expect(calculateFileTreeGutterWidth(200)).toBe(28);
+
+    expect(shouldShowFileTreeGutter(148, 40)).toBe(true);
+    expect(shouldShowFileTreeGutter(111, 40)).toBe(false);
+    expect(shouldShowFileTreeGutter(148, 15)).toBe(false);
+    expect(shouldShowFileTreeGutter(148, 40, true)).toBe(false);
   });
 
   test("renders v2 top chrome without fake error and warning labels", async () => {
