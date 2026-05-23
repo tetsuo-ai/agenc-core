@@ -182,6 +182,15 @@ describe("ProjectExplorer interactions", () => {
               activeSurfaceMode: "preview",
               activeFilePath: "src/nested/app.ts",
               activeFileLine: 12,
+              attachments: [{
+                id: "file-range:src/nested/app.ts:12-15",
+                kind: "file-range",
+                label: "src/nested/app.ts:12-15",
+                path: "src/nested/app.ts",
+                line: 12,
+                endLine: 15,
+              }],
+              composerAttachmentIds: ["file-range:src/nested/app.ts:12-15"],
             },
           }}
           onChangeAppState={({ newState }) => changes.push(newState)}
@@ -205,6 +214,15 @@ describe("ProjectExplorer interactions", () => {
         activeSurfaceMode: "buffer",
         activeFilePath: "lib/nested/app.ts",
         activeFileLine: 12,
+        attachments: [{
+          id: "file-range:lib/nested/app.ts:12-15",
+          kind: "file-range",
+          label: "lib/nested/app.ts:12-15",
+          path: "lib/nested/app.ts",
+          line: 12,
+          endLine: 15,
+        }],
+        composerAttachmentIds: ["file-range:lib/nested/app.ts:12-15"],
       });
     } finally {
       root.unmount();
