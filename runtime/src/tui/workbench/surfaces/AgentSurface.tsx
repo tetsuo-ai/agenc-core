@@ -22,21 +22,27 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
     const taskList = orderAgentTasks(Object.values(tasks).filter((item: any) => item.type !== "local_bash"));
     return resolveAgentSelection(taskList, workbench.selectedAgentTaskId).selectedTask;
   }, [tasks, workbench.selectedAgentTaskId]);
-  const [tail, setTail] = useState("");
+  const [tailState, setTailState] = useState<{ readonly taskId: string | null; readonly content: string }>({
+    taskId: null,
+    content: "",
+  });
+  const tail = tailState.taskId === task?.id ? tailState.content : "";
 
   useEffect(() => {
     if (!task?.id) {
-      setTail("");
+      setTailState({ taskId: null, content: "" });
       return;
     }
+    const taskId = task.id;
+    setTailState({ taskId, content: "" });
     let mounted = true;
     const readTail = () => {
-      tailFile(getTaskOutputPath(task.id), 16_000)
+      tailFile(getTaskOutputPath(taskId), 16_000)
         .then((result) => {
-          if (mounted) setTail(result.content);
+          if (mounted) setTailState({ taskId, content: result.content });
         })
         .catch(() => {
-          if (mounted) setTail("");
+          if (mounted) setTailState({ taskId, content: "" });
         });
     };
     readTail();
