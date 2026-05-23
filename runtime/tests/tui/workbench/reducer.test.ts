@@ -221,6 +221,39 @@ describe("workbenchReducer", () => {
     ]);
   });
 
+  it("normalizes trailing slash rename targets before rewriting references", () => {
+    const state = {
+      ...getDefaultWorkbenchState(),
+      activeFilePath: "src/nested/app.ts",
+      attachments: [
+        {
+          id: "file-range:src/nested/app.ts:12-15",
+          kind: "file-range" as const,
+          label: "src/nested/app.ts:12-15",
+          path: "src/nested/app.ts",
+          line: 12,
+          endLine: 15,
+        },
+      ],
+      composerAttachmentIds: ["file-range:src/nested/app.ts:12-15"],
+    };
+    const next = workbenchReducer(state, {
+      type: "renamePathReferences",
+      fromPath: "src",
+      toPath: "lib/",
+    });
+
+    expect(next.activeFilePath).toBe("lib/nested/app.ts");
+    expect(next.attachments[0]).toMatchObject({
+      id: "file-range:lib/nested/app.ts:12-15",
+      label: "lib/nested/app.ts:12-15",
+      path: "lib/nested/app.ts",
+    });
+    expect(next.composerAttachmentIds).toEqual([
+      "file-range:lib/nested/app.ts:12-15",
+    ]);
+  });
+
   it("clears active paths and attached context when a workspace path is deleted", () => {
     const state = {
       ...getDefaultWorkbenchState(),

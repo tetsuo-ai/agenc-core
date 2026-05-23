@@ -233,6 +233,30 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("returns canonical tree paths when renaming to a trailing slash target", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-slash-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
+      await store.refresh();
+
+      await expect(store.renamePath("src", "lib/")).resolves.toEqual({
+        ok: true,
+        path: "lib",
+      });
+
+      expect(await readFile(join(repo, "lib", "nested", "app.ts"), "utf8")).toBe("app\n");
+      expect(store.getCursorPath()).toBe("lib");
+      expect(store.getSnapshot().rows.map((row) => row.path)).toContain("lib");
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("lib/");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("deletes files and rejects paths outside the workspace", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-"));
     const store = new ProjectTreeStore(repo, 0);
