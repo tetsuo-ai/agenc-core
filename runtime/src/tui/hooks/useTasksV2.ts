@@ -2,6 +2,7 @@ import { type FSWatcher, watch } from 'fs'
 import { useEffect, useSyncExternalStore } from 'react'
 import { type AppState, useAppState, useSetAppState } from '../state/AppState.js'
 import { createSignal } from '../../utils/signal.js'
+import { logError } from '../../utils/log.js'
 import type { Task } from '../../utils/tasks.js'
 import {
   getTaskListId,
@@ -66,7 +67,7 @@ class TasksV2Store {
       this.#unsubscribeTasksUpdated = onTasksUpdated(this.#debouncedFetch)
       // Fire-and-forget: subscribe is called post-commit (not in render),
       // and the store notifies subscribers when the fetch resolves.
-      void this.#fetch()
+      this.#fetchAndLog()
     }
     let unsubscribed = false
     return () => {
@@ -106,8 +107,14 @@ class TasksV2Store {
 
   #debouncedFetch = (): void => {
     if (this.#debounceTimer) clearTimeout(this.#debounceTimer)
-    this.#debounceTimer = setTimeout(() => void this.#fetch(), DEBOUNCE_MS)
+    this.#debounceTimer = setTimeout(this.#fetchAndLog, DEBOUNCE_MS)
     this.#debounceTimer.unref()
+  }
+
+  #fetchAndLog = (): void => {
+    void this.#fetch().catch(error => {
+      logError(error instanceof Error ? error : new Error(String(error)))
+    })
   }
 
   #fetch = async (): Promise<void> => {
@@ -167,6 +174,9 @@ class TasksV2Store {
         this.#tasks = []
         this.#hidden = true
       }
+      this.#notify()
+    }).catch(error => {
+      logError(error instanceof Error ? error : new Error(String(error)))
       this.#notify()
     })
   }

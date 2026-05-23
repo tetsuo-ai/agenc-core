@@ -38,12 +38,16 @@ const fixture = vi.hoisted(() => {
     subscriptions: [] as SubscriptionRecord[],
     taskListId: 'list-a',
     taskListeners: new Set<() => void>(),
+    taskReadError: null as Error | null,
     tasksByList: new Map<string, Task[]>(),
     watchThrows: false,
     watchers: [] as WatcherRecord[],
   }
 
   const listTasks = vi.fn(async (taskListId: string) => {
+    if (state.taskReadError) {
+      throw state.taskReadError
+    }
     return state.tasksByList.get(taskListId) ?? []
   })
 
@@ -109,6 +113,7 @@ const fixture = vi.hoisted(() => {
     state.subscriptions = []
     state.taskListId = 'list-a'
     state.taskListeners.clear()
+    state.taskReadError = null
     state.tasksByList = new Map([['list-a', []]])
     state.watchThrows = false
     state.watchers = []
@@ -132,6 +137,10 @@ const fixture = vi.hoisted(() => {
     watch,
   }
 })
+
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}))
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react')
@@ -163,6 +172,10 @@ vi.mock('../../utils/tasks.js', () => ({
 
 vi.mock('../../utils/teammate.js', () => ({
   isTeamLead: () => fixture.state.isLead,
+}))
+
+vi.mock('../../utils/log.js', () => ({
+  logError: logMock.logError,
 }))
 
 let timers: ManualTimer[] = []
@@ -265,6 +278,7 @@ describe('useTasksV2', () => {
   beforeEach(() => {
     vi.resetModules()
     fixture.reset()
+    logMock.logError.mockClear()
     timers = []
     installTimerMocks()
   })
@@ -316,6 +330,24 @@ describe('useTasksV2', () => {
     expect(fixture.listTasks).toHaveBeenCalledWith('list-a')
     expect(latestTasks(mounted.record)).toBeUndefined()
     expect(activeTimers()).toHaveLength(0)
+  })
+
+  test('logs initial task read failures and retries on later task updates', async () => {
+    const error = new Error('tasks unavailable')
+    fixture.state.taskReadError = error
+
+    const mounted = await mountUseTasksV2()
+    await flushPromises()
+
+    expect(fixture.listTasks).toHaveBeenCalledWith('list-a')
+    expect(logMock.logError).toHaveBeenCalledWith(error)
+    expect(latestTasks(mounted.record)).toBeUndefined()
+
+    fixture.state.taskReadError = null
+    fixture.state.tasksByList.set('list-a', [task('1', 'pending')])
+    await emitTasksUpdated()
+
+    expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['1'])
   })
 
   test('filters internal tasks and preserves source ordering across add, update, and remove events', async () => {
@@ -411,6 +443,22 @@ describe('useTasksV2', () => {
     await emitTasksUpdated()
 
     expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['2'])
+  })
+
+  test('logs completed-task hide check failures and keeps completed tasks visible', async () => {
+    fixture.state.tasksByList.set('list-a', [task('1', 'completed')])
+    const mounted = await mountUseTasksV2()
+    await flushPromises()
+
+    expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['1'])
+
+    const error = new Error('hide check unavailable')
+    fixture.state.taskReadError = error
+    await fireNextTimer(5000)
+
+    expect(logMock.logError).toHaveBeenCalledWith(error)
+    expect(fixture.resetTaskList).not.toHaveBeenCalled()
+    expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['1'])
   })
 
   test('cancels completed-task hiding when incomplete work appears before the delay', async () => {

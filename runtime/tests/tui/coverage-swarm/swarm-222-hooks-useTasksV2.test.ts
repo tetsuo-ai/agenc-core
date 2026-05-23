@@ -131,6 +131,10 @@ const fixture = vi.hoisted(() => {
   }
 })
 
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}))
+
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react')
   return {
@@ -161,6 +165,10 @@ vi.mock('src/utils/tasks.js', () => ({
 
 vi.mock('src/utils/teammate.js', () => ({
   isTeamLead: () => fixture.state.isLead,
+}))
+
+vi.mock('src/utils/log.js', () => ({
+  logError: logMock.logError,
 }))
 
 let timers: ManualTimer[] = []
@@ -256,6 +264,7 @@ describe('useTasksV2 coverage swarm row 222', () => {
   beforeEach(() => {
     vi.resetModules()
     fixture.reset()
+    logMock.logError.mockClear()
     timers = []
     installTimerMocks()
   })
