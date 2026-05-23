@@ -245,6 +245,27 @@ describe('useIdeAtMentioned coverage swarm 066', () => {
     }
   })
 
+  test('ignores IDE notifications after unmount', async () => {
+    const ideClient = createIdeClient()
+    fixture.ideClient = ideClient
+    const onAtMentioned = vi.fn()
+    const rendered = await renderHookHarness({
+      mcpClients: [{ id: 'ide' }],
+      onAtMentioned,
+    })
+
+    expect(ideClient.client.setNotificationHandler).toHaveBeenCalledTimes(1)
+
+    await rendered.dispose()
+
+    ideClient.emit({
+      filePath: '/workspace/src/after-unmount.ts',
+      lineStart: 0,
+    })
+
+    expect(onAtMentioned).not.toHaveBeenCalled()
+  })
+
   test('logs notification handler errors instead of surfacing callback failures', async () => {
     const ideClient = createIdeClient()
     fixture.ideClient = ideClient

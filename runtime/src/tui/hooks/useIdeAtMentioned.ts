@@ -38,6 +38,10 @@ export function useIdeAtMentioned(
 ): void {
   const ideClientRef = useRef<ConnectedMCPServer | undefined>(undefined)
 
+  useEffect(() => () => {
+    ideClientRef.current = undefined
+  }, [])
+
   useEffect(() => {
     // Find the IDE client from the MCP clients list
     const ideClient = getConnectedIdeClient(mcpClients)

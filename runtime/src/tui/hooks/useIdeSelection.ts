@@ -70,6 +70,11 @@ export function useIdeSelection(
     onSelectRef.current = onSelect
   }, [onSelect])
 
+  useEffect(() => () => {
+    currentIDERef.current = null
+    handlersRegistered.current = false
+  }, [])
+
   useEffect(() => {
     // Find the IDE client from the MCP clients list
     const ideClient = getConnectedIdeClient(mcpClients)
