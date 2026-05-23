@@ -162,6 +162,30 @@ describe("workbenchReducer", () => {
     expect(transcript.activeSurfaceMode).toBe("transcript");
   });
 
+  it("clears stale selected search match ids when opening a new query", () => {
+    const first = workbenchReducer(undefined, {
+      type: "openSearch",
+      query: "needle",
+      selectedMatchId: "src/app.ts:4:needle",
+    });
+    const second = workbenchReducer(first, {
+      type: "openSearch",
+      query: "other",
+    });
+    const reopened = workbenchReducer(second, {
+      type: "openSearch",
+    });
+
+    expect(second).toMatchObject({
+      searchQuery: "other",
+      selectedSearchMatchId: null,
+    });
+    expect(reopened).toMatchObject({
+      searchQuery: "other",
+      selectedSearchMatchId: null,
+    });
+  });
+
   it("tracks blocked approval overlays and attachment removal", () => {
     const withAttachment = workbenchReducer(undefined, {
       type: "attach",

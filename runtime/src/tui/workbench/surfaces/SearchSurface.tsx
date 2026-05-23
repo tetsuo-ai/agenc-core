@@ -22,9 +22,11 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const query = workbench.searchQuery;
+  const selectedMatchId = workbench.selectedSearchMatchId;
 
   useEffect(() => {
     abortRef.current?.abort();
+    setSelected(0);
     if (!query.trim()) {
       setMatches([]);
       setLoading(false);
@@ -66,6 +68,12 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
       controller.abort();
     };
   }, [query]);
+
+  useEffect(() => {
+    if (!selectedMatchId) return;
+    const index = matches.findIndex((match) => match.id === selectedMatchId);
+    if (index >= 0) setSelected(index);
+  }, [matches, selectedMatchId]);
 
   const selectedIndex = clampSurfaceSelection(selected, matches.length);
   const selectedMatch = matches[selectedIndex] ?? null;

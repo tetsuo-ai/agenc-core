@@ -54,10 +54,14 @@ export function workbenchReducer(
         activeFileLine: command.line ?? null,
       };
     case "openSearch":
+      const nextSearchQuery = command.query ?? state.searchQuery;
+      const searchQueryChanged =
+        command.query !== undefined && command.query !== state.searchQuery;
       return {
         ...openSurface(state, "search"),
-        searchQuery: command.query ?? state.searchQuery,
-        selectedSearchMatchId: command.selectedMatchId ?? state.selectedSearchMatchId,
+        searchQuery: nextSearchQuery,
+        selectedSearchMatchId:
+          command.selectedMatchId ?? (searchQueryChanged ? null : state.selectedSearchMatchId),
       };
     case "openDiff":
       return {
