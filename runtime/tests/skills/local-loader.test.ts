@@ -323,14 +323,14 @@ All=$ARGUMENTS
 
     const rendered = await services.skillsManager.renderSkill?.({
       name: "explain",
-      args: '"rendering hooks" docs',
+      args: '"rendering hooks" #123',
       sessionId: "session-2",
     });
 
     expect(rendered?.content).toContain("Topic=rendering hooks");
     expect(rendered?.content).toContain("First=rendering hooks");
-    expect(rendered?.content).toContain("Second=docs");
-    expect(rendered?.content).toContain('All="rendering hooks" docs');
+    expect(rendered?.content).toContain("Second=#123");
+    expect(rendered?.content).toContain('All="rendering hooks" #123');
   });
 
   it("renders skills with base directory, arguments, and AgenC placeholders", async () => {

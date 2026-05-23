@@ -28,7 +28,10 @@ export function parseArguments(args: string): string[] {
   }
 
   // Return $KEY to preserve variable syntax literally (don't expand variables)
-  const result = tryParseShellCommand(args, (key) => `$${key}`);
+  const result = tryParseShellCommand(
+    escapeUnquotedHashLiterals(args),
+    (key) => `$${key}`,
+  );
   if (!result.success) {
     // Fall back to simple whitespace split if parsing fails
     return args.split(/\s+/).filter(Boolean);
@@ -148,4 +151,58 @@ export function substituteArguments(
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Slash arguments are prompt data, so unquoted # should remain literal instead
+// of being consumed by shell-quote's shell-comment parser.
+function escapeUnquotedHashLiterals(value: string): string {
+  let out = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let inBracedVariable = false;
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+
+    if (escaped) {
+      out += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\" && quote !== "'") {
+      out += char;
+      escaped = true;
+      continue;
+    }
+
+    if (inBracedVariable) {
+      out += char;
+      if (char === "}") inBracedVariable = false;
+      continue;
+    }
+
+    if (quote === undefined && char === "$" && value[i + 1] === "{") {
+      out += "${";
+      inBracedVariable = true;
+      i++;
+      continue;
+    }
+
+    if (char === "'" && quote !== '"') {
+      quote = quote === "'" ? undefined : "'";
+      out += char;
+      continue;
+    }
+
+    if (char === '"' && quote !== "'") {
+      quote = quote === '"' ? undefined : '"';
+      out += char;
+      continue;
+    }
+
+    out += quote === undefined && char === "#" ? "\\#" : char;
+  }
+
+  return out;
 }

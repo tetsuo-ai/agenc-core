@@ -8,12 +8,14 @@ import {
 } from 'src/tui/slash/argument-substitution.js'
 
 describe('argument substitution coverage edges', () => {
-  test('parses blank input and filters non-string shell tokens', () => {
+  test('parses blank input, filters shell operators, and preserves hash literals', () => {
     expect(parseArguments('')).toEqual([])
     expect(parseArguments('   \t  ')).toEqual([])
     expect(parseArguments('build && test # trailing')).toEqual([
       'build',
       'test',
+      '#',
+      'trailing',
     ])
   })
 
