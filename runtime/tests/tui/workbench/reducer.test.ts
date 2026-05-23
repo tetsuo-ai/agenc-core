@@ -203,6 +203,50 @@ describe("workbenchReducer", () => {
     ]);
   });
 
+  it("clears active paths and attached context when a workspace path is deleted", () => {
+    const state = {
+      ...getDefaultWorkbenchState(),
+      activeFilePath: "src/nested/app.ts",
+      activeFileLine: 12,
+      attachments: [
+        {
+          id: "file-range:src/nested/app.ts:12-15",
+          kind: "file-range" as const,
+          label: "src/nested/app.ts:12-15",
+          path: "src/nested/app.ts",
+          line: 12,
+          endLine: 15,
+        },
+        {
+          id: "file:src-old/app.ts",
+          kind: "file" as const,
+          label: "src-old/app.ts",
+          path: "src-old/app.ts",
+        },
+      ],
+      composerAttachmentIds: [
+        "file-range:src/nested/app.ts:12-15",
+        "file:src-old/app.ts",
+      ],
+    };
+    const next = workbenchReducer(state, {
+      type: "deletePathReferences",
+      path: "src",
+    });
+
+    expect(next.activeFilePath).toBeNull();
+    expect(next.activeFileLine).toBeNull();
+    expect(next.attachments).toEqual([
+      {
+        id: "file:src-old/app.ts",
+        kind: "file",
+        label: "src-old/app.ts",
+        path: "src-old/app.ts",
+      },
+    ]);
+    expect(next.composerAttachmentIds).toEqual(["file:src-old/app.ts"]);
+  });
+
   it("opens and closes non-transcript surfaces", () => {
     const diff = workbenchReducer(undefined, {
       type: "openDiff",
