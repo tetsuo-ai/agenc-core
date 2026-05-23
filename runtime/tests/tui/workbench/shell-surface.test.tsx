@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const shellHarness = vi.hoisted(() => ({
   deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
+  logError: vi.fn(),
   pendingReads: new Map<string, (result: { content: string }) => void>(),
   readCounts: {} as Record<string, number>,
   rejectOnRead: {} as Record<string, number>,
@@ -42,6 +43,10 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: shellHarness.logError,
+}));
+
 import { createRoot } from "../../../src/tui/ink.js";
 import { getInkInstance } from "../../../src/tui/ink/instances.js";
 import { cellAt } from "../../../src/tui/ink/screen.js";
@@ -60,6 +65,7 @@ describe("ShellSurface", () => {
   beforeEach(() => {
     shellHarness.deferredTaskIds = new Set();
     shellHarness.handlers = {};
+    shellHarness.logError.mockReset();
     shellHarness.pendingReads = new Map();
     shellHarness.readCounts = {};
     shellHarness.rejectOnRead = {};
@@ -284,6 +290,9 @@ describe("ShellSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("src/current-task.ts:7");
       expect(compact(screenText(stdout))).not.toContain("(nooutput)");
+      expect(shellHarness.logError.mock.calls.some(([error]) =>
+        error instanceof Error && error.message === "tail failed for shell-1"
+      )).toBe(true);
     } finally {
       root.unmount();
       stdin.end();

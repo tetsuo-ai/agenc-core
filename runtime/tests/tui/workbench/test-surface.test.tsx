@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const keybindingHarness = vi.hoisted(() => ({
   deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
+  logError: vi.fn(),
   pendingReads: new Map<string, (result: { content: string }) => void>(),
   readCounts: {} as Record<string, number>,
   rejectOnRead: {} as Record<string, number>,
@@ -41,6 +42,10 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: keybindingHarness.logError,
+}));
+
 import { createRoot } from "../../../src/tui/ink.js";
 import { getInkInstance } from "../../../src/tui/ink/instances.js";
 import { cellAt } from "../../../src/tui/ink/screen.js";
@@ -59,6 +64,7 @@ describe("TestSurface", () => {
   beforeEach(() => {
     keybindingHarness.deferredTaskIds = new Set();
     keybindingHarness.handlers = {};
+    keybindingHarness.logError.mockReset();
     keybindingHarness.pendingReads = new Map();
     keybindingHarness.readCounts = {};
     keybindingHarness.rejectOnRead = {};
@@ -226,6 +232,9 @@ describe("TestSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("firstfailure");
       expect(compact(screenText(stdout))).not.toContain("Noparsedtestfailures");
+      expect(keybindingHarness.logError.mock.calls.some(([error]) =>
+        error instanceof Error && error.message === "tail failed for shell-1"
+      )).toBe(true);
     } finally {
       root.unmount();
       stdin.end();

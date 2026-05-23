@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { useEffect, useMemo, useState } from "react";
 
+import { logError } from "../../../utils/log.js";
 import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
 import { tailFile } from "../../../utils/fsOperations.js";
 import { Box, Text } from "../../ink.js";
@@ -47,7 +48,8 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
         .then((result) => {
           if (mounted) setTailState({ taskId, content: result.content });
         })
-        .catch(() => {
+        .catch((error) => {
+          logError(error);
           // Keep the last successful tail visible across transient read failures.
         });
     };
