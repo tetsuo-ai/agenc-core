@@ -108,8 +108,9 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       dispatch(openBufferCommand(result.path, undefined, true));
       return;
     }
-    if (workbench.activeFilePath === action.path) {
-      dispatch(openBufferCommand(result.path, workbench.activeFileLine ?? undefined, false));
+    const renamedActivePath = renamedActiveFilePath(workbench.activeFilePath, action.path, result.path);
+    if (renamedActivePath) {
+      dispatch(openBufferCommand(renamedActivePath, workbench.activeFileLine ?? undefined, false));
     }
   }, [dispatch, fileAction, store, workbench.activeFileLine, workbench.activeFilePath]);
 
@@ -432,4 +433,11 @@ function defaultCreateFilePath(row: ProjectTreeRow | null): string {
 
 function pathContains(activePath: string | null, targetPath: string): boolean {
   return activePath === targetPath || Boolean(activePath?.startsWith(`${targetPath}/`));
+}
+
+function renamedActiveFilePath(activePath: string | null, fromPath: string, toPath: string): string | null {
+  if (!activePath) return null;
+  if (activePath === fromPath) return toPath;
+  if (activePath.startsWith(`${fromPath}/`)) return `${toPath}${activePath.slice(fromPath.length)}`;
+  return null;
 }
