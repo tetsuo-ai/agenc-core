@@ -2,6 +2,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { clearDeliveredDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import { getLspServerManager } from "../../../services/lsp/manager.js";
+import { logError } from "../../../utils/log.js";
 
 export type BufferLspPosition = {
   readonly line: number;
@@ -15,7 +16,7 @@ export type BufferDefinitionTarget = {
 };
 
 function bestEffort(run: () => Promise<void>): void {
-  void run().catch(() => {});
+  void run().catch(logError);
 }
 
 export function notifyBufferLspOpened(filePath: string, content: string): void {
