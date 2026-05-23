@@ -64,21 +64,28 @@ export function openFileInBufferExternalEditor(filePath: string, line?: number):
     : [...editorArgs, ...terminalGotoArgv(base, filePath, line)];
   const syncOpts: SpawnSyncOptions = { stdio: "inherit" };
 
-  if (guiFamily) {
-    inkInstance.pause();
-    inkInstance.suspendStdin();
-  } else {
-    inkInstance.enterAlternateScreen();
-  }
-
+  let paused = false;
+  let suspendedStdin = false;
+  let enteredAlternateScreen = false;
   try {
+    if (guiFamily) {
+      inkInstance.pause();
+      paused = true;
+      inkInstance.suspendStdin();
+      suspendedStdin = true;
+    } else {
+      inkInstance.enterAlternateScreen();
+      enteredAlternateScreen = true;
+    }
     const result = crossSpawn.sync(base, args, syncOpts);
     return !result.error && (typeof result.status !== "number" || result.status === 0);
+  } catch {
+    return false;
   } finally {
     if (guiFamily) {
-      inkInstance.resumeStdin();
-      inkInstance.resume();
-    } else {
+      if (suspendedStdin) inkInstance.resumeStdin();
+      if (paused) inkInstance.resume();
+    } else if (enteredAlternateScreen) {
       inkInstance.exitAlternateScreen();
     }
   }
