@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import {
   TerminalQuerier,
@@ -8,14 +8,23 @@ import {
 } from './terminal-querier.ts'
 import type { TerminalResponse } from './parse-keypress.ts'
 
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}))
+
+vi.mock('../../utils/log.js', () => ({
+  logError: logMock.logError,
+}))
+
 /** Minimal writable stub: records every chunk written. */
-function makeStdout(): {
+function makeStdout(writeImpl?: (chunk: string | Uint8Array) => boolean): {
   stdout: NodeJS.WriteStream
   writes: string[]
 } {
   const writes: string[] = []
   const stdout = {
     write: (chunk: string | Uint8Array): boolean => {
+      if (writeImpl !== undefined) return writeImpl(chunk)
       writes.push(
         typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'),
       )
@@ -31,6 +40,10 @@ function nextTick(): Promise<void> {
 }
 
 describe('TerminalQuerier write gating', () => {
+  beforeEach(() => {
+    logMock.logError.mockClear()
+  })
+
   test('writes immediately when no stdin handle is provided (legacy path)', () => {
     const { stdout, writes } = makeStdout()
     const q = new TerminalQuerier(stdout)
@@ -164,5 +177,53 @@ describe('TerminalQuerier write gating', () => {
     q.onResponse({ type: 'da1', params: [] } as unknown as TerminalResponse)
     const [r2] = await batch2
     expect(r2).toBeUndefined()
+  })
+
+  test('send() logs write failures and resolves undefined instead of rejecting', async () => {
+    const error = new Error('write failed')
+    const { stdout } = makeStdout(() => {
+      throw error
+    })
+    const stdin: QuerierStdin = { isTTY: true, isRaw: true }
+    const q = new TerminalQuerier(stdout, stdin)
+
+    await expect(q.send(xtversion())).resolves.toBeUndefined()
+
+    expect(logMock.logError).toHaveBeenCalledWith(error)
+  })
+
+  test('deferred send() logs write failures after raw mode becomes ready', async () => {
+    const error = new Error('deferred write failed')
+    const { stdout } = makeStdout(() => {
+      throw error
+    })
+    const stdin: QuerierStdin = { isTTY: true, isRaw: false }
+    const q = new TerminalQuerier(stdout, stdin)
+
+    const pending = q.send(xtversion())
+    await nextTick()
+    expect(logMock.logError).not.toHaveBeenCalled()
+
+    stdin.isRaw = true
+    await nextTick()
+
+    await expect(pending).resolves.toBeUndefined()
+    expect(logMock.logError).toHaveBeenCalledWith(error)
+  })
+
+  test('flush() logs sentinel write failures and drains queued queries', async () => {
+    const error = new Error('sentinel write failed')
+    const { stdout } = makeStdout(chunk => {
+      if (chunk === '\x1b[c') throw error
+      return true
+    })
+    const stdin: QuerierStdin = { isTTY: true, isRaw: true }
+    const q = new TerminalQuerier(stdout, stdin)
+
+    const pending = q.send(xtversion())
+    await expect(q.flush()).resolves.toBeUndefined()
+
+    await expect(pending).resolves.toBeUndefined()
+    expect(logMock.logError).toHaveBeenCalledWith(error)
   })
 })

@@ -23,6 +23,7 @@
 import type { TerminalResponse } from './parse-keypress.js'
 import { csi } from './termio/csi.js'
 import { osc } from './termio/osc.js'
+import { logError } from '../../utils/log.js'
 
 /** A terminal query: an outbound request sequence paired with a matcher
  *  that recognizes the expected inbound response. Built by `decrqm()`,
@@ -185,12 +186,15 @@ export class TerminalQuerier {
         resolve(undefined)
         return
       }
-      this.queue.push({
+      const pending: Pending = {
         kind: 'query',
         match: query.match,
         resolve: r => resolve(r as T | undefined),
+      }
+      this.queue.push(pending)
+      this.writeWhenRawModeReady(query.request, error => {
+        this.resolveFailedQueryWrite(pending, error)
       })
-      this.writeWhenRawModeReady(query.request)
     })
   }
 
@@ -217,8 +221,11 @@ export class TerminalQuerier {
         resolve()
         return
       }
-      this.queue.push({ kind: 'sentinel', resolve })
-      this.writeWhenRawModeReady(SENTINEL)
+      const pending: Pending = { kind: 'sentinel', resolve }
+      this.queue.push(pending)
+      this.writeWhenRawModeReady(SENTINEL, error => {
+        this.resolveFailedSentinelWrite(pending, error)
+      })
     })
   }
 
@@ -236,20 +243,52 @@ export class TerminalQuerier {
    *  handle was provided. Polls with `setImmediate` up to RAW_MODE_POLL_LIMIT
    *  ticks before falling back to a direct write so the queue can't
    *  deadlock on a misconfigured caller. */
-  private writeWhenRawModeReady(data: string): void {
+  private writeWhenRawModeReady(
+    data: string,
+    onWriteError: (error: unknown) => void,
+  ): void {
+    const write = (): void => {
+      try {
+        this.stdout.write(data)
+      } catch (error) {
+        onWriteError(error)
+      }
+    }
     if (this.isRawModeReady()) {
-      this.stdout.write(data)
+      write()
       return
     }
     let attempts = 0
     const tryWrite = (): void => {
       if (this.isRawModeReady() || ++attempts >= RAW_MODE_POLL_LIMIT) {
-        this.stdout.write(data)
+        write()
         return
       }
       setImmediate(tryWrite)
     }
     setImmediate(tryWrite)
+  }
+
+  private resolveFailedQueryWrite(pending: Pending, error: unknown): void {
+    logError(error)
+    const idx = this.queue.indexOf(pending)
+    if (idx === -1) return
+    const [removed] = this.queue.splice(idx, 1)
+    if (removed?.kind === 'query') removed.resolve(undefined)
+  }
+
+  private resolveFailedSentinelWrite(pending: Pending, error: unknown): void {
+    logError(error)
+    const idx = this.queue.indexOf(pending)
+    if (idx === -1) return
+    this.resolveQueueThrough(idx)
+  }
+
+  private resolveQueueThrough(index: number): void {
+    for (const p of this.queue.splice(0, index + 1)) {
+      if (p.kind === 'query') p.resolve(undefined)
+      else p.resolve()
+    }
   }
 
   /**
@@ -281,10 +320,7 @@ export class TerminalQuerier {
     if (r.type === 'da1') {
       const s = this.queue.findIndex(p => p.kind === 'sentinel')
       if (s === -1) return
-      for (const p of this.queue.splice(0, s + 1)) {
-        if (p.kind === 'query') p.resolve(undefined)
-        else p.resolve()
-      }
+      this.resolveQueueThrough(s)
     }
   }
 }
