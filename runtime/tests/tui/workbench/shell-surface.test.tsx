@@ -96,4 +96,49 @@ describe("ShellSurface", () => {
     expect(output).toContain("No shell task selected");
     expect(output).not.toContain("agent work");
   });
+
+  it("falls back to the running newest shell task after stale selection", async () => {
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            "shell-old": {
+              id: "shell-old",
+              type: "local_bash",
+              status: "completed",
+              description: "old completed shell",
+              command: "npm run old",
+              startTime: 1_000,
+              outputFile: "urn:agenc:task:shell-old:output",
+              outputOffset: 0,
+              notified: false,
+            } as any,
+            "shell-new": {
+              id: "shell-new",
+              type: "local_bash",
+              status: "running",
+              description: "new running shell",
+              command: "npm test",
+              startTime: 2_000,
+              outputFile: "urn:agenc:task:shell-new:output",
+              outputOffset: 0,
+              notified: false,
+            } as any,
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "shell",
+            selectedShellTaskId: "missing-shell",
+          },
+        }}
+      >
+        <ShellSurface focused={true} />
+      </AppStateProvider>,
+      100,
+    );
+
+    expect(output).toContain("SHELL - running - new running shell");
+    expect(output).not.toContain("old completed shell");
+  });
 });
