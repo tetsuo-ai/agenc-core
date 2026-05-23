@@ -333,7 +333,9 @@ beforeEach(() => {
   teamHelpersMock.removeHiddenPaneId.mockClear();
   teamHelpersMock.removeMemberFromTeam.mockClear();
   teamHelpersMock.setMemberMode.mockClear();
+  teamHelpersMock.setMemberMode.mockReturnValue(true);
   teamHelpersMock.setMultipleMemberModes.mockClear();
+  teamHelpersMock.setMultipleMemberModes.mockReturnValue(true);
   execFileNoThrowMock.mockReset();
   execFileNoThrowMock.mockResolvedValue({ code: 0, stderr: "", error: "" });
 });
@@ -672,6 +674,27 @@ describe("TeamsDialog rendering", () => {
       );
     } finally {
       failureHarness.unmount();
+    }
+  });
+
+  test("surfaces team config removal exceptions during kill actions", async () => {
+    const error = new Error("team file locked");
+    teamHelpersMock.removeMemberFromTeam.mockImplementationOnce(() => {
+      throw error;
+    });
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await harness.press("k", {}, 80);
+
+      expect(harness.getText()).toContain(
+        "Killed @Fixer, but could not remove it from team alpha: team file locked",
+      );
+      expect(logMock.logError).toHaveBeenCalledWith(error);
+    } finally {
+      harness.unmount();
     }
   });
 

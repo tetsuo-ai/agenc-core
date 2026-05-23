@@ -140,13 +140,28 @@ export function TeamsDialog({
 
   // Handler for confirm:cycleMode - cycle teammate permission modes
   const handleCycleMode = useCallback(() => {
+    setActionNotice(null);
     if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
       // Detail view: cycle just this teammate
-      cycleTeammateMode(currentTeammate, dialogLevel.teamName, isBypassAvailable);
+      const result = cycleTeammateMode(currentTeammate, dialogLevel.teamName, isBypassAvailable);
+      if (!result.ok) {
+        setActionNotice({
+          kind: 'error',
+          message: result.message
+        });
+        return;
+      }
       setRefreshKey(k => k + 1);
     } else if (dialogLevel.type === 'teammateList' && teammateStatuses.length > 0) {
       // List view: cycle all teammates in tandem
-      cycleAllTeammateModes(teammateStatuses, dialogLevel.teamName, isBypassAvailable);
+      const result = cycleAllTeammateModes(teammateStatuses, dialogLevel.teamName, isBypassAvailable);
+      if (!result.ok) {
+        setActionNotice({
+          kind: 'error',
+          message: result.message
+        });
+        return;
+      }
       setRefreshKey(k => k + 1);
     }
   }, [dialogLevel, currentTeammate, teammateStatuses, isBypassAvailable]);
@@ -574,7 +589,14 @@ async function killTeammate(paneId: string, backendType: PaneBackendType | undef
   }
 
   // Remove from team config file
-  if (!removeMemberFromTeam(teamName, paneId)) {
+  let removedFromTeam: boolean;
+  try {
+    removedFromTeam = removeMemberFromTeam(teamName, paneId);
+  } catch (error) {
+    logError(error);
+    return fail(`Killed @${teammateName}, but could not remove it from team ${teamName}: ${errorMessage(error)}`);
+  }
+  if (!removedFromTeam) {
     return fail(`Killed @${teammateName}, but could not remove it from team ${teamName}.`);
   }
 
@@ -736,12 +758,22 @@ async function showTeammate(teammate: TeammateStatus, teamName: string): Promise
  * Send a mode change message to a single teammate
  * Also updates config.json directly so the UI reflects the change immediately
  */
-function sendModeChangeToTeammate(teammateName: string, teamName: string, targetMode: PermissionMode): void {
+function sendModeChangeToTeammate(teammateName: string, teamName: string, targetMode: PermissionMode): TeamActionResult {
   // Update config.json directly so UI shows the change immediately
-  setMemberMode(teamName, teammateName, targetMode);
+  let updatedMode: boolean;
+  try {
+    updatedMode = setMemberMode(teamName, teammateName, targetMode);
+  } catch (error) {
+    logError(error);
+    return fail(`Cannot change @${teammateName} mode: ${errorMessage(error)}`);
+  }
+  if (!updatedMode) {
+    return fail(`Cannot change @${teammateName} mode: could not update team config.`);
+  }
 
   sendModeChangeMailboxMessage(teammateName, teamName, targetMode);
   logForDebugging(`[TeamsDialog] Sent mode change to ${teammateName}: ${targetMode}`);
+  return ok();
 }
 
 function sendModeChangeMailboxMessage(teammateName: string, teamName: string, targetMode: PermissionMode): void {
@@ -762,7 +794,7 @@ function sendModeChangeMailboxMessage(teammateName: string, teamName: string, ta
 /**
  * Cycle a single teammate's mode
  */
-function cycleTeammateMode(teammate: TeammateStatus, teamName: string, isBypassAvailable: boolean): void {
+function cycleTeammateMode(teammate: TeammateStatus, teamName: string, isBypassAvailable: boolean): TeamActionResult {
   const currentMode = teammate.mode ? permissionModeFromString(teammate.mode) : 'default';
   const context = {
     ...getEmptyToolPermissionContext(),
@@ -770,7 +802,7 @@ function cycleTeammateMode(teammate: TeammateStatus, teamName: string, isBypassA
     isBypassPermissionsModeAvailable: isBypassAvailable
   };
   const nextMode = getNextPermissionMode(context);
-  sendModeChangeToTeammate(teammate.name, teamName, nextMode);
+  return sendModeChangeToTeammate(teammate.name, teamName, nextMode);
 }
 
 /**
@@ -779,8 +811,8 @@ function cycleTeammateMode(teammate: TeammateStatus, teamName: string, isBypassA
  * If same, cycle all to next mode
  * Uses batch update to avoid race conditions
  */
-function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, isBypassAvailable: boolean): void {
-  if (teammates.length === 0) return;
+function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, isBypassAvailable: boolean): TeamActionResult {
+  if (teammates.length === 0) return ok();
   const modes = teammates.map(t => t.mode ? permissionModeFromString(t.mode) : 'default');
   const allSame = modes.every(m => m === modes[0]);
 
@@ -796,11 +828,21 @@ function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, is
     memberName: t.name,
     mode: targetMode
   }));
-  setMultipleMemberModes(teamName, modeUpdates);
+  let updatedModes: boolean;
+  try {
+    updatedModes = setMultipleMemberModes(teamName, modeUpdates);
+  } catch (error) {
+    logError(error);
+    return fail(`Cannot change team ${teamName} modes: ${errorMessage(error)}`);
+  }
+  if (!updatedModes) {
+    return fail(`Cannot change team ${teamName} modes: could not update team config.`);
+  }
 
   // Send mailbox messages to each teammate
   for (const teammate of teammates) {
     sendModeChangeMailboxMessage(teammate.name, teamName, targetMode);
   }
   logForDebugging(`[TeamsDialog] Sent mode change to all ${teammates.length} teammates: ${targetMode}`);
+  return ok();
 }

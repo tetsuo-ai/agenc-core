@@ -216,7 +216,9 @@ beforeEach(() => {
   teamHelpersMock.removeHiddenPaneId.mockClear();
   teamHelpersMock.removeMemberFromTeam.mockClear();
   teamHelpersMock.setMemberMode.mockClear();
+  teamHelpersMock.setMemberMode.mockReturnValue(true);
   teamHelpersMock.setMultipleMemberModes.mockClear();
+  teamHelpersMock.setMultipleMemberModes.mockReturnValue(true);
   execFileNoThrowMock.mockClear();
 });
 

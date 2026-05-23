@@ -348,7 +348,9 @@ beforeEach(() => {
   teamHelpersMock.removeMemberFromTeam.mockReset();
   teamHelpersMock.removeMemberFromTeam.mockReturnValue(true);
   teamHelpersMock.setMemberMode.mockReset();
+  teamHelpersMock.setMemberMode.mockReturnValue(true);
   teamHelpersMock.setMultipleMemberModes.mockReset();
+  teamHelpersMock.setMultipleMemberModes.mockReturnValue(true);
   execFileNoThrowMock.mockReset();
   execFileNoThrowMock.mockResolvedValue({ code: 0, stderr: "", error: "" });
   detectionMock.insideTmux = false;
@@ -436,6 +438,46 @@ describe("TeamsDialog coverage-swarm detail actions", () => {
       );
       expect(mailboxMock.writeToMailbox).toHaveBeenCalledTimes(2);
       expect(logMock.logError).toHaveBeenCalledWith(error);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("surfaces detail mode config exceptions without sending mailbox messages", async () => {
+    const error = new Error("team file locked");
+    teamHelpersMock.setMemberMode.mockImplementationOnce(() => {
+      throw error;
+    });
+    const harness = await createTeamsDialogHarness();
+
+    try {
+      await harness.press("\r", { return: true });
+
+      expect(() => keybindingMock.handlers.get("confirm:cycleMode")?.()).not.toThrow();
+      await settle();
+
+      expect(harness.getText()).toContain(
+        "Cannot change @Fixer mode: team file locked",
+      );
+      expect(mailboxMock.writeToMailbox).not.toHaveBeenCalled();
+      expect(logMock.logError).toHaveBeenCalledWith(error);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("surfaces bulk mode config failures without sending mailbox messages", async () => {
+    teamHelpersMock.setMultipleMemberModes.mockReturnValueOnce(false);
+    const harness = await createTeamsDialogHarness();
+
+    try {
+      keybindingMock.handlers.get("confirm:cycleMode")?.();
+      await settle();
+
+      expect(harness.getText()).toContain(
+        "Cannot change team alpha modes: could not update team config.",
+      );
+      expect(mailboxMock.writeToMailbox).not.toHaveBeenCalled();
     } finally {
       harness.unmount();
     }
