@@ -15,6 +15,7 @@ import { getCwd } from '../../utils/cwd';
 import { openFileInExternalEditor } from '../../utils/editor';
 import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
 import { highlightMatch } from '../../utils/highlightMatch';
+import { logError } from '../../utils/log';
 import { readFileInRange } from '../../utils/readFileInRange';
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
@@ -107,6 +108,12 @@ export function QuickOpenDialog(t0) {
         }
         const paths = items.filter(_temp).map(_temp2).filter(_temp3).map(_temp4);
         setResults(paths);
+      }).catch(error => {
+        if (gen !== queryGenRef.current) {
+          return;
+        }
+        logError(error);
+        setResults([]);
       });
     };
     $[3] = t4;
