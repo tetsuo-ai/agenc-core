@@ -1,15 +1,23 @@
 import path from "node:path";
 
+import { arrayToTree } from "performant-array-to-tree";
+
 import type { GitStatusByPath } from "./gitStatus.js";
 import type { ProjectTreeRow } from "../types.js";
 
 type NodeKind = "root" | "directory" | "file";
 
 type TreeNode = {
+  readonly id: string;
+  readonly parentId: string | null;
   readonly path: string;
   readonly label: string;
   readonly kind: NodeKind;
-  readonly children: Map<string, TreeNode>;
+  readonly children: TreeNode[];
+};
+
+type TreeItem = Omit<TreeNode, "children"> & {
+  children?: TreeItem[];
 };
 
 export type BuildProjectTreeOptions = {
@@ -25,31 +33,19 @@ export type BuildProjectTreeOptions = {
   readonly focused?: boolean;
 };
 
+const ROOT_ID = "__agenc_workspace_root__";
+
 export function buildProjectTreeRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
-  const root = createNode("", path.basename(options.cwd) || "workspace", "root");
-  for (const rawPath of options.paths) {
-    addPath(root, normalizeRelativePath(rawPath));
-  }
+  const root = createProjectTree(options);
+
+  if (!root) return emptyRows(options);
+
+  sortTree(root);
 
   const rows: ProjectTreeRow[] = [];
-  const rootExpanded = true;
-  rows.push(rowForNode(root, 0, rootExpanded, options));
-  appendChildren(root, 1, rows, options);
+  appendRows(root, 0, true, [], rows, options);
   if (rows.length === 1 && options.paths.length === 0) {
-    rows.push({
-      id: "loading-empty",
-      path: "",
-      label: options.gitStatus ? "No project files" : "Loading files",
-      kind: options.gitStatus ? "error" : "loading",
-      depth: 1,
-      expanded: false,
-      selected: false,
-      focused: false,
-      active: false,
-      attached: false,
-      searchHit: false,
-      inFlight: false,
-    });
+    rows.push(...emptyRows(options));
   }
   return rows;
 }
@@ -60,19 +56,44 @@ export function visibleTreePaths(rows: readonly ProjectTreeRow[]): readonly stri
     .map((row) => row.path);
 }
 
-function appendChildren(
+function createProjectTree(options: BuildProjectTreeOptions): TreeNode | null {
+  const items = new Map<string, Omit<TreeNode, "children">>();
+  items.set(ROOT_ID, {
+    id: ROOT_ID,
+    parentId: null,
+    path: "",
+    label: path.basename(options.cwd) || "workspace",
+    kind: "root",
+  });
+
+  for (const rawPath of options.paths) {
+    addPathItems(items, normalizeRelativePath(rawPath));
+  }
+
+  const tree = arrayToTree([...items.values()], {
+    dataField: null,
+    throwIfOrphans: true,
+  }) as TreeItem[];
+  return normalizeTreeItem(tree.find((item) => item.id === ROOT_ID) ?? null);
+}
+
+function appendRows(
   node: TreeNode,
   depth: number,
+  isLast: boolean,
+  ancestorLast: readonly boolean[],
   rows: ProjectTreeRow[],
   options: BuildProjectTreeOptions,
 ): void {
-  const children = [...node.children.values()].sort(compareNodes);
-  for (const child of children) {
-    const expanded = child.kind === "directory" && options.expandedPaths.has(child.path);
-    rows.push(rowForNode(child, depth, expanded, options));
-    if (expanded || child.kind === "root") {
-      appendChildren(child, depth + 1, rows, options);
-    }
+  const expanded = node.kind === "root" || (node.kind === "directory" && options.expandedPaths.has(node.path));
+  rows.push(rowForNode(node, depth, expanded, isLast, ancestorLast, options));
+
+  if (!expanded) return;
+
+  const nextAncestorLast = node.kind === "root" ? ancestorLast : [...ancestorLast, isLast];
+  for (let index = 0; index < node.children.length; index += 1) {
+    const child = node.children[index]!;
+    appendRows(child, depth + 1, index === node.children.length - 1, nextAncestorLast, rows, options);
   }
 }
 
@@ -80,6 +101,8 @@ function rowForNode(
   node: TreeNode,
   depth: number,
   expanded: boolean,
+  isLast: boolean,
+  ancestorLast: readonly boolean[],
   options: BuildProjectTreeOptions,
 ): ProjectTreeRow {
   const selected = options.cursorPath === node.path;
@@ -90,6 +113,9 @@ function rowForNode(
     kind: node.kind === "root" ? "root" : node.kind,
     depth,
     expanded,
+    hasChildren: node.children.length > 0,
+    isLast,
+    ancestorLast,
     selected,
     focused: selected && options.focused === true,
     active: options.activePath === node.path,
@@ -100,33 +126,47 @@ function rowForNode(
   };
 }
 
-function addPath(root: TreeNode, relPath: string): void {
+function addPathItems(items: Map<string, Omit<TreeNode, "children">>, relPath: string): void {
   if (!relPath || relPath.startsWith("../")) return;
   const directoryPath = relPath.endsWith("/");
   const parts = relPath.split("/").filter(Boolean);
-  let node = root;
   for (let index = 0; index < parts.length; index += 1) {
     const label = parts[index]!;
     const childPath = parts.slice(0, index + 1).join("/");
+    const parentPath = index === 0 ? ROOT_ID : parts.slice(0, index).join("/");
     const kind = index === parts.length - 1 && !directoryPath ? "file" : "directory";
-    const existing = node.children.get(label);
+    const existing = items.get(childPath);
     if (existing) {
-      node = existing;
+      if (existing.kind === "file" && kind === "directory") {
+        items.set(childPath, { ...existing, kind: "directory" });
+      }
       continue;
     }
-    const child = createNode(childPath, label, kind);
-    node.children.set(label, child);
-    node = child;
+    items.set(childPath, {
+      id: childPath,
+      parentId: parentPath,
+      path: childPath,
+      label,
+      kind,
+    });
   }
 }
 
-function createNode(pathValue: string, label: string, kind: NodeKind): TreeNode {
+function normalizeTreeItem(item: TreeItem | null): TreeNode | null {
+  if (!item) return null;
   return {
-    path: pathValue,
-    label,
-    kind,
-    children: new Map(),
+    id: item.id,
+    parentId: item.parentId,
+    path: item.path,
+    label: item.label,
+    kind: item.kind,
+    children: (item.children ?? []).map((child) => normalizeTreeItem(child)).filter((child): child is TreeNode => Boolean(child)),
   };
+}
+
+function sortTree(node: TreeNode): void {
+  node.children.sort(compareNodes);
+  for (const child of node.children) sortTree(child);
 }
 
 function compareNodes(left: TreeNode, right: TreeNode): number {
@@ -139,4 +179,24 @@ function compareNodes(left: TreeNode, right: TreeNode): number {
 
 function normalizeRelativePath(value: string): string {
   return value.split(path.sep).join("/");
+}
+
+function emptyRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
+  return [{
+    id: "loading-empty",
+    path: "",
+    label: options.gitStatus ? "No project files" : "Loading files",
+    kind: options.gitStatus ? "error" : "loading",
+    depth: 1,
+    expanded: false,
+    hasChildren: false,
+    isLast: true,
+    ancestorLast: [],
+    selected: false,
+    focused: false,
+    active: false,
+    attached: false,
+    searchHit: false,
+    inFlight: false,
+  }];
 }

@@ -295,17 +295,22 @@ export function createChordInputHandler({
           setPendingChord(null);
           if (wasInChord) {
             const contextsSet = new Set(contexts);
+            let handled = false;
             if (registry) {
               const handlers_0 = registry.get(result.action);
               if (handlers_0 && handlers_0.size > 0) {
                 for (const registration_0 of handlers_0) {
                   if (contextsSet.has(registration_0.context)) {
                     registration_0.handler();
-                    event.stopImmediatePropagation();
+                    handled = true;
                     break;
                   }
                 }
               }
+            }
+            event.stopImmediatePropagation();
+            if (!handled) {
+              logForDebugging(`[keybindings] Chord matched ${result.action} without an active handler`);
             }
           }
           break bb23;

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS,
   AgenCDaemonAutostartError,
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartConfig,
@@ -76,6 +77,12 @@ async function closeServer(server: Server | null): Promise<void> {
 }
 
 describe("AgenC daemon autostart", () => {
+  it("keeps the default readiness window long enough for cold starts", () => {
+    expect(AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      10_000,
+    );
+  });
+
   it("honors the autostart environment opt-out", () => {
     expect(shouldAutostartAgenCDaemon({})).toBe(true);
     expect(shouldAutostartAgenCDaemon({}, false)).toBe(false);
