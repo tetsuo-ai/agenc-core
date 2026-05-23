@@ -173,6 +173,7 @@ describe("SearchSurface", () => {
 
     expect(output).toContain("src/app.ts");
     expect(output).toContain("src/other.ts");
+    expect(output).toContain("o keep focus");
     expect(output).toContain("@ attach");
     for (const line of output.split(/\r?\n/u)) {
       expect(line.length).toBeLessThanOrEqual(60);

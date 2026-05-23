@@ -77,8 +77,10 @@ describe("workbench keybinding contract", () => {
     const searchSurface = descriptorForSurface("search");
 
     expect(surfaceBindings.get("enter")).toBe("surface:open");
+    expect(surfaceBindings.get("o")).toBe("surface:openKeepFocus");
     expect(searchSurface.footerHints).toContain("enter edit");
-    expect(searchSurface.keybindings).toContain("enter");
+    expect(searchSurface.footerHints).toContain("o keep focus");
+    expect(searchSurface.keybindings).toEqual(expect.arrayContaining(["enter", "o"]));
   });
 
   it("keeps SHELL surface edit shortcuts represented in descriptor metadata", () => {
