@@ -205,13 +205,17 @@ export function usePasteHandler({
                   // Successfully read at least one image
                   for (const imageData of validImages) {
                     const filename = basename(imageData.path)
-                    onImagePaste(
-                      imageData.base64,
-                      imageData.mediaType,
-                      filename,
-                      imageData.dimensions,
-                      imageData.path,
-                    )
+                    try {
+                      onImagePaste(
+                        imageData.base64,
+                        imageData.mediaType,
+                        filename,
+                        imageData.dimensions,
+                        imageData.path,
+                      )
+                    } catch (error) {
+                      logError(error as Error)
+                    }
                   }
                   // If some paths were not images or could not be read, paste them as text.
                   const fallbackLines = [
@@ -219,7 +223,11 @@ export function usePasteHandler({
                     ...failedImagePaths,
                   ]
                   if (fallbackLines.length > 0 && onPaste) {
-                    onPaste(fallbackLines.join('\n'))
+                    try {
+                      onPaste(fallbackLines.join('\n'))
+                    } catch (error) {
+                      logError(error as Error)
+                    }
                   }
                   setIsPasting(false)
                 } else if (isTempScreenshot && isMacOS) {
@@ -227,7 +235,11 @@ export function usePasteHandler({
                   checkClipboardForImage()
                 } else {
                   if (onPaste) {
-                    onPaste(pastedText)
+                    try {
+                      onPaste(pastedText)
+                    } catch (error) {
+                      logError(error as Error)
+                    }
                   }
                   setIsPasting(false)
                 }
