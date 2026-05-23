@@ -23,9 +23,13 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
   const [totalLines, setTotalLines] = useState<number | null>(null);
   const [content, setContent] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [gitState, setGitState] = useState<string | null>(null);
+  const [gitStateState, setGitStateState] = useState<{
+    readonly path: string | null;
+    readonly status: string | null;
+  }>({ path: null, status: null });
   const tasks = useAppState((state) => state.tasks);
   const activePath = workbench.activeFilePath;
+  const gitState = gitStateState.path === activePath ? gitStateState.status : null;
   const inFlightAgent = useMemo(
     () => Object.values(tasks).find((task: any) =>
       task.type !== "local_bash" &&
@@ -82,16 +86,18 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
 
   useEffect(() => {
     if (!activePath) {
-      setGitState(null);
+      setGitStateState({ path: null, status: null });
       return;
     }
+    const statusPath = activePath;
+    setGitStateState({ path: statusPath, status: null });
     let mounted = true;
     collectGitStatus(getCwd())
       .then((status) => {
-        if (mounted) setGitState(status.get(activePath) ?? "clean");
+        if (mounted) setGitStateState({ path: statusPath, status: status.get(statusPath) ?? "clean" });
       })
       .catch(() => {
-        if (mounted) setGitState(null);
+        if (mounted) setGitStateState({ path: statusPath, status: null });
       });
     return () => {
       mounted = false;
