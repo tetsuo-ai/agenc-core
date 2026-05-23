@@ -7,6 +7,8 @@ const keybindingHarness = vi.hoisted(() => ({
   deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
   pendingReads: new Map<string, (result: { content: string }) => void>(),
+  readCounts: {} as Record<string, number>,
+  rejectOnRead: {} as Record<string, number>,
   tails: {} as Record<string, string>,
 }));
 
@@ -14,6 +16,11 @@ vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
   tailFile: vi.fn(async (path: string) => {
     const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
+    const readCount = (keybindingHarness.readCounts[taskId] ?? 0) + 1;
+    keybindingHarness.readCounts[taskId] = readCount;
+    if (keybindingHarness.rejectOnRead[taskId] === readCount) {
+      throw new Error(`tail failed for ${taskId}`);
+    }
     if (keybindingHarness.deferredTaskIds.has(taskId)) {
       return new Promise<{ content: string }>((resolve) => {
         keybindingHarness.pendingReads.set(taskId, resolve);
@@ -53,6 +60,8 @@ describe("AgentSurface", () => {
     keybindingHarness.deferredTaskIds = new Set();
     keybindingHarness.handlers = {};
     keybindingHarness.pendingReads = new Map();
+    keybindingHarness.readCounts = {};
+    keybindingHarness.rejectOnRead = {};
     keybindingHarness.tails = {};
   });
 
@@ -204,6 +213,49 @@ describe("AgentSurface", () => {
     expect(canEnterAgentTranscript({ id: "remote", type: "remote_agent" })).toBe(false);
     expect(canEnterAgentTranscript({ type: "local_agent" })).toBe(false);
     expect(canEnterAgentTranscript(null)).toBe(false);
+  });
+
+  it("keeps the last agent tail visible when a later poll fails", async () => {
+    keybindingHarness.tails["agent-1"] = "current agent output";
+    keybindingHarness.rejectOnRead["agent-1"] = 2;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "agent-1": agentTask("agent-1", "current agent", "running", 1_000),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "agent",
+              selectedAgentTaskId: "agent-1",
+            },
+          }}
+        >
+          <AgentSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(screenText(stdout))).toContain("currentagentoutput");
+
+      await sleep(1_200);
+
+      expect(compact(screenText(stdout))).toContain("currentagentoutput");
+      expect(compact(screenText(stdout))).not.toContain("(nooutput)");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
   });
 });
 

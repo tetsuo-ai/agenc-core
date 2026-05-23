@@ -8,6 +8,8 @@ const shellHarness = vi.hoisted(() => ({
   deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
   pendingReads: new Map<string, (result: { content: string }) => void>(),
+  readCounts: {} as Record<string, number>,
+  rejectOnRead: {} as Record<string, number>,
   tails: {} as Record<string, string>,
 }));
 
@@ -15,6 +17,11 @@ vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
   tailFile: vi.fn(async (path: string) => {
     const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
+    const readCount = (shellHarness.readCounts[taskId] ?? 0) + 1;
+    shellHarness.readCounts[taskId] = readCount;
+    if (shellHarness.rejectOnRead[taskId] === readCount) {
+      throw new Error(`tail failed for ${taskId}`);
+    }
     if (shellHarness.deferredTaskIds.has(taskId)) {
       return new Promise<{ content: string }>((resolve) => {
         shellHarness.pendingReads.set(taskId, resolve);
@@ -36,6 +43,8 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 import { createRoot } from "../../../src/tui/ink.js";
+import { getInkInstance } from "../../../src/tui/ink/instances.js";
+import { cellAt } from "../../../src/tui/ink/screen.js";
 import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { ShellSurface } from "../../../src/tui/workbench/surfaces/ShellSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
@@ -52,6 +61,8 @@ describe("ShellSurface", () => {
     shellHarness.deferredTaskIds = new Set();
     shellHarness.handlers = {};
     shellHarness.pendingReads = new Map();
+    shellHarness.readCounts = {};
+    shellHarness.rejectOnRead = {};
     shellHarness.tails = {};
   });
 
@@ -233,6 +244,52 @@ describe("ShellSurface", () => {
       stdout.end();
     }
   });
+
+  it("keeps the last shell tail visible when a later poll fails", async () => {
+    shellHarness.tails["shell-1"] = [
+      "current task failed",
+      "src/current-task.ts:7:1",
+    ].join("\n");
+    shellHarness.rejectOnRead["shell-1"] = 2;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "shell-1": shellTask("shell-1", "current shell", "running"),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "shell",
+              selectedShellTaskId: "shell-1",
+            },
+          }}
+        >
+          <ShellSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(screenText(stdout))).toContain("src/current-task.ts:7");
+
+      await sleep(1_200);
+
+      expect(compact(screenText(stdout))).toContain("src/current-task.ts:7");
+      expect(compact(screenText(stdout))).not.toContain("(nooutput)");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
 
 function ShellTaskSelector({
@@ -306,4 +363,21 @@ function sleep(ms = 200): Promise<void> {
 
 function compact(value: string): string {
   return value.replace(/\s+/gu, "");
+}
+
+function screenText(stdout: PassThrough): string {
+  const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
+    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let row = 0; row < screen.height; row += 1) {
+    const chars: string[] = [];
+    for (let column = 0; column < screen.width; column += 1) {
+      chars.push(cellAt(screen, column, row)?.char ?? " ");
+    }
+    rows.push(chars.join("").trimEnd());
+  }
+  return rows.join("\n");
 }

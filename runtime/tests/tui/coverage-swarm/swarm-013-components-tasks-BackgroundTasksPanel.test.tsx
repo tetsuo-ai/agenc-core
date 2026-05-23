@@ -1,6 +1,11 @@
+import { PassThrough } from 'node:stream'
+
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createRoot } from '../ink.js'
+import { getInkInstance } from '../ink/instances.js'
+import { cellAt } from '../ink/screen.js'
 import { renderToString } from '../../utils/staticRender.js'
 
 const appStateMock = vi.hoisted(() => ({
@@ -25,6 +30,13 @@ const tailFileMock = vi.hoisted(() => vi.fn())
 const getTaskOutputPathMock = vi.hoisted(() =>
   vi.fn((taskId: string) => `/tmp/${taskId}.log`),
 )
+
+type TestStdin = PassThrough & {
+  isTTY: boolean
+  ref: () => void
+  setRawMode: (mode: boolean) => void
+  unref: () => void
+}
 
 vi.mock('../state/AppState.js', () => ({
   useAppState: (selector: (state: typeof appStateMock.state) => unknown) =>
@@ -314,6 +326,50 @@ describe('BackgroundTasksPanel swarm row 013', () => {
     expect(tailFileMock).toHaveBeenCalledWith('/tmp/shell-with-result.log', 8192)
   })
 
+  it('keeps the last shell detail tail visible when a later poll fails', async () => {
+    tailFileMock
+      .mockResolvedValueOnce({
+        content: 'tail line from shell',
+        bytesTotal: 1536,
+      })
+      .mockRejectedValueOnce(new Error('tail failed'))
+    appStateMock.state = {
+      tasks: {
+        shell: makeShellTask({
+          id: 'shell-with-result',
+          command: 'node scripts/check.js',
+          kind: 'monitor',
+        }),
+      },
+    }
+    const { stdin, stdout } = createStreams()
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      const { BackgroundTasksPanel } = await import(
+        '../components/tasks/BackgroundTasksPanel.js'
+      )
+
+      root.render(<BackgroundTasksPanel initialDetailTaskId="shell-with-result" />)
+      await sleep()
+
+      expect(compact(screenText(stdout))).toContain('taillinefromshell')
+
+      await sleep(1_200)
+
+      expect(compact(screenText(stdout))).toContain('taillinefromshell')
+      expect(compact(screenText(stdout))).not.toContain('(nooutput)')
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+    }
+  })
+
   it('renders remote review progress and ignores stop input for finished tasks', async () => {
     appStateMock.state = {
       tasks: {
@@ -403,3 +459,50 @@ describe('BackgroundTasksPanel swarm row 013', () => {
     expect(output).toContain('write notes.txt')
   })
 })
+
+function createStreams(): {
+  readonly stdin: TestStdin
+  readonly stdout: PassThrough
+} {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough() as TestStdin
+
+  stdin.isTTY = true
+  stdin.ref = () => {}
+  stdin.setRawMode = () => {}
+  stdin.unref = () => {}
+  ;(stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 132
+  ;(stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 36
+  ;(stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true
+  stdout.resume()
+
+  return {
+    stdin,
+    stdout,
+  }
+}
+
+function sleep(ms = 200): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function compact(value: string): string {
+  return value.replace(/\s+/gu, '')
+}
+
+function screenText(stdout: PassThrough): string {
+  const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
+    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | undefined
+  const screen = instance?.frontFrame?.screen
+  if (!screen) return ''
+  const rows: string[] = []
+  for (let row = 0; row < screen.height; row += 1) {
+    const chars: string[] = []
+    for (let column = 0; column < screen.width; column += 1) {
+      chars.push(cellAt(screen, column, row)?.char ?? ' ')
+    }
+    rows.push(chars.join('').trimEnd())
+  }
+  return rows.join('\n')
+}

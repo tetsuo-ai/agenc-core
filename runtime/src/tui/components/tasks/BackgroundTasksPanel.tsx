@@ -499,16 +499,7 @@ export function BackgroundTasksPanel({
           },
         }));
       } catch {
-        if (cancelled) {
-          return;
-        }
-        setShellOutputTails((current) => ({
-          ...current,
-          [selectedTask.id]: {
-            content: "",
-            bytesTotal: 0,
-          },
-        }));
+        // Keep the last successful tail visible across transient read failures.
       }
     };
     void readTail();
