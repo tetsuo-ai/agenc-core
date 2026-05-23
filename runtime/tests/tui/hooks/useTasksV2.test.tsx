@@ -426,6 +426,68 @@ describe('useTasksV2', () => {
     expect(fixture.state.watchers[0]?.close).toHaveBeenCalledTimes(1)
   })
 
+  test('does not recreate timers when an in-flight fetch resolves after final unsubscribe', async () => {
+    let resolveListTasks: ((tasks: Task[]) => void) | undefined
+    fixture.listTasks.mockImplementationOnce(
+      () =>
+        new Promise<Task[]>(resolve => {
+          resolveListTasks = resolve
+        }),
+    )
+
+    const mounted = await mountUseTasksV2()
+    expect(fixture.listTasks).toHaveBeenCalledTimes(1)
+    expect(fixture.watch).toHaveBeenCalledWith('/tasks/list-a', expect.any(Function))
+
+    mounted.dispose()
+
+    expect(fixture.state.watchers[0]?.close).toHaveBeenCalledTimes(1)
+    expect(fixture.state.taskListeners).toHaveLength(0)
+    expect(activeTimers()).toHaveLength(0)
+
+    resolveListTasks?.([task('1', 'pending')])
+    await flushPromises()
+
+    expect(activeTimers()).toHaveLength(0)
+  })
+
+  test('ignores stale fetch results when a newer fetch resolves first', async () => {
+    let resolveInitialFetch: ((tasks: Task[]) => void) | undefined
+    let resolveRefreshFetch: ((tasks: Task[]) => void) | undefined
+    fixture.listTasks
+      .mockImplementationOnce(
+        () =>
+          new Promise<Task[]>(resolve => {
+            resolveInitialFetch = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<Task[]>(resolve => {
+            resolveRefreshFetch = resolve
+          }),
+      )
+
+    const mounted = await mountUseTasksV2()
+    expect(fixture.listTasks).toHaveBeenCalledTimes(1)
+
+    for (const listener of [...fixture.state.taskListeners]) {
+      listener()
+    }
+    await fireNextTimer(50)
+    expect(fixture.listTasks).toHaveBeenCalledTimes(2)
+
+    resolveRefreshFetch?.([task('new', 'pending')])
+    await flushPromises()
+
+    expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['new'])
+
+    resolveInitialFetch?.([task('old', 'completed')])
+    await flushPromises()
+
+    expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['new'])
+  })
+
   test('resets and hides completed tasks after the completion delay, then shows new work', async () => {
     fixture.state.tasksByList.set('list-a', [task('1', 'completed')])
     const mounted = await mountUseTasksV2()
