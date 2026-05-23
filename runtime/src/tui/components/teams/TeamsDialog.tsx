@@ -16,6 +16,7 @@ import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManage
 import { logForDebugging } from 'src/utils/debug.js';
 import { errorMessage } from '../../../utils/errors.js';
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js';
+import { logError } from '../../../utils/log.js';
 import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js';
 import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js';
 import { jsonStringify } from '../../../utils/slowOperations.js';
@@ -734,7 +735,11 @@ function sendModeChangeToTeammate(teammateName: string, teamName: string, target
   // Update config.json directly so UI shows the change immediately
   setMemberMode(teamName, teammateName, targetMode);
 
-  // Also send message so teammate updates their local permission context
+  sendModeChangeMailboxMessage(teammateName, teamName, targetMode);
+  logForDebugging(`[TeamsDialog] Sent mode change to ${teammateName}: ${targetMode}`);
+}
+
+function sendModeChangeMailboxMessage(teammateName: string, teamName: string, targetMode: PermissionMode): void {
   const message = createModeSetRequestMessage({
     mode: targetMode,
     from: 'team-lead'
@@ -743,8 +748,10 @@ function sendModeChangeToTeammate(teammateName: string, teamName: string, target
     from: 'team-lead',
     text: jsonStringify(message),
     timestamp: new Date().toISOString()
-  }, teamName);
-  logForDebugging(`[TeamsDialog] Sent mode change to ${teammateName}: ${targetMode}`);
+  }, teamName).catch(error => {
+    logError(error);
+    logForDebugging(`[TeamsDialog] Failed to send mode change to ${teammateName}: ${errorMessage(error)}`);
+  });
 }
 
 /**
@@ -788,15 +795,7 @@ function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, is
 
   // Send mailbox messages to each teammate
   for (const teammate of teammates) {
-    const message = createModeSetRequestMessage({
-      mode: targetMode,
-      from: 'team-lead'
-    });
-    void writeToMailbox(teammate.name, {
-      from: 'team-lead',
-      text: jsonStringify(message),
-      timestamp: new Date().toISOString()
-    }, teamName);
+    sendModeChangeMailboxMessage(teammate.name, teamName, targetMode);
   }
   logForDebugging(`[TeamsDialog] Sent mode change to all ${teammates.length} teammates: ${targetMode}`);
 }
