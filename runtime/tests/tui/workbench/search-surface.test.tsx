@@ -247,6 +247,71 @@ describe("SearchSurface", () => {
     }
   });
 
+  it("does not restore the requested search match after manual navigation during streaming", async () => {
+    searchHarness.autoFlush = false;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+              selectedSearchMatchId: "src/second.ts:9:needle()",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      call.onLines([
+        "src/first.ts:4:const needle = true",
+        "src/second.ts:9:needle()",
+        "src/third.ts:10:needle again",
+      ]);
+      await sleep();
+
+      searchHarness.handlers["surface:down"]?.();
+      searchHarness.handlers["surface:down"]?.();
+      await sleep();
+      searchHarness.handlers["surface:open"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/third.ts",
+        activeFileLine: 10,
+      });
+
+      call.onLines(["src/fourth.ts:11:needle later"]);
+      await sleep(50);
+      searchHarness.handlers["surface:open"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/third.ts",
+        activeFileLine: 10,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("ignores line batches from an aborted search stream", async () => {
     searchHarness.autoFlush = false;
     let setSearchQuery: ((query: string) => void) | null = null;

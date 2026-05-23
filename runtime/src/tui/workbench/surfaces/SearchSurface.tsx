@@ -21,11 +21,13 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const appliedSelectedMatchIdRef = useRef<string | null>(null);
   const query = workbench.searchQuery;
   const selectedMatchId = workbench.selectedSearchMatchId;
 
   useEffect(() => {
     abortRef.current?.abort();
+    appliedSelectedMatchIdRef.current = null;
     setSelected(0);
     setMatches([]);
     if (!query.trim()) {
@@ -71,9 +73,16 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
   }, [query]);
 
   useEffect(() => {
-    if (!selectedMatchId) return;
+    if (!selectedMatchId) {
+      appliedSelectedMatchIdRef.current = null;
+      return;
+    }
+    if (appliedSelectedMatchIdRef.current === selectedMatchId) return;
     const index = matches.findIndex((match) => match.id === selectedMatchId);
-    if (index >= 0) setSelected(index);
+    if (index >= 0) {
+      appliedSelectedMatchIdRef.current = selectedMatchId;
+      setSelected(index);
+    }
   }, [matches, selectedMatchId]);
 
   const selectedIndex = clampSurfaceSelection(selected, matches.length);

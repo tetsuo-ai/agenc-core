@@ -288,12 +288,20 @@ describe("workbenchReducer", () => {
       type: "openSearch",
       query: "other",
     });
+    const explicitClear = workbenchReducer(first, {
+      type: "openSearch",
+      selectedMatchId: null,
+    });
     const reopened = workbenchReducer(second, {
       type: "openSearch",
     });
 
     expect(second).toMatchObject({
       searchQuery: "other",
+      selectedSearchMatchId: null,
+    });
+    expect(explicitClear).toMatchObject({
+      searchQuery: "needle",
       selectedSearchMatchId: null,
     });
     expect(reopened).toMatchObject({
