@@ -10,8 +10,16 @@ const manager = vi.hoisted(() => ({
   sendRequest: vi.fn(),
 }));
 
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}));
+
 vi.mock("../../../src/services/lsp/manager.js", () => ({
   getLspServerManager: () => manager,
+}));
+
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: logMock.logError,
 }));
 
 import {
@@ -27,6 +35,7 @@ import {
 
 beforeEach(() => {
   for (const fn of Object.values(manager)) fn.mockReset();
+  logMock.logError.mockReset();
 });
 
 describe("buffer LSP helpers", () => {
@@ -69,6 +78,17 @@ describe("buffer LSP helpers", () => {
     expect(manager.changeFile).toHaveBeenCalledWith("/tmp/example.ts", "const value = 2;\n");
     expect(manager.saveFile).toHaveBeenCalledWith("/tmp/example.ts");
     expect(manager.closeFile).toHaveBeenCalledWith("/tmp/example.ts");
+  });
+
+  it("logs best-effort lifecycle notification failures", async () => {
+    const error = new Error("lsp open failed");
+    manager.openFile.mockRejectedValueOnce(error);
+
+    notifyBufferLspOpened("/tmp/example.ts", "const value = 1;\n");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(logMock.logError).toHaveBeenCalledWith(error);
   });
 
   it("requests hover and definition with file URIs", async () => {
