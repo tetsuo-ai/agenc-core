@@ -254,8 +254,7 @@ export class WorkbenchBufferStore {
       return false;
     }
 
-    await this.#load(file.absolutePath, line, true, file.filePath);
-    return true;
+    return this.#load(file.absolutePath, line, true, file.filePath);
   }
 
   insert(text: string): void {
@@ -376,8 +375,7 @@ export class WorkbenchBufferStore {
     const position = this.#lspPosition(document);
     const target = await requestBufferDefinition(file.absolutePath, position).catch(() => null);
     if (!target || this.#file !== file || this.#document !== document) return false;
-    await this.#load(target.path, target.line, false, displayPathForAbsolute(target.path));
-    return true;
+    return this.#load(target.path, target.line, false, displayPathForAbsolute(target.path));
   }
 
   #handleVimCommandLineInput(input: string, key: Key, onCommand?: BufferVimCommandHandler): boolean {
@@ -742,19 +740,20 @@ export class WorkbenchBufferStore {
     line: number,
     allowDirtyReplace: boolean,
     displayPath = filePath,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const absolutePath = resolve(getCwd(), filePath);
     if (this.#file?.absolutePath === absolutePath && !allowDirtyReplace) {
       if (this.#document) {
         this.#document = moveBufferCursorToLine(this.#document, line);
         this.#ensureCursorVisible();
         this.#emit();
+        return true;
       }
-      return;
+      return false;
     }
     if (this.#isDirty() && !allowDirtyReplace) {
       this.#setProblem("conflict", "Unsaved edits. Save, revert, or close-discard before opening another file.", "disk");
-      return;
+      return false;
     }
 
     const generation = ++this.#openGeneration;
@@ -773,7 +772,7 @@ export class WorkbenchBufferStore {
       const snapshot = await readBufferFileSnapshot(absolutePath, {
         displayPath,
       });
-      if (generation !== this.#openGeneration) return;
+      if (generation !== this.#openGeneration) return false;
       if (previousPath && previousPath !== snapshot.absolutePath) notifyBufferLspClosed(previousPath);
       this.#file = snapshot;
       this.#document = createBufferDocument(snapshot.content, line);
@@ -785,12 +784,14 @@ export class WorkbenchBufferStore {
       this.#ensureCursorVisible();
       notifyBufferLspOpened(snapshot.absolutePath, snapshot.content);
       this.#emit();
+      return true;
     } catch (error) {
-      if (generation !== this.#openGeneration) return;
+      if (generation !== this.#openGeneration) return false;
       this.#status = "error";
       this.#error = errorMessage(error);
       this.#conflictKind = null;
       this.#emit();
+      return false;
     }
   }
 
