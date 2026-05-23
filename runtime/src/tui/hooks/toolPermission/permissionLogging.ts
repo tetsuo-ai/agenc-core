@@ -10,6 +10,7 @@ import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metada
 import { getCodeEditToolDecisionCounter } from '../../../bootstrap/state.js'
 import type { Tool as ToolType, ToolUseContext } from '../../../tools/Tool.js'
 import { getLanguageName } from '../../../utils/cliHighlight.js'
+import { logError } from '../../../utils/log.js'
 import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'
 import { logOTelEvent } from '../../../utils/telemetry/events.js'
 import type {
@@ -213,7 +214,14 @@ function logPermissionDecision(
   // Track code editing tool metrics
   if (isCodeEditingTool(tool.name)) {
     void buildCodeEditToolAttributes(tool, input, decision, sourceString).then(
-      attributes => getCodeEditToolDecisionCounter()?.add(1, attributes),
+      attributes => {
+        try {
+          getCodeEditToolDecisionCounter()?.add(1, attributes)
+        } catch (error) {
+          logError(error)
+        }
+      },
+      logError,
     )
   }
 
