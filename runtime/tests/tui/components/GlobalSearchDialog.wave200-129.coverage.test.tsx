@@ -33,6 +33,7 @@ type CapturedPickerProps = {
 const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
   logEvent: vi.fn(),
+  logError: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readFileInRange: vi.fn(),
@@ -68,6 +69,10 @@ vi.mock('../../utils/readFileInRange', () => ({
   readFileInRange: harness.readFileInRange,
 }))
 
+vi.mock('../../utils/log', () => ({
+  logError: harness.logError,
+}))
+
 vi.mock('../../utils/ripgrep', () => ({
   ripGrepStream: harness.ripGrepStream,
 }))
@@ -93,6 +98,7 @@ function resetHarness() {
   harness.pickerProps = undefined
   harness.registerOverlay.mockClear()
   harness.logEvent.mockClear()
+  harness.logError.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(true)
   harness.readFileInRange.mockReset()
@@ -222,7 +228,8 @@ describe('GlobalSearchDialog wave 200 worker 129 coverage', () => {
       )
       let searchSignal: AbortSignal | undefined
 
-      harness.readFileInRange.mockRejectedValue(new Error('preview failed'))
+      const previewError = new Error('preview failed')
+      harness.readFileInRange.mockRejectedValue(previewError)
       harness.ripGrepStream.mockImplementation(
         async (
           args: string[],
@@ -293,6 +300,7 @@ describe('GlobalSearchDialog wave 200 worker 129 coverage', () => {
         'Global search did not render the preview failure fallback',
       )
       expect(previewOutput).toContain('src/file-0.ts:1')
+      expect(harness.logError).toHaveBeenCalledWith(previewError)
 
       pickerProps().onQueryChange('   ')
       await waitFor(

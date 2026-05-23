@@ -144,10 +144,11 @@ export function GlobalSearchDialog(t0) {
           line: focused.line,
           content: r.content
         });
-      }).catch(() => {
+      }).catch(error => {
         if (controller.signal.aborted) {
           return;
         }
+        logError(error);
         setPreview({
           file: focused.file,
           line: focused.line,
