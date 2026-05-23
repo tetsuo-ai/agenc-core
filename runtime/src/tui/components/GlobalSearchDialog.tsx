@@ -314,13 +314,13 @@ export function GlobalSearchDialog(t0) {
 function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearching_0) {
   const cwd = getCwd();
   let collected = 0;
-  ripGrepStream(["-n", "--no-heading", "-i", "-m", String(MAX_MATCHES_PER_FILE), "-F", "-e", query_0], cwd, controller_1.signal, lines => {
+  ripGrepStream(["--json", "-i", "-m", String(MAX_MATCHES_PER_FILE), "-F", "-e", query_0], cwd, controller_1.signal, lines => {
     if (controller_1.signal.aborted) {
       return;
     }
     const parsed = [];
     for (const line of lines) {
-      const m_1 = parseRipgrepLine(line);
+      const m_1 = parseRipgrepJsonLine(line);
       if (!m_1) {
         continue;
       }
@@ -367,6 +367,46 @@ function _temp(m) {
 }
 function matchKey(m: Match): string {
   return `${m.file}:${m.line}`;
+}
+
+function stripJsonLineTerminator(text: string): string {
+  if (text.endsWith('\r\n')) return text.slice(0, -2);
+  if (text.endsWith('\n') || text.endsWith('\r')) return text.slice(0, -1);
+  return text;
+}
+
+function parseRipgrepJsonLine(line: string): Match | null {
+  let message: unknown;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!message || typeof message !== 'object') return null;
+  const typedMessage = message as {
+    type?: unknown;
+    data?: {
+      path?: {
+        text?: unknown;
+      };
+      line_number?: unknown;
+      lines?: {
+        text?: unknown;
+      };
+    };
+  };
+  if (typedMessage.type !== 'match') return null;
+  const file = typedMessage.data?.path?.text;
+  const lineNum = Number(typedMessage.data?.line_number);
+  const text = typedMessage.data?.lines?.text;
+  if (typeof file !== 'string' || !file || !Number.isSafeInteger(lineNum) || lineNum < 1 || typeof text !== 'string') {
+    return null;
+  }
+  return {
+    file,
+    line: lineNum,
+    text: stripJsonLineTerminator(text)
+  };
 }
 
 /**
