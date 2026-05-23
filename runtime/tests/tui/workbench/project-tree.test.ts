@@ -170,6 +170,32 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("keeps ignored-only fallback directories out of non-git workspaces", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-ignored-only-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "node_modules", "ignored"), { recursive: true });
+      await writeFile(join(repo, "node_modules", "ignored", "index.js"), "ignored\n", "utf8");
+
+      await store.refresh();
+
+      const paths = store.getSnapshot().rows.map((row) => row.path);
+
+      expect(paths).not.toContain("node_modules");
+      expect(paths).not.toContain("node_modules/ignored");
+      expect(paths).not.toContain("node_modules/ignored/index.js");
+      expect(store.getSnapshot()).toMatchObject({
+        cursorPath: null,
+        error: null,
+        loading: false,
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the recursive scanner when git has no indexed paths", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-empty-git-"));
     const store = new ProjectTreeStore(repo, 0);
