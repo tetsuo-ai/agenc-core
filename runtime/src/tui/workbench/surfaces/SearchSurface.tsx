@@ -168,7 +168,7 @@ export function SearchSurfaceView({
           ),
         )}
       </Box>
-      {selectedMatch ? <Text dimColor wrap="truncate-end">enter edit  @ attach  A attach visible: {selectedMatch.file}:{selectedMatch.line}</Text> : null}
+      {selectedMatch ? <Text dimColor wrap="truncate-end">enter edit  o keep focus  @ attach  A attach visible: {selectedMatch.file}:{selectedMatch.line}</Text> : null}
     </Box>
   );
 }
