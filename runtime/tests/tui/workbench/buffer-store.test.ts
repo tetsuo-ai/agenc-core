@@ -336,6 +336,24 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("omega\n");
   });
 
+  it("lets normal-mode enter fall through to the buffer keybinding", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+    expect(store.handleVimInput("", key({ return: true }), 80)).toBe(false);
+    expect(store.getText()).toBe("alpha\nomega\n");
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+
+    store.handleVimInput("i", key(), 80);
+    expect(store.handleVimInput("", key({ return: true }), 80)).toBe(true);
+    expect(store.getText()).toBe("\nalpha\nomega\n");
+    expect(store.getSnapshot().vimMode).toBe("INSERT");
+  });
+
   it("supports visual selection yank, delete, change, and paste", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "abcdef\nomega\n", "utf8");

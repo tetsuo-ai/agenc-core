@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   registerPendingLSPDiagnostic,
@@ -356,6 +356,56 @@ describe("BufferSurface", () => {
       expect(getWorkbenchBufferStore().getText()).toBe("qconst value = 1;\n");
       expect(getWorkbenchBufferStore().getSnapshot().vimMode).toBe("INSERT");
       expect(leaked).toEqual([]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("opens the external editor when enter is pressed in normal mode", async () => {
+    await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface focused={true} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const store = getWorkbenchBufferStore();
+      expect(store.getSnapshot().vimMode).toBe("NORMAL");
+      const openExternalEditor = vi
+        .spyOn(store, "openExternalEditor")
+        .mockResolvedValue(true);
+
+      stdin.write("\r");
+      await sleep();
+
+      expect(openExternalEditor).toHaveBeenCalledTimes(1);
+      expect(store.getText()).toBe("const value = 1;\n");
+      expect(store.getSnapshot().dirty).toBe(false);
     } finally {
       root.unmount();
       stdin.end();

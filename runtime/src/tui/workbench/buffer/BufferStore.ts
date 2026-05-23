@@ -316,9 +316,13 @@ export class WorkbenchBufferStore {
       return true;
     }
 
+    if (key.return || input === "\r" || input === "\n") {
+      return false;
+    }
+
     const vimInput = normalizeVimNormalInput(input, key);
     if (vimInput === null) {
-      return key.return || key.tab || input.length > 0;
+      return key.tab || input.length > 0;
     }
 
     const session = this.#createVimEditSession(columns);
