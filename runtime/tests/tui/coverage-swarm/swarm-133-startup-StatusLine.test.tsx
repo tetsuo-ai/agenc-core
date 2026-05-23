@@ -420,6 +420,34 @@ describe('StatusLine coverage swarm row 133', () => {
     })
   })
 
+  test('cancels the mount debounce when the initial status update starts', async () => {
+    const messages = [{ uuid: 'assistant-before' }]
+    const { stdin, stdout } = createStreams()
+    const root = await createRoot({
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+    })
+
+    try {
+      root.render(
+        <StatusLine
+          messagesRef={{ current: messages }}
+          lastAssistantMessageId="assistant-before"
+        />,
+      )
+      await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
+      await new Promise(resolve => setTimeout(resolve, 350))
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+    }
+
+    expect(harness.executeStatusLineCommand).toHaveBeenCalledTimes(1)
+    expect(harness.executeStatusLineCommand.mock.calls[0]![3]).toBe(true)
+  })
+
   test('reports trust-blocked status lines and swallows command failures', async () => {
     harness.appState = {
       toolPermissionContext: {
