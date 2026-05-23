@@ -104,6 +104,28 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().dirty).toBe(false);
   });
 
+  it("ignores stale file loads after the buffer is closed", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    const open = runWithCwdOverride(dir, () => store.open("target.txt"));
+    expect(store.getSnapshot().status).toBe("loading");
+
+    expect(store.close()).toBe(true);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "idle",
+      filePath: null,
+    });
+
+    await open;
+
+    expect(store.getSnapshot()).toMatchObject({
+      status: "idle",
+      filePath: null,
+    });
+    expect(store.getText()).toBe("");
+  });
+
   it("opens the current file in the external editor and reloads after it exits", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\nomega\n", "utf8");
