@@ -62,8 +62,10 @@ export function DiffSurface({
         if (selectedFile) dispatch(attachDiffHunkCommand({ path: selectedFile.path, label: `${selectedFile.path} diff` }));
       },
       "surface:accept": () => {
-        if (pendingApproval && approvalRisk !== "destructive") {
-          pendingApproval.resolve(APPROVED);
+        if (pendingApproval) {
+          if (approvalRisk !== "destructive") {
+            pendingApproval.resolve(APPROVED);
+          }
           return;
         }
         if (selectedFile) setDecisions((prev) => ({ ...prev, [selectedFile.path]: "accept" }));
