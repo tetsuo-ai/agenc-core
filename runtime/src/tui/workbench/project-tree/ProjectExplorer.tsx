@@ -10,6 +10,7 @@ import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContex
 import { useAppState } from "../../state/AppState.js";
 import TextInput from "../../components/TextInput.js";
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
+import { logError } from "../../../utils/log.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
@@ -96,9 +97,16 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
     const action = fileAction;
     if (!action || action.kind === "delete" || action.busy) return;
     setFileAction({ ...action, value, busy: true, error: null });
-    const result = action.kind === "create"
-      ? await store.createFile(value)
-      : await store.renamePath(action.path, value);
+    let result;
+    try {
+      result = action.kind === "create"
+        ? await store.createFile(value)
+        : await store.renamePath(action.path, value);
+    } catch (error) {
+      logError(error);
+      setFileAction({ ...action, value, busy: false, error: fileActionFailureMessage(action, value, error) });
+      return;
+    }
     if (!result.ok) {
       setFileAction({ ...action, value, busy: false, error: result.error });
       return;
@@ -115,7 +123,14 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
     const action = fileAction;
     if (!action || action.kind !== "delete" || action.busy) return;
     setFileAction({ ...action, busy: true, error: null });
-    const result = await store.deletePath(action.path);
+    let result;
+    try {
+      result = await store.deletePath(action.path);
+    } catch (error) {
+      logError(error);
+      setFileAction({ ...action, busy: false, error: fileActionFailureMessage(action, action.path, error) });
+      return;
+    }
     if (!result.ok) {
       setFileAction({ ...action, busy: false, error: result.error });
       return;
@@ -424,4 +439,11 @@ function defaultCreateFilePath(row: ProjectTreeRow | null): string {
     return slash >= 0 ? `${row.path.slice(0, slash)}/` : "";
   }
   return "";
+}
+
+function fileActionFailureMessage(action, value: string, error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (action.kind === "create") return `Cannot create ${value}: ${detail}`;
+  if (action.kind === "rename") return `Cannot rename ${action.path}: ${detail}`;
+  return `Cannot delete ${action.path}: ${detail}`;
 }
