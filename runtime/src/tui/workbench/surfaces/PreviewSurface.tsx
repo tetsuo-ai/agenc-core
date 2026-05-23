@@ -20,6 +20,7 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
   const [startLine, setStartLine] = useState(() => Math.max(0, (workbench.activeFileLine ?? 1) - 1));
+  const [totalLines, setTotalLines] = useState<number | null>(null);
   const [content, setContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [gitState, setGitState] = useState<string | null>(null);
@@ -41,6 +42,7 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
 
   useEffect(() => {
     setStartLine(Math.max(0, (workbench.activeFileLine ?? 1) - 1));
+    setTotalLines(null);
   }, [workbench.activeFileLine, workbench.activeFilePath]);
 
   useEffect(() => {
@@ -48,18 +50,27 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
       setContent("");
       setError(null);
       setGitState(null);
+      setTotalLines(null);
       return;
     }
     const controller = new AbortController();
     readFileInRange(absolutePath, startLine, PAGE_SIZE, undefined, controller.signal)
       .then((result) => {
         if (controller.signal.aborted) return;
+        const nextTotalLines = Math.max(0, result.totalLines ?? result.lineCount ?? 0);
+        const maxStartLine = maxPreviewStartLine(nextTotalLines);
+        setTotalLines(nextTotalLines);
+        if (startLine > maxStartLine) {
+          setStartLine(maxStartLine);
+          return;
+        }
         setContent(result.content);
         setError(null);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         setContent("");
+        setTotalLines(null);
         setError(err instanceof Error ? err.message : String(err));
       });
     return () => controller.abort();
@@ -87,9 +98,9 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
   useKeybindings(
     {
       "surface:up": () => setStartLine((value) => Math.max(0, value - 1)),
-      "surface:down": () => setStartLine((value) => value + 1),
+      "surface:down": () => setStartLine((value) => clampPreviewStartLine(value + 1, totalLines)),
       "surface:pageUp": () => setStartLine((value) => Math.max(0, value - 20)),
-      "surface:pageDown": () => setStartLine((value) => value + 20),
+      "surface:pageDown": () => setStartLine((value) => clampPreviewStartLine(value + 20, totalLines)),
       "surface:top": () => setStartLine(0),
       "surface:attach": () => {
         if (activePath) dispatch(attachFileRangeCommand(activePath, startLine + 1, startLine + Math.max(1, lines.length)));
@@ -136,6 +147,17 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
       </Box>
     </Box>
   );
+}
+
+function maxPreviewStartLine(totalLines: number): number {
+  return Math.max(0, totalLines - 1);
+}
+
+function clampPreviewStartLine(startLine: number, totalLines: number | null): number {
+  const nextStartLine = Math.max(0, Math.floor(startLine));
+  return totalLines === null
+    ? nextStartLine
+    : Math.min(nextStartLine, maxPreviewStartLine(totalLines));
 }
 
 export function SurfaceHeader({
