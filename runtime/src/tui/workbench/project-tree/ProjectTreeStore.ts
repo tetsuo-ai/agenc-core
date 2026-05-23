@@ -342,7 +342,7 @@ function selectableRows(rows: readonly ProjectTreeRow[]): readonly ProjectTreeRo
 
 function visibleCursorPath(cursorPath: string | null, rows: readonly ProjectTreeRow[]): string | null {
   const selectable = selectableRows(rows);
-  if (selectable.length === 0) return cursorPath;
+  if (selectable.length === 0) return null;
   if (cursorPath && selectable.some((row) => row.path === cursorPath)) return cursorPath;
 
   let parent = cursorPath ? parentPath(cursorPath) : null;
