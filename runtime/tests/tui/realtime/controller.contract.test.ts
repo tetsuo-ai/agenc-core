@@ -614,13 +614,14 @@ describe("AgenC realtime TUI controller", () => {
     },
   );
 
-  test("enqueues realtime output audio deltas into the audio player", () => {
+  test("enqueues realtime output audio deltas into the audio player", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
     const controls = createRealtimeTuiControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
       audioPlayer,
     });
     const audio = {
@@ -629,6 +630,11 @@ describe("AgenC realtime TUI controller", () => {
       numChannels: 1,
     };
 
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_1" },
+    });
     controls.handleTranscriptEvent({
       type: "realtime_output_audio_delta",
       payload: { audio },
@@ -642,6 +648,62 @@ describe("AgenC realtime TUI controller", () => {
     expect(audioPlayer.enqueued).toEqual([
       { ...audio, samplesPerChannel: null, itemId: null },
     ]);
+  });
+
+  test("ignores stale media and transcript notifications after stop", async () => {
+    const client = createClient();
+    const audioPlayer = createAudioPlayer();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
+      audioPlayer,
+    });
+    const audio = {
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+    };
+
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_1" },
+    });
+    controls.handleTranscriptEvent({
+      type: "realtime_output_audio_delta",
+      payload: { audio },
+    });
+    await controls.stop();
+
+    controls.handleTranscriptEvent({
+      type: "realtime_output_audio_delta",
+      payload: { audio: { ...audio, data: "BBBB" } },
+    });
+    controls.handleTranscriptEvent({
+      type: "realtime_transcript_delta",
+      payload: { role: "assistant", delta: "stale" },
+    });
+    controls.handleTranscriptEvent({
+      type: "realtime_item_added",
+      payload: { item: { type: "message", id: "stale_item" } },
+    });
+    controls.handleTranscriptEvent({
+      type: "realtime_local_audio_level",
+      payload: { peak: 32000 },
+    });
+
+    expect(audioPlayer.enqueued).toEqual([
+      { ...audio, samplesPerChannel: null, itemId: null },
+    ]);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      localAudioLevel: 0,
+      lastTranscript: null,
+      lastItemSummary: null,
+      closedBanner: "Realtime closed: requested",
+    });
   });
 
   test.each([

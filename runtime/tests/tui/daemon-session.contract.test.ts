@@ -693,6 +693,7 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
       realtimeThreadId: "agent_1",
       realtimeAudioPlayer,
+      realtimeAudioCaptureFactory: async () => ({ stop: vi.fn() }),
     });
     const received: JsonObject[] = [];
     const unsubscribe = session.subscribeToEvents((event) => {
@@ -708,6 +709,7 @@ describe("AgenC TUI daemon session adapter", () => {
         version: "v2",
       },
     });
+    await session.realtime.start({ transport: "websocket" });
     client.emitNotification({
       jsonrpc: JSON_RPC_VERSION,
       method: "thread/realtime/started",

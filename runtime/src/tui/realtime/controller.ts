@@ -271,17 +271,20 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
         break;
       case "realtime_sdp":
+        if (!this.#canApplyRealtimeSessionEvent()) return;
         if (typeof payload.sdp === "string") {
           void this.#applyProviderSdp(payload.sdp);
         }
         break;
       case "realtime_output_audio_delta":
+        if (!this.#canApplyRealtimeSessionEvent()) return;
         if (isJsonObject(payload.audio)) {
           const audio = toRealtimeAudioChunk(payload.audio);
           if (audio !== null) this.#audioPlayer.enqueue(audio);
         }
         break;
       case "realtime_transcript_delta":
+        if (!this.#canApplyRealtimeSessionEvent()) return;
         if (
           typeof payload.role === "string" &&
           typeof payload.delta === "string"
@@ -294,6 +297,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         }
         break;
       case "realtime_transcript_done":
+        if (!this.#canApplyRealtimeSessionEvent()) return;
         if (
           typeof payload.role === "string" &&
           typeof payload.text === "string"
@@ -306,6 +310,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         }
         break;
       case "realtime_item_added":
+        if (!this.#canApplyRealtimeSessionEvent()) return;
         this.#dispatch({ type: "item_added", item: payload.item ?? null });
         break;
       case "realtime_error":
@@ -330,6 +335,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
         break;
       case "realtime_local_audio_level":
+        if (!this.#canApplyRealtimeSessionEvent()) return;
         if (typeof payload.peak === "number") {
           this.#dispatch({ type: "local_audio_level", peak: payload.peak });
         }
@@ -410,6 +416,13 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
 
   #canAppendRealtimeInput(): boolean {
     return this.#state.phase === "starting" || this.#state.phase === "active";
+  }
+
+  #canApplyRealtimeSessionEvent(): boolean {
+    return (
+      !this.#state.requestedClose &&
+      (this.#state.phase === "starting" || this.#state.phase === "active")
+    );
   }
 
   async #handleRealtimeInputFailure(

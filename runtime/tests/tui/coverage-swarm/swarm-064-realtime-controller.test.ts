@@ -234,16 +234,22 @@ describe("AgenC realtime TUI controller coverage swarm row 064", () => {
     });
   });
 
-  test("filters transcript payloads and preserves complete output audio metadata", () => {
+  test("filters transcript payloads and preserves complete output audio metadata", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
     const controls = createRealtimeTuiControls({
       threadId: "thread-064",
       client,
       emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
       audioPlayer,
     });
 
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_064" },
+    });
     controls.handleTranscriptEvent({
       type: "realtime_sdp",
       payload: { sdp: "ignored-without-webrtc" },
