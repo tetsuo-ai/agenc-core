@@ -95,6 +95,7 @@ import {
   type PlanFileContext,
 } from "../planning/plan-files.js";
 import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
+import { canonicalModelToolName } from "./model-tool-aliases.js";
 import {
   buildToolRuntimeAttemptContext,
   buildToolRuntimeCallContext,
@@ -669,9 +670,14 @@ export class ToolRouter {
     toolCall: LLMToolCall,
     opts: LiveToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
-    const routed = toolCallFromLLMToolCall(toolCall, { session: opts.session });
+    const toolName = canonicalModelToolName(toolCall.name);
+    const routedToolCall =
+      toolName === toolCall.name ? toolCall : { ...toolCall, name: toolName };
+    const routed = toolCallFromLLMToolCall(routedToolCall, {
+      session: opts.session,
+    });
 
-    const spec = this.findSpec(toolCall.name);
+    const spec = this.findSpec(toolName);
     if (!spec) {
       return {
         content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
@@ -684,7 +690,7 @@ export class ToolRouter {
       turn: opts.turn,
       tracker: opts.tracker,
       callId: toolCall.id,
-      toolName: parseToolName(toolCall.name),
+      toolName: parseToolName(toolName),
       payload: routed.payload,
       source: opts.source ?? "direct",
     };

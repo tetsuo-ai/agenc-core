@@ -65,6 +65,46 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
+  test("dispatchModelToolCall routes legacy Read calls to FileRead", async () => {
+    const execute = vi.fn(async (args: Record<string, unknown>) => ({
+      content: `read ${String(args.file_path)}`,
+    }));
+    const router = new ToolRouter([
+      {
+        tool: { ...readTool, execute },
+        supportsParallelToolCalls: true,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-read-alias",
+        name: "Read",
+        arguments: '{"file_path":"main.c"}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: { subId: "turn-read-alias" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toBe("read main.c");
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ file_path: "main.c" }),
+    );
+  });
+
   test("findSpec rejects MCP-serverId entry for plain (no-namespace) lookup (router behavior)", () => {
     // A spec registered with `serverId` (MCP umbrella) must not
     // resolve when the request has no namespace. This prevents a

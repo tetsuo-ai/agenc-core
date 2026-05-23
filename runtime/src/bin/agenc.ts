@@ -54,6 +54,7 @@ import {
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { runTurn } from "../session/run-turn.js";
+import { seedFileMentionSessionReads } from "../session/file-mention-session-reads.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   SchemaMismatchError,
@@ -969,6 +970,10 @@ async function expandPromptFileMentions(params: {
   if (expansion.attachments.length === 0) {
     return { input: params.input };
   }
+  await seedFileMentionSessionReads(
+    params.session.conversationId,
+    expansion.attachments,
+  );
   return {
     input: expansion.prompt,
     displayInput: params.input,

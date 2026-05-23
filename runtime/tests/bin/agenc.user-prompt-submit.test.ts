@@ -13,6 +13,11 @@ import {
 import { defaultConfig } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
+import {
+  canonicalizePath,
+  clearSessionReadState,
+  getSessionReadSnapshot,
+} from "../tools/system/filesystem.js";
 
 function fakeSession(cwd: string) {
   let installed:
@@ -226,7 +231,9 @@ describe("TUI session UserPromptSubmit hooks", () => {
 
   it("runs live submit hooks before file mention expansion", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agenc-prompt-hooks-cwd-"));
-    await writeFile(join(cwd, "note.txt"), "file mention body\n", "utf8");
+    const notePath = join(cwd, "note.txt");
+    await writeFile(notePath, "file mention body\n", "utf8");
+    const noteCanonicalPath = await canonicalizePath(notePath);
     const { session } = fakeSession(cwd);
     const hookPrompts: unknown[] = [];
     const turnInputs: unknown[] = [];
@@ -274,6 +281,11 @@ describe("TUI session UserPromptSubmit hooks", () => {
     expect(String(turnInputs[0])).toContain(
       "<hook_additional_context>\nraw\n</hook_additional_context>",
     );
+    expect(
+      getSessionReadSnapshot(session.conversationId, noteCanonicalPath)
+        ?.rawContent,
+    ).toBe("file mention body\n");
+    clearSessionReadState(session.conversationId);
   });
 
   it("truncates oversized live submit hook context before the turn", async () => {

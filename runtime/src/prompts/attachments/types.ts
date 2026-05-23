@@ -17,6 +17,7 @@
  */
 
 import type { DiagnosticFile } from "../../services/lsp/types.js";
+import type { FileMentionAttachment } from "../file-mentions.js";
 
 /**
  * Memory file injection from the per-file 4-phase nested traversal.
@@ -261,15 +262,7 @@ export interface AgentMentionAttachment {
  */
 export interface FileMentionContextAttachment {
   readonly kind: "file_mention";
-  readonly files: ReadonlyArray<{
-    readonly raw: string;
-    readonly path: string;
-    readonly resolved: string;
-    readonly bytes: number;
-    readonly lineCount: number;
-    readonly truncated: boolean;
-    readonly content: string;
-  }>;
+  readonly files: readonly FileMentionAttachment[];
 }
 
 /** Image content resolved from a user-authored `@path` mention. */

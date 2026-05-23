@@ -72,6 +72,7 @@ import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
+import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
 import {
   realtimeEndInstructionMessage,
   realtimeStartInstructionMessage,
@@ -2331,6 +2332,10 @@ async function tryRunSamplingRequest(
     contextWindowTokens: ctx.modelInfo.contextWindow,
   });
   if (attachments.length > 0) {
+    await seedFileMentionAttachmentSessionReads(
+      session.conversationId,
+      attachments,
+    );
     const attachmentMessages = attachmentsToMessages(attachments);
     if (attachmentMessages.length > 0) {
       state.messagesForQuery = insertContextMessagesAfterLeadingSystem(

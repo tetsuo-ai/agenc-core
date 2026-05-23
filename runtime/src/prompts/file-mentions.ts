@@ -43,10 +43,13 @@ export interface FileMentionAttachment {
   readonly raw: string;
   readonly path: string;
   readonly resolved: string;
+  readonly canonicalResolved: string;
   readonly bytes: number;
   readonly lineCount: number;
   readonly truncated: boolean;
   readonly content: string;
+  readonly rawContent: string;
+  readonly mtimeMs: number;
 }
 
 export interface FileMentionExpansion {
@@ -425,10 +428,16 @@ export async function expandFileMentions(
       raw: mention.raw,
       path: relativePromptPath(options.cwd, resolved),
       resolved,
+      canonicalResolved: realTarget,
       bytes: rawBytes,
       lineCount: limited.lineCount,
       truncated: limited.truncated,
       content: limited.content,
+      rawContent: normalized,
+      mtimeMs:
+        typeof stat.mtimeMs === "number" && Number.isFinite(stat.mtimeMs)
+          ? stat.mtimeMs
+          : Date.now(),
     });
   }
 

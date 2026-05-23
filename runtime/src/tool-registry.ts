@@ -72,6 +72,7 @@ import {
   resolvePerToolConfig,
   toolConfigAllowsTool,
 } from "./tools/config.js";
+import { canonicalModelToolName } from "./tools/model-tool-aliases.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -889,7 +890,10 @@ export function buildToolRegistry(
     },
     async dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult> {
       const router = buildRouter();
-      const spec = router.findSpec(toolCall.name);
+      const toolName = canonicalModelToolName(toolCall.name);
+      const routedToolCall =
+        toolName === toolCall.name ? toolCall : { ...toolCall, name: toolName };
+      const spec = router.findSpec(toolName);
       if (!spec) {
         return {
           content: safeStringify({
@@ -900,7 +904,7 @@ export function buildToolRegistry(
       }
       try {
         const parseResult = parseToolCallArguments(
-          toolCall,
+          routedToolCall,
           builtinSurface.stringArgumentFields,
         );
         if (!parseResult.ok) {

@@ -1,6 +1,8 @@
 import {
   mkdtempSync,
   mkdirSync,
+  realpathSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -69,6 +71,15 @@ describe("file @mentions", () => {
 
     expect(expanded.rejected).toEqual([]);
     expect(expanded.attachments).toHaveLength(1);
+    expect(expanded.attachments[0]?.canonicalResolved).toBe(
+      realpathSync(join(cwd, "src", "app.ts")),
+    );
+    expect(expanded.attachments[0]?.rawContent).toBe(
+      "export const answer = 42;\n",
+    );
+    expect(expanded.attachments[0]?.mtimeMs).toBe(
+      statSync(join(cwd, "src", "app.ts")).mtimeMs,
+    );
     expect(expanded.prompt).toContain("<attached_files>");
     expect(expanded.prompt).toContain('path="src/app.ts"');
     expect(expanded.prompt).toContain("export const answer = 42;");
