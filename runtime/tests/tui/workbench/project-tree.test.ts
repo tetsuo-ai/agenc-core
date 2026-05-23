@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildProjectTreeRows } from "../../../src/tui/workbench/project-tree/buildTree.js";
-import { parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
+import { collectGitStatus, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
 import { ProjectTreeStore } from "../../../src/tui/workbench/project-tree/ProjectTreeStore.js";
 
 describe("project tree helpers", () => {
@@ -103,6 +103,23 @@ describe("project tree helpers", () => {
     expect(parsed.get("src/new.ts")).toBe("untracked");
     expect(parsed.get("src/conflict.ts")).toBe("unmerged");
     expect(parsed.get("src/new-name.ts")).toBe("renamed");
+  });
+
+  it("collects git status for paths that git would quote by default", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-git-status-"));
+    const fileName = `${Buffer.from([0xc3, 0xa9]).toString("utf8")}.ts`;
+
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await writeFile(join(repo, fileName), "accented\n", "utf8");
+
+      const status = await collectGitStatus(repo);
+
+      expect(status.get(fileName)).toBe("untracked");
+      expect([...status.keys()]).not.toContain("\"\\303\\251.ts\"");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it("does not start filesystem or git refresh work in the constructor", () => {

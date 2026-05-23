@@ -21,7 +21,7 @@ export function collectGitStatus(cwd: string): Promise<Map<string, ProjectTreeGi
   return new Promise((resolve) => {
     execFile(
       "git",
-      ["status", "--porcelain=v1", "--untracked-files=all"],
+      ["-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=all"],
       { cwd, encoding: "utf8", timeout: 5_000 },
       (error, stdout) => {
         if (error) {
