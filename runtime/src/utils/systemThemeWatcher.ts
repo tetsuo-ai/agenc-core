@@ -4,6 +4,7 @@ import {
   themeFromOscColor,
   type SystemTheme,
 } from './systemTheme.js'
+import { logError } from './log.js'
 
 const OSC_BACKGROUND_COLOR = 11
 const POLL_INTERVAL_MS = 2_000
@@ -20,6 +21,7 @@ export function watchSystemTheme(
     inFlight = true
     try {
       const responsePromise = querier.send(oscColor(OSC_BACKGROUND_COLOR))
+      void responsePromise.catch(() => undefined)
       await querier.flush()
       const response = await responsePromise
       if (cancelled || !response) return
@@ -27,6 +29,8 @@ export function watchSystemTheme(
       if (!theme) return
       setCachedSystemTheme(theme)
       onThemeChange(theme)
+    } catch (error) {
+      logError(error)
     } finally {
       inFlight = false
     }
