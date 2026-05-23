@@ -9,6 +9,7 @@ import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContex
 import { useAppState } from "../../state/AppState.js";
 import { attachTaskErrorCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import { resolveWorkbenchShellTask } from "../tasks/shellTasks.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { parseVitestFailures } from "./outputParsers.js";
 import { clampSurfaceSelection } from "./selection.js";
@@ -20,8 +21,7 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   const tasks = useAppState((state) => state.tasks);
   const dispatch = useWorkbenchDispatch();
   const task = useMemo(() => {
-    if (workbench.selectedShellTaskId && tasks[workbench.selectedShellTaskId]) return tasks[workbench.selectedShellTaskId];
-    return Object.values(tasks).find((item: any) => item.type === "local_bash") ?? null;
+    return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
   const [tail, setTail] = useState("");
   const [selected, setSelected] = useState(0);
