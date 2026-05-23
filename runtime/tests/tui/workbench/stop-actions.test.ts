@@ -9,6 +9,22 @@ describe("workbench task stop actions", () => {
     expect(workbenchStopActionForTask({ type: "in_process_teammate", status: "running" })).toBe("teammate");
   });
 
+  it("matches type-specific stop helper state support", () => {
+    expect(workbenchStopActionForTask({ type: "local_bash", status: "pending" })).toBeNull();
+    expect(workbenchStopActionForTask({ type: "local_agent", status: "pending" })).toBe("local-agent");
+    expect(workbenchStopActionForTask({ type: "in_process_teammate", status: "pending" })).toBeNull();
+    expect(workbenchStopActionForTask({
+      type: "in_process_teammate",
+      status: "running",
+      shutdownRequested: true,
+    })).toBeNull();
+    expect(workbenchStopActionForTask({
+      type: "in_process_teammate",
+      status: "running",
+      shutdownRequested: false,
+    })).toBe("teammate");
+  });
+
   it("does not expose fake stop behavior for terminal or remote tasks", () => {
     expect(workbenchStopActionForTask({ type: "local_agent", status: "completed" })).toBeNull();
     expect(workbenchStopActionForTask({ type: "remote_agent", status: "running" })).toBe("remote-unavailable");
