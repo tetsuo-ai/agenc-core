@@ -126,6 +126,10 @@ export function MessageSelector({
     let cancelled = false;
     void fileHistoryGetDiffStats(fileHistory, preselectedMessage.uuid).then(stats => {
       if (!cancelled) setDiffStatsForRestore(stats);
+    }).catch(error_0 => {
+      if (cancelled) return;
+      logError(error_0 as Error);
+      setDiffStatsForRestore(undefined);
     });
     return () => {
       cancelled = true;
@@ -218,7 +222,13 @@ export function MessageSelector({
       await restoreConversationDirectly(message_0);
       return;
     }
-    const diffStats = await fileHistoryGetDiffStats(fileHistory, message_0.uuid);
+    let diffStats;
+    try {
+      diffStats = await fileHistoryGetDiffStats(fileHistory, message_0.uuid);
+    } catch (error_0) {
+      logError(error_0 as Error);
+      diffStats = undefined;
+    }
     setMessageToRestore(message_0);
     setDiffStatsForRestore(diffStats);
   }

@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
     insertions: 5,
   },
   fileHistoryEnabled: true,
+  fileHistoryGetDiffStats: vi.fn(),
   keybindings: {} as Record<string, () => unknown>,
   logError: vi.fn(),
   logEvent: vi.fn(),
@@ -32,6 +33,8 @@ const harness = vi.hoisted(() => ({
       insertions: 5,
     }
     harness.fileHistoryEnabled = true
+    harness.fileHistoryGetDiffStats.mockReset()
+    harness.fileHistoryGetDiffStats.mockResolvedValue(harness.diffStats)
     harness.keybindings = {}
     harness.logError.mockClear()
     harness.logEvent.mockClear()
@@ -51,7 +54,7 @@ vi.mock('../state/AppState.js', () => ({
 vi.mock('../../utils/fileHistory.js', () => ({
   fileHistoryCanRestore: () => true,
   fileHistoryEnabled: () => harness.fileHistoryEnabled,
-  fileHistoryGetDiffStats: vi.fn(async () => harness.diffStats),
+  fileHistoryGetDiffStats: harness.fileHistoryGetDiffStats,
 }))
 
 vi.mock('../../utils/log.js', () => ({
@@ -275,6 +278,56 @@ describe('MessageSelector render paths', () => {
       expect(onRestoreCode).toHaveBeenCalledWith(selected)
       expect(onRestoreMessage).toHaveBeenCalledWith(selected)
       expect(onClose).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('logs rejected selected-message diff metadata and falls back to conversation restore', async () => {
+    const error = new Error('diff metadata unavailable')
+    harness.fileHistoryGetDiffStats.mockRejectedValueOnce(error)
+    const selected = userMessage('user-1', 'restore with missing metadata')
+    const rendered = await renderSelector({
+      messages: [selected, assistantMessage('assistant-1', 'reply')],
+    })
+
+    try {
+      harness.keybindings['messageSelector:up']?.()
+      await sleep()
+      harness.keybindings['messageSelector:select']?.()
+      await sleep()
+
+      expect(harness.fileHistoryGetDiffStats).toHaveBeenCalledWith(
+        harness.appState.fileHistory,
+        selected.uuid,
+      )
+      expect(harness.logError).toHaveBeenCalledWith(error)
+      expect(rendered.output()).toContain('Restore conversation')
+      expect(rendered.output()).not.toContain('Restore code')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('logs rejected preselected diff metadata and renders conversation-only restore', async () => {
+    const error = new Error('preselected diff metadata failed')
+    harness.fileHistoryGetDiffStats.mockRejectedValueOnce(error)
+    const selected = userMessage('user-1', 'preselected missing metadata')
+    const rendered = await renderSelector({
+      messages: [selected, assistantMessage('assistant-1', 'reply')],
+      preselectedMessage: selected,
+    })
+
+    try {
+      await sleep()
+
+      expect(harness.fileHistoryGetDiffStats).toHaveBeenCalledWith(
+        harness.appState.fileHistory,
+        selected.uuid,
+      )
+      expect(harness.logError).toHaveBeenCalledWith(error)
+      expect(rendered.output()).toContain('Restore conversation')
+      expect(rendered.output()).not.toContain('Restore code')
     } finally {
       await rendered.dispose()
     }
