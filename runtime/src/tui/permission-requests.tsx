@@ -278,7 +278,7 @@ export function AgenCPermissionOverlay({
   if (request === undefined || toolUseConfirm === null) {
     return null;
   }
-  return <AgenCApprovalOverlay request={request} toolUseConfirm={toolUseConfirm} />;
+  return <AgenCApprovalOverlay key={request.id} request={request} toolUseConfirm={toolUseConfirm} />;
 }
 
 function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
