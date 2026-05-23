@@ -74,7 +74,7 @@ function parseNumstat(raw: string): Map<string, Pick<DiffFileRow, "additions" | 
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     const [addRaw, delRaw, ...pathParts] = trimmed.split(/\t+/);
-    const path = pathParts.join("\t");
+    const path = destinationPathFromNumstat(pathParts.join("\t"));
     if (path.length === 0) continue;
     const binary = addRaw === "-" || delRaw === "-";
     byPath.set(path, {
@@ -84,6 +84,14 @@ function parseNumstat(raw: string): Map<string, Pick<DiffFileRow, "additions" | 
     });
   }
   return byPath;
+}
+
+function destinationPathFromNumstat(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed.includes(" => ")) return trimmed;
+  const expanded = trimmed.replace(/\{([^{}]*?) => ([^{}]*?)\}/gu, "$2");
+  if (expanded !== trimmed) return expanded;
+  return trimmed.slice(trimmed.lastIndexOf(" => ") + " => ".length).trim();
 }
 
 function diffPathFromHeader(line: string): string | null {
