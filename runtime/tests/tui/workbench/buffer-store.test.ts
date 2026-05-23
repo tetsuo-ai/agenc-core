@@ -14,7 +14,12 @@ const lspHarness = vi.hoisted(() => ({
   requestBufferHover: vi.fn(),
 }));
 
+const logHarness = vi.hoisted(() => ({
+  logError: vi.fn(),
+}));
+
 vi.mock("../../../src/tui/workbench/buffer/lsp.js", () => lspHarness);
+vi.mock("../../../src/utils/log.js", () => logHarness);
 
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 import type { Key } from "../../../src/tui/ink.js";
@@ -56,6 +61,7 @@ function key(overrides: Partial<Key> = {}): Key {
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agenc-buffer-"));
   for (const fn of Object.values(lspHarness)) fn.mockReset();
+  logHarness.logError.mockReset();
 });
 
 afterEach(async () => {
@@ -183,6 +189,24 @@ describe("WorkbenchBufferStore", () => {
     });
   });
 
+  it("logs rejected hover requests while preserving the current buffer", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const error = new Error("hover request failed");
+    lspHarness.requestBufferHover.mockRejectedValue(error);
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(store.requestHover()).resolves.toBeNull();
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      filePath: "target.txt",
+      hoverText: null,
+      status: "ready",
+    });
+    expect(store.getText()).toBe("alpha\n");
+  });
+
   it("ignores stale definition responses after switching files", async () => {
     await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
     await writeFile(join(dir, "next.txt"), "omega\n", "utf8");
@@ -206,6 +230,24 @@ describe("WorkbenchBufferStore", () => {
       position: { line: 1 },
     });
     expect(store.getText()).toBe("omega\n");
+  });
+
+  it("logs rejected definition requests without changing the buffer", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const error = new Error("definition request failed");
+    lspHarness.requestBufferDefinition.mockRejectedValue(error);
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(store.goToDefinition()).resolves.toBe(false);
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      filePath: "target.txt",
+      position: { line: 1 },
+      status: "ready",
+    });
+    expect(store.getText()).toBe("alpha\n");
   });
 
   it("reports failed definition navigation when unsaved edits block cross-file loads", async () => {
