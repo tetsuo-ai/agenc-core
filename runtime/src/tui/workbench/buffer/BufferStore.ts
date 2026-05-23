@@ -178,6 +178,7 @@ export class WorkbenchBufferStore {
       this.#setProblem("conflict", "Unsaved edits. Save, revert, or close-discard before closing.", "disk");
       return false;
     }
+    this.#openGeneration += 1;
     if (this.#file) notifyBufferLspClosed(this.#file.absolutePath);
     this.#file = null;
     this.#document = null;
