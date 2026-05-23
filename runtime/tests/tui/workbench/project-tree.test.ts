@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildProjectTreeRows } from "../../../src/tui/workbench/project-tree/buildTree.js";
-import { collectGitStatus, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
+import { collectGitStatus, listGitFiles, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
 import { ProjectTreeStore } from "../../../src/tui/workbench/project-tree/ProjectTreeStore.js";
 
 describe("project tree helpers", () => {
@@ -117,6 +117,45 @@ describe("project tree helpers", () => {
 
       expect(status.get(fileName)).toBe("untracked");
       expect([...status.keys()]).not.toContain("\"\\303\\251.ts\"");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves git file paths with leading and trailing spaces", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-git-files-"));
+    const leading = " spaced.ts";
+    const trailing = "trailing.ts ";
+
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await writeFile(join(repo, leading), "leading\n", "utf8");
+      await writeFile(join(repo, trailing), "trailing\n", "utf8");
+
+      await expect(listGitFiles(repo)).resolves.toEqual([leading, trailing]);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("collects renamed git status for paths containing rename separators", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-git-rename-"));
+    const oldPath = "a -> b.ts";
+    const newPath = "c -> d.ts";
+
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repo, stdio: "ignore" });
+      await writeFile(join(repo, oldPath), "renamed\n", "utf8");
+      execFileSync("git", ["add", oldPath], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["mv", oldPath, newPath], { cwd: repo, stdio: "ignore" });
+
+      const status = await collectGitStatus(repo);
+
+      expect(status.get(newPath)).toBe("renamed");
+      expect(status.has("d.ts")).toBe(false);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
