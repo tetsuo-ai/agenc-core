@@ -343,6 +343,32 @@ describe('useIdeSelection coverage swarm 175', () => {
     }
   })
 
+  test('ignores selection notifications after unmount', async () => {
+    const ideClient = createIdeClient()
+    fixture.ideClient = ideClient
+    const onSelect = vi.fn()
+    const rendered = await renderHookHarness({
+      mcpClients: [{ name: 'ide' }],
+      onSelect,
+    })
+
+    expect(ideClient.client.setNotificationHandler).toHaveBeenCalledTimes(1)
+    onSelect.mockClear()
+
+    await rendered.dispose()
+
+    ideClient.emit({
+      selection: {
+        start: { line: 4, character: 1 },
+        end: { line: 4, character: 6 },
+      },
+      text: 'after unmount',
+      filePath: '/workspace/src/after-unmount.ts',
+    })
+
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
   test('logs notification handler errors instead of surfacing callback failures', async () => {
     const ideClient = createIdeClient()
     fixture.ideClient = ideClient
