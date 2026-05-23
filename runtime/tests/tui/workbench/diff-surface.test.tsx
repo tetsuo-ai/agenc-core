@@ -5,12 +5,16 @@ import stripAnsi from "strip-ansi";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const diffHarness = vi.hoisted(() => ({
+  error: null as unknown,
   handlers: {} as Record<string, () => void>,
   snapshot: null as ReturnType<typeof import("../../../src/commands/diff-menu.js").createDiffMenuSnapshot> | null,
 }));
 
 vi.mock("../../../src/commands/diff.js", () => ({
-  collectDiffSnapshot: vi.fn(async () => diffHarness.snapshot),
+  collectDiffSnapshot: vi.fn(async () => {
+    if (diffHarness.error !== null) throw diffHarness.error;
+    return diffHarness.snapshot;
+  }),
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
@@ -35,6 +39,7 @@ type TestStdin = PassThrough & {
 
 describe("DiffSurface", () => {
   afterEach(() => {
+    diffHarness.error = null;
     diffHarness.handlers = {};
     diffHarness.snapshot = null;
     vi.clearAllMocks();
@@ -147,6 +152,31 @@ describe("DiffSurface", () => {
       expect(request.resolve).not.toHaveBeenCalled();
       expect(compact(output())).not.toContain("markedaccept");
       expect(compact(output())).not.toContain("YMsrc/app.ts");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("renders diff snapshot load failures instead of staying on the loading state", async () => {
+    diffHarness.error = new Error("git status failed");
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider initialState={getDefaultAppState()}>
+          <DiffSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(output())).toContain("toloaddiff:gitstatusfailed");
     } finally {
       root.unmount();
       stdin.end();

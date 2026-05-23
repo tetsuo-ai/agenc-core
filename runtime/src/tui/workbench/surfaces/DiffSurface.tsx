@@ -23,6 +23,7 @@ export function DiffSurface({
   readonly pendingApproval?: PendingRequest | null;
 }): React.ReactElement {
   const dispatch = useWorkbenchDispatch();
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<DiffMenuSnapshot | null>(null);
   const [selected, setSelected] = useState(0);
   const [decisions, setDecisions] = useState<Record<string, "accept" | "skip">>({});
@@ -38,9 +39,14 @@ export function DiffSurface({
 
   useEffect(() => {
     let mounted = true;
-    collectDiffSnapshot(getCwd()).then((next) => {
-      if (mounted) setSnapshot(next);
-    });
+    collectDiffSnapshot(getCwd()).then(
+      (next) => {
+        if (mounted) setSnapshot(next);
+      },
+      (error) => {
+        if (mounted) setLoadError(errorMessage(error));
+      },
+    );
     return () => {
       mounted = false;
     };
@@ -82,6 +88,7 @@ export function DiffSurface({
     { context: "Surface", isActive: focused },
   );
 
+  if (loadError !== null) return <EmptySurface title="DIFF" message={`Unable to load diff: ${loadError}`} />;
   if (snapshot === null) return <EmptySurface title="DIFF" message="Loading diff" />;
   if (snapshot.state === "not-repo") return <EmptySurface title="DIFF" message="Not a git repository" />;
   if (snapshot.state === "clean") return <EmptySurface title="DIFF" message="No working tree changes" />;
@@ -162,6 +169,12 @@ function commandText(input: Record<string, unknown>): string {
   } catch {
     return "";
   }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  if (typeof error === "string" && error.trim().length > 0) return error;
+  return "unknown error";
 }
 
 function statusMarker(status: string): string {
