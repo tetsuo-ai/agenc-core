@@ -23,25 +23,32 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   const task = useMemo(() => {
     return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
-  const [tail, setTail] = useState("");
+  const [tailState, setTailState] = useState<{ readonly taskId: string | null; readonly content: string }>({
+    taskId: null,
+    content: "",
+  });
   const [selected, setSelected] = useState(0);
+  const tail = tailState.taskId === task?.id ? tailState.content : "";
   const failures = useMemo(() => parseVitestFailures(tail), [tail]);
   const selectedIndex = clampSurfaceSelection(selected, failures.length);
   const selectedFailure = failures[selectedIndex] ?? null;
 
   useEffect(() => {
     if (!task?.id) {
-      setTail("");
+      setTailState({ taskId: null, content: "" });
       return;
     }
+    const taskId = task.id;
+    setSelected(0);
+    setTailState({ taskId, content: "" });
     let mounted = true;
     const readTail = () => {
-      tailFile(getTaskOutputPath(task.id), TAIL_BYTES)
+      tailFile(getTaskOutputPath(taskId), TAIL_BYTES)
         .then((result) => {
-          if (mounted) setTail(result.content);
+          if (mounted) setTailState({ taskId, content: result.content });
         })
         .catch(() => {
-          if (mounted) setTail("");
+          if (mounted) setTailState({ taskId, content: "" });
         });
     };
     readTail();
