@@ -49,8 +49,8 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   {
     mode: "buffer",
     title: (state) => state.activeFilePath ?? "BUFFER",
-    keybindings: ["ctrl+s", "ctrl+z", "ctrl+y", "ctrl+w q", "ctrl+w x"],
-    footerHints: "Buffer: ctrl+s save  ctrl+z undo  ctrl+y redo  ctrl+w q close  ctrl+w x discard",
+    keybindings: ["enter", "ctrl+s", "u", "ctrl+y", "ctrl+w q", "ctrl+w x"],
+    footerHints: "Buffer: enter $EDITOR  ctrl+s save  u undo  ctrl+y redo  ctrl+w q close",
     renderBody: ({ focused }) => <BufferSurface focused={focused} />,
   },
   {

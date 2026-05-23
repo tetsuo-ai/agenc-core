@@ -218,7 +218,7 @@ export type VimTextInputProps = BaseTextInputProps & {
 /**
  * Vim editor modes
  */
-export type VimMode = 'INSERT' | 'NORMAL'
+export type VimMode = 'INSERT' | 'NORMAL' | 'VISUAL'
 
 /**
  * Common properties for input hook results

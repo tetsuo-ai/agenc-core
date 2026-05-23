@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -138,6 +138,118 @@ describe("project tree helpers", () => {
       store.move(1);
 
       expect(store.getCursorPath()).toBe("docs");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("recursively discovers nested source files outside git workspaces", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-nongit-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await mkdir(join(repo, "node_modules", "ignored"), { recursive: true });
+      await writeFile(join(repo, "src", "nested", "index.ts"), "export const value = 1;\n", "utf8");
+      await writeFile(join(repo, "node_modules", "ignored", "index.js"), "ignored\n", "utf8");
+
+      await store.refresh();
+      store.reveal("src/nested/index.ts");
+
+      const paths = store.getSnapshot().rows.map((row) => row.path);
+
+      expect(paths).toContain("src");
+      expect(paths).toContain("src/nested");
+      expect(paths).toContain("src/nested/index.ts");
+      expect(paths).not.toContain("node_modules");
+      expect(paths).not.toContain("node_modules/ignored/index.js");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the recursive scanner when git has no indexed paths", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-empty-git-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "empty"), { recursive: true });
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+
+      await store.refresh();
+      store.reveal("src/empty");
+
+      const paths = store.getSnapshot().rows.map((row) => row.path);
+
+      expect(paths).toContain("src");
+      expect(paths).toContain("src/empty");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a nested file from a workspace-relative path", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-create-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await store.refresh();
+
+      await expect(store.createFile("src/new-file.ts")).resolves.toEqual({ ok: true, path: "src/new-file.ts" });
+
+      expect(await readFile(join(repo, "src", "new-file.ts"), "utf8")).toBe("");
+      expect(store.getCursorPath()).toBe("src/new-file.ts");
+      expect(store.getSnapshot().rows.map((row) => row.path)).toContain("src/new-file.ts");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("renames the selected workspace path without overwriting targets", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src"), { recursive: true });
+      await writeFile(join(repo, "src", "old.ts"), "old\n", "utf8");
+      await writeFile(join(repo, "src", "exists.ts"), "exists\n", "utf8");
+      await store.refresh();
+
+      await expect(store.renamePath("src/old.ts", "src/exists.ts")).resolves.toMatchObject({
+        ok: false,
+      });
+      await expect(store.renamePath("src/old.ts", "lib/new.ts")).resolves.toEqual({ ok: true, path: "lib/new.ts" });
+
+      await expect(readFile(join(repo, "src", "old.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(repo, "lib", "new.ts"), "utf8")).toBe("old\n");
+      expect(store.getCursorPath()).toBe("lib/new.ts");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes files and rejects paths outside the workspace", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src"), { recursive: true });
+      await writeFile(join(repo, "src", "gone.ts"), "gone\n", "utf8");
+      await store.refresh();
+
+      await expect(store.createFile("../outside.ts")).resolves.toEqual({
+        ok: false,
+        error: "Path must stay inside the workspace.",
+      });
+      await expect(store.deletePath("src/gone.ts")).resolves.toEqual({ ok: true, path: "src/gone.ts" });
+
+      await expect(readFile(join(repo, "src", "gone.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("src/gone.ts");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });

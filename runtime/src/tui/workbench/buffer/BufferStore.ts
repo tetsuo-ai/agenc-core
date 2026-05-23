@@ -16,11 +16,13 @@ import {
   executeToggleCase,
   executeX,
 } from "../../vim/operators.js";
+import { resolveMotion } from "../../vim/motions.js";
 import { transition, type TransitionContext } from "../../vim/transitions.js";
 import {
   createInitialPersistentState,
   type PersistentState,
   type RecordedChange,
+  SIMPLE_MOTIONS,
   type VimState,
 } from "../../vim/types.js";
 import {
@@ -33,15 +35,20 @@ import {
   insertBufferText,
   moveBufferCursor,
   moveBufferCursorToLine,
+  nextGraphemeOffset,
   previousGraphemeOffset,
+  replaceBufferRange,
   redoBufferChange,
   replaceBufferText,
   setBufferCursorOffset,
+  setBufferSelection,
+  selectionBounds,
   type BufferDocument,
   type BufferMove,
   type BufferSelection,
   undoBufferChange,
 } from "./editing.js";
+import { openFileInBufferExternalEditor, type BufferExternalEditorLauncher } from "./externalEditor.js";
 import type { BufferFileEncoding, BufferLineEndings, BufferFileSnapshot } from "./fileSnapshot.js";
 import { BufferSaveConflictError, readBufferFileSnapshot, saveBufferFileSnapshot } from "./fileSnapshot.js";
 import {
@@ -97,6 +104,9 @@ export type BufferVimCommand =
   | { readonly type: "saveQuit"; readonly force: boolean; readonly all: boolean };
 
 type BufferVimCommandHandler = (command: BufferVimCommand) => void;
+export type WorkbenchBufferStoreOptions = {
+  readonly openExternalEditor?: BufferExternalEditorLauncher;
+};
 type VimEditSession = {
   readonly context: TransitionContext;
   readonly flush: () => void;
@@ -119,8 +129,14 @@ export class WorkbenchBufferStore {
   #openGeneration = 0;
   #vimCommandLine: string | null = null;
   #vimState: VimState = { mode: "NORMAL", command: { type: "idle" } };
+  #visualAnchor: number | null = null;
   #vimPersistentState: PersistentState = createInitialPersistentState();
+  #openExternalEditor: BufferExternalEditorLauncher = openFileInBufferExternalEditor;
   #snapshot: WorkbenchBufferSnapshot = this.#createSnapshot();
+
+  constructor(options: WorkbenchBufferStoreOptions = {}) {
+    this.#openExternalEditor = options.openExternalEditor ?? openFileInBufferExternalEditor;
+  }
 
   subscribe = (listener: Listener): (() => void) => {
     this.#listeners.add(listener);
@@ -222,6 +238,25 @@ export class WorkbenchBufferStore {
     }
   }
 
+  async openExternalEditor(): Promise<boolean> {
+    const file = this.#file;
+    if (!file) return false;
+    if (this.#isDirty()) {
+      this.#setProblem("conflict", "Save or revert inline edits before opening the external editor.", "disk");
+      return false;
+    }
+
+    const line = this.#position().line;
+    const opened = this.#openExternalEditor(file.absolutePath, line);
+    if (!opened) {
+      this.#setProblem("error", "No external editor is available for BUFFER. Set $VISUAL or $EDITOR, or install nvim/vim.", null);
+      return false;
+    }
+
+    await this.#load(file.absolutePath, line, true, file.filePath);
+    return true;
+  }
+
   insert(text: string): void {
     this.#edit((document) => insertBufferText(document, text));
   }
@@ -247,6 +282,10 @@ export class WorkbenchBufferStore {
 
     if (key.ctrl || key.super || (key.meta && !key.escape)) return false;
 
+    if (this.#visualAnchor !== null) {
+      return this.#handleVimVisualInput(input, key, columns);
+    }
+
     const state = this.#vimState;
     if (key.escape && state.mode === "INSERT") {
       this.#switchToNormalMode();
@@ -269,6 +308,11 @@ export class WorkbenchBufferStore {
       this.#error = null;
       this.#conflictKind = null;
       this.#emit();
+      return true;
+    }
+
+    if (input === "v") {
+      this.#enterVisualMode();
       return true;
     }
 
@@ -404,6 +448,121 @@ export class WorkbenchBufferStore {
       return;
     }
     this.#emit();
+  }
+
+  #handleVimVisualInput(input: string, key: Key, columns: number): boolean {
+    if (key.escape || input === "v") {
+      this.#exitVisualMode();
+      return true;
+    }
+
+    if (input === "y" || input === "Y") {
+      this.#yankVisualSelection();
+      return true;
+    }
+    if (input === "d" || input === "x") {
+      this.#deleteVisualSelection(false);
+      return true;
+    }
+    if (input === "c") {
+      this.#deleteVisualSelection(true);
+      return true;
+    }
+    if (input === "p" || input === "P") {
+      this.#pasteOverVisualSelection();
+      return true;
+    }
+
+    const vimInput = normalizeVimNormalInput(input, key);
+    if (vimInput === null) {
+      return key.return || key.tab || input.length > 0;
+    }
+    if (!SIMPLE_MOTIONS.has(vimInput) && vimInput !== "G") {
+      return input.length > 0;
+    }
+
+    const document = this.#document;
+    if (!document) return true;
+    const text = bufferText(document);
+    const cursor = TextCursor.fromText(text, columns, currentSelection(document).head);
+    const target = vimInput === "G"
+      ? cursor.startOfLastLine()
+      : resolveMotion(vimInput, cursor, 1);
+    this.#setVisualHead(target.offset);
+    return true;
+  }
+
+  #enterVisualMode(): void {
+    const offset = this.#position().offset;
+    this.#visualAnchor = offset;
+    this.#replaceDocument((document) => setBufferSelection(document, { anchor: offset, head: offset }), false);
+  }
+
+  #exitVisualMode(): void {
+    const head = this.#position().offset;
+    this.#visualAnchor = null;
+    this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+    this.#replaceDocument((document) => setBufferCursorOffset(document, head), false);
+  }
+
+  #setVisualHead(offset: number): void {
+    const anchor = this.#visualAnchor;
+    if (anchor === null) return;
+    this.#replaceDocument((document) => setBufferSelection(document, { anchor, head: offset }), false);
+  }
+
+  #visualSelectionRange(): { readonly from: number; readonly to: number; readonly text: string } | null {
+    const document = this.#document;
+    if (!document) return null;
+    const text = bufferText(document);
+    const { from, to } = selectionBounds(currentSelection(document));
+    const safeTo = from === to ? nextGraphemeOffset(text, to) : to;
+    return { from, to: safeTo, text: text.slice(from, safeTo) };
+  }
+
+  #yankVisualSelection(): void {
+    const range = this.#visualSelectionRange();
+    if (!range) return;
+    this.#vimPersistentState = {
+      ...this.#vimPersistentState,
+      register: range.text,
+      registerIsLinewise: false,
+    };
+    this.#visualAnchor = null;
+    this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+    this.#replaceDocument((document) => setBufferCursorOffset(document, range.from), false);
+  }
+
+  #deleteVisualSelection(enterInsert: boolean): void {
+    const range = this.#visualSelectionRange();
+    if (!range) return;
+    this.#vimPersistentState = {
+      ...this.#vimPersistentState,
+      register: range.text,
+      registerIsLinewise: false,
+    };
+    this.#visualAnchor = null;
+    this.#vimState = enterInsert
+      ? { mode: "INSERT", insertedText: "" }
+      : { mode: "NORMAL", command: { type: "idle" } };
+    this.#replaceDocument((document) => replaceBufferRange(document, range.from, range.to, "", range.from), true);
+  }
+
+  #pasteOverVisualSelection(): void {
+    const range = this.#visualSelectionRange();
+    const register = this.#vimPersistentState.register;
+    if (!range || !register) return;
+    this.#vimPersistentState = {
+      ...this.#vimPersistentState,
+      register: range.text,
+      registerIsLinewise: false,
+    };
+    this.#visualAnchor = null;
+    this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+    this.#replaceDocument(
+      (document) => replaceBufferRange(document, range.from, range.to, register, range.from + register.length),
+      true,
+    );
   }
 
   #createVimEditSession(columns: number): VimEditSession {
@@ -548,6 +707,7 @@ export class WorkbenchBufferStore {
   #resetVimState(): void {
     this.#vimCommandLine = null;
     this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
+    this.#visualAnchor = null;
     this.#vimPersistentState = createInitialPersistentState();
   }
 
@@ -688,7 +848,7 @@ export class WorkbenchBufferStore {
       encoding: file?.encoding ?? null,
       lineEndings: file?.lineEndings ?? null,
       hoverText: this.#hoverText,
-      vimMode: this.#vimState.mode,
+      vimMode: this.#visualAnchor !== null ? "VISUAL" : this.#vimState.mode,
       vimCommandLine: this.#vimCommandLine,
     };
   }

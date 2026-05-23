@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
@@ -8,6 +8,7 @@ import { stringWidth } from "../../ink/stringWidth.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
+import TextInput from "../../components/TextInput.js";
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, openBufferCommand } from "../commands.js";
@@ -28,6 +29,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const dispatch = useWorkbenchDispatch();
   const store = getProjectTreeStore();
   const { rows: terminalRows } = useTerminalSize();
+  const [fileAction, setFileAction] = useState(null);
   const maxTreeRows = Math.max(1, terminalRows - 8);
   const attachedPaths = useMemo(
     () => workbench.attachments.flatMap((item) => item.path ? [item.path] : []),
@@ -52,6 +54,79 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       .map((row) => row.path);
     store.setInFlightPaths(inFlightPathsFromTasks(Object.values(tasks), filePaths));
   }, [store, tasks, snapshot.rows]);
+
+  const closeFileAction = useCallback(() => setFileAction(null), []);
+
+  const beginCreateFile = useCallback(() => {
+    const row = store.getCursorRow();
+    setFileAction({
+      kind: "create",
+      value: defaultCreateFilePath(row),
+      busy: false,
+      error: null,
+    });
+  }, [store]);
+
+  const beginRename = useCallback(() => {
+    const row = store.getCursorRow();
+    if (!isMutableTreeRow(row)) return;
+    setFileAction({
+      kind: "rename",
+      path: row.path,
+      value: row.path,
+      busy: false,
+      error: null,
+    });
+  }, [store]);
+
+  const beginDelete = useCallback(() => {
+    const row = store.getCursorRow();
+    if (!isMutableTreeRow(row)) return;
+    setFileAction({
+      kind: "delete",
+      path: row.path,
+      label: row.label,
+      rowKind: row.kind,
+      busy: false,
+      error: null,
+    });
+  }, [store]);
+
+  const submitFileAction = useCallback(async (value) => {
+    const action = fileAction;
+    if (!action || action.kind === "delete" || action.busy) return;
+    setFileAction({ ...action, value, busy: true, error: null });
+    const result = action.kind === "create"
+      ? await store.createFile(value)
+      : await store.renamePath(action.path, value);
+    if (!result.ok) {
+      setFileAction({ ...action, value, busy: false, error: result.error });
+      return;
+    }
+    setFileAction(null);
+    if (action.kind === "create") {
+      dispatch(openBufferCommand(result.path, undefined, true));
+      return;
+    }
+    if (workbench.activeFilePath === action.path) {
+      dispatch(openBufferCommand(result.path, workbench.activeFileLine ?? undefined, false));
+    }
+  }, [dispatch, fileAction, store, workbench.activeFileLine, workbench.activeFilePath]);
+
+  const confirmDelete = useCallback(async () => {
+    const action = fileAction;
+    if (!action || action.kind !== "delete" || action.busy) return;
+    setFileAction({ ...action, busy: true, error: null });
+    const result = await store.deletePath(action.path);
+    if (!result.ok) {
+      setFileAction({ ...action, busy: false, error: result.error });
+      return;
+    }
+    setFileAction(null);
+    if (pathContains(workbench.activeFilePath, action.path)) {
+      dispatch({ type: "closeSurface" });
+    }
+  }, [dispatch, fileAction, store, workbench.activeFilePath]);
 
   useRegisterKeybindingContext("Explorer", focused);
   useKeybindings(
@@ -89,8 +164,11 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
         const row = store.getCursorRow();
         if (row?.kind === "file" && row.path) dispatch(attachFileCommand(row.path));
       },
+      "explorer:addFile": beginCreateFile,
+      "explorer:rename": beginRename,
+      "explorer:delete": beginDelete,
     },
-    { context: "Explorer", isActive: focused },
+    { context: "Explorer", isActive: focused && fileAction === null },
   );
 
   const viewport = projectTreeViewport(snapshot.rows, maxTreeRows);
@@ -111,6 +189,16 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
           <Text color="error" wrap="truncate-end">{snapshot.error}</Text>
         </Box>
       ) : null}
+      {fileAction ? (
+        <ProjectFileActionPrompt
+          action={fileAction}
+          width={Math.max(8, width - 2)}
+          onChange={(value) => setFileAction((current) => current ? { ...current, value } : current)}
+          onSubmit={submitFileAction}
+          onConfirmDelete={confirmDelete}
+          onCancel={closeFileAction}
+        />
+      ) : null}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {viewport.above > 0 ? (
           <Box height={1} flexShrink={0}>
@@ -124,6 +212,79 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
           </Box>
         ) : null}
       </Box>
+    </Box>
+  );
+}
+
+export function ProjectFileActionPrompt({
+  action,
+  width,
+  onChange,
+  onSubmit,
+  onConfirmDelete,
+  onCancel,
+}) {
+  const actionKey = action.kind === "create" ? action.kind : `${action.kind}:${action.path}`;
+  const [cursorOffset, setCursorOffset] = useState(action.value?.length ?? 0);
+
+  useEffect(() => {
+    setCursorOffset(action.value?.length ?? 0);
+  }, [actionKey]);
+
+  useRegisterKeybindingContext("Confirmation", action.kind === "delete");
+  useKeybindings(
+    {
+      "confirm:yes": () => {
+        void onConfirmDelete();
+      },
+      "confirm:no": onCancel,
+    },
+    { context: "Confirmation", isActive: action.kind === "delete" },
+  );
+
+  if (action.kind === "delete") {
+    return (
+      <Box flexDirection="column" borderTop borderBottom borderColor="error" paddingY={0} flexShrink={0}>
+        <Text color="error" wrap="truncate-end">
+          Delete {action.rowKind === "directory" ? "directory" : "file"} {action.path}?
+        </Text>
+        <Text dimColor wrap="truncate-end">{action.busy ? "deleting..." : "y/enter confirm  n/esc cancel"}</Text>
+        {action.error ? <Text color="error" wrap="truncate-end">{action.error}</Text> : null}
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" borderTop borderBottom borderColor="suggestion" paddingY={0} flexShrink={0}>
+      <Text color="suggestion" wrap="truncate-end">
+        {action.kind === "create" ? "Add file" : "Rename"}
+      </Text>
+      <TextInput
+        value={action.value}
+        onChange={onChange}
+        onSubmit={(value) => {
+          void onSubmit(value);
+        }}
+        onExit={onCancel}
+        inputFilter={(input, key) => {
+          if (key.escape) {
+            onCancel();
+            return "";
+          }
+          return input;
+        }}
+        disableEscapeDoublePress
+        focus={!action.busy}
+        showCursor
+        multiline={false}
+        maxVisibleLines={1}
+        cursorOffset={cursorOffset}
+        onChangeCursorOffset={setCursorOffset}
+        columns={Math.max(8, width - 2)}
+        placeholder="path/to/file"
+      />
+      <Text dimColor wrap="truncate-end">{action.busy ? "working..." : "enter confirm  esc cancel"}</Text>
+      {action.error ? <Text color="error" wrap="truncate-end">{action.error}</Text> : null}
     </Box>
   );
 }
@@ -252,4 +413,21 @@ function trim(value: string, width: number): string {
     used = nextWidth;
   }
   return `${output}${suffix}`;
+}
+
+function isMutableTreeRow(row: ProjectTreeRow | null): boolean {
+  return row?.kind === "file" || row?.kind === "directory";
+}
+
+function defaultCreateFilePath(row: ProjectTreeRow | null): string {
+  if (row?.kind === "directory") return `${row.path}/`;
+  if (row?.kind === "file") {
+    const slash = row.path.lastIndexOf("/");
+    return slash >= 0 ? `${row.path.slice(0, slash)}/` : "";
+  }
+  return "";
+}
+
+function pathContains(activePath: string | null, targetPath: string): boolean {
+  return activePath === targetPath || Boolean(activePath?.startsWith(`${targetPath}/`));
 }

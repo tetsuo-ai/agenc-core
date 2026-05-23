@@ -67,6 +67,9 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
       "buffer:closeDiscard": () => {
         if (store.close({ discard: true })) dispatch({ type: "closeSurface" });
       },
+      "buffer:externalEditor": () => {
+        void store.openExternalEditor();
+      },
       "buffer:undo": () => store.undo(),
       "buffer:redo": () => store.redo(),
       "buffer:hover": () => store.requestHover(),
@@ -157,9 +160,11 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
         <Text dimColor wrap="truncate-end">
           {snapshot.vimCommandLine !== null
             ? `:${snapshot.vimCommandLine}`
-            : snapshot.vimMode === "NORMAL"
-              ? "NORMAL  : command  i/a/o insert  h/j/k/l move  dd delete  u undo"
-              : "INSERT  esc normal"}
+            : snapshot.vimMode === "VISUAL"
+              ? "VISUAL  h/j/k/l move  y yank  d delete  c change  p paste  esc normal"
+              : snapshot.vimMode === "NORMAL"
+                ? "NORMAL  enter $EDITOR  v visual  y/p register  : command  i/a/o insert  u undo"
+                : "INSERT  esc normal"}
         </Text>
       </Box>
     </Box>
