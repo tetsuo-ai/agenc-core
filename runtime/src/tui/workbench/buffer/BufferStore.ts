@@ -319,6 +319,9 @@ export class WorkbenchBufferStore {
     if (key.return || input === "\r" || input === "\n") {
       return false;
     }
+    if (isShiftSelectionNavigationKey(key)) {
+      return false;
+    }
 
     const vimInput = normalizeVimNormalInput(input, key);
     if (vimInput === null) {
@@ -940,6 +943,10 @@ function parseVimCommand(rawCommand: string): BufferVimCommand | null {
 
 function isNavigationKey(key: Key): boolean {
   return key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.pageUp || key.pageDown || key.home || key.end;
+}
+
+function isShiftSelectionNavigationKey(key: Key): boolean {
+  return key.shift && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.home || key.end);
 }
 
 function removeLastGrapheme(value: string): string {
