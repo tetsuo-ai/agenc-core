@@ -11,6 +11,7 @@ import { AgentsRail } from "./agents/AgentsRail.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
 import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
+import { visibleWorkbenchPane } from "./reducer.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "./state.js";
 import type { WorkbenchLayoutSize, WorkbenchPane } from "./types.js";
 import { WorkbenchFooter } from "./WorkbenchFooter.js";
@@ -35,6 +36,7 @@ export function WorkbenchLayout({
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
   const layoutSize = layoutSizeForColumns(columns);
+  const focusedPane = visibleWorkbenchPane(workbench);
   const showExplorer = workbench.explorerVisible && layoutSize !== "narrow";
   const showAgents = workbench.agentsVisible && layoutSize === "wide";
   const visiblePanes = useMemo(
@@ -43,11 +45,11 @@ export function WorkbenchLayout({
   );
 
   useRegisterKeybindingContext("Workbench", true);
-  useRegisterKeybindingContext("Composer", workbench.focusedPane === "composer");
+  useRegisterKeybindingContext("Composer", focusedPane === "composer");
   useKeybindings(
     {
       "workbench:focusExplorer": () => dispatch({ type: "focus", pane: "explorer" }),
-      "workbench:focusSurface": () => dispatch({ type: "focus", pane: nextRightPane(workbench.focusedPane, showAgents) }),
+      "workbench:focusSurface": () => dispatch({ type: "focus", pane: nextRightPane(focusedPane, showAgents) }),
       "workbench:focusAgents": () => dispatch({ type: "focus", pane: "agents" }),
       "workbench:focusComposer": () => dispatch({ type: "focus", pane: "composer" }),
       "workbench:focusUp": () => dispatch({ type: "focus", pane: "surface" }),
@@ -65,29 +67,29 @@ export function WorkbenchLayout({
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
       {rows >= 8 ? <WorkbenchStatusBar columns={columns} /> : null}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
-        {showExplorer ? <ProjectExplorer focused={workbench.focusedPane === "explorer"} width={explorerWidth} /> : null}
-        <ActiveWorkSurface focused={workbench.focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} />
-        {showAgents ? <AgentsRail focused={workbench.focusedPane === "agents"} width={agentsWidth} /> : null}
+        {showExplorer ? <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} /> : null}
+        <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} />
+        {showAgents ? <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} /> : null}
       </Box>
       {overlay ? (
         <Box flexDirection="column" borderColor="warning" borderTop paddingX={1}>
           {overlay}
         </Box>
       ) : null}
-      <Box flexDirection="column" flexShrink={0} borderTop borderColor={workbench.focusedPane === "composer" ? "suggestion" : "gray"}>
+      <Box flexDirection="column" flexShrink={0} borderTop borderColor={focusedPane === "composer" ? "suggestion" : "gray"}>
         <PromptSuggestionsOverlay />
-        <WorkbenchComposerFocusProvider active={workbench.focusedPane === "composer"}>
+        <WorkbenchComposerFocusProvider active={focusedPane === "composer"}>
           {composer}
         </WorkbenchComposerFocusProvider>
       </Box>
       <PromptDialogOverlay />
       {rows >= 5 ? <WorkbenchFooter /> : null}
-      {layoutSize !== "wide" && workbench.focusedPane === "agents" ? (
+      {layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
         <Box position="absolute" right={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
           <AgentsRail focused={true} width={Math.min(34, columns)} />
         </Box>
       ) : null}
-      {layoutSize === "narrow" && workbench.focusedPane === "explorer" ? (
+      {layoutSize === "narrow" && workbench.explorerVisible && focusedPane === "explorer" ? (
         <Box position="absolute" left={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
           <ProjectExplorer focused={true} width={Math.min(34, columns)} />
         </Box>

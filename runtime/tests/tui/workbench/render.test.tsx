@@ -412,6 +412,43 @@ describe("workbench render contract", () => {
     expect(activeOutput).toContain("composer-active");
   });
 
+  it("does not render compact pane overlays when their panes are hidden", async () => {
+    const hiddenAgentsOutput = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          workbench: {
+            ...getDefaultAppState().workbench,
+            focusedPane: "agents",
+            agentsVisible: false,
+          },
+        }}
+      >
+        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+      </AppStateProvider>,
+      { columns: 120, rows: 30 },
+    );
+
+    const hiddenExplorerOutput = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          workbench: {
+            ...getDefaultAppState().workbench,
+            focusedPane: "explorer",
+            explorerVisible: false,
+          },
+        }}
+      >
+        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+      </AppStateProvider>,
+      { columns: 80, rows: 30 },
+    );
+
+    expect(hiddenAgentsOutput).not.toContain("Agents");
+    expect(hiddenExplorerOutput).not.toContain("WORKSPACE");
+  });
+
   it("defines the surface descriptor contract for every live workbench surface", () => {
     expect(WORKBENCH_SURFACES.map((surface) => surface.mode)).toEqual([
       "transcript",

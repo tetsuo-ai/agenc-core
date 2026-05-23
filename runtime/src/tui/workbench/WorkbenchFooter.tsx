@@ -3,11 +3,12 @@ import React from "react";
 
 import { Box, Text } from "../ink.js";
 import { footerHintsForSurface } from "./surfaces/ActiveWorkSurface.js";
+import { visibleWorkbenchPane } from "./reducer.js";
 import { useWorkbenchState } from "./state.js";
 
 export function WorkbenchFooter(): React.ReactElement {
   const workbench = useWorkbenchState();
-  const hints = hintsForPane(workbench.focusedPane, workbench.activeSurfaceMode);
+  const hints = hintsForPane(visibleWorkbenchPane(workbench), workbench.activeSurfaceMode);
   return (
     <Box height={1} width="100%">
       <Text dimColor wrap="truncate-end">{hints}</Text>
