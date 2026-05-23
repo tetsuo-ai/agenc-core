@@ -107,6 +107,9 @@ type BufferVimCommandHandler = (command: BufferVimCommand) => void;
 export type WorkbenchBufferStoreOptions = {
   readonly openExternalEditor?: BufferExternalEditorLauncher;
 };
+type BufferLoadOptions = {
+  readonly preserveCurrentOnError?: boolean;
+};
 type VimEditSession = {
   readonly context: TransitionContext;
   readonly flush: () => void;
@@ -382,7 +385,9 @@ export class WorkbenchBufferStore {
     const position = this.#lspPosition(document);
     const target = await requestBufferDefinition(file.absolutePath, position).catch(() => null);
     if (!target || this.#file !== file || this.#document !== document) return false;
-    return this.#load(target.path, target.line, false, displayPathForAbsolute(target.path));
+    return this.#load(target.path, target.line, false, displayPathForAbsolute(target.path), {
+      preserveCurrentOnError: true,
+    });
   }
 
   #handleVimCommandLineInput(input: string, key: Key, onCommand?: BufferVimCommandHandler): boolean {
@@ -747,6 +752,7 @@ export class WorkbenchBufferStore {
     line: number,
     allowDirtyReplace: boolean,
     displayPath = filePath,
+    options: BufferLoadOptions = {},
   ): Promise<boolean> {
     const absolutePath = resolve(getCwd(), filePath);
     if (this.#file?.absolutePath === absolutePath && !allowDirtyReplace) {
@@ -765,6 +771,13 @@ export class WorkbenchBufferStore {
 
     const generation = ++this.#openGeneration;
     const previousPath = this.#file?.absolutePath;
+    const previousFile = this.#file;
+    const previousDocument = this.#document;
+    const previousScrollLine = this.#scrollLine;
+    const previousVimCommandLine = this.#vimCommandLine;
+    const previousVimState = this.#vimState;
+    const previousVisualAnchor = this.#visualAnchor;
+    const previousVimPersistentState = this.#vimPersistentState;
     this.#status = "loading";
     this.#error = null;
     this.#conflictKind = null;
@@ -794,6 +807,15 @@ export class WorkbenchBufferStore {
       return true;
     } catch (error) {
       if (generation !== this.#openGeneration) return false;
+      if (options.preserveCurrentOnError && previousFile && previousDocument) {
+        this.#file = previousFile;
+        this.#document = previousDocument;
+        this.#scrollLine = previousScrollLine;
+        this.#vimCommandLine = previousVimCommandLine;
+        this.#vimState = previousVimState;
+        this.#visualAnchor = previousVisualAnchor;
+        this.#vimPersistentState = previousVimPersistentState;
+      }
       this.#status = "error";
       this.#error = errorMessage(error);
       this.#conflictKind = null;
