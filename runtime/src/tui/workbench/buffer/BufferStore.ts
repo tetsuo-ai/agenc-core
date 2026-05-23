@@ -363,6 +363,7 @@ export class WorkbenchBufferStore {
     if (!file || !document) return null;
     const position = this.#lspPosition(document);
     const hover = await requestBufferHover(file.absolutePath, position).catch(() => null);
+    if (this.#file !== file || this.#document !== document) return null;
     this.#hoverText = hover;
     this.#emit();
     return hover;
@@ -372,8 +373,9 @@ export class WorkbenchBufferStore {
     const file = this.#file;
     const document = this.#document;
     if (!file || !document) return false;
-    const target = await requestBufferDefinition(file.absolutePath, this.#lspPosition(document)).catch(() => null);
-    if (!target) return false;
+    const position = this.#lspPosition(document);
+    const target = await requestBufferDefinition(file.absolutePath, position).catch(() => null);
+    if (!target || this.#file !== file || this.#document !== document) return false;
     await this.#load(target.path, target.line, false, displayPathForAbsolute(target.path));
     return true;
   }
