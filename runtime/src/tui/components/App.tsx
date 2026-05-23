@@ -32,6 +32,7 @@ import { setGlobalCommandRegistry } from "../../commands/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
+import { useApiKeyVerification } from "../hooks/useApiKeyVerification.js";
 import { addToHistory } from "../history/history.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import { type AppState, AppStateProvider, getDefaultAppState, useAppState, useAppStateStore, useSetAppState } from "../state/AppState.js";
@@ -1376,6 +1377,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   );
   const backpressureWarning = formatTuiBackpressureWarning(backpressureSnapshot);
   const { addNotification } = useNotifications();
+  const {
+    status: apiKeyStatus,
+    reverify
+  } = useApiKeyVerification();
+  useEffect(() => {
+    void reverify();
+  }, [reverify]);
   const [completionPipelineState, setCompletionPipelineState] =
     useState<CompletionPipelineState>(() => readCompletionPipelineState());
   useEffect(() => {
@@ -1580,7 +1588,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     mcpClients,
     setAppState,
     setMessages: () => {},
-  }) as any, [appStateStore, commands, availableTools, mcpClients, props.session, refreshAvailableTools, toolPermissionContext, setToolJSX, setAppState]);
+    onChangeAPIKey: reverify,
+  }) as any, [appStateStore, commands, availableTools, mcpClients, props.session, refreshAvailableTools, toolPermissionContext, setToolJSX, setAppState, reverify]);
 
   // Transient-message helper for local slash-command results.
   const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -2291,7 +2300,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {toolJSX !== null ? <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
         </Box> : null}
-      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
+      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
         if (isExitSlashCommand(value_0)) {
           setInput("");
           helpers.clearBuffer();
@@ -2358,7 +2367,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     completionPipelineOwnsPrompt: completionPipelineActive,
     toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true
   });
-  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
+  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
     if (isLocalJSXCommandActive) {
       return;
     }
