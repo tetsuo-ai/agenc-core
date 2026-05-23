@@ -1,22 +1,26 @@
+import { PassThrough } from "node:stream";
+
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const keybindingHarness = vi.hoisted(() => ({
+  deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
+  pendingReads: new Map<string, (result: { content: string }) => void>(),
+  tails: {} as Record<string, string>,
 }));
 
 vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
-  tailFile: vi.fn(async () => ({
-    content: [
-      "FAIL first failure",
-      "src/first.ts:4:1",
-      "first message",
-      "FAIL second failure",
-      "src/second.ts:9:1",
-      "second message",
-    ].join("\n"),
-  })),
+  tailFile: vi.fn(async (path: string) => {
+    const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
+    if (keybindingHarness.deferredTaskIds.has(taskId)) {
+      return new Promise<{ content: string }>((resolve) => {
+        keybindingHarness.pendingReads.set(taskId, resolve);
+      });
+    }
+    return { content: keybindingHarness.tails[taskId] ?? defaultTestTail() };
+  }),
 }));
 
 vi.mock("../../../src/utils/task/diskOutput.js", () => ({
@@ -30,11 +34,26 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import { createRoot } from "../../../src/tui/ink.js";
+import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { TestSurface, TestSurfaceView } from "../../../src/tui/workbench/surfaces/TestSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
+type TestStdin = PassThrough & {
+  isTTY: boolean;
+  ref: () => void;
+  setRawMode: (mode: boolean) => void;
+  unref: () => void;
+};
+
 describe("TestSurface", () => {
+  beforeEach(() => {
+    keybindingHarness.deferredTaskIds = new Set();
+    keybindingHarness.handlers = {};
+    keybindingHarness.pendingReads = new Map();
+    keybindingHarness.tails = {};
+  });
+
   it("clamps stale selection to the last parsed failure", async () => {
     const output = await renderToString(
       <TestSurfaceView
@@ -109,4 +128,130 @@ describe("TestSurface", () => {
       focusedPane: "surface",
     });
   });
+
+  it("clears stale failure output immediately when switching selected test tasks", async () => {
+    keybindingHarness.tails["shell-old"] = [
+      "FAIL old failure",
+      "src/old-test.ts:4:1",
+      "old message",
+    ].join("\n");
+    keybindingHarness.deferredTaskIds.add("shell-new");
+    let selectTask: ((taskId: string) => void) | null = null;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "shell-old": shellTask("shell-old", "old test", "completed"),
+              "shell-new": shellTask("shell-new", "new test", "running"),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "test",
+              selectedShellTaskId: "shell-old",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <TestTaskSelector onReady={(setter) => { selectTask = setter; }} />
+          <TestSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      selectTask?.("shell-new");
+      await sleep(25);
+
+      keybindingHarness.handlers["surface:open"]?.();
+      expect(changes.at(-1)?.workbench.activeFilePath).not.toBe("src/old-test.ts");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
+
+function TestTaskSelector({
+  onReady,
+}: {
+  readonly onReady: (selectTask: (taskId: string) => void) => void;
+}): null {
+  const setAppState = useSetAppState();
+  React.useEffect(() => {
+    onReady((selectedShellTaskId: string) => {
+      setAppState((state) => ({
+        ...state,
+        workbench: {
+          ...state.workbench,
+          selectedShellTaskId,
+        },
+      }));
+    });
+  }, [onReady, setAppState]);
+  return null;
+}
+
+function defaultTestTail(): string {
+  return [
+    "FAIL first failure",
+    "src/first.ts:4:1",
+    "first message",
+    "FAIL second failure",
+    "src/second.ts:9:1",
+    "second message",
+  ].join("\n");
+}
+
+function shellTask(
+  id: string,
+  description: string,
+  status: "running" | "completed",
+): any {
+  return {
+    id,
+    type: "local_bash",
+    status,
+    description,
+    command: "npm test",
+    startTime: id === "shell-new" ? 2_000 : 1_000,
+    outputFile: `urn:agenc:task:${id}:output`,
+    outputOffset: 0,
+    notified: false,
+  };
+}
+
+function createStreams(): {
+  readonly stdin: TestStdin;
+  readonly stdout: PassThrough;
+} {
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as TestStdin;
+
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
+  stdout.resume();
+
+  return {
+    stdin,
+    stdout,
+  };
+}
+
+function sleep(ms = 200): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
