@@ -29,6 +29,10 @@ let mockHasConsoleBillingAccess = false;
 let mockWorktreeSession: unknown = null;
 let mockGlobalConfig: Record<string, unknown> = {};
 const mockTuiCommandList = vi.hoisted(() => [] as Array<Record<string, any>>);
+const apiKeyVerificationProbe = vi.hoisted(() => ({
+  reverify: vi.fn(async () => {}),
+  status: "valid" as "loading" | "valid" | "invalid" | "missing" | "error",
+}));
 
 const providerProbe = {
   fpsGetters: [] as unknown[],
@@ -184,6 +188,14 @@ vi.mock("../hooks/useEffectEventCompat.js", () => ({
 
 vi.mock("../hooks/useSettingsChange.js", () => ({
   useSettingsChange: () => {},
+}));
+
+vi.mock("../hooks/useApiKeyVerification.js", () => ({
+  useApiKeyVerification: () => ({
+    error: null,
+    reverify: apiKeyVerificationProbe.reverify,
+    status: apiKeyVerificationProbe.status,
+  }),
 }));
 
 vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
@@ -491,6 +503,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onInputChange,
       isLoading,
       isLocalJSXCommandActive,
+      apiKeyStatus,
       pastedContents,
       setPastedContents,
       mode,
@@ -513,6 +526,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onInputChange?: (input: string) => void;
       isLoading?: boolean;
       isLocalJSXCommandActive?: boolean;
+      apiKeyStatus?: unknown;
       pastedContents?: unknown;
       setPastedContents?: unknown;
       mode?: unknown;
@@ -532,6 +546,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onInputChange,
         isLoading,
         isLocalJSXCommandActive,
+        apiKeyStatus,
         pastedContents,
         setPastedContents,
         mode,
@@ -1067,6 +1082,35 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         setVimMode: expect.any(Function),
       }),
     );
+  });
+
+  test("passes API key verification status into PromptInput and verifies on startup", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const previousStatus = apiKeyVerificationProbe.status;
+    apiKeyVerificationProbe.status = "missing";
+    apiKeyVerificationProbe.reverify.mockClear();
+    providerProbe.promptProps.length = 0;
+
+    try {
+      await renderApp(
+        <AgenCTuiApp
+          session={createSession()}
+          configStore={{}}
+          isInteractive={false}
+          initialComposerText="draft"
+        />,
+      );
+
+      expect(providerProbe.promptProps.at(-1)).toEqual(
+        expect.objectContaining({
+          apiKeyStatus: "missing",
+        }),
+      );
+      expect(apiKeyVerificationProbe.reverify).toHaveBeenCalledTimes(1);
+    } finally {
+      apiKeyVerificationProbe.status = previousStatus;
+      apiKeyVerificationProbe.reverify.mockClear();
+    }
   });
 
   test("hydrates the TUI app state with registered agent roles", async () => {
