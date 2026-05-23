@@ -38,6 +38,7 @@ const harness = vi.hoisted(() => {
     cachedDetection: undefined as undefined | { isNative?: boolean },
     inProcessEnabled: false,
     inProcessTeammate: false,
+    insideTmuxError: undefined as undefined | Error,
     insideTmux: null as boolean | null,
     teammate: {
       active: false,
@@ -55,6 +56,7 @@ const harness = vi.hoisted(() => {
       state.cachedDetection = undefined
       state.inProcessEnabled = false
       state.inProcessTeammate = false
+      state.insideTmuxError = undefined
       state.insideTmux = null
       state.teammate = {
         active: false,
@@ -112,7 +114,14 @@ vi.mock('../../../utils/standaloneAgent.js', () => ({
 }))
 
 vi.mock('../../../utils/swarm/backends/detection.js', () => ({
-  isInsideTmux: () => Promise.resolve(harness.insideTmux),
+  isInsideTmux: () =>
+    harness.insideTmuxError
+      ? Promise.reject(harness.insideTmuxError)
+      : Promise.resolve(harness.insideTmux),
+}))
+
+vi.mock('../../../utils/log.js', () => ({
+  logError: vi.fn(),
 }))
 
 vi.mock('../../../utils/swarm/backends/registry.js', () => ({
@@ -137,6 +146,7 @@ vi.mock('../../../utils/teammateContext.js', () => ({
 
 import { createRoot } from '../../ink/root.js'
 import { useSwarmBanner } from './useSwarmBanner.js'
+import { logError } from '../../../utils/log.js'
 
 type Banner = ReturnType<typeof useSwarmBanner>
 
@@ -317,5 +327,25 @@ describe('useSwarmBanner coverage', () => {
     })
 
     await expectBanner(() => {}, null)
+  })
+
+  test('logs rejected tmux detection and falls back to attach hint', async () => {
+    const error = new Error('tmux detection failed')
+
+    await expectBanner(() => {
+      harness.insideTmuxError = error
+      harness.appState.teamContext = {
+        teamName: 'launch',
+        teammates: { analyst: {} },
+      }
+      harness.viewedTeammate = {
+        identity: { agentName: 'analyst', color: 'blue' },
+      }
+    }, {
+      bgColor: 'blue_FOR_SUBAGENTS_ONLY',
+      text: 'View teammates: `tmux -L agenc-swarm-test a`',
+    })
+
+    expect(logError).toHaveBeenCalledWith(error)
   })
 })
