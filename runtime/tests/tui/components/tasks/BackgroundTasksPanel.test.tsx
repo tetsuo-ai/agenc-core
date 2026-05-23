@@ -108,6 +108,35 @@ function makeRemoteTask(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeTeammateTask(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 't1',
+    type: 'in_process_teammate',
+    status: 'running',
+    description: 'Teammate work',
+    startTime: Date.now(),
+    outputFile: 'urn:agenc:task:t1:output',
+    outputOffset: 0,
+    notified: false,
+    identity: {
+      agentId: 'teammate-1',
+      agentName: 'Planner',
+      teamName: 'Core',
+      planModeRequired: false,
+      parentSessionId: 'session-1',
+    },
+    prompt: 'Inspect the TUI',
+    awaitingPlanApproval: false,
+    permissionMode: 'default',
+    pendingUserMessages: [],
+    isIdle: false,
+    shutdownRequested: false,
+    lastReportedToolCount: 0,
+    lastReportedTokenCount: 0,
+    ...overrides,
+  }
+}
+
 describe('BackgroundTasksPanel', () => {
   beforeEach(() => {
     appStateMock.state = { tasks: {} }
@@ -269,5 +298,52 @@ describe('BackgroundTasksPanel', () => {
     inputHandler.current('x', key())
 
     expect(killTaskMock).toHaveBeenCalledWith('b1', contextSetAppState)
+  })
+
+  it('does not invoke stop helpers for states those helpers cannot change', async () => {
+    appStateMock.state = {
+      tasks: {
+        b1: makeShellTask({ status: 'pending' }),
+      },
+    }
+
+    const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+
+    const pendingShellOutput = await renderToString(
+      <BackgroundTasksPanel initialDetailTaskId="b1" />,
+      100,
+    )
+    expect(pendingShellOutput).not.toContain('x stop')
+
+    if (!inputHandler.current) {
+      throw new Error('BackgroundTasksPanel did not register input handling')
+    }
+    inputHandler.current('x', key())
+
+    expect(killTaskMock).not.toHaveBeenCalled()
+    expect(killAsyncAgentMock).not.toHaveBeenCalled()
+    expect(requestTeammateShutdownMock).not.toHaveBeenCalled()
+
+    appStateMock.state = {
+      tasks: {
+        t1: makeTeammateTask({ shutdownRequested: true }),
+      },
+    }
+    inputHandler.current = undefined
+
+    const shutdownTeammateOutput = await renderToString(
+      <BackgroundTasksPanel initialDetailTaskId="t1" />,
+      100,
+    )
+    expect(shutdownTeammateOutput).not.toContain('x stop')
+
+    if (!inputHandler.current) {
+      throw new Error('BackgroundTasksPanel did not register input handling')
+    }
+    inputHandler.current('x', key())
+
+    expect(killTaskMock).not.toHaveBeenCalled()
+    expect(killAsyncAgentMock).not.toHaveBeenCalled()
+    expect(requestTeammateShutdownMock).not.toHaveBeenCalled()
   })
 })

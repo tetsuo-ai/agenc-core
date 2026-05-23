@@ -104,7 +104,7 @@ function makeTeammateTask(overrides: Record<string, unknown> = {}) {
       ],
     },
     isIdle: false,
-    shutdownRequested: true,
+    shutdownRequested: false,
     lastReportedToolCount: 3,
     lastReportedTokenCount: 1200,
     ...overrides,
@@ -122,7 +122,7 @@ describe('BackgroundTasksPanel coverage', () => {
     requestTeammateShutdownMock.mockClear()
   })
 
-  it('renders teammate detail rows and stops the selected teammate task', async () => {
+  it('renders teammate detail rows and stops the selected running teammate task', async () => {
     appStateMock.state = {
       tasks: {
         'teammate-1': makeTeammateTask(),
@@ -141,9 +141,9 @@ describe('BackgroundTasksPanel coverage', () => {
     expect(output).toContain('Reviewer · Agent')
     expect(output).toContain('agent-reviewer')
     expect(output).toContain('awaiting plan approval')
-    expect(output).toContain('shutdown requested')
     expect(output).toContain('reading related tests')
     expect(output).toContain('Please check edge cases')
+    expect(output).toContain('x stop')
 
     if (!inputHandler.current) {
       throw new Error('BackgroundTasksPanel did not register input handling')
@@ -154,6 +154,33 @@ describe('BackgroundTasksPanel coverage', () => {
       'teammate-1',
       appStateMock.setAppState,
     )
+    expect(killTaskMock).not.toHaveBeenCalled()
+    expect(killAsyncAgentMock).not.toHaveBeenCalled()
+  })
+
+  it('renders shutdown-requested teammates without another stop affordance', async () => {
+    appStateMock.state = {
+      tasks: {
+        'teammate-1': makeTeammateTask({ shutdownRequested: true }),
+      },
+    }
+
+    const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+
+    const output = await renderToString(
+      <BackgroundTasksPanel initialDetailTaskId="teammate-1" />,
+      120,
+    )
+
+    expect(output).toContain('shutdown requested')
+    expect(output).not.toContain('x stop')
+
+    if (!inputHandler.current) {
+      throw new Error('BackgroundTasksPanel did not register input handling')
+    }
+    inputHandler.current('x', key())
+
+    expect(requestTeammateShutdownMock).not.toHaveBeenCalled()
     expect(killTaskMock).not.toHaveBeenCalled()
     expect(killAsyncAgentMock).not.toHaveBeenCalled()
   })

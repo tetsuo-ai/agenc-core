@@ -1,11 +1,7 @@
 import * as React from "react";
 
-import { killAsyncAgent } from "../../../tasks/LocalAgentTask/LocalAgentTask.js";
-import { killTask } from "../../../tasks/LocalShellTask/killShellTasks.js";
-import { requestTeammateShutdown } from "../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js";
 import {
   isBackgroundTask,
-  isStoppableTaskStatus,
   isTaskType,
   type TaskState,
 } from "../../../tasks/types.js";
@@ -17,6 +13,7 @@ import { agentRolePresentation } from "../../../agents/role-presentation.js";
 import { Box, useInput } from "../../ink.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useAppState, useSetAppState, type AppState } from "../../state/AppState.js";
+import { stopTuiTask, tuiStopActionForTask } from "../../task-stop-actions.js";
 import ThemedBox from "../design-system/ThemedBox.js";
 import ThemedText from "../design-system/ThemedText.js";
 import { KeyHint, MenuModal } from "../v2/primitives.js";
@@ -367,19 +364,9 @@ function buildTaskDetailRows(
 }
 
 function taskActionLabel(task: TaskState): string {
-  if (!isStoppableTaskStatus(task.status)) {
-    return "View output";
-  }
-  switch (task.type) {
-    case "local_bash":
-    case "local_agent":
-    case "in_process_teammate":
-      return "Stop";
-    case "remote_agent":
-      return "Stop unavailable";
-    default:
-      return "View output";
-  }
+  const stopAction = tuiStopActionForTask(task);
+  if (stopAction === "remote-unavailable") return "Stop unavailable";
+  return stopAction ? "Stop" : "View output";
 }
 
 function isBackgroundDialogTask(task: unknown): task is TaskState {
@@ -405,25 +392,6 @@ function isBackgroundDialogTask(task: unknown): task is TaskState {
     candidate.status === "failed" ||
     candidate.status === "killed"
   );
-}
-
-function stopTask(task: TaskState, setAppState: ReturnType<typeof useSetAppState>): void {
-  if (!isStoppableTaskStatus(task.status)) {
-    return;
-  }
-  switch (task.type) {
-    case "local_bash":
-      killTask(task.id, setAppState);
-      break;
-    case "local_agent":
-      killAsyncAgent(task.id, setAppState);
-      break;
-    case "in_process_teammate":
-      requestTeammateShutdown(task.id, setAppState);
-      break;
-    case "remote_agent":
-      break;
-  }
 }
 
 function setAppStateFromContext(toolUseContext: unknown): ReturnType<typeof useSetAppState> | null {
@@ -502,6 +470,9 @@ export function BackgroundTasksPanel({
     [nameByAgentId, selectedShellOutputTail, selectedTask],
   );
   const selectedTaskDetail = selectedTask ? taskDetail(selectedTask) : null;
+  const selectedTaskStopAction = tuiStopActionForTask(selectedTask);
+  const selectedTaskCanStop =
+    selectedTaskStopAction !== null && selectedTaskStopAction !== "remote-unavailable";
   React.useEffect(() => {
     setDetailIndex(0);
   }, [selectedTaskId]);
@@ -565,7 +536,7 @@ export function BackgroundTasksPanel({
   );
   const stopSelectedTask = React.useCallback(() => {
     if (selectedTask) {
-      stopTask(selectedTask, setAppState);
+      stopTuiTask(selectedTask, setAppState);
     }
   }, [selectedTask, setAppState]);
   const selectDetailRelative = React.useCallback(
@@ -659,14 +630,14 @@ export function BackgroundTasksPanel({
         title="task detail"
         count={taskDetailStatusLabel(selectedTask)}
         summary={truncateToWidth(taskTitle(selectedTask), Math.max(1, columns - 38))}
-        headerRight="↑↓ scroll · ← back · x stop"
+        headerRight={selectedTaskCanStop ? "↑↓ scroll · ← back · x stop" : "↑↓ scroll · ← back"}
         columns={[8, 12, detailValueWidth]}
         headers={["section", "field", "value"]}
         items={detailRows}
         activeIndex={detailIndex}
         footer={[
           { keyName: "←", label: "back" },
-          { keyName: "x", label: "stop" },
+          ...(selectedTaskCanStop ? [{ keyName: "x", label: "stop" }] : []),
         ]}
         hint={truncateToWidth(`${taskKindLabel(selectedTask)} · ${selectedTask.id}`, taskTextWidth)}
         renderRow={(row, _index, active) => [
@@ -689,14 +660,14 @@ export function BackgroundTasksPanel({
       title="background tasks"
       count={summary}
       summary="unified background panel"
-      headerRight="↑↓ select · ⏎ open · x stop"
+      headerRight={selectedTaskCanStop ? "↑↓ select · ⏎ open · x stop" : "↑↓ select · ⏎ open"}
       columns={[2, 8, 18, 28, 18, 12, 8, 8]}
       headers={["", "kind", "id · status", "label", "target", "progress", "elapsed", "cost"]}
       items={sorted}
       activeIndex={selectedIndex}
       footer={[
         { keyName: "⏎", label: "open" },
-        { keyName: "x", label: "stop" },
+        ...(selectedTaskCanStop ? [{ keyName: "x", label: "stop" }] : []),
         { keyName: "l", label: "detail" },
       ]}
       hint={truncateToWidth(
