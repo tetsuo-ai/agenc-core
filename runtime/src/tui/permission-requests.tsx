@@ -220,6 +220,10 @@ export function usePermissionRequests(
     session.services.approvalResolver = {
       request(ctx) {
         return new Promise<ReviewDecision>((resolve) => {
+          if (ctx.signal?.aborted === true) {
+            resolve(ABORT);
+            return;
+          }
           const request: PendingRequest = {
             id: ctx.callId,
             ctx,
