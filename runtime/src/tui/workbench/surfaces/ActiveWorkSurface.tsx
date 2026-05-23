@@ -70,8 +70,8 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   {
     mode: "test",
     title: () => "TEST",
-    keybindings: ["j", "k", "g", "@", "q"],
-    footerHints: "Test: j/k failure  g edit  @ attach  q close",
+    keybindings: ["j", "k", "enter", "o", "@", "q"],
+    footerHints: "Test: j/k failure  enter edit  o keep focus  @ attach  q close",
     renderBody: ({ focused }) => <TestSurface focused={focused} />,
   },
   {
