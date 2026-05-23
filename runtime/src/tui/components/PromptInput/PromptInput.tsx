@@ -2063,8 +2063,9 @@ function PromptInput({
   }, [previousModeBeforeAuto, toolPermissionContext, setAppState, setToolPermissionContext]);
 
   // Handler for chat:imagePaste - paste image from clipboard
-  const handleImagePaste = useCallback(() => {
-    void getImageFromClipboard().then(imageData => {
+  const handleImagePaste = useCallback(async () => {
+    try {
+      const imageData = await getImageFromClipboard();
       if (imageData) {
         onImagePaste(
           imageData.base64,
@@ -2082,7 +2083,15 @@ function PromptInput({
           timeoutMs: 1000
         });
       }
-    });
+    } catch (err) {
+      logError(err);
+      addNotification({
+        key: 'image-paste-error',
+        text: `Image paste failed: ${errorMessage(err)}`,
+        color: 'warning',
+        priority: 'high'
+      });
+    }
   }, [addNotification, onImagePaste]);
 
   // Register chat:submit handler directly in the handler registry (not via

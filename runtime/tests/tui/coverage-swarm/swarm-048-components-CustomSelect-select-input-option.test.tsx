@@ -9,6 +9,7 @@ import {
   computeSelectInputColumns,
   SelectInputOption,
 } from "../../../src/tui/components/CustomSelect/select-input-option.js";
+import { logError } from "../../../src/utils/log.js";
 
 const keybindingMock = vi.hoisted(() => ({
   single: new Map<
@@ -153,6 +154,10 @@ vi.mock("../../../src/utils/imagePaste.js", () => ({
   getImageFromClipboard: imagePasteMock.getImageFromClipboard,
 }));
 
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: vi.fn(),
+}));
+
 type TestRoot = Awaited<ReturnType<typeof createRoot>>;
 
 const mountedRoots: Array<{ root: TestRoot; stdin: PassThrough }> = [];
@@ -225,6 +230,7 @@ describe("SelectInputOption coverage", () => {
     textInputMock.current = undefined;
     imagePasteMock.result = undefined;
     imagePasteMock.getImageFromClipboard.mockClear();
+    vi.mocked(logError).mockClear();
   });
 
   afterEach(() => {
@@ -292,6 +298,36 @@ describe("SelectInputOption coverage", () => {
     await keybindingMock.single.get("chat:imagePaste")?.at(-1)?.handler();
 
     expect(imagePasteMock.getImageFromClipboard).toHaveBeenCalledTimes(1);
+    expect(onImagePaste).not.toHaveBeenCalled();
+  });
+
+  test("logs rejected image paste shortcut lookups without routing image callbacks", async () => {
+    const error = new Error("clipboard read failed");
+    imagePasteMock.getImageFromClipboard.mockRejectedValueOnce(error);
+    const onImagePaste = vi.fn();
+
+    await renderOption(
+      <SelectInputOption
+        option={inputOption({ showLabelWithValue: false })}
+        isFocused
+        isSelected={false}
+        shouldShowDownArrow={false}
+        shouldShowUpArrow={false}
+        maxIndexWidth={1}
+        index={1}
+        inputValue=""
+        onInputChange={() => {}}
+        onSubmit={() => {}}
+        layout="compact"
+        onImagePaste={onImagePaste}
+      />,
+    );
+
+    await keybindingMock.single.get("chat:imagePaste")?.at(-1)?.handler();
+    await waitForRender();
+
+    expect(imagePasteMock.getImageFromClipboard).toHaveBeenCalledTimes(1);
+    expect(logError).toHaveBeenCalledWith(error);
     expect(onImagePaste).not.toHaveBeenCalled();
   });
 

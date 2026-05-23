@@ -8,6 +8,7 @@ import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.j
 import type { PastedContent } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ImageDimensions } from '../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js';
 import { ClickableImageRef } from '../ClickableImageRef.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Byline } from '../design-system/Byline.js';
@@ -190,11 +191,13 @@ export function SelectInputOption<T>(t0: Props<T>) {
       if (!onImagePaste) {
         return;
       }
-      getImageFromClipboard().then(imageData => {
-        if (imageData) {
-          onImagePaste(imageData.base64, imageData.mediaType, undefined, imageData.dimensions);
-        }
-      });
+      void getImageFromClipboard()
+        .then(imageData => {
+          if (imageData) {
+            onImagePaste(imageData.base64, imageData.mediaType, undefined, imageData.dimensions);
+          }
+        })
+        .catch(logError);
     };
     $[16] = onImagePaste;
     $[17] = t10;
