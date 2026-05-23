@@ -7,6 +7,10 @@ import React from "react";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  registerPendingLSPDiagnostic,
+  resetAllLSPDiagnosticState,
+} from "../../../src/services/lsp/LSPDiagnosticRegistry.js";
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 import { createRoot, useInput } from "../../../src/tui/ink.js";
 import { KeybindingSetup } from "../../../src/tui/keybindings/KeybindingProviderSetup.js";
@@ -69,6 +73,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  resetAllLSPDiagnosticState();
   resetWorkbenchBufferStoreForTesting();
   await rm(dir, { recursive: true, force: true });
 });
@@ -162,6 +167,62 @@ describe("BufferSurface", () => {
       expect(frame).toContain("target.ts");
       expect(frame).not.toContain("agent edit in flight");
       expect(frame).not.toMatch(/\bagent\b/u);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("shows diagnostics that span the current buffer line", async () => {
+    const filePath = join(dir, "target.ts");
+    await writeFile(filePath, "function value() {\n  return 1;\n}\n", "utf8");
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [{
+        uri: filePath,
+        diagnostics: [{
+          message: "spans block",
+          severity: "Error",
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 2, character: 1 },
+          },
+        }],
+      }],
+    });
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 2,
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface focused={false} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const frame = output();
+      expect(frame).toMatch(/1\s*diagnostic/u);
+      expect(frame).toMatch(/spans\s*block/u);
     } finally {
       root.unmount();
       stdin.end();

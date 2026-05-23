@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
+import type { DiagnosticEntry } from "../../../services/lsp/types.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { Box, Text } from "../../ink.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
@@ -43,7 +44,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   const visibleLines = store.getVisibleLines();
   const highlightedLines = useBufferHighlightedLines(snapshot.filePath ?? activePath, visibleLines);
   const currentLineDiagnostic = diagnostics.find(
-    (diagnostic) => (diagnostic.range?.start.line ?? -1) + 1 === snapshot.position.line,
+    (diagnostic) => diagnosticCoversLine(diagnostic, snapshot.position.line),
   );
 
   useEffect(() => {
@@ -182,6 +183,18 @@ function bufferStatusLabel(snapshot: ReturnType<typeof useBufferStore>, hasInFli
 
 function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
+}
+
+function diagnosticCoversLine(diagnostic: DiagnosticEntry, line: number): boolean {
+  const range = diagnostic.range;
+  if (!range) return false;
+  const targetLine = line - 1;
+  const startLine = range.start.line;
+  const endLine =
+    range.end.line > startLine && range.end.character === 0
+      ? range.end.line - 1
+      : range.end.line;
+  return targetLine >= startLine && targetLine <= endLine;
 }
 
 function useBufferHighlightedLines(
