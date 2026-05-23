@@ -199,4 +199,36 @@ describe('useClipboardImageHint coverage swarm row 246', () => {
       await rendered.dispose()
     }
   })
+
+  test('ignores rejected clipboard probes and retries on the next focus regain', async () => {
+    fixture.hasImageInClipboard
+      .mockRejectedValueOnce(new Error('clipboard probe failed'))
+      .mockResolvedValueOnce(true)
+    const rendered = await renderHookHarness({
+      enabled: true,
+      isFocused: false,
+    })
+
+    try {
+      await rendered.render({ isFocused: true })
+      await flushEffects(1_000)
+
+      expect(fixture.hasImageInClipboard).toHaveBeenCalledTimes(1)
+      expect(fixture.addNotification).not.toHaveBeenCalled()
+
+      await rendered.render({ isFocused: false })
+      await rendered.render({ isFocused: true })
+      await flushEffects(1_000)
+
+      expect(fixture.hasImageInClipboard).toHaveBeenCalledTimes(2)
+      expect(fixture.addNotification).toHaveBeenCalledWith({
+        key: 'clipboard-image-hint',
+        text: 'Image in clipboard · Ctrl+V to paste',
+        priority: 'immediate',
+        timeoutMs: 8000,
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
 })
