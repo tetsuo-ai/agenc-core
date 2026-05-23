@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import { getCwd } from "../../../utils/cwd.js";
+import { logError } from "../../../utils/log.js";
 import { readFileInRange } from "../../../utils/readFileInRange.js";
 import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
@@ -96,7 +97,8 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
       .then((status) => {
         if (mounted) setGitStateState({ path: statusPath, status: status.get(statusPath) ?? "clean" });
       })
-      .catch(() => {
+      .catch((error) => {
+        logError(error);
         if (mounted) setGitStateState({ path: statusPath, status: null });
       });
     return () => {
