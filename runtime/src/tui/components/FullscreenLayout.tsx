@@ -656,6 +656,11 @@ function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
     ]} />;
 }
 
+const fullscreenHyperlinkOwners = new WeakMap<object, {
+  base: ((url: string) => void) | undefined;
+  handlers: Array<(url: string) => void>;
+}>();
+
 // Slack-style pill. Absolute overlay at bottom={0} of the scrollwrap — floats
 // over the ScrollBox's last content row, only obscuring the centered pill
 // text (the rest of the row shows ScrollBox content). Scroll-smear from
@@ -671,9 +676,27 @@ function _temp3() {
   if (!ink) {
     return;
   }
-  ink.onHyperlinkClick = _temp2;
+  const ownerState = fullscreenHyperlinkOwners.get(ink) ?? {
+    base: ink.onHyperlinkClick,
+    handlers: [],
+  };
+  fullscreenHyperlinkOwners.set(ink, ownerState);
+  const handler = (url: string) => {
+    _temp2(url);
+  };
+  ownerState.handlers.push(handler);
+  ink.onHyperlinkClick = handler;
   return () => {
-    ink.onHyperlinkClick = undefined;
+    const index = ownerState.handlers.indexOf(handler);
+    if (index !== -1) {
+      ownerState.handlers.splice(index, 1);
+    }
+    if (ink.onHyperlinkClick === handler) {
+      ink.onHyperlinkClick = ownerState.handlers.at(-1) ?? ownerState.base;
+    }
+    if (ownerState.handlers.length === 0) {
+      fullscreenHyperlinkOwners.delete(ink);
+    }
   };
 }
 function openFullscreenHyperlinkTarget(result, failureMessage) {

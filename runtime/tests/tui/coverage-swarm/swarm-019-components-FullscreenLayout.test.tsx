@@ -417,4 +417,147 @@ describe('FullscreenLayout coverage swarm 019', () => {
       await sleep()
     }
   })
+
+  test('restores only its own fullscreen hyperlink handler on unmount', async () => {
+    const previousHandler = vi.fn()
+    const replacementHandler = vi.fn()
+    const fakeInk = {
+      onHyperlinkClick: previousHandler,
+    } as { onHyperlinkClick?: (url: string) => void }
+    setInkInstance(process.stdout, fakeInk as never)
+
+    try {
+      await withFullscreenEnv(async () => {
+        const first = createStreams({ columns: 90, rows: 12 })
+        first.stdout.resume()
+        const firstRoot = await createRoot({
+          patchConsole: false,
+          stdin: first.stdin as unknown as NodeJS.ReadStream,
+          stdout: first.stdout as unknown as NodeJS.WriteStream,
+        })
+        try {
+          firstRoot.render(
+            <FullscreenLayout
+              scrollable={<Text>link body</Text>}
+              bottom={<Text>prompt body</Text>}
+            />,
+          )
+          await sleep()
+
+          expect(fakeInk.onHyperlinkClick).toEqual(expect.any(Function))
+          expect(fakeInk.onHyperlinkClick).not.toBe(previousHandler)
+
+          fakeInk.onHyperlinkClick = replacementHandler
+          firstRoot.unmount()
+          await sleep()
+
+          expect(fakeInk.onHyperlinkClick).toBe(replacementHandler)
+        } finally {
+          firstRoot.unmount()
+          first.stdin.end()
+          first.stdout.end()
+        }
+
+        const second = createStreams({ columns: 90, rows: 12 })
+        second.stdout.resume()
+        const secondRoot = await createRoot({
+          patchConsole: false,
+          stdin: second.stdin as unknown as NodeJS.ReadStream,
+          stdout: second.stdout as unknown as NodeJS.WriteStream,
+        })
+        fakeInk.onHyperlinkClick = previousHandler
+        try {
+          secondRoot.render(
+            <FullscreenLayout
+              scrollable={<Text>link body</Text>}
+              bottom={<Text>prompt body</Text>}
+            />,
+          )
+          await sleep()
+
+          secondRoot.unmount()
+          await sleep()
+
+          expect(fakeInk.onHyperlinkClick).toBe(previousHandler)
+        } finally {
+          secondRoot.unmount()
+          second.stdin.end()
+          second.stdout.end()
+        }
+      })
+    } finally {
+      deleteInkInstance(process.stdout)
+      await sleep()
+    }
+  })
+
+  test('keeps nested fullscreen hyperlink handlers stacked', async () => {
+    const previousHandler = vi.fn()
+    const fakeInk = {
+      onHyperlinkClick: previousHandler,
+    } as { onHyperlinkClick?: (url: string) => void }
+    setInkInstance(process.stdout, fakeInk as never)
+
+    try {
+      await withFullscreenEnv(async () => {
+        const first = createStreams({ columns: 90, rows: 12 })
+        const second = createStreams({ columns: 90, rows: 12 })
+        first.stdout.resume()
+        second.stdout.resume()
+        const firstRoot = await createRoot({
+          patchConsole: false,
+          stdin: first.stdin as unknown as NodeJS.ReadStream,
+          stdout: first.stdout as unknown as NodeJS.WriteStream,
+        })
+        const secondRoot = await createRoot({
+          patchConsole: false,
+          stdin: second.stdin as unknown as NodeJS.ReadStream,
+          stdout: second.stdout as unknown as NodeJS.WriteStream,
+        })
+
+        try {
+          firstRoot.render(
+            <FullscreenLayout
+              scrollable={<Text>first link body</Text>}
+              bottom={<Text>first prompt body</Text>}
+            />,
+          )
+          await sleep()
+          const firstHandler = fakeInk.onHyperlinkClick
+          expect(firstHandler).toEqual(expect.any(Function))
+
+          secondRoot.render(
+            <FullscreenLayout
+              scrollable={<Text>second link body</Text>}
+              bottom={<Text>second prompt body</Text>}
+            />,
+          )
+          await sleep()
+          const secondHandler = fakeInk.onHyperlinkClick
+          expect(secondHandler).toEqual(expect.any(Function))
+          expect(secondHandler).not.toBe(firstHandler)
+
+          firstRoot.unmount()
+          await sleep()
+
+          expect(fakeInk.onHyperlinkClick).toBe(secondHandler)
+
+          secondRoot.unmount()
+          await sleep()
+
+          expect(fakeInk.onHyperlinkClick).toBe(previousHandler)
+        } finally {
+          firstRoot.unmount()
+          secondRoot.unmount()
+          first.stdin.end()
+          first.stdout.end()
+          second.stdin.end()
+          second.stdout.end()
+        }
+      })
+    } finally {
+      deleteInkInstance(process.stdout)
+      await sleep()
+    }
+  })
 })
