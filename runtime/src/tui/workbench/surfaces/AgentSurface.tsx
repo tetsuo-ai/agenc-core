@@ -51,7 +51,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
   useKeybindings(
     {
       "surface:open": () => {
-        if (task?.type === "local_agent") enterTeammateView(task.id, setAppState);
+        if (canEnterAgentTranscript(task)) enterTeammateView(task.id, setAppState);
       },
       "surface:stop": () => {
         if (task) stopWorkbenchTask(task, setAppState);
@@ -86,7 +86,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
         </Box>
       ) : null}
       <Text dimColor wrap="truncate-end">
-        {task.type === "local_agent" ? "enter transcript · " : ""}
+        {canEnterAgentTranscript(task) ? "enter transcript · " : ""}
         {stopAction === "remote-unavailable" ? "stop unavailable from this session" : stopAction ? "x stop" : "view only"}
         {" · steer unavailable unless agent routing is real"}
       </Text>
@@ -97,4 +97,8 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
       </Box>
     </Box>
   );
+}
+
+export function canEnterAgentTranscript(task: { readonly id?: string; readonly type?: string } | null | undefined): task is { readonly id: string; readonly type: "local_agent" | "in_process_teammate" } {
+  return typeof task?.id === "string" && (task.type === "local_agent" || task.type === "in_process_teammate");
 }
