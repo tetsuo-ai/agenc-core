@@ -621,15 +621,20 @@ async function killTeammate(paneId: string, backendType: PaneBackendType | undef
 }
 async function viewTeammateOutput(paneId: string, backendType: PaneBackendType | undefined): Promise<TeamActionResult> {
   let result;
-  if (backendType === 'iterm2') {
-    // -s is required to target a specific session (ITermBackend.ts:216-217)
-    result = await execFileNoThrow(IT2_COMMAND, ['session', 'focus', '-s', paneId]);
-  } else {
-    // External-tmux teammates live on the swarm socket — without -L, this
-    // targets the default server and silently no-ops. Mirrors runTmuxInSwarm
-    // in TmuxBackend.ts:85-89.
-    const args = isInsideTmuxSync() ? ['select-pane', '-t', paneId] : ['-L', getSwarmSocketName(), 'select-pane', '-t', paneId];
-    result = await execFileNoThrow(TMUX_COMMAND, args);
+  try {
+    if (backendType === 'iterm2') {
+      // -s is required to target a specific session (ITermBackend.ts:216-217)
+      result = await execFileNoThrow(IT2_COMMAND, ['session', 'focus', '-s', paneId]);
+    } else {
+      // External-tmux teammates live on the swarm socket — without -L, this
+      // targets the default server and silently no-ops. Mirrors runTmuxInSwarm
+      // in TmuxBackend.ts:85-89.
+      const args = isInsideTmuxSync() ? ['select-pane', '-t', paneId] : ['-L', getSwarmSocketName(), 'select-pane', '-t', paneId];
+      result = await execFileNoThrow(TMUX_COMMAND, args);
+    }
+  } catch (error) {
+    logError(error);
+    return fail(`Cannot view teammate output: ${errorMessage(error)}`);
   }
   if (result.code !== 0) {
     return fail(`Cannot view teammate output: ${result.error || result.stderr || `exit code ${result.code}`}`);
