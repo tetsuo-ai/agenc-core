@@ -40,6 +40,7 @@ const harness = vi.hoisted(() => ({
   dialogProps: undefined as CapturedDialogProps | undefined,
   getAllMcpConfigs: vi.fn(),
   gracefulShutdown: vi.fn(),
+  logError: vi.fn(),
   selectProps: undefined as CapturedSelectMultiProps | undefined,
   writeToStdout: vi.fn(),
 }))
@@ -51,6 +52,10 @@ vi.mock('../../services/mcp/config.js', () => ({
 
 vi.mock('../../utils/gracefulShutdown.js', () => ({
   gracefulShutdown: harness.gracefulShutdown,
+}))
+
+vi.mock('../../utils/log.js', () => ({
+  logError: harness.logError,
 }))
 
 vi.mock('src/utils/process.js', () => ({
@@ -209,6 +214,7 @@ describe('MCPServerDesktopImportDialog', () => {
     harness.dialogProps = undefined
     harness.getAllMcpConfigs.mockReset()
     harness.gracefulShutdown.mockReset()
+    harness.logError.mockReset()
     harness.selectProps = undefined
     harness.writeToStdout.mockReset()
   })
@@ -267,6 +273,29 @@ describe('MCPServerDesktopImportDialog', () => {
       expect(body).toContain('Note: Some servers already exist')
       expect(body).toContain('Please select the servers you want to import')
       expect(body).toContain('docs (already exists)')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('logs rejected existing config reads and keeps all imports selectable', async () => {
+    const error = new Error('config read failed')
+    harness.getAllMcpConfigs.mockRejectedValueOnce(error)
+    const rendered = await renderDialog()
+
+    try {
+      await waitFor(
+        () => harness.getAllMcpConfigs.mock.calls.length > 0,
+        'MCP server import dialog did not try to load existing server names',
+      )
+      await sleep(20)
+
+      expect(harness.logError).toHaveBeenCalledWith(error)
+      expect(selectProps().options).toEqual([
+        { label: 'filesystem', value: 'filesystem' },
+        { label: 'docs', value: 'docs' },
+      ])
+      expect(selectProps().defaultValue).toEqual(['filesystem', 'docs'])
     } finally {
       await rendered.dispose()
     }

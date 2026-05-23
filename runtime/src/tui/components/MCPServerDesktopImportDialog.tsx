@@ -5,6 +5,7 @@ import { writeToStdout } from 'src/utils/process.js';
 import { Box, color, Text, useTheme } from '../ink.js';
 import { addMcpConfig, getAllMcpConfigs } from '../../services/mcp/config.js';
 import type { ConfigScope, McpServerConfig, ScopedMcpServerConfig } from '../../services/mcp/types.js';
+import { logError } from '../../utils/log.js';
 import { plural } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { SelectMulti } from './CustomSelect/SelectMulti.js';
@@ -40,16 +41,25 @@ export function MCPServerDesktopImportDialog(t0: Props) {
     t2 = $[2];
   }
   const [existingServers, setExistingServers] = useState<Record<string, ScopedMcpServerConfig>>(t2);
-  let t3: () => void;
+  let t3: () => void | (() => void);
   let t4: [];
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = () => {
+      let mounted = true;
       getAllMcpConfigs().then((t5) => {
         const {
           servers: servers_0
         } = t5;
+        if (!mounted) {
+          return;
+        }
         return setExistingServers(servers_0);
+      }, error => {
+        logError(error);
       });
+      return () => {
+        mounted = false;
+      };
     };
     t4 = [];
     $[3] = t3;
