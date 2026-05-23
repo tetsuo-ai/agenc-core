@@ -1,10 +1,76 @@
-import React from "react";
-import { describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
 
-import { SearchSurfaceView } from "../../../src/tui/workbench/surfaces/SearchSurface.js";
+import React from "react";
+import stripAnsi from "strip-ansi";
+import { describe, expect, it, vi } from "vitest";
+
+const searchHarness = vi.hoisted(() => ({
+  handlers: {} as Record<string, () => void>,
+  lines: [] as string[],
+}));
+
+vi.mock("../../../src/utils/ripgrep.js", () => ({
+  ripGrepStream: vi.fn(async (
+    _args: string[],
+    _target: string,
+    _signal: AbortSignal,
+    onLines: (lines: string[]) => void,
+  ) => {
+    onLines(searchHarness.lines);
+  }),
+}));
+
+vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useKeybinding: () => {},
+  useKeybindings: (handlers: Record<string, () => void>) => {
+    searchHarness.handlers = handlers;
+  },
+}));
+
+import { createRoot } from "../../../src/tui/ink.js";
+import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import { SearchSurface, SearchSurfaceView } from "../../../src/tui/workbench/surfaces/SearchSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
-describe("SearchSurfaceView", () => {
+type TestStdin = PassThrough & {
+  isTTY: boolean;
+  ref: () => void;
+  setRawMode: (mode: boolean) => void;
+  unref: () => void;
+};
+
+function createStreams(): {
+  readonly stdin: TestStdin;
+  readonly stdout: PassThrough;
+  readonly output: () => string;
+} {
+  let output = "";
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as TestStdin;
+
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
+  stdout.on("data", chunk => {
+    output += chunk.toString();
+  });
+
+  return {
+    stdin,
+    stdout,
+    output: () => stripAnsi(output),
+  };
+}
+
+function sleep(ms = 200): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+describe("SearchSurface", () => {
   it("renders loading, no result, error, and truncated states", async () => {
     const loading = await renderToString(
       <SearchSurfaceView query="needle" matches={[]} selected={0} loading={true} error={null} focused={true} />,
@@ -84,4 +150,56 @@ describe("SearchSurfaceView", () => {
     expect(output).toContain("src/other.ts:9");
     expect(output).toContain("@ attach");
   });
+
+  it("selects the requested search match id after ripgrep results load", async () => {
+    searchHarness.lines = [
+      "src/first.ts:4:const needle = true",
+      "src/second.ts:9:needle()",
+    ];
+    const changes: AppState[] = [];
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+              selectedSearchMatchId: "src/second.ts:9:needle()",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(output())).toContain("src/second.ts");
+      searchHarness.handlers["surface:open"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/second.ts",
+        activeFileLine: 9,
+        focusedPane: "surface",
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
+
+function compact(value: string): string {
+  return value.replace(/\s+/gu, "");
+}
