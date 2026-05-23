@@ -63,8 +63,17 @@ export type WorkbenchCommand =
   | { readonly type: "openAgent"; readonly taskId: string; readonly focus?: boolean }
   | { readonly type: "selectAgent"; readonly taskId: string | null }
   | { readonly type: "closeSurface" }
-  | { readonly type: "renamePathReferences"; readonly fromPath: string; readonly toPath: string }
-  | { readonly type: "deletePathReferences"; readonly path: string }
+  | {
+      readonly type: "renamePathReferences";
+      readonly fromPath: string;
+      readonly toPath: string;
+      readonly openAffectedBuffer?: boolean;
+    }
+  | {
+      readonly type: "deletePathReferences";
+      readonly path: string;
+      readonly closeAffectedSurface?: boolean;
+    }
   | { readonly type: "toggleExplorer"; readonly visible?: boolean }
   | { readonly type: "toggleAgents"; readonly visible?: boolean }
   | { readonly type: "attach"; readonly attachment: WorkbenchAttachment }

@@ -28,12 +28,28 @@ export function attachFileCommand(path: string): WorkbenchCommand {
   };
 }
 
-export function renamePathReferencesCommand(fromPath: string, toPath: string): WorkbenchCommand {
-  return { type: "renamePathReferences", fromPath, toPath };
+export function renamePathReferencesCommand(
+  fromPath: string,
+  toPath: string,
+  options: { readonly openAffectedBuffer?: boolean } = {},
+): WorkbenchCommand {
+  return {
+    type: "renamePathReferences",
+    fromPath,
+    toPath,
+    openAffectedBuffer: options.openAffectedBuffer,
+  };
 }
 
-export function deletePathReferencesCommand(path: string): WorkbenchCommand {
-  return { type: "deletePathReferences", path };
+export function deletePathReferencesCommand(
+  path: string,
+  options: { readonly closeAffectedSurface?: boolean } = {},
+): WorkbenchCommand {
+  return {
+    type: "deletePathReferences",
+    path,
+    closeAffectedSurface: options.closeAffectedSurface,
+  };
 }
 
 export function attachFileRangeCommand(

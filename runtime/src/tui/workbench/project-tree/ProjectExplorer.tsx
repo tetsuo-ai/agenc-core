@@ -12,10 +12,6 @@ import TextInput from "../../components/TextInput.js";
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
-import {
-  containsWorkspacePathReference,
-  renameWorkspacePathReference,
-} from "../pathReferences.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
@@ -112,12 +108,8 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       dispatch(openBufferCommand(result.path, undefined, true));
       return;
     }
-    const renamedActivePath = renamedActiveFilePath(workbench.activeFilePath, action.path, result.path);
-    dispatch(renamePathReferencesCommand(action.path, result.path));
-    if (renamedActivePath) {
-      dispatch(openBufferCommand(renamedActivePath, workbench.activeFileLine ?? undefined, false));
-    }
-  }, [dispatch, fileAction, store, workbench.activeFileLine, workbench.activeFilePath]);
+    dispatch(renamePathReferencesCommand(action.path, result.path, { openAffectedBuffer: true }));
+  }, [dispatch, fileAction, store]);
 
   const confirmDelete = useCallback(async () => {
     const action = fileAction;
@@ -129,11 +121,8 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       return;
     }
     setFileAction(null);
-    dispatch(deletePathReferencesCommand(action.path));
-    if (pathContains(workbench.activeFilePath, action.path)) {
-      dispatch({ type: "closeSurface" });
-    }
-  }, [dispatch, fileAction, store, workbench.activeFilePath]);
+    dispatch(deletePathReferencesCommand(action.path, { closeAffectedSurface: true }));
+  }, [dispatch, fileAction, store]);
 
   useRegisterKeybindingContext("Explorer", focused);
   useKeybindings(
@@ -435,12 +424,4 @@ function defaultCreateFilePath(row: ProjectTreeRow | null): string {
     return slash >= 0 ? `${row.path.slice(0, slash)}/` : "";
   }
   return "";
-}
-
-function pathContains(activePath: string | null, targetPath: string): boolean {
-  return containsWorkspacePathReference(activePath, targetPath);
-}
-
-function renamedActiveFilePath(activePath: string | null, fromPath: string, toPath: string): string | null {
-  return renameWorkspacePathReference(activePath, fromPath, toPath);
 }

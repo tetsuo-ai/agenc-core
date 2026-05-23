@@ -9,6 +9,8 @@ const explorerHarness = vi.hoisted(() => {
     textInputProps: Array<Record<string, unknown>>;
     renameCalls: Array<readonly [string, string]>;
     deleteCalls: string[];
+    deferDelete: boolean;
+    pendingDeleteResolve: null | ((result: { readonly ok: true; readonly path: string }) => void);
     cursorRow: Record<string, unknown> | null;
     snapshot: Record<string, unknown>;
     store: Record<string, unknown>;
@@ -17,6 +19,8 @@ const explorerHarness = vi.hoisted(() => {
     textInputProps: [],
     renameCalls: [],
     deleteCalls: [],
+    deferDelete: false,
+    pendingDeleteResolve: null,
     cursorRow: {
       id: "src",
       path: "src",
@@ -92,6 +96,11 @@ const explorerHarness = vi.hoisted(() => {
     },
     deletePath: async (value: string) => {
       harness.deleteCalls.push(value);
+      if (harness.deferDelete) {
+        return new Promise((resolve) => {
+          harness.pendingDeleteResolve = resolve;
+        });
+      }
       return { ok: true, path: value };
     },
   };
@@ -128,7 +137,7 @@ vi.mock("../../../src/tui/workbench/project-tree/ProjectTreeStore.js", () => ({
 }));
 
 import { createRoot } from "../../../src/tui/ink.js";
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { ProjectExplorer } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 
 type TestStdin = PassThrough & {
@@ -166,6 +175,8 @@ describe("ProjectExplorer interactions", () => {
     explorerHarness.textInputProps = [];
     explorerHarness.renameCalls = [];
     explorerHarness.deleteCalls = [];
+    explorerHarness.deferDelete = false;
+    explorerHarness.pendingDeleteResolve = null;
   });
 
   it("updates the active buffer when renaming a directory that contains it", async () => {
@@ -229,6 +240,57 @@ describe("ProjectExplorer interactions", () => {
           endLine: 15,
         }],
         composerAttachmentIds: ["file-range:lib/nested/app.ts:12-15"],
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("does not reopen an unrelated active file when renaming another path", async () => {
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: "explorer",
+              activeSurfaceMode: "preview",
+              activeFilePath: "other.ts",
+              activeFileLine: 5,
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <ProjectExplorer focused={true} width={40} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      explorerHarness.handlers["explorer:rename"]?.();
+      await sleep();
+
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      expect(submitRename).toEqual(expect.any(Function));
+      submitRename?.("lib");
+      await sleep();
+
+      expect(explorerHarness.renameCalls).toEqual([["src", "lib"]]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        focusedPane: "explorer",
+        activeSurfaceMode: "preview",
+        activeFilePath: "other.ts",
+        activeFileLine: 5,
       });
     } finally {
       root.unmount();
@@ -312,4 +374,86 @@ describe("ProjectExplorer interactions", () => {
       stdout.end();
     }
   });
+
+  it("does not close a newer active file when delete finishes after navigation moved away", async () => {
+    explorerHarness.deferDelete = true;
+    const changes: AppState[] = [];
+    let setWorkbench: ((next: Partial<NonNullable<AppState["workbench"]>>) => void) | null = null;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: "explorer",
+              activeSurfaceMode: "buffer",
+              activeFilePath: "src/nested/app.ts",
+              activeFileLine: 12,
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <WorkbenchStateSetter onReady={(setter) => { setWorkbench = setter; }} />
+          <ProjectExplorer focused={true} width={40} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      explorerHarness.handlers["explorer:delete"]?.();
+      await sleep();
+
+      explorerHarness.handlers["confirm:yes"]?.();
+      await sleep();
+
+      setWorkbench?.({
+        activeSurfaceMode: "preview",
+        activeFilePath: "other.ts",
+        activeFileLine: 5,
+      });
+      await sleep();
+
+      explorerHarness.pendingDeleteResolve?.({ ok: true, path: "src" });
+      await sleep();
+
+      expect(explorerHarness.deleteCalls).toEqual(["src"]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "preview",
+        activeFilePath: "other.ts",
+        activeFileLine: 5,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
+
+function WorkbenchStateSetter({
+  onReady,
+}: {
+  readonly onReady: (setWorkbench: (next: Partial<NonNullable<AppState["workbench"]>>) => void) => void;
+}): null {
+  const setAppState = useSetAppState();
+  React.useEffect(() => {
+    onReady((next) => {
+      setAppState((state) => ({
+        ...state,
+        workbench: {
+          ...getDefaultAppState().workbench,
+          ...state.workbench,
+          ...next,
+        },
+      }));
+    });
+  }, [onReady, setAppState]);
+  return null;
+}

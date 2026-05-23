@@ -95,10 +95,28 @@ export function workbenchReducer(
       };
     case "closeSurface":
       return openSurface(state, "transcript");
-    case "renamePathReferences":
-      return renamePathReferences(state, command.fromPath, command.toPath);
-    case "deletePathReferences":
-      return deletePathReferences(state, command.path);
+    case "renamePathReferences": {
+      const nextState = renamePathReferences(state, command.fromPath, command.toPath);
+      if (
+        command.openAffectedBuffer === true &&
+        nextState.activeFilePath !== null &&
+        nextState.activeFilePath !== state.activeFilePath
+      ) {
+        return openSurface(nextState, "buffer", false);
+      }
+      return nextState;
+    }
+    case "deletePathReferences": {
+      const nextState = deletePathReferences(state, command.path);
+      if (
+        command.closeAffectedSurface === true &&
+        state.activeFilePath !== null &&
+        nextState.activeFilePath === null
+      ) {
+        return openSurface(nextState, "transcript");
+      }
+      return nextState;
+    }
     case "toggleExplorer":
       return {
         ...state,

@@ -254,6 +254,46 @@ describe("workbenchReducer", () => {
     ]);
   });
 
+  it("opens the buffer only when rename changes the current active path", () => {
+    const affected = workbenchReducer({
+      ...getDefaultWorkbenchState(),
+      focusedPane: "explorer",
+      activeSurfaceMode: "preview",
+      activeFilePath: "src/nested/app.ts",
+      activeFileLine: 12,
+    }, {
+      type: "renamePathReferences",
+      fromPath: "src",
+      toPath: "lib",
+      openAffectedBuffer: true,
+    });
+    const unaffected = workbenchReducer({
+      ...getDefaultWorkbenchState(),
+      focusedPane: "explorer",
+      activeSurfaceMode: "preview",
+      activeFilePath: "other.ts",
+      activeFileLine: 5,
+    }, {
+      type: "renamePathReferences",
+      fromPath: "src",
+      toPath: "lib",
+      openAffectedBuffer: true,
+    });
+
+    expect(affected).toMatchObject({
+      focusedPane: "explorer",
+      activeSurfaceMode: "buffer",
+      activeFilePath: "lib/nested/app.ts",
+      activeFileLine: 12,
+    });
+    expect(unaffected).toMatchObject({
+      focusedPane: "explorer",
+      activeSurfaceMode: "preview",
+      activeFilePath: "other.ts",
+      activeFileLine: 5,
+    });
+  });
+
   it("clears active paths and attached context when a workspace path is deleted", () => {
     const state = {
       ...getDefaultWorkbenchState(),
@@ -296,6 +336,41 @@ describe("workbenchReducer", () => {
       },
     ]);
     expect(next.composerAttachmentIds).toEqual(["file:src-old/app.ts"]);
+  });
+
+  it("closes the active surface only when delete clears the current active path", () => {
+    const affected = workbenchReducer({
+      ...getDefaultWorkbenchState(),
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/nested/app.ts",
+      activeFileLine: 12,
+    }, {
+      type: "deletePathReferences",
+      path: "src",
+      closeAffectedSurface: true,
+    });
+    const unaffected = workbenchReducer({
+      ...getDefaultWorkbenchState(),
+      activeSurfaceMode: "preview",
+      activeFilePath: "other.ts",
+      activeFileLine: 5,
+    }, {
+      type: "deletePathReferences",
+      path: "src",
+      closeAffectedSurface: true,
+    });
+
+    expect(affected).toMatchObject({
+      focusedPane: "surface",
+      activeSurfaceMode: "transcript",
+      activeFilePath: null,
+      activeFileLine: null,
+    });
+    expect(unaffected).toMatchObject({
+      activeSurfaceMode: "preview",
+      activeFilePath: "other.ts",
+      activeFileLine: 5,
+    });
   });
 
   it("opens and closes non-transcript surfaces", () => {
