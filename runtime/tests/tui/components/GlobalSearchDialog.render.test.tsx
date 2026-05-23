@@ -271,12 +271,13 @@ describe('GlobalSearchDialog render and interactions', () => {
 
       await searchFor('needle', [
         '/workspace/project/src/app.tsx:12:Needle alpha',
+        '/workspace/project/..config:4:Needle config',
         '/tmp/outside.ts:3:needle beta',
         'not a ripgrep match',
       ])
 
       await waitFor(
-        () => pickerProps().items.length === 2 && pickerProps().matchLabel === '2 matches',
+        () => pickerProps().items.length === 3 && pickerProps().matchLabel === '3 matches',
         'Global search results did not render',
       )
 
@@ -288,6 +289,11 @@ describe('GlobalSearchDialog render and interactions', () => {
         text: 'Needle alpha',
       })
       expect(props.items[1]).toEqual({
+        file: '..config',
+        line: 4,
+        text: 'Needle config',
+      })
+      expect(props.items[2]).toEqual({
         file: '/tmp/outside.ts',
         line: 3,
         text: 'needle beta',
