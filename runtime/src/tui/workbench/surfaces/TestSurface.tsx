@@ -54,13 +54,13 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   }, [task?.id, task?.status]);
 
   useRegisterKeybindingContext("Surface", focused);
-  const jumpToSelectedFailure = () => {
+  const jumpToSelectedFailure = (focus = true) => {
     if (selectedFailure?.location) {
       dispatch({
         type: "openBuffer",
         path: selectedFailure.location.file,
         line: selectedFailure.location.line,
-        focus: true,
+        focus,
       });
     }
   };
@@ -68,8 +68,12 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
     {
       "surface:up": () => setSelected((value) => Math.max(0, value - 1)),
       "surface:down": () => setSelected((value) => Math.min(Math.max(0, failures.length - 1), value + 1)),
-      "surface:open": jumpToSelectedFailure,
-      "surface:top": jumpToSelectedFailure,
+      "surface:pageUp": () => setSelected((value) => Math.max(0, value - 10)),
+      "surface:pageDown": () => setSelected((value) => Math.min(Math.max(0, failures.length - 1), value + 10)),
+      "surface:top": () => setSelected(0),
+      "surface:bottom": () => setSelected(Math.max(0, failures.length - 1)),
+      "surface:open": () => jumpToSelectedFailure(true),
+      "surface:openKeepFocus": () => jumpToSelectedFailure(false),
       "surface:attach": () => {
         if (task?.id && selectedFailure?.location) {
           dispatch(attachTaskErrorCommand({
@@ -103,7 +107,7 @@ export function TestSurfaceView({
   const selectedFailure = failures[selectedIndex] ?? null;
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
-      <SurfaceHeader title="TEST" detail={`${failures.length} failure${failures.length === 1 ? "" : "s"} - g/enter edit - @ attach`} focused={focused} />
+      <SurfaceHeader title="TEST" detail={`${failures.length} failure${failures.length === 1 ? "" : "s"} - enter edit - o keep focus - @ attach`} focused={focused} />
       {failures.length === 0 ? (
         <Text dimColor wrap="truncate-end">No parsed test failures in the selected task output.</Text>
       ) : null}
