@@ -485,6 +485,64 @@ describe("BufferSurface", () => {
     }
   });
 
+  it("honors forced vim writes when the file changed on disk", async () => {
+    const file = join(dir, "target.ts");
+    await writeFile(file, "const value = 1;\n", "utf8");
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface focused={true} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const store = getWorkbenchBufferStore();
+      await writeFile(file, "external change\n", "utf8");
+      store.insert("draft ");
+
+      stdin.write(":");
+      await sleep();
+      stdin.write("w");
+      await sleep();
+      stdin.write("!");
+      await sleep();
+      stdin.write("\r");
+      await sleep();
+
+      expect(await readFile(file, "utf8")).toBe("draft const value = 1;\n");
+      expect(store.getSnapshot()).toMatchObject({
+        status: "ready",
+        conflictKind: null,
+        dirty: false,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("extends the buffer selection with shifted arrow keybindings", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const { stdin, stdout } = createStreams();
