@@ -211,4 +211,19 @@ describe('useInputBuffer coverage swarm 202', () => {
       await rendered.dispose()
     }
   })
+
+  test('clears a pending debounced push when the hook unmounts', async () => {
+    const rendered = await renderHookHarness({
+      debounceMs: 1_000,
+      maxBufferSize: 5,
+    })
+
+    await rendered.push('settled')
+    await rendered.push('pending')
+    expect(vi.getTimerCount()).toBe(1)
+
+    await rendered.dispose()
+
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PastedContent } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export type BufferEntry = {
@@ -34,6 +34,15 @@ export function useInputBuffer({
   }>({ buffer: [], currentIndex: -1 })
   const lastPushTime = useRef<number>(0)
   const pendingPush = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (pendingPush.current) {
+        clearTimeout(pendingPush.current)
+        pendingPush.current = null
+      }
+    }
+  }, [])
 
   const pushToBuffer = useCallback(
     (
