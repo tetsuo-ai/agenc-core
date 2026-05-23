@@ -3,7 +3,18 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const lspHarness = vi.hoisted(() => ({
+  notifyBufferLspChanged: vi.fn(),
+  notifyBufferLspClosed: vi.fn(),
+  notifyBufferLspOpened: vi.fn(),
+  notifyBufferLspSaved: vi.fn(),
+  requestBufferDefinition: vi.fn(),
+  requestBufferHover: vi.fn(),
+}));
+
+vi.mock("../../../src/tui/workbench/buffer/lsp.js", () => lspHarness);
 
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 import type { Key } from "../../../src/tui/ink.js";
@@ -44,6 +55,7 @@ function key(overrides: Partial<Key> = {}): Key {
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agenc-buffer-"));
+  for (const fn of Object.values(lspHarness)) fn.mockReset();
 });
 
 afterEach(async () => {
@@ -148,6 +160,91 @@ describe("WorkbenchBufferStore", () => {
       filePath: "target.txt",
       position: { line: 2 },
     });
+  });
+
+  it("ignores stale hover responses after switching files", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    await writeFile(join(dir, "next.txt"), "omega\n", "utf8");
+    let resolveHover: ((value: string | null) => void) | undefined;
+    lspHarness.requestBufferHover.mockImplementation(() => new Promise<string | null>((resolve) => {
+      resolveHover = resolve;
+    }));
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    const hover = store.requestHover();
+    await runWithCwdOverride(dir, () => store.open("next.txt"));
+    resolveHover?.("stale hover");
+
+    await expect(hover).resolves.toBeNull();
+    expect(store.getSnapshot()).toMatchObject({
+      filePath: "next.txt",
+      hoverText: null,
+    });
+  });
+
+  it("ignores stale definition responses after switching files", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    await writeFile(join(dir, "next.txt"), "omega\n", "utf8");
+    await writeFile(join(dir, "definition.txt"), "definition\n", "utf8");
+    let resolveDefinition:
+      | ((value: { readonly path: string; readonly line: number; readonly character: number } | null) => void)
+      | undefined;
+    lspHarness.requestBufferDefinition.mockImplementation(() => new Promise((resolve) => {
+      resolveDefinition = resolve;
+    }));
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    const definition = store.goToDefinition();
+    await runWithCwdOverride(dir, () => store.open("next.txt"));
+    resolveDefinition?.({ path: join(dir, "definition.txt"), line: 1, character: 0 });
+
+    await expect(definition).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      filePath: "next.txt",
+      position: { line: 1 },
+    });
+    expect(store.getText()).toBe("omega\n");
+  });
+
+  it("ignores stale LSP responses after moving within the same file", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\nomega\n", "utf8");
+    await writeFile(join(dir, "definition.txt"), "definition\n", "utf8");
+    let resolveHover: ((value: string | null) => void) | undefined;
+    let resolveDefinition:
+      | ((value: { readonly path: string; readonly line: number; readonly character: number } | null) => void)
+      | undefined;
+    lspHarness.requestBufferHover.mockImplementation(() => new Promise<string | null>((resolve) => {
+      resolveHover = resolve;
+    }));
+    lspHarness.requestBufferDefinition.mockImplementation(() => new Promise((resolve) => {
+      resolveDefinition = resolve;
+    }));
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    const hover = store.requestHover();
+    store.move("down");
+    resolveHover?.("stale hover");
+
+    await expect(hover).resolves.toBeNull();
+    expect(store.getSnapshot()).toMatchObject({
+      filePath: "target.txt",
+      position: { line: 2 },
+      hoverText: null,
+    });
+
+    const definition = store.goToDefinition();
+    store.move("up");
+    resolveDefinition?.({ path: join(dir, "definition.txt"), line: 1, character: 0 });
+
+    await expect(definition).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      filePath: "target.txt",
+      position: { line: 1 },
+    });
+    expect(store.getText()).toBe("alpha\nomega\n");
   });
 
   it("requires inline edits to be saved or reverted before opening the external editor", async () => {
