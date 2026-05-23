@@ -7,20 +7,30 @@ const explorerHarness = vi.hoisted(() => {
   const harness: {
     handlers: Record<string, () => void>;
     textInputProps: Array<Record<string, unknown>>;
+    createCalls: string[];
     renameCalls: Array<readonly [string, string]>;
     deleteCalls: string[];
     deferDelete: boolean;
+    rejectCreateError: Error | null;
+    rejectRenameError: Error | null;
+    rejectDeleteError: Error | null;
     pendingDeleteResolve: null | ((result: { readonly ok: true; readonly path: string }) => void);
+    logError: ReturnType<typeof vi.fn>;
     cursorRow: Record<string, unknown> | null;
     snapshot: Record<string, unknown>;
     store: Record<string, unknown>;
   } = {
     handlers: {},
     textInputProps: [],
+    createCalls: [],
     renameCalls: [],
     deleteCalls: [],
     deferDelete: false,
+    rejectCreateError: null,
+    rejectRenameError: null,
+    rejectDeleteError: null,
     pendingDeleteResolve: null,
+    logError: vi.fn(),
     cursorRow: {
       id: "src",
       path: "src",
@@ -89,13 +99,19 @@ const explorerHarness = vi.hoisted(() => {
     reveal: () => {},
     toggle: () => {},
     getCursorRow: () => harness.cursorRow,
-    createFile: async (value: string) => ({ ok: true, path: value }),
+    createFile: async (value: string) => {
+      harness.createCalls.push(value);
+      if (harness.rejectCreateError) throw harness.rejectCreateError;
+      return { ok: true, path: value };
+    },
     renamePath: async (from: string, to: string) => {
       harness.renameCalls.push([from, to]);
+      if (harness.rejectRenameError) throw harness.rejectRenameError;
       return { ok: true, path: to };
     },
     deletePath: async (value: string) => {
       harness.deleteCalls.push(value);
+      if (harness.rejectDeleteError) throw harness.rejectDeleteError;
       if (harness.deferDelete) {
         return new Promise((resolve) => {
           harness.pendingDeleteResolve = resolve;
@@ -136,6 +152,10 @@ vi.mock("../../../src/tui/workbench/project-tree/ProjectTreeStore.js", () => ({
   getProjectTreeStore: () => explorerHarness.store,
 }));
 
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: explorerHarness.logError,
+}));
+
 import { createRoot } from "../../../src/tui/ink.js";
 import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { ProjectExplorer } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
@@ -173,10 +193,15 @@ describe("ProjectExplorer interactions", () => {
   beforeEach(() => {
     explorerHarness.handlers = {};
     explorerHarness.textInputProps = [];
+    explorerHarness.createCalls = [];
     explorerHarness.renameCalls = [];
     explorerHarness.deleteCalls = [];
     explorerHarness.deferDelete = false;
+    explorerHarness.rejectCreateError = null;
+    explorerHarness.rejectRenameError = null;
+    explorerHarness.rejectDeleteError = null;
     explorerHarness.pendingDeleteResolve = null;
+    explorerHarness.logError.mockClear();
   });
 
   it("updates the active buffer when renaming a directory that contains it", async () => {
@@ -428,6 +453,176 @@ describe("ProjectExplorer interactions", () => {
         activeSurfaceMode: "preview",
         activeFilePath: "other.ts",
         activeFileLine: 5,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("logs rejected create actions and restores the prompt for retry", async () => {
+    const createError = new Error("create failed");
+    explorerHarness.rejectCreateError = createError;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: "explorer",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <ProjectExplorer focused={true} width={40} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      explorerHarness.handlers["explorer:addFile"]?.();
+      await sleep();
+
+      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      expect(submitCreate).toEqual(expect.any(Function));
+      submitCreate?.("src/new.ts");
+      await sleep();
+
+      expect(explorerHarness.logError).toHaveBeenCalledWith(createError);
+      expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
+
+      explorerHarness.rejectCreateError = null;
+      const retryCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      retryCreate?.("src/new.ts");
+      await sleep();
+
+      expect(explorerHarness.createCalls).toEqual(["src/new.ts", "src/new.ts"]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/new.ts",
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("logs rejected rename actions and restores the prompt for retry", async () => {
+    const renameError = new Error("rename failed");
+    explorerHarness.rejectRenameError = renameError;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: "explorer",
+              activeSurfaceMode: "buffer",
+              activeFilePath: "src/nested/app.ts",
+              activeFileLine: 12,
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <ProjectExplorer focused={true} width={40} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      explorerHarness.handlers["explorer:rename"]?.();
+      await sleep();
+
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      expect(submitRename).toEqual(expect.any(Function));
+      submitRename?.("lib/");
+      await sleep();
+
+      expect(explorerHarness.logError).toHaveBeenCalledWith(renameError);
+      expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
+
+      explorerHarness.rejectRenameError = null;
+      const retryRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      retryRename?.("lib/");
+      await sleep();
+
+      expect(explorerHarness.renameCalls).toEqual([["src", "lib/"], ["src", "lib/"]]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "lib/nested/app.ts",
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("logs rejected delete actions and restores the confirmation for retry", async () => {
+    const deleteError = new Error("delete failed");
+    explorerHarness.rejectDeleteError = deleteError;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: "explorer",
+              activeSurfaceMode: "buffer",
+              activeFilePath: "src/nested/app.ts",
+              activeFileLine: 12,
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <ProjectExplorer focused={true} width={40} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      explorerHarness.handlers["explorer:delete"]?.();
+      await sleep();
+
+      explorerHarness.handlers["confirm:yes"]?.();
+      await sleep();
+
+      expect(explorerHarness.logError).toHaveBeenCalledWith(deleteError);
+
+      explorerHarness.rejectDeleteError = null;
+      explorerHarness.handlers["confirm:yes"]?.();
+      await sleep();
+
+      expect(explorerHarness.deleteCalls).toEqual(["src", "src"]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "transcript",
+        activeFilePath: null,
       });
     } finally {
       root.unmount();
