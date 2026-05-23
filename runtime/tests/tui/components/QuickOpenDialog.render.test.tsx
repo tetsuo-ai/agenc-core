@@ -301,7 +301,7 @@ describe('QuickOpenDialog render and interactions', () => {
     }
   })
 
-  it('loads preview content and shows the stale preview path while a new focus is loading', async () => {
+  it('loads preview content without showing stale content under a new focused path', async () => {
     const rendered = await renderDialog()
 
     try {
@@ -359,7 +359,8 @@ describe('QuickOpenDialog render and interactions', () => {
         120,
       )
       expect(staleOutput).toContain('src/beta.ts - loading...')
-      expect(staleOutput).toContain('needle alpha')
+      expect(staleOutput).toContain('Loading preview...')
+      expect(staleOutput).not.toContain('needle alpha')
 
       secondPreview.resolve({ content: 'beta ready' })
       const refreshedOutput = await waitForRenderedText(
