@@ -21,6 +21,8 @@ const harness = vi.hoisted(() => ({
     next: ReturnType<typeof vi.fn>;
     return: ReturnType<typeof vi.fn>;
   }>,
+  readerError: null as Error | null,
+  logError: vi.fn(),
   reset() {
     harness.entries = [];
     harness.features = new Set();
@@ -28,6 +30,8 @@ const harness = vi.hoisted(() => ({
     harness.keybinding = new Map();
     harness.keybindings = new Map();
     harness.readers = [];
+    harness.readerError = null;
+    harness.logError.mockClear();
   },
 }));
 
@@ -45,6 +49,7 @@ vi.mock("../history/history.js", () => ({
     let index = 0;
     const reader = {
       next: vi.fn(async () => {
+        if (harness.readerError) throw harness.readerError;
         if (index >= harness.entries.length) {
           return { done: true, value: undefined };
         }
@@ -59,6 +64,10 @@ vi.mock("../history/history.js", () => ({
     harness.readers.push(reader);
     return reader;
   },
+}));
+
+vi.mock("../../utils/log.js", () => ({
+  logError: harness.logError,
 }));
 
 vi.mock("../keybindings/useKeybinding.js", () => ({
@@ -322,6 +331,32 @@ describe("useHistorySearch", () => {
         keep: true,
       });
       expect(harness.readers.at(-1)?.return).toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("logs history reader failures and marks the search as failed", async () => {
+    const error = new Error("history read failed");
+    harness.readerError = error;
+    const rendered = await renderHistoryHarness({
+      currentInput: "keep me",
+      currentPastedContents: { keep: true },
+    });
+
+    try {
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      rendered.result().setHistoryQuery("needle");
+
+      await waitFor(() =>
+        expect(rendered.result().historyFailedMatch).toBe(true),
+      );
+      expect(harness.logError).toHaveBeenCalledWith(error);
+      expect(rendered.callbacks.onInputChange).not.toHaveBeenCalledWith(
+        "needle",
+      );
+      expect(rendered.result().historyMatch).toBeUndefined();
     } finally {
       await rendered.dispose();
     }
