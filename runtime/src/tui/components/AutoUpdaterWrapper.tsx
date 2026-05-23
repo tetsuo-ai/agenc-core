@@ -3,6 +3,7 @@ import * as React from 'react';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
+import { logError } from '../../utils/log.js';
 import { getCurrentInstallationType } from '../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AutoUpdater } from './AutoUpdater.js';
 import { NativeAutoUpdater } from './NativeAutoUpdater.js';
@@ -29,6 +30,7 @@ export function AutoUpdaterWrapper({
   const [isPackageManager, setIsPackageManager] = React.useState<boolean | null>(null);
 
   React.useEffect(() => {
+    let mounted = true;
     const checkInstallation = async () => {
       if (feature("SKIP_DETECTION_WHEN_AUTOUPDATES_DISABLED") && isAutoUpdaterDisabled()) {
         logForDebugging("AutoUpdaterWrapper: Skipping detection, auto-updates disabled");
@@ -36,10 +38,18 @@ export function AutoUpdaterWrapper({
       }
       const installationType = await getCurrentInstallationType();
       logForDebugging(`AutoUpdaterWrapper: Installation type: ${installationType}`);
+      if (!mounted) {
+        return;
+      }
       setUseNativeInstaller(installationType === "native");
       setIsPackageManager(installationType === "package-manager");
     };
-    void checkInstallation();
+    void checkInstallation().catch(error => {
+      logError(error);
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   if (useNativeInstaller === null || isPackageManager === null) {
