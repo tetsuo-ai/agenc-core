@@ -39,6 +39,13 @@ describe('memory path display formatting', () => {
     ).toBe('./AGENC.md')
     expect(
       getRelativeMemoryPathForRoots(
+        '/workspace/project/..config',
+        '/home/user',
+        '/workspace/project',
+      ),
+    ).toBe('./..config')
+    expect(
+      getRelativeMemoryPathForRoots(
         '/home/user/project/AGENC.md',
         '/home/user',
         '/home/user/project',

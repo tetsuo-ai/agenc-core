@@ -264,6 +264,19 @@ describe('fileSuggestions hidden-file visibility', () => {
     expect(matches).not.toContain('.other')
   })
 
+  test('dotted prefix query with two literal dots surfaces matching top-level files', async () => {
+    writeFileSync(join(tempCwd, '..hidden-file.txt'), '')
+    writeFileSync(join(tempCwd, '..hideme'), '')
+    writeFileSync(join(tempCwd, '..other'), '')
+
+    const items = await generateFileSuggestions('..hid')
+    const names = items.map(i => i.displayText)
+
+    expect(names).toContain('..hidden-file.txt')
+    expect(names).toContain('..hideme')
+    expect(names).not.toContain('..other')
+  })
+
   test('getHiddenTopLevelMatches marks directories with a trailing separator', async () => {
     mkdirSync(join(tempCwd, '.config'), { recursive: true })
 

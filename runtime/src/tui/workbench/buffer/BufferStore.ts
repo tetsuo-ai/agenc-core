@@ -5,6 +5,7 @@ import { lastGrapheme } from "../../../utils/intl.js";
 import { TextCursor } from "../../../utils/TextCursor.js";
 import type { VimMode } from "../../../types/textInputTypes.js";
 import type { Key } from "../../ink.js";
+import { isRelativePathOutsideBase } from "../../pathDisplay.js";
 import {
   executeIndent,
   executeJoin,
@@ -895,7 +896,7 @@ export class WorkbenchBufferStore {
 function displayPathForAbsolute(absolutePath: string): string {
   const cwd = getCwd();
   const relativePath = relative(cwd, absolutePath);
-  return relativePath.startsWith("..") || relativePath === "" || resolve(cwd, relativePath) !== absolutePath
+  return isRelativePathOutsideBase(relativePath) || relativePath === "" || resolve(cwd, relativePath) !== absolutePath
     ? absolutePath
     : relativePath;
 }

@@ -231,6 +231,27 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("draft alpha\n");
   });
 
+  it("keeps definition targets with leading-dot relative names relative", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    await writeFile(join(dir, "..definition.txt"), "definition\n", "utf8");
+    lspHarness.requestBufferDefinition.mockResolvedValue({
+      path: join(dir, "..definition.txt"),
+      line: 1,
+      character: 0,
+    });
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(runWithCwdOverride(dir, () => store.goToDefinition())).resolves.toBe(true);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "ready",
+      filePath: "..definition.txt",
+      position: { line: 1 },
+    });
+    expect(store.getText()).toBe("definition\n");
+  });
+
   it("reports failed definition navigation when the target cannot be loaded", async () => {
     await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
     lspHarness.requestBufferDefinition.mockResolvedValue({

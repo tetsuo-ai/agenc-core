@@ -15,9 +15,9 @@ import { getCwd } from '../../utils/cwd';
 import { openFileInExternalEditor } from '../../utils/editor';
 import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
 import { highlightMatch } from '../../utils/highlightMatch';
-import { relativePath } from '../../utils/permissions/filesystem';
 import { readFileInRange } from '../../utils/readFileInRange';
 import { ripGrepStream } from '../../utils/ripgrep';
+import { displayPathRelativeToBase } from '../pathDisplay.js';
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {
@@ -324,10 +324,9 @@ function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearch
       if (!m_1) {
         continue;
       }
-      const rel = relativePath(cwd, m_1.file);
       parsed.push({
         ...m_1,
-        file: rel.startsWith("..") ? m_1.file : rel
+        file: displayPathRelativeToBase(cwd, m_1.file)
       });
     }
     if (!parsed.length) {

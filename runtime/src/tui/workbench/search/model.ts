@@ -1,4 +1,5 @@
 import { relativePath } from "../../../utils/permissions/filesystem.js";
+import { isRelativePathOutsideBase } from "../../pathDisplay.js";
 import type { SearchGroup, SearchMatch } from "../types.js";
 
 export function parseWorkbenchRipgrepLine(line: string, cwd: string): SearchMatch | null {
@@ -8,7 +9,7 @@ export function parseWorkbenchRipgrepLine(line: string, cwd: string): SearchMatc
   const lineNumber = Number.parseInt(lineText ?? "", 10);
   if (!rawFile || !Number.isFinite(lineNumber)) return null;
   const rel = isAbsoluteLike(rawFile) ? relativePath(cwd, rawFile) : rawFile;
-  const file = rel.startsWith("..") ? rawFile : rel;
+  const file = isRelativePathOutsideBase(rel) ? rawFile : rel;
   return {
     id: `${file}:${lineNumber}:${text ?? ""}`,
     file,

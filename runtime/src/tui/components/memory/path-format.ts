@@ -1,9 +1,11 @@
 import { isAbsolute, relative } from 'path';
 
+import { isRelativePathOutsideBase } from '../../pathDisplay.js';
+
 function containedRelativePath(basePath: string, targetPath: string): string | null {
   const relativePath = relative(basePath, targetPath);
   if (relativePath === '') return '';
-  if (relativePath.startsWith('..') || isAbsolute(relativePath)) return null;
+  if (isRelativePathOutsideBase(relativePath) || isAbsolute(relativePath)) return null;
   return relativePath;
 }
 

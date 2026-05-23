@@ -25,6 +25,15 @@ describe("workbench search model", () => {
     expect(parseWorkbenchRipgrepLine("not-a-match", "/repo")).toBeNull();
   });
 
+  it("keeps workspace files whose relative names start with dots relative", () => {
+    expect(parseWorkbenchRipgrepLine("/repo/..config:3:needle", "/repo")).toEqual({
+      id: "..config:3:needle",
+      file: "..config",
+      line: 3,
+      text: "needle",
+    });
+  });
+
   it("groups matches by file and exposes visible header rows", () => {
     const groups = groupSearchMatches([
       { id: "a:1:x", file: "a.ts", line: 1, text: "x" },

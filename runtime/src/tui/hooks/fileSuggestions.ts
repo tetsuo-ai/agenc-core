@@ -13,6 +13,7 @@ import {
   FileIndex,
   yieldToEventLoop,
 } from '../ink/native-ts/file-index/index'
+import { isRelativePathOutsideBase } from '../pathDisplay.js'
 import { logEvent } from '../../services/analytics/index'
 import type { FileSuggestionCommandInput } from '../../types/fileSuggestion'
 import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
@@ -870,7 +871,7 @@ export async function generateFileSuggestions(
     // untracked dotfiles surface the same way `@` alone shows them.
     if (
       normalizedPath.startsWith('.') &&
-      !normalizedPath.startsWith('..') &&
+      !isRelativePathOutsideBase(normalizedPath) &&
       !normalizedPath.includes(path.sep) &&
       matches.length < MAX_SUGGESTIONS
     ) {
