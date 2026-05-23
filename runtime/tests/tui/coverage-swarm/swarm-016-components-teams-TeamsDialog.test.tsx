@@ -54,6 +54,10 @@ const mailboxMock = vi.hoisted(() => ({
   writeToMailbox: vi.fn(async () => {}),
 }));
 
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}));
+
 const teamHelpersMock = vi.hoisted(() => ({
   addHiddenPaneId: vi.fn(() => true),
   removeHiddenPaneId: vi.fn(() => true),
@@ -163,6 +167,9 @@ vi.mock("../../../src/utils/teammateMailbox.js", () => ({
   createModeSetRequestMessage: (message: unknown) => message,
   sendShutdownRequestToMailbox: mailboxMock.sendShutdownRequestToMailbox,
   writeToMailbox: mailboxMock.writeToMailbox,
+}));
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: logMock.logError,
 }));
 vi.mock("../../../src/utils/swarm/teamHelpers.js", () => ({
   addHiddenPaneId: teamHelpersMock.addHiddenPaneId,
@@ -333,6 +340,7 @@ beforeEach(() => {
   mailboxMock.sendShutdownRequestToMailbox.mockResolvedValue(undefined);
   mailboxMock.writeToMailbox.mockReset();
   mailboxMock.writeToMailbox.mockResolvedValue(undefined);
+  logMock.logError.mockReset();
   teamHelpersMock.addHiddenPaneId.mockReset();
   teamHelpersMock.addHiddenPaneId.mockReturnValue(true);
   teamHelpersMock.removeHiddenPaneId.mockReset();
@@ -381,6 +389,53 @@ describe("TeamsDialog coverage-swarm detail actions", () => {
         "alpha",
       );
       expect(teamHelpersMock.setMultipleMemberModes).not.toHaveBeenCalled();
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("logs rejected detail mode mailbox writes without rolling back local mode", async () => {
+    const error = new Error("mailbox lock release failed");
+    mailboxMock.writeToMailbox.mockRejectedValueOnce(error);
+    const harness = await createTeamsDialogHarness();
+
+    try {
+      await harness.press("\r", { return: true });
+      keybindingMock.handlers.get("confirm:cycleMode")?.();
+      await settle();
+
+      expect(teamHelpersMock.setMemberMode).toHaveBeenCalledWith(
+        "alpha",
+        "Fixer",
+        "plan",
+      );
+      expect(mailboxMock.writeToMailbox).toHaveBeenCalledTimes(1);
+      expect(logMock.logError).toHaveBeenCalledWith(error);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("logs rejected bulk mode mailbox writes after the batch local update", async () => {
+    const error = new Error("bulk mailbox offline");
+    mailboxMock.writeToMailbox
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(undefined);
+    const harness = await createTeamsDialogHarness();
+
+    try {
+      keybindingMock.handlers.get("confirm:cycleMode")?.();
+      await settle();
+
+      expect(teamHelpersMock.setMultipleMemberModes).toHaveBeenCalledWith(
+        "alpha",
+        [
+          { memberName: "Fixer", mode: "default" },
+          { memberName: "Planner", mode: "default" },
+        ],
+      );
+      expect(mailboxMock.writeToMailbox).toHaveBeenCalledTimes(2);
+      expect(logMock.logError).toHaveBeenCalledWith(error);
     } finally {
       harness.unmount();
     }
