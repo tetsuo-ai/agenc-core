@@ -17,6 +17,7 @@ import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
 import { highlightMatch } from '../../utils/highlightMatch';
 import { readFileInRange } from '../../utils/readFileInRange';
 import { ripGrepStream } from '../../utils/ripgrep';
+import { logError } from '../../utils/log';
 import { displayPathRelativeToBase } from '../pathDisplay.js';
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
@@ -71,7 +72,7 @@ function renderMatchText(m: Match, query: string, listWidth: number, maxPathWidt
  * Debounced ripgrep search across the workspace.
  */
 export function GlobalSearchDialog(t0) {
-  const $ = _c(41);
+  const $ = _c(42);
   const {
     onDone,
     onInsert
@@ -100,6 +101,7 @@ export function GlobalSearchDialog(t0) {
   const [matches, setMatches] = useState(t1);
   const [truncated, setTruncated] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState(null);
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(undefined);
   const [preview, setPreview] = useState(null);
@@ -175,18 +177,20 @@ export function GlobalSearchDialog(t0) {
         setMatches(_temp);
         setIsSearching(false);
         setTruncated(false);
+        setSearchError(null);
         return;
       }
       const controller_0 = new AbortController();
       abortRef.current = controller_0;
       setIsSearching(true);
       setTruncated(false);
+      setSearchError(null);
       const queryLower = q.toLowerCase();
       setMatches(m_0 => {
         const filtered = m_0.filter(match => match.text.toLowerCase().includes(queryLower));
         return filtered.length === m_0.length ? m_0 : filtered;
       });
-      timeoutRef.current = setTimeout(_temp4, DEBOUNCE_MS, q, controller_0, setMatches, setTruncated, setIsSearching);
+      timeoutRef.current = setTimeout(_temp4, DEBOUNCE_MS, q, controller_0, setMatches, setTruncated, setIsSearching, setSearchError);
     };
     $[6] = t6;
   } else {
@@ -238,7 +242,7 @@ export function GlobalSearchDialog(t0) {
     t8 = $[13];
   }
   const handleInsert = t8;
-  const matchLabel = matches.length > 0 ? `${matches.length}${truncated ? "+" : ""} matches${isSearching ? "..." : ""}` : " ";
+  const matchLabel = matches.length > 0 ? `${matches.length}${truncated ? "+" : ""} matches${isSearching ? "..." : ""}` : searchError ? "Search failed" : " ";
   const t9 = previewOnRight ? "right" : "bottom";
   let t10;
   if ($[14] !== handleInsert) {
@@ -263,9 +267,10 @@ export function GlobalSearchDialog(t0) {
     t11 = $[17];
   }
   let t12;
-  if ($[18] !== isSearching) {
-    t12 = q_0 => isSearching ? "Searching..." : q_0 ? "No matches" : "Type to search...";
+  if ($[18] !== isSearching || $[41] !== searchError) {
+    t12 = q_0 => isSearching ? "Searching..." : searchError ? `Search failed: ${searchError}` : q_0 ? "No matches" : "Type to search...";
     $[18] = isSearching;
+    $[41] = searchError;
     $[19] = t12;
   } else {
     t12 = $[19];
@@ -311,7 +316,7 @@ export function GlobalSearchDialog(t0) {
   }
   return t15;
 }
-function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearching_0) {
+function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearching_0, setSearchError_0) {
   const cwd = getCwd();
   let collected = 0;
   ripGrepStream(["--json", "-i", "-m", String(MAX_MATCHES_PER_FILE), "-F", "-e", query_0], cwd, controller_1.signal, lines => {
@@ -348,7 +353,13 @@ function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearch
       setTruncated_0(true);
       setIsSearching_0(false);
     }
-  }).catch(_temp2).finally(() => {
+  }).catch(error => {
+    if (controller_1.signal.aborted) {
+      return;
+    }
+    logError(error);
+    setSearchError_0(searchErrorMessage(error));
+  }).finally(() => {
     if (controller_1.signal.aborted) {
       return;
     }
@@ -361,9 +372,12 @@ function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearch
 function _temp3(m_2) {
   return m_2.length ? [] : m_2;
 }
-function _temp2() {}
 function _temp(m) {
   return m.length ? [] : m;
+}
+
+function searchErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 function matchKey(m: Match): string {
   return `${m.file}:${m.line}`;
