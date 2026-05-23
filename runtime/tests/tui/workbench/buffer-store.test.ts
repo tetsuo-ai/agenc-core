@@ -208,6 +208,47 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("omega\n");
   });
 
+  it("reports failed definition navigation when unsaved edits block cross-file loads", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    await writeFile(join(dir, "definition.txt"), "definition\n", "utf8");
+    lspHarness.requestBufferDefinition.mockResolvedValue({
+      path: join(dir, "definition.txt"),
+      line: 1,
+      character: 0,
+    });
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.insert("draft ");
+
+    await expect(store.goToDefinition()).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "conflict",
+      conflictKind: "disk",
+      filePath: "target.txt",
+      dirty: true,
+    });
+    expect(store.getText()).toBe("draft alpha\n");
+  });
+
+  it("reports failed definition navigation when the target cannot be loaded", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    lspHarness.requestBufferDefinition.mockResolvedValue({
+      path: join(dir, "missing.txt"),
+      line: 1,
+      character: 0,
+    });
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(store.goToDefinition()).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      filePath: null,
+    });
+  });
+
   it("ignores stale LSP responses after moving within the same file", async () => {
     await writeFile(join(dir, "target.txt"), "alpha\nomega\n", "utf8");
     await writeFile(join(dir, "definition.txt"), "definition\n", "utf8");
