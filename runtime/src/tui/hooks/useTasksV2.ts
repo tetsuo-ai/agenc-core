@@ -46,6 +46,8 @@ class TasksV2Store {
   #changed = createSignal()
   #subscriberCount = 0
   #started = false
+  #generation = 0
+  #fetchRequestId = 0
 
   /**
    * useSyncExternalStore snapshot. Returns the same Task[] reference between
@@ -64,10 +66,13 @@ class TasksV2Store {
     this.#subscriberCount++
     if (!this.#started) {
       this.#started = true
-      this.#unsubscribeTasksUpdated = onTasksUpdated(this.#debouncedFetch)
+      const generation = ++this.#generation
+      this.#unsubscribeTasksUpdated = onTasksUpdated(() => {
+        this.#debouncedFetch(generation)
+      })
       // Fire-and-forget: subscribe is called post-commit (not in render),
       // and the store notifies subscribers when the fetch resolves.
-      this.#fetchAndLog()
+      this.#fetchAndLog(generation)
     }
     let unsubscribed = false
     return () => {
@@ -83,20 +88,38 @@ class TasksV2Store {
     this.#changed.emit()
   }
 
+  #isCurrentGeneration(generation: number): boolean {
+    return (
+      this.#started &&
+      this.#subscriberCount > 0 &&
+      generation === this.#generation
+    )
+  }
+
+  #isCurrentFetch(generation: number, requestId: number): boolean {
+    return (
+      this.#isCurrentGeneration(generation) &&
+      requestId === this.#fetchRequestId
+    )
+  }
+
   /**
    * Point the file watcher at the current tasks directory. Called on start
    * and whenever #fetch detects the task list ID has changed (e.g. when
    * TeamCreateTool sets leaderTeamName mid-session).
    */
-  #rewatch(dir: string): void {
+  #rewatch(dir: string, generation: number): void {
     // Retry even on same dir if the previous watch attempt failed (dir
     // didn't exist yet). Once the watcher is established, same-dir is a no-op.
+    if (!this.#isCurrentGeneration(generation)) return
     if (dir === this.#watchedDir && this.#watcher !== null) return
     this.#watcher?.close()
     this.#watcher = null
     this.#watchedDir = dir
     try {
-      this.#watcher = watch(dir, this.#debouncedFetch)
+      this.#watcher = watch(dir, () => {
+        this.#debouncedFetch(generation)
+      })
       this.#watcher.unref()
     } catch {
       // Directory may not exist yet (ensureTasksDir is called by writers).
@@ -105,26 +128,34 @@ class TasksV2Store {
     }
   }
 
-  #debouncedFetch = (): void => {
+  #debouncedFetch = (generation: number = this.#generation): void => {
+    if (!this.#isCurrentGeneration(generation)) return
     if (this.#debounceTimer) clearTimeout(this.#debounceTimer)
-    this.#debounceTimer = setTimeout(this.#fetchAndLog, DEBOUNCE_MS)
+    this.#debounceTimer = setTimeout(() => {
+      this.#fetchAndLog(generation)
+    }, DEBOUNCE_MS)
     this.#debounceTimer.unref()
   }
 
-  #fetchAndLog = (): void => {
-    void this.#fetch().catch(error => {
+  #fetchAndLog = (generation: number = this.#generation): void => {
+    if (!this.#isCurrentGeneration(generation)) return
+    const requestId = ++this.#fetchRequestId
+    void this.#fetch(generation, requestId).catch(error => {
+      if (!this.#isCurrentFetch(generation, requestId)) return
       logError(error instanceof Error ? error : new Error(String(error)))
     })
   }
 
-  #fetch = async (): Promise<void> => {
+  #fetch = async (generation: number, requestId: number): Promise<void> => {
+    if (!this.#isCurrentGeneration(generation)) return
     const taskListId = getTaskListId()
     // Task list ID can change mid-session (TeamCreateTool sets
     // leaderTeamName) — point the watcher at the current dir.
-    this.#rewatch(getTasksDir(taskListId))
+    this.#rewatch(getTasksDir(taskListId), generation)
     const current = (await listTasks(taskListId)).filter(
       t => !t.metadata?._internal,
     )
+    if (!this.#isCurrentFetch(generation, requestId)) return
     this.#tasks = current
 
     const hasIncomplete = current.some(t => t.status !== 'completed')
@@ -136,7 +167,7 @@ class TasksV2Store {
     } else if (this.#hideTimer === null && !this.#hidden) {
       // All tasks just became completed — schedule clear
       this.#hideTimer = setTimeout(
-        this.#onHideTimerFired.bind(this, taskListId),
+        this.#onHideTimerFired.bind(this, taskListId, generation),
         HIDE_DELAY_MS,
       )
       this.#hideTimer.unref()
@@ -153,29 +184,35 @@ class TasksV2Store {
       this.#pollTimer = null
     }
     if (hasIncomplete) {
-      this.#pollTimer = setTimeout(this.#debouncedFetch, FALLBACK_POLL_MS)
+      this.#pollTimer = setTimeout(() => {
+        this.#debouncedFetch(generation)
+      }, FALLBACK_POLL_MS)
       this.#pollTimer.unref()
     }
   }
 
-  #onHideTimerFired(scheduledForTaskListId: string): void {
+  #onHideTimerFired(scheduledForTaskListId: string, generation: number): void {
     this.#hideTimer = null
+    if (!this.#isCurrentGeneration(generation)) return
     // Bail if the task list ID changed since scheduling (team created/deleted
     // during the 5s window) — don't reset the wrong list.
     const currentId = getTaskListId()
     if (currentId !== scheduledForTaskListId) return
     // Verify all tasks are still completed before clearing
     void listTasks(currentId).then(async tasksToCheck => {
+      if (!this.#isCurrentGeneration(generation)) return
       const allStillCompleted =
         tasksToCheck.length > 0 &&
         tasksToCheck.every(t => t.status === 'completed')
       if (allStillCompleted) {
         await resetTaskList(currentId)
+        if (!this.#isCurrentGeneration(generation)) return
         this.#tasks = []
         this.#hidden = true
       }
       this.#notify()
     }).catch(error => {
+      if (!this.#isCurrentGeneration(generation)) return
       logError(error instanceof Error ? error : new Error(String(error)))
       this.#notify()
     })
@@ -194,6 +231,7 @@ class TasksV2Store {
    * subsequent re-subscribe renders the last known state immediately.
    */
   #stop(): void {
+    this.#generation++
     this.#watcher?.close()
     this.#watcher = null
     this.#watchedDir = null
