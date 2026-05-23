@@ -677,6 +677,7 @@ describe("WorkbenchBufferStore", () => {
     store.insert("draft ");
 
     await expect(store.save({ hasInFlightAgent: true })).resolves.toBe(false);
+    await expect(store.save({ hasInFlightAgent: true, force: true })).resolves.toBe(false);
     expect(store.getSnapshot()).toMatchObject({
       status: "conflict",
       conflictKind: "agent",

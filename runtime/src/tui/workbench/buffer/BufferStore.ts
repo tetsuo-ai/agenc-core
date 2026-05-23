@@ -204,7 +204,7 @@ export class WorkbenchBufferStore {
     await this.#load(file.absolutePath, this.#position().line, true, file.filePath);
   }
 
-  async save(options: { readonly hasInFlightAgent?: boolean } = {}): Promise<boolean> {
+  async save(options: { readonly hasInFlightAgent?: boolean; readonly force?: boolean } = {}): Promise<boolean> {
     const file = this.#file;
     const document = this.#document;
     if (!file || !document) return false;
@@ -226,7 +226,7 @@ export class WorkbenchBufferStore {
     this.#emit();
 
     try {
-      const nextFile = await saveBufferFileSnapshot(file, bufferText(document));
+      const nextFile = await saveBufferFileSnapshot(file, bufferText(document), { force: options.force });
       this.#file = nextFile;
       this.#status = "ready";
       this.#error = null;

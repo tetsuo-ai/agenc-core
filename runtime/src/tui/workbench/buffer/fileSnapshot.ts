@@ -119,16 +119,21 @@ async function readCurrentContent(snapshot: BufferFileSnapshot): Promise<string>
 export async function saveBufferFileSnapshot(
   snapshot: BufferFileSnapshot,
   content: string,
+  options: { readonly force?: boolean } = {},
 ): Promise<BufferFileSnapshot> {
+  const force = options.force === true;
   await stat(snapshot.absolutePath).catch((error: unknown) => {
     const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" && force) return;
     if (code === "ENOENT") throw new BufferSaveConflictError(snapshot.filePath);
     throw error;
   });
 
-  const currentContent = await readCurrentContent(snapshot);
-  if (currentContent !== snapshot.content && currentContent !== content) {
-    throw new BufferSaveConflictError(snapshot.filePath);
+  if (!force) {
+    const currentContent = await readCurrentContent(snapshot);
+    if (currentContent !== snapshot.content && currentContent !== content) {
+      throw new BufferSaveConflictError(snapshot.filePath);
+    }
   }
 
   await mkdir(dirname(snapshot.absolutePath), { recursive: true });

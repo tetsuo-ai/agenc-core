@@ -110,14 +110,14 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     (command: BufferVimCommand): void => {
       switch (command.type) {
         case "save":
-          void store.save({ hasInFlightAgent: Boolean(inFlightAgent) });
+          void store.save({ hasInFlightAgent: Boolean(inFlightAgent), force: command.force });
           break;
         case "quit":
           if (store.close({ discard: command.discard })) dispatch({ type: "closeSurface" });
           break;
         case "saveQuit":
           void (async () => {
-            const saved = await store.save({ hasInFlightAgent: Boolean(inFlightAgent) });
+            const saved = await store.save({ hasInFlightAgent: Boolean(inFlightAgent), force: command.force });
             if (saved && store.close()) dispatch({ type: "closeSurface" });
           })();
           break;
