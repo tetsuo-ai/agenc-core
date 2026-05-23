@@ -90,6 +90,17 @@ function sleep(ms = 200): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function jsonMatchLine(file: string, line: number, text: string): string {
+  return JSON.stringify({
+    type: "match",
+    data: {
+      path: { text: file },
+      line_number: line,
+      lines: { text: `${text}\n` },
+    },
+  });
+}
+
 function SearchQueryController({
   onReady,
 }: {
@@ -202,8 +213,8 @@ describe("SearchSurface", () => {
 
   it("selects the requested search match id after ripgrep results load", async () => {
     searchHarness.lines = [
-      "src/first.ts:4:const needle = true",
-      "src/second.ts:9:needle()",
+      jsonMatchLine("src/first.ts", 4, "const needle = true"),
+      jsonMatchLine("src/second.ts", 9, "needle()"),
     ];
     const changes: AppState[] = [];
     const { stdin, stdout, output } = createStreams();
@@ -248,6 +259,65 @@ describe("SearchSurface", () => {
     }
   });
 
+  it("preserves colon-number path segments from structured ripgrep output", async () => {
+    searchHarness.autoFlush = false;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      expect(call.args).toEqual([
+        "--json",
+        "-i",
+        "-m",
+        "20",
+        "-F",
+        "-e",
+        "needle",
+      ]);
+
+      call.onLines([
+        jsonMatchLine("src/topic:12/app.ts", 4, "const needle = true"),
+      ]);
+      call.resolve();
+      await sleep(50);
+      searchHarness.handlers["surface:open"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/topic:12/app.ts",
+        activeFileLine: 4,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("does not restore the requested search match after manual navigation during streaming", async () => {
     searchHarness.autoFlush = false;
     const changes: AppState[] = [];
@@ -280,9 +350,9 @@ describe("SearchSurface", () => {
       expect(searchHarness.calls).toHaveLength(1);
       const call = searchHarness.calls[0]!;
       call.onLines([
-        "src/first.ts:4:const needle = true",
-        "src/second.ts:9:needle()",
-        "src/third.ts:10:needle again",
+        jsonMatchLine("src/first.ts", 4, "const needle = true"),
+        jsonMatchLine("src/second.ts", 9, "needle()"),
+        jsonMatchLine("src/third.ts", 10, "needle again"),
       ]);
       await sleep();
 
@@ -297,7 +367,7 @@ describe("SearchSurface", () => {
         activeFileLine: 10,
       });
 
-      call.onLines(["src/fourth.ts:11:needle later"]);
+      call.onLines([jsonMatchLine("src/fourth.ts", 11, "needle later")]);
       await sleep(50);
       searchHarness.handlers["surface:open"]?.();
 
@@ -345,15 +415,15 @@ describe("SearchSurface", () => {
       expect(searchHarness.calls).toHaveLength(1);
       const call = searchHarness.calls[0]!;
       call.onLines([
-        "src/first.ts:4:const needle = true",
-        "src/second.ts:9:needle()",
+        jsonMatchLine("src/first.ts", 4, "const needle = true"),
+        jsonMatchLine("src/second.ts", 9, "needle()"),
       ]);
       await sleep();
 
       searchHarness.handlers["surface:down"]?.();
       await sleep();
 
-      call.onLines(["src/target.ts:20:needle target"]);
+      call.onLines([jsonMatchLine("src/target.ts", 20, "needle target")]);
       await sleep(50);
       searchHarness.handlers["surface:open"]?.();
 
@@ -403,7 +473,7 @@ describe("SearchSurface", () => {
       await sleep(20);
 
       expect(staleCall.signal.aborted).toBe(true);
-      staleCall.onLines(["src/old.ts:7:old result"]);
+      staleCall.onLines([jsonMatchLine("src/old.ts", 7, "old result")]);
       staleCall.resolve();
       await sleep(50);
 
@@ -444,7 +514,7 @@ describe("SearchSurface", () => {
       await sleep(180);
 
       const oldCall = searchHarness.calls[0]!;
-      oldCall.onLines(["src/old.ts:7:old result"]);
+      oldCall.onLines([jsonMatchLine("src/old.ts", 7, "old result")]);
       oldCall.resolve();
       await sleep(50);
 

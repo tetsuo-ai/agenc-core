@@ -7,7 +7,7 @@ import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { attachSearchMatchCommand, openBufferCommand } from "../commands.js";
-import { groupSearchMatches, parseWorkbenchRipgrepLine, visibleSearchRows } from "../search/model.js";
+import { groupSearchMatches, parseWorkbenchRipgrepJsonLine, visibleSearchRows } from "../search/model.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { SearchMatch } from "../types.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
@@ -43,13 +43,13 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
     const next: SearchMatch[] = [];
     const timer = setTimeout(() => {
       void ripGrepStream(
-        ["-n", "--no-heading", "-i", "-m", "20", "-F", "-e", query],
+        ["--json", "-i", "-m", "20", "-F", "-e", query],
         cwd,
         controller.signal,
         (lines) => {
           if (controller.signal.aborted) return;
           for (const line of lines) {
-            const match = parseWorkbenchRipgrepLine(line, cwd);
+            const match = parseWorkbenchRipgrepJsonLine(line, cwd);
             if (match) next.push(match);
           }
           setMatches(next.slice(0, 500));
