@@ -245,8 +245,9 @@ describe("WorkbenchBufferStore", () => {
     await expect(store.goToDefinition()).resolves.toBe(false);
     expect(store.getSnapshot()).toMatchObject({
       status: "error",
-      filePath: null,
+      filePath: "target.txt",
     });
+    expect(store.getText()).toBe("alpha\n");
   });
 
   it("ignores stale LSP responses after moving within the same file", async () => {
