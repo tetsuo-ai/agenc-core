@@ -162,6 +162,69 @@ describe("permission request overlay coverage", () => {
     }
   });
 
+  test("clears typed high-risk confirmation when the pending request changes", async () => {
+    const firstResolved: ReviewDecision[] = [];
+    const secondResolved: ReviewDecision[] = [];
+    const firstRequest = createPendingRequest(
+      decision => {
+        firstResolved.push(decision);
+      },
+      {
+        id: "request-delete-first",
+        input: { command: "rm -rf /tmp/agenc-first" },
+        description: "Delete generated path",
+      },
+    );
+    const secondRequest = createPendingRequest(
+      decision => {
+        secondResolved.push(decision);
+      },
+      {
+        id: "request-delete-second",
+        input: { command: "rm -rf /tmp/agenc-second" },
+        description: "Delete another generated path",
+      },
+    );
+    const tools = [{ name: "Bash" }];
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(<AgenCPermissionOverlay request={firstRequest} tools={tools} />);
+      await sleep();
+
+      for (const character of "delete") {
+        stdin.write(character);
+        await sleep();
+      }
+      stdin.write("\r");
+      await sleep();
+
+      expect(firstResolved).toEqual([APPROVED]);
+      expect(secondResolved).toEqual([]);
+
+      root.render(<AgenCPermissionOverlay request={secondRequest} tools={tools} />);
+      await sleep();
+
+      expect(stripAnsi(extractLastFrame(output()))).toContain("second");
+      expect(secondResolved).toEqual([]);
+
+      stdin.write("\r");
+      await sleep();
+
+      expect(secondResolved).toEqual([]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
   test("renders split command arguments as the destructive command", async () => {
     const resolved: ReviewDecision[] = [];
     const request = createPendingRequest(
