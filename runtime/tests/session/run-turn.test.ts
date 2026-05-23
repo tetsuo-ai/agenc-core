@@ -101,10 +101,16 @@ import {
   PERSONALITY_SPEC_START_MARKER,
   type ModelMessages,
 } from "../context/personality-spec-instructions.js";
+import {
+  canonicalizePath,
+  clearSessionReadState,
+  getSessionReadSnapshot,
+} from "../tools/system/filesystem.js";
 
 afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
   sessionMemoryPostSamplingMockState.error = null;
+  clearSessionReadState("conv-test");
 });
 
 function mkCtx(): TurnContext {
@@ -705,6 +711,12 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(rendered).toContain("<attached_files>");
     expect(rendered).toContain('path="src/app.ts"');
     expect(rendered).toContain("export const answer = 42;");
+    const snapshot = getSessionReadSnapshot(
+      session.conversationId,
+      await canonicalizePath(join(cwd, "src", "app.ts")),
+    );
+    expect(snapshot?.viewKind).toBe("full");
+    expect(snapshot?.rawContent).toBe("export const answer = 42;\n");
 
     const userMsg = events.find((e) => e.msg.type === "user_message");
     if (userMsg?.msg.type === "user_message") {

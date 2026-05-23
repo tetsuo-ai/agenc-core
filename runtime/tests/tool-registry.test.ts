@@ -250,6 +250,25 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.content).toContain("[exec exit_code=0");
   });
 
+  test("dispatch routes legacy Read calls to the canonical FileRead tool", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-registry-read-alias-"));
+    try {
+      await writeFile(join(root, "note.txt"), "alias read body\n", "utf8");
+      const registry = buildToolRegistry({ workspaceRoot: root });
+
+      const result = await registry.dispatch({
+        id: "read-alias-1",
+        name: "Read",
+        arguments: JSON.stringify({ file_path: "note.txt", cwd: root }),
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("alias read body");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("model-facing Task tools keep string id dispatch in the registry", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-registry-task-tools-"));
     try {
