@@ -17,6 +17,52 @@ import { AgentSurface, canEnterAgentTranscript } from "../../../src/tui/workbenc
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 describe("AgentSurface", () => {
+  it("falls back to the running newest agent when the selected agent id is stale", async () => {
+    const oldAgent = {
+      id: "agent-old",
+      type: "local_agent",
+      status: "completed",
+      description: "old completed agent",
+      startTime: 1_000,
+      outputFile: "urn:agenc:task:agent-old:output",
+      outputOffset: 0,
+      notified: false,
+    } as any;
+    const newAgent = {
+      id: "agent-new",
+      type: "local_agent",
+      status: "running",
+      description: "new running agent",
+      startTime: 2_000,
+      outputFile: "urn:agenc:task:agent-new:output",
+      outputOffset: 0,
+      notified: false,
+    } as any;
+
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            [oldAgent.id]: oldAgent,
+            [newAgent.id]: newAgent,
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "agent",
+            selectedAgentTaskId: "agent-gone",
+          },
+        }}
+      >
+        <AgentSurface focused={true} />
+      </AppStateProvider>,
+      100,
+    );
+
+    expect(output).toContain("AGENT - running - new running agent");
+    expect(output).not.toContain("old completed agent");
+  });
+
   it("opens in-process teammate transcripts from the agent surface", async () => {
     const changes: AppState[] = [];
     const teammateTask = {

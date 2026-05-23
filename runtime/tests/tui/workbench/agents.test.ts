@@ -44,6 +44,19 @@ describe("workbench agents rail model", () => {
     });
   });
 
+  it("resolves stale agent selection to the active newest agent before completed tasks", () => {
+    const tasks = [
+      { id: "agent-old", type: "local_agent", status: "completed", startTime: 1_000 },
+      { id: "agent-new", type: "local_agent", status: "running", startTime: 2_000 },
+    ];
+
+    expect(resolveAgentSelection(tasks, "agent-gone")).toMatchObject({
+      selectedId: "agent-new",
+      selectedIndex: 0,
+      selectedTask: tasks[1],
+    });
+  });
+
   it("formats elapsed runtime and extracts task paths", () => {
     const task = {
       id: "agent-1",
