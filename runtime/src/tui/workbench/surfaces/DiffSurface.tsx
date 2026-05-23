@@ -16,6 +16,8 @@ import { useWorkbenchDispatch } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { clampSurfaceSelection } from "./selection.js";
 
+const FILE_LIST_LIMIT = 40;
+
 export function DiffSurface({
   focused,
   pendingApproval,
@@ -121,6 +123,7 @@ export function DiffSurfaceView({
   const files = snapshot.files ?? [];
   const selectedIndex = clampSurfaceSelection(selected, files.length);
   const selectedFile = files[selectedIndex] ?? files[0];
+  const visibleFiles = visibleFileWindow(files, selectedIndex, FILE_LIST_LIMIT);
   const acceptedCount = Object.values(decisions).filter((value) => value === "accept").length;
   const skippedCount = Object.values(decisions).filter((value) => value === "skip").length;
   return (
@@ -139,7 +142,7 @@ export function DiffSurfaceView({
       </Text>
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         <Box flexDirection="column" width={32} flexShrink={0} borderRight borderColor="gray" paddingRight={1}>
-          {files.slice(0, 40).map((file, index) => (
+          {visibleFiles.map(({ file, index }) => (
             <Text key={file.path} color={index === selectedIndex ? "suggestion" : undefined} wrap="truncate-end">
               {decisionMarker(decisions[file.path])}{statusMarker(file.status)} {file.path}
             </Text>
@@ -160,6 +163,25 @@ export function DiffSurfaceView({
       </Box>
     </Box>
   );
+}
+
+function visibleFileWindow(
+  files: readonly DiffMenuSnapshot["files"][number][],
+  selectedIndex: number,
+  limit: number,
+): Array<{ readonly file: DiffMenuSnapshot["files"][number]; readonly index: number }> {
+  const maxItems = Math.max(1, Math.floor(limit));
+  if (files.length <= maxItems) {
+    return files.map((file, index) => ({ file, index }));
+  }
+  const start = Math.min(
+    Math.max(0, selectedIndex - Math.floor(maxItems / 2)),
+    files.length - maxItems,
+  );
+  return files.slice(start, start + maxItems).map((file, offset) => ({
+    file,
+    index: start + offset,
+  }));
 }
 
 function errorMessage(error: unknown): string {
