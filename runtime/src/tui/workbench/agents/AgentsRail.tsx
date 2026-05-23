@@ -21,7 +21,7 @@ export function AgentsRail({
   const setAppState = useSetAppState();
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
-  const taskList = Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash");
+  const taskList = orderAgentTasks(Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash"));
   const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
   const { selectedId, selectedIndex, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
   const selectByDelta = (delta: number) => {
@@ -72,22 +72,38 @@ export function partitionAgentTasks(tasks: readonly any[]): {
   };
 }
 
+export function orderAgentTasks(tasks: readonly any[]): readonly any[] {
+  return [...tasks].sort(compareAgentTasks);
+}
+
 export function resolveAgentSelection(tasks: readonly any[], selectedId: string | null | undefined): {
   readonly selectedId: string | null;
   readonly selectedIndex: number;
   readonly selectedTask: any | null;
 } {
-  if (tasks.length === 0) {
+  const orderedTasks = orderAgentTasks(tasks);
+  if (orderedTasks.length === 0) {
     return { selectedId: null, selectedIndex: -1, selectedTask: null };
   }
-  const selectedIndex = tasks.findIndex((task: any) => task.id === selectedId);
+  const selectedIndex = orderedTasks.findIndex((task: any) => task.id === selectedId);
   const resolvedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-  const selectedTask = tasks[resolvedIndex] ?? null;
+  const selectedTask = orderedTasks[resolvedIndex] ?? null;
   return {
     selectedId: selectedTask?.id ?? null,
     selectedIndex: selectedTask ? resolvedIndex : -1,
     selectedTask,
   };
+}
+
+function compareAgentTasks(left: any, right: any): number {
+  const leftActive = isActiveTaskStatus(left?.status);
+  const rightActive = isActiveTaskStatus(right?.status);
+  if (leftActive !== rightActive) return leftActive ? -1 : 1;
+  return (right?.startTime ?? 0) - (left?.startTime ?? 0);
+}
+
+function isActiveTaskStatus(status: unknown): boolean {
+  return status === "running" || status === "pending";
 }
 
 function AgentRailSection({

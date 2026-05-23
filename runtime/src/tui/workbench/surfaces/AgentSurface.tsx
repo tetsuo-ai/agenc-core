@@ -9,6 +9,7 @@ import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContex
 import { useAppState, useSetAppState } from "../../state/AppState.js";
 import { enterTeammateView } from "../../state/teammateViewHelpers.js";
 import { formatTaskElapsed, taskPathLabel } from "../agents/activity.js";
+import { orderAgentTasks, resolveAgentSelection } from "../agents/AgentsRail.js";
 import { useWorkbenchState } from "../state.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
@@ -18,8 +19,8 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
   const tasks = useAppState((state) => state.tasks);
   const setAppState = useSetAppState();
   const task = useMemo(() => {
-    if (workbench.selectedAgentTaskId && tasks[workbench.selectedAgentTaskId]) return tasks[workbench.selectedAgentTaskId];
-    return Object.values(tasks).find((item: any) => item.type !== "local_bash") ?? null;
+    const taskList = orderAgentTasks(Object.values(tasks).filter((item: any) => item.type !== "local_bash"));
+    return resolveAgentSelection(taskList, workbench.selectedAgentTaskId).selectedTask;
   }, [tasks, workbench.selectedAgentTaskId]);
   const [tail, setTail] = useState("");
 
