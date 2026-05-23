@@ -27,8 +27,8 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
   useEffect(() => {
     abortRef.current?.abort();
     setSelected(0);
+    setMatches([]);
     if (!query.trim()) {
-      setMatches([]);
       setLoading(false);
       setError(null);
       return;
