@@ -427,12 +427,14 @@ function resolveWorkspaceRelativePath(
     return { ok: false, error: "Use a workspace-relative path, not an absolute path." };
   }
 
-  const relativePath = path.posix.normalize(trimmed).replace(/^\.\//u, "");
+  const normalizedPath = path.posix.normalize(trimmed).replace(/^\.\//u, "");
+  if (options.requireFilePath && normalizedPath.endsWith("/")) {
+    return { ok: false, error: "Enter a file path, not a directory path." };
+  }
+
+  const relativePath = stripTrailingSlashes(normalizedPath);
   if (!relativePath || relativePath === "." || relativePath.startsWith("../")) {
     return { ok: false, error: "Path must stay inside the workspace." };
-  }
-  if (options.requireFilePath && relativePath.endsWith("/")) {
-    return { ok: false, error: "Enter a file path, not a directory path." };
   }
 
   const root = path.resolve(cwd);
@@ -446,6 +448,10 @@ function resolveWorkspaceRelativePath(
   }
 
   return { ok: true, relativePath, absolutePath };
+}
+
+function stripTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/u, "");
 }
 
 async function pathExists(absolutePath: string): Promise<boolean> {

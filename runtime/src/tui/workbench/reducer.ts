@@ -5,6 +5,11 @@ import type {
   WorkbenchPane,
   WorkbenchState,
 } from "./types.js";
+import {
+  containsWorkspacePathReference,
+  normalizeWorkspacePathForReferences,
+  renameWorkspacePathReference,
+} from "./pathReferences.js";
 
 export function getDefaultWorkbenchState(): WorkbenchState {
   return {
@@ -201,10 +206,16 @@ function renamePathReferences(
   fromPath: string,
   toPath: string,
 ): WorkbenchState {
+  const normalizedFromPath = normalizeWorkspacePathForReferences(fromPath);
+  const normalizedToPath = normalizeWorkspacePathForReferences(toPath);
   const attachmentIdMap = new Map<string, string>();
   const attachmentsById = new Map<string, WorkbenchAttachment>();
   for (const attachment of state.attachments) {
-    const nextAttachment = renameAttachmentPath(attachment, fromPath, toPath);
+    const nextAttachment = renameAttachmentPath(
+      attachment,
+      normalizedFromPath,
+      normalizedToPath,
+    );
     attachmentIdMap.set(attachment.id, nextAttachment.id);
     attachmentsById.set(nextAttachment.id, nextAttachment);
   }
@@ -217,7 +228,12 @@ function renamePathReferences(
   );
   return {
     ...state,
-    activeFilePath: renameWorkspacePath(state.activeFilePath, fromPath, toPath) ?? state.activeFilePath,
+    activeFilePath:
+      renameWorkspacePathReference(
+        state.activeFilePath,
+        normalizedFromPath,
+        normalizedToPath,
+      ) ?? state.activeFilePath,
     attachments,
     composerAttachmentIds,
   };
@@ -227,9 +243,12 @@ function deletePathReferences(
   state: WorkbenchState,
   deletedPath: string,
 ): WorkbenchState {
-  const activeFileDeleted = containsWorkspacePath(state.activeFilePath, deletedPath);
+  const activeFileDeleted = containsWorkspacePathReference(
+    state.activeFilePath,
+    deletedPath,
+  );
   const attachments = state.attachments.filter((attachment) =>
-    !containsWorkspacePath(attachment.path ?? null, deletedPath)
+    !containsWorkspacePathReference(attachment.path ?? null, deletedPath)
   );
   const attachmentIds = new Set(attachments.map((item) => item.id));
   return {
@@ -246,7 +265,11 @@ function renameAttachmentPath(
   fromPath: string,
   toPath: string,
 ): WorkbenchAttachment {
-  const nextPath = renameWorkspacePath(attachment.path ?? null, fromPath, toPath);
+  const nextPath = renameWorkspacePathReference(
+    attachment.path ?? null,
+    fromPath,
+    toPath,
+  );
   if (!nextPath || nextPath === attachment.path) return attachment;
   return {
     ...attachment,
@@ -254,17 +277,6 @@ function renameAttachmentPath(
     path: nextPath,
     label: replaceFirst(attachment.label, attachment.path ?? "", nextPath),
   };
-}
-
-function renameWorkspacePath(value: string | null, fromPath: string, toPath: string): string | null {
-  if (!value) return value;
-  if (value === fromPath) return toPath;
-  if (value.startsWith(`${fromPath}/`)) return `${toPath}${value.slice(fromPath.length)}`;
-  return value;
-}
-
-function containsWorkspacePath(value: string | null, targetPath: string): boolean {
-  return value === targetPath || Boolean(value?.startsWith(`${targetPath}/`));
 }
 
 function replaceFirst(value: string, needle: string, replacement: string): string {

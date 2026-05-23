@@ -12,6 +12,10 @@ import TextInput from "../../components/TextInput.js";
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
+import {
+  containsWorkspacePathReference,
+  renameWorkspacePathReference,
+} from "../pathReferences.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
@@ -434,12 +438,9 @@ function defaultCreateFilePath(row: ProjectTreeRow | null): string {
 }
 
 function pathContains(activePath: string | null, targetPath: string): boolean {
-  return activePath === targetPath || Boolean(activePath?.startsWith(`${targetPath}/`));
+  return containsWorkspacePathReference(activePath, targetPath);
 }
 
 function renamedActiveFilePath(activePath: string | null, fromPath: string, toPath: string): string | null {
-  if (!activePath) return null;
-  if (activePath === fromPath) return toPath;
-  if (activePath.startsWith(`${fromPath}/`)) return `${toPath}${activePath.slice(fromPath.length)}`;
-  return null;
+  return renameWorkspacePathReference(activePath, fromPath, toPath);
 }

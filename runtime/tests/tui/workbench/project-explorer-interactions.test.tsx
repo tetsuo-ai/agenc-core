@@ -211,10 +211,10 @@ describe("ProjectExplorer interactions", () => {
 
       const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
       expect(submitRename).toEqual(expect.any(Function));
-      submitRename?.("lib");
+      submitRename?.("lib/");
       await sleep();
 
-      expect(explorerHarness.renameCalls).toEqual([["src", "lib"]]);
+      expect(explorerHarness.renameCalls).toEqual([["src", "lib/"]]);
       expect(changes.at(-1)?.workbench).toMatchObject({
         focusedPane: "explorer",
         activeSurfaceMode: "buffer",
