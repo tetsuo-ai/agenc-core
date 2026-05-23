@@ -201,6 +201,19 @@ describe("permission request swarm coverage", () => {
       expect(resolver).toBeDefined();
 
       const abortController = new AbortController();
+      const preAbortedController = new AbortController();
+      preAbortedController.abort();
+      const preAbortedDecision = resolver!.request(
+        createCtx(
+          "pre-aborted-shell",
+          "Shell",
+          {
+            kind: "local_shell",
+            params: { command: ["pwd"] },
+          },
+          { signal: preAbortedController.signal },
+        ),
+      );
       const missingPayloadDecision = resolver!.request(
         createCtx("missing-payload", "Read", undefined),
       );
@@ -237,6 +250,8 @@ describe("permission request swarm coverage", () => {
       await waitFor(() => {
         expect(latestRequests).toHaveLength(5);
       });
+      await expect(preAbortedDecision).resolves.toEqual(ABORT);
+      expect(latestRequests.map(request => request.id)).not.toContain("pre-aborted-shell");
       expect(
         latestRequests.map(request => ({
           id: request.id,
