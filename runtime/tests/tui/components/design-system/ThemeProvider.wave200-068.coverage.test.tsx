@@ -15,18 +15,22 @@ import {
 const mocks = vi.hoisted(() => {
   const feature = vi.fn(() => false);
   const getGlobalConfig = vi.fn(() => ({ theme: "auto" }));
+  const logError = vi.fn();
   const savedConfigs: unknown[] = [];
   const saveGlobalConfig = vi.fn((update: (current: unknown) => unknown) => {
     savedConfigs.push(update({ retained: true, theme: "dark" }));
   });
   const getSystemThemeName = vi.fn(() => "light");
+  const watchSystemTheme = vi.fn(() => () => {});
 
   return {
     feature,
     getGlobalConfig,
     getSystemThemeName,
+    logError,
     savedConfigs,
     saveGlobalConfig,
+    watchSystemTheme,
   };
 });
 
@@ -41,6 +45,14 @@ vi.mock("../../../utils/config.js", () => ({
 
 vi.mock("../../../utils/systemTheme.js", () => ({
   getSystemThemeName: mocks.getSystemThemeName,
+}));
+
+vi.mock("../../../utils/systemThemeWatcher.js", () => ({
+  watchSystemTheme: mocks.watchSystemTheme,
+}));
+
+vi.mock("../../../utils/log.js", () => ({
+  logError: mocks.logError,
 }));
 
 type TestStdin = PassThrough & {
@@ -180,6 +192,57 @@ describe("ThemeProvider", () => {
 
       expect(mocks.saveGlobalConfig).toHaveBeenCalledTimes(2);
       expect(mocks.savedConfigs).toContainEqual({ retained: true, theme: "auto" });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      stderr.end();
+    }
+  });
+
+  test("logs auto-theme watcher startup failures without unmounting the provider", async () => {
+    mocks.feature.mockReturnValue(true);
+    const watcherError = new Error("theme watcher startup failed");
+    mocks.watchSystemTheme.mockImplementationOnce(() => {
+      throw watcherError;
+    });
+    const snapshots: ThemeSnapshot[] = [];
+    const { stderr, stdin, stdout } = createTestStreams();
+    const root = await createRoot({
+      stderr: stderr as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+    });
+
+    function Probe() {
+      const [theme] = useTheme();
+      const setting = useThemeSetting();
+
+      React.useEffect(() => {
+        snapshots.push({ setting, theme });
+      }, [setting, theme]);
+
+      return <Text>{`${setting}:${theme}`}</Text>;
+    }
+
+    try {
+      root.render(
+        <ThemeProvider initialState="auto" onThemeSave={vi.fn()}>
+          <Probe />
+        </ThemeProvider>,
+      );
+
+      await waitFor(
+        () => mocks.watchSystemTheme.mock.calls.length === 1,
+        "auto theme watcher did not start",
+      );
+      await waitFor(
+        () => mocks.logError.mock.calls.some(([error]) => error === watcherError),
+        "auto theme watcher startup failure was not logged",
+      );
+
+      expect(snapshots.at(-1)).toEqual({ setting: "auto", theme: "light" });
     } finally {
       root.unmount();
       stdin.end();

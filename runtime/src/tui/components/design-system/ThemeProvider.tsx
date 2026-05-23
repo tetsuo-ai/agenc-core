@@ -5,6 +5,7 @@ import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useStdin } from '../../ink/components/StdinContext.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js';
 import { getSystemThemeName, type SystemTheme } from '../../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ThemeName, ThemeSetting } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type ThemeContextValue = {
@@ -72,8 +73,12 @@ export function ThemeProvider({
         watchSystemTheme
       }) => {
         if (cancelled) return;
-        cleanup = watchSystemTheme(internal_querier, setSystemTheme);
-      });
+        try {
+          cleanup = watchSystemTheme(internal_querier, setSystemTheme);
+        } catch (error) {
+          logError(error);
+        }
+      }, logError);
       return () => {
         cancelled = true;
         cleanup?.();
