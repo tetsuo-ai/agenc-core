@@ -11,7 +11,7 @@ import { useAppState } from "../../state/AppState.js";
 import TextInput from "../../components/TextInput.js";
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
-import { attachFileCommand, openBufferCommand } from "../commands.js";
+import { attachFileCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
@@ -109,6 +109,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       return;
     }
     const renamedActivePath = renamedActiveFilePath(workbench.activeFilePath, action.path, result.path);
+    dispatch(renamePathReferencesCommand(action.path, result.path));
     if (renamedActivePath) {
       dispatch(openBufferCommand(renamedActivePath, workbench.activeFileLine ?? undefined, false));
     }

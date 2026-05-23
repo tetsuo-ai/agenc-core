@@ -28,6 +28,10 @@ export function attachFileCommand(path: string): WorkbenchCommand {
   };
 }
 
+export function renamePathReferencesCommand(fromPath: string, toPath: string): WorkbenchCommand {
+  return { type: "renamePathReferences", fromPath, toPath };
+}
+
 export function attachFileRangeCommand(
   path: string,
   line: number,

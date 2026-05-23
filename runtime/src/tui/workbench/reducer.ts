@@ -85,6 +85,8 @@ export function workbenchReducer(
       };
     case "closeSurface":
       return openSurface(state, "transcript");
+    case "renamePathReferences":
+      return renamePathReferences(state, command.fromPath, command.toPath);
     case "toggleExplorer":
       return {
         ...state,
@@ -185,4 +187,64 @@ function attach(
     attachments,
     composerAttachmentIds: attachments.map((item) => item.id),
   };
+}
+
+function renamePathReferences(
+  state: WorkbenchState,
+  fromPath: string,
+  toPath: string,
+): WorkbenchState {
+  const attachmentIdMap = new Map<string, string>();
+  const attachmentsById = new Map<string, WorkbenchAttachment>();
+  for (const attachment of state.attachments) {
+    const nextAttachment = renameAttachmentPath(attachment, fromPath, toPath);
+    attachmentIdMap.set(attachment.id, nextAttachment.id);
+    attachmentsById.set(nextAttachment.id, nextAttachment);
+  }
+  const attachments = [...attachmentsById.values()];
+  const attachmentIds = new Set(attachments.map((item) => item.id));
+  const composerAttachmentIds = unique(
+    state.composerAttachmentIds
+      .map((id) => attachmentIdMap.get(id) ?? id)
+      .filter((id) => attachmentIds.has(id)),
+  );
+  return {
+    ...state,
+    activeFilePath: renameWorkspacePath(state.activeFilePath, fromPath, toPath) ?? state.activeFilePath,
+    attachments,
+    composerAttachmentIds,
+  };
+}
+
+function renameAttachmentPath(
+  attachment: WorkbenchAttachment,
+  fromPath: string,
+  toPath: string,
+): WorkbenchAttachment {
+  const nextPath = renameWorkspacePath(attachment.path ?? null, fromPath, toPath);
+  if (!nextPath || nextPath === attachment.path) return attachment;
+  return {
+    ...attachment,
+    id: replaceFirst(attachment.id, attachment.path ?? "", nextPath),
+    path: nextPath,
+    label: replaceFirst(attachment.label, attachment.path ?? "", nextPath),
+  };
+}
+
+function renameWorkspacePath(value: string | null, fromPath: string, toPath: string): string | null {
+  if (!value) return value;
+  if (value === fromPath) return toPath;
+  if (value.startsWith(`${fromPath}/`)) return `${toPath}${value.slice(fromPath.length)}`;
+  return value;
+}
+
+function replaceFirst(value: string, needle: string, replacement: string): string {
+  if (!needle) return value;
+  const index = value.indexOf(needle);
+  if (index < 0) return value;
+  return `${value.slice(0, index)}${replacement}${value.slice(index + needle.length)}`;
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
