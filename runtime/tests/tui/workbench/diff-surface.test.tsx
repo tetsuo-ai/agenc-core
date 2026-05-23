@@ -41,4 +41,34 @@ describe("DiffSurfaceView", () => {
       expect(line.length).toBeLessThanOrEqual(columns);
     }
   });
+
+  it("clamps stale selection to the last changed file", async () => {
+    const snapshot = createDiffMenuSnapshot({
+      rawDiff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "diff --git a/src/new.ts b/src/new.ts",
+        "@@ -0,0 +1 @@",
+        "+fresh",
+      ].join("\n"),
+      nameStatus: "M\tsrc/app.ts\nA\tsrc/new.ts",
+      numstat: "1\t1\tsrc/app.ts\n1\t0\tsrc/new.ts",
+      untrackedFiles: [],
+    });
+
+    const output = await renderToString(
+      <DiffSurfaceView
+        snapshot={snapshot}
+        selected={99}
+        decisions={{}}
+        focused={true}
+        pendingApprovalRisk={null}
+      />,
+      { columns: 80, rows: 24 },
+    );
+
+    expect(output).toContain("src/new.ts - non-mutating review");
+  });
 });

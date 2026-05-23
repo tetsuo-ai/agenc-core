@@ -11,6 +11,7 @@ import { groupSearchMatches, parseWorkbenchRipgrepLine, visibleSearchRows } from
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { SearchMatch } from "../types.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+import { clampSurfaceSelection } from "./selection.js";
 
 export function SearchSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
@@ -66,7 +67,8 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
     };
   }, [query]);
 
-  const selectedMatch = matches[selected] ?? null;
+  const selectedIndex = clampSurfaceSelection(selected, matches.length);
+  const selectedMatch = matches[selectedIndex] ?? null;
   const groups = useMemo(() => groupSearchMatches(matches), [matches]);
   const rows = useMemo(() => visibleSearchRows(groups), [groups]);
   useRegisterKeybindingContext("Surface", focused);
@@ -103,7 +105,7 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
     <SearchSurfaceView
       query={query}
       matches={matches}
-      selected={selected}
+      selected={selectedIndex}
       loading={loading}
       error={error}
       focused={focused}
@@ -126,7 +128,8 @@ export function SearchSurfaceView({
   readonly error: string | null;
   readonly focused: boolean;
 }): React.ReactElement {
-  const selectedMatch = matches[selected] ?? null;
+  const selectedIndex = clampSurfaceSelection(selected, matches.length);
+  const selectedMatch = matches[selectedIndex] ?? null;
   const groups = groupSearchMatches(matches);
   const rows = visibleSearchRows(groups);
   return (
@@ -141,7 +144,7 @@ export function SearchSurfaceView({
           row.kind === "file" ? (
             <Text key={row.id} color="text2" wrap="truncate-end">{row.file} ({row.count})</Text>
           ) : (
-            <Text key={row.id} color={matches[selected]?.id === row.match.id ? "suggestion" : undefined} wrap="truncate-end">
+            <Text key={row.id} color={matches[selectedIndex]?.id === row.match.id ? "suggestion" : undefined} wrap="truncate-end">
               <Text dimColor>  {row.match.line} </Text>{row.match.text.trim()}
             </Text>
           ),

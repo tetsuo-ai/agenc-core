@@ -182,7 +182,7 @@ describe("KeybindingProviderSetup coverage swarm 049", () => {
     expect(invoked).toHaveBeenCalledTimes(1);
   });
 
-  test("clears chord state without stopping when a completed chord has no handler", () => {
+  test("clears chord state and consumes completed chord input without a handler", () => {
     const bindings = parseBindings([
       {
         context: "Chat",
@@ -211,7 +211,7 @@ describe("KeybindingProviderSetup coverage swarm 049", () => {
     const completionEvent = inputEvent();
     handler("k", key({ ctrl: true }), completionEvent);
 
-    expect(completionEvent.stopped).toBe(false);
+    expect(completionEvent.stopped).toBe(true);
     expect(pendingChordRef.current).toBeNull();
   });
 

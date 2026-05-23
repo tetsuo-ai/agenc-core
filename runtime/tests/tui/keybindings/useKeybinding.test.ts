@@ -71,6 +71,7 @@ const NON_MENU_CONTEXTS = new Set<KeybindingContextName>([
   "Workbench",
   "Explorer",
   "Surface",
+  "Buffer",
   "Agents",
   "Composer",
 ]);
@@ -79,6 +80,7 @@ const WORKBENCH_CONTEXTS: readonly KeybindingContextName[] = [
   "Workbench",
   "Explorer",
   "Surface",
+  "Buffer",
   "Agents",
   "Composer",
 ];
