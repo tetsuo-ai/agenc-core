@@ -23,8 +23,7 @@ export function AgentsRail({
   const dispatch = useWorkbenchDispatch();
   const taskList = Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash");
   const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
-  const selectedId = workbench.selectedAgentTaskId ?? taskList[0]?.id ?? null;
-  const selectedIndex = Math.max(0, taskList.findIndex((task: any) => task.id === selectedId));
+  const { selectedId, selectedIndex, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
   const selectByDelta = (delta: number) => {
     if (taskList.length === 0) return;
     const base = selectedIndex < 0 ? 0 : selectedIndex;
@@ -39,12 +38,10 @@ export function AgentsRail({
       "agents:up": () => selectByDelta(-1),
       "agents:down": () => selectByDelta(1),
       "agents:open": () => {
-        const taskId = selectedId ?? taskList[0]?.id;
-        if (taskId) dispatch({ type: "openAgent", taskId, focus: true });
+        if (selectedTask?.id) dispatch({ type: "openAgent", taskId: selectedTask.id, focus: true });
       },
       "agents:stop": () => {
-        const task = taskList[selectedIndex] ?? taskList[0];
-        if (task) stopWorkbenchTask(task, setAppState);
+        if (selectedTask) stopWorkbenchTask(selectedTask, setAppState);
       },
     },
     { context: "Agents", isActive: focused },
@@ -72,6 +69,24 @@ export function partitionAgentTasks(tasks: readonly any[]): {
   return {
     activeTasks: tasks.filter((task: any) => task.status === "running" || task.status === "pending"),
     backgroundTasks: tasks.filter((task: any) => task.status !== "running" && task.status !== "pending"),
+  };
+}
+
+export function resolveAgentSelection(tasks: readonly any[], selectedId: string | null | undefined): {
+  readonly selectedId: string | null;
+  readonly selectedIndex: number;
+  readonly selectedTask: any | null;
+} {
+  if (tasks.length === 0) {
+    return { selectedId: null, selectedIndex: -1, selectedTask: null };
+  }
+  const selectedIndex = tasks.findIndex((task: any) => task.id === selectedId);
+  const resolvedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  const selectedTask = tasks[resolvedIndex] ?? null;
+  return {
+    selectedId: selectedTask?.id ?? null,
+    selectedIndex: selectedTask ? resolvedIndex : -1,
+    selectedTask,
   };
 }
 
