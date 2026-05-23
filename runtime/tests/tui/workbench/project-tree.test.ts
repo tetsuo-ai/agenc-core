@@ -255,4 +255,26 @@ describe("project tree helpers", () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it("clears the cursor when deleting the last selectable workspace path", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-empty-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, "gone.ts"), "gone\n", "utf8");
+      await store.refresh();
+
+      expect(store.getCursorPath()).toBe("gone.ts");
+
+      await expect(store.deletePath("gone.ts")).resolves.toEqual({ ok: true, path: "gone.ts" });
+
+      const selectableRows = store.getSnapshot().rows.filter((row) => row.kind === "file" || row.kind === "directory");
+      expect(selectableRows).toHaveLength(0);
+      expect(store.getCursorPath()).toBeNull();
+      expect(store.getSnapshot().cursorPath).toBeNull();
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 });
