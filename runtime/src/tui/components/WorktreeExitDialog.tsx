@@ -160,71 +160,86 @@ export function WorktreeExitDialog({
   async function handleSelect(value: string) {
     if (!worktreeSession) return;
     const hasTmux = Boolean(worktreeSession.tmuxSessionName);
-    if (value === 'keep' || value === 'keep-with-tmux') {
-      setStatus('keeping');
-      logEvent('agenc_worktree_kept', {
-        commits: commitCount,
-        changed_files: changes.length
-      });
-      await keepWorktree();
-      process.chdir(worktreeSession.originalCwd);
-      setCwd(worktreeSession.originalCwd);
-      await recordWorktreeExit();
-      getPlansDirectory.cache.clear?.();
-      if (hasTmux) {
-        setResultMessage(`Worktree kept. Your work is saved at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}. Reattach to tmux session with: tmux attach -t ${worktreeSession.tmuxSessionName}`);
-      } else {
-        setResultMessage(`Worktree kept. Your work is saved at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}`);
-      }
-      setStatus('done');
-    } else if (value === 'keep-kill-tmux') {
-      setStatus('keeping');
-      logEvent('agenc_worktree_kept', {
-        commits: commitCount,
-        changed_files: changes.length
-      });
-      if (worktreeSession.tmuxSessionName) {
-        await killTmuxSession(worktreeSession.tmuxSessionName);
-      }
-      await keepWorktree();
-      process.chdir(worktreeSession.originalCwd);
-      setCwd(worktreeSession.originalCwd);
-      await recordWorktreeExit();
-      getPlansDirectory.cache.clear?.();
-      setResultMessage(`Worktree kept at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}. Tmux session terminated.`);
-      setStatus('done');
-    } else if (value === 'remove' || value === 'remove-with-tmux') {
-      setStatus('removing');
-      logEvent('agenc_worktree_removed', {
-        commits: commitCount,
-        changed_files: changes.length
-      });
-      if (worktreeSession.tmuxSessionName) {
-        await killTmuxSession(worktreeSession.tmuxSessionName);
-      }
-      try {
-        await cleanupWorktree();
+    try {
+      if (value === 'keep' || value === 'keep-with-tmux') {
+        setStatus('keeping');
+        logEvent('agenc_worktree_kept', {
+          commits: commitCount,
+          changed_files: changes.length
+        });
+        await keepWorktree();
         process.chdir(worktreeSession.originalCwd);
         setCwd(worktreeSession.originalCwd);
         await recordWorktreeExit();
         getPlansDirectory.cache.clear?.();
-      } catch (error) {
+        if (hasTmux) {
+          setResultMessage(`Worktree kept. Your work is saved at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}. Reattach to tmux session with: tmux attach -t ${worktreeSession.tmuxSessionName}`);
+        } else {
+          setResultMessage(`Worktree kept. Your work is saved at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}`);
+        }
+        setStatus('done');
+      } else if (value === 'keep-kill-tmux') {
+        setStatus('keeping');
+        logEvent('agenc_worktree_kept', {
+          commits: commitCount,
+          changed_files: changes.length
+        });
+        if (worktreeSession.tmuxSessionName) {
+          await killTmuxSession(worktreeSession.tmuxSessionName);
+        }
+        await keepWorktree();
+        process.chdir(worktreeSession.originalCwd);
+        setCwd(worktreeSession.originalCwd);
+        await recordWorktreeExit();
+        getPlansDirectory.cache.clear?.();
+        setResultMessage(`Worktree kept at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}. Tmux session terminated.`);
+        setStatus('done');
+      } else if (value === 'remove' || value === 'remove-with-tmux') {
+        setStatus('removing');
+        logEvent('agenc_worktree_removed', {
+          commits: commitCount,
+          changed_files: changes.length
+        });
+        if (worktreeSession.tmuxSessionName) {
+          await killTmuxSession(worktreeSession.tmuxSessionName);
+        }
+        try {
+          await cleanupWorktree();
+          process.chdir(worktreeSession.originalCwd);
+          setCwd(worktreeSession.originalCwd);
+          await recordWorktreeExit();
+          getPlansDirectory.cache.clear?.();
+        } catch (error) {
+          logForDebugging(`Failed to clean up worktree: ${error}`, {
+            level: 'error'
+          });
+          setResultMessage('Worktree cleanup failed, exiting anyway');
+          setStatus('done');
+          return;
+        }
+        const tmuxNote = hasTmux ? ' Tmux session terminated.' : '';
+        if (commitCount > 0 && changes.length > 0) {
+          setResultMessage(`Worktree removed. ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} and uncommitted changes were discarded.${tmuxNote}`);
+        } else if (commitCount > 0) {
+          setResultMessage(`Worktree removed. ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} on ${worktreeSession.worktreeBranch} ${commitCount === 1 ? 'was' : 'were'} discarded.${tmuxNote}`);
+        } else if (changes.length > 0) {
+          setResultMessage(`Worktree removed. Uncommitted changes were discarded.${tmuxNote}`);
+        } else {
+          setResultMessage(`Worktree removed.${tmuxNote}`);
+        }
+        setStatus('done');
+      }
+    } catch (error) {
+      if (value === 'keep' || value === 'keep-with-tmux' || value === 'keep-kill-tmux') {
+        logForDebugging(`Failed to keep worktree: ${error}`, {
+          level: 'error'
+        });
+        setResultMessage('Worktree keep failed, exiting anyway');
+      } else {
         logForDebugging(`Failed to clean up worktree: ${error}`, {
           level: 'error'
         });
         setResultMessage('Worktree cleanup failed, exiting anyway');
-        setStatus('done');
-        return;
-      }
-      const tmuxNote = hasTmux ? ' Tmux session terminated.' : '';
-      if (commitCount > 0 && changes.length > 0) {
-        setResultMessage(`Worktree removed. ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} and uncommitted changes were discarded.${tmuxNote}`);
-      } else if (commitCount > 0) {
-        setResultMessage(`Worktree removed. ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} on ${worktreeSession.worktreeBranch} ${commitCount === 1 ? 'was' : 'were'} discarded.${tmuxNote}`);
-      } else if (changes.length > 0) {
-        setResultMessage(`Worktree removed. Uncommitted changes were discarded.${tmuxNote}`);
-      } else {
-        setResultMessage(`Worktree removed.${tmuxNote}`);
       }
       setStatus('done');
     }

@@ -675,6 +675,37 @@ describe('WorktreeExitDialog', () => {
     await mounted.dispose()
   })
 
+  it('reports keep action failures instead of rejecting the select action', async () => {
+    const restoreError = new Error('original cwd vanished')
+    const mounted = await mountAskingDialog({
+      commitCount: 1,
+      statusLines: [],
+    })
+    chdirSpy.mockImplementationOnce(() => {
+      throw restoreError
+    })
+
+    try {
+      await expect(Promise.resolve(selectProps().onChange?.('keep'))).resolves.toBeUndefined()
+      await waitFor(
+        () => mounted.onDone.mock.calls.length > 0,
+        'keep failure did not finish',
+      )
+
+      expect(harness.logForDebugging).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Failed to keep worktree: Error: original cwd vanished',
+        ),
+        { level: 'error' },
+      )
+      expect(mounted.onDone).toHaveBeenCalledWith(
+        'Worktree keep failed, exiting anyway',
+      )
+    } finally {
+      await mounted.dispose()
+    }
+  })
+
   it('keeps a tmux-backed worktree and preserves the reattach instruction', async () => {
     const keep = deferred()
     harness.session = baseSession({ tmuxSessionName: 'agenc-worktree-tmux' })
@@ -740,6 +771,41 @@ describe('WorktreeExitDialog', () => {
     )
 
     await mounted.dispose()
+  })
+
+  it('reports tmux removal failures instead of rejecting the select action', async () => {
+    harness.session = baseSession({ tmuxSessionName: 'agenc-worktree-tmux' })
+    harness.killTmuxSession.mockRejectedValue(new Error('tmux kill failed'))
+    mockGitState({ commitCount: 0, statusLines: [' M README.md'] })
+
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'tmux remove choices did not render',
+    )
+
+    try {
+      await expect(
+        Promise.resolve(selectProps().onChange?.('remove-with-tmux')),
+      ).resolves.toBeUndefined()
+      await waitFor(
+        () => mounted.onDone.mock.calls.length > 0,
+        'tmux remove failure did not finish',
+      )
+
+      expect(harness.cleanupWorktree).not.toHaveBeenCalled()
+      expect(harness.logForDebugging).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Failed to clean up worktree: Error: tmux kill failed',
+        ),
+        { level: 'error' },
+      )
+      expect(mounted.onDone).toHaveBeenCalledWith(
+        'Worktree cleanup failed, exiting anyway',
+      )
+    } finally {
+      await mounted.dispose()
+    }
   })
 
   it('removes a tmux-backed worktree and reports discarded commits plus changes', async () => {
