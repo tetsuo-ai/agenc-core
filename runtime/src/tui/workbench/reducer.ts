@@ -57,11 +57,16 @@ export function workbenchReducer(
       const nextSearchQuery = command.query ?? state.searchQuery;
       const searchQueryChanged =
         command.query !== undefined && command.query !== state.searchQuery;
+      let nextSelectedSearchMatchId = state.selectedSearchMatchId;
+      if (command.selectedMatchId !== undefined) {
+        nextSelectedSearchMatchId = command.selectedMatchId;
+      } else if (searchQueryChanged) {
+        nextSelectedSearchMatchId = null;
+      }
       return {
         ...openSurface(state, "search"),
         searchQuery: nextSearchQuery,
-        selectedSearchMatchId:
-          command.selectedMatchId ?? (searchQueryChanged ? null : state.selectedSearchMatchId),
+        selectedSearchMatchId: nextSelectedSearchMatchId,
       };
     case "openDiff":
       return {
