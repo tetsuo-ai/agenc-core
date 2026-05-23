@@ -19,7 +19,7 @@ import type { FileSuggestionCommandInput } from '../../types/fileSuggestion'
 import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getCwd } from '../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage, isENOENT } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getFsImplementation } from '../../utils/fsOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { findGitRoot, gitExe } from '../../utils/git'
@@ -232,7 +232,16 @@ async function loadFilePickerIgnorePatterns(
     ignoreFiles.map(f => path.join(dir, f)),
   )
   const contents = await Promise.all(
-    paths.map(p => fs.readFile(p, { encoding: 'utf8' }).catch(() => null)),
+    paths.map(async p => {
+      try {
+        return await fs.readFile(p, { encoding: 'utf8' })
+      } catch (error) {
+        if (!isENOENT(error)) {
+          logError(error)
+        }
+        return null
+      }
+    }),
   )
   for (const [i, content] of contents.entries()) {
     if (content === null) continue

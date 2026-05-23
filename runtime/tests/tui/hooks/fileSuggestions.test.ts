@@ -8,6 +8,12 @@ import {
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import {
+  getFsImplementation,
+  setFsImplementation,
+  setOriginalFsImplementation,
+  type FsOperations,
+} from '../../utils/fsOperations.js'
 
 let tempCwd = ''
 
@@ -242,6 +248,7 @@ describe('fileSuggestions hidden-file visibility', () => {
   })
 
   afterEach(() => {
+    setOriginalFsImplementation()
     rmSync(tempCwd, { recursive: true, force: true })
     tempCwd = ''
   })
@@ -299,6 +306,29 @@ describe('fileSuggestions hidden-file visibility', () => {
     expect(names).toContain('visible.txt')
     expect(names).not.toContain('ignored.txt')
     expect(names).not.toContain('ignored-dir' + sep)
+  })
+
+  test('logs unreadable picker ignore files without hiding suggestions', async () => {
+    const readError = Object.assign(new Error('permission denied'), {
+      code: 'EACCES',
+    })
+    const originalFs = getFsImplementation()
+    setFsImplementation({
+      ...originalFs,
+      async readFile(filePath, options) {
+        if (filePath === join(tempCwd, '.agencignore')) {
+          throw readError
+        }
+        return originalFs.readFile(filePath, options)
+      },
+    } as FsOperations)
+    writeFileSync(join(tempCwd, '.agencignore'), 'secret.txt\n')
+    writeFileSync(join(tempCwd, 'secret.txt'), '')
+
+    const items = await generateFileSuggestions('', true)
+
+    expect(items.map(item => item.displayText)).toContain('secret.txt')
+    expect(harness.logError).toHaveBeenCalledWith(readError)
   })
 
   test('dotted prefix query excludes hidden paths ignored by .agencignore', async () => {
