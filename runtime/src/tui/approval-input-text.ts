@@ -31,7 +31,7 @@ export function approvalInputText(
 
 function commandText(record: Record<string, unknown>): string | null {
   const args = Array.isArray(record.args)
-    ? (scalarArrayParts(record.args) ?? [])
+    ? commandArrayParts(record.args)
     : [];
   for (const key of COMMAND_KEYS) {
     const command = commandParts(record[key]);
@@ -43,9 +43,18 @@ function commandText(record: Record<string, unknown>): string | null {
 }
 
 function commandParts(value: unknown): readonly string[] {
-  if (Array.isArray(value)) return scalarArrayParts(value) ?? [];
+  if (Array.isArray(value)) return commandArrayParts(value);
   const text = textValue(value);
   return text === null ? [] : [text];
+}
+
+function commandArrayParts(value: readonly unknown[]): readonly string[] {
+  const parts: string[] = [];
+  for (const item of value) {
+    const text = textValue(item);
+    parts.push(text ?? fallbackText(item, { prettyJson: false }));
+  }
+  return parts;
 }
 
 function scalarArrayText(value: readonly unknown[]): string | null {
