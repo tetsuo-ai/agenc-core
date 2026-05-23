@@ -74,24 +74,32 @@ async function sleep(ms = 25): Promise<void> {
 
 function createPendingRequest(
   resolve: (decision: ReviewDecision) => void,
+  options: {
+    readonly id?: string;
+    readonly input?: Record<string, unknown>;
+    readonly description?: string;
+  } = {},
 ): PendingRequest {
+  const input = options.input ?? {
+    command: "agenc stake --mainnet --validator 42",
+  };
+  const description = options.description ?? "Stake on mainnet";
+  const id = options.id ?? "request-mainnet-stake";
   return {
-    id: "request-mainnet-stake",
+    id,
     ctx: {
-      callId: "call-mainnet-stake",
+      callId: `call-${id}`,
       toolName: "Bash",
       turnId: "turn-1",
       invocation: {
         payload: {
           kind: "function",
-          arguments: "{\"command\":\"agenc stake --mainnet --validator 42\"}",
+          arguments: JSON.stringify(input),
         },
       },
     } as unknown as ApprovalCtx,
-    input: {
-      command: "agenc stake --mainnet --validator 42",
-    },
-    description: "Stake on mainnet",
+    input,
+    description,
     resolve,
   };
 }
@@ -146,6 +154,43 @@ describe("permission request overlay coverage", () => {
 
       expect(tools[0]?.userFacingName).toHaveBeenCalledWith(request.input);
       expect(resolved).toEqual([APPROVED]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
+  test("renders split command arguments as the destructive command", async () => {
+    const resolved: ReviewDecision[] = [];
+    const request = createPendingRequest(
+      decision => {
+        resolved.push(decision);
+      },
+      {
+        id: "request-delete-path",
+        input: { command: "rm", args: ["-rf", "/tmp/agenc-danger"] },
+        description: "Delete generated path",
+      },
+    );
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(<AgenCPermissionOverlay request={request} tools={[{ name: "Bash" }]} />);
+      await sleep();
+
+      const frame = stripAnsi(extractLastFrame(output()));
+      const compactFrame = frame.replace(/\s+/gu, "");
+      expect(compactFrame).toContain("high-riskapproval");
+      expect(compactFrame).toContain("rm-rf/tmp/agenc-danger");
+      expect(compactFrame).toContain("type'delete'toapprove");
+      expect(resolved).toEqual([]);
     } finally {
       root.unmount();
       stdin.end();

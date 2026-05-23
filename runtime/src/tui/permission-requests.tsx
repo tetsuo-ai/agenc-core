@@ -18,6 +18,7 @@ import { makeToolUseMessage } from "./session-transcript.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
+import { approvalInputText } from "./approval-input-text.js";
 import { Box, useInput } from "./ink.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
@@ -280,24 +281,6 @@ export function AgenCPermissionOverlay({
   return <AgenCApprovalOverlay request={request} toolUseConfirm={toolUseConfirm} />;
 }
 
-function inputValue(input: unknown): string {
-  if (input === null || input === undefined) return "";
-  if (typeof input === "string") return input;
-  if (typeof input !== "object") return String(input);
-  const record = input as Record<string, unknown>;
-  for (const key of ["command", "cmd", "input", "query", "path", "file_path"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value;
-    }
-  }
-  try {
-    return JSON.stringify(record, null, 2);
-  } catch {
-    return String(input);
-  }
-}
-
 function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
   const fromTool = toolUseConfirm.tool.userFacingName?.(toolUseConfirm.input);
   if (fromTool && fromTool.trim().length > 0) return fromTool;
@@ -311,7 +294,7 @@ function AgenCApprovalOverlay({
   readonly request: PendingRequest;
   readonly toolUseConfirm: ProjectedToolUseConfirm;
 }) {
-  const command = inputValue(toolUseConfirm.input);
+  const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
   const risk = classifyApprovalRisk({
     request,
     toolName: toolUseConfirm.tool.name,

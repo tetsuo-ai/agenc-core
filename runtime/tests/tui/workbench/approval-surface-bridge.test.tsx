@@ -44,6 +44,25 @@ describe("ApprovalSurfaceBridge", () => {
     expect(output).toContain("risk destructive");
   });
 
+  it("classifies destructive approval risk from split command arguments", async () => {
+    const request = pendingRequest({
+      id: "approval-argv",
+      description: "Run shell command",
+      input: { command: "rm", args: ["-rf", "/tmp/agenc-danger"] },
+      toolName: "Bash",
+    });
+
+    const output = await renderToString(
+      <AppStateProvider initialState={getDefaultAppState()}>
+        <ApprovalSurfaceBridge request={request} />
+      </AppStateProvider>,
+      80,
+    );
+
+    expect(output).toContain("Approval pending: Run shell command");
+    expect(output).toContain("risk destructive");
+  });
+
   it("opens the diff surface for the active approval request", async () => {
     const changes: AppState[] = [];
     const request = pendingRequest({
