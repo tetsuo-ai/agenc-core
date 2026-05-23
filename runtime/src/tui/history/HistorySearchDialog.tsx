@@ -1,7 +1,7 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRegisterOverlay } from '../context/overlayContext.js';
 import { getTimestampedHistory, type TimestampedHistoryEntry } from './history.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -37,6 +37,14 @@ export function HistorySearchDialog({
   } = useTerminalSize();
   const [items, setItems] = useState<Item[] | null>(null);
   const [query, setQuery] = useState(initialQuery ?? '');
+  const isMountedRef = useRef(true);
+  const isSelectionResolvingRef = useRef(false);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -84,11 +92,23 @@ export function HistorySearchDialog({
   const rowWidth = Math.max(20, listWidth - AGE_WIDTH - 1);
   const previewWidth = previewOnRight ? Math.max(20, columns - listWidth - 12) : Math.max(20, columns - 10);
   return <FuzzyPicker title="Search prompts" placeholder="Filter history…" initialQuery={initialQuery} items={filtered} getKey={item_0 => String(item_0.entry.timestamp)} onQueryChange={setQuery} onSelect={item_1 => {
+    if (isSelectionResolvingRef.current) return;
+    isSelectionResolvingRef.current = true;
     logEvent('agenc_history_picker_select', {
       result_count: filtered.length,
       query_length: query.length
     });
-    void item_1.entry.resolve().then(onSelect);
+    void item_1.entry.resolve().then(entry => {
+      if (!isMountedRef.current) return;
+      isSelectionResolvingRef.current = false;
+      onSelect(entry);
+    }, () => {
+      if (!isMountedRef.current) return;
+      isSelectionResolvingRef.current = false;
+      logEvent('agenc_history_picker_select_error', {
+        query_length: query.length
+      });
+    });
   }} onCancel={onCancel} emptyMessage={q_0 => items === null ? 'Loading…' : q_0 ? 'No matching prompts' : 'No history yet'} selectAction="use" direction="up" previewPosition={previewOnRight ? 'right' : 'bottom'} renderItem={(item_2, isFocused) => <Text>
           <Text dimColor>{item_2.age}</Text>
           <Text color={isFocused ? 'suggestion' : undefined}>

@@ -36,9 +36,9 @@ type CapturedPickerProps = {
   renderPreview: (item: PickerItem) => React.ReactNode
 }
 
-type Deferred = {
-  promise: Promise<void>
-  resolve: () => void
+type Deferred<T = void> = {
+  promise: Promise<T>
+  resolve: (value: T) => void
 }
 
 const harness = vi.hoisted(() => ({
@@ -109,9 +109,9 @@ import { createRoot } from '../ink/root.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { HistorySearchDialog } from './HistorySearchDialog.js'
 
-function deferred(): Deferred {
-  let resolve!: () => void
-  const promise = new Promise<void>(res => {
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(res => {
     resolve = res
   })
 
@@ -335,5 +335,68 @@ describe('HistorySearchDialog coverage', () => {
     } finally {
       await rendered.dispose()
     }
+  })
+
+  it('does not resolve a history selection more than once while it is pending', async () => {
+    const resolvedEntry = { display: 'slow prompt' }
+    const pendingSelection = deferred<HistoryEntryLike>()
+    const resolveEntry = vi.fn(() => pendingSelection.promise)
+    harness.entries = [
+      {
+        display: 'slow prompt',
+        timestamp: 1710000000000,
+        resolve: resolveEntry,
+      },
+    ]
+
+    const rendered = await renderDialog()
+
+    try {
+      await waitFor(
+        () => pickerProps().items.length === 1,
+        'History search item did not load',
+      )
+
+      const selectedItem = pickerProps().items[0]!
+      pickerProps().onSelect(selectedItem)
+      pickerProps().onSelect(selectedItem)
+
+      expect(resolveEntry).toHaveBeenCalledTimes(1)
+      pendingSelection.resolve(resolvedEntry)
+
+      await waitFor(
+        () => rendered.onSelect.mock.calls.length === 1,
+        'History search selection did not resolve exactly once',
+      )
+      expect(rendered.onSelect).toHaveBeenCalledWith(resolvedEntry)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('does not apply a pending history selection after the dialog unmounts', async () => {
+    const pendingSelection = deferred<HistoryEntryLike>()
+    const resolveEntry = vi.fn(() => pendingSelection.promise)
+    harness.entries = [
+      {
+        display: 'cancelled slow prompt',
+        timestamp: 1710000000000,
+        resolve: resolveEntry,
+      },
+    ]
+
+    const rendered = await renderDialog()
+    await waitFor(
+      () => pickerProps().items.length === 1,
+      'History search item did not load',
+    )
+
+    pickerProps().onSelect(pickerProps().items[0]!)
+    await rendered.dispose()
+    pendingSelection.resolve({ display: 'cancelled slow prompt' })
+    await sleep(25)
+
+    expect(resolveEntry).toHaveBeenCalledTimes(1)
+    expect(rendered.onSelect).not.toHaveBeenCalled()
   })
 })
