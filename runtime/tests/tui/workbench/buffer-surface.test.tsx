@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
@@ -19,6 +19,7 @@ import {
   getWorkbenchBufferStore,
   resetWorkbenchBufferStoreForTesting,
 } from "../../../src/tui/workbench/buffer/BufferStore.js";
+import { useWorkbenchDispatch } from "../../../src/tui/workbench/state.js";
 import { BufferSurface } from "../../../src/tui/workbench/surfaces/BufferSurface.js";
 
 type TestStdin = PassThrough & {
@@ -63,6 +64,14 @@ function LeakyInput({ leaked }: { readonly leaked: string[] }): null {
   useInput((input) => {
     leaked.push(input);
   });
+  return null;
+}
+
+function OpenBufferRequest({ path }: { readonly path: string | null }): null {
+  const dispatch = useWorkbenchDispatch();
+  React.useEffect(() => {
+    if (path) dispatch({ type: "openBuffer", path, line: 1, focus: true });
+  }, [dispatch, path]);
   return null;
 }
 
@@ -223,6 +232,78 @@ describe("BufferSurface", () => {
       const frame = output();
       expect(frame).toMatch(/1\s*diagnostic/u);
       expect(frame).toMatch(/spans\s*block/u);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("opens the active file after saving a dirty-buffer conflict", async () => {
+    await writeFile(join(dir, "first.ts"), "first\n", "utf8");
+    await writeFile(join(dir, "second.ts"), "second\n", "utf8");
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    function App({ requestedPath }: { readonly requestedPath: string | null }): React.ReactElement {
+      return (
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "buffer",
+              activeFilePath: "first.ts",
+              activeFileLine: 1,
+            },
+          }}
+        >
+          <KeybindingSetup>
+            <OpenBufferRequest path={requestedPath} />
+            <BufferSurface focused={true} />
+          </KeybindingSetup>
+        </AppStateProvider>
+      );
+    }
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(<App requestedPath={null} />);
+        await sleep();
+
+        const store = getWorkbenchBufferStore();
+        expect(store.getSnapshot().filePath).toBe("first.ts");
+        store.insert("draft ");
+        expect(store.getSnapshot()).toMatchObject({
+          filePath: "first.ts",
+          dirty: true,
+        });
+
+        root.render(<App requestedPath="second.ts" />);
+        await sleep();
+
+        expect(store.getSnapshot()).toMatchObject({
+          status: "conflict",
+          conflictKind: "disk",
+          filePath: "first.ts",
+          dirty: true,
+        });
+
+        await expect(store.save()).resolves.toBe(true);
+        await sleep();
+
+        expect(await readFile(join(dir, "first.ts"), "utf8")).toBe("draft first\n");
+        expect(store.getSnapshot()).toMatchObject({
+          status: "ready",
+          filePath: "second.ts",
+          dirty: false,
+        });
+        expect(store.getText()).toBe("second\n");
+      });
     } finally {
       root.unmount();
       stdin.end();
