@@ -43,6 +43,8 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
   useEffect(() => {
     setStartLine(Math.max(0, (workbench.activeFileLine ?? 1) - 1));
     setTotalLines(null);
+    setContent("");
+    setError(null);
   }, [workbench.activeFileLine, workbench.activeFilePath]);
 
   useEffect(() => {
@@ -61,6 +63,8 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
         const maxStartLine = maxPreviewStartLine(nextTotalLines);
         setTotalLines(nextTotalLines);
         if (startLine > maxStartLine) {
+          setContent("");
+          setError(null);
           setStartLine(maxStartLine);
           return;
         }
