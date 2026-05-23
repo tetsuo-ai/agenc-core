@@ -10,11 +10,23 @@ const generateTempFilePathMock = vi.fn(() => mockedClipboardPath)
 const execFileNoThrowMock = vi.fn(
   async () => ({ code: 0, stdout: '', stderr: '' }),
 )
+const logErrorMock = vi.fn()
+const writeFileMock = vi.fn(async () => {})
+const unlinkMock = vi.fn(async () => {})
 
 function installOscMocks(): void {
   vi.doMock('../../../utils/execFileNoThrow.js', () => ({
     execFileNoThrow: execFileNoThrowMock,
     execFileNoThrowWithCwd: execFileNoThrowMock,
+  }))
+
+  vi.doMock('../../../utils/log.js', () => ({
+    logError: logErrorMock,
+  }))
+
+  vi.doMock('node:fs/promises', () => ({
+    unlink: unlinkMock,
+    writeFile: writeFileMock,
   }))
 
   vi.doMock('../../../utils/tempfile.js', () => ({
@@ -51,6 +63,9 @@ describe('Windows clipboard fallback', () => {
     installOscMocks()
     execFileNoThrowMock.mockClear()
     generateTempFilePathMock.mockClear()
+    logErrorMock.mockClear()
+    writeFileMock.mockClear()
+    unlinkMock.mockClear()
     process.env = { ...originalEnv }
     delete process.env['SSH_CONNECTION']
     delete process.env['TMUX']
@@ -95,6 +110,28 @@ describe('Windows clipboard fallback', () => {
       `$text = [System.IO.File]::ReadAllText('${mockedClipboardPath.replace(/'/g, "''")}', [System.Text.Encoding]::UTF8); Set-Clipboard -Value $text`,
     )
   })
+
+  test('logs Windows clipboard temp-file failures', async () => {
+    const writeError = new Error('clipboard temp write failed')
+    writeFileMock.mockRejectedValueOnce(writeError)
+    const { setClipboard } = await importFreshOscModule()
+
+    await setClipboard('Привет мир')
+    await flushClipboardCopy()
+
+    expect(logErrorMock).toHaveBeenCalledWith(writeError)
+  })
+
+  test('logs Windows clipboard temp-file cleanup failures', async () => {
+    const unlinkError = new Error('clipboard temp cleanup failed')
+    unlinkMock.mockRejectedValueOnce(unlinkError)
+    const { setClipboard } = await importFreshOscModule()
+
+    await setClipboard('Привет мир')
+    await flushClipboardCopy()
+
+    expect(logErrorMock).toHaveBeenCalledWith(unlinkError)
+  })
 })
 
 describe('clipboard path behavior remains stable', () => {
@@ -102,6 +139,9 @@ describe('clipboard path behavior remains stable', () => {
     vi.resetModules()
     installOscMocks()
     execFileNoThrowMock.mockClear()
+    logErrorMock.mockClear()
+    writeFileMock.mockClear()
+    unlinkMock.mockClear()
     process.env = { ...originalEnv }
     delete process.env['SSH_CONNECTION']
     delete process.env['TMUX']
@@ -148,5 +188,30 @@ describe('clipboard path behavior remains stable', () => {
     expect(execFileNoThrowMock.mock.calls.some(([cmd]) => cmd === 'pbcopy')).toBe(
       true,
     )
+  })
+
+  test('local macOS clipboard fallback logs rejected native copy attempts', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    const copyError = new Error('pbcopy rejected')
+    execFileNoThrowMock.mockRejectedValueOnce(copyError)
+    const { setClipboard } = await importFreshOscModule()
+
+    await setClipboard('hello')
+    await flushClipboardCopy()
+
+    expect(logErrorMock).toHaveBeenCalledWith(copyError)
+  })
+
+  test('local Linux clipboard probe logs rejected native copy attempts', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' })
+    const probeError = new Error('wl-copy rejected')
+    execFileNoThrowMock.mockRejectedValueOnce(probeError)
+    const { _resetLinuxCopyCache, setClipboard } = await importFreshOscModule()
+
+    _resetLinuxCopyCache()
+    await setClipboard('hello')
+    await flushClipboardCopy()
+
+    expect(logErrorMock).toHaveBeenCalledWith(probeError)
   })
 })

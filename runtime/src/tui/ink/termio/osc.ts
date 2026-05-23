@@ -6,6 +6,7 @@ import { Buffer } from 'buffer'
 import { unlink, writeFile } from 'node:fs/promises'
 import { env } from '../../../utils/env.js'
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'
+import { logError } from '../../../utils/log.js'
 import { generateTempFilePath } from '../../../utils/tempfile.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
@@ -161,6 +162,11 @@ export async function setClipboard(text: string): Promise<string> {
 // Probe order: wl-copy (Wayland) → xclip (X11) → xsel (X11 fallback).
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
+type ClipboardExecOptions = {
+  readonly input: string
+  readonly useCwd: false
+  readonly timeout: number
+}
 
 /**
  * Shell out to a native clipboard utility as a safety net for OSC 52.
@@ -169,45 +175,27 @@ let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
  * Fire-and-forget: failures are silent since OSC 52 may have succeeded.
  */
 function copyNative(text: string): void {
-  const opts = { input: text, useCwd: false, timeout: 2000 }
+  const opts: ClipboardExecOptions = { input: text, useCwd: false, timeout: 2000 }
   switch (process.platform) {
     case 'darwin':
-      void execFileNoThrow('pbcopy', [], opts)
+      void execFileNoThrow('pbcopy', [], opts).catch(logError)
       return
     case 'linux': {
       if (linuxCopy === null) return
       if (linuxCopy === 'wl-copy') {
-        void execFileNoThrow('wl-copy', [], opts)
+        void execFileNoThrow('wl-copy', [], opts).catch(logError)
         return
       }
       if (linuxCopy === 'xclip') {
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).catch(logError)
         return
       }
       if (linuxCopy === 'xsel') {
-        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
+        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts).catch(logError)
         return
       }
       // First call: probe wl-copy (Wayland) then xclip/xsel (X11), cache winner.
-      void execFileNoThrow('wl-copy', [], opts).then(r => {
-        if (r.code === 0) {
-          linuxCopy = 'wl-copy'
-          return
-        }
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).then(
-          r2 => {
-            if (r2.code === 0) {
-              linuxCopy = 'xclip'
-              return
-            }
-            void execFileNoThrow('xsel', ['--clipboard', '--input'], opts).then(
-              r3 => {
-                linuxCopy = r3.code === 0 ? 'xsel' : null
-              },
-            )
-          },
-        )
-      })
+      void probeLinuxClipboard(opts)
       return
     }
     case 'win32':
@@ -233,12 +221,44 @@ function copyNative(text: string): void {
               stdin: 'ignore',
             },
           )
+        } catch (error) {
+          logError(error)
         } finally {
-          await unlink(tempPath).catch(() => {})
+          await unlink(tempPath).catch(logError)
         }
-      })().catch(() => {})
+      })().catch(logError)
       return
   }
+}
+
+async function probeLinuxClipboard(opts: ClipboardExecOptions): Promise<void> {
+  const wlCopy = await execFileNoThrow('wl-copy', [], opts).catch(error => {
+    logError(error)
+    return null
+  })
+  if (wlCopy?.code === 0) {
+    linuxCopy = 'wl-copy'
+    return
+  }
+
+  const xclip = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).catch(
+    error => {
+      logError(error)
+      return null
+    },
+  )
+  if (xclip?.code === 0) {
+    linuxCopy = 'xclip'
+    return
+  }
+
+  const xsel = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts).catch(
+    error => {
+      logError(error)
+      return null
+    },
+  )
+  linuxCopy = xsel?.code === 0 ? 'xsel' : null
 }
 
 /** @internal test-only */

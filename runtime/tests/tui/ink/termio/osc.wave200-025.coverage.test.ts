@@ -160,6 +160,7 @@ describe('OSC wave200-025 coverage', () => {
       ['-selection', 'clipboard'],
       { input: linuxText, timeout: 2000, useCwd: false },
     ])
+    await flushClipboardCopy()
 
     execFileNoThrowMock.mockClear()
     await setClipboard('cached linux')
