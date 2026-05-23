@@ -41,6 +41,7 @@ export type WorkbenchState = {
   readonly activeSurfaceMode: ActiveSurfaceMode;
   readonly activeFilePath: string | null;
   readonly activeFileLine: number | null;
+  readonly bufferOpenRequestId: number;
   readonly selectedAgentTaskId: string | null;
   readonly selectedShellTaskId: string | null;
   readonly openDiffId: string | null;

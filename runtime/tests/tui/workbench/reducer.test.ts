@@ -75,6 +75,26 @@ describe("workbenchReducer", () => {
     });
   });
 
+  it("increments buffer open requests even when reopening the same path", () => {
+    const first = workbenchReducer(undefined, {
+      type: "openBuffer",
+      path: "src/index.ts",
+      line: 7,
+    });
+    const retry = workbenchReducer(first, {
+      type: "openBuffer",
+      path: "src/index.ts",
+      line: 7,
+    });
+
+    expect(retry).toMatchObject({
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/index.ts",
+      activeFileLine: 7,
+      bufferOpenRequestId: first.bufferOpenRequestId + 1,
+    });
+  });
+
   it("cycles through visible panes", () => {
     const explorer = workbenchReducer(undefined, {
       type: "focus",
