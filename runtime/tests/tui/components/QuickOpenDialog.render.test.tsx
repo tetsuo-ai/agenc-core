@@ -35,6 +35,7 @@ type Suggestion = {
 const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
   generateFileSuggestions: vi.fn(),
+  logError: vi.fn(),
   logEvent: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
@@ -60,6 +61,10 @@ vi.mock('../hooks/useTerminalSize', () => ({
 
 vi.mock('../../services/analytics/index', () => ({
   logEvent: harness.logEvent,
+}))
+
+vi.mock('../../utils/log', () => ({
+  logError: harness.logError,
 }))
 
 vi.mock('../../utils/cwd', () => ({
@@ -96,6 +101,7 @@ function resetHarness() {
   harness.registerOverlay.mockClear()
   harness.generateFileSuggestions.mockReset()
   harness.generateFileSuggestions.mockResolvedValue([])
+  harness.logError.mockClear()
   harness.logEvent.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(true)
@@ -296,6 +302,76 @@ describe('QuickOpenDialog render and interactions', () => {
         'Quick open did not clear normalized results for an empty query',
       )
       expect(harness.generateFileSuggestions).toHaveBeenCalledTimes(1)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('logs rejected file searches and clears stale results for the current query', async () => {
+    const rendered = await renderDialog()
+
+    try {
+      await searchFor(
+        'ready',
+        [{ id: 'file-ready', displayText: 'src/ready.ts' }],
+        ['src/ready.ts'],
+      )
+      expect(pickerProps().items).toEqual(['src/ready.ts'])
+
+      const error = new Error('file suggestions failed')
+      harness.generateFileSuggestions.mockRejectedValueOnce(error)
+      pickerProps().onQueryChange('broken')
+
+      await waitFor(
+        () => harness.generateFileSuggestions.mock.calls.length === 2,
+        'Quick open did not request the rejected search',
+      )
+      await waitFor(
+        () => harness.logError.mock.calls.length === 1,
+        'Quick open did not log the rejected search',
+      )
+
+      expect(harness.logError).toHaveBeenCalledWith(error)
+      expect(pickerProps().items).toEqual([])
+      expect(emptyMessage(pickerProps(), 'broken')).toBe('No matching files')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('ignores rejected stale file searches after newer results render', async () => {
+    const rendered = await renderDialog()
+    const staleSearch = deferred<Suggestion[]>()
+    const freshSearch = deferred<Suggestion[]>()
+
+    try {
+      harness.generateFileSuggestions
+        .mockReturnValueOnce(staleSearch.promise)
+        .mockReturnValueOnce(freshSearch.promise)
+
+      pickerProps().onQueryChange('old')
+      await waitFor(
+        () => harness.generateFileSuggestions.mock.calls.length === 1,
+        'Quick open did not request the stale search',
+      )
+
+      pickerProps().onQueryChange('new')
+      await waitFor(
+        () => harness.generateFileSuggestions.mock.calls.length === 2,
+        'Quick open did not request the fresh search',
+      )
+
+      freshSearch.resolve([{ id: 'file-new', displayText: 'src/new.ts' }])
+      await waitFor(
+        () => pickerProps().items.join('\0') === 'src/new.ts',
+        'Quick open did not render fresh search results',
+      )
+
+      staleSearch.reject(new Error('stale search failed'))
+      await sleep(20)
+
+      expect(pickerProps().items).toEqual(['src/new.ts'])
+      expect(harness.logError).not.toHaveBeenCalled()
     } finally {
       await rendered.dispose()
     }
