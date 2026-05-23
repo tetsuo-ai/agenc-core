@@ -315,6 +315,31 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("preserves leading and trailing spaces in tree mutation paths", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-space-paths-"));
+    const store = new ProjectTreeStore(repo, 0);
+    const leading = " leading.ts";
+    const trailing = "trailing.ts ";
+    const renamed = " renamed.ts ";
+
+    try {
+      await writeFile(join(repo, leading), "leading\n", "utf8");
+      await writeFile(join(repo, trailing), "trailing\n", "utf8");
+      await store.refresh();
+
+      await expect(store.renamePath(trailing, renamed)).resolves.toEqual({ ok: true, path: renamed });
+      await expect(store.deletePath(leading)).resolves.toEqual({ ok: true, path: leading });
+
+      expect(await readFile(join(repo, renamed), "utf8")).toBe("trailing\n");
+      await expect(readFile(join(repo, leading), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(store.getSnapshot().rows.map((row) => row.path)).toContain(renamed);
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain(leading);
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("returns canonical tree paths when renaming to a trailing slash target", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-slash-"));
     const store = new ProjectTreeStore(repo, 0);

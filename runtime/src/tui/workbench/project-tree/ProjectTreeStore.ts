@@ -427,13 +427,13 @@ function resolveWorkspaceRelativePath(
   inputPath: string,
   options: { readonly requireFilePath?: boolean } = {},
 ): { readonly ok: true; readonly relativePath: string; readonly absolutePath: string } | { readonly ok: false; readonly error: string } {
-  const trimmed = inputPath.trim().replace(/\\/gu, "/");
-  if (!trimmed) return { ok: false, error: "Enter a workspace-relative path." };
-  if (path.posix.isAbsolute(trimmed) || path.isAbsolute(trimmed)) {
+  const input = inputPath.replace(/\\/gu, "/");
+  if (input.trim().length === 0) return { ok: false, error: "Enter a workspace-relative path." };
+  if (path.posix.isAbsolute(input) || path.isAbsolute(input)) {
     return { ok: false, error: "Use a workspace-relative path, not an absolute path." };
   }
 
-  const normalizedPath = path.posix.normalize(trimmed).replace(/^\.\//u, "");
+  const normalizedPath = path.posix.normalize(input).replace(/^\.\//u, "");
   if (options.requireFilePath && normalizedPath.endsWith("/")) {
     return { ok: false, error: "Enter a file path, not a directory path." };
   }
