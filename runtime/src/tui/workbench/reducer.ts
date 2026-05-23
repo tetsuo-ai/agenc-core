@@ -8,7 +8,7 @@ import type {
 
 export function getDefaultWorkbenchState(): WorkbenchState {
   return {
-    focusedPane: "surface",
+    focusedPane: "composer",
     explorerVisible: true,
     agentsVisible: true,
     activeSurfaceMode: "transcript",

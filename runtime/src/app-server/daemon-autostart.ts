@@ -35,6 +35,8 @@ import {
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
+export const AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS = 15_000;
+
 export interface AgenCDaemonConnectionTarget {
   readonly pid: number;
   readonly pidPath: string;
@@ -369,7 +371,7 @@ async function waitForAgenCDaemonReady(
   host: AgenCDaemonCliHost,
   options: AgenCDaemonAutostartOptions,
 ): Promise<boolean> {
-  const timeoutMs = options.waitTimeoutMs ?? 2000;
+  const timeoutMs = options.waitTimeoutMs ?? AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS;
   const pollMs = options.pollMs ?? 25;
   const startedAt = Date.now();
   const isReady =

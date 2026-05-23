@@ -105,6 +105,7 @@ import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
 import { materializeAttachmentMentions } from '../../workbench/commands.js';
+import { useWorkbenchComposerFocus } from '../../workbench/composerFocusContext.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../../workbench/state.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksPanel } from '../tasks/BackgroundTasksPanel.js';
@@ -605,6 +606,8 @@ function PromptInput({
   // system, so treat them as a modal overlay here to stop navigation keys from
   // leaking into TextInput/footer handlers and stacking a second dialog.
   const upstreamModalOverlayActive = useIsModalOverlayActive() || isLocalJSXCommandActive;
+  const workbenchComposerFocused = useWorkbenchComposerFocus();
+  const composerInputEnabled = workbenchComposerFocused ?? true;
   const [isAutoUpdating, setIsAutoUpdating] = useState(false);
   const [exitMessage, setExitMessage] = useState<{
     show: boolean;
@@ -744,6 +747,7 @@ function PromptInput({
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
   const promptModalOverlayActive =
     upstreamModalOverlayActive || showModeSwitcher || Boolean(showBashesDialog);
+  const promptKeyboardActive = composerInputEnabled && !promptModalOverlayActive;
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] = useState<PermissionMode | null>(null);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -2089,7 +2093,7 @@ function PromptInput({
   // stopImmediatePropagation on Enter, blocking autocomplete from seeing the key.
   const keybindingContext = useOptionalKeybindingContext();
   useEffect(() => {
-    if (!keybindingContext || promptModalOverlayActive) return;
+    if (!keybindingContext || !promptKeyboardActive) return;
     return keybindingContext.registerHandler({
       action: 'chat:submit',
       context: 'Chat',
@@ -2097,7 +2101,7 @@ function PromptInput({
         void onSubmit(input);
       }
     });
-  }, [keybindingContext, promptModalOverlayActive, onSubmit, input]);
+  }, [keybindingContext, promptKeyboardActive, onSubmit, input]);
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as
@@ -2116,20 +2120,20 @@ function PromptInput({
   }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
-    isActive: !promptModalOverlayActive
+    isActive: promptKeyboardActive
   });
 
   // Shift+↑ enters message-actions cursor. Separate isActive so ctrl+r search
   // doesn't leave stale isSearchingHistory on cursor-exit remount.
   useKeybinding('chat:messageActions', () => onMessageActionsEnter?.(), {
     context: 'Chat',
-    isActive: !promptModalOverlayActive && !isSearchingHistory
+    isActive: promptKeyboardActive && !isSearchingHistory
   });
 
   // Fast mode keybinding is only active when fast mode is enabled and available
   useKeybinding('chat:fastMode', handleFastModePicker, {
     context: 'Chat',
-    isActive: !promptModalOverlayActive && isFastModeEnabled() && isFastModeAvailable()
+    isActive: promptKeyboardActive && isFastModeEnabled() && isFastModeAvailable()
   });
 
   // Handle help:dismiss keybinding (ESC closes help menu)
@@ -2139,13 +2143,13 @@ function PromptInput({
     setHelpOpen(false);
   }, {
     context: 'Help',
-    isActive: helpOpen
+    isActive: composerInputEnabled && helpOpen
   });
 
   // Quick Open / Global Search. Hook calls are unconditional (Rules of Hooks);
   // the handler body is feature()-gated so the setState calls and component
   // references get tree-shaken in external builds.
-  const quickSearchActive = feature('QUICK_SEARCH') ? !promptModalOverlayActive : false;
+  const quickSearchActive = feature('QUICK_SEARCH') ? promptKeyboardActive : false;
   useKeybinding('app:quickOpen', () => {
     if (feature('QUICK_SEARCH')) {
       setShowQuickOpen(true);
@@ -2179,7 +2183,7 @@ function PromptInput({
     }
   }, {
     context: 'Global',
-    isActive: feature('HISTORY_PICKER') ? !promptModalOverlayActive : false
+    isActive: feature('HISTORY_PICKER') ? promptKeyboardActive : false
   });
 
   // Handle Ctrl+C to abort speculation when idle (not loading)
@@ -2281,9 +2285,12 @@ function PromptInput({
     }
   }, {
     context: 'Footer',
-    isActive: !!footerItemSelected && !promptModalOverlayActive
+    isActive: !!footerItemSelected && promptKeyboardActive
   });
   useInput((char, key, event) => {
+    if (!composerInputEnabled) {
+      return;
+    }
     // Skip all input handling when a full-screen dialog is open. These dialogs
     // render via early return, but hooks run unconditionally — so without this
     // guard, Escape inside a dialog leaks to the double-press message-selector.
@@ -2626,8 +2633,8 @@ function PromptInput({
     onChangeCursorOffset: setCursorOffset,
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
-    focus: !isSearchingHistory && !promptModalOverlayActive && !footerItemSelected,
-    showCursor: !footerItemSelected && !isSearchingHistory && !cursorAtImageChip,
+    focus: composerInputEnabled && !isSearchingHistory && !promptModalOverlayActive && !footerItemSelected,
+    showCursor: composerInputEnabled && !footerItemSelected && !isSearchingHistory && !cursorAtImageChip,
     argumentHint: commandArgumentHint,
     onUndo: canUndo ? () => {
       const previousState = undo();

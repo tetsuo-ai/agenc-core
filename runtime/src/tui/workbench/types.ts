@@ -92,6 +92,9 @@ export type ProjectTreeRow = {
   readonly kind: ProjectTreeRowKind;
   readonly depth: number;
   readonly expanded: boolean;
+  readonly hasChildren?: boolean;
+  readonly isLast?: boolean;
+  readonly ancestorLast?: readonly boolean[];
   readonly selected: boolean;
   readonly focused: boolean;
   readonly active: boolean;

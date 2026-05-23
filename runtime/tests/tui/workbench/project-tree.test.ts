@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { buildProjectTreeRows } from "../../../src/tui/workbench/project-tree/buildTree.js";
 import { parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
@@ -34,6 +38,8 @@ describe("project tree helpers", () => {
     });
     expect(rows.find((row) => row.path === "src/tui/App.tsx")).toMatchObject({
       attached: true,
+      ancestorLast: [false, false],
+      isLast: true,
     });
   });
 
@@ -75,6 +81,7 @@ describe("project tree helpers", () => {
     expect(rows.find((row) => row.path === "src")).toMatchObject({
       selected: true,
       expanded: true,
+      hasChildren: false,
     });
   });
 
@@ -108,5 +115,32 @@ describe("project tree helpers", () => {
     });
 
     store.dispose();
+  });
+
+  it("normalizes hidden cursor paths to the nearest visible row", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-store-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, ".githooks"), { recursive: true });
+      await mkdir(join(repo, "docs"), { recursive: true });
+      await writeFile(join(repo, ".githooks", "pre-commit"), "#!/bin/sh\n", "utf8");
+      await writeFile(join(repo, "docs", "guide.md"), "guide\n", "utf8");
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+
+      await store.refresh();
+
+      expect(store.getCursorPath()).toBe(".githooks");
+      expect(store.getSnapshot().rows.find((row) => row.path === ".githooks")).toMatchObject({
+        selected: true,
+      });
+
+      store.move(1);
+
+      expect(store.getCursorPath()).toBe("docs");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 });

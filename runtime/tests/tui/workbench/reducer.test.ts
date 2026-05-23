@@ -8,7 +8,7 @@ import {
 describe("workbenchReducer", () => {
   it("provides stable defaults", () => {
     expect(getDefaultWorkbenchState()).toMatchObject({
-      focusedPane: "surface",
+      focusedPane: "composer",
       explorerVisible: true,
       agentsVisible: true,
       activeSurfaceMode: "transcript",

@@ -16,6 +16,7 @@ const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   activePath: null,
   expandedPaths: [],
 });
+const DEFAULT_VIEWPORT_ROWS = 20;
 
 export class ProjectTreeStore {
   #cwd: string;
@@ -28,6 +29,7 @@ export class ProjectTreeStore {
   #attachedPaths = new Set<string>();
   #searchHitPaths = new Set<string>();
   #inFlightPaths = new Set<string>();
+  #viewportRows = DEFAULT_VIEWPORT_ROWS;
   #loading = true;
   #error: string | null = null;
   #listeners = new Set<Listener>();
@@ -122,6 +124,12 @@ export class ProjectTreeStore {
     this.#emit();
   }
 
+  setViewportRows(rows: number): void {
+    const nextRows = Math.max(1, Math.floor(rows));
+    if (nextRows === this.#viewportRows) return;
+    this.#viewportRows = nextRows;
+  }
+
   move(delta: number): void {
     const rows = selectableRows(this.#snapshot.rows);
     if (rows.length === 0) return;
@@ -132,7 +140,7 @@ export class ProjectTreeStore {
   }
 
   movePage(delta: number): void {
-    this.move(delta * 10);
+    this.move(delta * Math.max(1, this.#viewportRows - 1));
   }
 
   moveToStart(): void {
@@ -152,8 +160,13 @@ export class ProjectTreeStore {
 
   toggle(pathValue = this.#cursorPath): void {
     if (!pathValue) return;
+    const row = this.#rowForPath(pathValue);
+    if (!row || row.kind !== "directory") return;
     if (this.#expandedPaths.has(pathValue)) {
       this.#expandedPaths.delete(pathValue);
+      if (this.#cursorPath && isDescendantPath(this.#cursorPath, pathValue)) {
+        this.#cursorPath = pathValue;
+      }
     } else {
       this.#expandedPaths.add(pathValue);
     }
@@ -162,14 +175,20 @@ export class ProjectTreeStore {
 
   expand(pathValue = this.#cursorPath): void {
     if (!pathValue) return;
+    const row = this.#rowForPath(pathValue);
+    if (!row || row.kind !== "directory") return;
     this.#expandedPaths.add(pathValue);
     this.#emit();
   }
 
   collapse(pathValue = this.#cursorPath): void {
     if (!pathValue) return;
-    if (this.#expandedPaths.has(pathValue)) {
+    const row = this.#rowForPath(pathValue);
+    if (row?.kind === "directory" && this.#expandedPaths.has(pathValue)) {
       this.#expandedPaths.delete(pathValue);
+      if (this.#cursorPath && isDescendantPath(this.#cursorPath, pathValue)) {
+        this.#cursorPath = pathValue;
+      }
     } else {
       const parent = parentPath(pathValue);
       if (parent !== null) this.#cursorPath = parent;
@@ -196,21 +215,42 @@ export class ProjectTreeStore {
     return this.#snapshot.rows.find((row) => row.path === this.#cursorPath) ?? null;
   }
 
+  #rowForPath(pathValue: string): ProjectTreeRow | null {
+    return this.#snapshot.rows.find((row) => row.path === pathValue) ?? null;
+  }
+
   #emit(): void {
-    this.#snapshot = {
+    const rows = buildProjectTreeRows({
       cwd: this.#cwd,
-      rows: buildProjectTreeRows({
+      paths: this.#paths,
+      expandedPaths: this.#expandedPaths,
+      cursorPath: this.#cursorPath,
+      activePath: this.#activePath,
+      attachedPaths: this.#attachedPaths,
+      searchHitPaths: this.#searchHitPaths,
+      inFlightPaths: this.#inFlightPaths,
+      gitStatus: this.#gitStatus,
+      focused: true,
+    });
+    const normalizedCursorPath = visibleCursorPath(this.#cursorPath, rows);
+    const visibleRows = normalizedCursorPath === this.#cursorPath
+      ? rows
+      : buildProjectTreeRows({
         cwd: this.#cwd,
         paths: this.#paths,
         expandedPaths: this.#expandedPaths,
-        cursorPath: this.#cursorPath,
+        cursorPath: normalizedCursorPath,
         activePath: this.#activePath,
         attachedPaths: this.#attachedPaths,
         searchHitPaths: this.#searchHitPaths,
         inFlightPaths: this.#inFlightPaths,
         gitStatus: this.#gitStatus,
         focused: true,
-      }),
+      });
+    this.#cursorPath = normalizedCursorPath;
+    this.#snapshot = {
+      cwd: this.#cwd,
+      rows: visibleRows,
       loading: this.#loading,
       error: this.#error,
       cursorPath: this.#cursorPath,
@@ -232,6 +272,21 @@ function selectableRows(rows: readonly ProjectTreeRow[]): readonly ProjectTreeRo
   return rows.filter((row) => row.kind === "file" || row.kind === "directory");
 }
 
+function visibleCursorPath(cursorPath: string | null, rows: readonly ProjectTreeRow[]): string | null {
+  const selectable = selectableRows(rows);
+  if (selectable.length === 0) return cursorPath;
+  if (cursorPath && selectable.some((row) => row.path === cursorPath)) return cursorPath;
+
+  let parent = cursorPath ? parentPath(cursorPath) : null;
+  while (parent !== null) {
+    const visibleParent = selectable.find((row) => row.path === parent);
+    if (visibleParent) return visibleParent.path;
+    parent = parentPath(parent);
+  }
+
+  return selectable[0]?.path ?? cursorPath;
+}
+
 function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   if (left.size !== right.size) return false;
   for (const value of left) {
@@ -247,6 +302,10 @@ function firstFilePath(paths: readonly string[]): string | null {
 function parentPath(value: string): string | null {
   const parent = path.posix.dirname(value.split(path.sep).join("/"));
   return parent === "." || parent === value ? null : parent;
+}
+
+function isDescendantPath(value: string, possibleAncestor: string): boolean {
+  return value.length > possibleAncestor.length && value.startsWith(`${possibleAncestor}/`);
 }
 
 async function readTopLevelPaths(cwd: string): Promise<string[]> {

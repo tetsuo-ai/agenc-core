@@ -10,6 +10,7 @@ import type { PendingRequest } from "../permission-requests.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
+import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "./state.js";
 import type { WorkbenchLayoutSize, WorkbenchPane } from "./types.js";
 import { WorkbenchFooter } from "./WorkbenchFooter.js";
@@ -75,7 +76,9 @@ export function WorkbenchLayout({
       ) : null}
       <Box flexDirection="column" flexShrink={0} borderTop borderColor={workbench.focusedPane === "composer" ? "suggestion" : "gray"}>
         <PromptSuggestionsOverlay />
-        {composer}
+        <WorkbenchComposerFocusProvider active={workbench.focusedPane === "composer"}>
+          {composer}
+        </WorkbenchComposerFocusProvider>
       </Box>
       <PromptDialogOverlay />
       {rows >= 5 ? <WorkbenchFooter /> : null}

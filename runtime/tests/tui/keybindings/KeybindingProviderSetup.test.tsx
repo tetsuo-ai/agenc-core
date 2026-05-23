@@ -63,6 +63,9 @@ function key(overrides: Partial<Key> = {}): Key {
 function inputEvent(): InputEvent & { stopped: boolean } {
   return {
     stopped: false,
+    didStopImmediatePropagation() {
+      return this.stopped;
+    },
     stopImmediatePropagation() {
       this.stopped = true;
     },
@@ -144,6 +147,50 @@ describe("KeybindingProviderSetup", () => {
     expect(completionEvent.stopped).toBe(true);
     expect(pendingChordRef.current).toBeNull();
     expect(invoked).toBe(1);
+  });
+
+  test("consumes completed workbench chords even before an action handler is registered", () => {
+    const bindings = parseBindings([
+      {
+        context: "Workbench",
+        bindings: {
+          "ctrl+w d": "workbench:openDiff",
+        },
+      },
+    ]);
+    const pendingChordRef = { current: null as ParsedKeystroke[] | null };
+    const captured: string[] = [];
+    const handler = createChordInputHandler({
+      bindings,
+      pendingChordRef,
+      setPendingChord: pending => {
+        pendingChordRef.current = pending;
+      },
+      activeContexts: new Set(["Workbench"]),
+      handlerRegistryRef: { current: new Map() },
+      inputCaptureRegistryRef: {
+        current: new Set([
+          {
+            context: "Workbench",
+            handler: input => {
+              captured.push(input);
+              return true;
+            },
+          },
+        ]),
+      },
+    });
+
+    const prefixEvent = inputEvent();
+    handler("w", key({ ctrl: true }), prefixEvent);
+    expect(prefixEvent.stopped).toBe(true);
+
+    const completionEvent = inputEvent();
+    handler("d", key(), completionEvent);
+
+    expect(completionEvent.stopped).toBe(true);
+    expect(pendingChordRef.current).toBeNull();
+    expect(captured).toEqual([]);
   });
 
   test("runs active input captures before child input handlers", () => {
