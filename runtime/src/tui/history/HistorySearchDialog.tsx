@@ -11,6 +11,7 @@ import { Box, Text } from '../ink.js';
 import { logEvent } from '../../services/analytics/index.js';
 import type { HistoryEntry } from '../../utils/config.js';
 import { formatRelativeTimeAgo, truncateToWidth } from '../../utils/format.js';
+import { logError } from '../../utils/log.js';
 import { FuzzyPicker } from '../components/design-system/FuzzyPicker.js';
 type Props = {
   initialQuery?: string;
@@ -47,29 +48,46 @@ export function HistorySearchDialog({
   }, []);
   useEffect(() => {
     let cancelled = false;
+    let reader: ReturnType<typeof getTimestampedHistory> | undefined;
+    let returned = false;
+    const closeReader = () => {
+      if (!reader || returned) return;
+      returned = true;
+      void reader.return(undefined).catch(logError);
+    };
     void (async () => {
-      const reader = getTimestampedHistory();
-      const loaded: Item[] = [];
-      for await (const entry of reader) {
+      try {
+        reader = getTimestampedHistory();
+        const loaded: Item[] = [];
+        for await (const entry of reader) {
+          if (cancelled) {
+            closeReader();
+            return;
+          }
+          const display = entry.display;
+          const nl = display.indexOf('\n');
+          const age = formatRelativeTimeAgo(new Date(entry.timestamp));
+          loaded.push({
+            entry,
+            display,
+            lower: display.toLowerCase(),
+            firstLine: nl === -1 ? display : display.slice(0, nl),
+            age: age + ' '.repeat(Math.max(0, AGE_WIDTH - stringWidth(age)))
+          });
+        }
+        if (!cancelled) setItems(loaded);
+      } catch (error) {
         if (cancelled) {
-          void reader.return(undefined);
+          closeReader();
           return;
         }
-        const display = entry.display;
-        const nl = display.indexOf('\n');
-        const age = formatRelativeTimeAgo(new Date(entry.timestamp));
-        loaded.push({
-          entry,
-          display,
-          lower: display.toLowerCase(),
-          firstLine: nl === -1 ? display : display.slice(0, nl),
-          age: age + ' '.repeat(Math.max(0, AGE_WIDTH - stringWidth(age)))
-        });
+        logError(error);
+        setItems([]);
       }
-      if (!cancelled) setItems(loaded);
     })();
     return () => {
       cancelled = true;
+      closeReader();
     };
   }, []);
   const filtered = useMemo(() => {
