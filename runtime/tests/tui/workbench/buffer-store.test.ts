@@ -108,6 +108,29 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().dirty).toBe(false);
   });
 
+  it("logs failed save notifications without failing the save", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const error = new Error("save notification failed");
+    lspHarness.notifyBufferLspSaved.mockImplementation(() => {
+      throw error;
+    });
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.insert("draft ");
+
+    await expect(store.save()).resolves.toBe(true);
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "ready",
+      filePath: "target.txt",
+      dirty: false,
+      error: null,
+    });
+    expect(await readFile(file, "utf8")).toBe("draft alpha\n");
+  });
+
   it("reverts explicit unsaved edits from disk", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\n", "utf8");
@@ -144,6 +167,26 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("");
   });
 
+  it("logs failed close notifications without blocking buffer close", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const error = new Error("close notification failed");
+    lspHarness.notifyBufferLspClosed.mockImplementation(() => {
+      throw error;
+    });
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.close()).toBe(true);
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "idle",
+      filePath: null,
+      error: null,
+    });
+    expect(store.getText()).toBe("");
+  });
+
   it("opens the current file in the external editor and reloads after it exits", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\nomega\n", "utf8");
@@ -166,6 +209,47 @@ describe("WorkbenchBufferStore", () => {
       filePath: "target.txt",
       position: { line: 2 },
     });
+  });
+
+  it("logs external editor launcher exceptions without rejecting", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const error = new Error("editor crashed");
+    const store = new WorkbenchBufferStore({
+      openExternalEditor: () => {
+        throw error;
+      },
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(store.openExternalEditor()).resolves.toBe(false);
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      filePath: "target.txt",
+      error: "Failed to open external editor: editor crashed",
+    });
+    expect(store.getText()).toBe("alpha\n");
+  });
+
+  it("logs failed open notifications without blocking the loaded buffer", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const error = new Error("open notification failed");
+    lspHarness.notifyBufferLspOpened.mockImplementation(() => {
+      throw error;
+    });
+    const store = new WorkbenchBufferStore();
+
+    await expect(runWithCwdOverride(dir, () => store.open("target.txt"))).resolves.toBeUndefined();
+
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "ready",
+      filePath: "target.txt",
+      error: null,
+    });
+    expect(store.getText()).toBe("alpha\n");
   });
 
   it("ignores stale hover responses after switching files", async () => {
@@ -205,6 +289,27 @@ describe("WorkbenchBufferStore", () => {
       status: "ready",
     });
     expect(store.getText()).toBe("alpha\n");
+  });
+
+  it("logs failed change notifications without rejecting edits", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const error = new Error("change notification failed");
+    lspHarness.notifyBufferLspChanged.mockImplementation(() => {
+      throw error;
+    });
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(() => store.insert("draft ")).not.toThrow();
+    expect(logHarness.logError).toHaveBeenCalledWith(error);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "ready",
+      filePath: "target.txt",
+      dirty: true,
+      error: null,
+    });
+    expect(store.getText()).toBe("draft alpha\n");
   });
 
   it("ignores stale definition responses after switching files", async () => {
