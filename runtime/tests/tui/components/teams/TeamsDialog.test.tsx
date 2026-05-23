@@ -67,6 +67,10 @@ const mailboxMock = vi.hoisted(() => ({
   writeToMailbox: vi.fn(async () => {}),
 }));
 
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}));
+
 const teamHelpersMock = vi.hoisted(() => ({
   addHiddenPaneId: vi.fn(() => true),
   removeHiddenPaneId: vi.fn(() => true),
@@ -148,6 +152,9 @@ vi.mock("../../../utils/teammateMailbox.js", () => ({
   createModeSetRequestMessage: (message: unknown) => message,
   sendShutdownRequestToMailbox: mailboxMock.sendShutdownRequestToMailbox,
   writeToMailbox: mailboxMock.writeToMailbox,
+}));
+vi.mock("../../../utils/log.js", () => ({
+  logError: logMock.logError,
 }));
 vi.mock("../../../utils/swarm/teamHelpers.js", () => ({
   addHiddenPaneId: teamHelpersMock.addHiddenPaneId,
@@ -321,6 +328,7 @@ beforeEach(() => {
   });
   mailboxMock.sendShutdownRequestToMailbox.mockClear();
   mailboxMock.writeToMailbox.mockClear();
+  logMock.logError.mockClear();
   teamHelpersMock.addHiddenPaneId.mockClear();
   teamHelpersMock.removeHiddenPaneId.mockClear();
   teamHelpersMock.removeMemberFromTeam.mockClear();
@@ -544,6 +552,29 @@ describe("TeamsDialog rendering", () => {
 
       expect(harness.getText()).toContain(
         "Cannot view teammate output: pane disappeared",
+      );
+      expect(harness.getText()).toContain("@Fixer");
+      expect(onDone).not.toHaveBeenCalled();
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("logs rejected view-output commands and keeps dialog open", async () => {
+    const onDone = vi.fn();
+    const error = new Error("pane command crashed");
+    execFileNoThrowMock.mockRejectedValue(error);
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={onDone} />,
+    );
+
+    try {
+      await harness.press("\r", { return: true }, 80);
+      await harness.press("\r", { return: true }, 80);
+
+      expect(logMock.logError).toHaveBeenCalledWith(error);
+      expect(harness.getText()).toContain(
+        "Cannot view teammate output: pane command crashed",
       );
       expect(harness.getText()).toContain("@Fixer");
       expect(onDone).not.toHaveBeenCalled();
