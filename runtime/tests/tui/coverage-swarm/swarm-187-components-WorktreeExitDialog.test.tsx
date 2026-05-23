@@ -52,6 +52,7 @@ const harness = vi.hoisted(() => ({
   setChanges: vi.fn(),
   setCommitCount: vi.fn(),
   setCwd: vi.fn(),
+  setInspectionFailed: vi.fn(),
   setResultMessage: vi.fn(),
   setStatus: vi.fn(),
   useEffect: vi.fn(),
@@ -128,6 +129,7 @@ function seedDialogState(): void {
     [[], harness.setChanges],
     [0, harness.setCommitCount],
     [undefined, harness.setResultMessage],
+    [false, harness.setInspectionFailed],
   ]
   let index = 0
 
@@ -164,6 +166,7 @@ describe('WorktreeExitDialog coverage swarm row 187', () => {
     harness.setChanges.mockClear()
     harness.setCommitCount.mockClear()
     harness.setCwd.mockClear()
+    harness.setInspectionFailed.mockClear()
     harness.setResultMessage.mockClear()
     harness.setStatus.mockClear()
     harness.session = {

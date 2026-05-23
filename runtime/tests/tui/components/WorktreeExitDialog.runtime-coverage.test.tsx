@@ -19,9 +19,13 @@ const execMock = vi.hoisted(() => ({
   statusStdout: "",
   revListStdout: "0\n",
   execFileNoThrow: vi.fn(async (_cmd: string, args: string[]) => {
-    if (args[0] === "status") return { stdout: execMock.statusStdout };
-    if (args[0] === "rev-list") return { stdout: execMock.revListStdout };
-    return { stdout: "" };
+    if (args[0] === "status") {
+      return { code: 0, stderr: "", stdout: execMock.statusStdout };
+    }
+    if (args[0] === "rev-list") {
+      return { code: 0, stderr: "", stdout: execMock.revListStdout };
+    }
+    return { code: 0, stderr: "", stdout: "" };
   }),
 }));
 

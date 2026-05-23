@@ -26,6 +26,22 @@ type Props = {
   }) => void;
   onCancel?: () => void;
 };
+
+type GitInspectionResult = {
+  code: number;
+  error?: string;
+  stderr: string;
+  stdout: string;
+};
+
+function describeGitInspectionFailure(
+  command: string,
+  result: GitInspectionResult,
+): string {
+  const detail = result.stderr.trim() || result.error || `exit code ${result.code}`;
+  return `${command} failed: ${detail}`;
+}
+
 export function WorktreeExitLoadingState(): React.ReactNode {
   return <Box flexDirection="row" marginY={1}>
       <Spinner />
@@ -40,23 +56,54 @@ export function WorktreeExitDialog({
   const [changes, setChanges] = useState<string[]>([]);
   const [commitCount, setCommitCount] = useState<number>(0);
   const [resultMessage, setResultMessage] = useState<string | undefined>();
+  const [inspectionFailed, setInspectionFailed] = useState(false);
   const worktreeSession = getCurrentWorktreeSession();
   useEffect(() => {
+    let cancelled = false;
+    function failInspection(message: string) {
+      if (cancelled) return;
+      logForDebugging(`Failed to inspect worktree status: ${message}`, {
+        level: 'error'
+      });
+      setInspectionFailed(true);
+      setStatus('asking');
+    }
     async function loadChanges() {
+      if (!worktreeSession) return;
+      setInspectionFailed(false);
+      setChanges([]);
+      setCommitCount(0);
       let changeLines: string[] = [];
       const gitStatus = await execFileNoThrow('git', ['status', '--porcelain']);
+      if (gitStatus.code !== 0) {
+        failInspection(
+          describeGitInspectionFailure('git status --porcelain', gitStatus),
+        );
+        return;
+      }
       if (gitStatus.stdout) {
         changeLines = gitStatus.stdout.split('\n').filter(_ => _.trim() !== '');
-        setChanges(changeLines);
       }
+      if (cancelled) return;
+      setChanges(changeLines);
 
       // Check for commits to eject
-      if (worktreeSession) {
+      if (worktreeSession.originalHeadCommit) {
         // Get commits in worktree that are not in original branch
-        const {
-          stdout: commitsStr
-        } = await execFileNoThrow('git', ['rev-list', '--count', `${worktreeSession.originalHeadCommit}..HEAD`]);
+        const commitResult = await execFileNoThrow('git', [
+          'rev-list',
+          '--count',
+          `${worktreeSession.originalHeadCommit}..HEAD`
+        ]);
+        if (commitResult.code !== 0) {
+          failInspection(
+            describeGitInspectionFailure('git rev-list --count', commitResult),
+          );
+          return;
+        }
+        const commitsStr = commitResult.stdout;
         const count = parseInt(commitsStr.trim()) || 0;
+        if (cancelled) return;
         setCommitCount(count);
 
         // If no changes and no commits, clean up silently
@@ -80,9 +127,16 @@ export function WorktreeExitDialog({
         } else {
           setStatus('asking');
         }
+      } else {
+        failInspection('missing original head commit');
       }
     }
-    void loadChanges();
+    void loadChanges().catch(error => {
+      failInspection(error instanceof Error ? error.message : String(error));
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // biome-ignore lint/correctness/useExhaustiveDependencies: intentional
   }, [worktreeSession]);
@@ -193,6 +247,8 @@ export function WorktreeExitDialog({
   let subtitle = '';
   if (hasUncommitted && hasCommits) {
     subtitle = `You have ${changes.length} uncommitted ${changes.length === 1 ? 'file' : 'files'} and ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} on ${branchName}. All will be lost if you remove.`;
+  } else if (inspectionFailed) {
+    subtitle = 'Unable to inspect worktree status. Keep the worktree unless you have verified it is safe to remove.';
   } else if (hasUncommitted) {
     subtitle = `You have ${changes.length} uncommitted ${changes.length === 1 ? 'file' : 'files'}. These will be lost if you remove the worktree.`;
   } else if (hasCommits) {
@@ -209,7 +265,11 @@ export function WorktreeExitDialog({
     // Fallback: treat Escape as "keep" if no onCancel provided
     void handleSelect('keep');
   }
-  const removeDescription = hasUncommitted || hasCommits ? 'All changes and commits will be lost.' : 'Clean up the worktree directory.';
+  const removeDescription = inspectionFailed
+    ? 'Status could not be checked; removing may discard work.'
+    : hasUncommitted || hasCommits
+      ? 'All changes and commits will be lost.'
+      : 'Clean up the worktree directory.';
   const hasTmuxSession = Boolean(worktreeSession.tmuxSessionName);
   const options = hasTmuxSession ? [{
     label: 'Keep worktree and tmux session',
