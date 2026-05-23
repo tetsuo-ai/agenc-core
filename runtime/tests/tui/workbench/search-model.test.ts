@@ -2,36 +2,48 @@ import { describe, expect, it } from "vitest";
 
 import {
   groupSearchMatches,
-  parseWorkbenchRipgrepLine,
+  parseWorkbenchRipgrepJsonLine,
   visibleSearchRows,
 } from "../../../src/tui/workbench/search/model.js";
 
 describe("workbench search model", () => {
-  it("parses ripgrep output while preserving colon-containing paths", () => {
-    expect(parseWorkbenchRipgrepLine("src/app.ts:12:needle", "/repo")).toEqual({
+  it("parses ripgrep json match events while preserving path boundaries", () => {
+    expect(parseWorkbenchRipgrepJsonLine(jsonMatchLine("src/app.ts", 12, "needle"), "/repo")).toEqual({
       id: "src/app.ts:12:needle",
       file: "src/app.ts",
       line: 12,
       text: "needle",
     });
 
-    expect(parseWorkbenchRipgrepLine("C:/repo/src/app.ts:8:needle", "C:/repo")).toEqual({
+    expect(parseWorkbenchRipgrepJsonLine(jsonMatchLine("C:/repo/src/app.ts", 8, "needle"), "C:/repo")).toEqual({
       id: "src/app.ts:8:needle",
       file: "src/app.ts",
       line: 8,
       text: "needle",
     });
 
-    expect(parseWorkbenchRipgrepLine("not-a-match", "/repo")).toBeNull();
+    expect(parseWorkbenchRipgrepJsonLine("not-a-match", "/repo")).toBeNull();
   });
 
   it("keeps workspace files whose relative names start with dots relative", () => {
-    expect(parseWorkbenchRipgrepLine("/repo/..config:3:needle", "/repo")).toEqual({
+    expect(parseWorkbenchRipgrepJsonLine(jsonMatchLine("/repo/..config", 3, "needle"), "/repo")).toEqual({
       id: "..config:3:needle",
       file: "..config",
       line: 3,
       text: "needle",
     });
+  });
+
+  it("parses ripgrep json match events without splitting colon-number path segments", () => {
+    expect(parseWorkbenchRipgrepJsonLine(jsonMatchLine("/repo/src/topic:12/app.ts", 4, "needle json\r\n"), "/repo")).toEqual({
+      id: "src/topic:12/app.ts:4:needle json",
+      file: "src/topic:12/app.ts",
+      line: 4,
+      text: "needle json",
+    });
+
+    expect(parseWorkbenchRipgrepJsonLine("not json", "/repo")).toBeNull();
+    expect(parseWorkbenchRipgrepJsonLine(JSON.stringify({ type: "begin" }), "/repo")).toBeNull();
   });
 
   it("groups matches by file and exposes visible header rows", () => {
@@ -63,3 +75,14 @@ describe("workbench search model", () => {
     ]);
   });
 });
+
+function jsonMatchLine(file: string, line: number, text: string): string {
+  return JSON.stringify({
+    type: "match",
+    data: {
+      path: { text: file },
+      line_number: line,
+      lines: { text },
+    },
+  });
+}
