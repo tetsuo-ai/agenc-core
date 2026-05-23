@@ -11,6 +11,7 @@ import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import type { PendingRequest } from "../../permission-requests.js";
 import { attachDiffHunkCommand, openBufferCommand } from "../commands.js";
+import { approvalInputText } from "../approvals/inputText.js";
 import { useWorkbenchDispatch } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { clampSurfaceSelection } from "./selection.js";
@@ -33,7 +34,7 @@ export function DiffSurface({
     ? classifyApprovalRisk({
         request: pendingApproval,
         description: pendingApproval.description,
-        command: commandText(pendingApproval.input),
+        command: approvalInputText(pendingApproval.input),
       })
     : null;
 
@@ -159,16 +160,6 @@ export function DiffSurfaceView({
       </Box>
     </Box>
   );
-}
-
-function commandText(input: Record<string, unknown>): string {
-  const command = input.command;
-  if (typeof command === "string") return command;
-  try {
-    return JSON.stringify(input);
-  } catch {
-    return "";
-  }
 }
 
 function errorMessage(error: unknown): string {

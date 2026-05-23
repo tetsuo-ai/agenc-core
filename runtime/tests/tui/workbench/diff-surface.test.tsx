@@ -159,6 +159,55 @@ describe("DiffSurface", () => {
     }
   });
 
+  it("classifies destructive approvals from non-command input fields before falling back to JSON", async () => {
+    diffHarness.snapshot = createDiffMenuSnapshot({
+      rawDiff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+      ].join("\n"),
+      nameStatus: "M\tsrc/app.ts",
+      numstat: "1\t1\tsrc/app.ts",
+      untrackedFiles: [],
+    });
+    const input: Record<string, unknown> = { cmd: "rm -rf /tmp/agenc-danger" };
+    input.self = input;
+    const request = pendingRequest({
+      id: "approval-destructive-cmd",
+      description: "Run shell command",
+      input,
+      toolName: "Bash",
+    });
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider initialState={getDefaultAppState()}>
+          <DiffSurface focused={true} pendingApproval={request} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(output())).toContain("typedconfirmationstays");
+
+      diffHarness.handlers["surface:accept"]?.();
+      await sleep();
+
+      expect(request.resolve).not.toHaveBeenCalled();
+      expect(compact(output())).not.toContain("markedaccept");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("renders diff snapshot load failures instead of staying on the loading state", async () => {
     diffHarness.error = new Error("git status failed");
     const { stdin, stdout, output } = createStreams();

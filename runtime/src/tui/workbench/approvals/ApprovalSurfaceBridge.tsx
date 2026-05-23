@@ -6,6 +6,7 @@ import { useKeybinding } from "../../keybindings/useKeybinding.js";
 import type { PendingRequest } from "../../permission-requests.js";
 import { useWorkbenchDispatch } from "../state.js";
 import { classifyApprovalRisk } from "../../../permissions/risk.js";
+import { approvalInputText } from "./inputText.js";
 
 export function ApprovalSurfaceBridge({
   request,
@@ -39,18 +40,4 @@ export function ApprovalSurfaceBridge({
       </Text>
     </Box>
   );
-}
-
-function approvalInputText(input: Record<string, unknown>): string {
-  for (const key of ["command", "cmd", "input", "query", "path", "file_path"]) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value;
-    }
-  }
-  try {
-    return JSON.stringify(input);
-  } catch {
-    return "";
-  }
 }
