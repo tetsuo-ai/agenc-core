@@ -55,7 +55,7 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
     if (!absolutePath) {
       setContent("");
       setError(null);
-      setGitState(null);
+      setGitStateState({ path: null, status: null });
       setTotalLines(null);
       return;
     }
