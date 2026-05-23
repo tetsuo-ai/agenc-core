@@ -57,7 +57,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     mode: "diff",
     title: () => "DIFF",
     keybindings: ["j", "k", "y", "n", "@", "enter", "q"],
-    footerHints: "Diff: j/k file  y/n approve or mark  enter edit  q close",
+    footerHints: "Diff: j/k file  y/n approve or mark  enter edit  @ attach  q close",
     renderBody: ({ focused, pendingApproval }) => <DiffSurface focused={focused} pendingApproval={pendingApproval} />,
   },
   {
@@ -78,7 +78,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     mode: "search",
     title: () => "SEARCH",
     keybindings: ["j", "k", "J", "K", "enter", "@", "A", "q"],
-    footerHints: "Search: j/k match  J/K file  enter edit  @ attach  q close",
+    footerHints: "Search: j/k match  J/K file  enter edit  @ attach  A attach visible  q close",
     renderBody: ({ focused }) => <SearchSurface focused={focused} />,
   },
   {

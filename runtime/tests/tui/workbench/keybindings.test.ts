@@ -90,4 +90,14 @@ describe("workbench keybinding contract", () => {
     expect(shellSurface.footerHints).toContain("g/enter edit");
     expect(shellSurface.keybindings).toEqual(expect.arrayContaining(["g", "enter"]));
   });
+
+  it("keeps action-bearing surface descriptor shortcuts represented in footer hints", () => {
+    const diffSurface = descriptorForSurface("diff");
+    const searchSurface = descriptorForSurface("search");
+
+    expect(diffSurface.keybindings).toContain("@");
+    expect(diffSurface.footerHints).toContain("@ attach");
+    expect(searchSurface.keybindings).toContain("A");
+    expect(searchSurface.footerHints).toContain("A attach");
+  });
 });
