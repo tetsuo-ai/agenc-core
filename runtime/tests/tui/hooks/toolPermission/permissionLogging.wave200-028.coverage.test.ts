@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   features: new Set<string>(),
   getCodeEditToolDecisionCounter: vi.fn(),
   getLanguageName: vi.fn(),
+  logError: vi.fn(),
   logEvent: vi.fn(),
   logOTelEvent: vi.fn(),
   sandboxEnabled: true,
@@ -31,6 +32,10 @@ vi.mock('../../../bootstrap/state.js', () => ({
 
 vi.mock('../../../utils/cliHighlight.js', () => ({
   getLanguageName: harness.getLanguageName,
+}))
+
+vi.mock('../../../utils/log.js', () => ({
+  logError: harness.logError,
 }))
 
 vi.mock('../../../utils/sandbox/sandbox-runtime.js', () => ({
@@ -109,6 +114,7 @@ describe('permissionLogging coverage', () => {
     harness.getCodeEditToolDecisionCounter.mockReturnValue(harness.counter)
     harness.getLanguageName.mockReset()
     harness.getLanguageName.mockResolvedValue('TypeScript')
+    harness.logError.mockClear()
     harness.logEvent.mockClear()
     harness.logOTelEvent.mockClear()
     harness.sandboxEnabled = true
@@ -321,5 +327,65 @@ describe('permissionLogging coverage', () => {
       source: 'user_abort',
       tool_name: 'safe:Read',
     })
+  })
+
+  test('logs rejected code-edit metric enrichment without dropping the decision', async () => {
+    const languageError = new Error('language detection failed')
+    harness.getLanguageName.mockRejectedValueOnce(languageError)
+    const editDecision = context({
+      tool: tool('Write'),
+      toolUseID: 'write-1',
+    })
+
+    logPermissionDecision(
+      editDecision.ctx as never,
+      { decision: 'accept', source: { type: 'user', permanent: false } },
+      1_750,
+    )
+    await flushMicrotasks()
+
+    expect(editDecision.toolUseContext.toolDecisions?.get('write-1')).toEqual({
+      decision: 'accept',
+      source: 'user_temporary',
+      timestamp: 2_000,
+    })
+    expect(harness.counter.add).not.toHaveBeenCalled()
+    expect(harness.logError).toHaveBeenCalledWith(languageError)
+    expect(harness.logOTelEvent).toHaveBeenCalledWith('tool_decision', {
+      decision: 'accept',
+      source: 'user_temporary',
+      tool_name: 'safe:Write',
+    })
+  })
+
+  test('logs thrown code-edit counter updates without dropping the decision', async () => {
+    const counterError = new Error('counter backend failed')
+    harness.counter.add.mockImplementationOnce(() => {
+      throw counterError
+    })
+    const editDecision = context({
+      tool: tool('Edit'),
+      toolUseID: 'edit-counter-1',
+    })
+
+    logPermissionDecision(
+      editDecision.ctx as never,
+      { decision: 'reject', source: { type: 'hook' } },
+      1_500,
+    )
+    await flushMicrotasks()
+
+    expect(editDecision.toolUseContext.toolDecisions?.get('edit-counter-1')).toEqual({
+      decision: 'reject',
+      source: 'hook',
+      timestamp: 2_000,
+    })
+    expect(harness.counter.add).toHaveBeenCalledWith(1, {
+      decision: 'reject',
+      language: 'TypeScript',
+      source: 'hook',
+      tool_name: 'Edit',
+    })
+    expect(harness.logError).toHaveBeenCalledWith(counterError)
   })
 })
