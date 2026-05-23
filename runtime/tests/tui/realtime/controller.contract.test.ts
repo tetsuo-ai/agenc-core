@@ -1,4 +1,12 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+const logMock = vi.hoisted(() => ({
+  logError: vi.fn(),
+}));
+
+vi.mock("../../utils/log.js", () => ({
+  logError: logMock.logError,
+}));
 
 import {
   createRealtimeWebrtcEventChannel,
@@ -73,6 +81,10 @@ async function waitFor(
 }
 
 describe("AgenC realtime TUI controller", () => {
+  beforeEach(() => {
+    logMock.logError.mockReset();
+  });
+
   test("routes websocket start, text, audio, and stop through daemon RPC", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
@@ -587,13 +599,17 @@ describe("AgenC realtime TUI controller", () => {
       const client = createClient();
       let callbacks: RealtimeAudioCaptureCallbacks | null = null;
       const emitted: JsonObject[] = [];
+      const cleanupError = new Error(`${kind} capture cleanup failed`);
+      const stop = vi.fn(async () => {
+        throw cleanupError;
+      });
       const controls = createRealtimeTuiControls({
         threadId: "agent_1",
         client,
         emitEvent: (event) => emitted.push(event),
         startAudioCapture: async (nextCallbacks) => {
           callbacks = nextCallbacks;
-          return { stop: vi.fn() };
+          return { stop };
         },
       });
 
@@ -605,9 +621,11 @@ describe("AgenC realtime TUI controller", () => {
         () =>
           client.requests.filter(
             (request) => request.method === "thread/realtime/stop",
-          ).length === 1,
+          ).length === 1 &&
+          logMock.logError.mock.calls.some(([error]) => error === cleanupError),
         "daemon stop after capture terminal event",
       );
+      expect(stop).toHaveBeenCalledTimes(1);
       expect(emitted.at(-1)).toMatchObject({
         type: eventType,
       });
@@ -725,10 +743,11 @@ describe("AgenC realtime TUI controller", () => {
     "guards audio player close failures during remote %s notifications",
     (type, payload, expectedState) => {
       const client = createClient();
+      const closeError = new Error("close failed");
       const audioPlayer = {
         enqueue: vi.fn(),
         close: vi.fn(() => {
-          throw new Error("close failed");
+          throw closeError;
         }),
       };
       const controls = createRealtimeTuiControls({
@@ -742,6 +761,39 @@ describe("AgenC realtime TUI controller", () => {
         controls.handleTranscriptEvent({ type, payload });
       }).not.toThrow();
       expect(controls.getState()).toMatchObject(expectedState);
+      expect(logMock.logError).toHaveBeenCalledWith(closeError);
+    },
+  );
+
+  test.each(["realtime_error", "realtime_closed"] as const)(
+    "logs audio capture cleanup failures during remote %s notifications",
+    async (type) => {
+      const client = createClient();
+      const cleanupError = new Error("capture cleanup failed");
+      const stop = vi.fn(async () => {
+        throw cleanupError;
+      });
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: () => {},
+        startAudioCapture: async () => ({ stop }),
+      });
+
+      await controls.start({ transport: "websocket" });
+      controls.handleTranscriptEvent({
+        type,
+        payload:
+          type === "realtime_error"
+            ? { message: "remote failed" }
+            : { reason: "remote closed" },
+      });
+
+      await waitFor(
+        () => logMock.logError.mock.calls.some(([error]) => error === cleanupError),
+        "logged remote cleanup failure",
+      );
+      expect(stop).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -851,7 +903,22 @@ describe("AgenC realtime TUI controller", () => {
   ])(
     "stops daemon realtime on unexpected local WebRTC %s events",
     async (event, eventType) => {
-      const client = createClient();
+      const stopError = new Error("daemon stop failed");
+      const requests: Array<{
+        readonly method: AgenCDaemonMethod;
+        readonly params?: JsonObject;
+      }> = [];
+      const client = {
+        requests,
+        async request<Method extends AgenCDaemonMethod>(
+          method: Method,
+          params?: JsonObject,
+        ): Promise<AgenCDaemonResultByMethod[Method]> {
+          requests.push({ method, params });
+          if (method === "thread/realtime/stop") throw stopError;
+          return {} as AgenCDaemonResultByMethod[Method];
+        },
+      };
       const channel = createRealtimeWebrtcEventChannel();
       const emitted: JsonObject[] = [];
       const controls = createRealtimeTuiControls({
@@ -875,7 +942,8 @@ describe("AgenC realtime TUI controller", () => {
         () =>
           client.requests.filter(
             (request) => request.method === "thread/realtime/stop",
-          ).length === 1,
+          ).length === 1 &&
+          logMock.logError.mock.calls.some(([error]) => error === stopError),
         "daemon stop after local WebRTC terminal event",
       );
       expect(emitted.at(-1)).toMatchObject({ type: eventType });
@@ -902,7 +970,10 @@ describe("AgenC realtime TUI controller", () => {
     async (type, payload, expectedState) => {
       const client = createClient();
       const channel = createRealtimeWebrtcEventChannel();
-      const close = vi.fn();
+      const closeError = new Error("remote WebRTC cleanup failed");
+      const close = vi.fn(async () => {
+        throw closeError;
+      });
       const started: StartedRealtimeWebrtcSession = {
         offerSdp: "offer-sdp",
         handle: new RealtimeWebrtcSessionHandle({
@@ -922,7 +993,9 @@ describe("AgenC realtime TUI controller", () => {
       controls.handleTranscriptEvent({ type, payload });
 
       await waitFor(
-        () => close.mock.calls.length === 1,
+        () =>
+          close.mock.calls.length === 1 &&
+          logMock.logError.mock.calls.some(([error]) => error === closeError),
         "remote terminal WebRTC cleanup",
       );
       expect(controls.getState()).toMatchObject(expectedState);

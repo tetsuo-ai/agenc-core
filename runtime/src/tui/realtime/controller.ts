@@ -21,6 +21,7 @@ import {
   type RealtimeAudioPlayer,
   type StartRealtimeAudioCapture,
 } from "./audio.js";
+import { logError } from "../../utils/log.js";
 import {
   effectiveRealtimeMicrophoneMuted,
   initialRealtimeTuiState,
@@ -139,9 +140,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         await this.#startWebsocketAudioCapture();
       }
     } catch (error) {
-      await this.#stopAudioCapture().catch(() => {});
+      await this.#stopAudioCapture().catch(logError);
       if (startedWebRtc !== null) {
-        await this.#closeWebrtc(startedWebRtc).catch(() => {});
+        await this.#closeWebrtc(startedWebRtc).catch(logError);
       }
       if (this.#webRtc === startedWebRtc) this.#webRtc = null;
       if (daemonStarted) await this.#requestDaemonStop();
@@ -314,7 +315,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         this.#dispatch({ type: "item_added", item: payload.item ?? null });
         break;
       case "realtime_error":
-        void this.#stopAudioCapture().catch(() => {});
+        void this.#stopAudioCapture().catch(logError);
         this.#closeActiveWebrtc();
         this.#closeAudioPlayerBestEffort();
         this.#dispatch({
@@ -326,7 +327,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
         break;
       case "realtime_closed":
-        void this.#stopAudioCapture().catch(() => {});
+        void this.#stopAudioCapture().catch(logError);
         this.#closeActiveWebrtc();
         this.#closeAudioPlayerBestEffort();
         this.#dispatch({
@@ -406,7 +407,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       rollback();
       if (started !== null && this.#webRtc === started) {
         this.#webRtc = null;
-        void this.#closeWebrtc(started).catch(() => {});
+        void this.#closeWebrtc(started).catch(logError);
       }
       this.#closeAudioPlayerBestEffort();
       void this.#requestDaemonStop();
@@ -430,7 +431,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     fallback: string,
   ): Promise<void> {
     if (this.#state.requestedClose || this.#state.phase === "inactive") return;
-    await this.#stopAudioCapture().catch(() => {});
+    await this.#stopAudioCapture().catch(logError);
     this.#closeActiveWebrtc();
     this.#closeAudioPlayerBestEffort();
     this.#surfaceRealtimeError(error, fallback);
@@ -440,8 +441,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   #closeAudioPlayerBestEffort(): void {
     try {
       this.#audioPlayer.close();
-    } catch {
+    } catch (error) {
       // Audio output cleanup must not tear down daemon notification handling.
+      logError(error);
     }
   }
 
@@ -477,7 +479,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     message: string,
   ): Promise<void> {
     if (this.#state.requestedClose || this.#state.phase === "inactive") return;
-    await this.#stopAudioCapture().catch(() => {});
+    await this.#stopAudioCapture().catch(logError);
     this.#closeAudioPlayerBestEffort();
     if (kind === "error") {
       this.#surfaceRealtimeError(message, "Realtime audio capture failed");
@@ -503,7 +505,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       .request("thread/realtime/stop", {
         threadId: this.#threadId,
       } satisfies ThreadRealtimeStopParams)
-      .catch(() => {});
+      .catch(logError);
   }
 
   async #applyProviderSdp(sdp: string): Promise<void> {
@@ -513,7 +515,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       await started.handle.applyAnswerSdp(sdp);
     } catch (error) {
       if (this.#webRtc === started) this.#webRtc = null;
-      await this.#closeWebrtc(started).catch(() => {});
+      await this.#closeWebrtc(started).catch(logError);
       this.#closeAudioPlayerBestEffort();
       this.#surfaceRealtimeError(error, "Realtime SDP failed");
       await this.#requestDaemonStop();
@@ -529,7 +531,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     const started = this.#webRtc;
     if (started === null) return;
     this.#webRtc = null;
-    void this.#closeWebrtc(started).catch(() => {});
+    void this.#closeWebrtc(started).catch(logError);
   }
 
   #surfaceRealtimeError(error: unknown, fallback: string): string {
