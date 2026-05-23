@@ -191,6 +191,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       ) : null}
       {fileAction ? (
         <ProjectFileActionPrompt
+          focused={focused}
           action={fileAction}
           width={Math.max(8, width - 2)}
           onChange={(value) => setFileAction((current) => current ? { ...current, value } : current)}
@@ -217,6 +218,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
 }
 
 export function ProjectFileActionPrompt({
+  focused = true,
   action,
   width,
   onChange,
@@ -231,7 +233,7 @@ export function ProjectFileActionPrompt({
     setCursorOffset(action.value?.length ?? 0);
   }, [actionKey]);
 
-  useRegisterKeybindingContext("Confirmation", action.kind === "delete");
+  useRegisterKeybindingContext("Confirmation", focused && action.kind === "delete");
   useKeybindings(
     {
       "confirm:yes": () => {
@@ -239,7 +241,7 @@ export function ProjectFileActionPrompt({
       },
       "confirm:no": onCancel,
     },
-    { context: "Confirmation", isActive: action.kind === "delete" },
+    { context: "Confirmation", isActive: focused && action.kind === "delete" },
   );
 
   if (action.kind === "delete") {
@@ -274,7 +276,7 @@ export function ProjectFileActionPrompt({
           return input;
         }}
         disableEscapeDoublePress
-        focus={!action.busy}
+        focus={focused && !action.busy}
         showCursor
         multiline={false}
         maxVisibleLines={1}

@@ -4,11 +4,20 @@ import { describe, expect, it, vi } from "vitest";
 
 const projectExplorerHarness = vi.hoisted(() => ({
   textInputProps: [] as Array<Record<string, unknown>>,
+  keybindingCalls: [] as Array<{
+    handlers: Record<string, () => void>;
+    options?: Record<string, unknown>;
+  }>,
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   useKeybinding: () => {},
-  useKeybindings: () => {},
+  useKeybindings: (
+    handlers: Record<string, () => void>,
+    options?: Record<string, unknown>,
+  ) => {
+    projectExplorerHarness.keybindingCalls.push({ handlers, options });
+  },
 }));
 
 vi.mock("../../../src/tui/components/TextInput.js", async () => {
@@ -208,6 +217,62 @@ describe("workbench render contract", () => {
       multiline: false,
     });
     expect(props?.onChangeCursorOffset).toEqual(expect.any(Function));
+  });
+
+  it("disables explorer file-action text input when the explorer is unfocused", async () => {
+    projectExplorerHarness.textInputProps = [];
+
+    await renderToString(
+      <ProjectFileActionPrompt
+        focused={false}
+        action={{
+          kind: "rename",
+          path: "src/old.ts",
+          value: "src/old.ts",
+          busy: false,
+          error: null,
+        }}
+        width={40}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onConfirmDelete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+      80,
+    );
+
+    expect(projectExplorerHarness.textInputProps.at(-1)).toMatchObject({
+      focus: false,
+    });
+  });
+
+  it("disables explorer delete confirmations when the explorer is unfocused", async () => {
+    projectExplorerHarness.keybindingCalls = [];
+
+    await renderToString(
+      <ProjectFileActionPrompt
+        focused={false}
+        action={{
+          kind: "delete",
+          path: "src/old.ts",
+          label: "old.ts",
+          rowKind: "file",
+          busy: false,
+          error: null,
+        }}
+        width={40}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onConfirmDelete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+      80,
+    );
+
+    expect(projectExplorerHarness.keybindingCalls.at(-1)?.options).toMatchObject({
+      context: "Confirmation",
+      isActive: false,
+    });
   });
 
   it("keeps the selected explorer row inside a contiguous viewport", () => {
