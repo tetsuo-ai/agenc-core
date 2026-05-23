@@ -27,6 +27,7 @@ import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '..
 import { getShellHistoryCompletion } from '../../utils/suggestions/shellHistoryCompletion.js';
 import { getSlackChannelSuggestions, hasSlackMcpServer } from '../../utils/suggestions/slackChannelSuggestions.js';
 import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js';
+import { logError } from '../../utils/log.js';
 import { applyFileSuggestion, findLongestCommonPrefix, onIndexBuildComplete, startBackgroundCacheRefresh } from './fileSuggestions';
 import { generateUnifiedSuggestions } from './unifiedSuggestions';
 import {
@@ -359,7 +360,17 @@ export function useTypeahead({
   // Expensive async operation to fetch file/resource suggestions
   const fetchFileSuggestions = useCallback(async (searchToken: string, isAtSymbol = false): Promise<void> => {
     latestSearchTokenRef.current = searchToken;
-    const combinedItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
+    let combinedItems: SuggestionItem[];
+    try {
+      combinedItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
+    } catch (error) {
+      if (latestSearchTokenRef.current !== searchToken) {
+        return;
+      }
+      logError(error);
+      clearSuggestions();
+      return;
+    }
     // Discard stale results if a newer query was initiated while waiting
     if (latestSearchTokenRef.current !== searchToken) {
       return;
@@ -382,7 +393,7 @@ export function useTypeahead({
     }));
     setSuggestionType(combinedItems.length > 0 ? 'file' : 'none');
     setMaxColumnWidth(undefined); // No fixed width for file suggestions
-  }, [mcpResources, setSuggestionsState, setSuggestionType, setMaxColumnWidth, agents]);
+  }, [mcpResources, setSuggestionsState, setSuggestionType, setMaxColumnWidth, agents, clearSuggestions]);
 
   // Pre-warm the file index on mount so the first @-mention doesn't block.
   // The build runs in background with ~4ms event-loop yields, so it doesn't
@@ -418,7 +429,15 @@ export function useTypeahead({
   const debouncedFetchFileSuggestions = useDebounceCallback(fetchFileSuggestions, 50);
   const fetchSlackChannels = useCallback(async (partial: string): Promise<void> => {
     latestSlackTokenRef.current = partial;
-    const channels = await getSlackChannelSuggestions(store.getState().mcp.clients, partial);
+    let channels: SuggestionItem[];
+    try {
+      channels = await getSlackChannelSuggestions(store.getState().mcp.clients, partial);
+    } catch (error) {
+      if (latestSlackTokenRef.current !== partial) return;
+      logError(error);
+      clearSuggestions();
+      return;
+    }
     if (latestSlackTokenRef.current !== partial) return;
     setSuggestionsState(prev => ({
       commandArgumentHint: undefined,
@@ -429,7 +448,7 @@ export function useTypeahead({
     setMaxColumnWidth(undefined);
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps -- store is a stable context ref
-  [setSuggestionsState]);
+  [setSuggestionsState, clearSuggestions]);
 
   // First keystroke after # needs the MCP round-trip; subsequent keystrokes
   // that share the same first-word segment hit the cache synchronously.
@@ -471,7 +490,16 @@ export function useTypeahead({
     // Bash mode: check for history-based ghost text completion
     if (mode === 'bash' && value.trim()) {
       latestBashInputRef.current = value;
-      const historyMatch = await getShellHistoryCompletion(value);
+      let historyMatch: Awaited<ReturnType<typeof getShellHistoryCompletion>> = null;
+      try {
+        historyMatch = await getShellHistoryCompletion(value);
+      } catch (error) {
+        if (latestBashInputRef.current !== value) {
+          return;
+        }
+        logError(error);
+        setInlineGhostText(undefined);
+      }
       // Discard stale results if input changed while waiting
       if (latestBashInputRef.current !== value) {
         return;
@@ -579,7 +607,15 @@ export function useTypeahead({
           clearSuggestions();
           return;
         }
-        const dirSuggestions = await getDirectoryCompletions(args);
+        let dirSuggestions: SuggestionItem[];
+        try {
+          dirSuggestions = await getDirectoryCompletions(args);
+        } catch (error) {
+          logError(error);
+          debouncedFetchFileSuggestions.cancel();
+          clearSuggestions();
+          return;
+        }
         if (dirSuggestions.length > 0) {
           setSuggestionsState(prev => ({
             suggestions: dirSuggestions,
@@ -603,9 +639,16 @@ export function useTypeahead({
         } = parsedCommand;
 
         // Get custom title suggestions using partial match
-        const matches = await searchSessionsByCustomTitle(args, {
-          limit: 10
-        });
+        let matches;
+        try {
+          matches = await searchSessionsByCustomTitle(args, {
+            limit: 10
+          });
+        } catch (error) {
+          logError(error);
+          clearSuggestions();
+          return;
+        }
         const suggestions = matches.map(log => {
           const sessionId = getSessionIdFromLog(log);
           return {
@@ -733,9 +776,19 @@ export function useTypeahead({
         // This handles cases like @~/path, @./path, @/path for directory traversal
         if (isPathLikeToken(searchToken)) {
           latestPathTokenRef.current = searchToken;
-          const pathSuggestions = await getPathCompletions(searchToken, {
-            maxResults: 10
-          });
+          let pathSuggestions: SuggestionItem[];
+          try {
+            pathSuggestions = await getPathCompletions(searchToken, {
+              maxResults: 10
+            });
+          } catch (error) {
+            if (latestPathTokenRef.current !== searchToken) {
+              return;
+            }
+            logError(error);
+            clearSuggestions();
+            return;
+          }
           // Discard stale results if a newer query was initiated while waiting
           if (latestPathTokenRef.current !== searchToken) {
             return;
@@ -1049,7 +1102,13 @@ export function useTypeahead({
           // If token starts with @, search without the @ prefix
           const isAtSymbol = completionInfo.token.startsWith('@');
           const searchToken = isAtSymbol ? completionInfo.token.substring(1) : completionInfo.token;
-          suggestionItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
+          try {
+            suggestionItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
+          } catch (error) {
+            logError(error);
+            clearSuggestions();
+            suggestionItems = [];
+          }
         } else {
           suggestionItems = [];
         }

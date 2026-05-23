@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
+  logError: vi.fn(),
   appState: {
     agentNameRegistry: new Map<string, string>(),
     mcp: {
@@ -33,6 +34,7 @@ const harness = vi.hoisted(() => ({
   unifiedSuggestions: [] as unknown[],
   reset() {
     harness.addNotification.mockClear()
+    harness.logError.mockClear()
     harness.appState.agentNameRegistry = new Map()
     harness.appState.mcp = { clients: [], resources: [] }
     harness.appState.promptSuggestion = {
@@ -77,6 +79,10 @@ vi.mock('../context/notifications.js', () => ({
 
 vi.mock('../../services/analytics/index.js', () => ({
   logEvent: vi.fn(),
+}))
+
+vi.mock('../../utils/log.js', () => ({
+  logError: harness.logError,
 }))
 
 vi.mock('../context/overlayContext', () => ({
@@ -751,6 +757,24 @@ describe('useTypeahead hook paths', () => {
         () => generateUnifiedSuggestionsMock.mock.calls.length > 0,
         'refetch after input changes',
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('logs file suggestion provider failures and fails closed', async () => {
+    const error = new Error('unified suggestions failed')
+    generateUnifiedSuggestionsMock.mockRejectedValueOnce(error)
+    const rendered = await renderHookHarness({ input: '@sr', cursorOffset: 3 })
+
+    try {
+      await waitFor(
+        () => harness.logError.mock.calls.some(call => call[0] === error),
+        'logged suggestion failure',
+      )
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
     } finally {
       await rendered.dispose()
     }
