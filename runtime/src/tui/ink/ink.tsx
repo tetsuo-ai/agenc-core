@@ -1058,7 +1058,7 @@ export default class Ink {
       // drops it silently unless allow-passthrough is on — no regression).
       void setClipboard(text).then(raw => {
         if (raw) this.options.stdout.write(raw);
-      });
+      }).catch(logError);
     }
     return text;
   }

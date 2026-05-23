@@ -14,6 +14,7 @@ import { CURSOR_HOME, ERASE_SCREEN } from './termio/csi.ts'
 import { ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN } from './termio/dec.ts'
 
 const clipboardMock = vi.hoisted(() => ({
+  logError: vi.fn(),
   setClipboard: vi.fn(async (_text: string) => ''),
   supportsTabStatus: vi.fn(() => false),
 }))
@@ -26,6 +27,10 @@ vi.mock('./termio/osc.js', async importOriginal => {
     supportsTabStatus: clipboardMock.supportsTabStatus,
   }
 })
+
+vi.mock('../../utils/log.js', () => ({
+  logError: clipboardMock.logError,
+}))
 
 vi.mock('../../utils/fullscreen.js', () => ({
   isMouseClicksDisabled: () => false,
@@ -277,6 +282,28 @@ describe('Ink instance rendering paths', () => {
       expect(selectionChanges).toHaveLength(afterCopyChanges)
 
       unsubscribe()
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test('logs rejected clipboard writes while preserving copied selection text', async () => {
+    const error = new Error('clipboard write failed')
+    clipboardMock.logError.mockClear()
+    clipboardMock.setClipboard.mockRejectedValueOnce(error)
+    const harness = await createHarness({ columns: 40, rows: 6 })
+
+    try {
+      harness.instance.setAltScreenActive(true)
+      harness.root.render(textNode('alpha beta'))
+      await sleep(10)
+
+      harness.instance.handleMultiClick(1, 0, 2)
+
+      expect(harness.instance.copySelectionNoClear()).toBe('alpha')
+      expect(harness.instance.hasTextSelection()).toBe(true)
+      await sleep(10)
+      expect(clipboardMock.logError).toHaveBeenCalledWith(error)
     } finally {
       await harness.dispose()
     }
