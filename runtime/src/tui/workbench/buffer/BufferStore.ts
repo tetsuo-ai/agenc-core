@@ -2,6 +2,7 @@ import { relative, resolve } from "node:path";
 
 import { getCwd } from "../../../utils/cwd.js";
 import { lastGrapheme } from "../../../utils/intl.js";
+import { logError } from "../../../utils/log.js";
 import { TextCursor } from "../../../utils/TextCursor.js";
 import type { VimMode } from "../../../types/textInputTypes.js";
 import type { Key } from "../../ink.js";
@@ -372,7 +373,10 @@ export class WorkbenchBufferStore {
     const document = this.#document;
     if (!file || !document) return null;
     const position = this.#lspPosition(document);
-    const hover = await requestBufferHover(file.absolutePath, position).catch(() => null);
+    const hover = await requestBufferHover(file.absolutePath, position).catch(error => {
+      logError(error);
+      return null;
+    });
     if (this.#file !== file || this.#document !== document) return null;
     this.#hoverText = hover;
     this.#emit();
@@ -384,7 +388,10 @@ export class WorkbenchBufferStore {
     const document = this.#document;
     if (!file || !document) return false;
     const position = this.#lspPosition(document);
-    const target = await requestBufferDefinition(file.absolutePath, position).catch(() => null);
+    const target = await requestBufferDefinition(file.absolutePath, position).catch(error => {
+      logError(error);
+      return null;
+    });
     if (!target || this.#file !== file || this.#document !== document) return false;
     return this.#load(target.path, target.line, false, displayPathForAbsolute(target.path), {
       preserveCurrentOnError: true,
