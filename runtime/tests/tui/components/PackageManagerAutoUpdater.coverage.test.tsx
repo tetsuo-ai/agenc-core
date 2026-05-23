@@ -8,14 +8,17 @@ const harness = vi.hoisted(() => ({
   getLatestVersionFromGcs: vi.fn(async () => "9.0.0"),
   getMaxVersion: vi.fn(async () => "2.0.0"),
   getPackageManager: vi.fn(async () => "homebrew"),
+  intervalCallback: undefined as (() => void) | undefined,
   intervalDelay: undefined as number | null | undefined,
   isAutoUpdaterDisabled: vi.fn(() => false),
   logForDebugging: vi.fn(),
+  logError: vi.fn(),
   shouldSkipVersion: vi.fn(() => false),
 }));
 
 vi.mock("usehooks-ts", () => ({
-  useInterval: (_callback: () => void, delay: number | null) => {
+  useInterval: (callback: () => void, delay: number | null) => {
+    harness.intervalCallback = callback;
     harness.intervalDelay = delay;
   },
 }));
@@ -61,6 +64,10 @@ vi.mock("../../utils/settings/settings.js", () => ({
 
 vi.mock("src/utils/debug.js", () => ({
   logForDebugging: harness.logForDebugging,
+}));
+
+vi.mock("../../utils/log.js", () => ({
+  logError: harness.logError,
 }));
 
 import { createRoot } from "../ink/root.js";
@@ -116,7 +123,9 @@ async function waitForOutput(
 describe("PackageManagerAutoUpdater coverage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    harness.intervalCallback = undefined;
     harness.intervalDelay = undefined;
+    harness.logError.mockReset();
     (globalThis as Record<string, unknown>).MACRO = {
       VERSION: "1.0.0",
     };
@@ -173,6 +182,86 @@ describe("PackageManagerAutoUpdater coverage", () => {
       expect(harness.logForDebugging).toHaveBeenCalledWith(
         "PackageManagerAutoUpdater: Update available 1.0.0 -> 2.0.0",
       );
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  test("logs rejected package-manager probes and leaves the prompt hidden", async () => {
+    const error = new Error("package-manager probe failed");
+    harness.getPackageManager.mockRejectedValueOnce(error);
+    let output = "";
+    const { stdin, stdout } = createStreams();
+    stdout.on("data", chunk => {
+      output += chunk.toString();
+    });
+
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <PackageManagerAutoUpdater
+          autoUpdaterResult={null}
+          isUpdating={false}
+          onAutoUpdaterResult={() => {}}
+          onChangeIsUpdating={() => {}}
+          showSuccessMessage={false}
+          verbose={true}
+        />,
+      );
+
+      await waitForOutput(() => `${harness.getPackageManager.mock.calls.length}`, "1");
+      await sleep(20);
+
+      expect(harness.logError).toHaveBeenCalledWith(error);
+      expect(stripAnsi(output)).not.toContain("Update available");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  test("logs rejected interval checks without leaking async failures", async () => {
+    const error = new Error("latest-version probe failed");
+    let output = "";
+    const { stdin, stdout } = createStreams();
+    stdout.on("data", chunk => {
+      output += chunk.toString();
+    });
+
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <PackageManagerAutoUpdater
+          autoUpdaterResult={null}
+          isUpdating={false}
+          onAutoUpdaterResult={() => {}}
+          onChangeIsUpdating={() => {}}
+          showSuccessMessage={false}
+          verbose={false}
+        />,
+      );
+
+      await waitForOutput(() => output, "brew upgrade");
+      harness.logError.mockReset();
+      harness.getLatestVersionFromGcs.mockRejectedValueOnce(error);
+      harness.intervalCallback?.();
+      await sleep(20);
+
+      expect(harness.logError).toHaveBeenCalledWith(error);
+      expect(stripAnsi(output)).toContain("brew upgrade agenc-code");
     } finally {
       root.unmount();
       stdin.end();
