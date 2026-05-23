@@ -770,6 +770,7 @@ vi.mock('./utils.js', async importOriginal => {
 import { createRoot } from '../../ink/root.js'
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'
 import { cacheImagePath, storeImage } from '../../../utils/imageStore.js'
+import { logError } from '../../../utils/log.js'
 import PromptInput from './PromptInput.js'
 
 function sleep(ms: number): Promise<void> {
@@ -925,6 +926,7 @@ describe('PromptInput render surface', () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue(null)
     vi.mocked(cacheImagePath).mockClear()
     vi.mocked(storeImage).mockClear()
+    vi.mocked(logError).mockClear()
   })
 
   test('wires base text input props for the idle prompt surface', async () => {
@@ -1146,6 +1148,39 @@ describe('PromptInput render surface', () => {
       ) => string
       expect(inputFilter('caption', {})).toBe(' caption')
       expect(inputFilter('again', {})).toBe('again')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('logs rejected clipboard image shortcut lookups without routing image paste', async () => {
+    const error = new Error('clipboard read failed')
+    vi.mocked(getImageFromClipboard).mockRejectedValueOnce(error)
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      expect(logError).toHaveBeenCalledWith(error)
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          color: 'warning',
+          key: 'image-paste-error',
+          priority: 'high',
+        }),
+      )
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(pastedContents.current).toEqual({})
+      expect(cacheImagePath).not.toHaveBeenCalled()
+      expect(storeImage).not.toHaveBeenCalled()
     } finally {
       await rendered.dispose()
     }
