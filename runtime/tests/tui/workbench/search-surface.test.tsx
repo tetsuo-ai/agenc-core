@@ -2,21 +2,41 @@ import { PassThrough } from "node:stream";
 
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const searchHarness = vi.hoisted(() => ({
   handlers: {} as Record<string, () => void>,
   lines: [] as string[],
+  autoFlush: true,
+  calls: [] as Array<{
+    readonly args: string[];
+    readonly target: string;
+    readonly signal: AbortSignal;
+    readonly onLines: (lines: string[]) => void;
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+  }>,
 }));
 
 vi.mock("../../../src/utils/ripgrep.js", () => ({
-  ripGrepStream: vi.fn(async (
-    _args: string[],
-    _target: string,
-    _signal: AbortSignal,
+  ripGrepStream: vi.fn((
+    args: string[],
+    target: string,
+    signal: AbortSignal,
     onLines: (lines: string[]) => void,
   ) => {
-    onLines(searchHarness.lines);
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    searchHarness.calls.push({ args, target, signal, onLines, resolve, reject });
+    if (searchHarness.autoFlush) {
+      onLines(searchHarness.lines);
+      resolve();
+    }
+    return promise;
   }),
 }));
 
@@ -28,7 +48,7 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 import { createRoot } from "../../../src/tui/ink.js";
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { SearchSurface, SearchSurfaceView } from "../../../src/tui/workbench/surfaces/SearchSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
@@ -70,7 +90,35 @@ function sleep(ms = 200): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function SearchQueryController({
+  onReady,
+}: {
+  readonly onReady: (setSearchQuery: (query: string) => void) => void;
+}): null {
+  const setAppState = useSetAppState();
+  React.useEffect(() => {
+    onReady((searchQuery: string) => {
+      setAppState((state) => ({
+        ...state,
+        workbench: {
+          ...state.workbench,
+          searchQuery,
+          selectedSearchMatchId: null,
+        },
+      }));
+    });
+  }, [onReady, setAppState]);
+  return null;
+}
+
 describe("SearchSurface", () => {
+  beforeEach(() => {
+    searchHarness.handlers = {};
+    searchHarness.lines = [];
+    searchHarness.autoFlush = true;
+    searchHarness.calls = [];
+  });
+
   it("renders loading, no result, error, and truncated states", async () => {
     const loading = await renderToString(
       <SearchSurfaceView query="needle" matches={[]} selected={0} loading={true} error={null} focused={true} />,
@@ -192,6 +240,52 @@ describe("SearchSurface", () => {
         activeFileLine: 9,
         focusedPane: "surface",
       });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("ignores line batches from an aborted search stream", async () => {
+    searchHarness.autoFlush = false;
+    let setSearchQuery: ((query: string) => void) | null = null;
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "old",
+            },
+          }}
+        >
+          <SearchQueryController onReady={(setter) => { setSearchQuery = setter; }} />
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const staleCall = searchHarness.calls[0]!;
+      setSearchQuery?.("new");
+      await sleep(20);
+
+      expect(staleCall.signal.aborted).toBe(true);
+      staleCall.onLines(["src/old.ts:7:old result"]);
+      staleCall.resolve();
+      await sleep(50);
+
+      expect(compact(output())).not.toContain("src/old.ts");
     } finally {
       root.unmount();
       stdin.end();

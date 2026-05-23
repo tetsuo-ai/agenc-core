@@ -45,6 +45,7 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
         cwd,
         controller.signal,
         (lines) => {
+          if (controller.signal.aborted) return;
           for (const line of lines) {
             const match = parseWorkbenchRipgrepLine(line, cwd);
             if (match) next.push(match);
