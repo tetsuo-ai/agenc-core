@@ -6,7 +6,7 @@ import {
   taskMayReferencePath,
   taskPathLabel,
 } from "../../../src/tui/workbench/agents/activity.js";
-import { partitionAgentTasks } from "../../../src/tui/workbench/agents/AgentsRail.js";
+import { partitionAgentTasks, resolveAgentSelection } from "../../../src/tui/workbench/agents/AgentsRail.js";
 
 describe("workbench agents rail model", () => {
   it("groups active and background agent tasks", () => {
@@ -19,6 +19,29 @@ describe("workbench agents rail model", () => {
 
     expect(grouped.activeTasks.map((task) => task.id)).toEqual(["agent-1", "agent-2"]);
     expect(grouped.backgroundTasks.map((task) => task.id)).toEqual(["agent-3", "agent-4"]);
+  });
+
+  it("resolves stale agent selection to the first live agent", () => {
+    const tasks = [
+      { id: "agent-1", type: "local_agent", status: "running" },
+      { id: "agent-2", type: "remote_agent", status: "completed" },
+    ];
+
+    expect(resolveAgentSelection(tasks, "agent-2")).toMatchObject({
+      selectedId: "agent-2",
+      selectedIndex: 1,
+      selectedTask: tasks[1],
+    });
+    expect(resolveAgentSelection(tasks, "agent-gone")).toMatchObject({
+      selectedId: "agent-1",
+      selectedIndex: 0,
+      selectedTask: tasks[0],
+    });
+    expect(resolveAgentSelection([], "agent-gone")).toEqual({
+      selectedId: null,
+      selectedIndex: -1,
+      selectedTask: null,
+    });
   });
 
   it("formats elapsed runtime and extracts task paths", () => {
