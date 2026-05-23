@@ -87,6 +87,8 @@ export function workbenchReducer(
       return openSurface(state, "transcript");
     case "renamePathReferences":
       return renamePathReferences(state, command.fromPath, command.toPath);
+    case "deletePathReferences":
+      return deletePathReferences(state, command.path);
     case "toggleExplorer":
       return {
         ...state,
@@ -216,6 +218,24 @@ function renamePathReferences(
   };
 }
 
+function deletePathReferences(
+  state: WorkbenchState,
+  deletedPath: string,
+): WorkbenchState {
+  const activeFileDeleted = containsWorkspacePath(state.activeFilePath, deletedPath);
+  const attachments = state.attachments.filter((attachment) =>
+    !containsWorkspacePath(attachment.path ?? null, deletedPath)
+  );
+  const attachmentIds = new Set(attachments.map((item) => item.id));
+  return {
+    ...state,
+    activeFilePath: activeFileDeleted ? null : state.activeFilePath,
+    activeFileLine: activeFileDeleted ? null : state.activeFileLine,
+    attachments,
+    composerAttachmentIds: state.composerAttachmentIds.filter((id) => attachmentIds.has(id)),
+  };
+}
+
 function renameAttachmentPath(
   attachment: WorkbenchAttachment,
   fromPath: string,
@@ -236,6 +256,10 @@ function renameWorkspacePath(value: string | null, fromPath: string, toPath: str
   if (value === fromPath) return toPath;
   if (value.startsWith(`${fromPath}/`)) return `${toPath}${value.slice(fromPath.length)}`;
   return value;
+}
+
+function containsWorkspacePath(value: string | null, targetPath: string): boolean {
+  return value === targetPath || Boolean(value?.startsWith(`${targetPath}/`));
 }
 
 function replaceFirst(value: string, needle: string, replacement: string): string {

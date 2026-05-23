@@ -8,6 +8,7 @@ const explorerHarness = vi.hoisted(() => {
     handlers: Record<string, () => void>;
     textInputProps: Array<Record<string, unknown>>;
     renameCalls: Array<readonly [string, string]>;
+    deleteCalls: string[];
     cursorRow: Record<string, unknown> | null;
     snapshot: Record<string, unknown>;
     store: Record<string, unknown>;
@@ -15,6 +16,7 @@ const explorerHarness = vi.hoisted(() => {
     handlers: {},
     textInputProps: [],
     renameCalls: [],
+    deleteCalls: [],
     cursorRow: {
       id: "src",
       path: "src",
@@ -88,7 +90,10 @@ const explorerHarness = vi.hoisted(() => {
       harness.renameCalls.push([from, to]);
       return { ok: true, path: to };
     },
-    deletePath: async (value: string) => ({ ok: true, path: value }),
+    deletePath: async (value: string) => {
+      harness.deleteCalls.push(value);
+      return { ok: true, path: value };
+    },
   };
   return harness;
 });
@@ -160,6 +165,7 @@ describe("ProjectExplorer interactions", () => {
     explorerHarness.handlers = {};
     explorerHarness.textInputProps = [];
     explorerHarness.renameCalls = [];
+    explorerHarness.deleteCalls = [];
   });
 
   it("updates the active buffer when renaming a directory that contains it", async () => {
@@ -223,6 +229,82 @@ describe("ProjectExplorer interactions", () => {
           endLine: 15,
         }],
         composerAttachmentIds: ["file-range:lib/nested/app.ts:12-15"],
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("clears active and attached references when deleting a directory that contains them", async () => {
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: "explorer",
+              activeSurfaceMode: "buffer",
+              activeFilePath: "src/nested/app.ts",
+              activeFileLine: 12,
+              attachments: [
+                {
+                  id: "file-range:src/nested/app.ts:12-15",
+                  kind: "file-range",
+                  label: "src/nested/app.ts:12-15",
+                  path: "src/nested/app.ts",
+                  line: 12,
+                  endLine: 15,
+                },
+                {
+                  id: "file:src-old/app.ts",
+                  kind: "file",
+                  label: "src-old/app.ts",
+                  path: "src-old/app.ts",
+                },
+              ],
+              composerAttachmentIds: [
+                "file-range:src/nested/app.ts:12-15",
+                "file:src-old/app.ts",
+              ],
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <ProjectExplorer focused={true} width={40} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      explorerHarness.handlers["explorer:delete"]?.();
+      await sleep();
+
+      explorerHarness.handlers["confirm:yes"]?.();
+      await sleep();
+
+      expect(explorerHarness.deleteCalls).toEqual(["src"]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        focusedPane: "surface",
+        activeSurfaceMode: "transcript",
+        activeFilePath: null,
+        activeFileLine: null,
+        attachments: [{
+          id: "file:src-old/app.ts",
+          kind: "file",
+          label: "src-old/app.ts",
+          path: "src-old/app.ts",
+        }],
+        composerAttachmentIds: ["file:src-old/app.ts"],
       });
     } finally {
       root.unmount();

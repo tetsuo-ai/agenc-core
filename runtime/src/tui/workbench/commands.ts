@@ -32,6 +32,10 @@ export function renamePathReferencesCommand(fromPath: string, toPath: string): W
   return { type: "renamePathReferences", fromPath, toPath };
 }
 
+export function deletePathReferencesCommand(path: string): WorkbenchCommand {
+  return { type: "deletePathReferences", path };
+}
+
 export function attachFileRangeCommand(
   path: string,
   line: number,
