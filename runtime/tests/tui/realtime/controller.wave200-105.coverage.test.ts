@@ -63,6 +63,7 @@ describe("AgenC realtime TUI controller coverage", () => {
 
     controls.handleTranscriptEvent(null);
     controls.handleTranscriptEvent({ type: 105, payload: { peak: 65_535 } });
+    await controls.start({ transport: "websocket" });
     controls.handleTranscriptEvent({
       type: "realtime_output_audio_delta",
       payload: { audio: { data: "AAAA", sampleRate: 24_000 } },
@@ -82,7 +83,6 @@ describe("AgenC realtime TUI controller coverage", () => {
       localAudioLevel: 322,
     });
 
-    await controls.start({ transport: "websocket" });
     controls.handleTranscriptEvent({
       type: "realtime_error",
       payload: "not an object",
@@ -97,7 +97,7 @@ describe("AgenC realtime TUI controller coverage", () => {
       errorBanner: "Realtime error",
     });
     expect(emitted).toEqual([]);
-    expect(snapshots).toContain("inactive|322|null|");
+    expect(snapshots).toContain("starting|322|null|");
     expect(client.requests.map((request) => request.method)).toEqual([
       "thread/realtime/start",
     ]);
