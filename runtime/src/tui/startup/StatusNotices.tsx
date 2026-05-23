@@ -3,6 +3,7 @@
 import * as React from 'react';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import { getGlobalConfig } from '../../utils/config.js';
+import { logError } from '../../utils/log.js';
 import { buildMemoryDiagnostics } from '../../utils/status.js';
 import { Box } from '../ink.js';
 import ThemedBox from '../components/design-system/ThemedBox.js';
@@ -21,6 +22,9 @@ async function loadMemoryDiagnostics(): Promise<void> {
   }
   memoryDiagnosticsPromise = buildMemoryDiagnostics().then(diagnostics => {
     cachedMemoryDiagnostics = diagnostics.map(diagnostic => String(diagnostic));
+  }).catch(error => {
+    logError(error);
+    cachedMemoryDiagnostics = [];
   }).finally(() => {
     memoryDiagnosticsPromise = null;
   });

@@ -43,6 +43,7 @@ const harness = vi.hoisted(() => ({
     autoInstallIdeExtension: true,
     source: 'swarm-197',
   },
+  logError: vi.fn(),
 }))
 
 vi.mock('../../../src/utils/config.js', () => ({
@@ -51,6 +52,10 @@ vi.mock('../../../src/utils/config.js', () => ({
 
 vi.mock('../../../src/utils/status.js', () => ({
   buildMemoryDiagnostics: harness.buildMemoryDiagnostics,
+}))
+
+vi.mock('../../../src/utils/log.js', () => ({
+  logError: harness.logError,
 }))
 
 vi.mock('../../../src/tui/startup/statusNoticeDefinitions.js', () => ({
@@ -86,6 +91,7 @@ describe('StatusNotices coverage swarm row 197', () => {
     harness.buildMemoryDiagnostics.mockReset()
     harness.buildMemoryDiagnostics.mockResolvedValue([])
     harness.contexts = []
+    harness.logError.mockClear()
     harness.getActiveNotices.mockClear()
     harness.getActiveNotices.mockImplementation((context: CapturedContext) => {
       harness.contexts.push(context)
@@ -176,5 +182,31 @@ describe('StatusNotices coverage swarm row 197', () => {
 
     expect(harness.buildMemoryDiagnostics).toHaveBeenCalledTimes(1)
     expect(cachedOutput).toContain('memory:404|Large memory file')
+  })
+
+  test('logs rejected memory diagnostics and retries on a later render', async () => {
+    const error = new Error('memory diagnostics unavailable')
+    harness.buildMemoryDiagnostics.mockRejectedValueOnce(error)
+
+    const firstOutput = await renderStatusNotices()
+
+    expect(firstOutput).toContain('memory:')
+    await vi.waitFor(() => {
+      expect(harness.buildMemoryDiagnostics).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(harness.logError).toHaveBeenCalledWith(error)
+    })
+
+    harness.buildMemoryDiagnostics.mockResolvedValueOnce(['Recovered memory'])
+    await renderStatusNotices()
+
+    await vi.waitFor(() => {
+      expect(harness.buildMemoryDiagnostics).toHaveBeenCalledTimes(2)
+    })
+
+    const thirdOutput = await renderStatusNotices()
+
+    expect(thirdOutput).toContain('memory:Recovered memory')
   })
 })
