@@ -24,6 +24,13 @@ describe("parseArguments", () => {
     ]);
   });
 
+  it("preserves unquoted glob patterns as literal arguments", () => {
+    expect(parseArguments("src/**/*.ts *.md")).toEqual([
+      "src/**/*.ts",
+      "*.md",
+    ]);
+  });
+
   it("falls back to whitespace splitting when shell parsing throws", () => {
     expect(parseArguments("foo ${")).toEqual(["foo", "${"]);
   });
@@ -71,6 +78,14 @@ describe("substituteArguments", () => {
     expect(
       substituteArguments("missing=$topic idx=$2", "value", true, ["topic"]),
     ).toBe("missing=value idx=");
+  });
+
+  it("substitutes glob arguments without dropping them", () => {
+    expect(
+      substituteArguments("glob=$0 named=$pattern", "*.ts", true, [
+        "pattern",
+      ]),
+    ).toBe("glob=*.ts named=*.ts");
   });
 
   it("appends arguments when no placeholders are present", () => {
