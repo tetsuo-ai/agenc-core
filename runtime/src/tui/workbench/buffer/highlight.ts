@@ -1,5 +1,6 @@
 import { basename, extname } from "node:path";
 
+import { logError } from "../../../utils/log.js";
 import type { BufferVisibleLine } from "./BufferStore.js";
 
 type CodeToANSI = (code: string, lang: string, theme: string) => Promise<string>;
@@ -79,7 +80,8 @@ export async function highlightBufferVisibleLines(
     const highlighted = await codeToANSI(code, language, BUFFER_SHIKI_THEME);
     const highlightedLines = trimSingleTrailingLineBreak(highlighted).split("\n");
     return new Map(lines.map((line, index) => [line.number, highlightedLines[index] ?? line.text]));
-  } catch {
+  } catch (error) {
+    logError(error);
     return new Map();
   }
 }
@@ -87,7 +89,10 @@ export async function highlightBufferVisibleLines(
 function getCodeToANSI(): Promise<CodeToANSI | null> {
   codeToANSIPromise ??= import("@shikijs/cli")
     .then((module) => module.codeToANSI as CodeToANSI)
-    .catch(() => null);
+    .catch((error) => {
+      logError(error);
+      return null;
+    });
   return codeToANSIPromise;
 }
 
