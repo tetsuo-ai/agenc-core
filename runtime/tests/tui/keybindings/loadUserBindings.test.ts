@@ -176,6 +176,17 @@ describe('loadUserBindings', () => {
         type: 'parse_error',
       }),
     ])
+
+    resetKeybindingLoaderForTesting()
+    await writeKeybindings('{')
+    const malformed = loadKeybindingsSyncWithWarnings()
+    expect(malformed.warnings).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('Failed to parse keybindings.json:'),
+        severity: 'error',
+        type: 'parse_error',
+      }),
+    ])
   })
 
   test('starts, emits, deletes, and disposes the keybinding watcher', async () => {
