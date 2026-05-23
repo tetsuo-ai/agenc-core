@@ -71,4 +71,13 @@ describe("workbench keybinding contract", () => {
     expect(testSurface.footerHints).toContain("o keep focus");
     expect(testSurface.footerHints).not.toContain("g edit");
   });
+
+  it("keeps SEARCH surface edit hints represented in descriptor key metadata", () => {
+    const surfaceBindings = new Map(Object.entries(DEFAULT_BINDINGS.find((block) => block.context === "Surface")?.bindings ?? {}));
+    const searchSurface = descriptorForSurface("search");
+
+    expect(surfaceBindings.get("enter")).toBe("surface:open");
+    expect(searchSurface.footerHints).toContain("enter edit");
+    expect(searchSurface.keybindings).toContain("enter");
+  });
 });
