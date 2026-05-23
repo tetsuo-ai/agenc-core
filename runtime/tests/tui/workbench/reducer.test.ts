@@ -93,6 +93,24 @@ describe("workbenchReducer", () => {
     expect(composer.focusedPane).toBe("composer");
   });
 
+  it.each([
+    ["explorer" as const, { explorerVisible: false }],
+    ["agents" as const, { agentsVisible: false }],
+  ])("cycles from the visible fallback pane when hidden %s focus is stale", (focusedPane, visibility) => {
+    const hiddenSidePaneFocus = {
+      ...getDefaultWorkbenchState(),
+      focusedPane,
+      ...visibility,
+    };
+    const next = workbenchReducer(hiddenSidePaneFocus, {
+      type: "focusNext",
+      visiblePanes: ["surface", "composer"],
+    });
+
+    expect(visibleWorkbenchPane(hiddenSidePaneFocus)).toBe("surface");
+    expect(next.focusedPane).toBe("composer");
+  });
+
   it("falls back to the surface when hidden panes have stale focus", () => {
     expect(visibleWorkbenchPane({
       ...getDefaultWorkbenchState(),

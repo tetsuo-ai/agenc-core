@@ -176,7 +176,7 @@ function focusNextPane(
   visiblePanes: readonly WorkbenchPane[],
 ): WorkbenchState {
   const panes = visiblePanes.length > 0 ? visiblePanes : (["surface", "composer"] as const);
-  const current = panes.indexOf(state.focusedPane);
+  const current = panes.indexOf(visibleWorkbenchPane(state));
   const next = panes[(current + 1 + panes.length) % panes.length] ?? "surface";
   return { ...state, focusedPane: next };
 }
