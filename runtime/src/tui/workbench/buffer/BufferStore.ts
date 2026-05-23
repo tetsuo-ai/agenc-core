@@ -446,7 +446,7 @@ export class WorkbenchBufferStore {
       this.deleteForward();
       this.#vimState = {
         mode: "INSERT",
-        insertedText: removeLastGrapheme(state.insertedText),
+        insertedText: state.insertedText,
       };
       return;
     }
