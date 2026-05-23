@@ -184,7 +184,8 @@ export class WorkbenchBufferStore {
       return false;
     }
     this.#openGeneration += 1;
-    if (this.#file) notifyBufferLspClosed(this.#file.absolutePath);
+    const closedFile = this.#file;
+    if (closedFile) safeNotifyBufferLsp(() => notifyBufferLspClosed(closedFile.absolutePath));
     this.#file = null;
     this.#document = null;
     this.#status = "idle";
@@ -231,7 +232,7 @@ export class WorkbenchBufferStore {
       this.#error = null;
       this.#conflictKind = null;
       this.#hoverText = null;
-      notifyBufferLspSaved(nextFile.absolutePath);
+      safeNotifyBufferLsp(() => notifyBufferLspSaved(nextFile.absolutePath));
       this.#emit();
       return true;
     } catch (error) {
@@ -253,7 +254,14 @@ export class WorkbenchBufferStore {
     }
 
     const line = this.#position().line;
-    const opened = this.#openExternalEditor(file.absolutePath, line);
+    let opened: boolean;
+    try {
+      opened = this.#openExternalEditor(file.absolutePath, line);
+    } catch (error) {
+      logError(error);
+      this.#setProblem("error", `Failed to open external editor: ${errorMessage(error)}`, null);
+      return false;
+    }
     if (!opened) {
       this.#setProblem("error", "No external editor is available for BUFFER. Set $VISUAL or $EDITOR, or install nvim/vim.", null);
       return false;
@@ -750,7 +758,8 @@ export class WorkbenchBufferStore {
     this.#ensureCursorVisible();
     const nextText = bufferText(next);
     if (notifyLsp && nextText !== previousText && this.#file) {
-      notifyBufferLspChanged(this.#file.absolutePath, nextText);
+      const file = this.#file;
+      if (file) safeNotifyBufferLsp(() => notifyBufferLspChanged(file.absolutePath, nextText));
     }
     this.#emit();
   }
@@ -801,7 +810,9 @@ export class WorkbenchBufferStore {
         displayPath,
       });
       if (generation !== this.#openGeneration) return false;
-      if (previousPath && previousPath !== snapshot.absolutePath) notifyBufferLspClosed(previousPath);
+      if (previousPath && previousPath !== snapshot.absolutePath) {
+        safeNotifyBufferLsp(() => notifyBufferLspClosed(previousPath));
+      }
       this.#file = snapshot;
       this.#document = createBufferDocument(snapshot.content, line);
       this.#resetVimState();
@@ -810,7 +821,7 @@ export class WorkbenchBufferStore {
       this.#conflictKind = null;
       this.#hoverText = null;
       this.#ensureCursorVisible();
-      notifyBufferLspOpened(snapshot.absolutePath, snapshot.content);
+      safeNotifyBufferLsp(() => notifyBufferLspOpened(snapshot.absolutePath, snapshot.content));
       this.#emit();
       return true;
     } catch (error) {
@@ -910,6 +921,14 @@ function displayPathForAbsolute(absolutePath: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function safeNotifyBufferLsp(notify: () => void): void {
+  try {
+    notify();
+  } catch (error) {
+    logError(error);
+  }
 }
 
 function normalizeVimNormalInput(input: string, key: Key): string | null {
