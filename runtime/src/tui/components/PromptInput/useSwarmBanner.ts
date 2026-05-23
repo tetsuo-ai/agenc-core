@@ -19,6 +19,7 @@ import {
   isInProcessEnabled,
 } from '../../../utils/swarm/backends/registry.js'
 import { getSwarmSocketName } from '../../../utils/swarm/constants.js'
+import { logError } from '../../../utils/log.js'
 import {
   getAgentName,
   getTeammateColor,
@@ -53,7 +54,10 @@ export function useSwarmBanner(): SwarmBannerInfo {
   const [insideTmux, setInsideTmux] = React.useState<boolean | null>(null)
 
   React.useEffect(() => {
-    void isInsideTmux().then(setInsideTmux)
+    void isInsideTmux().then(setInsideTmux, error => {
+      logError(error)
+      setInsideTmux(false)
+    })
   }, [])
 
   const state = store.getState()
