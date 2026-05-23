@@ -34,10 +34,11 @@ export function parseArguments(args: string): string[] {
     return args.split(/\s+/).filter(Boolean);
   }
 
-  // Filter to only string tokens (ignore shell operators, etc.)
-  return result.tokens.filter(
-    (token): token is string => typeof token === "string",
-  );
+  return result.tokens.flatMap((token) => {
+    if (typeof token === "string") return [token];
+    if ("pattern" in token) return [token.pattern];
+    return [];
+  });
 }
 
 /**
