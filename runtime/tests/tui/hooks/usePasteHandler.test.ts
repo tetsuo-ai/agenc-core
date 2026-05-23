@@ -364,6 +364,46 @@ describe('usePasteHandler', () => {
     }
   })
 
+  test('logs image paste callback failures and clears paste state', async () => {
+    const imagePath = '/tmp/agenc-callback.png'
+    const callbackError = new Error('image paste callback failed')
+    imagePasteMocks.tryReadImageFromPath.mockResolvedValue({
+      base64: 'image-data',
+      dimensions: {
+        displayHeight: 24,
+        displayWidth: 48,
+        originalHeight: 96,
+        originalWidth: 192,
+      },
+      mediaType: 'image/png',
+      path: imagePath,
+    })
+    const onImagePaste = vi.fn(() => {
+      throw callbackError
+    })
+    const onInput = vi.fn()
+    const onPaste = vi.fn()
+    const rendered = await renderPasteHandler({
+      onImagePaste,
+      onInput,
+      onPaste,
+    })
+
+    try {
+      rendered.latest().wrappedOnInput(imagePath, key(), inputEvent(false))
+
+      await waitForPasteFlush()
+
+      expect(onImagePaste).toHaveBeenCalledTimes(1)
+      expect(logMocks.logError).toHaveBeenCalledWith(callbackError)
+      expect(onPaste).not.toHaveBeenCalled()
+      expect(onInput).not.toHaveBeenCalled()
+      expect(rendered.latest().isPasting).toBe(false)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('logs rejected image path reads and falls back to text paste', async () => {
     const imagePath = '/tmp/agenc-corrupt.png'
     const error = new Error('image decoder failed')
