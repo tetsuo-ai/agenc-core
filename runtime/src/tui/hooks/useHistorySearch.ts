@@ -13,6 +13,7 @@ import { useInput } from '../ink.js'
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
 import type { PromptInputMode } from '../../types/textInputTypes'
 import type { HistoryEntry } from '../../utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'
 
 export function useHistorySearch(
   onAcceptHistory: (entry: HistoryEntry) => void,
@@ -105,7 +106,18 @@ export function useHistorySearch(
           return
         }
 
-        const item = await historyReader.current.next()
+        let item
+        try {
+          item = await historyReader.current.next()
+        } catch (error) {
+          if (signal?.aborted) {
+            return
+          }
+          logError(error)
+          setHistoryFailedMatch(true)
+          closeHistoryReader()
+          return
+        }
         if (item.done) {
           // No match found - keep last match but mark as failed
           setHistoryFailedMatch(true)
