@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import type { DiagnosticEntry } from "../../../services/lsp/types.js";
@@ -30,6 +30,8 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   const { rows, columns } = useTerminalSize();
   const tasks = useAppState((state) => state.tasks);
   const activePath = workbench.activeFilePath;
+  const activeLine = workbench.activeFileLine ?? 1;
+  const lastOpenRequest = useRef<string | null>(null);
   const inFlightAgent = useMemo(
     () => Object.values(tasks).find((task) =>
       task.type !== "local_bash" &&
@@ -48,10 +50,18 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   );
 
   useEffect(() => {
-    if (activePath) {
-      void store.open(activePath, workbench.activeFileLine ?? 1);
-    }
-  }, [activePath, store, workbench.activeFileLine]);
+    if (!activePath) return;
+    const requestKey = `${activePath}\u0000${activeLine}`;
+    const isNewRequest = lastOpenRequest.current !== requestKey;
+    const shouldRetryCleanBlockedPath =
+      snapshot.status !== "loading" &&
+      snapshot.filePath !== null &&
+      snapshot.filePath !== activePath &&
+      !snapshot.dirty;
+    if (!isNewRequest && !shouldRetryCleanBlockedPath) return;
+    lastOpenRequest.current = requestKey;
+    void store.open(activePath, activeLine);
+  }, [activeLine, activePath, snapshot.dirty, snapshot.filePath, snapshot.status, store]);
 
   useEffect(() => {
     store.setViewportRows(Math.max(1, rows - 9));
