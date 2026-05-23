@@ -446,6 +446,117 @@ describe('WorktreeExitDialog', () => {
 
   it.each([
     {
+      failedCommand: 'status',
+      mockGit: () => {
+        harness.execFileNoThrow.mockImplementation(
+          async (file: string, args: string[]) => {
+            expect(file).toBe('git')
+            if (args[0] === 'status') {
+              return {
+                code: 128,
+                error: 'not a git repository',
+                stderr: 'fatal: not a git repository',
+                stdout: '',
+              }
+            }
+            if (args[0] === 'rev-list') {
+              return { code: 0, stderr: '', stdout: '0\n' }
+            }
+            throw new Error(
+              `Unexpected execFileNoThrow call: ${file} ${args.join(' ')}`,
+            )
+          },
+        )
+      },
+    },
+    {
+      failedCommand: 'rev-list',
+      mockGit: () => {
+        harness.execFileNoThrow.mockImplementation(
+          async (file: string, args: string[]) => {
+            expect(file).toBe('git')
+            if (args[0] === 'status') {
+              return { code: 0, stderr: '', stdout: '' }
+            }
+            if (args[0] === 'rev-list') {
+              return {
+                code: 128,
+                error: 'bad revision',
+                stderr: 'fatal: bad revision',
+                stdout: '',
+              }
+            }
+            throw new Error(
+              `Unexpected execFileNoThrow call: ${file} ${args.join(' ')}`,
+            )
+          },
+        )
+      },
+    },
+  ])(
+    'fails closed instead of auto-removing when $failedCommand inspection fails',
+    async ({ mockGit }) => {
+      harness.session = baseSession()
+      mockGit()
+
+      const mounted = await mountDialog()
+      await waitFor(
+        () =>
+          harness.selectProps !== undefined ||
+          harness.cleanupWorktree.mock.calls.length > 0,
+        'inspection failure did not settle',
+      )
+
+      expect(harness.cleanupWorktree).not.toHaveBeenCalled()
+      expect(harness.logForDebugging).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to inspect worktree status:'),
+        { level: 'error' },
+      )
+      expect(harness.selectProps).toBeDefined()
+      expect(dialogProps().subtitle).toBe(
+        'Unable to inspect worktree status. Keep the worktree unless you have verified it is safe to remove.',
+      )
+      expect(selectProps().defaultFocusValue).toBe('keep')
+
+      await mounted.dispose()
+    },
+  )
+
+  it('fails closed instead of auto-removing when the baseline commit is missing', async () => {
+    harness.session = baseSession({ originalHeadCommit: undefined })
+    harness.execFileNoThrow.mockImplementation(
+      async (file: string, args: string[]) => {
+        expect(file).toBe('git')
+        if (args[0] === 'status') {
+          return { code: 0, stderr: '', stdout: '' }
+        }
+        throw new Error(
+          `Unexpected execFileNoThrow call: ${file} ${args.join(' ')}`,
+        )
+      },
+    )
+
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'missing baseline did not render choices',
+    )
+
+    expect(harness.cleanupWorktree).not.toHaveBeenCalled()
+    expect(harness.logForDebugging).toHaveBeenCalledWith(
+      'Failed to inspect worktree status: missing original head commit',
+      { level: 'error' },
+    )
+    expect(selectProps().defaultFocusValue).toBe('keep')
+    expect(dialogProps().subtitle).toBe(
+      'Unable to inspect worktree status. Keep the worktree unless you have verified it is safe to remove.',
+    )
+
+    await mounted.dispose()
+  })
+
+  it.each([
+    {
       commitCount: 0,
       expectedSubtitle:
         'You have 1 uncommitted file. These will be lost if you remove the worktree.',
