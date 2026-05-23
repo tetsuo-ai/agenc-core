@@ -56,6 +56,43 @@ afterEach(() => {
 });
 
 describe("PreviewSurface", () => {
+  it("renders an empty preview without crashing when no file is selected", async () => {
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "preview",
+              activeFilePath: null,
+              activeFileLine: null,
+            },
+          }}
+        >
+          <PreviewSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      const frame = output();
+      expect(compact(frame)).toContain("Nofileselected");
+      expect(frame).not.toContain("ERROR");
+      expect(frame).not.toContain("setGitState");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("renders read-only file content without overflowing the terminal", async () => {
     const { stdin, stdout, output } = createStreams();
     const root = await createRoot({
@@ -142,3 +179,7 @@ describe("PreviewSurface", () => {
     }
   });
 });
+
+function compact(value: string): string {
+  return value.replace(/\s+/gu, "");
+}
