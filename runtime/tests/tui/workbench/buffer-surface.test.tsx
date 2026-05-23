@@ -119,6 +119,56 @@ describe("BufferSurface", () => {
     }
   });
 
+  it("does not show an in-flight agent warning for longer sibling file names", async () => {
+    await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              tasks: {
+                "agent-1": {
+                  id: "agent-1",
+                  type: "local_agent",
+                  status: "running",
+                  description: "editing target.tsx",
+                } as any,
+              },
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface focused={false} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const frame = output();
+      expect(frame).toContain("target.ts");
+      expect(frame).not.toContain("agent edit in flight");
+      expect(frame).not.toMatch(/\bagent\b/u);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("captures focused vim insert text before later input handlers", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const { stdin, stdout } = createStreams();
