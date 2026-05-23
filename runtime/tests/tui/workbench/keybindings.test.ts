@@ -80,4 +80,14 @@ describe("workbench keybinding contract", () => {
     expect(searchSurface.footerHints).toContain("enter edit");
     expect(searchSurface.keybindings).toContain("enter");
   });
+
+  it("keeps SHELL surface edit shortcuts represented in descriptor metadata", () => {
+    const surfaceBindings = new Map(Object.entries(DEFAULT_BINDINGS.find((block) => block.context === "Surface")?.bindings ?? {}));
+    const shellSurface = descriptorForSurface("shell");
+
+    expect(surfaceBindings.get("g")).toBe("surface:top");
+    expect(surfaceBindings.get("enter")).toBe("surface:open");
+    expect(shellSurface.footerHints).toContain("g/enter edit");
+    expect(shellSurface.keybindings).toEqual(expect.arrayContaining(["g", "enter"]));
+  });
 });

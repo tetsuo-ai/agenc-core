@@ -63,8 +63,8 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   {
     mode: "shell",
     title: () => "SHELL",
-    keybindings: ["g", "@", "x", "q"],
-    footerHints: "Shell: g edit  @ attach error  x stop  q close",
+    keybindings: ["g", "enter", "@", "x", "q"],
+    footerHints: "Shell: g/enter edit  @ attach error  x stop  q close",
     renderBody: ({ focused }) => <ShellSurface focused={focused} />,
   },
   {
