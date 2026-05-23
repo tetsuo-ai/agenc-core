@@ -88,6 +88,7 @@ export class ProjectTreeStore {
   getSnapshot = (): ProjectTreeSnapshot => this.#snapshot;
 
   dispose(): void {
+    this.#started = false;
     if (this.#refreshTimer !== null) {
       clearInterval(this.#refreshTimer);
       this.#refreshTimer = null;

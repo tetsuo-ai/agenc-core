@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { buildProjectTreeRows } from "../../../src/tui/workbench/project-tree/buildTree.js";
 import { collectGitStatus, listGitFiles, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
@@ -171,6 +172,27 @@ describe("project tree helpers", () => {
     });
 
     store.dispose();
+  });
+
+  it("restarts project tree refresh after dispose", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-restart-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, "first.ts"), "first\n", "utf8");
+
+      store.start();
+      await waitForTreePaths(store, ["first.ts"]);
+
+      store.dispose();
+      await writeFile(join(repo, "second.ts"), "second\n", "utf8");
+
+      store.start();
+      await waitForTreePaths(store, ["first.ts", "second.ts"]);
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it("normalizes hidden cursor paths to the nearest visible row", async () => {
@@ -409,3 +431,18 @@ describe("project tree helpers", () => {
     }
   });
 });
+
+async function waitForTreePaths(
+  store: ProjectTreeStore,
+  expectedPaths: readonly string[],
+): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const snapshot = store.getSnapshot();
+    const paths = snapshot.rows.map((row) => row.path);
+    if (!snapshot.loading && expectedPaths.every((path) => paths.includes(path))) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for project tree paths: ${expectedPaths.join(", ")}`);
+}
