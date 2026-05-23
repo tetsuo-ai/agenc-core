@@ -36,6 +36,7 @@ type CapturedPickerProps = {
 const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
   logEvent: vi.fn(),
+  logError: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readFileInRange: vi.fn(),
@@ -71,6 +72,10 @@ vi.mock('../../utils/readFileInRange', () => ({
   readFileInRange: harness.readFileInRange,
 }))
 
+vi.mock('../../utils/log', () => ({
+  logError: harness.logError,
+}))
+
 vi.mock('../../utils/ripgrep', () => ({
   ripGrepStream: harness.ripGrepStream,
 }))
@@ -96,6 +101,7 @@ function resetHarness() {
   harness.pickerProps = undefined
   harness.registerOverlay.mockClear()
   harness.logEvent.mockClear()
+  harness.logError.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(true)
   harness.readFileInRange.mockReset()
@@ -409,6 +415,34 @@ describe('GlobalSearchDialog render and interactions', () => {
         'Global search did not render the no-match state',
       )
       expect(pickerProps().matchLabel).toBe(' ')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('renders search failures instead of treating them as no matches', async () => {
+    const rendered = await renderDialog()
+
+    try {
+      const failure = new Error('ripgrep unavailable')
+      harness.ripGrepStream.mockRejectedValueOnce(failure)
+
+      pickerProps().onQueryChange('needle')
+
+      await waitFor(
+        () => emptyMessage(pickerProps(), 'needle') === 'Searching...',
+        'Global search did not enter searching state before failure',
+      )
+      await waitFor(
+        () =>
+          pickerProps().items.length === 0 &&
+          emptyMessage(pickerProps(), 'needle') ===
+            'Search failed: ripgrep unavailable',
+        'Global search did not render the search failure state',
+      )
+
+      expect(pickerProps().matchLabel).toBe('Search failed')
+      expect(harness.logError).toHaveBeenCalledWith(failure)
     } finally {
       await rendered.dispose()
     }
