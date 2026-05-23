@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_BINDINGS } from "../../../src/tui/keybindings/defaultBindings.js";
 import { KEYBINDING_ACTION_NAMES, KEYBINDING_CONTEXT_NAMES } from "../../../src/tui/keybindings/types.js";
 import { WORKBENCH_ACTIONS, WORKBENCH_CONTEXTS } from "../../../src/tui/workbench/keymap.js";
+import { descriptorForSurface } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 
 describe("workbench keybinding contract", () => {
   it("registers every workbench context and action with the global keybinding schema", () => {
@@ -58,5 +59,16 @@ describe("workbench keybinding contract", () => {
     expect(byContext.get("Confirmation")).toMatchObject({
       d: "workbench:openDiff",
     });
+  });
+
+  it("keeps TEST surface footer hints aligned with surface navigation bindings", () => {
+    const surfaceBindings = new Map(Object.entries(DEFAULT_BINDINGS.find((block) => block.context === "Surface")?.bindings ?? {}));
+    const testSurface = descriptorForSurface("test");
+
+    expect(surfaceBindings.get("g")).toBe("surface:top");
+    expect(surfaceBindings.get("enter")).toBe("surface:open");
+    expect(testSurface.footerHints).toContain("enter edit");
+    expect(testSurface.footerHints).toContain("o keep focus");
+    expect(testSurface.footerHints).not.toContain("g edit");
   });
 });
