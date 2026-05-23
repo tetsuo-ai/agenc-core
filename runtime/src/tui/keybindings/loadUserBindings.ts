@@ -298,10 +298,23 @@ export function loadKeybindingsSyncWithWarnings(): KeybindingsLoadResult {
     }
 
     return { bindings: cachedBindings, warnings: cachedWarnings }
-  } catch {
-    // File doesn't exist or error - use defaults (user can run /keybindings to create)
+  } catch (error) {
+    // File doesn't exist - use defaults (user can run /keybindings to create)
     cachedBindings = defaultBindings
-    cachedWarnings = []
+    if (isFileNotFoundError(error)) {
+      cachedWarnings = []
+    } else {
+      logForDebugging(
+        `[keybindings] Error loading ${userPath}: ${formatErrorMessage(error)}`,
+      )
+      cachedWarnings = [
+        {
+          type: 'parse_error',
+          severity: 'error',
+          message: `Failed to parse keybindings.json: ${formatErrorMessage(error)}`,
+        },
+      ]
+    }
     return { bindings: cachedBindings, warnings: cachedWarnings }
   }
 }
