@@ -418,6 +418,51 @@ describe('HistorySearchDialog coverage', () => {
     expect(rendered.onSelect).not.toHaveBeenCalled()
   })
 
+  it('logs rejected history selection resolution and allows retry', async () => {
+    const selectError = new Error('history entry resolve failed')
+    const resolvedEntry = { display: 'retry prompt' }
+    const resolveEntry = vi
+      .fn<() => Promise<HistoryEntryLike>>()
+      .mockRejectedValueOnce(selectError)
+      .mockResolvedValueOnce(resolvedEntry)
+    harness.entries = [
+      {
+        display: 'retry prompt',
+        timestamp: 1710000000000,
+        resolve: resolveEntry,
+      },
+    ]
+
+    const rendered = await renderDialog()
+
+    try {
+      await waitFor(
+        () => pickerProps().items.length === 1,
+        'History search item did not load',
+      )
+
+      const selectedItem = pickerProps().items[0]!
+      pickerProps().onSelect(selectedItem)
+
+      await waitFor(
+        () => harness.logError.mock.calls.some(call => call[0] === selectError),
+        'History selection failure was not logged',
+      )
+      expect(rendered.onSelect).not.toHaveBeenCalled()
+
+      pickerProps().onSelect(selectedItem)
+      await waitFor(
+        () => rendered.onSelect.mock.calls.length === 1,
+        'History selection did not allow retry after rejection',
+      )
+
+      expect(resolveEntry).toHaveBeenCalledTimes(2)
+      expect(rendered.onSelect).toHaveBeenCalledWith(resolvedEntry)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   it('logs rejected history loads and clears the loading state', async () => {
     const error = new Error('history reader failed')
     harness.readerNextError = error

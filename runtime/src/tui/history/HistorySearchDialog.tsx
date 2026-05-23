@@ -120,9 +120,10 @@ export function HistorySearchDialog({
       if (!isMountedRef.current) return;
       isSelectionResolvingRef.current = false;
       onSelect(entry);
-    }, () => {
+    }, error => {
       if (!isMountedRef.current) return;
       isSelectionResolvingRef.current = false;
+      logError(error);
       logEvent('agenc_history_picker_select_error', {
         query_length: query.length
       });
