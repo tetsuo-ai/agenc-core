@@ -89,15 +89,38 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
   const selectedMatch = matches[selectedIndex] ?? null;
   const groups = useMemo(() => groupSearchMatches(matches), [matches]);
   const rows = useMemo(() => visibleSearchRows(groups), [groups]);
+  const disablePendingSelectedMatchRestore = () => {
+    if (selectedMatchId) {
+      appliedSelectedMatchIdRef.current = selectedMatchId;
+    }
+  };
   useRegisterKeybindingContext("Surface", focused);
   useKeybindings(
     {
-      "surface:up": () => setSelected((value) => Math.max(0, value - 1)),
-      "surface:down": () => setSelected((value) => Math.min(Math.max(0, matches.length - 1), value + 1)),
-      "surface:pageUp": () => setSelected((value) => Math.max(0, value - 10)),
-      "surface:pageDown": () => setSelected((value) => Math.min(Math.max(0, matches.length - 1), value + 10)),
-      "surface:top": () => setSelected(0),
-      "surface:bottom": () => setSelected(Math.max(0, matches.length - 1)),
+      "surface:up": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected((value) => Math.max(0, value - 1));
+      },
+      "surface:down": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected((value) => Math.min(Math.max(0, matches.length - 1), value + 1));
+      },
+      "surface:pageUp": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected((value) => Math.max(0, value - 10));
+      },
+      "surface:pageDown": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected((value) => Math.min(Math.max(0, matches.length - 1), value + 10));
+      },
+      "surface:top": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected(0);
+      },
+      "surface:bottom": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected(Math.max(0, matches.length - 1));
+      },
       "surface:open": () => {
         if (selectedMatch) dispatch(openBufferCommand(selectedMatch.file, selectedMatch.line, true));
       },
@@ -110,8 +133,14 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
       "surface:attachAll": () => {
         for (const match of matches) dispatch(attachSearchMatchCommand(query, match));
       },
-      "surface:groupUp": () => setSelected((value) => groupStep(groups, matches, value, -1)),
-      "surface:groupDown": () => setSelected((value) => groupStep(groups, matches, value, 1)),
+      "surface:groupUp": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected((value) => groupStep(groups, matches, value, -1));
+      },
+      "surface:groupDown": () => {
+        disablePendingSelectedMatchRestore();
+        setSelected((value) => groupStep(groups, matches, value, 1));
+      },
       "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },

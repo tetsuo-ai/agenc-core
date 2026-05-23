@@ -313,6 +313,62 @@ describe("SearchSurface", () => {
     }
   });
 
+  it("does not restore a late requested search match after manual navigation during streaming", async () => {
+    searchHarness.autoFlush = false;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+              selectedSearchMatchId: "src/target.ts:20:needle target",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      call.onLines([
+        "src/first.ts:4:const needle = true",
+        "src/second.ts:9:needle()",
+      ]);
+      await sleep();
+
+      searchHarness.handlers["surface:down"]?.();
+      await sleep();
+
+      call.onLines(["src/target.ts:20:needle target"]);
+      await sleep(50);
+      searchHarness.handlers["surface:open"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/second.ts",
+        activeFileLine: 9,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("ignores line batches from an aborted search stream", async () => {
     searchHarness.autoFlush = false;
     let setSearchQuery: ((query: string) => void) | null = null;
