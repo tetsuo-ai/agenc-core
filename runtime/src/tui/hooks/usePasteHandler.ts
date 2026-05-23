@@ -178,11 +178,28 @@ export function usePasteHandler({
 
               // Process all image paths
               void Promise.all(
-                imagePaths.map(imagePath => tryReadImageFromPath(imagePath)),
-              ).then(results => {
-                const validImages = results.filter(
-                  (r): r is NonNullable<typeof r> => r !== null,
-                )
+                imagePaths.map(async imagePath => {
+                  try {
+                    return {
+                      image: await tryReadImageFromPath(imagePath),
+                      path: imagePath,
+                    }
+                  } catch (error) {
+                    logError(error as Error)
+                    return { image: null, path: imagePath }
+                  }
+                }),
+              ).then(imageReadResults => {
+                if (!isMountedRef.current) return
+
+                const validImages = imageReadResults
+                  .map(result => result.image)
+                  .filter(
+                    (r): r is NonNullable<typeof r> => r !== null,
+                  )
+                const failedImagePaths = imageReadResults
+                  .filter(result => result.image === null)
+                  .map(result => result.path)
 
                 if (validImages.length > 0) {
                   // Successfully read at least one image
@@ -196,12 +213,13 @@ export function usePasteHandler({
                       imageData.path,
                     )
                   }
-                  // If some paths weren't images, paste them as text
-                  const nonImageLines = lines.filter(
-                    line => !isImageFilePath(line),
-                  )
-                  if (nonImageLines.length > 0 && onPaste) {
-                    onPaste(nonImageLines.join('\n'))
+                  // If some paths were not images or could not be read, paste them as text.
+                  const fallbackLines = [
+                    ...lines.filter(line => !isImageFilePath(line)),
+                    ...failedImagePaths,
+                  ]
+                  if (fallbackLines.length > 0 && onPaste) {
+                    onPaste(fallbackLines.join('\n'))
                   }
                   setIsPasting(false)
                 } else if (isTempScreenshot && isMacOS) {
@@ -248,8 +266,8 @@ export function usePasteHandler({
       )
     },
     [
-      checkClipboardForImage,
       canFallbackToClipboardImage,
+      checkClipboardForImage,
       isMacOS,
       onImagePaste,
       onPaste,
