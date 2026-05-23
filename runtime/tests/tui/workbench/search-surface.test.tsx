@@ -292,6 +292,54 @@ describe("SearchSurface", () => {
       stdout.end();
     }
   });
+
+  it("clears previous search results as soon as the query changes", async () => {
+    searchHarness.autoFlush = false;
+    let setSearchQuery: ((query: string) => void) | null = null;
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "old",
+            },
+          }}
+        >
+          <SearchQueryController onReady={(setter) => { setSearchQuery = setter; }} />
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      const oldCall = searchHarness.calls[0]!;
+      oldCall.onLines(["src/old.ts:7:old result"]);
+      oldCall.resolve();
+      await sleep(50);
+
+      expect(compact(output())).toContain("src/old.ts");
+
+      const beforeQueryChange = output();
+      setSearchQuery?.("new");
+      await sleep(20);
+
+      const afterQueryChange = output().slice(beforeQueryChange.length);
+      expect(compact(afterQueryChange)).not.toContain("src/old.ts");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
 
 function compact(value: string): string {
