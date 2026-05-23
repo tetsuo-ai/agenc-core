@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 let tempCwd = ''
 
 const harness = vi.hoisted(() => ({
+  commandError: null as Error | null,
   commandInputs: [] as unknown[],
   commandResults: [] as string[],
   fileIndexLoads: [] as string[][],
@@ -25,6 +26,7 @@ const harness = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   yieldToEventLoop: vi.fn(async () => {}),
   reset() {
+    this.commandError = null
     this.commandInputs = []
     this.commandResults = []
     this.fileIndexLoads = []
@@ -68,6 +70,7 @@ vi.mock('../../utils/hooks.js', () => ({
   createBaseHookInput: () => ({ base: true }),
   executeFileSuggestionCommand: async (input: unknown) => {
     harness.commandInputs.push(input)
+    if (harness.commandError) throw harness.commandError
     return harness.commandResults
   },
 }))
@@ -412,6 +415,16 @@ describe('generateFileSuggestions edge branches', () => {
     expect(items[0]?.metadata).toBeUndefined()
     expect(items[1]?.metadata).toBeUndefined()
     expect(items.at(-1)?.displayText).toBe('result-14.ts')
+  })
+
+  test('custom command suggestion failures are logged and return no suggestions', async () => {
+    const error = new Error('custom command failed')
+    harness.settings = { fileSuggestion: { type: 'command' } }
+    harness.commandError = error
+
+    await expect(generateFileSuggestions('src')).resolves.toEqual([])
+    expect(harness.commandInputs).toEqual([{ base: true, query: 'src' }])
+    expect(harness.logError).toHaveBeenCalledWith(error)
   })
 
   test('non-empty search normalizes current-directory prefixes and backfills hidden matches', async () => {

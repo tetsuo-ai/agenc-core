@@ -821,14 +821,19 @@ export async function generateFileSuggestions(
   // Use custom command directly if configured. We don't mix in our config files
   // because the command returns pre-ranked results using its own search logic.
   if (getInitialSettings().fileSuggestion?.type === 'command') {
-    const input: FileSuggestionCommandInput = {
-      ...createBaseHookInput(),
-      query: partialPath,
+    try {
+      const input: FileSuggestionCommandInput = {
+        ...createBaseHookInput(),
+        query: partialPath,
+      }
+      const results = await executeFileSuggestionCommand(input)
+      return results
+        .slice(0, MAX_SUGGESTIONS)
+        .map(path => createFileSuggestionItem(path))
+    } catch (error) {
+      logError(error)
+      return []
     }
-    const results = await executeFileSuggestionCommand(input)
-    return results
-      .slice(0, MAX_SUGGESTIONS)
-      .map(path => createFileSuggestionItem(path))
   }
 
   // If the partial path is empty or just a dot, return current directory suggestions
