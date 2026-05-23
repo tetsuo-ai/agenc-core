@@ -118,6 +118,7 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE;
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null;
+  terminalIdentityProbeImmediate: ReturnType<typeof setImmediate> | null = null;
   // Default to readable-mode stdin (compatibility Ink behavior). The data-mode path
   // is kept as an explicit opt-in because some terminals can enter a state
   // where startup input appears frozen when data mode is the default.
@@ -205,6 +206,10 @@ export default class App extends PureComponent<Props, State> {
       clearTimeout(this.pendingHyperlinkTimer);
       this.pendingHyperlinkTimer = null;
     }
+    if (this.terminalIdentityProbeImmediate) {
+      clearImmediate(this.terminalIdentityProbeImmediate);
+      this.terminalIdentityProbeImmediate = null;
+    }
     // ignore calling setRawMode on an handle stdin it cannot be called
     if (this.isRawModeSupported()) {
       this.handleSetRawMode(false);
@@ -267,7 +272,8 @@ export default class App extends PureComponent<Props, State> {
         // Delayed to next tick so it fires AFTER the current synchronous
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
-        setImmediate(() => {
+        this.terminalIdentityProbeImmediate = setImmediate(() => {
+          this.terminalIdentityProbeImmediate = null;
           void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
             if (r) {
               setXtversionName(r.name);

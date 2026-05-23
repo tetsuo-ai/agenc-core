@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import App, { handleMouseEvent } from "../../../src/tui/ink/components/App.js";
 import type { ParsedMouse } from "../../../src/tui/ink/parse-keypress.js";
 import { createSelectionState } from "../../../src/tui/ink/selection.js";
+import { SHOW_CURSOR } from "../../../src/tui/ink/termio/dec.js";
 import { FOCUS_IN, FOCUS_OUT } from "../../../src/tui/ink/termio/csi.js";
 import {
   getTerminalFocused,
@@ -11,6 +12,13 @@ import {
 } from "../../../src/tui/ink/terminal-focus-state.js";
 
 type TestStream = NodeJS.ReadStream & NodeJS.WriteStream;
+type TestTtyStream = TestStream & {
+  isRaw?: boolean;
+  writes: string[];
+  ref: ReturnType<typeof vi.fn>;
+  setRawMode: ReturnType<typeof vi.fn>;
+  unref: ReturnType<typeof vi.fn>;
+};
 type AppProps = ConstructorParameters<typeof App>[0];
 
 function stream(): TestStream {
@@ -18,6 +26,29 @@ function stream(): TestStream {
   s.isTTY = false;
   s.write = vi.fn(() => true) as never;
   return s;
+}
+
+function ttyStream(): TestTtyStream {
+  const s = new PassThrough() as TestTtyStream;
+  s.isTTY = true;
+  s.isRaw = false;
+  s.writes = [];
+  s.ref = vi.fn();
+  s.unref = vi.fn();
+  s.setRawMode = vi.fn((mode: boolean) => {
+    s.isRaw = mode;
+  });
+  s.write = vi.fn((chunk: string | Uint8Array) => {
+    s.writes.push(String(chunk));
+    return true;
+  }) as never;
+  return s;
+}
+
+async function flushImmediateTicks(count: number): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
 }
 
 function mouse(
@@ -259,5 +290,25 @@ describe("Ink App coverage swarm row 010", () => {
         sequence: "a",
       }),
     );
+  });
+
+  test("cancels delayed terminal identity probes after raw mode unmount", async () => {
+    const stdin = ttyStream();
+    const stdout = ttyStream();
+    const app = createApp({
+      stdin,
+      stdout,
+    });
+
+    app.handleSetRawMode(true);
+    app.componentWillUnmount();
+    stdout.writes.length = 0;
+
+    await flushImmediateTicks(60);
+
+    expect(stdout.writes.join("")).toBe("");
+    expect(stdout.write).toHaveBeenCalledWith(SHOW_CURSOR);
+    expect(stdin.setRawMode).toHaveBeenNthCalledWith(1, true);
+    expect(stdin.setRawMode).toHaveBeenNthCalledWith(2, false);
   });
 });
