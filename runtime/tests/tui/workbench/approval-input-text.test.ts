@@ -20,4 +20,13 @@ describe("approvalInputText", () => {
       }),
     ).toBe("bash -lc rm -rf /tmp/agenc-danger");
   });
+
+  it("does not hide structured command arguments", () => {
+    expect(
+      approvalInputText({
+        command: "bash",
+        args: [{ script: "rm -rf /tmp/agenc-danger" }],
+      }),
+    ).toContain("rm -rf /tmp/agenc-danger");
+  });
 });
