@@ -11,6 +11,7 @@ import { attachTaskErrorCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { parseVitestFailures } from "./outputParsers.js";
+import { clampSurfaceSelection } from "./selection.js";
 
 const TAIL_BYTES = 48_000;
 
@@ -25,7 +26,8 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   const [tail, setTail] = useState("");
   const [selected, setSelected] = useState(0);
   const failures = useMemo(() => parseVitestFailures(tail), [tail]);
-  const selectedFailure = failures[selected] ?? null;
+  const selectedIndex = clampSurfaceSelection(selected, failures.length);
+  const selectedFailure = failures[selectedIndex] ?? null;
 
   useEffect(() => {
     if (!task?.id) {
@@ -85,6 +87,20 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
 
   if (!task) return <EmptySurface title="TEST" message="No test task selected" />;
 
+  return <TestSurfaceView failures={failures} selected={selectedIndex} focused={focused} />;
+}
+
+export function TestSurfaceView({
+  failures,
+  selected,
+  focused,
+}: {
+  readonly failures: readonly ReturnType<typeof parseVitestFailures>[number][];
+  readonly selected: number;
+  readonly focused: boolean;
+}): React.ReactElement {
+  const selectedIndex = clampSurfaceSelection(selected, failures.length);
+  const selectedFailure = failures[selectedIndex] ?? null;
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="TEST" detail={`${failures.length} failure${failures.length === 1 ? "" : "s"} - g/enter edit - @ attach`} focused={focused} />
@@ -93,7 +109,7 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
       ) : null}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {failures.map((failure, index) => (
-          <Text key={failure.id} color={index === selected ? "suggestion" : undefined} wrap="truncate-end">
+          <Text key={failure.id} color={index === selectedIndex ? "suggestion" : undefined} wrap="truncate-end">
             {failure.location ? `${failure.location.file}:${failure.location.line} ` : ""}
             {failure.name}
           </Text>

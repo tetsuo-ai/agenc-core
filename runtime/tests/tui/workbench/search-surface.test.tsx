@@ -64,4 +64,24 @@ describe("SearchSurfaceView", () => {
       expect(line.length).toBeLessThanOrEqual(60);
     }
   });
+
+  it("clamps stale selection to a live match", async () => {
+    const output = await renderToString(
+      <SearchSurfaceView
+        query="needle"
+        matches={[
+          { id: "src/app.ts:4:needle", file: "src/app.ts", line: 4, text: "const needle = true" },
+          { id: "src/other.ts:9:needle", file: "src/other.ts", line: 9, text: "needle()" },
+        ]}
+        selected={99}
+        loading={false}
+        error={null}
+        focused={true}
+      />,
+      80,
+    );
+
+    expect(output).toContain("src/other.ts:9");
+    expect(output).toContain("@ attach");
+  });
 });

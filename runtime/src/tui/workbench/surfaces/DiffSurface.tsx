@@ -13,6 +13,7 @@ import type { PendingRequest } from "../../permission-requests.js";
 import { attachDiffHunkCommand, openBufferCommand } from "../commands.js";
 import { useWorkbenchDispatch } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+import { clampSurfaceSelection } from "./selection.js";
 
 export function DiffSurface({
   focused,
@@ -26,6 +27,7 @@ export function DiffSurface({
   const [selected, setSelected] = useState(0);
   const [decisions, setDecisions] = useState<Record<string, "accept" | "skip">>({});
   const files = snapshot?.files ?? [];
+  const selectedFile = files[clampSurfaceSelection(selected, files.length)] ?? files[0];
   const approvalRisk = pendingApproval
     ? classifyApprovalRisk({
         request: pendingApproval,
@@ -54,28 +56,24 @@ export function DiffSurface({
       "surface:top": () => setSelected(0),
       "surface:bottom": () => setSelected(Math.max(0, files.length - 1)),
       "surface:open": () => {
-        const file = files[selected] ?? files[0];
-        if (file) dispatch(openBufferCommand(file.path, undefined, true));
+        if (selectedFile) dispatch(openBufferCommand(selectedFile.path, undefined, true));
       },
       "surface:attach": () => {
-        const file = files[selected] ?? files[0];
-        if (file) dispatch(attachDiffHunkCommand({ path: file.path, label: `${file.path} diff` }));
+        if (selectedFile) dispatch(attachDiffHunkCommand({ path: selectedFile.path, label: `${selectedFile.path} diff` }));
       },
       "surface:accept": () => {
         if (pendingApproval && approvalRisk !== "destructive") {
           pendingApproval.resolve(APPROVED);
           return;
         }
-        const file = files[selected] ?? files[0];
-        if (file) setDecisions((prev) => ({ ...prev, [file.path]: "accept" }));
+        if (selectedFile) setDecisions((prev) => ({ ...prev, [selectedFile.path]: "accept" }));
       },
       "surface:reject": () => {
         if (pendingApproval) {
           pendingApproval.resolve(DENIED);
           return;
         }
-        const file = files[selected] ?? files[0];
-        if (file) setDecisions((prev) => ({ ...prev, [file.path]: "skip" }));
+        if (selectedFile) setDecisions((prev) => ({ ...prev, [selectedFile.path]: "skip" }));
       },
       "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
@@ -111,7 +109,8 @@ export function DiffSurfaceView({
   readonly pendingApprovalRisk?: "low" | "medium" | "destructive" | null;
 }): React.ReactElement {
   const files = snapshot.files ?? [];
-  const selectedFile = files[selected] ?? files[0];
+  const selectedIndex = clampSurfaceSelection(selected, files.length);
+  const selectedFile = files[selectedIndex] ?? files[0];
   const acceptedCount = Object.values(decisions).filter((value) => value === "accept").length;
   const skippedCount = Object.values(decisions).filter((value) => value === "skip").length;
   return (
@@ -131,7 +130,7 @@ export function DiffSurfaceView({
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         <Box flexDirection="column" width={32} flexShrink={0} borderRight borderColor="gray" paddingRight={1}>
           {files.slice(0, 40).map((file, index) => (
-            <Text key={file.path} color={index === selected ? "suggestion" : undefined} wrap="truncate-end">
+            <Text key={file.path} color={index === selectedIndex ? "suggestion" : undefined} wrap="truncate-end">
               {decisionMarker(decisions[file.path])}{statusMarker(file.status)} {file.path}
             </Text>
           ))}
