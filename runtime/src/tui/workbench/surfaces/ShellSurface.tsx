@@ -10,6 +10,7 @@ import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { attachTaskErrorCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import { resolveWorkbenchShellTask } from "../tasks/shellTasks.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { parseSourceLocations } from "./outputParsers.js";
@@ -22,8 +23,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
   const dispatch = useWorkbenchDispatch();
   const setAppState = useSetAppState();
   const task = useMemo(() => {
-    if (workbench.selectedShellTaskId && tasks[workbench.selectedShellTaskId]) return tasks[workbench.selectedShellTaskId];
-    return Object.values(tasks).find((item: any) => item.type === "local_bash") ?? null;
+    return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
   const [tail, setTail] = useState("");
 
