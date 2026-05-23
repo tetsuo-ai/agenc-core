@@ -2,15 +2,29 @@ import React from "react";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
+const projectExplorerHarness = vi.hoisted(() => ({
+  textInputProps: [] as Array<Record<string, unknown>>,
+}));
+
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   useKeybinding: () => {},
   useKeybindings: () => {},
 }));
 
+vi.mock("../../../src/tui/components/TextInput.js", async () => {
+  const ReactModule = await import("react");
+  return {
+    default: (props: Record<string, unknown>) => {
+      projectExplorerHarness.textInputProps.push(props);
+      return ReactModule.createElement(ReactModule.Fragment);
+    },
+  };
+});
+
 import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
 import { Text } from "../../../src/tui/ink.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
-import { ProjectExplorerRow, projectTreeViewport } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
+import { ProjectExplorerRow, ProjectFileActionPrompt, projectTreeViewport } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 import { useWorkbenchComposerFocus } from "../../../src/tui/workbench/composerFocusContext.js";
 import { WORKBENCH_SURFACES } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 import { TranscriptSurface } from "../../../src/tui/workbench/surfaces/TranscriptSurface.js";
@@ -161,6 +175,39 @@ describe("workbench render contract", () => {
     expect(paths).toEqual(rows.slice(0, 10).map((item) => item.path));
     expect(paths).toContain("runtime/src");
     expect(viewport.below).toBeGreaterThan(0);
+  });
+
+  it("wires cursor state into explorer add and rename prompts", async () => {
+    projectExplorerHarness.textInputProps = [];
+
+    await renderToString(
+      <ProjectFileActionPrompt
+        action={{
+          kind: "rename",
+          path: "src/old.ts",
+          value: "src/old.ts",
+          busy: false,
+          error: null,
+        }}
+        width={40}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onConfirmDelete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+      80,
+    );
+
+    const props = projectExplorerHarness.textInputProps.at(-1);
+
+    expect(props).toMatchObject({
+      value: "src/old.ts",
+      cursorOffset: "src/old.ts".length,
+      columns: 38,
+      focus: true,
+      multiline: false,
+    });
+    expect(props?.onChangeCursorOffset).toEqual(expect.any(Function));
   });
 
   it("keeps the selected explorer row inside a contiguous viewport", () => {

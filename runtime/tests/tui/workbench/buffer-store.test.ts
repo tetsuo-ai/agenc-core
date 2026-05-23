@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -103,6 +104,54 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().dirty).toBe(false);
   });
 
+  it("opens the current file in the external editor and reloads after it exits", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const calls: Array<{ readonly path: string; readonly line?: number }> = [];
+    const store = new WorkbenchBufferStore({
+      openExternalEditor: (path, line) => {
+        calls.push({ path, line });
+        writeFileSync(path, "edited\n", "utf8");
+        return true;
+      },
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt", 2));
+    await expect(store.openExternalEditor()).resolves.toBe(true);
+
+    expect(calls).toEqual([{ path: file, line: 2 }]);
+    expect(store.getText()).toBe("edited\n");
+    expect(store.getSnapshot()).toMatchObject({
+      dirty: false,
+      filePath: "target.txt",
+      position: { line: 2 },
+    });
+  });
+
+  it("requires inline edits to be saved or reverted before opening the external editor", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const calls: string[] = [];
+    const store = new WorkbenchBufferStore({
+      openExternalEditor: (path) => {
+        calls.push(path);
+        return true;
+      },
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.insert("draft ");
+
+    await expect(store.openExternalEditor()).resolves.toBe(false);
+
+    expect(calls).toEqual([]);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "conflict",
+      conflictKind: "disk",
+      error: "Save or revert inline edits before opening the external editor.",
+    });
+  });
+
   it("uses the shared vim engine for normal and insert mode buffer edits", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\nomega\n", "utf8");
@@ -125,6 +174,47 @@ describe("WorkbenchBufferStore", () => {
     store.handleVimInput("d", key(), 80);
 
     expect(store.getText()).toBe("omega\n");
+  });
+
+  it("supports visual selection yank, delete, change, and paste", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "abcdef\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput("v", key(), 80);
+    expect(store.getSnapshot().vimMode).toBe("VISUAL");
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 2 });
+
+    store.handleVimInput("y", key(), 80);
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+    store.handleVimInput("$", key({ shift: true }), 80);
+    store.handleVimInput("p", key(), 80);
+    expect(store.getText()).toBe("abcdef\nabomega\n");
+
+    store.close({ discard: true });
+    await writeFile(file, "abcdef\nomega\n", "utf8");
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.handleVimInput("v", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("d", key(), 80);
+    expect(store.getText()).toBe("cdef\nomega\n");
+
+    store.close({ discard: true });
+    await writeFile(file, "abcdef\nomega\n", "utf8");
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.handleVimInput("v", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("c", key(), 80);
+    expect(store.getSnapshot().vimMode).toBe("INSERT");
+    store.handleVimInput("Z", key({ shift: true }), 80);
+    store.handleVimInput("", key({ escape: true, meta: true }), 80);
+    expect(store.getText()).toBe("Zcdef\nomega\n");
   });
 
   it("supports vim command-line save and quit commands", async () => {

@@ -100,6 +100,13 @@ function setSelection(
   return { ...document, state: next, preferredColumn };
 }
 
+export function setBufferSelection(
+  document: BufferDocument,
+  selection: BufferSelection,
+): BufferDocument {
+  return setSelection(document, selection, null);
+}
+
 function applyChange(
   document: BufferDocument,
   changes: ChangeSpec,
@@ -139,6 +146,24 @@ export function insertBufferText(document: BufferDocument, text: string): Buffer
     document,
     { from, to, insert },
     { anchor: from + insert.length, head: from + insert.length },
+  );
+}
+
+export function replaceBufferRange(
+  document: BufferDocument,
+  from: number,
+  to: number,
+  insert: string,
+  cursorOffset = from + insert.length,
+): BufferDocument {
+  const safeFrom = Math.max(0, Math.min(document.state.doc.length, from));
+  const safeTo = Math.max(safeFrom, Math.min(document.state.doc.length, to));
+  const normalized = insert.normalize("NFC");
+  const offset = Math.max(safeFrom, Math.min(safeFrom + normalized.length, cursorOffset));
+  return applyChange(
+    document,
+    { from: safeFrom, to: safeTo, insert: normalized },
+    { anchor: offset, head: offset },
   );
 }
 

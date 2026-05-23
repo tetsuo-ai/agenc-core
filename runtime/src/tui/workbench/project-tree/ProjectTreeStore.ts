@@ -1,11 +1,15 @@
-import { readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { globby } from "globby";
 
 import { buildProjectTreeRows, visibleTreePaths } from "./buildTree.js";
 import { collectGitStatus, listGitFiles, type GitStatusByPath } from "./gitStatus.js";
 import type { ProjectTreeRow, ProjectTreeSnapshot } from "../types.js";
 
 type Listener = () => void;
+export type ProjectTreeMutationResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly error: string };
 
 const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   cwd: process.cwd(),
@@ -17,6 +21,21 @@ const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   expandedPaths: [],
 });
 const DEFAULT_VIEWPORT_ROWS = 20;
+const WORKSPACE_TREE_IGNORE = [
+  "**/.git/**",
+  "**/node_modules/**",
+  "**/.next/**",
+  "**/.turbo/**",
+  "**/.cache/**",
+  "**/coverage/**",
+  "**/.venv/**",
+  "**/venv/**",
+  "**/__pycache__/**",
+  "**/build/**",
+  "**/dist/**",
+  "**/out/**",
+  "**/target/**",
+] as const;
 
 export class ProjectTreeStore {
   #cwd: string;
@@ -77,7 +96,7 @@ export class ProjectTreeStore {
     this.#emit();
     try {
       const [paths, gitStatus] = await Promise.all([
-        listGitFiles(this.#cwd).then((gitPaths) => gitPaths ?? readTopLevelPaths(this.#cwd)),
+        listWorkspacePaths(this.#cwd),
         collectGitStatus(this.#cwd),
       ]);
       if (version !== this.#refreshVersion) return;
@@ -215,6 +234,55 @@ export class ProjectTreeStore {
     return this.#snapshot.rows.find((row) => row.path === this.#cursorPath) ?? null;
   }
 
+  async createFile(relativePath: string): Promise<ProjectTreeMutationResult> {
+    const target = resolveWorkspaceRelativePath(this.#cwd, relativePath, { requireFilePath: true });
+    if (!target.ok) return target;
+
+    try {
+      await mkdir(path.dirname(target.absolutePath), { recursive: true });
+      await writeFile(target.absolutePath, "", { flag: "wx" });
+      await this.refresh();
+      this.reveal(target.relativePath);
+      return { ok: true, path: target.relativePath };
+    } catch (error) {
+      return { ok: false, error: fileActionError("create", target.relativePath, error) };
+    }
+  }
+
+  async renamePath(fromPath: string, toPath: string): Promise<ProjectTreeMutationResult> {
+    const source = resolveWorkspaceRelativePath(this.#cwd, fromPath);
+    if (!source.ok) return source;
+    const target = resolveWorkspaceRelativePath(this.#cwd, toPath);
+    if (!target.ok) return target;
+
+    try {
+      if (await pathExists(target.absolutePath)) {
+        return { ok: false, error: `Cannot rename to ${target.relativePath}: path already exists.` };
+      }
+      await mkdir(path.dirname(target.absolutePath), { recursive: true });
+      await rename(source.absolutePath, target.absolutePath);
+      await this.refresh();
+      this.reveal(target.relativePath);
+      return { ok: true, path: target.relativePath };
+    } catch (error) {
+      return { ok: false, error: fileActionError("rename", source.relativePath, error) };
+    }
+  }
+
+  async deletePath(relativePath: string): Promise<ProjectTreeMutationResult> {
+    const target = resolveWorkspaceRelativePath(this.#cwd, relativePath);
+    if (!target.ok) return target;
+
+    try {
+      await rm(target.absolutePath, { recursive: true });
+      await this.refresh();
+      this.reveal(parentPath(target.relativePath));
+      return { ok: true, path: target.relativePath };
+    } catch (error) {
+      return { ok: false, error: fileActionError("delete", target.relativePath, error) };
+    }
+  }
+
   #rowForPath(pathValue: string): ProjectTreeRow | null {
     return this.#snapshot.rows.find((row) => row.path === pathValue) ?? null;
   }
@@ -314,4 +382,93 @@ async function readTopLevelPaths(cwd: string): Promise<string[]> {
     .filter((entry) => entry.name !== ".git")
     .map((entry) => entry.isDirectory() ? `${entry.name}/` : entry.name)
     .sort((a, b) => a.localeCompare(b));
+}
+
+async function listWorkspacePaths(cwd: string): Promise<string[]> {
+  const gitPaths = await listGitFiles(cwd);
+  if (gitPaths && gitPaths.length > 0) return gitPaths;
+
+  const scannedPaths = await scanWorkspacePaths(cwd);
+  if (scannedPaths.length > 0) return scannedPaths;
+
+  return readTopLevelPaths(cwd);
+}
+
+async function scanWorkspacePaths(cwd: string): Promise<string[]> {
+  const entries = await globby(["**/*"], {
+    cwd,
+    dot: true,
+    gitignore: true,
+    ignore: [...WORKSPACE_TREE_IGNORE],
+    objectMode: true,
+    onlyFiles: false,
+    unique: true,
+  });
+
+  return entries
+    .map((entry) => normalizeScannedPath(entry.path, entry.dirent.isDirectory()))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeScannedPath(pathValue: string, isDirectory: boolean): string {
+  const normalized = pathValue.split(path.sep).join("/");
+  return isDirectory ? `${normalized}/` : normalized;
+}
+
+function resolveWorkspaceRelativePath(
+  cwd: string,
+  inputPath: string,
+  options: { readonly requireFilePath?: boolean } = {},
+): { readonly ok: true; readonly relativePath: string; readonly absolutePath: string } | { readonly ok: false; readonly error: string } {
+  const trimmed = inputPath.trim().replace(/\\/gu, "/");
+  if (!trimmed) return { ok: false, error: "Enter a workspace-relative path." };
+  if (path.posix.isAbsolute(trimmed) || path.isAbsolute(trimmed)) {
+    return { ok: false, error: "Use a workspace-relative path, not an absolute path." };
+  }
+
+  const relativePath = path.posix.normalize(trimmed).replace(/^\.\//u, "");
+  if (!relativePath || relativePath === "." || relativePath.startsWith("../")) {
+    return { ok: false, error: "Path must stay inside the workspace." };
+  }
+  if (options.requireFilePath && relativePath.endsWith("/")) {
+    return { ok: false, error: "Enter a file path, not a directory path." };
+  }
+
+  const root = path.resolve(cwd);
+  const absolutePath = path.resolve(root, relativePath);
+  const rootWithSeparator = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  if (absolutePath !== root && !absolutePath.startsWith(rootWithSeparator)) {
+    return { ok: false, error: "Path must stay inside the workspace." };
+  }
+  if (absolutePath === root) {
+    return { ok: false, error: "Choose a path below the workspace root." };
+  }
+
+  return { ok: true, relativePath, absolutePath };
+}
+
+async function pathExists(absolutePath: string): Promise<boolean> {
+  try {
+    await lstat(absolutePath);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function fileActionError(action: string, relativePath: string, error: unknown): string {
+  if (isNodeError(error) && error.code === "EEXIST") {
+    return `Cannot ${action} ${relativePath}: path already exists.`;
+  }
+  if (isNodeError(error) && error.code === "ENOENT") {
+    return `Cannot ${action} ${relativePath}: path does not exist.`;
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  return `Cannot ${action} ${relativePath}: ${detail}`;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
