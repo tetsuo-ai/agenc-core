@@ -48,6 +48,9 @@ const harness = vi.hoisted(() => ({
     const reader = {
       next: vi.fn(async (): Promise<IteratorResult<TimestampedEntryLike>> => {
         await harness.historyGate?.promise
+        if (harness.readerNextError) {
+          throw harness.readerNextError
+        }
         if (index >= harness.entries.length) {
           return { done: true, value: undefined }
         }
@@ -56,10 +59,15 @@ const harness = vi.hoisted(() => ({
         index += 1
         return { done: false, value: value! }
       }),
-      return: vi.fn(async (): Promise<IteratorResult<TimestampedEntryLike>> => ({
-        done: true,
-        value: undefined,
-      })),
+      return: vi.fn(async (): Promise<IteratorResult<TimestampedEntryLike>> => {
+        if (harness.readerReturnError) {
+          throw harness.readerReturnError
+        }
+        return {
+          done: true,
+          value: undefined,
+        }
+      }),
       [Symbol.asyncIterator]() {
         return this
       },
@@ -69,8 +77,11 @@ const harness = vi.hoisted(() => ({
     return reader
   }),
   historyGate: undefined as Deferred | undefined,
+  logError: vi.fn(),
   logEvent: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
+  readerNextError: undefined as unknown | undefined,
+  readerReturnError: undefined as unknown | undefined,
   readers: [] as Array<{
     next: ReturnType<typeof vi.fn>
     return: ReturnType<typeof vi.fn>
@@ -98,6 +109,10 @@ vi.mock('../../services/analytics/index.js', () => ({
   logEvent: harness.logEvent,
 }))
 
+vi.mock('../../utils/log.js', () => ({
+  logError: harness.logError,
+}))
+
 vi.mock('../components/design-system/FuzzyPicker.js', () => ({
   FuzzyPicker: (props: CapturedPickerProps) => {
     harness.pickerProps = props
@@ -122,8 +137,11 @@ function resetHarness() {
   harness.entries = []
   harness.getTimestampedHistory.mockClear()
   harness.historyGate = undefined
+  harness.logError.mockClear()
   harness.logEvent.mockClear()
   harness.pickerProps = undefined
+  harness.readerNextError = undefined
+  harness.readerReturnError = undefined
   harness.readers = []
   harness.registerOverlay.mockClear()
   harness.terminal.columns = 120
@@ -398,5 +416,57 @@ describe('HistorySearchDialog coverage', () => {
 
     expect(resolveEntry).toHaveBeenCalledTimes(1)
     expect(rendered.onSelect).not.toHaveBeenCalled()
+  })
+
+  it('logs rejected history loads and clears the loading state', async () => {
+    const error = new Error('history reader failed')
+    harness.readerNextError = error
+
+    const rendered = await renderDialog()
+
+    try {
+      await waitFor(
+        () => harness.readers[0]?.next.mock.calls.length === 1,
+        'History reader did not attempt to load',
+      )
+      await waitFor(
+        () => harness.logError.mock.calls.length === 1,
+        'History reader failure was not logged',
+      )
+      await waitFor(
+        () => emptyMessage(pickerProps(), '') === 'No history yet',
+        'History reader failure did not clear loading state',
+      )
+
+      const props = pickerProps()
+      expect(harness.logError).toHaveBeenCalledWith(error)
+      expect(props.items).toEqual([])
+      expect(emptyMessage(props, '')).toBe('No history yet')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('logs rejected history reader closes during unmount', async () => {
+    const closeError = new Error('history reader close failed')
+    harness.historyGate = deferred()
+    harness.readerReturnError = closeError
+
+    const rendered = await renderDialog()
+
+    try {
+      await waitFor(
+        () => harness.readers.length === 1,
+        'History reader was not created',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+
+    await waitFor(
+      () => harness.logError.mock.calls.some(call => call[0] === closeError),
+      'History reader close failure was not logged',
+    )
+    expect(harness.readers[0]?.return).toHaveBeenCalledWith(undefined)
   })
 })
