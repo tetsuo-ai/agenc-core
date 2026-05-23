@@ -364,6 +364,36 @@ describe('usePasteHandler', () => {
     }
   })
 
+  test('logs rejected image path reads and falls back to text paste', async () => {
+    const imagePath = '/tmp/agenc-corrupt.png'
+    const error = new Error('image decoder failed')
+    imagePasteMocks.tryReadImageFromPath.mockRejectedValue(error)
+    const onImagePaste = vi.fn()
+    const onInput = vi.fn()
+    const onPaste = vi.fn()
+    const rendered = await renderPasteHandler({
+      onImagePaste,
+      onInput,
+      onPaste,
+    })
+
+    try {
+      rendered.latest().wrappedOnInput(imagePath, key(), inputEvent(false))
+
+      await waitForPasteFlush()
+
+      expect(imagePasteMocks.tryReadImageFromPath).toHaveBeenCalledWith(imagePath)
+      expect(logMocks.logError).toHaveBeenCalledWith(error)
+      expect(onImagePaste).not.toHaveBeenCalled()
+      expect(onPaste).toHaveBeenCalledTimes(1)
+      expect(onPaste).toHaveBeenCalledWith(imagePath)
+      expect(onInput).not.toHaveBeenCalled()
+      expect(rendered.latest().isPasting).toBe(false)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('ignores empty bracketed paste when clipboard image lookup misses', async () => {
     platformMock.current = 'macos'
     imagePasteMocks.getImageFromClipboard.mockResolvedValue(null)
