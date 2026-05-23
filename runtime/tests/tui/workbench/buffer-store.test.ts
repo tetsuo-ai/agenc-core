@@ -354,6 +354,21 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().vimMode).toBe("INSERT");
   });
 
+  it("lets normal-mode shifted arrows fall through to selection keybindings", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+    expect(store.handleVimInput("", key({ shift: true, rightArrow: true }), 80)).toBe(false);
+    expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 0 });
+
+    expect(store.handleVimInput("", key({ rightArrow: true }), 80)).toBe(true);
+    expect(store.getSnapshot().selection).toEqual({ anchor: 1, head: 1 });
+  });
+
   it("supports visual selection yank, delete, change, and paste", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "abcdef\nomega\n", "utf8");

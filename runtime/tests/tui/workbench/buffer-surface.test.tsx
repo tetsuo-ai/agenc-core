@@ -412,4 +412,49 @@ describe("BufferSurface", () => {
       stdout.end();
     }
   });
+
+  it("extends the buffer selection with shifted arrow keybindings", async () => {
+    await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface focused={true} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const store = getWorkbenchBufferStore();
+      expect(store.getSnapshot().vimMode).toBe("NORMAL");
+      stdin.write("\x1b[1;2C");
+      await sleep();
+
+      expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 1 });
+      expect(store.getSnapshot().position.column).toBe(1);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
