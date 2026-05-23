@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getIsNonInteractiveSession } from '../../bootstrap/state'
 import { verifyApiKey } from '../../services/api/anthropic' // branding-scan: allow upstream mirror import path pending purge
 import {
@@ -45,10 +45,12 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
     getInitialVerificationStatus,
   )
   const [error, setError] = useState<Error | null>(null)
+  const verificationRequestIdRef = useRef(0)
   const anthropicVerificationEnabled =
     isAnthropicAuthEnabled() && !isAgenCAISubscriber()
 
   useEffect(() => {
+    verificationRequestIdRef.current += 1
     const nextStatus = anthropicVerificationEnabled
       ? getInitialVerificationStatus()
       : 'valid'
@@ -61,14 +63,30 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
     }
   }, [anthropicVerificationEnabled])
 
+  useEffect(() => {
+    return () => {
+      verificationRequestIdRef.current += 1
+    }
+  }, [])
+
   const verify = useCallback(async (): Promise<void> => {
+    const requestId = verificationRequestIdRef.current + 1
+    verificationRequestIdRef.current = requestId
+    const isCurrentRequest = () =>
+      requestId === verificationRequestIdRef.current
+
     if (!isAnthropicAuthEnabled() || isAgenCAISubscriber()) {
+      setError(null)
       setStatus('valid')
       return
     }
     // Warm the apiKeyHelper cache (no-op if not configured), then read from
     // all sources. getAnthropicApiKeyWithSource() reads the now-warm cache.
     await getApiKeyFromApiKeyHelper(getIsNonInteractiveSession())
+    if (!isCurrentRequest()) {
+      return
+    }
+
     const { key: apiKey, source } = getAnthropicApiKeyWithSource()
     if (!apiKey) {
       if (source === 'apiKeyHelper') {
@@ -77,16 +95,26 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
         return
       }
       const newStatus = 'missing'
+      setError(null)
       setStatus(newStatus)
       return
     }
 
     try {
       const isValid = await verifyApiKey(apiKey, false)
+      if (!isCurrentRequest()) {
+        return
+      }
+
       const newStatus = isValid ? 'valid' : 'invalid'
+      setError(null)
       setStatus(newStatus)
       return
     } catch (error) {
+      if (!isCurrentRequest()) {
+        return
+      }
+
       // This happens when there an error response from the API but it's not an invalid API key error
       // In this case, we still mark the API key as invalid - but we also log the error so we can
       // display it to the user to be more helpful

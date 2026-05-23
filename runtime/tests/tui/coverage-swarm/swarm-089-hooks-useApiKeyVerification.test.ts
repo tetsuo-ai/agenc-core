@@ -108,6 +108,21 @@ async function waitForCondition(
   throw new Error(message)
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>
+  readonly reject: (error: unknown) => void
+  readonly resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+
+  return { promise, reject, resolve }
+}
+
 async function renderVerificationHook(): Promise<{
   readonly cleanup: () => Promise<void>
   readonly getLatest: () => HookResult
@@ -300,6 +315,85 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
           rendered.getLatest().error === null,
         'Timed out waiting for disabled auth to clear verifier error',
       )
+    } finally {
+      await rendered.cleanup()
+    }
+  })
+
+  test('keeps the newest verifier result when rechecks resolve out of order', async () => {
+    authHarness.state.key = 'sk-ant-test'
+    authHarness.state.source = 'environment'
+    const stale = deferred<boolean>()
+    const latest = deferred<boolean>()
+    authHarness.verifyApiKey
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(latest.promise)
+    const rendered = await renderVerificationHook()
+
+    try {
+      await waitForCondition(
+        () => rendered.getLatest().status === 'loading',
+        'Timed out waiting for loading initial status',
+      )
+
+      const staleRun = rendered.getLatest().reverify()
+      await waitForCondition(
+        () => authHarness.verifyApiKey.mock.calls.length === 1,
+        'Timed out waiting for first verifier call',
+      )
+      const latestRun = rendered.getLatest().reverify()
+      await waitForCondition(
+        () => authHarness.verifyApiKey.mock.calls.length === 2,
+        'Timed out waiting for second verifier call',
+      )
+
+      latest.resolve(true)
+      await latestRun
+      await waitForCondition(
+        () => rendered.getLatest().status === 'valid',
+        'Timed out waiting for latest verifier status',
+      )
+
+      stale.resolve(false)
+      await staleRun
+      await sleep()
+
+      expect(rendered.getLatest().status).toBe('valid')
+      expect(rendered.getLatest().error).toBeNull()
+    } finally {
+      await rendered.cleanup()
+    }
+  })
+
+  test('clears a previous verifier error when a later recheck succeeds', async () => {
+    authHarness.state.key = 'sk-ant-test'
+    authHarness.state.source = 'environment'
+    authHarness.verifyApiKey.mockRejectedValueOnce(new Error('network failed'))
+    const rendered = await renderVerificationHook()
+
+    try {
+      await waitForCondition(
+        () => rendered.getLatest().status === 'loading',
+        'Timed out waiting for loading initial status',
+      )
+
+      await rendered.getLatest().reverify()
+      await waitForCondition(
+        () =>
+          rendered.getLatest().status === 'error' &&
+          rendered.getLatest().error?.message === 'network failed',
+        'Timed out waiting for verifier error status',
+      )
+
+      authHarness.verifyApiKey.mockResolvedValueOnce(true)
+      await rendered.getLatest().reverify()
+
+      await waitForCondition(
+        () => rendered.getLatest().status === 'valid',
+        'Timed out waiting for recovered verifier status',
+      )
+
+      expect(rendered.getLatest().error).toBeNull()
     } finally {
       await rendered.cleanup()
     }
