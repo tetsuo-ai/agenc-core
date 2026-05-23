@@ -1,8 +1,30 @@
+import { PassThrough } from "node:stream";
+
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const keybindingHarness = vi.hoisted(() => ({
+  deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
+  pendingReads: new Map<string, (result: { content: string }) => void>(),
+  tails: {} as Record<string, string>,
+}));
+
+vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
+  tailFile: vi.fn(async (path: string) => {
+    const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
+    if (keybindingHarness.deferredTaskIds.has(taskId)) {
+      return new Promise<{ content: string }>((resolve) => {
+        keybindingHarness.pendingReads.set(taskId, resolve);
+      });
+    }
+    return { content: keybindingHarness.tails[taskId] ?? "" };
+  }),
+}));
+
+vi.mock("../../../src/utils/task/diskOutput.js", () => ({
+  getTaskOutputPath: (taskId: string) => `/tmp/${taskId}.log`,
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
@@ -12,11 +34,28 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import { createRoot } from "../../../src/tui/ink.js";
+import { getInkInstance } from "../../../src/tui/ink/instances.js";
+import { cellAt } from "../../../src/tui/ink/screen.js";
+import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { AgentSurface, canEnterAgentTranscript } from "../../../src/tui/workbench/surfaces/AgentSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
+type TestStdin = PassThrough & {
+  isTTY: boolean;
+  ref: () => void;
+  setRawMode: (mode: boolean) => void;
+  unref: () => void;
+};
+
 describe("AgentSurface", () => {
+  beforeEach(() => {
+    keybindingHarness.deferredTaskIds = new Set();
+    keybindingHarness.handlers = {};
+    keybindingHarness.pendingReads = new Map();
+    keybindingHarness.tails = {};
+  });
+
   it("falls back to the running newest agent when the selected agent id is stale", async () => {
     const oldAgent = {
       id: "agent-old",
@@ -109,6 +148,56 @@ describe("AgentSurface", () => {
     });
   });
 
+  it("clears stale tail content immediately when switching selected agent tasks", async () => {
+    keybindingHarness.tails["agent-old"] = [
+      "old agent output",
+      "stale output from old agent",
+    ].join("\n");
+    keybindingHarness.deferredTaskIds.add("agent-new");
+    let selectAgent: ((taskId: string) => void) | null = null;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "agent-old": agentTask("agent-old", "old agent", "completed", 1_000),
+              "agent-new": agentTask("agent-new", "new agent", "running", 2_000),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "agent",
+              selectedAgentTaskId: "agent-old",
+            },
+          }}
+        >
+          <AgentTaskSelector onReady={(setter) => { selectAgent = setter; }} />
+          <AgentSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(screenText(stdout))).toContain("staleoutputfromoldagent");
+
+      selectAgent?.("agent-new");
+      await sleep(25);
+
+      expect(compact(screenText(stdout))).toContain("running-newagent");
+      expect(compact(screenText(stdout))).not.toContain("staleoutputfromoldagent");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("limits transcript entry to locally viewable agent task types", () => {
     expect(canEnterAgentTranscript({ id: "local", type: "local_agent" })).toBe(true);
     expect(canEnterAgentTranscript({ id: "team", type: "in_process_teammate" })).toBe(true);
@@ -117,3 +206,88 @@ describe("AgentSurface", () => {
     expect(canEnterAgentTranscript(null)).toBe(false);
   });
 });
+
+function AgentTaskSelector({
+  onReady,
+}: {
+  readonly onReady: (selectAgent: (taskId: string) => void) => void;
+}): null {
+  const setAppState = useSetAppState();
+  React.useEffect(() => {
+    onReady((selectedAgentTaskId: string) => {
+      setAppState((state) => ({
+        ...state,
+        workbench: {
+          ...state.workbench,
+          selectedAgentTaskId,
+        },
+      }));
+    });
+  }, [onReady, setAppState]);
+  return null;
+}
+
+function agentTask(
+  id: string,
+  description: string,
+  status: "running" | "completed",
+  startTime: number,
+): any {
+  return {
+    id,
+    type: "local_agent",
+    status,
+    description,
+    startTime,
+    outputFile: `urn:agenc:task:${id}:output`,
+    outputOffset: 0,
+    notified: false,
+  };
+}
+
+function createStreams(): {
+  readonly stdin: TestStdin;
+  readonly stdout: PassThrough;
+} {
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as TestStdin;
+
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
+  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
+  stdout.resume();
+
+  return {
+    stdin,
+    stdout,
+  };
+}
+
+function sleep(ms = 200): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function compact(value: string): string {
+  return value.replace(/\s+/gu, "");
+}
+
+function screenText(stdout: PassThrough): string {
+  const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
+    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let row = 0; row < screen.height; row += 1) {
+    const chars: string[] = [];
+    for (let column = 0; column < screen.width; column += 1) {
+      chars.push(cellAt(screen, column, row)?.char ?? " ");
+    }
+    rows.push(chars.join("").trimEnd());
+  }
+  return rows.join("\n");
+}
