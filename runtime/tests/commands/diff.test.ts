@@ -217,6 +217,47 @@ describe("createDiffMenuSnapshot", () => {
     ]));
     expect(snapshot.files.find((file) => file.path === "src/changed.ts")?.previewLines).toContain("+new");
   });
+
+  it("normalizes git numstat rename and copy paths to destination rows", () => {
+    const snapshot = createDiffMenuSnapshot({
+      rawDiff: [
+        "diff --git a/old.ts b/new.ts",
+        "similarity index 100%",
+        "rename from old.ts",
+        "rename to new.ts",
+        "diff --git a/src/source.ts b/src/copied.ts",
+        "similarity index 100%",
+        "copy from src/source.ts",
+        "copy to src/copied.ts",
+        "diff --git a/a/file.ts b/b/file.ts",
+        "similarity index 100%",
+        "rename from a/file.ts",
+        "rename to b/file.ts",
+      ].join("\n"),
+      nameStatus: [
+        "R100\told.ts\tnew.ts",
+        "C100\tsrc/source.ts\tsrc/copied.ts",
+        "R100\ta/file.ts\tb/file.ts",
+      ].join("\n"),
+      numstat: [
+        "0\t0\told.ts => new.ts",
+        "0\t0\tsrc/{source.ts => copied.ts}",
+        "0\t0\t{a => b}/file.ts",
+      ].join("\n"),
+      untrackedFiles: [],
+    });
+
+    expect(snapshot.files.map((file) => file.path)).toEqual([
+      "b/file.ts",
+      "new.ts",
+      "src/copied.ts",
+    ]);
+    expect(snapshot.files.map((file) => file.status)).toEqual([
+      "renamed",
+      "renamed",
+      "copied",
+    ]);
+  });
 });
 
 describe("diffCommand", () => {

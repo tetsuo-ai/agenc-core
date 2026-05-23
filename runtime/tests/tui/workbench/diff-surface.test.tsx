@@ -111,6 +111,35 @@ describe("DiffSurface", () => {
     expect(output).toContain("src/new.ts - non-mutating review");
   });
 
+  it("renders copied files with the copied status marker", async () => {
+    const snapshot = createDiffMenuSnapshot({
+      rawDiff: [
+        "diff --git a/src/source.ts b/src/copied.ts",
+        "similarity index 100%",
+        "copy from src/source.ts",
+        "copy to src/copied.ts",
+      ].join("\n"),
+      nameStatus: "C\tsrc/source.ts\tsrc/copied.ts",
+      numstat: "0\t0\tsrc/{source.ts => copied.ts}",
+      untrackedFiles: [],
+    });
+
+    const output = await renderToString(
+      <DiffSurfaceView
+        snapshot={snapshot}
+        selected={0}
+        decisions={{}}
+        focused={true}
+        pendingApprovalRisk={null}
+      />,
+      { columns: 100, rows: 24 },
+    );
+
+    expect(output).toContain("1 file changed");
+    expect(compact(output)).toContain("Csrc/copied.ts");
+    expect(compact(output)).not.toContain("Msrc/copied.ts");
+  });
+
   it("keeps the selected changed file visible beyond the first file-list page", async () => {
     const fileCount = 45;
     const snapshot = createDiffMenuSnapshot({

@@ -198,6 +198,8 @@ function statusMarker(status: string): string {
       return "D";
     case "renamed":
       return "R";
+    case "copied":
+      return "C";
     case "unmerged":
       return "U";
     case "untracked":
