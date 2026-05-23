@@ -75,6 +75,20 @@ function OpenBufferRequest({ path }: { readonly path: string | null }): null {
   return null;
 }
 
+function OpenBufferRetryRequest({
+  path,
+  attempt,
+}: {
+  readonly path: string | null;
+  readonly attempt: number;
+}): null {
+  const dispatch = useWorkbenchDispatch();
+  React.useEffect(() => {
+    if (path) dispatch({ type: "openBuffer", path, line: 1, focus: true });
+  }, [attempt, dispatch, path]);
+  return null;
+}
+
 let dir: string;
 
 beforeEach(async () => {
@@ -303,6 +317,64 @@ describe("BufferSurface", () => {
           dirty: false,
         });
         expect(store.getText()).toBe("second\n");
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("retries the same active buffer path after an initial load error", async () => {
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    function App({ retryAttempt }: { readonly retryAttempt: number }): React.ReactElement {
+      return (
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "buffer",
+              activeFilePath: "missing.ts",
+              activeFileLine: 1,
+            },
+          }}
+        >
+          <KeybindingSetup>
+            <OpenBufferRetryRequest path={retryAttempt > 0 ? "missing.ts" : null} attempt={retryAttempt} />
+            <BufferSurface focused={true} />
+          </KeybindingSetup>
+        </AppStateProvider>
+      );
+    }
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(<App retryAttempt={0} />);
+        await sleep();
+
+        const store = getWorkbenchBufferStore();
+        expect(store.getSnapshot()).toMatchObject({
+          status: "error",
+          filePath: null,
+        });
+
+        await writeFile(join(dir, "missing.ts"), "created\n", "utf8");
+        root.render(<App retryAttempt={1} />);
+        await sleep();
+
+        expect(store.getSnapshot()).toMatchObject({
+          status: "ready",
+          filePath: "missing.ts",
+          dirty: false,
+        });
+        expect(store.getText()).toBe("created\n");
       });
     } finally {
       root.unmount();

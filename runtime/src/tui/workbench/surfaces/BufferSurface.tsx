@@ -31,6 +31,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   const tasks = useAppState((state) => state.tasks);
   const activePath = workbench.activeFilePath;
   const activeLine = workbench.activeFileLine ?? 1;
+  const activeOpenRequestId = workbench.bufferOpenRequestId;
   const lastOpenRequest = useRef<string | null>(null);
   const inFlightAgent = useMemo(
     () => Object.values(tasks).find((task) =>
@@ -51,7 +52,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
 
   useEffect(() => {
     if (!activePath) return;
-    const requestKey = `${activePath}\u0000${activeLine}`;
+    const requestKey = `${activePath}\u0000${activeLine}\u0000${activeOpenRequestId}`;
     const isNewRequest = lastOpenRequest.current !== requestKey;
     const shouldRetryCleanBlockedPath =
       snapshot.status !== "loading" &&
@@ -61,7 +62,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     if (!isNewRequest && !shouldRetryCleanBlockedPath) return;
     lastOpenRequest.current = requestKey;
     void store.open(activePath, activeLine);
-  }, [activeLine, activePath, snapshot.dirty, snapshot.filePath, snapshot.status, store]);
+  }, [activeLine, activeOpenRequestId, activePath, snapshot.dirty, snapshot.filePath, snapshot.status, store]);
 
   useEffect(() => {
     store.setViewportRows(Math.max(1, rows - 9));

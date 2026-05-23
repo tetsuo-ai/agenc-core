@@ -19,6 +19,7 @@ export function getDefaultWorkbenchState(): WorkbenchState {
     activeSurfaceMode: "transcript",
     activeFilePath: null,
     activeFileLine: null,
+    bufferOpenRequestId: 0,
     selectedAgentTaskId: null,
     selectedShellTaskId: null,
     openDiffId: null,
@@ -57,6 +58,7 @@ export function workbenchReducer(
         ...openSurface(state, "buffer", command.focus ?? true),
         activeFilePath: command.path,
         activeFileLine: command.line ?? null,
+        bufferOpenRequestId: state.bufferOpenRequestId + 1,
       };
     case "openSearch":
       const nextSearchQuery = command.query ?? state.searchQuery;
