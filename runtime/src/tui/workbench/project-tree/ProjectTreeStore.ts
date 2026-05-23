@@ -36,6 +36,12 @@ const WORKSPACE_TREE_IGNORE = [
   "**/out/**",
   "**/target/**",
 ] as const;
+const WORKSPACE_TREE_IGNORED_DIRECTORY_NAMES = new Set(
+  WORKSPACE_TREE_IGNORE.flatMap((pattern) => {
+    const match = pattern.match(/^\*\*\/([^/]+)\/\*\*$/u);
+    return match ? [match[1]!] : [];
+  }),
+);
 
 export class ProjectTreeStore {
   #cwd: string;
@@ -379,7 +385,7 @@ function isDescendantPath(value: string, possibleAncestor: string): boolean {
 async function readTopLevelPaths(cwd: string): Promise<string[]> {
   const entries = await readdir(cwd, { withFileTypes: true });
   return entries
-    .filter((entry) => entry.name !== ".git")
+    .filter((entry) => !(entry.isDirectory() && WORKSPACE_TREE_IGNORED_DIRECTORY_NAMES.has(entry.name)))
     .map((entry) => entry.isDirectory() ? `${entry.name}/` : entry.name)
     .sort((a, b) => a.localeCompare(b));
 }
