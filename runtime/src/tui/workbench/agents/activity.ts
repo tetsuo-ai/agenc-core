@@ -21,7 +21,7 @@ export function taskMayReferencePath(task: TaskState, pathValue: string | null |
   if (!pathValue) return false;
   const normalized = normalizePath(pathValue);
   if (normalized.length === 0) return false;
-  return taskSearchStrings(task).some((value) => normalizePath(value).includes(normalized));
+  return taskSearchStrings(task).some((value) => containsPathReference(normalizePath(value), normalized));
 }
 
 export function inFlightPathsFromTasks(
@@ -85,4 +85,27 @@ function stringifyInput(input: unknown): string {
 
 function normalizePath(value: string): string {
   return value.replace(/\\/gu, "/").replace(/^\.\//u, "");
+}
+
+function containsPathReference(value: string, pathValue: string): boolean {
+  let index = value.indexOf(pathValue);
+  while (index !== -1) {
+    const before = index > 0 ? value[index - 1] : "";
+    const after = value[index + pathValue.length] ?? "";
+    if (isPathReferenceStart(before) && isPathReferenceEnd(after)) return true;
+    index = value.indexOf(pathValue, index + 1);
+  }
+  return false;
+}
+
+function isPathReferenceStart(value: string): boolean {
+  return value === "" || value === "/" || !isPathContinuation(value);
+}
+
+function isPathReferenceEnd(value: string): boolean {
+  return value === "" || !isPathContinuation(value);
+}
+
+function isPathContinuation(value: string): boolean {
+  return /^[\p{L}\p{N}._~+%/-]$/u.test(value);
 }

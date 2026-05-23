@@ -82,4 +82,36 @@ describe("workbench agents rail model", () => {
     expect(taskMayReferencePath(task, "src/app.ts")).toBe(true);
     expect(inFlightPathsFromTasks([task], ["src/app.ts", "src/other.ts"])).toEqual(["src/app.ts"]);
   });
+
+  it("does not treat longer sibling file names as the selected in-flight path", () => {
+    const task = {
+      id: "agent-1",
+      type: "local_agent",
+      status: "running",
+      description: "editing src/app.tsx",
+      startTime: 0,
+      outputFile: "urn:agenc:task:agent-1:output",
+      outputOffset: 0,
+      notified: false,
+    } as any;
+
+    expect(taskMayReferencePath(task, "src/app.ts")).toBe(false);
+    expect(taskMayReferencePath(task, "src/app.tsx")).toBe(true);
+    expect(inFlightPathsFromTasks([task], ["src/app.ts", "src/app.tsx"])).toEqual(["src/app.tsx"]);
+  });
+
+  it("recognizes path references with absolute prefixes and line suffixes", () => {
+    const task = {
+      id: "agent-1",
+      type: "local_agent",
+      status: "running",
+      description: "patch /repo/src/app.ts:42",
+      startTime: 0,
+      outputFile: "urn:agenc:task:agent-1:output",
+      outputOffset: 0,
+      notified: false,
+    } as any;
+
+    expect(taskMayReferencePath(task, "src/app.ts")).toBe(true);
+  });
 });
