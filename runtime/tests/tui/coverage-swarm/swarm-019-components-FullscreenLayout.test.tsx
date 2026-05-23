@@ -5,11 +5,16 @@ import stripAnsi from 'strip-ansi'
 import { describe, expect, test, vi } from 'vitest'
 
 const browser = vi.hoisted(() => ({
+  logError: vi.fn(),
   openBrowser: vi.fn(),
   openPath: vi.fn(),
 }))
 
 vi.mock('../../../src/utils/browser.js', () => browser)
+
+vi.mock('../../../src/utils/log.js', () => ({
+  logError: browser.logError,
+}))
 
 import { createRoot, Text } from '../../../src/tui/ink.js'
 import {
@@ -356,8 +361,11 @@ describe('FullscreenLayout coverage swarm 019', () => {
   })
 
   test('routes fullscreen hyperlink clicks to file and browser openers', async () => {
+    const browserFailure = new Error('browser failed')
+    browser.logError.mockClear()
     browser.openBrowser.mockClear()
     browser.openPath.mockClear()
+    browser.openBrowser.mockRejectedValueOnce(browserFailure)
     const fakeInk = {} as { onHyperlinkClick?: (url: string) => void }
     setInkInstance(process.stdout, fakeInk as never)
 
@@ -384,14 +392,22 @@ describe('FullscreenLayout coverage swarm 019', () => {
         fakeInk.onHyperlinkClick?.('file:///tmp/agenc-layout-marker.txt')
         fakeInk.onHyperlinkClick?.('https://example.test/docs')
         fakeInk.onHyperlinkClick?.('file://%zz')
+        fakeInk.onHyperlinkClick?.('https://example.test/ok')
+        await sleep()
 
         expect(browser.openPath).toHaveBeenCalledTimes(1)
         expect(browser.openPath).toHaveBeenCalledWith(
           '/tmp/agenc-layout-marker.txt',
         )
-        expect(browser.openBrowser).toHaveBeenCalledWith(
+        expect(browser.openBrowser).toHaveBeenNthCalledWith(
+          1,
           'https://example.test/docs',
         )
+        expect(browser.openBrowser).toHaveBeenNthCalledWith(2, 'https://example.test/ok')
+        expect(browser.logError).toHaveBeenCalledWith(browserFailure)
+        expect(browser.logError.mock.calls.some(([error]) =>
+          error instanceof Error && error.message.includes('Invalid URL')
+        )).toBe(true)
       })
     } finally {
       root.unmount()

@@ -13,6 +13,7 @@ import { Box, Text } from '../ink.js';
 import type { Message } from '../../types/message';
 import { openBrowser, openPath } from '../../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
+import { logError } from '../../utils/log.js';
 import { plural } from '../../utils/stringUtils.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { getTotalCost } from '../../cost/tracker.js';
@@ -675,13 +676,21 @@ function _temp3() {
     ink.onHyperlinkClick = undefined;
   };
 }
+function openFullscreenHyperlinkTarget(result, failureMessage) {
+  void Promise.resolve(result).then((opened) => {
+    if (opened === false) logError(new Error(failureMessage));
+  }, logError);
+}
 function _temp2(url) {
   if (url.startsWith("file:")) {
     try {
-      openPath(fileURLToPath(url));
-    } catch {}
+      const filePath = fileURLToPath(url);
+      openFullscreenHyperlinkTarget(openPath(filePath), `Failed to open path: ${filePath}`);
+    } catch (error) {
+      logError(error);
+    }
   } else {
-    openBrowser(url);
+    openFullscreenHyperlinkTarget(openBrowser(url), `Failed to open URL: ${url}`);
   }
 }
 function _temp() {}
