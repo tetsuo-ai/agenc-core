@@ -191,6 +191,10 @@ function StatusLineInner({
 
   // Stable update function — reads latest values from refs
   const doUpdate = useCallback(async () => {
+    if (debounceTimerRef.current !== undefined) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = undefined;
+    }
     // Cancel any in-flight requests
     abortControllerRef.current?.abort();
     const controller = new AbortController();
