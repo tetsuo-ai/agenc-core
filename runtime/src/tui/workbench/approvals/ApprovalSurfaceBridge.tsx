@@ -24,7 +24,11 @@ export function ApprovalSurfaceBridge({
   );
 
   if (!request) return null;
-  const risk = classifyApprovalRisk({ request, description: request.description });
+  const risk = classifyApprovalRisk({
+    request,
+    description: request.description,
+    command: approvalInputText(request.input),
+  });
   return (
     <Box flexDirection="column">
       <Text color={risk === "destructive" ? "error" : risk === "medium" ? "warning" : "text2"} wrap="truncate-end">
@@ -35,4 +39,18 @@ export function ApprovalSurfaceBridge({
       </Text>
     </Box>
   );
+}
+
+function approvalInputText(input: Record<string, unknown>): string {
+  for (const key of ["command", "cmd", "input", "query", "path", "file_path"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return "";
+  }
 }
