@@ -111,6 +111,37 @@ describe("DiffSurface", () => {
     expect(output).toContain("src/new.ts - non-mutating review");
   });
 
+  it("keeps the selected changed file visible beyond the first file-list page", async () => {
+    const fileCount = 45;
+    const snapshot = createDiffMenuSnapshot({
+      rawDiff: Array.from({ length: fileCount }, (_, index) => [
+        `diff --git a/src/file-${index}.ts b/src/file-${index}.ts`,
+        "@@ -1 +1 @@",
+        `-old${index}`,
+        `+new${index}`,
+      ].join("\n")).join("\n"),
+      nameStatus: Array.from({ length: fileCount }, (_, index) => `M\tsrc/file-${index}.ts`).join("\n"),
+      numstat: Array.from({ length: fileCount }, (_, index) => `1\t1\tsrc/file-${index}.ts`).join("\n"),
+      untrackedFiles: [],
+    });
+    const selectedPath = snapshot.files.at(-1)?.path;
+
+    const output = await renderToString(
+      <DiffSurfaceView
+        snapshot={snapshot}
+        selected={fileCount - 1}
+        decisions={{}}
+        focused={true}
+        pendingApprovalRisk={null}
+      />,
+      { columns: 100, rows: 30 },
+    );
+
+    expect(selectedPath).toBeTruthy();
+    expect(compact(output)).toContain(`M${selectedPath}`);
+    expect(output).toContain(`${selectedPath} - non-mutating review`);
+  });
+
   it("keeps destructive pending approvals out of the diff accept shortcut", async () => {
     diffHarness.snapshot = createDiffMenuSnapshot({
       rawDiff: [
