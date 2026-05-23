@@ -48,7 +48,7 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
           if (mounted) setTailState({ taskId, content: result.content });
         })
         .catch(() => {
-          if (mounted) setTailState({ taskId, content: "" });
+          // Keep the last successful tail visible across transient read failures.
         });
     };
     readTail();

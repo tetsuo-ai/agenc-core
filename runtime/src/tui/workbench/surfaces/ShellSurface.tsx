@@ -45,7 +45,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
           if (mounted) setTailState({ taskId, content: result.content });
         })
         .catch(() => {
-          if (mounted) setTailState({ taskId, content: "" });
+          // Keep the last successful tail visible across transient read failures.
         });
     };
     readTail();

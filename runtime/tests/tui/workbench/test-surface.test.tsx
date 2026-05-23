@@ -7,6 +7,8 @@ const keybindingHarness = vi.hoisted(() => ({
   deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
   pendingReads: new Map<string, (result: { content: string }) => void>(),
+  readCounts: {} as Record<string, number>,
+  rejectOnRead: {} as Record<string, number>,
   tails: {} as Record<string, string>,
 }));
 
@@ -14,6 +16,11 @@ vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
   tailFile: vi.fn(async (path: string) => {
     const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
+    const readCount = (keybindingHarness.readCounts[taskId] ?? 0) + 1;
+    keybindingHarness.readCounts[taskId] = readCount;
+    if (keybindingHarness.rejectOnRead[taskId] === readCount) {
+      throw new Error(`tail failed for ${taskId}`);
+    }
     if (keybindingHarness.deferredTaskIds.has(taskId)) {
       return new Promise<{ content: string }>((resolve) => {
         keybindingHarness.pendingReads.set(taskId, resolve);
@@ -35,6 +42,8 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 import { createRoot } from "../../../src/tui/ink.js";
+import { getInkInstance } from "../../../src/tui/ink/instances.js";
+import { cellAt } from "../../../src/tui/ink/screen.js";
 import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { TestSurface, TestSurfaceView } from "../../../src/tui/workbench/surfaces/TestSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
@@ -51,6 +60,8 @@ describe("TestSurface", () => {
     keybindingHarness.deferredTaskIds = new Set();
     keybindingHarness.handlers = {};
     keybindingHarness.pendingReads = new Map();
+    keybindingHarness.readCounts = {};
+    keybindingHarness.rejectOnRead = {};
     keybindingHarness.tails = {};
   });
 
@@ -179,6 +190,48 @@ describe("TestSurface", () => {
       stdout.end();
     }
   });
+
+  it("keeps parsed failures visible when a later tail poll fails", async () => {
+    keybindingHarness.rejectOnRead["shell-1"] = 2;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "shell-1": shellTask("shell-1", "current test", "running"),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "test",
+              selectedShellTaskId: "shell-1",
+            },
+          }}
+        >
+          <TestSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(screenText(stdout))).toContain("firstfailure");
+
+      await sleep(1_200);
+
+      expect(compact(screenText(stdout))).toContain("firstfailure");
+      expect(compact(screenText(stdout))).not.toContain("Noparsedtestfailures");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
 
 function TestTaskSelector({
@@ -254,4 +307,25 @@ function createStreams(): {
 
 function sleep(ms = 200): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function compact(value: string): string {
+  return value.replace(/\s+/gu, "");
+}
+
+function screenText(stdout: PassThrough): string {
+  const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
+    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let row = 0; row < screen.height; row += 1) {
+    const chars: string[] = [];
+    for (let column = 0; column < screen.width; column += 1) {
+      chars.push(cellAt(screen, column, row)?.char ?? " ");
+    }
+    rows.push(chars.join("").trimEnd());
+  }
+  return rows.join("\n");
 }
