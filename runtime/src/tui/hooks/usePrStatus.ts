@@ -60,7 +60,12 @@ export function usePrStatus(isLoading: boolean, enabled = true): PrStatusState {
       }
 
       const start = Date.now()
-      const result = await fetchPrStatus()
+      let result = null
+      try {
+        result = await fetchPrStatus()
+      } catch {
+        result = null
+      }
       if (cancelled) return
       lastFetchRef.current = start
 

@@ -217,6 +217,45 @@ describe('usePrStatus coverage swarm row 152', () => {
     }
   })
 
+  test('treats a rejected PR status fetch as unavailable and keeps polling', async () => {
+    fixture.fetchPrStatus
+      .mockRejectedValueOnce(new Error('gh lookup failed'))
+      .mockResolvedValueOnce({
+        number: 153,
+        reviewState: 'approved',
+        url: 'https://example.test/pull/153',
+      })
+    const rendered = await renderHookHarness({
+      enabled: true,
+      isLoading: false,
+    })
+
+    try {
+      await waitFor(() => {
+        expect(fixture.fetchPrStatus).toHaveBeenCalledTimes(1)
+      })
+      expect(rendered.latest()).toEqual({
+        number: null,
+        reviewState: null,
+        url: null,
+        lastUpdated: 0,
+      })
+
+      await flushEffects(POLL_INTERVAL_MS)
+
+      await waitFor(() => {
+        expect(rendered.latest()).toMatchObject({
+          number: 153,
+          reviewState: 'approved',
+          url: 'https://example.test/pull/153',
+        })
+      })
+      expect(fixture.fetchPrStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('stops polling once the session has been idle for an hour', async () => {
     fixture.fetchPrStatus.mockResolvedValue({
       number: 152,
