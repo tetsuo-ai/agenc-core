@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   getDefaultWorkbenchState,
+  visibleWorkbenchPane,
   workbenchReducer,
 } from "../../../src/tui/workbench/reducer.js";
 
@@ -90,6 +91,23 @@ describe("workbenchReducer", () => {
 
     expect(surface.focusedPane).toBe("surface");
     expect(composer.focusedPane).toBe("composer");
+  });
+
+  it("falls back to the surface when hidden panes have stale focus", () => {
+    expect(visibleWorkbenchPane({
+      ...getDefaultWorkbenchState(),
+      focusedPane: "agents",
+      agentsVisible: false,
+    })).toBe("surface");
+    expect(visibleWorkbenchPane({
+      ...getDefaultWorkbenchState(),
+      focusedPane: "explorer",
+      explorerVisible: false,
+    })).toBe("surface");
+    expect(visibleWorkbenchPane({
+      ...getDefaultWorkbenchState(),
+      focusedPane: "composer",
+    })).toBe("composer");
   });
 
   it("stores attachment payloads and ids together", () => {

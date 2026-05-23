@@ -134,6 +134,12 @@ export function workbenchReducer(
   }
 }
 
+export function visibleWorkbenchPane(state: WorkbenchState): WorkbenchPane {
+  if (state.focusedPane === "explorer" && !state.explorerVisible) return "surface";
+  if (state.focusedPane === "agents" && !state.agentsVisible) return "surface";
+  return state.focusedPane;
+}
+
 function openSurface(
   state: WorkbenchState,
   mode: ActiveSurfaceMode,
