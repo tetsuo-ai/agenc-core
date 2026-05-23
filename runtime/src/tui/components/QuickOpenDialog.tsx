@@ -139,10 +139,11 @@ export function QuickOpenDialog(t0) {
           path: focusedPath,
           content: r.content
         });
-      }).catch(() => {
+      }).catch(error => {
         if (controller.signal.aborted) {
           return;
         }
+        logError(error);
         setPreview({
           path: focusedPath,
           content: "(preview unavailable)"

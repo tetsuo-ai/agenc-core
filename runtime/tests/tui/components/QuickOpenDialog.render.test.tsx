@@ -455,7 +455,8 @@ describe('QuickOpenDialog render and interactions', () => {
     const rendered = await renderDialog()
 
     try {
-      harness.readFileInRange.mockRejectedValueOnce(new Error('cannot preview'))
+      const previewError = new Error('cannot preview')
+      harness.readFileInRange.mockRejectedValueOnce(previewError)
 
       await searchFor(
         'broken',
@@ -476,6 +477,7 @@ describe('QuickOpenDialog render and interactions', () => {
       )
       expect(previewOutput).toContain('src/broken.ts')
       expect(previewOutput).toContain('(preview unavailable)')
+      expect(harness.logError).toHaveBeenCalledWith(previewError)
     } finally {
       await rendered.dispose()
     }
