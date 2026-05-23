@@ -111,6 +111,17 @@ function pickerProps(): CapturedPickerProps {
   return props
 }
 
+function jsonMatchLine(file: string, line: number, text: string): string {
+  return JSON.stringify({
+    type: 'match',
+    data: {
+      path: { text: file },
+      line_number: line,
+      lines: { text: `${text}\n` },
+    },
+  })
+}
+
 async function waitFor(
   predicate: () => boolean,
   message: string,
@@ -222,27 +233,26 @@ describe('GlobalSearchDialog coverage swarm row 127', () => {
           onLines: (chunk: readonly string[]) => void,
         ) => {
           searchSignals.push(signal)
-          expect(args.slice(0, 8)).toEqual([
-            '-n',
-            '--no-heading',
+          expect(args.slice(0, 7)).toEqual([
+            '--json',
             '-i',
             '-m',
             '10',
             '-F',
             '-e',
-            args[7],
+            args[6],
           ])
           expect(cwd).toBe(harness.cwd)
 
-          if (args[7] === 'needle') {
+          if (args[6] === 'needle') {
             onLines([
-              '/workspace/project/src/alpha.ts:2:Needle alpha',
-              '/workspace/project/src/beta.ts:3:Needle beta',
+              jsonMatchLine('/workspace/project/src/alpha.ts', 2, 'Needle alpha'),
+              jsonMatchLine('/workspace/project/src/beta.ts', 3, 'Needle beta'),
             ])
             return
           }
 
-          onLines(['/workspace/project/src/alpha.ts:2:Needle alpha'])
+          onLines([jsonMatchLine('/workspace/project/src/alpha.ts', 2, 'Needle alpha')])
         },
       )
 

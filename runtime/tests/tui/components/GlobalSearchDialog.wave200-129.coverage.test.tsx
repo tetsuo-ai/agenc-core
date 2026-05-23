@@ -111,6 +111,17 @@ function emptyMessage(props: CapturedPickerProps, query: string): string {
   return typeof message === 'function' ? message(query) : message ?? ''
 }
 
+function jsonMatchLine(file: string, line: number, text: string): string {
+  return JSON.stringify({
+    type: 'match',
+    data: {
+      path: { text: file },
+      line_number: line,
+      lines: { text: `${text}\n` },
+    },
+  })
+}
+
 async function waitFor(
   predicate: () => boolean,
   message: string,
@@ -202,7 +213,12 @@ describe('GlobalSearchDialog wave 200 worker 129 coverage', () => {
       const query = 'needle'
       const lines = Array.from(
         { length: 501 },
-        (_, i) => `/workspace/project/src/file-${i}.ts:${i + 1}:Needle ${i}`,
+        (_, i) =>
+          jsonMatchLine(
+            `/workspace/project/src/file-${i}.ts`,
+            i + 1,
+            `Needle ${i}`,
+          ),
       )
       let searchSignal: AbortSignal | undefined
 
@@ -215,8 +231,7 @@ describe('GlobalSearchDialog wave 200 worker 129 coverage', () => {
           onLines: (chunk: readonly string[]) => void,
         ) => {
           expect(args).toEqual([
-            '-n',
-            '--no-heading',
+            '--json',
             '-i',
             '-m',
             '10',

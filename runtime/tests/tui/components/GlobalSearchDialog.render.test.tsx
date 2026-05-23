@@ -115,6 +115,17 @@ function emptyMessage(props: CapturedPickerProps, query: string): string {
   return typeof message === 'function' ? message(query) : message ?? ''
 }
 
+function jsonMatchLine(file: string, line: number, text: string): string {
+  return JSON.stringify({
+    type: 'match',
+    data: {
+      path: { text: file },
+      line_number: line,
+      lines: { text: `${text}\n` },
+    },
+  })
+}
+
 async function waitFor(
   predicate: () => boolean,
   message: string,
@@ -205,8 +216,7 @@ async function searchFor(query: string, lines: readonly string[]) {
       onLines: (chunk: readonly string[]) => void,
     ) => {
       expect(args).toEqual([
-        '-n',
-        '--no-heading',
+        '--json',
         '-i',
         '-m',
         '10',
@@ -270,9 +280,9 @@ describe('GlobalSearchDialog render and interactions', () => {
       })
 
       await searchFor('needle', [
-        '/workspace/project/src/app.tsx:12:Needle alpha',
-        '/workspace/project/..config:4:Needle config',
-        '/tmp/outside.ts:3:needle beta',
+        jsonMatchLine('/workspace/project/src/app.tsx', 12, 'Needle alpha'),
+        jsonMatchLine('/workspace/project/..config', 4, 'Needle config'),
+        jsonMatchLine('/tmp/outside.ts', 3, 'needle beta'),
         'not a ripgrep match',
       ])
 
@@ -332,6 +342,60 @@ describe('GlobalSearchDialog render and interactions', () => {
     }
   })
 
+  it('preserves file paths that contain colon-number segments in search results', async () => {
+    const rendered = await renderDialog()
+
+    try {
+      const rawPath = '/workspace/project/src/topic:12/app.ts'
+      harness.ripGrepStream.mockImplementation(
+        async (
+          args: string[],
+          cwd: string,
+          signal: AbortSignal,
+          onLines: (chunk: readonly string[]) => void,
+        ) => {
+          expect(args).toEqual([
+            '--json',
+            '-i',
+            '-m',
+            '10',
+            '-F',
+            '-e',
+            'needle',
+          ])
+          expect(cwd).toBe(harness.cwd)
+          expect(signal.aborted).toBe(false)
+          onLines([
+            JSON.stringify({
+              type: 'match',
+              data: {
+                path: { text: rawPath },
+                line_number: 4,
+                lines: { text: 'Needle in colon path\n' },
+              },
+            }),
+          ])
+        },
+      )
+
+      pickerProps().onQueryChange('needle')
+
+      await waitFor(
+        () =>
+          pickerProps().items.length === 1 &&
+          pickerProps().items[0]?.file === 'src/topic:12/app.ts',
+        'Global search did not preserve the full colon-number path',
+      )
+      expect(pickerProps().items[0]).toEqual({
+        file: 'src/topic:12/app.ts',
+        line: 4,
+        text: 'Needle in colon path',
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   it('shows no-match state after a completed empty search', async () => {
     const rendered = await renderDialog()
 
@@ -354,7 +418,9 @@ describe('GlobalSearchDialog render and interactions', () => {
     const rendered = await renderDialog()
 
     try {
-      await searchFor('needle', ['/workspace/project/src/app.tsx:12:Needle alpha'])
+      await searchFor('needle', [
+        jsonMatchLine('/workspace/project/src/app.tsx', 12, 'Needle alpha'),
+      ])
       await waitFor(
         () => pickerProps().items.length === 1 && pickerProps().matchLabel === '1 matches',
         'Global search result did not render for action test',
