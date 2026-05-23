@@ -31,6 +31,31 @@ describe("parseArguments", () => {
     ]);
   });
 
+  it("preserves unquoted hash arguments instead of treating them as comments", () => {
+    expect(parseArguments("issue #123 literal#hash color=#fff")).toEqual([
+      "issue",
+      "#123",
+      "literal#hash",
+      "color=#fff",
+    ]);
+  });
+
+  it("keeps hashes inside braced variables literal", () => {
+    expect(parseArguments("${TAG#prefix} $TAG#suffix")).toEqual([
+      "$TAG#prefix",
+      "$TAG#suffix",
+    ]);
+  });
+
+  it("preserves escaped and quoted hash arguments", () => {
+    expect(parseArguments(String.raw`escaped\#hash "#quoted" '\#single'`))
+      .toEqual([
+        "escaped#hash",
+        "#quoted",
+        "\\#single",
+      ]);
+  });
+
   it("falls back to whitespace splitting when shell parsing throws", () => {
     expect(parseArguments("foo ${")).toEqual(["foo", "${"]);
   });
@@ -86,6 +111,14 @@ describe("substituteArguments", () => {
         "pattern",
       ]),
     ).toBe("glob=*.ts named=*.ts");
+  });
+
+  it("substitutes hash arguments without dropping them", () => {
+    expect(
+      substituteArguments("ticket=$0 color=$1 named=$ticket", "#123 #fff", true, [
+        "ticket",
+      ]),
+    ).toBe("ticket=#123 color=#fff named=#123");
   });
 
   it("appends arguments when no placeholders are present", () => {
