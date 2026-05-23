@@ -354,6 +354,24 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().vimMode).toBe("INSERT");
   });
 
+  it("keeps insert-mode Delete from erasing typed text from dot repeat", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput("i", key(), 80);
+    store.handleVimInput("X", key({ shift: true }), 80);
+    store.handleVimInput("", key({ delete: true }), 80);
+    store.handleVimInput("", key({ escape: true, meta: true }), 80);
+    expect(store.getText()).toBe("Xlpha\nomega\n");
+
+    store.handleVimInput(".", key(), 80);
+
+    expect(store.getText()).toBe("XXlpha\nomega\n");
+  });
+
   it("lets normal-mode shifted arrows fall through to selection keybindings", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\nomega\n", "utf8");
