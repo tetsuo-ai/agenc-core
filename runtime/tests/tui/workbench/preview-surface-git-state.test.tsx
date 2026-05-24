@@ -169,6 +169,49 @@ describe("PreviewSurface git state", () => {
     }
   });
 
+  it("ignores stale git status failures after switching preview targets", async () => {
+    let setPreviewTarget: ((filePath: string) => void) | null = null;
+    const staleError = new Error("old status failed");
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "preview",
+              activeFilePath: "old.ts",
+              activeFileLine: 1,
+            },
+          }}
+        >
+          <PreviewTargetController onReady={(setter) => { setPreviewTarget = setter; }} />
+          <PreviewSurface focused={false} />
+        </AppStateProvider>,
+      );
+
+      const oldStatusRead = await waitForStatusRead(0);
+      setPreviewTarget?.("new.ts");
+      await waitForStatusRead(1);
+
+      oldStatusRead.reject(staleError);
+      await sleep();
+
+      expect(previewHarness.logError).not.toHaveBeenCalledWith(staleError);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("logs git status refresh failures without showing stale status", async () => {
     const statusError = new Error("status unavailable");
     const { stdin, stdout } = createStreams();
