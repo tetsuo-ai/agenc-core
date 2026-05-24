@@ -14,7 +14,9 @@ function stringMetadata(
   key: string,
 ): string | undefined {
   const value = metadata?.[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function localAgentTaskFromSnapshot(
@@ -28,6 +30,11 @@ function localAgentTaskFromSnapshot(
   const threadName = stringMetadata(snapshot.metadata, "threadName");
   const agentRole = stringMetadata(snapshot.metadata, "agentRole");
   const model = stringMetadata(snapshot.metadata, "model");
+  const cwd = stringMetadata(snapshot.metadata, "cwd") ?? previousAgent?.cwd;
+  const worktreePath =
+    stringMetadata(snapshot.metadata, "worktreePath") ??
+    previousAgent?.worktreePath;
+  const path = stringMetadata(snapshot.metadata, "path") ?? previousAgent?.path;
   return {
     id: snapshot.id,
     type: "local_agent",
@@ -42,6 +49,9 @@ function localAgentTaskFromSnapshot(
     agentId: snapshot.id,
     prompt: snapshot.description,
     agentType: agentRole ?? previousAgent?.agentType ?? "agent",
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(worktreePath !== undefined ? { worktreePath } : {}),
+    ...(path !== undefined ? { path } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
     ...(progress !== undefined ? { progress } : {}),

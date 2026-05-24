@@ -39,15 +39,15 @@ export function inFlightPathsFromTasks(
 
 export function taskPathLabel(task: TaskState): string | null {
   const record = task as unknown as Record<string, unknown>;
-  for (const key of ["cwd", "worktreePath", "path", "outputFile"]) {
+  for (const key of ["cwd", "worktreePath", "path"]) {
     const value = record[key];
-    if (typeof value === "string" && value.trim().length > 0) return value;
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
   }
   const metadata = record.remoteTaskMetadata;
   if (metadata && typeof metadata === "object") {
     for (const key of ["cwd", "worktreePath", "path"]) {
       const value = (metadata as Record<string, unknown>)[key];
-      if (typeof value === "string" && value.trim().length > 0) return value;
+      if (typeof value === "string" && value.trim().length > 0) return value.trim();
     }
   }
   return null;
@@ -58,6 +58,7 @@ function taskSearchStrings(task: TaskState): string[] {
   const values: unknown[] = [
     task.id,
     task.description,
+    taskPathLabel(task) ?? "",
     "command" in task && typeof task.command === "string" ? task.command : "",
     "prompt" in task && typeof task.prompt === "string" ? task.prompt : "",
     "title" in task && typeof task.title === "string" ? task.title : "",
@@ -86,7 +87,7 @@ function stringifyInput(input: unknown): string {
 }
 
 function normalizePath(value: string): string {
-  return value.replace(/\\/gu, "/").replace(/^\.\//u, "");
+  return value.trim().replace(/\\\\/gu, "/").replace(/\\/gu, "/").replace(/^\.\//u, "");
 }
 
 function containsPathReference(value: string, pathValue: string): boolean {

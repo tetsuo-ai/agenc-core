@@ -19,6 +19,8 @@ function snapshot(
       threadName: "reviewer",
       agentRole: "worker",
       model: "qwen3.6-35b-a3b-fp8",
+      cwd: "  /repo/current  ",
+      worktreePath: "  /repo/worktree  ",
     },
     progress: {
       toolUseCount: 2,
@@ -51,6 +53,8 @@ describe("syncBackgroundTaskSnapshotToAppState", () => {
           prompt: "inspect the repo",
           agentType: "worker",
           model: "qwen3.6-35b-a3b-fp8",
+          cwd: "/repo/current",
+          worktreePath: "/repo/worktree",
           isBackgrounded: true,
           progress: {
             toolUseCount: 2,
@@ -105,6 +109,52 @@ describe("syncBackgroundTaskSnapshotToAppState", () => {
           retain: true,
           diskLoaded: true,
           messages: [{ type: "assistant" }],
+        },
+      },
+    });
+  });
+
+  it("preserves previous display paths when later lifecycle snapshots omit metadata", () => {
+    let appState: unknown = {
+      tasks: {
+        "agent-1": {
+          id: "agent-1",
+          type: "local_agent",
+          status: "running",
+          description: "old",
+          startTime: 1,
+          outputFile: "old",
+          outputOffset: 0,
+          notified: false,
+          agentId: "agent-1",
+          prompt: "old prompt",
+          agentType: "worker",
+          cwd: "/repo/current",
+          worktreePath: "/repo/worktree",
+          retrieved: false,
+          lastReportedToolCount: 0,
+          lastReportedTokenCount: 0,
+          isBackgrounded: true,
+          pendingMessages: [],
+          retain: false,
+          diskLoaded: false,
+        },
+      },
+    };
+    syncBackgroundTaskSnapshotToAppState(
+      {
+        setAppState(updater) {
+          appState = updater(appState);
+        },
+      },
+      snapshot({ metadata: undefined }),
+    );
+
+    expect(appState).toMatchObject({
+      tasks: {
+        "agent-1": {
+          cwd: "/repo/current",
+          worktreePath: "/repo/worktree",
         },
       },
     });
