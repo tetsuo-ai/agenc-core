@@ -482,6 +482,44 @@ describe('VirtualMessageList', () => {
     }
   })
 
+  test('ignores stale non-search jump indices', async () => {
+    const messages = [
+      userMessage('u-1', 'first prompt'),
+      assistantMessage('a-1', 'assistant reply'),
+    ]
+    virtualScroll.range = [0, messages.length]
+    virtualScroll.offsets = [0, 10, 20]
+    messages.forEach((_, index) => {
+      virtualScroll.heights.set(index, 2)
+      virtualScroll.itemTops.set(index, index * 10)
+      virtualScroll.elements.set(index, fakeElement(2))
+    })
+
+    const jumpRef = React.createRef<JumpHandle | null>()
+    const scrollHandle = createScrollHandle(12)
+    const scrollTo = vi.mocked(scrollHandle.scrollTo)
+    const rendered = await renderList({
+      jumpRef,
+      messages,
+      scrollHandle,
+    })
+
+    try {
+      expect(jumpRef.current).not.toBeNull()
+
+      jumpRef.current?.jumpToIndex(1)
+      expect(scrollTo).toHaveBeenLastCalledWith(7)
+
+      scrollTo.mockClear()
+      jumpRef.current?.jumpToIndex(-1)
+      jumpRef.current?.jumpToIndex(messages.length)
+
+      expect(scrollTo).not.toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('tracks sticky prompts and jump-to-prompt correction paths', async () => {
     const stickyPrompts: unknown[] = []
     const messages = [
