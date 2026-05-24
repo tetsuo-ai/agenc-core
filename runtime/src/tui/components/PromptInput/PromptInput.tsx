@@ -1188,6 +1188,9 @@ function PromptInput({
     viewingAgentName
   });
   const onChange = useCallback((value: string) => {
+    const currentInput = lastInternalInputRef.current;
+    const currentCursorOffset = cursorOffsetRef.current;
+    const currentPastedContents = pastedContentsRef.current;
     if (value === '?') {
       logEvent('agenc_help_toggled', {});
       setHelpOpen(v => !v);
@@ -1208,22 +1211,23 @@ function PromptInput({
     // `!` in the buffer (issue #662).
     const modeEntry = detectModeEntry({
       value,
-      prevInputLength: input.length,
-      cursorOffset,
+      prevInputLength: currentInput.length,
+      cursorOffset: currentCursorOffset,
     });
     if (modeEntry) {
       onModeChange(modeEntry.mode);
       const cleaned = modeEntry.strippedValue.replaceAll('\t', '    ');
-      pushToBuffer(input, cursorOffset, pastedContents);
+      pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
       trackAndSetInput(cleaned);
+      cursorOffsetRef.current = cleaned.length;
       setCursorOffset(cleaned.length);
       return;
     }
     const processedValue = value.replaceAll('\t', '    ');
 
     // Push current state to buffer before making changes
-    if (input !== processedValue) {
-      pushToBuffer(input, cursorOffset, pastedContents);
+    if (currentInput !== processedValue) {
+      pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
     }
 
     // Deselect footer items when user types
@@ -1232,7 +1236,7 @@ function PromptInput({
       footerSelection: null
     });
     trackAndSetInput(processedValue);
-  }, [trackAndSetInput, onModeChange, input, cursorOffset, pushToBuffer, pastedContents, dismissStashHint, setAppState]);
+  }, [trackAndSetInput, onModeChange, pushToBuffer, dismissStashHint, setAppState]);
   const {
     resetHistory,
     onHistoryUp,
@@ -1624,6 +1628,8 @@ function PromptInput({
     // Store image to disk in background
     void storeImage(newContent);
 
+    const bufferPastedContents = pastedContentsRef.current;
+
     // Update UI
     updatePastedContentsAndRef(prev => ({
       ...prev,
@@ -1633,7 +1639,7 @@ function PromptInput({
     // armed, the previous pill's lazy space fires now (before this pill)
     // rather than being lost.
     const prefix = pendingSpaceAfterPillRef.current ? ' ' : '';
-    insertTextAtCursor(prefix + formatImageRef(pasteId));
+    insertTextAtCursor(prefix + formatImageRef(pasteId), bufferPastedContents);
     pendingSpaceAfterPillRef.current = true;
   }
 
@@ -1699,11 +1705,15 @@ function PromptInput({
         type: 'text',
         content: text
       };
+      const bufferPastedContents = pastedContentsRef.current;
       updatePastedContentsAndRef(prev => ({
         ...prev,
         [pasteId]: newContent
       }));
-      insertTextAtCursor(formatPastedTextRef(pasteId, numLines));
+      insertTextAtCursor(
+        formatPastedTextRef(pasteId, numLines),
+        bufferPastedContents,
+      );
     } else {
       // For shorter pastes, just insert the text normally
       insertTextAtCursor(text);
@@ -1720,13 +1730,16 @@ function PromptInput({
   const cursorOffsetRef = useRef(cursorOffset);
   cursorOffsetRef.current = cursorOffset;
 
-  function insertTextAtCursor(text: string) {
+  function insertTextAtCursor(
+    text: string,
+    bufferPastedContents = pastedContentsRef.current,
+  ) {
     // Use refs for input/cursor so back-to-back calls in the same event
     // (e.g. onImagePaste loop for multiple dragged images) chain correctly
     // instead of each reading the same stale closure values.
     const currentInput = lastInternalInputRef.current;
     const currentOffset = cursorOffsetRef.current;
-    pushToBuffer(currentInput, currentOffset, pastedContents);
+    pushToBuffer(currentInput, currentOffset, bufferPastedContents);
     const newInput = currentInput.slice(0, currentOffset) + text + currentInput.slice(currentOffset);
     trackAndSetInput(newInput);
     const newOffset = currentOffset + text.length;
@@ -1810,9 +1823,12 @@ function PromptInput({
   const handleExternalEditor = useCallback(async () => {
     logEvent('agenc_external_editor_used', {});
     setIsExternalEditorActive(true);
+    const currentInput = lastInternalInputRef.current;
+    const currentCursorOffset = cursorOffsetRef.current;
+    const currentPastedContents = pastedContentsRef.current;
     try {
       // Pass pastedContents to expand collapsed text references
-      const result = await editPromptInEditor(input, pastedContents);
+      const result = await editPromptInEditor(currentInput, currentPastedContents);
       if (result.error) {
         addNotification({
           key: 'external-editor-error',
@@ -1821,10 +1837,11 @@ function PromptInput({
           priority: 'high'
         });
       }
-      if (result.content !== null && result.content !== input) {
+      if (result.content !== null && result.content !== currentInput) {
         // Push current state to buffer before making changes
-        pushToBuffer(input, cursorOffset, pastedContents);
+        pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
         trackAndSetInput(result.content);
+        cursorOffsetRef.current = result.content.length;
         setCursorOffset(result.content.length);
       }
     } catch (err) {
@@ -1840,7 +1857,7 @@ function PromptInput({
     } finally {
       setIsExternalEditorActive(false);
     }
-  }, [input, cursorOffset, pastedContents, pushToBuffer, trackAndSetInput, addNotification]);
+  }, [pushToBuffer, trackAndSetInput, addNotification]);
 
   // Handler for chat:stash - stash/unstash prompt
   const handleStash = useCallback(() => {

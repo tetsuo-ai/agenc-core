@@ -779,6 +779,7 @@ import { createRoot } from '../../ink/root.js'
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'
 import { cacheImagePath, storeImage } from '../../../utils/imageStore.js'
 import { logError } from '../../../utils/log.js'
+import { editPromptInEditor } from '../../../utils/promptEditor.js'
 import { getDefaultWorkbenchState } from '../../../../src/tui/workbench/reducer.js'
 import PromptInput from './PromptInput.js'
 
@@ -937,6 +938,7 @@ describe('PromptInput render surface', () => {
     vi.mocked(cacheImagePath).mockClear()
     vi.mocked(storeImage).mockClear()
     vi.mocked(logError).mockClear()
+    vi.mocked(editPromptInEditor).mockClear()
   })
 
   test('wires base text input props for the idle prompt surface', async () => {
@@ -1013,7 +1015,7 @@ describe('PromptInput render surface', () => {
       expect(onInputChange).toHaveBeenCalledWith('echo hi')
 
       ;(baseProps.onPaste as (value: string) => void)('short\tpaste')
-      expect(onInputChange).toHaveBeenCalledWith('short    pasteecho hi')
+      expect(onInputChange).toHaveBeenCalledWith('echo hishort    paste')
 
       ;(baseProps.onPaste as (value: string) => void)('x'.repeat(40))
       expect(setPastedContents).toHaveBeenCalled()
@@ -1435,6 +1437,94 @@ describe('PromptInput render surface', () => {
       })
     } finally {
       resetCommandQueue()
+      await rendered.dispose()
+    }
+  })
+
+  test('buffers current image paste contents before newline insertion rerender', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'undo-buffer-image',
+      mediaType: 'image/png',
+    })
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+      harness.pushToBuffer.mockClear()
+
+      harness.keybindings['chat:newline']?.()
+
+      expect(harness.pushToBuffer).toHaveBeenCalledWith(
+        '[Image #1]',
+        '[Image #1]'.length,
+        {
+          1: expect.objectContaining({
+            content: 'undo-buffer-image',
+            id: 1,
+            mediaType: 'image/png',
+            type: 'image',
+          }),
+        },
+      )
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]\n')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('opens external editor with current image paste drafts before parent rerender', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'editor-image',
+      mediaType: 'image/jpeg',
+    })
+    harness.editPromptResult = { content: 'edited image draft', error: null }
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+      harness.pushToBuffer.mockClear()
+
+      await harness.keybindings['chat:externalEditor']?.()
+
+      const expectedPastedContents = {
+        1: expect.objectContaining({
+          content: 'editor-image',
+          id: 1,
+          mediaType: 'image/jpeg',
+          type: 'image',
+        }),
+      }
+      expect(editPromptInEditor).toHaveBeenCalledWith(
+        '[Image #1]',
+        expectedPastedContents,
+      )
+      expect(harness.pushToBuffer).toHaveBeenCalledWith(
+        '[Image #1]',
+        '[Image #1]'.length,
+        expectedPastedContents,
+      )
+      expect(onInputChange).toHaveBeenCalledWith('edited image draft')
+    } finally {
       await rendered.dispose()
     }
   })
