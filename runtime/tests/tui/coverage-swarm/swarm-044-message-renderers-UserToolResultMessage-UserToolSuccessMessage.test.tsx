@@ -103,6 +103,46 @@ describe('UserToolSuccessMessage swarm-044 coverage', () => {
     expect(output).toContain('1 PostToolUse hook running')
   })
 
+  test('recovers fallback output from the matching tool result block', async () => {
+    const firstToolUseID = 'toolu_swarm_044_first'
+    const secondToolUseID = 'toolu_swarm_044_second'
+
+    const output = await renderToString(
+      <UserToolSuccessMessage
+        message={{
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: firstToolUseID,
+                content: '<persisted-output>first fallback output</persisted-output>',
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: secondToolUseID,
+                content:
+                  '<persisted-output>second fallback output</persisted-output>',
+              },
+            ],
+          },
+          toolUseResult: null,
+        } as never}
+        lookups={createLookups(secondToolUseID)}
+        toolUseID={secondToolUseID}
+        progressMessagesForMessage={[]}
+        tools={[]}
+        verbose={false}
+        width={60}
+      />,
+      { columns: 90, rows: 12 },
+    )
+
+    expect(output).toContain('second fallback output')
+    expect(output).not.toContain('first fallback output')
+  })
+
   test('falls back instead of delegating when output schema validation fails', async () => {
     const toolUseID = 'toolu_swarm_044_invalid_schema'
     const renderToolResultMessage = vi.fn(() => <Text>delegated result</Text>)

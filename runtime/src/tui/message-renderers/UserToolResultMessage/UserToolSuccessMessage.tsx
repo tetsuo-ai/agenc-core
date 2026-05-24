@@ -46,9 +46,14 @@ function formatRecoveredToolResultContent(content: unknown): string | null {
   return String(content);
 }
 
-export function getToolResultFallbackContent(messageContent: unknown): string | null {
+export function getToolResultFallbackContent(messageContent: unknown, toolUseID?: string): string | null {
   if (!Array.isArray(messageContent)) return null;
-  const toolResultBlock = messageContent.find(block => block && typeof block === 'object' && 'type' in block && block.type === 'tool_result');
+  const toolResultBlock = messageContent.find(block => {
+    if (!block || typeof block !== 'object' || !('type' in block) || block.type !== 'tool_result') {
+      return false;
+    }
+    return toolUseID === undefined || ('tool_use_id' in block && block.tool_use_id === toolUseID);
+  });
   if (!toolResultBlock || !('content' in toolResultBlock)) {
     return null;
   }
@@ -84,7 +89,7 @@ export function UserToolSuccessMessage({
     deleteClassifierApproval(toolUseID);
   }, [toolUseID]);
 
-  const fallbackContent = React.useMemo(() => getToolResultFallbackContent(message.message.content), [message.message.content]);
+  const fallbackContent = React.useMemo(() => getToolResultFallbackContent(message.message.content, toolUseID), [message.message.content, toolUseID]);
   if (isToolUseResultMissing(message.toolUseResult) || !tool) {
     return fallbackContent !== null ? <Box flexDirection="column">
           <Box flexDirection="column" width={width}>
