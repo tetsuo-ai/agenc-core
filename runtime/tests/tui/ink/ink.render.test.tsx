@@ -533,6 +533,33 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('drops suspended stdin state when resume sees non-tty stdin', async () => {
+    const harness = await createHarness({ stdinIsRaw: true })
+    const readableListener = vi.fn()
+
+    try {
+      harness.stdin.on('readable', readableListener)
+
+      harness.instance.suspendStdin()
+      expect(harness.stdin.listeners('readable')).not.toContain(readableListener)
+      expect(harness.rawModes).toEqual([false])
+
+      harness.stdin.isTTY = false
+      harness.instance.resumeStdin()
+
+      expect(harness.stdin.listeners('readable')).not.toContain(readableListener)
+      expect(harness.rawModes).toEqual([false])
+
+      harness.stdin.isTTY = true
+      harness.instance.resumeStdin()
+
+      expect(harness.stdin.listeners('readable')).not.toContain(readableListener)
+      expect(harness.rawModes).toEqual([false])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test('drops stale stdin resumes after detach or unmount', async () => {
     const detached = await createHarness({ stdinIsRaw: true })
     const detachedReadable = vi.fn()
