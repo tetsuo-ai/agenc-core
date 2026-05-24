@@ -14,7 +14,7 @@ import { useInput } from '../ink.js';
 import { useOptionalKeybindingContext, useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { useAppState, useAppStateStore } from '../state/AppState.js';
+import { useAppState } from '../state/AppState.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import type { InlineGhostText, PromptInputMode } from '../../types/textInputTypes';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled';
@@ -304,10 +304,12 @@ export function useTypeahead({
     return maxLen + 6; // +1 for "/" prefix, +5 for padding
   }, [commands]);
   const [maxColumnWidth, setMaxColumnWidth] = useState<number | undefined>(undefined);
+  const agentNameRegistry = useAppState(s => s.agentNameRegistry);
   const mcpClients = useAppState(s => s.mcp.clients);
   const mcpResources = useAppState(s => s.mcp.resources);
-  const store = useAppStateStore();
   const promptSuggestion = useAppState(s => s.promptSuggestion);
+  const tasks = useAppState(s => s.tasks);
+  const teamContext = useAppState(s => s.teamContext);
   // PromptInput hides suggestion ghost text in teammate view — mirror that
   // gate here so Tab/rightArrow can't accept what isn't displayed.
   const isViewingTeammate = useAppState(s => !!s.viewingAgentTaskId);
@@ -527,7 +529,7 @@ export function useTypeahead({
   const debouncedFetchSlackChannels = useDebounceCallback(fetchSlackChannels, 150);
 
   // Handle immediate suggestion logic (cheap operations)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: store is a stable context ref, read imperatively at call-time
+  // biome-ignore lint/correctness/useExhaustiveDependencies: suggestionsRef avoids selection-only churn; module helpers are stable
   const updateSuggestions = useCallback(async (value: string, inputCursorOffset?: number): Promise<void> => {
     // Use provided cursor offset or fall back to ref (avoids dependency on cursorOffset)
     const effectiveCursorOffset = inputCursorOffset ?? cursorOffsetRef.current;
@@ -614,13 +616,10 @@ export function useTypeahead({
     const atMatch = mode !== 'bash' ? value.substring(0, effectiveCursorOffset).match(/(^|\s)@([\w-]*)$/) : null;
     if (atMatch) {
       const partialName = (atMatch[2] ?? '').toLowerCase();
-      // Imperative read — reading at call-time fixes staleness for
-      // teammates/subagents added mid-session.
-      const state = store.getState();
       const members: SuggestionItem[] = [];
       const seen = new Set<string>();
-      if (isAgentSwarmsEnabled() && state.teamContext) {
-        for (const t of Object.values(state.teamContext.teammates ?? {})) {
+      if (isAgentSwarmsEnabled() && teamContext) {
+        for (const t of Object.values(teamContext.teammates ?? {})) {
           if (t.name === TEAM_LEAD_NAME) continue;
           if (!t.name.toLowerCase().startsWith(partialName)) continue;
           seen.add(t.name);
@@ -631,10 +630,10 @@ export function useTypeahead({
           });
         }
       }
-      for (const [name, agentId] of state.agentNameRegistry) {
+      for (const [name, agentId] of agentNameRegistry) {
         if (seen.has(name)) continue;
         if (!name.toLowerCase().startsWith(partialName)) continue;
-        const status = state.tasks[agentId]?.status;
+        const status = tasks[agentId]?.status;
         members.push({
           id: `dm-${name}`,
           displayText: `@${name}`,
@@ -962,7 +961,10 @@ export function useTypeahead({
     debouncedFetchSlackChannels,
     mode,
     suppressSuggestions,
+    agentNameRegistry,
     mcpClients,
+    tasks,
+    teamContext,
     // Note: using suggestionsRef instead of suggestions to avoid recreating
     // this callback when only selectedSuggestion changes (not the suggestions list)
     allCommandsMaxWidth
