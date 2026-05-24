@@ -52,6 +52,26 @@ describe("UserToolSuccessMessage fallback recovery", () => {
     ).toBe("first\nsecond");
   });
 
+  test("recovers persisted output for a matching tool result id", () => {
+    expect(
+      getToolResultFallbackContent(
+        [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_first",
+            content: "<persisted-output>first output</persisted-output>",
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_second",
+            content: "<persisted-output>second output</persisted-output>",
+          },
+        ],
+        "toolu_second",
+      ),
+    ).toBe("second output");
+  });
+
   test("only treats nullish toolUseResult values as missing", () => {
     expect(isToolUseResultMissing(undefined)).toBe(true);
     expect(isToolUseResultMissing(null)).toBe(true);
