@@ -149,6 +149,7 @@ vi.mock('./unifiedSuggestions', () => ({
 
 import { createRoot } from '../ink/root.js'
 import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js'
+import { startBackgroundCacheRefresh } from './fileSuggestions'
 import { useTypeahead } from './useTypeahead.js'
 
 type SuggestionsState = {
@@ -232,6 +233,35 @@ function tabKeypress(): ParsedKeyForTest {
 }
 
 describe('useTypeahead useInput bridge', () => {
+  test('does not start background file prewarm under NODE_ENV=test', async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'test'
+    vi.mocked(startBackgroundCacheRefresh).mockClear()
+    const { stdin, stdout } = createTestStreams()
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      root.render(<TypeaheadHarness />)
+      await sleep(25)
+
+      expect(startBackgroundCacheRefresh).not.toHaveBeenCalled()
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = previousNodeEnv
+      }
+      await sleep(25)
+    }
+  })
+
   test('stops the original Ink input event when the adapted keyboard event is consumed', async () => {
     const { stdin, stdout } = createTestStreams()
     const root = await createRoot({
