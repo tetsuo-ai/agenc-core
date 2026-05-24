@@ -1,11 +1,12 @@
 import type { SearchMatch, WorkbenchAttachment, WorkbenchCommand } from "./types.js";
+import { normalizeWorkspacePathForReferences } from "./pathReferences.js";
 
 export function openPreviewCommand(
   path: string,
   line?: number,
   focus = true,
 ): WorkbenchCommand {
-  return { type: "openPreview", path, line, focus };
+  return { type: "openPreview", path: normalizeCommandPath(path), line, focus };
 }
 
 export function openBufferCommand(
@@ -13,17 +14,18 @@ export function openBufferCommand(
   line?: number,
   focus = true,
 ): WorkbenchCommand {
-  return { type: "openBuffer", path, line, focus };
+  return { type: "openBuffer", path: normalizeCommandPath(path), line, focus };
 }
 
 export function attachFileCommand(path: string): WorkbenchCommand {
+  const normalizedPath = normalizeCommandPath(path);
   return {
     type: "attach",
     attachment: {
-      id: `file:${path}`,
+      id: `file:${normalizedPath}`,
       kind: "file",
-      path,
-      label: path,
+      path: normalizedPath,
+      label: normalizedPath,
     },
   };
 }
@@ -57,15 +59,16 @@ export function attachFileRangeCommand(
   line: number,
   endLine = line,
 ): WorkbenchCommand {
+  const normalizedPath = normalizeCommandPath(path);
   return {
     type: "attach",
     attachment: {
-      id: `file-range:${path}:${line}-${endLine}`,
+      id: `file-range:${normalizedPath}:${line}-${endLine}`,
       kind: "file-range",
-      path,
+      path: normalizedPath,
       line,
       endLine,
-      label: `${path}:${line}${endLine !== line ? `-${endLine}` : ""}`,
+      label: `${normalizedPath}:${line}${endLine !== line ? `-${endLine}` : ""}`,
     },
   };
 }
@@ -83,15 +86,21 @@ export function attachTaskErrorCommand(input: {
   readonly line?: number;
   readonly label?: string;
 }): WorkbenchCommand {
+  const file = normalizeCommandPath(input.file);
   return {
     type: "attach",
     attachment: {
-      id: `task-error:${input.taskId}:${input.file}:${input.line ?? 1}`,
+      id: `task-error:${input.taskId}:${file}:${input.line ?? 1}`,
       kind: "task-error",
-      path: input.file,
+      path: file,
       line: input.line,
       taskId: input.taskId,
-      label: input.label ?? `${input.file}${input.line ? `:${input.line}` : ""}`,
+      label: normalizePathBackedLabel(
+        input.label,
+        input.file,
+        file,
+        `${file}${input.line ? `:${input.line}` : ""}`,
+      ),
     },
   };
 }
@@ -101,40 +110,48 @@ export function attachDiffHunkCommand(input: {
   readonly line?: number;
   readonly label?: string;
 }): WorkbenchCommand {
+  const path = normalizeCommandPath(input.path);
   return {
     type: "attach",
     attachment: {
-      id: `diff-hunk:${input.path}:${input.line ?? 1}`,
+      id: `diff-hunk:${path}:${input.line ?? 1}`,
       kind: "diff-hunk",
-      path: input.path,
+      path,
       line: input.line,
-      label: input.label ?? `${input.path}${input.line ? `:${input.line}` : ""}`,
+      label: normalizePathBackedLabel(
+        input.label,
+        input.path,
+        path,
+        `${path}${input.line ? `:${input.line}` : ""}`,
+      ),
     },
   };
 }
 
 export function searchMatchAttachment(query: string, match: SearchMatch): WorkbenchAttachment {
+  const file = normalizeCommandPath(match.file);
   return {
-    id: `search-result:${match.id}`,
+    id: `search-result:${replaceFirst(match.id, match.file, file)}`,
     kind: "search-result",
-    path: match.file,
+    path: file,
     line: match.line,
     query,
-    label: `${match.file}:${match.line}`,
+    label: `${file}:${match.line}`,
   };
 }
 
 export function attachmentPromptMention(attachment: WorkbenchAttachment): string | null {
   if (!attachment.path) return null;
+  const path = normalizeCommandPath(attachment.path);
   switch (attachment.kind) {
     case "file":
-      return `@${attachment.path}`;
+      return `@${path}`;
     case "file-range":
-      return `@${attachment.path}#L${attachment.line ?? 1}${attachment.endLine && attachment.endLine !== attachment.line ? `-${attachment.endLine}` : ""}`;
+      return `@${path}#L${attachment.line ?? 1}${attachment.endLine && attachment.endLine !== attachment.line ? `-${attachment.endLine}` : ""}`;
     case "search-result":
     case "diff-hunk":
     case "task-error":
-      return `@${attachment.path}${attachment.line ? `#L${attachment.line}` : ""}`;
+      return `@${path}${attachment.line ? `#L${attachment.line}` : ""}`;
   }
 }
 
@@ -151,4 +168,25 @@ export function materializeAttachmentMentions(
     );
   if (mentions.length === 0) return input;
   return `${mentions.join(" ")}\n\n${input}`;
+}
+
+function normalizeCommandPath(path: string): string {
+  return normalizeWorkspacePathForReferences(path);
+}
+
+function normalizePathBackedLabel(
+  label: string | undefined,
+  originalPath: string,
+  normalizedPath: string,
+  defaultLabel: string,
+): string {
+  if (label === undefined) return defaultLabel;
+  return replaceFirst(label, originalPath, normalizedPath);
+}
+
+function replaceFirst(value: string, needle: string, replacement: string): string {
+  if (!needle || needle === replacement) return value;
+  const index = value.indexOf(needle);
+  if (index < 0) return value;
+  return `${value.slice(0, index)}${replacement}${value.slice(index + needle.length)}`;
 }
