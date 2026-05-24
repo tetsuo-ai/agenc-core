@@ -1355,6 +1355,67 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('opens workbench global search against current paste draft before parent rerender', async () => {
+    harness.features.QUICK_SEARCH = true
+    const onInputChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      setHelpOpen,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      ;(baseProps.onPaste as (text: string) => void)('search term')
+      expect(onInputChange).toHaveBeenCalledWith('search term')
+
+      harness.keybindings['app:globalSearch']?.()
+
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(harness.appState.workbench).toEqual(
+        expect.objectContaining({
+          activeSurfaceMode: 'search',
+          focusedPane: 'surface',
+          searchQuery: 'search term',
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('opens history search against current paste draft before parent rerender', async () => {
+    harness.features.HISTORY_PICKER = true
+    const onInputChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      setHelpOpen,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      ;(baseProps.onPaste as (text: string) => void)('recent query')
+      expect(onInputChange).toHaveBeenCalledWith('recent query')
+
+      harness.keybindings['history:search']?.()
+      await sleep(25)
+
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(harness.historySearchProps).toEqual(
+        expect.objectContaining({
+          initialQuery: 'recent query',
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('stashes image paste drafts before the parent input rerenders', async () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue({
       base64: 'jpeg-data',

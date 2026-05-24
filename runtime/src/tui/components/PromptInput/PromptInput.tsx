@@ -2251,7 +2251,7 @@ function PromptInput({
       if (isWorkbenchEnabled()) {
         setAppState(prev => applyWorkbenchCommand(prev, {
           type: 'openSearch',
-          query: input.trim(),
+          query: lastInternalInputRef.current.trim(),
         }));
         setHelpOpen(false);
         return;
@@ -2681,12 +2681,13 @@ function PromptInput({
     }
   }
   if (feature('HISTORY_PICKER') && showHistoryPicker) {
-    return <HistorySearchDialog initialQuery={input} onSelect={entry => {
+    return <HistorySearchDialog initialQuery={lastInternalInputRef.current} onSelect={entry => {
       const entryMode = getModeFromInput(entry.display);
       const value = getValueFromInput(entry.display);
       onModeChange(entryMode);
       trackAndSetInput(value);
       setPastedContentsAndRef(entry.pastedContents);
+      cursorOffsetRef.current = value.length;
       setCursorOffset(value.length);
       setShowHistoryPicker(false);
     }} onCancel={() => setShowHistoryPicker(false)} />;
