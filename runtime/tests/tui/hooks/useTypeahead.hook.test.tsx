@@ -211,7 +211,10 @@ import type { SuggestionItem } from '../components/PromptInput/PromptInputFooter
 import type { PromptInputMode } from '../../types/textInputTypes.js'
 import { useTypeahead } from './useTypeahead.js'
 import { generateUnifiedSuggestions } from './unifiedSuggestions'
-import { getDirectoryCompletions } from '../../utils/suggestions/directoryCompletion.js'
+import {
+  getDirectoryCompletions,
+  getPathCompletions,
+} from '../../utils/suggestions/directoryCompletion.js'
 import { searchSessionsByCustomTitle } from '../../utils/sessionStorage.js'
 
 type SuggestionsState = {
@@ -233,6 +236,7 @@ function sleep(ms: number): Promise<void> {
 
 const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions)
 const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions)
+const getPathCompletionsMock = vi.mocked(getPathCompletions)
 const searchSessionsByCustomTitleMock = vi.mocked(searchSessionsByCustomTitle)
 
 function createKey(
@@ -752,6 +756,59 @@ describe('useTypeahead hook paths', () => {
           metadata: { type: 'directory' },
         },
       ])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('ignores stale @ path completions after input leaves the path token', async () => {
+    let resolveSlowPathCompletion: (items: unknown[]) => void = () => {}
+    harness.directoryCompletionResponses.set(
+      '/tm',
+      new Promise(resolve => {
+        resolveSlowPathCompletion = resolve
+      }),
+    )
+    harness.unifiedSuggestions = [
+      {
+        displayText: 'plain.md',
+        id: 'plain.md',
+        description: 'file',
+      },
+    ]
+    const rendered = await renderHookHarness({
+      input: '@/tm',
+      cursorOffset: '@/tm'.length,
+    })
+
+    try {
+      await waitFor(
+        () => getPathCompletionsMock.mock.calls.some(call => call[0] === '/tm'),
+        'initial delayed path completion request',
+      )
+
+      rendered.rerender({
+        input: '@plain',
+        cursorOffset: '@plain'.length,
+      })
+      await waitFor(
+        () =>
+          rendered.getSnapshot().suggestionType === 'file' &&
+          rendered.getSnapshot().suggestions[0]?.id === 'plain.md',
+        'newer file suggestions',
+      )
+
+      resolveSlowPathCompletion([
+        {
+          displayText: '/tmp/project',
+          id: '/tmp/project',
+          metadata: { type: 'directory' },
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('file')
+      expect(rendered.getSnapshot().suggestions[0]?.id).toBe('plain.md')
     } finally {
       await rendered.dispose()
     }

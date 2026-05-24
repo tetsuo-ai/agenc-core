@@ -340,7 +340,7 @@ export function useTypeahead({
   // Track previous input to detect actual text changes vs. callback recreations
   const prevInputRef = useRef('');
   // Track the latest path token to discard stale results from path completion
-  const latestPathTokenRef = useRef('');
+  const latestPathTokenRef = useRef<string | null>(null);
   // Track command-argument async lookups to discard stale results.
   const latestCommandDirectoryArgsRef = useRef<string | null>(null);
   const latestResumeTitleArgsRef = useRef<string | null>(null);
@@ -468,6 +468,7 @@ export function useTypeahead({
   const updateSuggestions = useCallback(async (value: string, inputCursorOffset?: number): Promise<void> => {
     // Use provided cursor offset or fall back to ref (avoids dependency on cursorOffset)
     const effectiveCursorOffset = inputCursorOffset ?? cursorOffsetRef.current;
+    latestPathTokenRef.current = null;
     const parsedCommandForInvalidation = mode === 'prompt' && isCommandInput(value) ? extractCommandNameAndArgs(value) : null;
     if (parsedCommandForInvalidation?.commandName !== 'add-dir') {
       latestCommandDirectoryArgsRef.current = null;
