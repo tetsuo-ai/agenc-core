@@ -91,6 +91,13 @@ const harness = vi.hoisted(() => {
           display: string
           pastedContents: Record<number, PastedContent>
         }) => void),
+    historySetInput: undefined as
+      | undefined
+      | ((
+          value: string,
+          mode: string,
+          pastedContents: Record<number, PastedContent>,
+        ) => void),
     ideAtMentionedHandler: undefined as
       | undefined
       | ((atMentioned: {
@@ -204,6 +211,7 @@ const harness = vi.hoisted(() => {
       harness.history.setHistoryQuery.mockClear()
       harness.historySearchProps = undefined
       harness.historySearchSelect = undefined
+      harness.historySetInput = undefined
       harness.ideAtMentionedHandler = undefined
       harness.isAgentSwarmsEnabled = false
       harness.isBackgroundTask.mockReset()
@@ -318,13 +326,22 @@ vi.mock('../../hooks/useIdeAtMentioned.js', () => ({
 }))
 
 vi.mock('../../hooks/useArrowKeyHistory.js', () => ({
-  useArrowKeyHistory: () => ({
-    dismissSearchHint: harness.history.dismissSearchHint,
-    historyIndex: harness.history.historyIndex,
-    onHistoryDown: harness.history.onHistoryDown,
-    onHistoryUp: harness.history.onHistoryUp,
-    resetHistory: harness.history.resetHistory,
-  }),
+  useArrowKeyHistory: (
+    onSetInput: (
+      value: string,
+      mode: string,
+      pastedContents: Record<number, PastedContent>,
+    ) => void,
+  ) => {
+    harness.historySetInput = onSetInput
+    return {
+      dismissSearchHint: harness.history.dismissSearchHint,
+      historyIndex: harness.history.historyIndex,
+      onHistoryDown: harness.history.onHistoryDown,
+      onHistoryUp: harness.history.onHistoryUp,
+      resetHistory: harness.history.resetHistory,
+    }
+  },
 }))
 
 vi.mock('../../hooks/useDoublePress.js', () => ({
@@ -2893,6 +2910,33 @@ describe('PromptInput render surface', () => {
       expect(harness.history.onHistoryDown).not.toHaveBeenCalled()
     } finally {
       await guarded.dispose()
+    }
+  })
+
+  test('restores a literal question mark from history without toggling help', async () => {
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const setPastedContents = vi.fn()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      onModeChange,
+      setHelpOpen,
+      setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.historySetInput?.('?', 'prompt', {})
+
+      expect(onInputChange).toHaveBeenCalledWith('?')
+      expect(onModeChange).toHaveBeenCalledWith('prompt')
+      expect(setPastedContents).toHaveBeenCalledWith({})
+      expect(setHelpOpen).not.toHaveBeenCalledWith(expect.any(Function))
+    } finally {
+      await rendered.dispose()
     }
   })
 
