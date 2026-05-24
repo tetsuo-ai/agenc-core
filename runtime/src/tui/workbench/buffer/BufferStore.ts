@@ -652,13 +652,17 @@ export class WorkbenchBufferStore {
     return {
       context,
       flush: () => {
-        if (textChanged) {
-          this.#replaceDocument((document) => replaceBufferText(document, nextText, nextOffset), true);
-        } else if (offsetChanged) {
-          this.#replaceDocument((document) => setBufferCursorOffset(document, nextOffset), false);
-        }
         if (enteredInsert) {
           this.#vimState = { mode: "INSERT", insertedText: "" };
+        }
+        let emitted = false;
+        if (textChanged) {
+          emitted = this.#replaceDocument((document) => replaceBufferText(document, nextText, nextOffset), true);
+        } else if (offsetChanged) {
+          emitted = this.#replaceDocument((document) => setBufferCursorOffset(document, nextOffset), false);
+        }
+        if (enteredInsert && !emitted) {
+          this.#emit();
         }
       },
     };
@@ -744,12 +748,12 @@ export class WorkbenchBufferStore {
     this.#replaceDocument(update, true);
   }
 
-  #replaceDocument(update: (document: BufferDocument) => BufferDocument, notifyLsp: boolean): void {
+  #replaceDocument(update: (document: BufferDocument) => BufferDocument, notifyLsp: boolean): boolean {
     const current = this.#document;
-    if (!current) return;
+    if (!current) return false;
     const previousText = bufferText(current);
     const next = update(current);
-    if (next === current) return;
+    if (next === current) return false;
     this.#document = next;
     this.#status = "ready";
     this.#error = null;
@@ -762,6 +766,7 @@ export class WorkbenchBufferStore {
       if (file) safeNotifyBufferLsp(() => notifyBufferLspChanged(file.absolutePath, nextText));
     }
     this.#emit();
+    return true;
   }
 
   async #load(
