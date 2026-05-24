@@ -13,6 +13,8 @@ import type { SearchMatch } from "../types.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { clampSurfaceSelection } from "./selection.js";
 
+const SEARCH_RESULT_LIMIT = 500;
+
 export function SearchSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -49,10 +51,17 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
         (lines) => {
           if (controller.signal.aborted) return;
           for (const line of lines) {
+            if (next.length >= SEARCH_RESULT_LIMIT) break;
             const match = parseWorkbenchRipgrepJsonLine(line, cwd);
             if (match) next.push(match);
+            if (next.length >= SEARCH_RESULT_LIMIT) {
+              setMatches(next.slice(0, SEARCH_RESULT_LIMIT));
+              setLoading(false);
+              controller.abort();
+              return;
+            }
           }
-          setMatches(next.slice(0, 500));
+          setMatches(next.slice(0, SEARCH_RESULT_LIMIT));
         },
       )
         .then(() => {
@@ -185,7 +194,7 @@ export function SearchSurfaceView({
       {loading ? <Text dimColor wrap="truncate-end">searching...</Text> : null}
       {error ? <Text color="error" wrap="truncate-end">{error}</Text> : null}
       {!loading && !error && matches.length === 0 ? <Text dimColor wrap="truncate-end">No results</Text> : null}
-      {matches.length >= 500 ? <Text color="warning" wrap="truncate-end">Results truncated at 500 matches</Text> : null}
+      {matches.length >= SEARCH_RESULT_LIMIT ? <Text color="warning" wrap="truncate-end">Results truncated at 500 matches</Text> : null}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {rows.map((row) =>
           row.kind === "file" ? (

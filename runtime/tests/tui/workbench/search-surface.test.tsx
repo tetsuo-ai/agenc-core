@@ -532,6 +532,50 @@ describe("SearchSurface", () => {
       stdout.end();
     }
   });
+
+  it("aborts the active ripgrep stream once the visible result cap is reached", async () => {
+    searchHarness.autoFlush = false;
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+            },
+          }}
+        >
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      call.onLines(
+        Array.from({ length: 501 }, (_, index) =>
+          jsonMatchLine("src/many.ts", index + 1, `needle ${index + 1}`),
+        ),
+      );
+      await sleep(50);
+
+      expect(call.signal.aborted).toBe(true);
+      expect(compact(output())).toContain("truncatedat500matches");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
 
 function compact(value: string): string {
