@@ -1546,6 +1546,8 @@ describe('PromptInput render surface', () => {
           .mockReturnValueOnce('bash-input-id')
           .mockReturnValueOnce('bash-stdout-id')
           .mockReturnValueOnce('bash-late-stdout-id')
+          .mockReturnValueOnce('bash-combined-stdout-id')
+          .mockReturnValueOnce('bash-combined-stderr-id')
           .mockReturnValueOnce('bash-stderr-id'),
       },
       setToolJSX,
@@ -1573,6 +1575,15 @@ describe('PromptInput render surface', () => {
             content: [
               { text: '<ignored>metadata</ignored>', type: 'text' },
               { text: '<bash-stdout>late</bash-stdout>', type: 'text' },
+            ],
+          },
+          type: 'user',
+        },
+        {
+          message: {
+            content: [
+              { text: '<bash-stdout>combined</bash-stdout>', type: 'text' },
+              { text: '<bash-stderr>combined warn</bash-stderr>', type: 'text' },
             ],
           },
           type: 'user',
@@ -1634,6 +1645,22 @@ describe('PromptInput render surface', () => {
           msg: expect.objectContaining({
             payload: expect.objectContaining({
               message: '<bash-stdout>late</bash-stdout>',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          id: 'bash-combined-stdout-id',
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-stdout>combined</bash-stdout>',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          id: 'bash-combined-stderr-id',
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-stderr>combined warn</bash-stderr>',
             }),
           }),
         }),

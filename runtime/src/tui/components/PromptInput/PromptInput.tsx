@@ -1477,10 +1477,9 @@ function PromptInput({
         );
         for (const m of result.messages) {
           if (m?.type !== 'user') continue;
-          const text = extractUserMessageText(m);
-          if (text === null) continue;
-          if (!text.startsWith('<bash-stdout') && !text.startsWith('<bash-stderr')) continue;
-          emitTranscriptText(text);
+          for (const text of extractUserMessageBashOutputTexts(m)) {
+            emitTranscriptText(text);
+          }
         }
       } catch (err) {
         const errText = err instanceof Error ? err.message : String(err);
@@ -2807,21 +2806,23 @@ export function getNextPasteIdAfter(
   }
   return maxId + 1;
 }
-function extractUserMessageText(m: unknown): string | null {
+function isBashOutputText(text: string): boolean {
+  return text.startsWith('<bash-stdout') || text.startsWith('<bash-stderr');
+}
+function extractUserMessageBashOutputTexts(m: unknown): string[] {
   const content = (m as { message?: { content?: unknown }; content?: unknown }).message?.content
     ?? (m as { content?: unknown }).content;
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return null;
-  let firstText: string | null = null;
+  if (typeof content === 'string') return isBashOutputText(content) ? [content] : [];
+  if (!Array.isArray(content)) return [];
+  const outputs: string[] = [];
   for (const block of content) {
     if (block?.type === 'text' && typeof block.text === 'string') {
-      firstText ??= block.text;
-      if (block.text.startsWith('<bash-stdout') || block.text.startsWith('<bash-stderr')) {
-        return block.text;
+      if (isBashOutputText(block.text)) {
+        outputs.push(block.text);
       }
     }
   }
-  return firstText;
+  return outputs;
 }
 function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastModeCooldown: boolean): BorderTextOptions | undefined {
   if (!showFastIcon) return undefined;
