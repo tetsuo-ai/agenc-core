@@ -7,6 +7,7 @@ const keybindingHarness = vi.hoisted(() => ({
   deferredTaskIds: new Set<string>(),
   handlers: {} as Record<string, () => void>,
   logError: vi.fn(),
+  pendingRejects: new Map<string, (reason?: unknown) => void>(),
   pendingReads: new Map<string, (result: { content: string }) => void>(),
   readCounts: {} as Record<string, number>,
   rejectOnRead: {} as Record<string, number>,
@@ -23,7 +24,8 @@ vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
       throw new Error(`tail failed for ${taskId}`);
     }
     if (keybindingHarness.deferredTaskIds.has(taskId)) {
-      return new Promise<{ content: string }>((resolve) => {
+      return new Promise<{ content: string }>((resolve, reject) => {
+        keybindingHarness.pendingRejects.set(taskId, reject);
         keybindingHarness.pendingReads.set(taskId, resolve);
       });
     }
@@ -65,6 +67,7 @@ describe("AgentSurface", () => {
     keybindingHarness.deferredTaskIds = new Set();
     keybindingHarness.handlers = {};
     keybindingHarness.logError.mockReset();
+    keybindingHarness.pendingRejects = new Map();
     keybindingHarness.pendingReads = new Map();
     keybindingHarness.readCounts = {};
     keybindingHarness.rejectOnRead = {};
@@ -260,6 +263,55 @@ describe("AgentSurface", () => {
       expect(keybindingHarness.logError.mock.calls.some(([error]) =>
         error instanceof Error && error.message === "tail failed for agent-1"
       )).toBe(true);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("ignores stale tail read failures after switching selected agent tasks", async () => {
+    keybindingHarness.deferredTaskIds.add("agent-old");
+    keybindingHarness.tails["agent-new"] = "new agent output";
+    let selectAgent: ((taskId: string) => void) | null = null;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "agent-old": agentTask("agent-old", "old agent", "running", 1_000),
+              "agent-new": agentTask("agent-new", "new agent", "running", 2_000),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "agent",
+              selectedAgentTaskId: "agent-old",
+            },
+          }}
+        >
+          <AgentTaskSelector onReady={(setter) => { selectAgent = setter; }} />
+          <AgentSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+      expect(keybindingHarness.pendingRejects.has("agent-old")).toBe(true);
+
+      selectAgent?.("agent-new");
+      await sleep(25);
+
+      keybindingHarness.pendingRejects.get("agent-old")?.(new Error("old tail failed"));
+      await sleep(25);
+
+      expect(compact(screenText(stdout))).toContain("newagentoutput");
+      expect(keybindingHarness.logError).not.toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();
