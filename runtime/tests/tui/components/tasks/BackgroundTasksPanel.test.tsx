@@ -170,6 +170,28 @@ describe('BackgroundTasksPanel', () => {
     expect(output).toContain('← back')
   })
 
+  it('falls back to the task list when the requested detail task no longer exists', async () => {
+    appStateMock.state = {
+      tasks: {
+        b1: makeShellTask(),
+        r1: makeRemoteTask(),
+      },
+    }
+
+    const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+
+    const output = await renderToString(
+      <BackgroundTasksPanel initialDetailTaskId="missing-task" />,
+      100,
+    )
+
+    expect(output).toContain('BACKGROUND TASKS')
+    expect(output).toContain('b1')
+    expect(output).toContain('r1')
+    expect(output).not.toContain('TASK DETAIL')
+    expect(output).not.toContain('← back')
+  })
+
   it('keeps terminal background tasks visible while the dialog is open', async () => {
     appStateMock.state = {
       tasks: {
