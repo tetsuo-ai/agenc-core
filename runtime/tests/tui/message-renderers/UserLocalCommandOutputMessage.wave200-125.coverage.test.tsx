@@ -27,4 +27,19 @@ describe('UserLocalCommandOutputMessage wave200-125 coverage', () => {
     expect(output).not.toContain('local-command-stdout')
     expect(output).not.toContain('local-command-stderr')
   })
+
+  test('treats empty closed local command tags as empty output', async () => {
+    const output = await renderToString(
+      <UserLocalCommandOutputMessage
+        content={[
+          '<local-command-stdout data-kind="local"></local-command-stdout>',
+          '<local-command-stderr></local-command-stderr>',
+        ].join('\n')}
+      />,
+      { columns: 80, rows: 6 },
+    )
+
+    expect(output.trim()).toBe('')
+    expect(output).not.toContain(NO_CONTENT_MESSAGE)
+  })
 })
