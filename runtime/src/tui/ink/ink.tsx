@@ -1447,6 +1447,8 @@ export default class Ink {
     }
     const stdin = this.options.stdin;
     if (!stdin.isTTY) {
+      this.stdinListeners = [];
+      this.wasRawMode = false;
       return;
     }
 
