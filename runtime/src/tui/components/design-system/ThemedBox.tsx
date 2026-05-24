@@ -7,18 +7,19 @@ import type { DOMElement } from '../../ink/dom.js';
 import type { ClickEvent } from '../../ink/events/click-event.js';
 import type { FocusEvent } from '../../ink/events/focus-event.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
-import type { Color, Styles } from '../../ink/styles.js';
-import { getTheme, type Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Styles } from '../../ink/styles.js';
+import { getTheme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTheme } from './ThemeProvider';
+import { resolveThemedColor, type ThemedColor } from './resolveThemedColor.js';
 
 // Color props that accept theme keys
 type ThemedColorProps = {
-  readonly borderColor?: keyof Theme | Color;
-  readonly borderTopColor?: keyof Theme | Color;
-  readonly borderBottomColor?: keyof Theme | Color;
-  readonly borderLeftColor?: keyof Theme | Color;
-  readonly borderRightColor?: keyof Theme | Color;
-  readonly backgroundColor?: keyof Theme | Color;
+  readonly borderColor?: ThemedColor;
+  readonly borderTopColor?: ThemedColor;
+  readonly borderBottomColor?: ThemedColor;
+  readonly borderLeftColor?: ThemedColor;
+  readonly borderRightColor?: ThemedColor;
+  readonly backgroundColor?: ThemedColor;
 };
 
 // Base Styles without color props (they'll be overridden)
@@ -36,19 +37,6 @@ export type Props = BaseStylesWithoutColors & ThemedColorProps & {
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
 };
-
-/**
- * Resolves a color value that may be a theme key to a raw Color.
- */
-function resolveColor(color: keyof Theme | Color | undefined, theme: Theme): Color | undefined {
-  if (!color) return undefined;
-  // Check if it's a raw color (starts with rgb(, #, ansi256(, or ansi:)
-  if (color.startsWith('rgb(') || color.startsWith('#') || color.startsWith('ansi256(') || color.startsWith('ansi:')) {
-    return color as Color;
-  }
-  // It's a theme key - resolve it
-  return theme[color as keyof Theme] as Color;
-}
 
 /**
  * Theme-aware Box component that resolves theme color keys to raw colors.
@@ -103,12 +91,12 @@ function ThemedBoxInner(t0, ref: React.ForwardedRef<DOMElement>) {
   let t1;
   if ($[10] !== backgroundColor || $[11] !== borderBottomColor || $[12] !== borderColor || $[13] !== borderLeftColor || $[14] !== borderRightColor || $[15] !== borderTopColor || $[16] !== themeName) {
     const theme = getTheme(themeName);
-    resolvedBorderColor = resolveColor(borderColor, theme);
-    resolvedBorderTopColor = resolveColor(borderTopColor, theme);
-    resolvedBorderBottomColor = resolveColor(borderBottomColor, theme);
-    resolvedBorderLeftColor = resolveColor(borderLeftColor, theme);
-    resolvedBorderRightColor = resolveColor(borderRightColor, theme);
-    t1 = resolveColor(backgroundColor, theme);
+    resolvedBorderColor = resolveThemedColor(borderColor, theme);
+    resolvedBorderTopColor = resolveThemedColor(borderTopColor, theme);
+    resolvedBorderBottomColor = resolveThemedColor(borderBottomColor, theme);
+    resolvedBorderLeftColor = resolveThemedColor(borderLeftColor, theme);
+    resolvedBorderRightColor = resolveThemedColor(borderRightColor, theme);
+    t1 = resolveThemedColor(backgroundColor, theme);
     $[10] = backgroundColor;
     $[11] = borderBottomColor;
     $[12] = borderColor;

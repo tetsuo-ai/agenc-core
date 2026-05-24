@@ -7,15 +7,16 @@ import Text from '../../ink/components/Text.js';
 import type { Color, Styles } from '../../ink/styles.js';
 import { getTheme, type Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTheme } from './ThemeProvider';
+import { resolveThemedColor, type ThemedColor } from './resolveThemedColor.js';
 
 /** Colors uncolored ThemedText in the subtree. Precedence: explicit `color` >
  *  this > dimColor. Crosses Box boundaries (Ink's style cascade doesn't). */
-export const TextHoverColorContext = React.createContext<keyof Theme | undefined>(undefined);
+export const TextHoverColorContext = React.createContext<ThemedColor | undefined>(undefined);
 export type Props = {
   /**
    * Change text color. Accepts a theme key or raw color value.
    */
-  readonly color?: keyof Theme | Color;
+  readonly color?: ThemedColor;
 
   /**
    * Same as `color`, but for background. Must be a theme key.
@@ -63,19 +64,6 @@ export type Props = {
 };
 
 /**
- * Resolves a color value that may be a theme key to a raw Color.
- */
-function resolveColor(color: keyof Theme | Color | undefined, theme: Theme): Color | undefined {
-  if (!color) return undefined;
-  // Check if it's a raw color (starts with rgb(, #, ansi256(, or ansi:)
-  if (color.startsWith('rgb(') || color.startsWith('#') || color.startsWith('ansi256(') || color.startsWith('ansi:')) {
-    return color as Color;
-  }
-  // It's a theme key - resolve it
-  return theme[color as keyof Theme] as Color;
-}
-
-/**
  * Theme-aware Text component that resolves theme color keys to raw colors.
  * This wraps the base Text component with theme resolution.
  */
@@ -103,7 +91,7 @@ export default function ThemedText(t0) {
   const [themeName] = useTheme();
   const theme = getTheme(themeName);
   const hoverColor = useContext(TextHoverColorContext);
-  const resolvedColor = !color && hoverColor ? resolveColor(hoverColor, theme) : dimColor ? theme.inactive as Color : resolveColor(color, theme);
+  const resolvedColor = !color && hoverColor ? resolveThemedColor(hoverColor, theme) : dimColor ? theme.inactive as Color : resolveThemedColor(color, theme);
   const resolvedBackgroundColor = backgroundColor ? theme[backgroundColor] as Color : undefined;
   let t8;
   if ($[0] !== bold || $[1] !== children || $[2] !== inverse || $[3] !== italic || $[4] !== resolvedBackgroundColor || $[5] !== resolvedColor || $[6] !== strikethrough || $[7] !== underline || $[8] !== wrap) {

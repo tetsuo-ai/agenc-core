@@ -244,6 +244,20 @@ describe('ThemedText coverage swarm row 245', () => {
     expect(findSegment(segments, 'ansi').styles.color).toBe('ansi:yellow')
   })
 
+  test('maps legacy gray foreground names to the inactive theme color', async () => {
+    const theme = getTheme('dark')
+    const rendered = await renderText(
+      <>
+        <ThemedText color="gray">gray</ThemedText>
+        <ThemedText color="grey">grey</ThemedText>
+      </>,
+    )
+    const segments = rendered.segments()
+
+    expect(findSegment(segments, 'gray').styles.color).toBe(theme.inactive)
+    expect(findSegment(segments, 'grey').styles.color).toBe(theme.inactive)
+  })
+
   test('uses hover context for uncolored text and inactive color for dimmed text', async () => {
     const theme = getTheme('dark')
     const rendered = await renderText(
