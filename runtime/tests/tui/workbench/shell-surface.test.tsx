@@ -33,6 +33,7 @@ vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../../src/utils/task/diskOutput.js", () => ({
+  evictTaskOutput: vi.fn(),
   getTaskOutputPath: (taskId: string) => `/tmp/${taskId}.log`,
 }));
 
@@ -117,6 +118,7 @@ describe("ShellSurface", () => {
   });
 
   it("shows an empty shell state instead of rendering a selected agent task", async () => {
+    const changes: AppState[] = [];
     const output = await renderToString(
       <AppStateProvider
         initialState={{
@@ -139,6 +141,7 @@ describe("ShellSurface", () => {
             selectedShellTaskId: "agent-1",
           },
         }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
       >
         <ShellSurface focused={true} />
       </AppStateProvider>,
@@ -147,6 +150,9 @@ describe("ShellSurface", () => {
 
     expect(output).toContain("No shell task selected");
     expect(output).not.toContain("agent work");
+
+    shellHarness.handlers["surface:stop"]?.();
+    expect(changes).toHaveLength(0);
   });
 
   it("falls back to the running newest shell task after stale selection", async () => {
@@ -192,6 +198,136 @@ describe("ShellSurface", () => {
 
     expect(output).toContain("SHELL - running - new running shell");
     expect(output).not.toContain("old completed shell");
+  });
+
+  it("normalizes shell output paths when opening and attaching errors", async () => {
+    shellHarness.tails["shell-1"] = [
+      "shell failed",
+      "src\\nested\\shell.test.ts:12:3",
+    ].join("\n");
+    const changes: AppState[] = [];
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            "shell-1": {
+              ...shellTask("shell-1", "unused", "running"),
+              description: undefined,
+            } as any,
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "shell",
+            selectedShellTaskId: "shell-1",
+          },
+        }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <ShellSurface focused={true} />
+      </AppStateProvider>,
+      120,
+    );
+
+    expect(output).toContain("SHELL - running - shell-1");
+    expect(output).toContain("x stop");
+
+    shellHarness.handlers["surface:open"]?.();
+    expect(changes.at(-1)?.workbench).toMatchObject({
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/nested/shell.test.ts",
+      activeFileLine: 12,
+      focusedPane: "surface",
+    });
+
+    shellHarness.handlers["surface:attach"]?.();
+    expect(changes.at(-1)?.workbench.attachments.at(-1)).toMatchObject({
+      id: "task-error:shell-1:src/nested/shell.test.ts:12",
+      kind: "task-error",
+      path: "src/nested/shell.test.ts",
+      line: 12,
+      taskId: "shell-1",
+    });
+
+    shellHarness.handlers["surface:stop"]?.();
+    expect(changes.at(-1)?.tasks["shell-1"]?.status).toBe("killed");
+
+    shellHarness.handlers["workbench:closeSurface"]?.();
+    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+  });
+
+  it("does not dispatch location actions when no shell output location is parsed", async () => {
+    shellHarness.tails["shell-1"] = "plain output without locations";
+    const changes: AppState[] = [];
+    await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            "shell-1": shellTask("shell-1", "plain shell", "completed"),
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "shell",
+            selectedShellTaskId: "shell-1",
+          },
+        }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <ShellSurface focused={true} />
+      </AppStateProvider>,
+      100,
+    );
+
+    shellHarness.handlers["surface:open"]?.();
+    shellHarness.handlers["surface:top"]?.();
+    shellHarness.handlers["surface:attach"]?.();
+    shellHarness.handlers["surface:stop"]?.();
+
+    expect(changes).toHaveLength(0);
+  });
+
+  it("ignores tail reads that resolve after unmount", async () => {
+    shellHarness.deferredTaskIds.add("shell-1");
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "shell-1": shellTask("shell-1", "current shell", "completed"),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "shell",
+              selectedShellTaskId: "shell-1",
+            },
+          }}
+        >
+          <ShellSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      const resolveRead = shellHarness.pendingReads.get("shell-1");
+      expect(resolveRead).toBeTypeOf("function");
+
+      root.unmount();
+      resolveRead?.({ content: "src/late.ts:1:1" });
+      await sleep();
+
+      expect(shellHarness.logError).not.toHaveBeenCalled();
+    } finally {
+      stdin.end();
+      stdout.end();
+    }
   });
 
   it("clears stale tail content immediately when switching selected shell tasks", async () => {

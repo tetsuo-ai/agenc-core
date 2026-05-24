@@ -198,6 +198,41 @@ describe("TestSurface", () => {
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
   });
 
+  it("normalizes test failure paths when opening buffers", async () => {
+    keybindingHarness.tails["shell-windows"] = [
+      "FAIL windows-style failure",
+      "src\\nested\\first.test.ts:4:1",
+      "first message",
+    ].join("\n");
+    const changes: AppState[] = [];
+    await renderTestSurface({
+      selectedShellTaskId: "shell-windows",
+      tasks: {
+        "shell-windows": shellTask("shell-windows", "windows path test", "completed"),
+      },
+      onChange: changes,
+      workbench: {
+        focusedPane: "composer",
+      },
+    });
+
+    keybindingHarness.handlers["surface:openKeepFocus"]?.();
+    expect(changes.at(-1)?.workbench).toMatchObject({
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/nested/first.test.ts",
+      activeFileLine: 4,
+      focusedPane: "composer",
+    });
+
+    keybindingHarness.handlers["surface:open"]?.();
+    expect(changes.at(-1)?.workbench).toMatchObject({
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/nested/first.test.ts",
+      activeFileLine: 4,
+      focusedPane: "surface",
+    });
+  });
+
   it("ignores attach and open commands when the selected failure has no location", async () => {
     keybindingHarness.tails["shell-no-location"] = [
       "FAIL failure without location",
