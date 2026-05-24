@@ -88,7 +88,8 @@ function textValue(value: unknown): string | null {
 
 function fallbackText(value: unknown, options: ApprovalInputTextOptions): string {
   try {
-    return JSON.stringify(value, null, options.prettyJson ? 2 : undefined) ?? "";
+    const json = JSON.stringify(value, null, options.prettyJson ? 2 : undefined);
+    return json ?? String(value);
   } catch {
     return String(value);
   }
