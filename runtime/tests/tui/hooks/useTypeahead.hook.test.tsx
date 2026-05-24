@@ -1195,6 +1195,49 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('tab refreshes common-prefix file suggestions from the replaced token', async () => {
+    harness.unifiedSuggestions = [
+      {
+        id: 'src/app.ts',
+        displayText: 'src/app.ts',
+        description: 'file',
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@sr some filler text @sr',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'file suggestions',
+      )
+
+      generateUnifiedSuggestionsMock.mockClear()
+      harness.keybindings['autocomplete:accept']?.()
+
+      expect(onInputChange).toHaveBeenCalledWith(
+        '@sr some filler text @src/app.ts',
+      )
+      expect(setCursorOffset).toHaveBeenCalledWith(
+        '@sr some filler text @src/app.ts'.length,
+      )
+      await waitFor(
+        () =>
+          generateUnifiedSuggestionsMock.mock.calls.some(
+            call => call[0] === 'src/app.ts',
+          ),
+        'common-prefix refresh uses replaced token',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('tab handles directory suggestions in command and general path contexts', async () => {
     harness.directorySuggestions = [
       {
