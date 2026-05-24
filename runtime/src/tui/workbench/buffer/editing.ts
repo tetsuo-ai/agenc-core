@@ -214,9 +214,9 @@ export function moveBufferCursor(
   let target = selection.head;
   let preferredColumn = document.preferredColumn;
 
-  if (!options.extend && from !== to) {
+  if (!options.extend && from !== to && (move === "left" || move === "right")) {
     if (move === "left") target = from;
-    else if (move === "right") target = to;
+    else target = to;
     preferredColumn = null;
   } else if (move === "left") {
     target = previousGraphemeOffset(bufferText(document), selection.head);

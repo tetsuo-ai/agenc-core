@@ -66,4 +66,17 @@ describe("buffer editing model", () => {
     document = moveBufferCursor(document, "down");
     expect(documentPosition(document)).toMatchObject({ line: 3, column: 1 });
   });
+
+  it("honors explicit line and document moves while collapsing selections", () => {
+    let document = createBufferDocument("alpha\nbeta\ngamma");
+    document = moveBufferCursor(document, "right");
+    document = moveBufferCursor(document, "right", { extend: true });
+
+    document = moveBufferCursor(document, "lineEnd");
+    expect(documentPosition(document)).toMatchObject({ line: 1, column: 5 });
+
+    document = moveBufferCursor(document, "left", { extend: true });
+    document = moveBufferCursor(document, "bottom");
+    expect(documentPosition(document)).toMatchObject({ line: 3, column: 5 });
+  });
 });
