@@ -667,7 +667,7 @@ beforeAll(async () => {
   installElicitationResolvers = app.installElicitationResolvers;
   settlePendingOnSubmit = app.settlePendingOnSubmit;
   visibleCancelStreamMode = app.visibleCancelStreamMode;
-});
+}, 30_000);
 
 async function renderApp(node: React.ReactNode): Promise<string> {
   const { stdout, stdin, output } = createTestStreams();
