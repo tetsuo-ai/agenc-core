@@ -10,8 +10,10 @@ import type { Frame } from './frame.ts'
 import instances from './instances.ts'
 import { createRoot, type Root } from './root.ts'
 import { CellWidth, cellAt } from './screen.ts'
+import { BEL } from './termio/ansi.ts'
 import { CURSOR_HOME, ERASE_SCREEN } from './termio/csi.ts'
 import { ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN } from './termio/dec.ts'
+import { useTerminalNotification } from './useTerminalNotification.ts'
 
 const clipboardMock = vi.hoisted(() => ({
   logError: vi.fn(),
@@ -77,6 +79,20 @@ function textNode(children: React.ReactNode): React.ReactElement {
     },
     children,
   )
+}
+
+function CaptureTerminalBell({
+  onReady,
+}: {
+  onReady: (notifyBell: () => void) => void
+}): React.ReactElement {
+  const { notifyBell } = useTerminalNotification()
+
+  React.useEffect(() => {
+    onReady(notifyBell)
+  }, [notifyBell, onReady])
+
+  return textNode('ready')
 }
 
 function createTestStreams(options: {
@@ -321,6 +337,44 @@ describe('Ink instance rendering paths', () => {
       expect(writes).not.toContain(ERASE_SCREEN + CURSOR_HOME)
       expect(harness.instance.frontFrame.screen.width).toBe(widthBeforeDetach)
       expect(harness.instance.frontFrame.screen.height).toBe(heightBeforeDetach)
+    } finally {
+      instances.delete(harness.stdout as unknown as NodeJS.WriteStream)
+      harness.stdin.end()
+      harness.stdout.end()
+      harness.stderr.end()
+      await sleep(25)
+    }
+  })
+
+  test('drops stale raw terminal writes while paused or unmounted', async () => {
+    const harness = await createHarness({ columns: 20, rows: 5 })
+    let notifyBell: (() => void) | undefined
+
+    try {
+      harness.root.render(
+        <CaptureTerminalBell
+          onReady={callback => {
+            notifyBell = callback
+          }}
+        />,
+      )
+      await sleep(10)
+      expect(notifyBell).toEqual(expect.any(Function))
+
+      harness.stdoutWrites.length = 0
+      notifyBell?.()
+      expect(harness.stdoutWrites.join('')).toContain(BEL)
+
+      harness.instance.pause()
+      harness.stdoutWrites.length = 0
+      notifyBell?.()
+      expect(harness.stdoutWrites.join('')).not.toContain(BEL)
+      harness.instance.resume()
+
+      harness.root.unmount()
+      harness.stdoutWrites.length = 0
+      notifyBell?.()
+      expect(harness.stdoutWrites.join('')).not.toContain(BEL)
     } finally {
       instances.delete(harness.stdout as unknown as NodeJS.WriteStream)
       harness.stdin.end()
