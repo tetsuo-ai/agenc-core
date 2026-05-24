@@ -1454,12 +1454,17 @@ export function useTypeahead({
       if (suggestions.length > 0 || effectiveGhostText) {
         return;
       }
-      // MD-NEW9: ALWAYS consume Tab in prompt mode so the raw byte (or its
+      // MD-NEW9: ALWAYS consume raw Tab here so the byte (or its
       // escape-sequence tail) never falls through to the text input. Without
       // this, edge cases like "cursor inside an @ token but picker briefly
       // empty" leak the Tab as a stray `l`/`e` character in the composer.
       e.preventDefault();
       e.stopImmediatePropagation();
+
+      if (mode === 'bash') {
+        void handleTab();
+        return;
+      }
 
       // Accept prompt suggestion if it exists in AppState
       const suggestionText = promptSuggestion.text;

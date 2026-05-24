@@ -714,4 +714,38 @@ describe('useTypeahead coverage swarm row 009', () => {
       await rendered.dispose()
     }
   })
+
+  test('runs bash shell completion from raw tab when the picker is empty', async () => {
+    harness.shellCompletions = [
+      {
+        displayText: 'git',
+        id: 'git',
+        metadata: { completionType: 'command' },
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: 'g',
+      mode: 'bash',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      const tab = createKey('tab')
+      rendered.getSnapshot().handleKeyDown(tab)
+
+      expect(tab.defaultPrevented).toBe(true)
+      await waitFor(
+        () => onInputChange.mock.calls.length === 1,
+        'raw tab shell completion',
+      )
+      expect(onInputChange).toHaveBeenCalledWith('git ')
+      expect(setCursorOffset).toHaveBeenCalledWith('git '.length)
+      expect(harness.addNotification).not.toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
 })
