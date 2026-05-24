@@ -481,18 +481,28 @@ export function useTypeahead({
   // instead of stuttering on each repeated key. The search itself is ~8–15ms
   // on a 270k-file index.
   const debouncedFetchFileSuggestions = useDebounceCallback(fetchFileSuggestions, 50);
-  const fetchSlackChannels = useCallback(async (partial: string): Promise<void> => {
+  const fetchSlackChannels = useCallback(async (
+    partial: string,
+    requestState: InputStateSnapshot = currentInputStateRef.current,
+  ): Promise<void> => {
     latestSlackTokenRef.current = partial;
+    const isStaleRequest = () =>
+      latestSlackTokenRef.current !== partial ||
+      !isCurrentInputState(
+        requestState.input,
+        requestState.cursorOffset,
+        requestState.mode,
+      );
     let channels: SuggestionItem[];
     try {
       channels = await getSlackChannelSuggestions(store.getState().mcp.clients, partial);
     } catch (error) {
-      if (latestSlackTokenRef.current !== partial) return;
+      if (isStaleRequest()) return;
       logError(error);
       clearSuggestions();
       return;
     }
-    if (latestSlackTokenRef.current !== partial) return;
+    if (isStaleRequest()) return;
     setSuggestionsState(prev => ({
       commandArgumentHint: undefined,
       suggestions: channels,
@@ -502,7 +512,7 @@ export function useTypeahead({
     setMaxColumnWidth(undefined);
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps -- store is a stable context ref
-  [setSuggestionsState, clearSuggestions]);
+  [setSuggestionsState, clearSuggestions, isCurrentInputState]);
 
   // First keystroke after # needs the MCP round-trip; subsequent keystrokes
   // that share the same first-word segment hit the cache synchronously.
@@ -637,7 +647,11 @@ export function useTypeahead({
     if (mode === 'prompt') {
       const hashMatch = value.substring(0, effectiveCursorOffset).match(HASH_CHANNEL_RE);
       if (hashMatch && hasSlackMcpServer(store.getState().mcp.clients)) {
-        debouncedFetchSlackChannels(hashMatch[2]!);
+        debouncedFetchSlackChannels(hashMatch[2]!, {
+          cursorOffset: effectiveCursorOffset,
+          input: value,
+          mode,
+        });
         return;
       } else if (suggestionType === 'slack-channel') {
         debouncedFetchSlackChannels.cancel();
