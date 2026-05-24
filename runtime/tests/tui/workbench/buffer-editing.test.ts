@@ -54,4 +54,16 @@ describe("buffer editing model", () => {
     document = moveBufferCursor(document, "down");
     expect(documentPosition(document)).toMatchObject({ line: 3, column: 2 });
   });
+
+  it("resets stale preferred column after collapsing a vertical selection", () => {
+    let document = createBufferDocument("abcd\nx\nabcdef");
+    document = moveBufferCursor(document, "lineEnd");
+    document = moveBufferCursor(document, "down", { extend: true });
+
+    document = moveBufferCursor(document, "right");
+    expect(documentPosition(document)).toMatchObject({ line: 2, column: 1 });
+
+    document = moveBufferCursor(document, "down");
+    expect(documentPosition(document)).toMatchObject({ line: 3, column: 1 });
+  });
 });
