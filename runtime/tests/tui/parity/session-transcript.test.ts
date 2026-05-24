@@ -410,6 +410,23 @@ describe("AgenC TUI session transcript", () => {
     expect(transcript.streamingToolUses).toEqual([]);
   });
 
+  test("deduplicates non-serializable fallback events by object identity", () => {
+    const payload: Record<string, unknown> = {
+      cause: "mode_changed",
+      message: "Mode changed",
+    };
+    payload.self = payload;
+    const event = { type: "warning", payload };
+
+    const state = createSessionTranscriptStateForTesting([event, event]);
+    expect(state.events).toHaveLength(1);
+
+    const transcript = adaptTranscriptEvents([event, event]);
+    expect(transcript.messages.map((message) => message.content)).toEqual([
+      "Mode changed",
+    ]);
+  });
+
   test("orders sequenced reset events before adapting transcript boundaries", () => {
     const transcript = adaptTranscriptEvents([
       {

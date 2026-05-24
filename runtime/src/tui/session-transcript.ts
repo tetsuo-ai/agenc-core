@@ -77,6 +77,8 @@ export interface AdaptedTranscript {
 const SYNTHETIC_MODEL = "agenc";
 const GLOB_NO_FILES_TEXT = "No files found";
 const GLOB_TRUNCATION_PREFIX = "(Results are truncated.";
+const fallbackEventKeys = new WeakMap<SessionTranscriptEvent, string>();
+let fallbackEventKeyCounter = 0;
 
 /**
  * Allow-list of `warning` event causes that are surfaced to the
@@ -450,7 +452,12 @@ function eventKey(event: SessionTranscriptEvent): string {
   try {
     return JSON.stringify(event);
   } catch {
-    return `${event.type}:${Math.random()}`;
+    const existing = fallbackEventKeys.get(event);
+    if (existing !== undefined) return existing;
+    const fallback = `${event.type}:object:${fallbackEventKeyCounter}`;
+    fallbackEventKeyCounter += 1;
+    fallbackEventKeys.set(event, fallback);
+    return fallback;
   }
 }
 
