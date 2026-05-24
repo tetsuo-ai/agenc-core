@@ -1661,6 +1661,8 @@ function PromptInput({
   }, [input, updatePastedContentsAndRef]);
   function onTextPaste(rawText: string) {
     pendingSpaceAfterPillRef.current = false;
+    const currentInput = lastInternalInputRef.current;
+    const currentCursorOffset = cursorOffsetRef.current;
     // Clean up pasted text - strip ANSI escape codes and normalize line endings and tabs
     let text = stripAnsi(rawText).replace(/\r/g, '\n').replaceAll('\t', '    ');
 
@@ -1675,13 +1677,13 @@ function PromptInput({
         .map(p => (p.includes(' ') || p.includes(':') ? `@"${p}"` : `@${p}`))
         .join(' ');
       // Ensure spacing around the mention(s) relative to existing input
-      const charBefore = input[cursorOffset - 1];
+      const charBefore = currentInput[currentCursorOffset - 1];
       const prefix = charBefore && !/\s/.test(charBefore) ? ' ' : '';
       text = prefix + mentions + ' ';
     }
 
     // Match typed/auto-suggest: `!cmd` pasted into empty input enters bash mode.
-    if (input.length === 0) {
+    if (currentInput.length === 0) {
       const pastedMode = getModeFromInput(text);
       if (pastedMode !== 'prompt') {
         onModeChange(pastedMode);

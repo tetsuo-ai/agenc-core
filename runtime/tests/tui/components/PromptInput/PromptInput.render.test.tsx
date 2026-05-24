@@ -1529,6 +1529,68 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('separates dragged file mentions after image paste before parent rerender', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'dragged-image',
+      mediaType: 'image/png',
+    })
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      ;(baseProps.onPaste as (value: string) => void)('/dragged/file:b')
+
+      expect(onInputChange).toHaveBeenCalledWith(
+        '[Image #1] @"/dragged/file:b" ',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('does not enter bash mode from text paste after current image drafts', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'bash-paste-image',
+      mediaType: 'image/png',
+    })
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      onModeChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+      onModeChange.mockClear()
+
+      ;(baseProps.onPaste as (value: string) => void)('!echo hi')
+
+      expect(onModeChange).not.toHaveBeenCalledWith('bash')
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]!echo hi')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('allocates image paste IDs after existing draft paste references', async () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue({
       base64: 'png-data',
