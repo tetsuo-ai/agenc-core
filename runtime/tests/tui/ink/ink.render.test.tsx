@@ -298,6 +298,38 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('ignores resize events after shutdown detach', async () => {
+    const harness = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      harness.instance.setAltScreenActive(true, true)
+      harness.root.render(textNode('ready'))
+      await sleep(10)
+
+      const widthBeforeDetach = harness.instance.frontFrame.screen.width
+      const heightBeforeDetach = harness.instance.frontFrame.screen.height
+      harness.instance.detachForShutdown()
+      harness.stdoutWrites.length = 0
+
+      harness.stdout.columns = 32
+      harness.stdout.rows = 9
+      harness.stdout.emit('resize')
+      await sleep(10)
+
+      const writes = harness.stdoutWrites.join('')
+      expect(writes).not.toContain(ENABLE_MOUSE_TRACKING)
+      expect(writes).not.toContain(ERASE_SCREEN + CURSOR_HOME)
+      expect(harness.instance.frontFrame.screen.width).toBe(widthBeforeDetach)
+      expect(harness.instance.frontFrame.screen.height).toBe(heightBeforeDetach)
+    } finally {
+      instances.delete(harness.stdout as unknown as NodeJS.WriteStream)
+      harness.stdin.end()
+      harness.stdout.end()
+      harness.stderr.end()
+      await sleep(25)
+    }
+  })
+
   test('suspends and resumes stdin listeners and raw mode around external TUI handoff', async () => {
     const harness = await createHarness({ stdinIsRaw: true })
     const readableListener = vi.fn()

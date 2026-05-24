@@ -333,6 +333,7 @@ export default class Ink {
   // blank→paint flicker). useVirtualScroll's height scaling already bounds
   // the per-resize cost; synchronous handling keeps dimensions consistent.
   private handleResize = () => {
+    if (this.isUnmounted) return;
     const cols = this.options.stdout.columns || 80;
     const rows = this.options.stdout.rows || 24;
     // Terminals often emit 2+ resize events for one user action (window
