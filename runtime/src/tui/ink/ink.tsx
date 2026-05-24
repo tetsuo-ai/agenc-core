@@ -1206,6 +1206,7 @@ export default class Ink {
    * edge. Supplies screen.width for the col-reset-on-clamp boundary.
    */
   shiftSelectionForScroll(dRow: number, minRow: number, maxRow: number): void {
+    if (this.isUnmounted || this.isPaused) return;
     const hadSel = hasSelection(this.selection);
     shiftSelection(this.selection, dRow, minRow, maxRow, this.frontFrame.screen.width);
     // shiftSelection clears when both endpoints overshoot the same edge
@@ -1226,7 +1227,7 @@ export default class Ink {
    * char mode. No-op outside alt-screen or without an active selection.
    */
   moveSelectionFocus(move: FocusMove): void {
-    if (!this.altScreenActive) return;
+    if (!this.altScreenActive || this.isUnmounted || this.isPaused) return;
     const {
       focus
     } = this.selection;
@@ -1298,15 +1299,16 @@ export default class Ink {
    * nodeCache rects map 1:1 to terminal cells (no scrollback offset).
    */
   dispatchClick(col: number, row: number): boolean {
-    if (!this.altScreenActive) return false;
+    if (!this.altScreenActive || this.isUnmounted || this.isPaused) return false;
     const blank = isEmptyCellAt(this.frontFrame.screen, col, row);
     return dispatchClick(this.rootNode, col, row, blank);
   }
   dispatchHover(col: number, row: number): void {
-    if (!this.altScreenActive) return;
+    if (!this.altScreenActive || this.isUnmounted || this.isPaused) return;
     dispatchHover(this.rootNode, col, row, this.hoveredNodes);
   }
   dispatchKeyboardEvent(parsedKey: ParsedKey): void {
+    if (this.isUnmounted || this.isPaused) return;
     const target = this.focusManager.activeElement ?? this.rootNode;
     const event = new KeyboardEvent(parsedKey);
     dispatcher.dispatchDiscrete(target, event);
@@ -1331,7 +1333,7 @@ export default class Ink {
    * the browser-open action via a timer.
    */
   getHyperlinkAt(col: number, row: number): string | undefined {
-    if (!this.altScreenActive) return undefined;
+    if (!this.altScreenActive || this.isUnmounted || this.isPaused) return undefined;
     const screen = this.frontFrame.screen;
     const cell = cellAt(screen, col, row);
     let url = cell?.hyperlink;
@@ -1355,6 +1357,7 @@ export default class Ink {
    * the mutable field at call time — not the undefined-at-render value.
    */
   openHyperlink(url: string): void {
+    if (this.isUnmounted || this.isPaused) return;
     this.onHyperlinkClick?.(url);
   }
 
@@ -1366,7 +1369,7 @@ export default class Ink {
    * char-mode startSelection if the click lands on a noSelect cell.
    */
   handleMultiClick(col: number, row: number, count: 2 | 3): void {
-    if (!this.altScreenActive) return;
+    if (!this.altScreenActive || this.isUnmounted || this.isPaused) return;
     const screen = this.frontFrame.screen;
     // selectWordAt/selectLineAt no-op on noSelect/out-of-bounds. Seed with
     // a char-mode selection so the press still starts a drag even if the
@@ -1386,7 +1389,7 @@ export default class Ink {
    * altScreenActive for the same reason as dispatchClick.
    */
   handleSelectionDrag(col: number, row: number): void {
-    if (!this.altScreenActive) return;
+    if (!this.altScreenActive || this.isUnmounted || this.isPaused) return;
     const sel = this.selection;
     if (sel.anchorSpan) {
       extendSelection(sel, this.frontFrame.screen, col, row);

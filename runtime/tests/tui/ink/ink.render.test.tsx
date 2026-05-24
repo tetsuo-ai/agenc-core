@@ -384,6 +384,51 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('ignores stale terminal interactions while paused or unmounted', async () => {
+    const harness = await createHarness({ columns: 40, rows: 6 })
+    const clicks: Array<{ localCol?: number; localRow?: number }> = []
+
+    try {
+      harness.instance.setAltScreenActive(true)
+      harness.root.render(
+        React.createElement(
+          'ink-box',
+          {
+            onClick: (event: { localCol?: number; localRow?: number }) => {
+              clicks.push({
+                localCol: event.localCol,
+                localRow: event.localRow,
+              })
+            },
+            style: { height: 1, width: 12 },
+          },
+          textNode('alpha beta'),
+        ),
+      )
+      await sleep(10)
+
+      harness.instance.pause()
+      expect(harness.instance.dispatchClick(1, 0)).toBe(false)
+      harness.instance.handleMultiClick(1, 0, 2)
+      harness.instance.handleSelectionDrag(9, 0)
+      harness.instance.moveSelectionFocus('right')
+      expect(clicks).toEqual([])
+      expect(harness.instance.hasTextSelection()).toBe(false)
+      harness.instance.resume()
+
+      harness.root.unmount()
+      harness.instance.handleMultiClick(1, 0, 2)
+      harness.instance.handleSelectionDrag(9, 0)
+      expect(harness.instance.hasTextSelection()).toBe(false)
+    } finally {
+      instances.delete(harness.stdout as unknown as NodeJS.WriteStream)
+      harness.stdin.end()
+      harness.stdout.end()
+      harness.stderr.end()
+      await sleep(25)
+    }
+  })
+
   test('suspends and resumes stdin listeners and raw mode around external TUI handoff', async () => {
     const harness = await createHarness({ stdinIsRaw: true })
     const readableListener = vi.fn()
