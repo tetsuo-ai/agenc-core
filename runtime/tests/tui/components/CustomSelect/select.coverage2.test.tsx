@@ -227,4 +227,38 @@ describe('Select input option coverage', () => {
       view.unmount()
     }
   })
+
+  test('flushes current input option text before selecting on submit', async () => {
+    const optionTextChange = vi.fn()
+    const onChange = vi.fn()
+    const options: OptionWithDescription<string>[] = [
+      {
+        type: 'input',
+        value: 'feedback',
+        label: 'Feedback',
+        initialValue: 'old feedback',
+        onChange: optionTextChange,
+      },
+    ]
+
+    const view = await renderSelect(
+      <Select
+        options={options}
+        defaultFocusValue="feedback"
+        onChange={onChange}
+      />,
+    )
+
+    try {
+      latestInputOption().onSubmit('new feedback')
+
+      expect(optionTextChange).toHaveBeenCalledWith('new feedback')
+      expect(onChange).toHaveBeenCalledWith('feedback')
+      expect(optionTextChange.mock.invocationCallOrder[0]).toBeLessThan(
+        onChange.mock.invocationCallOrder[0]!,
+      )
+    } finally {
+      view.unmount()
+    }
+  })
 })

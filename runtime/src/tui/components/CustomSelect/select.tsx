@@ -407,6 +407,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
               }} onSubmit={(value_0: string) => {
                 const hasImageAttachments = pastedContents && Object.values(pastedContents).some(_temp5);
                 if (value_0.trim() || hasImageAttachments || option_1.allowEmptySubmitToCancel) {
+                  option_1.onChange(value_0);
                   onChange?.(option_1.value);
                 } else {
                   onCancel?.();
@@ -455,6 +456,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
               }} onSubmit={(value_2: string) => {
                 const hasImageAttachments_0 = pastedContents && Object.values(pastedContents).some(_temp6);
                 if (value_2.trim() || hasImageAttachments_0 || option_2.allowEmptySubmitToCancel) {
+                  option_2.onChange(value_2);
                   onChange?.(option_2.value);
                 } else {
                   onCancel?.();
@@ -574,6 +576,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
           }} onSubmit={(value_4: string) => {
             const hasImageAttachments_1 = pastedContents && Object.values(pastedContents).some(_temp9);
             if (value_4.trim() || hasImageAttachments_1 || option_4.allowEmptySubmitToCancel) {
+              option_4.onChange(value_4);
               onChange?.(option_4.value);
             } else {
               onCancel?.();
