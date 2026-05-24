@@ -201,4 +201,33 @@ describe('Byline coverage swarm row 148', () => {
       { text: 'primitive child', styles: {} },
     ])
   })
+
+  test('separates children nested inside fragments', async () => {
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+
+    const rendered = await renderByline(
+      <Byline>
+        <>
+          <Text>Next</Text>
+          <Text>Previous</Text>
+        </>
+        <Text>Remove</Text>
+      </Byline>,
+    )
+
+    expect(rendered.text()).toBe('Next - Previous - Remove')
+  })
+
+  test('preserves explicit element keys while joining children', async () => {
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+
+    const rendered = await renderByline(
+      <Byline>
+        <Text key="alpha">Alpha</Text>
+        <Text>Beta</Text>
+      </Byline>,
+    )
+
+    expect(rendered.text()).toBe('Alpha - Beta')
+  })
 })
