@@ -1064,6 +1064,54 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('refreshes @ suggestions when MCP resources change without editing input', async () => {
+    harness.unifiedSuggestions = [
+      {
+        displayText: 'old-doc.md',
+        id: 'old-doc.md',
+      },
+    ]
+    const rendered = await renderHookHarness({
+      input: '@doc',
+    })
+
+    try {
+      await waitFor(
+        () =>
+          rendered.getSnapshot().suggestionType === 'file' &&
+          rendered.getSnapshot().suggestions[0]?.id === 'old-doc.md',
+        'initial file suggestions',
+      )
+      expect(generateUnifiedSuggestionsMock).toHaveBeenCalledTimes(1)
+
+      harness.appState.mcp = {
+        clients: [],
+        resources: [{ name: 'docs' }],
+      }
+      harness.unifiedSuggestions = [
+        {
+          displayText: 'docs://latest',
+          id: 'mcp-resource-docs-latest',
+        },
+      ]
+      rendered.rerender({ input: '@doc' })
+
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length === 2,
+        'refetched suggestions after MCP resources changed',
+      )
+      await waitFor(
+        () =>
+          rendered.getSnapshot().suggestionType === 'file' &&
+          rendered.getSnapshot().suggestions[0]?.id ===
+            'mcp-resource-docs-latest',
+        'fresh MCP resource suggestions',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('drops @ path completions after the mode changes', async () => {
     let resolveSlowPathCompletion: (items: unknown[]) => void = () => {}
     harness.directoryCompletionResponses.set(
