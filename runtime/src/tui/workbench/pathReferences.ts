@@ -1,5 +1,9 @@
+import path from "node:path";
+
 export function normalizeWorkspacePathForReferences(value: string): string {
-  return value.replace(/\\/gu, "/").replace(/\/+$/u, "");
+  const slashPath = value.replace(/\\/gu, "/");
+  if (!slashPath) return slashPath;
+  return path.posix.normalize(slashPath).replace(/\/+$/u, "");
 }
 
 export function renameWorkspacePathReference(

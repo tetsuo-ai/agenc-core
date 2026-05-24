@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  attachTaskErrorCommand,
+  openBufferCommand,
+} from "../../../src/tui/workbench/commands.js";
+import {
   getDefaultWorkbenchState,
   visibleWorkbenchPane,
   workbenchReducer,
@@ -307,6 +311,37 @@ describe("workbenchReducer", () => {
     ]);
   });
 
+  it("normalizes dot-segment references before renaming active paths and attachments", () => {
+    const opened = workbenchReducer(
+      undefined,
+      openBufferCommand("./test/foo.test.tsx", 8, true),
+    );
+    const state = workbenchReducer(opened, attachTaskErrorCommand({
+      taskId: "test-1",
+      file: "./test/foo.test.tsx",
+      line: 8,
+      label: "./test/foo.test.tsx failure",
+    }));
+    const next = workbenchReducer(state, {
+      type: "renamePathReferences",
+      fromPath: "test",
+      toPath: "spec",
+    });
+
+    expect(next.activeFilePath).toBe("spec/foo.test.tsx");
+    expect(next.attachments).toEqual([
+      {
+        id: "task-error:test-1:spec/foo.test.tsx:8",
+        kind: "task-error",
+        label: "spec/foo.test.tsx failure",
+        path: "spec/foo.test.tsx",
+        line: 8,
+        taskId: "test-1",
+      },
+    ]);
+    expect(next.composerAttachmentIds).toEqual(["task-error:test-1:spec/foo.test.tsx:8"]);
+  });
+
   it("opens the buffer only when rename changes the current active path", () => {
     const affected = workbenchReducer({
       ...getDefaultWorkbenchState(),
@@ -433,6 +468,27 @@ describe("workbenchReducer", () => {
       },
     ]);
     expect(next.composerAttachmentIds).toEqual(["file:src-old\\app.ts"]);
+  });
+
+  it("normalizes dot-segment references before deleting active paths and attachments", () => {
+    const opened = workbenchReducer(
+      undefined,
+      openBufferCommand("./test/foo.test.tsx", 8, true),
+    );
+    const state = workbenchReducer(opened, attachTaskErrorCommand({
+      taskId: "test-1",
+      file: "./test/foo.test.tsx",
+      line: 8,
+    }));
+    const next = workbenchReducer(state, {
+      type: "deletePathReferences",
+      path: "test",
+    });
+
+    expect(next.activeFilePath).toBeNull();
+    expect(next.activeFileLine).toBeNull();
+    expect(next.attachments).toEqual([]);
+    expect(next.composerAttachmentIds).toEqual([]);
   });
 
   it("closes the active surface only when delete clears the current active path", () => {
