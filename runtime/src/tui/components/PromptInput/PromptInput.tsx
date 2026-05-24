@@ -2604,7 +2604,10 @@ function PromptInput({
   }
   if (feature('QUICK_SEARCH')) {
     const insertWithSpacing = (text: string) => {
-      const cursorChar = input[cursorOffset - 1] ?? ' ';
+      const currentInput = lastInternalInputRef.current;
+      const currentOffset = cursorOffsetRef.current;
+      const cursorChar = currentInput[currentOffset - 1] ?? ' ';
+      pendingSpaceAfterPillRef.current = false;
       insertTextAtCursor(/\s/.test(cursorChar) ? text : ` ${text}`);
     };
     if (showQuickOpen) {
