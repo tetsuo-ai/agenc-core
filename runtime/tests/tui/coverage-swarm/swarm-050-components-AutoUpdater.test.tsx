@@ -17,6 +17,7 @@ const harness = vi.hoisted(() => ({
   intervalDelay: undefined as number | null | undefined,
   isAutoUpdaterDisabled: vi.fn(),
   localInstallationExists: vi.fn(),
+  logError: vi.fn(),
   logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   removeInstalledSymlink: vi.fn(),
@@ -53,6 +54,10 @@ vi.mock("../../../src/utils/config.js", () => ({
 
 vi.mock("../../../src/utils/debug.js", () => ({
   logForDebugging: harness.logForDebugging,
+}));
+
+vi.mock("../../../src/utils/log.js", () => ({
+  logError: harness.logError,
 }));
 
 vi.mock("../../../src/utils/doctorDiagnostic.js", () => ({
@@ -113,6 +118,7 @@ type TestStreams = {
 type RenderedRoot = {
   readonly cleanup: () => Promise<void>;
   readonly readOutput: () => string;
+  readonly render: (node: React.ReactNode) => void;
 };
 
 function resetHarness(): void {
@@ -129,6 +135,7 @@ function resetHarness(): void {
   harness.installOrUpdateAgenCPackage.mockReset().mockResolvedValue("success");
   harness.isAutoUpdaterDisabled.mockReset().mockReturnValue(false);
   harness.localInstallationExists.mockReset().mockResolvedValue(false);
+  harness.logError.mockReset();
   harness.logEvent.mockReset();
   harness.logForDebugging.mockReset();
   harness.removeInstalledSymlink.mockReset().mockResolvedValue(undefined);
@@ -179,6 +186,9 @@ async function renderInRoot(node: React.ReactNode): Promise<RenderedRoot> {
 
   return {
     readOutput: () => stripAnsi(output),
+    render: (updatedNode: React.ReactNode) => {
+      root.render(updatedNode);
+    },
     cleanup: async () => {
       root.unmount();
       stdin.end();
@@ -322,6 +332,192 @@ describe("AutoUpdater coverage swarm row 050", () => {
     }
   });
 
+  test("does not start an install when updating begins during a version check", async () => {
+    let resolveLatestVersion!: (version: string) => void;
+    harness.getLatestVersion.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveLatestVersion = resolve;
+      }),
+    );
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    try {
+      await waitFor(
+        () => harness.getLatestVersion.mock.calls.length > 0,
+        "version check start",
+      );
+      rendered.render(
+        <AutoUpdater
+          autoUpdaterResult={null}
+          isUpdating={true}
+          onAutoUpdaterResult={onAutoUpdaterResult}
+          onChangeIsUpdating={onChangeIsUpdating}
+          showSuccessMessage={true}
+          verbose={true}
+        />,
+      );
+      await sleep(0);
+
+      resolveLatestVersion("2.0.0");
+      await sleep(20);
+
+      expect(harness.getMaxVersion).not.toHaveBeenCalled();
+      expect(harness.removeInstalledSymlink).not.toHaveBeenCalled();
+      expect(harness.getCurrentInstallationType).not.toHaveBeenCalled();
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+      expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+      expect(onChangeIsUpdating).not.toHaveBeenCalled();
+      expect(onAutoUpdaterResult).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("does not start an install when updating begins during a max-version check", async () => {
+    let resolveMaxVersion!: (version: string | null) => void;
+    harness.getMaxVersion.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveMaxVersion = resolve;
+      }),
+    );
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    try {
+      await waitFor(
+        () => harness.getMaxVersion.mock.calls.length > 0,
+        "max-version check start",
+      );
+      rendered.render(
+        <AutoUpdater
+          autoUpdaterResult={null}
+          isUpdating={true}
+          onAutoUpdaterResult={onAutoUpdaterResult}
+          onChangeIsUpdating={onChangeIsUpdating}
+          showSuccessMessage={true}
+          verbose={true}
+        />,
+      );
+      await sleep(0);
+
+      resolveMaxVersion(null);
+      await sleep(20);
+
+      expect(harness.removeInstalledSymlink).not.toHaveBeenCalled();
+      expect(harness.getCurrentInstallationType).not.toHaveBeenCalled();
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+      expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+      expect(onChangeIsUpdating).not.toHaveBeenCalled();
+      expect(onAutoUpdaterResult).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("logs local installation probe failures without blocking checks", async () => {
+    const error = new Error("local probe failed");
+    process.env.NODE_ENV = "development";
+    harness.localInstallationExists.mockRejectedValueOnce(error);
+    const rendered = await renderInRoot(<StaticAutoUpdater />);
+
+    try {
+      await waitFor(
+        () => harness.logError.mock.calls.some(([value]) => value === error),
+        "local installation probe error",
+      );
+
+      expect(harness.getLatestVersion).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("drops local installation probe results after unmount", async () => {
+    let resolveLocalExists!: (exists: boolean) => void;
+    harness.localInstallationExists.mockReturnValueOnce(
+      new Promise<boolean>(resolve => {
+        resolveLocalExists = resolve;
+      }),
+    );
+    const rendered = await renderInRoot(
+      <StaticAutoUpdater
+        autoUpdaterResult={{ status: "install_failed", version: "2.0.0" }}
+      />,
+    );
+
+    await rendered.cleanup();
+    resolveLocalExists(true);
+    await sleep(20);
+
+    expect(rendered.readOutput()).not.toContain("cd ~/.agenc/local");
+  });
+
+  test("uses latest channel when initial settings are unavailable", async () => {
+    harness.getInitialSettings.mockReturnValue(undefined);
+    const rendered = await renderInRoot(<StaticAutoUpdater />);
+
+    try {
+      await waitFor(
+        () => harness.getLatestVersion.mock.calls.length > 0,
+        "default channel update check",
+      );
+
+      expect(harness.getLatestVersion).toHaveBeenCalledWith("latest");
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("logs version-check errors before an update starts", async () => {
+    const error = new Error("version lookup failed");
+    harness.getLatestVersion.mockRejectedValueOnce(error);
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={() => {}}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    try {
+      await waitFor(
+        () => harness.logError.mock.calls.some(([value]) => value === error),
+        "version check error",
+      );
+
+      expect(onChangeIsUpdating).not.toHaveBeenCalled();
+      expect(harness.getMaxVersion).not.toHaveBeenCalled();
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
   test("caps to maxVersion and returns when current version already meets it", async () => {
     setMacro("2.0.0");
     harness.getLatestVersion.mockResolvedValue("9.0.0");
@@ -357,6 +553,32 @@ describe("AutoUpdater coverage swarm row 050", () => {
       expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
       expect(harness.removeInstalledSymlink).not.toHaveBeenCalled();
       expect(onChangeIsUpdating).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("caps install target to maxVersion when current version is below the cap", async () => {
+    harness.getLatestVersion.mockResolvedValue("9.0.0");
+    harness.getMaxVersion.mockResolvedValue("2.0.0");
+    harness.getCurrentInstallationType.mockResolvedValue("npm-global");
+    const rendered = await renderInRoot(<StatefulAutoUpdater />);
+
+    try {
+      await waitForOutput(rendered, "Update installed");
+
+      expect(harness.logForDebugging).toHaveBeenCalledWith(
+        "AutoUpdater: maxVersion 2.0.0 is set, capping update from 9.0.0 to 2.0.0",
+      );
+      expect(harness.installGlobalPackage).toHaveBeenCalledOnce();
+      expect(harness.logEvent).toHaveBeenCalledWith(
+        "tengu_auto_updater_success",
+        expect.objectContaining({
+          fromVersion: "1.0.0",
+          toVersion: "2.0.0",
+          wasMigrated: false,
+        }),
+      );
     } finally {
       await rendered.cleanup();
     }
@@ -459,6 +681,148 @@ describe("AutoUpdater coverage swarm row 050", () => {
     }
   });
 
+  test("skips unexpected native installation in the JS updater and clears updating", async () => {
+    harness.getCurrentInstallationType.mockResolvedValue("native");
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    try {
+      await waitFor(
+        () =>
+          harness.logForDebugging.mock.calls.some(
+            ([message]) =>
+              message ===
+              "AutoUpdater: Unexpected native installation in non-native updater",
+          ),
+        "native install skip",
+      );
+
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+      expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+      expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
+      expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
+      expect(onAutoUpdaterResult).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("skips development installation type and clears updating", async () => {
+    harness.getCurrentInstallationType.mockResolvedValue("development");
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    try {
+      await waitFor(
+        () =>
+          harness.logForDebugging.mock.calls.some(
+            ([message]) =>
+              message === "AutoUpdater: Cannot auto-update development build",
+          ),
+        "development install skip",
+      );
+
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+      expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+      expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
+      expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
+      expect(onAutoUpdaterResult).not.toHaveBeenCalled();
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("clears updating when unmounted during installation-type detection", async () => {
+    let resolveInstallationType!: (installationType: "npm-global") => void;
+    harness.getCurrentInstallationType.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveInstallationType = resolve;
+      }),
+    );
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    await waitFor(
+      () => harness.getCurrentInstallationType.mock.calls.length > 0,
+      "installation type check start",
+    );
+    await rendered.cleanup();
+    resolveInstallationType("npm-global");
+    await sleep(20);
+
+    expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
+    expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
+    expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+    expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+    expect(onAutoUpdaterResult).not.toHaveBeenCalled();
+  });
+
+  test("clears updating when unmounted after symlink cleanup", async () => {
+    let resolveRemoveSymlink!: () => void;
+    harness.removeInstalledSymlink.mockReturnValueOnce(
+      new Promise<void>(resolve => {
+        resolveRemoveSymlink = resolve;
+      }),
+    );
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    await waitFor(
+      () => harness.removeInstalledSymlink.mock.calls.length > 0,
+      "symlink cleanup start",
+    );
+    await rendered.cleanup();
+    resolveRemoveSymlink();
+    await sleep(20);
+
+    expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
+    expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
+    expect(harness.getCurrentInstallationType).not.toHaveBeenCalled();
+    expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+    expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+    expect(onAutoUpdaterResult).not.toHaveBeenCalled();
+  });
+
   test("does not install when disabled, already current, or user-skipped", async () => {
     const cases = [
       {
@@ -535,6 +899,71 @@ describe("AutoUpdater coverage swarm row 050", () => {
           wasMigrated: false,
         }),
       );
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("renders the local repair command for migrated fallback failures", async () => {
+    harness.getGlobalConfig.mockReturnValue({
+      installMethod: "local",
+      theme: "dark",
+    });
+    harness.getCurrentInstallationType.mockResolvedValue("unknown");
+    harness.installOrUpdateAgenCPackage.mockResolvedValue("no_permissions");
+    harness.localInstallationExists.mockResolvedValue(true);
+    const rendered = await renderInRoot(<StatefulAutoUpdater />);
+
+    try {
+      const output = await waitForOutput(rendered, "Auto-update failed");
+
+      expect(output).toContain("ERR Auto-update failed - Try agenc doctor");
+      expect(output).toContain("cd ~/.agenc/local && npm update @tetsuo-ai/agenc");
+      expect(harness.localInstallationExists).toHaveBeenCalledOnce();
+      expect(harness.installOrUpdateAgenCPackage).toHaveBeenCalledWith("stable");
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+      expect(harness.logEvent).toHaveBeenCalledWith(
+        "tengu_auto_updater_fail",
+        expect.objectContaining({
+          attemptedVersion: "2.0.0",
+          installationType: "unknown",
+          status: "no_permissions",
+          wasMigrated: true,
+        }),
+      );
+    } finally {
+      await rendered.cleanup();
+    }
+  });
+
+  test("logs errors and clears updating after a started update fails before install", async () => {
+    const error = new Error("remove symlink failed");
+    harness.removeInstalledSymlink.mockRejectedValueOnce(error);
+    const onAutoUpdaterResult = vi.fn();
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={onAutoUpdaterResult}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    try {
+      await waitFor(
+        () => onChangeIsUpdating.mock.calls.some(([value]) => value === false),
+        "failed update cleanup",
+      );
+
+      expect(harness.getCurrentInstallationType).not.toHaveBeenCalled();
+      expect(harness.installGlobalPackage).not.toHaveBeenCalled();
+      expect(harness.installOrUpdateAgenCPackage).not.toHaveBeenCalled();
+      expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
+      expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
+      expect(onAutoUpdaterResult).not.toHaveBeenCalled();
     } finally {
       await rendered.cleanup();
     }
