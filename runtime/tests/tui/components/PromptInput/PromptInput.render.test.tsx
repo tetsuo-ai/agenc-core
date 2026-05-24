@@ -106,6 +106,7 @@ const harness = vi.hoisted(() => {
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
     modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: 'plan',
+    cyclePermissionModeNextMode: null as null | string,
     platform: 'linux',
     quickOpenProps: undefined as undefined | Record<string, unknown>,
     runningTeammates: [] as unknown[],
@@ -213,6 +214,7 @@ const harness = vi.hoisted(() => {
       harness.keybindingRegistrations = []
       harness.modelPickerProps = undefined
       harness.nextPermissionMode = 'plan'
+      harness.cyclePermissionModeNextMode = null
       harness.platform = 'linux'
       harness.quickOpenProps = undefined
       harness.runningTeammates = []
@@ -553,7 +555,10 @@ vi.mock('../../../utils/permissions/autoModeState.js', () => ({
 }))
 
 vi.mock('../../../utils/permissions/getNextPermissionMode.js', () => ({
-  cyclePermissionMode: (context: unknown) => ({ context }),
+  cyclePermissionMode: (context: unknown) => ({
+    context,
+    nextMode: harness.cyclePermissionModeNextMode ?? harness.nextPermissionMode,
+  }),
   getNextPermissionMode: () => harness.nextPermissionMode,
 }))
 
@@ -1096,6 +1101,31 @@ describe('PromptInput render surface', () => {
         expect.objectContaining({
           key: 'no-image-in-clipboard',
         }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('commits the permission mode returned with the cycled context', async () => {
+    harness.nextPermissionMode = 'plan'
+    harness.cyclePermissionModeNextMode = 'default'
+    const setToolPermissionContext = vi.fn()
+    const rendered = await renderPromptInput({ setToolPermissionContext })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:cycleMode']?.()
+
+      expect(setToolPermissionContext).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'default' }),
+      )
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
+      expect(harness.saveGlobalConfig).not.toHaveBeenCalled()
+      expect(harness.logEvent).toHaveBeenCalledWith(
+        'agenc_mode_cycle',
+        expect.objectContaining({ to: 'default' }),
       )
     } finally {
       await rendered.dispose()
