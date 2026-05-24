@@ -14,6 +14,7 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).pointer).not.toBe(">");
     expect(selectAgenCTuiGlyphs({}).ellipsis).toBe("…");
     expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
+    expect(selectAgenCTuiGlyphs({}).ideSelection).toBe("⧉");
     expect(selectAgenCTuiGlyphs({}).responseGutter).toBe("⎿");
     expect(selectAgenCTuiGlyphs({}).spinnerFrames).toEqual([
       "·",
@@ -48,6 +49,7 @@ describe("AgenC TUI glyph selection", () => {
       enter: "Enter",
       ellipsis: "...",
       horizontal: "-",
+      ideSelection: "[]",
       modalDivider: "-",
       mcpResource: "*",
       pointer: ">",
