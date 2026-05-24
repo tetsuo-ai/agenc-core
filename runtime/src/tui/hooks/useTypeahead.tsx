@@ -370,6 +370,7 @@ export function useTypeahead({
   const latestResumeTitleArgsRef = useRef<string | null>(null);
   // Track the latest bash input to discard stale results from history completion
   const latestBashInputRef = useRef('');
+  const prevSuggestionSourcesRef = useRef({ agents, mcpResources });
   // Track the latest slack channel token to discard stale results from MCP
   const latestSlackTokenRef = useRef('');
   // Track suggestions via ref to avoid updateSuggestions being recreated on selection changes
@@ -960,14 +961,19 @@ export function useTypeahead({
     // When the actual input text changes (not just updateSuggestions being recreated),
     // reset the search token ref so the same query can be re-fetched.
     // This fixes: type @readme.md, clear, retype @readme.md → no suggestions.
-    if (prevInputRef.current !== input) {
+    const previousSources = prevSuggestionSourcesRef.current;
+    const suggestionSourcesChanged =
+      previousSources.agents !== agents ||
+      previousSources.mcpResources !== mcpResources;
+    if (prevInputRef.current !== input || suggestionSourcesChanged) {
       prevInputRef.current = input;
+      prevSuggestionSourcesRef.current = { agents, mcpResources };
       latestSearchTokenRef.current = null;
     }
     // Clear the dismissed state when input changes
     dismissedForInputRef.current = null;
     void updateSuggestions(input);
-  }, [input, updateSuggestions]);
+  }, [agents, input, mcpResources, updateSuggestions]);
 
   // Handle tab key press - complete suggestions or trigger file suggestions
   const handleTab = useCallback(async () => {
