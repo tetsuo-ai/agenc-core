@@ -108,33 +108,19 @@ export function clearFileSuggestionCaches(): void {
 }
 
 /**
- * Content hash of a path list. A length|first|last sample misses renames of
- * middle files (same length, same endpoints → stale entry stuck in nucleo).
- *
- * Samples every Nth path (plus length). On a 346k-path list this hashes ~700
- * paths instead of 14MB — enough to catch git operations (checkout, rebase,
- * add/rm) while running in <1ms. A single mid-list rename that happens to
- * fall between samples will miss the rebuild, but the 5s refresh floor picks
- * it up on the next cycle.
+ * Content hash of a path list. Every path is included: sampling can miss a
+ * stable-length rename forever because subsequent refreshes recompute the same
+ * sampled signature and skip the index rebuild again.
  */
 export function pathListSignature(paths: string[]): string {
   const n = paths.length
-  const stride = Math.max(1, Math.floor(n / 500))
   let h = 0x811c9dc5 | 0
-  for (let i = 0; i < n; i += stride) {
+  for (let i = 0; i < n; i++) {
     const p = paths[i]!
     for (let j = 0; j < p.length; j++) {
       h = ((h ^ p.charCodeAt(j)) * 0x01000193) | 0
     }
-    h = (h * 0x01000193) | 0
-  }
-  // Stride starts at 0 (first path always hashed); explicitly include last
-  // so single-file add/rm at the tail is caught
-  if (n > 0) {
-    const last = paths[n - 1]!
-    for (let j = 0; j < last.length; j++) {
-      h = ((h ^ last.charCodeAt(j)) * 0x01000193) | 0
-    }
+    h = ((h ^ 0) * 0x01000193) | 0
   }
   return `${n}:${(h >>> 0).toString(16)}`
 }
