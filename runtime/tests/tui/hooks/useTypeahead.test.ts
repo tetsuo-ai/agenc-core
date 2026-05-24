@@ -218,6 +218,23 @@ describe('applyShellSuggestion', () => {
     expect(setCursorOffset).toHaveBeenCalledWith('echo $PATH '.length);
   });
 
+  it('treats shell whitespace as word boundaries', () => {
+    const onInputChange = vi.fn();
+    const setCursorOffset = vi.fn();
+
+    applyShellSuggestion(
+      { id: 'PATH', displayText: 'PATH' },
+      'echo\tPA',
+      'echo\tPA'.length,
+      onInputChange,
+      setCursorOffset,
+      'variable',
+    );
+
+    expect(onInputChange).toHaveBeenCalledWith('echo\t$PATH ');
+    expect(setCursorOffset).toHaveBeenCalledWith('echo\t$PATH '.length);
+  });
+
   it('leaves default path completions unspaced', () => {
     const onInputChange = vi.fn();
     const setCursorOffset = vi.fn();
