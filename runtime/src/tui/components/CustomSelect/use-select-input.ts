@@ -96,9 +96,9 @@ export const useSelectInput = <T>({
   imagesSelected = false,
   onEnterImageSelection,
 }: UseSelectProps<T>) => {
-  // Automatically register as an overlay when onCancel is provided.
+  // Automatically register as an overlay when an enabled cancelable select is active.
   // This ensures CancelRequestHandler won't intercept Escape when the select is active.
-  useRegisterOverlay('select', !!state.onCancel)
+  useRegisterOverlay('select', !isDisabled && !!state.onCancel)
 
   // Determine if the focused option is an input type
   const isInInput = useMemo(() => {
