@@ -2098,6 +2098,63 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('submits workbench attachments without auto-accepting an empty prompt suggestion', async () => {
+    harness.appState.promptSuggestion = {
+      acceptedAt: 0,
+      generationRequestId: 'generation-attachments',
+      promptId: 'prompt-attachments',
+      shownAt: 100,
+      text: 'run the unrelated suggestion',
+    }
+    harness.appState.workbench = {
+      ...getDefaultWorkbenchState(),
+      attachments: [
+        {
+          id: 'file:src/app.ts',
+          kind: 'file',
+          label: 'src/app.ts',
+          path: 'src/app.ts',
+        },
+      ],
+      composerAttachmentIds: ['file:src/app.ts'],
+    }
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({ input: '', onSubmit })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('')
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        '@src/app.ts\n\n',
+        expect.objectContaining({
+          clearBuffer: harness.clearBuffer,
+          resetHistory: expect.any(Function),
+          setCursorOffset: expect.any(Function),
+        }),
+        undefined,
+        expect.objectContaining({
+          mode: 'prompt',
+        }),
+      )
+      expect(harness.promptSuggestionLogEvent).toHaveBeenCalledWith(
+        'agenc_prompt_suggestion',
+        expect.objectContaining({
+          outcome: 'ignored',
+          prompt_id: 'prompt-attachments',
+        }),
+      )
+      expect(harness.appState.workbench).toEqual(
+        expect.objectContaining({
+          attachments: [],
+          composerAttachmentIds: [],
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('executes bash-mode input locally and emits transcript events', async () => {
     const emitted: unknown[] = []
     const setToolJSX = vi.fn()
