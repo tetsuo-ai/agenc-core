@@ -168,13 +168,21 @@ describe('useInputBuffer coverage swarm 202', () => {
       })
       await flushEffects()
 
-      expect(rendered.latest().canUndo).toBe(false)
+      expect(rendered.latest().canUndo).toBe(true)
 
       await advanceTimers(50)
       expect(rendered.latest().canUndo).toBe(true)
 
       await advanceTimers(50)
       await rendered.push('delta')
+
+      await expect(rendered.undo()).resolves.toEqual(
+        expect.objectContaining({
+          cursorOffset: 5,
+          pastedContents: {},
+          text: 'delta',
+        }),
+      )
 
       await expect(rendered.undo()).resolves.toEqual(
         expect.objectContaining({
@@ -199,7 +207,7 @@ describe('useInputBuffer coverage swarm 202', () => {
       await rendered.clear()
       await rendered.push('after-clear')
 
-      expect(rendered.latest().canUndo).toBe(false)
+      expect(rendered.latest().canUndo).toBe(true)
       await expect(rendered.undo()).resolves.toEqual(
         expect.objectContaining({
           cursorOffset: 'after-clear'.length,

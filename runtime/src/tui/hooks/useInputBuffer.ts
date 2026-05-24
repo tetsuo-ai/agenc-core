@@ -114,13 +114,13 @@ export function useInputBuffer({
       return undefined
     }
 
-    const targetIndex = Math.max(0, currentIndex - 1)
+    const targetIndex = currentIndex
     const entry = buffer[targetIndex]
 
     if (entry) {
       setBufferState(prevState => ({
         ...prevState,
-        currentIndex: Math.min(targetIndex, prevState.buffer.length - 1),
+        currentIndex: Math.min(targetIndex - 1, prevState.buffer.length - 1),
       }))
       return entry
     }
@@ -137,7 +137,7 @@ export function useInputBuffer({
     }
   }, [lastPushTime, pendingPush])
 
-  const canUndo = currentIndex > 0 && buffer.length > 1
+  const canUndo = currentIndex >= 0 && buffer.length > 0
 
   return {
     pushToBuffer,

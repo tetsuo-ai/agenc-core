@@ -87,6 +87,28 @@ async function push(
 }
 
 describe('useInputBuffer coverage', () => {
+  test('enables undo after the first captured previous state', async () => {
+    const rendered = await renderHookHarness({
+      debounceMs: 0,
+      maxBufferSize: 10,
+    })
+
+    try {
+      await push(rendered, 'before edit')
+
+      expect(rendered.latest().canUndo).toBe(true)
+      expect(rendered.latest().undo()).toEqual(
+        expect.objectContaining({
+          cursorOffset: 'before edit'.length,
+          pastedContents: {},
+          text: 'before edit',
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('keeps undo history coherent across capped entries, branch edits, debounced clears, and duplicate pushes', async () => {
     const capped = await renderHookHarness({
       debounceMs: 0,
@@ -100,14 +122,20 @@ describe('useInputBuffer coverage', () => {
 
       expect(capped.latest().undo()).toEqual(
         expect.objectContaining({
-          cursorOffset: 3,
+          cursorOffset: 5,
           pastedContents: {},
-          text: 'two',
+          text: 'three',
         }),
       )
       await sleep()
 
       await push(capped, 'branch')
+      expect(capped.latest().undo()).toEqual(
+        expect.objectContaining({
+          text: 'branch',
+        }),
+      )
+      await sleep()
       expect(capped.latest().undo()).toEqual(
         expect.objectContaining({
           text: 'two',
@@ -144,6 +172,12 @@ describe('useInputBuffer coverage', () => {
       await push(duplicates, 'beta')
       await push(duplicates, 'beta')
 
+      expect(duplicates.latest().undo()).toEqual(
+        expect.objectContaining({
+          text: 'beta',
+        }),
+      )
+      await sleep()
       expect(duplicates.latest().undo()).toEqual(
         expect.objectContaining({
           text: 'alpha',
