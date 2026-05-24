@@ -784,7 +784,7 @@ export function subscribeToMcpUrlCompletions(session: Partial<Pick<AgenCTuiElici
         readonly elicitationId?: unknown;
       };
     };
-    if (record.type !== "mcp_elicitation_complete" || typeof record.payload?.serverName !== "string" || typeof record.payload.elicitationId !== "string") {
+    if (record.type !== "mcp_elicitation_complete" || typeof record.payload?.serverName !== "string" || (typeof record.payload.elicitationId !== "string" && typeof record.payload.elicitationId !== "number")) {
       return;
     }
     controller.completeMcpUrl(record.payload.serverName, record.payload.elicitationId, createMcpUrlCompletionResponse());
