@@ -78,13 +78,13 @@ export function AutoUpdater({
       const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest';
       let latestVersion = await getLatestVersion(channel);
       const isDisabled = isAutoUpdaterDisabled();
-      if (!mountedRef.current) {
+      if (!mountedRef.current || isUpdatingRef.current) {
         return;
       }
 
       // Check if max version is set (server-side kill switch for auto-updates)
       const maxVersion = await getMaxVersion();
-      if (!mountedRef.current) {
+      if (!mountedRef.current || isUpdatingRef.current) {
         return;
       }
       if (maxVersion && latestVersion && gt(latestVersion, maxVersion)) {
