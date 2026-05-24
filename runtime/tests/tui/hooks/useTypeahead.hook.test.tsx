@@ -24,8 +24,10 @@ const harness = vi.hoisted(() => ({
     viewingAgentTaskId: null as string | null,
   },
   directorySuggestions: [] as unknown[],
+  directoryCompletionResponses: new Map<string, unknown[] | Promise<unknown[]>>(),
   keybindings: {} as Record<string, () => unknown>,
   sessionTitleMatches: [] as unknown[],
+  sessionTitleResponses: new Map<string, unknown[] | Promise<unknown[]>>(),
   shellCompletions: [] as unknown[],
   shellHistoryCompletion: null as null | {
     fullCommand: string
@@ -48,8 +50,10 @@ const harness = vi.hoisted(() => ({
     harness.appState.teamContext = undefined
     harness.appState.viewingAgentTaskId = null
     harness.directorySuggestions = []
+    harness.directoryCompletionResponses = new Map()
     harness.keybindings = {}
     harness.sessionTitleMatches = []
+    harness.sessionTitleResponses = new Map()
     harness.shellCompletions = []
     harness.shellHistoryCompletion = null
     harness.slackSuggestions = []
@@ -131,12 +135,27 @@ vi.mock('../../utils/bash/shellCompletion.js', () => ({
 vi.mock('../../utils/sessionStorage.js', () => ({
   getSessionIdFromLog: (log: { readonly sessionId?: string }) =>
     log.sessionId ?? 'session-1',
-  searchSessionsByCustomTitle: vi.fn(async () => harness.sessionTitleMatches),
+  searchSessionsByCustomTitle: vi.fn(async (query: string) => {
+    if (harness.sessionTitleResponses.has(query)) {
+      return await harness.sessionTitleResponses.get(query)
+    }
+    return harness.sessionTitleMatches
+  }),
 }))
 
 vi.mock('../../utils/suggestions/directoryCompletion.js', () => ({
-  getDirectoryCompletions: vi.fn(async () => harness.directorySuggestions),
-  getPathCompletions: vi.fn(async () => harness.directorySuggestions),
+  getDirectoryCompletions: vi.fn(async (query: string) => {
+    if (harness.directoryCompletionResponses.has(query)) {
+      return await harness.directoryCompletionResponses.get(query)
+    }
+    return harness.directorySuggestions
+  }),
+  getPathCompletions: vi.fn(async (query: string) => {
+    if (harness.directoryCompletionResponses.has(query)) {
+      return await harness.directoryCompletionResponses.get(query)
+    }
+    return harness.directorySuggestions
+  }),
   isPathLikeToken: (token: string) =>
     token.startsWith('/') || token.startsWith('./') || token.startsWith('~/'),
 }))
@@ -192,6 +211,8 @@ import type { SuggestionItem } from '../components/PromptInput/PromptInputFooter
 import type { PromptInputMode } from '../../types/textInputTypes.js'
 import { useTypeahead } from './useTypeahead.js'
 import { generateUnifiedSuggestions } from './unifiedSuggestions'
+import { getDirectoryCompletions } from '../../utils/suggestions/directoryCompletion.js'
+import { searchSessionsByCustomTitle } from '../../utils/sessionStorage.js'
 
 type SuggestionsState = {
   commandArgumentHint?: string
@@ -211,6 +232,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions)
+const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions)
+const searchSessionsByCustomTitleMock = vi.mocked(searchSessionsByCustomTitle)
 
 function createKey(
   name: string,
@@ -368,6 +391,8 @@ describe('useTypeahead hook paths', () => {
   beforeEach(() => {
     harness.reset()
     generateUnifiedSuggestionsMock.mockClear()
+    getDirectoryCompletionsMock.mockClear()
+    searchSessionsByCustomTitleMock.mockClear()
   })
 
   test('generates slash command suggestions and navigates them with autocomplete keybindings', async () => {
@@ -617,6 +642,123 @@ describe('useTypeahead hook paths', () => {
       expect(onInputChange).toHaveBeenCalledWith('/resume session-42')
       expect(setCursorOffset).toHaveBeenCalledWith('/resume session-42'.length)
       expect(onSubmit).toHaveBeenCalledWith('/resume session-42', true)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('ignores stale /add-dir directory completions that resolve out of order', async () => {
+    let resolveSlowCompletion: (items: unknown[]) => void = () => {}
+    harness.directoryCompletionResponses.set(
+      's',
+      new Promise(resolve => {
+        resolveSlowCompletion = resolve
+      }),
+    )
+    harness.directoryCompletionResponses.set('lib', [
+      {
+        displayText: 'lib',
+        id: 'lib',
+        metadata: { type: 'directory' },
+      },
+    ])
+    const rendered = await renderHookHarness({
+      input: '/add-dir s',
+      cursorOffset: '/add-dir s'.length,
+    })
+
+    try {
+      await waitFor(
+        () => getDirectoryCompletionsMock.mock.calls.some(call => call[0] === 's'),
+        'initial delayed directory completion request',
+      )
+
+      rendered.rerender({
+        input: '/add-dir lib',
+        cursorOffset: '/add-dir lib'.length,
+      })
+      await waitFor(
+        () =>
+          rendered.getSnapshot().suggestionType === 'directory' &&
+          rendered.getSnapshot().suggestions[0]?.id === 'lib',
+        'newer directory completion result',
+      )
+
+      resolveSlowCompletion([
+        {
+          displayText: 'src',
+          id: 'src',
+          metadata: { type: 'directory' },
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('directory')
+      expect(rendered.getSnapshot().suggestions).toEqual([
+        {
+          displayText: 'lib',
+          id: 'lib',
+          metadata: { type: 'directory' },
+        },
+      ])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('ignores stale /resume title completions that resolve out of order', async () => {
+    let resolveSlowTitle: (items: unknown[]) => void = () => {}
+    harness.sessionTitleResponses.set(
+      'Old',
+      new Promise(resolve => {
+        resolveSlowTitle = resolve
+      }),
+    )
+    harness.sessionTitleResponses.set('New', [
+      {
+        customTitle: 'New sprint',
+        messageCount: 7,
+        modified: new Date('2026-05-21T00:00:00.000Z'),
+        sessionId: 'session-new',
+      },
+    ])
+    const rendered = await renderHookHarness({
+      input: '/resume Old',
+      cursorOffset: '/resume Old'.length,
+    })
+
+    try {
+      await waitFor(
+        () => searchSessionsByCustomTitleMock.mock.calls.some(call => call[0] === 'Old'),
+        'initial delayed title completion request',
+      )
+
+      rendered.rerender({
+        input: '/resume New',
+        cursorOffset: '/resume New'.length,
+      })
+      await waitFor(
+        () =>
+          rendered.getSnapshot().suggestionType === 'custom-title' &&
+          rendered.getSnapshot().suggestions[0]?.displayText === 'New sprint',
+        'newer title completion result',
+      )
+
+      resolveSlowTitle([
+        {
+          customTitle: 'Old sprint',
+          messageCount: 4,
+          modified: new Date('2026-05-20T00:00:00.000Z'),
+          sessionId: 'session-old',
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('custom-title')
+      expect(rendered.getSnapshot().suggestions[0]).toMatchObject({
+        displayText: 'New sprint',
+        metadata: { sessionId: 'session-new' },
+      })
     } finally {
       await rendered.dispose()
     }

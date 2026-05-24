@@ -335,6 +335,9 @@ export function useTypeahead({
   const prevInputRef = useRef('');
   // Track the latest path token to discard stale results from path completion
   const latestPathTokenRef = useRef('');
+  // Track command-argument async lookups to discard stale results.
+  const latestCommandDirectoryArgsRef = useRef<string | null>(null);
+  const latestResumeTitleArgsRef = useRef<string | null>(null);
   // Track the latest bash input to discard stale results from history completion
   const latestBashInputRef = useRef('');
   // Track the latest slack channel token to discard stale results from MCP
@@ -459,6 +462,13 @@ export function useTypeahead({
   const updateSuggestions = useCallback(async (value: string, inputCursorOffset?: number): Promise<void> => {
     // Use provided cursor offset or fall back to ref (avoids dependency on cursorOffset)
     const effectiveCursorOffset = inputCursorOffset ?? cursorOffsetRef.current;
+    const parsedCommandForInvalidation = mode === 'prompt' && isCommandInput(value) ? extractCommandNameAndArgs(value) : null;
+    if (parsedCommandForInvalidation?.commandName !== 'add-dir') {
+      latestCommandDirectoryArgsRef.current = null;
+    }
+    if (parsedCommandForInvalidation?.commandName !== 'resume') {
+      latestResumeTitleArgsRef.current = null;
+    }
     if (suppressSuggestions) {
       debouncedFetchFileSuggestions.cancel();
       clearSuggestions();
@@ -603,17 +613,25 @@ export function useTypeahead({
 
         // Clear suggestions if args end with whitespace (user is done with path)
         if (args.match(/\s+$/)) {
+          latestCommandDirectoryArgsRef.current = null;
           debouncedFetchFileSuggestions.cancel();
           clearSuggestions();
           return;
         }
+        latestCommandDirectoryArgsRef.current = args;
         let dirSuggestions: SuggestionItem[];
         try {
           dirSuggestions = await getDirectoryCompletions(args);
         } catch (error) {
+          if (latestCommandDirectoryArgsRef.current !== args) {
+            return;
+          }
           logError(error);
           debouncedFetchFileSuggestions.cancel();
           clearSuggestions();
+          return;
+        }
+        if (latestCommandDirectoryArgsRef.current !== args) {
           return;
         }
         if (dirSuggestions.length > 0) {
@@ -639,14 +657,21 @@ export function useTypeahead({
         } = parsedCommand;
 
         // Get custom title suggestions using partial match
+        latestResumeTitleArgsRef.current = args;
         let matches;
         try {
           matches = await searchSessionsByCustomTitle(args, {
             limit: 10
           });
         } catch (error) {
+          if (latestResumeTitleArgsRef.current !== args) {
+            return;
+          }
           logError(error);
           clearSuggestions();
+          return;
+        }
+        if (latestResumeTitleArgsRef.current !== args) {
           return;
         }
         const suggestions = matches.map(log => {
