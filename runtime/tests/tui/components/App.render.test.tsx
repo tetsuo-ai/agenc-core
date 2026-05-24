@@ -2026,6 +2026,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(session.onCompactProgress).toEqual(expect.any(Function));
         expect(session.setSDKStatus).toEqual(expect.any(Function));
 
+        session.setSDKStatus?.("compacting");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(output()).toMatch(/Compacting[\s\S]*conversation/);
+
+        session.setSDKStatus?.(null);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
         session.onCompactProgress?.({ type: "compact_start" });
         await new Promise((resolve) => setTimeout(resolve, 25));
         expect(output()).toMatch(/Compacting[\s\S]*conversation/);

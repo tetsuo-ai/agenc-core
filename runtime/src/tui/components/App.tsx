@@ -2109,13 +2109,19 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     });
   }, []);
   const setCompactSDKStatus = useCallback((status: "compacting" | null) => {
-    if (status === null) {
+    if (status === "compacting") {
       setCompactProgress({
-        status: "idle",
-        label: null,
+        status: "compacting",
+        label: "Compacting conversation",
         responseLength: 0
       });
+      return;
     }
+    setCompactProgress({
+      status: "idle",
+      label: null,
+      responseLength: 0
+    });
   }, []);
   useEffect(() => installCompactProgressControls(props.session, {
     setStreamMode: setCompactStreamMode,
