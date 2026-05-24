@@ -32,6 +32,13 @@ describe('ToolUseLoader', () => {
       ),
     ).resolves.toContain('✕')
 
+    await expect(
+      renderToString(
+        <ToolUseLoader isError isUnresolved shouldAnimate />,
+        20,
+      ),
+    ).resolves.toContain('✕')
+
     await expect(renderToString(<RerenderLoader />, 20)).resolves.toContain('●')
   })
 })
