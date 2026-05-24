@@ -269,6 +269,12 @@ export class ProjectTreeStore {
     if (!target.ok) return target;
 
     try {
+      if (isDescendantPath(target.relativePath, source.relativePath)) {
+        return {
+          ok: false,
+          error: `Cannot rename ${source.relativePath} to ${target.relativePath}: target is inside the source path.`,
+        };
+      }
       if (await pathExists(target.absolutePath)) {
         return { ok: false, error: `Cannot rename to ${target.relativePath}: path already exists.` };
       }

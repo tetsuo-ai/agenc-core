@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -439,6 +439,30 @@ describe("project tree helpers", () => {
       expect(rowPaths).not.toContain("src");
       expect(snapshot.expandedPaths).not.toContain("src");
       expect(snapshot.expandedPaths).not.toContain("src/nested");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects renaming a directory into its own descendant without mutating it", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-descendant-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src"), { recursive: true });
+      await writeFile(join(repo, "src", "app.ts"), "app\n", "utf8");
+      await store.refresh();
+
+      const result = await store.renamePath("src", "src/nested/new-src");
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Cannot rename src to src/nested/new-src: target is inside the source path.",
+      });
+      expect(await readdir(join(repo, "src"))).toEqual(["app.ts"]);
+      expect(await readFile(join(repo, "src", "app.ts"), "utf8")).toBe("app\n");
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("src/nested");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
