@@ -384,6 +384,90 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('drops stale external alternate-screen handoffs after detach or unmount', async () => {
+    const enterAfterDetach = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      enterAfterDetach.root.render(textNode('ready'))
+      await sleep(10)
+
+      enterAfterDetach.instance.detachForShutdown()
+      enterAfterDetach.stdoutWrites.length = 0
+
+      enterAfterDetach.instance.enterAlternateScreen()
+
+      expect(enterAfterDetach.stdoutWrites.join('')).toBe('')
+    } finally {
+      instances.delete(enterAfterDetach.stdout as unknown as NodeJS.WriteStream)
+      enterAfterDetach.stdin.end()
+      enterAfterDetach.stdout.end()
+      enterAfterDetach.stderr.end()
+      await sleep(25)
+    }
+
+    const enterAfterUnmount = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      enterAfterUnmount.root.render(textNode('ready'))
+      await sleep(10)
+
+      enterAfterUnmount.root.unmount()
+      enterAfterUnmount.stdoutWrites.length = 0
+
+      enterAfterUnmount.instance.enterAlternateScreen()
+
+      expect(enterAfterUnmount.stdoutWrites.join('')).toBe('')
+    } finally {
+      instances.delete(enterAfterUnmount.stdout as unknown as NodeJS.WriteStream)
+      enterAfterUnmount.stdin.end()
+      enterAfterUnmount.stdout.end()
+      enterAfterUnmount.stderr.end()
+      await sleep(25)
+    }
+
+    const detached = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      detached.root.render(textNode('ready'))
+      await sleep(10)
+
+      detached.instance.enterAlternateScreen()
+      detached.instance.detachForShutdown()
+      detached.stdoutWrites.length = 0
+
+      detached.instance.exitAlternateScreen()
+
+      expect(detached.stdoutWrites.join('')).toBe('')
+    } finally {
+      instances.delete(detached.stdout as unknown as NodeJS.WriteStream)
+      detached.stdin.end()
+      detached.stdout.end()
+      detached.stderr.end()
+      await sleep(25)
+    }
+
+    const unmounted = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      unmounted.root.render(textNode('ready'))
+      await sleep(10)
+
+      unmounted.instance.enterAlternateScreen()
+      unmounted.root.unmount()
+      unmounted.stdoutWrites.length = 0
+
+      unmounted.instance.exitAlternateScreen()
+
+      expect(unmounted.stdoutWrites.join('')).toBe('')
+    } finally {
+      instances.delete(unmounted.stdout as unknown as NodeJS.WriteStream)
+      unmounted.stdin.end()
+      unmounted.stdout.end()
+      unmounted.stderr.end()
+      await sleep(25)
+    }
+  })
+
   test('ignores stale terminal interactions while paused or unmounted', async () => {
     const harness = await createHarness({ columns: 40, rows: 6 })
     const clicks: Array<{ localCol?: number; localRow?: number }> = []

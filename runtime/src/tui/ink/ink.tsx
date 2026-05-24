@@ -391,6 +391,7 @@ export default class Ink {
    * Call `exitAlternateScreen()` when done to restore Ink.
    */
   enterAlternateScreen(): void {
+    if (this.isUnmounted || this.isPaused) return;
     this.pause();
     this.suspendStdin();
     this.options.stdout.write(
@@ -426,6 +427,7 @@ export default class Ink {
    * returns, fullscreen scroll is dead.
    */
   exitAlternateScreen(): void {
+    if (this.isUnmounted || !this.isPaused) return;
     this.options.stdout.write((this.altScreenActive ? ENTER_ALT_SCREEN : '') +
     // re-enter alt — vim's rmcup dropped us to main
     '\x1b[2J' +
