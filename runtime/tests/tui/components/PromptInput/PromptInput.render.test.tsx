@@ -3,6 +3,7 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { PastedContent } from '../../../utils/config.js'
+import { enqueue, resetCommandQueue } from '../../../utils/messageQueueManager.js'
 
 const harness = vi.hoisted(() => {
   const appState = {
@@ -930,6 +931,7 @@ async function renderPromptInput(overrides: Record<string, unknown> = {}) {
 describe('PromptInput render surface', () => {
   beforeEach(() => {
     harness.reset()
+    resetCommandQueue()
     vi.mocked(getImageFromClipboard).mockReset()
     vi.mocked(getImageFromClipboard).mockResolvedValue(null)
     vi.mocked(cacheImagePath).mockClear()
@@ -1388,6 +1390,51 @@ describe('PromptInput render surface', () => {
       expect(onInputChange).toHaveBeenCalledWith('')
       expect(pastedContents.current).toEqual({})
     } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('pops queued commands after current image paste drafts before parent rerender', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'queued-draft-image',
+      mediaType: 'image/png',
+    })
+    const queuedCommand = {
+      value: 'queued command',
+      mode: 'prompt' as const,
+    }
+    enqueue(queuedCommand)
+    harness.commandQueue = [queuedCommand]
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      ;(baseProps.onHistoryUp as () => void)()
+
+      expect(onInputChange).toHaveBeenCalledWith(
+        'queued command\n[Image #1]',
+      )
+      expect(pastedContents.current).toEqual({
+        1: expect.objectContaining({
+          content: 'queued-draft-image',
+          id: 1,
+          mediaType: 'image/png',
+          type: 'image',
+        }),
+      })
+    } finally {
+      resetCommandQueue()
       await rendered.dispose()
     }
   })

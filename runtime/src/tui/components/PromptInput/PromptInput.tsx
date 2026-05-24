@@ -1737,12 +1737,16 @@ function PromptInput({
 
   // Function to get the queued command for editing. Returns true if commands were popped.
   const popAllCommandsFromQueue = useCallback((): boolean => {
-    const result = popAllEditable(input, cursorOffset);
+    const result = popAllEditable(
+      lastInternalInputRef.current,
+      cursorOffsetRef.current,
+    );
     if (!result) {
       return false;
     }
     trackAndSetInput(result.text);
     onModeChange('prompt'); // Always prompt mode for queued commands
+    cursorOffsetRef.current = result.cursorOffset;
     setCursorOffset(result.cursorOffset);
 
     // Restore images from queued commands to pastedContents
@@ -1758,7 +1762,7 @@ function PromptInput({
       });
     }
     return true;
-  }, [trackAndSetInput, onModeChange, input, cursorOffset, updatePastedContentsAndRef]);
+  }, [trackAndSetInput, onModeChange, updatePastedContentsAndRef]);
 
   // Insert the at-mentioned reference (the file and, optionally, a line range) when
   // we receive an at-mentioned notification the IDE.
