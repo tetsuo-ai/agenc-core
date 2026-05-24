@@ -432,7 +432,7 @@ export function BackgroundTasksPanel({
     () => initialDetailTaskId ?? sorted[0]?.id ?? null,
   );
   const [showDetail, setShowDetail] = React.useState(
-    () => Boolean(initialDetailTaskId),
+    () => Boolean(initialDetailTaskId && sorted.some((task) => task.id === initialDetailTaskId)),
   );
   const [detailIndex, setDetailIndex] = React.useState(0);
   const [shellOutputTails, setShellOutputTails] = React.useState<
@@ -443,6 +443,9 @@ export function BackgroundTasksPanel({
       setSelectedTaskId(initialDetailTaskId);
       setShowDetail(true);
       return;
+    }
+    if (initialDetailTaskId) {
+      setShowDetail(false);
     }
     setSelectedTaskId((current) =>
       current && sorted.some((task) => task.id === current)
