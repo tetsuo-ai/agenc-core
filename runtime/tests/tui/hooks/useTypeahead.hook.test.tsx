@@ -1726,6 +1726,77 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('enter clears stale file suggestions after cursor leaves their source token', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'src/app.ts', displayText: 'src/app.ts', description: 'file' },
+    ]
+    const onInputChange = vi.fn()
+    const rendered = await renderHookHarness({
+      cursorOffset: '@sr'.length,
+      input: '@sr, note',
+      onInputChange,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'initial file suggestions',
+      )
+
+      rendered.rerender({
+        cursorOffset: '@sr, note'.length,
+        input: '@sr, note',
+      })
+
+      const enter = createKey('return')
+      rendered.getSnapshot().handleKeyDown(enter)
+
+      expect(enter.defaultPrevented).toBe(true)
+      expect(onInputChange).not.toHaveBeenCalled()
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'cleared stale file suggestions',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('tab clears stale file suggestions after cursor leaves their source token', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'src/app.ts', displayText: 'src/app.ts', description: 'file' },
+    ]
+    const onInputChange = vi.fn()
+    const rendered = await renderHookHarness({
+      cursorOffset: '@sr'.length,
+      input: '@sr, note',
+      onInputChange,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'initial file suggestions',
+      )
+
+      rendered.rerender({
+        cursorOffset: '@sr, note'.length,
+        input: '@sr, note',
+      })
+
+      harness.keybindings['autocomplete:accept']?.()
+
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(generateUnifiedSuggestionsMock.mock.calls.map(call => call[0])).toEqual(['sr'])
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'cleared stale file suggestions',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('logs file suggestion provider failures and fails closed', async () => {
     const error = new Error('unified suggestions failed')
     generateUnifiedSuggestionsMock.mockRejectedValueOnce(error)
