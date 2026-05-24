@@ -543,6 +543,43 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('drops debounced file suggestions after the mode changes', async () => {
+    const staleSuggestions = createDeferred<SuggestionItem[]>()
+    generateUnifiedSuggestionsMock.mockImplementationOnce(
+      async () => staleSuggestions.promise,
+    )
+    const rendered = await renderHookHarness({
+      cursorOffset: '@sr'.length,
+      input: '@sr',
+    })
+
+    try {
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length === 1,
+        'debounced file suggestion fetch',
+      )
+
+      rendered.rerender({
+        cursorOffset: '@sr'.length,
+        input: '@sr',
+        mode: 'bash',
+      })
+      staleSuggestions.resolve([
+        {
+          id: 'src/app.ts',
+          displayText: 'src/app.ts',
+          description: 'file',
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('does not apply stale single shell completion after the input changes', async () => {
     const staleCompletions = createDeferred<SuggestionItem[]>()
     getShellCompletionsMock.mockImplementationOnce(

@@ -84,7 +84,7 @@ type Props = {
   input: string;
   cursorOffset: number;
   commands: Command[];
-  mode: string;
+  mode: PromptInputMode;
   agents: AgentDefinition[];
   setSuggestionsState: (f: (previousSuggestionsState: {
     suggestions: SuggestionItem[];
@@ -112,6 +112,12 @@ type UseTypeaheadResult = {
   commandArgumentHint?: string;
   inlineGhostText?: InlineGhostText;
   handleKeyDown: (e: KeyboardEvent) => void;
+};
+
+type InputStateSnapshot = {
+  cursorOffset: number;
+  input: string;
+  mode: PromptInputMode;
 };
 
 /**
@@ -354,6 +360,7 @@ export function useTypeahead({
 
   // Track the latest search token to discard stale results from slow async operations
   const latestSearchTokenRef = useRef<string | null>(null);
+  const latestSearchInputStateRef = useRef<InputStateSnapshot | null>(null);
   // Track previous input to detect actual text changes vs. callback recreations
   const prevInputRef = useRef('');
   // Track the latest path token to discard stale results from path completion
@@ -384,13 +391,25 @@ export function useTypeahead({
   }, [setSuggestionsState]);
 
   // Expensive async operation to fetch file/resource suggestions
-  const fetchFileSuggestions = useCallback(async (searchToken: string, isAtSymbol = false): Promise<void> => {
+  const fetchFileSuggestions = useCallback(async (
+    searchToken: string,
+    isAtSymbol = false,
+    requestState: InputStateSnapshot = currentInputStateRef.current,
+  ): Promise<void> => {
     latestSearchTokenRef.current = searchToken;
+    latestSearchInputStateRef.current = requestState;
+    const isStaleRequest = () =>
+      latestSearchTokenRef.current !== searchToken ||
+      !isCurrentInputState(
+        requestState.input,
+        requestState.cursorOffset,
+        requestState.mode,
+      );
     let combinedItems: SuggestionItem[];
     try {
       combinedItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
     } catch (error) {
-      if (latestSearchTokenRef.current !== searchToken) {
+      if (isStaleRequest()) {
         return;
       }
       logError(error);
@@ -398,7 +417,7 @@ export function useTypeahead({
       return;
     }
     // Discard stale results if a newer query was initiated while waiting
-    if (latestSearchTokenRef.current !== searchToken) {
+    if (isStaleRequest()) {
       return;
     }
     if (combinedItems.length === 0) {
@@ -419,7 +438,7 @@ export function useTypeahead({
     }));
     setSuggestionType(combinedItems.length > 0 ? 'file' : 'none');
     setMaxColumnWidth(undefined); // No fixed width for file suggestions
-  }, [mcpResources, setSuggestionsState, setSuggestionType, setMaxColumnWidth, agents, clearSuggestions]);
+  }, [mcpResources, setSuggestionsState, setSuggestionType, setMaxColumnWidth, agents, clearSuggestions, isCurrentInputState]);
 
   // Pre-warm the file index on mount so the first @-mention doesn't block.
   // The build runs in background with ~4ms event-loop yields, so it doesn't
@@ -441,12 +460,21 @@ export function useTypeahead({
     }
     return onIndexBuildComplete(() => {
       const token = latestSearchTokenRef.current;
-      if (token !== null) {
+      const requestState = latestSearchInputStateRef.current;
+      if (
+        token !== null &&
+        requestState &&
+        isCurrentInputState(
+          requestState.input,
+          requestState.cursorOffset,
+          requestState.mode,
+        )
+      ) {
         latestSearchTokenRef.current = null;
-        void fetchFileSuggestions(token, token === '');
+        void fetchFileSuggestions(token, token === '', requestState);
       }
     });
-  }, [fetchFileSuggestions]);
+  }, [fetchFileSuggestions, isCurrentInputState]);
 
   // Debounce the file fetch operation. 50ms sits just above macOS default
   // key-repeat (~33ms) so held-delete/backspace coalesces into one search
@@ -858,7 +886,11 @@ export function useTypeahead({
         if (latestSearchTokenRef.current === searchToken) {
           return;
         }
-        void debouncedFetchFileSuggestions(searchToken, true);
+        void debouncedFetchFileSuggestions(searchToken, true, {
+          cursorOffset: effectiveCursorOffset,
+          input: value,
+          mode,
+        });
         return;
       }
     }
@@ -872,7 +904,11 @@ export function useTypeahead({
         if (latestSearchTokenRef.current === searchToken) {
           return;
         }
-        void debouncedFetchFileSuggestions(searchToken, false);
+        void debouncedFetchFileSuggestions(searchToken, false, {
+          cursorOffset: effectiveCursorOffset,
+          input: value,
+          mode,
+        });
       } else {
         // If we had file suggestions but now there's no completion token
         debouncedFetchFileSuggestions.cancel();
