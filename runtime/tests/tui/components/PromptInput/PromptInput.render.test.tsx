@@ -2850,6 +2850,29 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('keeps prompt input unfocused while auto-mode opt-in dialog remains open', async () => {
+    harness.features.TRANSCRIPT_CLASSIFIER = true
+    harness.hasAutoModeOptIn = false
+    harness.nextPermissionMode = 'auto'
+    const rendered = await renderPromptInput()
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      expect(baseProps.focus).toBe(true)
+
+      harness.keybindings['chat:cycleMode']?.()
+      await sleep(450)
+      expect(harness.autoModeOptInProps).toBeDefined()
+      expect(harness.baseProps?.focus).toBe(false)
+
+      await sleep(2700)
+      expect(harness.autoModeOptInProps).toBeDefined()
+      expect(harness.baseProps?.focus).toBe(false)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('routes footer close through viewed-agent typing and task dismissal paths', async () => {
     harness.isBackgroundTask.mockImplementation(
       task => (task as { background?: boolean }).background === true,
