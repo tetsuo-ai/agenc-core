@@ -8,12 +8,13 @@ export function renameWorkspacePathReference(
   toPath: string,
 ): string | null {
   if (!value) return value;
+  const normalizedValue = normalizeWorkspacePathForReferences(value);
   const normalizedFromPath = normalizeWorkspacePathForReferences(fromPath);
   const normalizedToPath = normalizeWorkspacePathForReferences(toPath);
   if (!normalizedFromPath) return value;
-  if (value === normalizedFromPath) return normalizedToPath;
-  if (value.startsWith(`${normalizedFromPath}/`)) {
-    return `${normalizedToPath}${value.slice(normalizedFromPath.length)}`;
+  if (normalizedValue === normalizedFromPath) return normalizedToPath;
+  if (normalizedValue.startsWith(`${normalizedFromPath}/`)) {
+    return `${normalizedToPath}${normalizedValue.slice(normalizedFromPath.length)}`;
   }
   return value;
 }
@@ -23,10 +24,11 @@ export function containsWorkspacePathReference(
   targetPath: string,
 ): boolean {
   if (!value) return false;
+  const normalizedValue = normalizeWorkspacePathForReferences(value);
   const normalizedTargetPath = normalizeWorkspacePathForReferences(targetPath);
   if (!normalizedTargetPath) return false;
   return (
-    value === normalizedTargetPath ||
-    value.startsWith(`${normalizedTargetPath}/`)
+    normalizedValue === normalizedTargetPath ||
+    normalizedValue.startsWith(`${normalizedTargetPath}/`)
   );
 }

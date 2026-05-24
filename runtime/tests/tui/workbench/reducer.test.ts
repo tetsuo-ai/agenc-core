@@ -274,6 +274,39 @@ describe("workbenchReducer", () => {
     ]);
   });
 
+  it("normalizes backslash path references before renaming active paths and attachments", () => {
+    const state = {
+      ...getDefaultWorkbenchState(),
+      activeFilePath: "src\\nested\\app.ts",
+      attachments: [
+        {
+          id: "file-range:src\\nested\\app.ts:12-15",
+          kind: "file-range" as const,
+          label: "src\\nested\\app.ts:12-15",
+          path: "src\\nested\\app.ts",
+          line: 12,
+          endLine: 15,
+        },
+      ],
+      composerAttachmentIds: ["file-range:src\\nested\\app.ts:12-15"],
+    };
+    const next = workbenchReducer(state, {
+      type: "renamePathReferences",
+      fromPath: "src",
+      toPath: "lib",
+    });
+
+    expect(next.activeFilePath).toBe("lib/nested/app.ts");
+    expect(next.attachments[0]).toMatchObject({
+      id: "file-range:lib/nested/app.ts:12-15",
+      label: "lib/nested/app.ts:12-15",
+      path: "lib/nested/app.ts",
+    });
+    expect(next.composerAttachmentIds).toEqual([
+      "file-range:lib/nested/app.ts:12-15",
+    ]);
+  });
+
   it("opens the buffer only when rename changes the current active path", () => {
     const affected = workbenchReducer({
       ...getDefaultWorkbenchState(),
@@ -356,6 +389,50 @@ describe("workbenchReducer", () => {
       },
     ]);
     expect(next.composerAttachmentIds).toEqual(["file:src-old/app.ts"]);
+  });
+
+  it("normalizes backslash path references before deleting active paths and attachments", () => {
+    const state = {
+      ...getDefaultWorkbenchState(),
+      activeFilePath: "src\\nested\\app.ts",
+      activeFileLine: 12,
+      attachments: [
+        {
+          id: "file-range:src\\nested\\app.ts:12-15",
+          kind: "file-range" as const,
+          label: "src\\nested\\app.ts:12-15",
+          path: "src\\nested\\app.ts",
+          line: 12,
+          endLine: 15,
+        },
+        {
+          id: "file:src-old\\app.ts",
+          kind: "file" as const,
+          label: "src-old\\app.ts",
+          path: "src-old\\app.ts",
+        },
+      ],
+      composerAttachmentIds: [
+        "file-range:src\\nested\\app.ts:12-15",
+        "file:src-old\\app.ts",
+      ],
+    };
+    const next = workbenchReducer(state, {
+      type: "deletePathReferences",
+      path: "src",
+    });
+
+    expect(next.activeFilePath).toBeNull();
+    expect(next.activeFileLine).toBeNull();
+    expect(next.attachments).toEqual([
+      {
+        id: "file:src-old\\app.ts",
+        kind: "file",
+        label: "src-old\\app.ts",
+        path: "src-old\\app.ts",
+      },
+    ]);
+    expect(next.composerAttachmentIds).toEqual(["file:src-old\\app.ts"]);
   });
 
   it("closes the active surface only when delete clears the current active path", () => {
