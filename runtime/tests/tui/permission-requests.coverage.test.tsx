@@ -261,4 +261,46 @@ describe("permission request overlay coverage", () => {
       await sleep();
     }
   });
+
+  test("requires typed confirmation for equivalent forced recursive removal forms", async () => {
+    const resolved: ReviewDecision[] = [];
+    const request = createPendingRequest(
+      decision => {
+        resolved.push(decision);
+      },
+      {
+        id: "request-delete-permuted",
+        input: { command: "rm", args: ["-fr", "/tmp/agenc-danger"] },
+        description: "Remove generated path",
+      },
+    );
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(<AgenCPermissionOverlay request={request} tools={[{ name: "Bash" }]} />);
+      await sleep();
+
+      const frame = stripAnsi(extractLastFrame(output()));
+      const compactFrame = frame.replace(/\s+/gu, "");
+      expect(compactFrame).toContain("high-riskapproval");
+      expect(compactFrame).toContain("rm-fr/tmp/agenc-danger");
+      expect(compactFrame).toContain("type'delete'toapprove");
+      expect(resolved).toEqual([]);
+
+      stdin.write("\r");
+      await sleep();
+
+      expect(resolved).toEqual([]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
 });

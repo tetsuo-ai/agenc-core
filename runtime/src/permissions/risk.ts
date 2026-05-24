@@ -1,4 +1,19 @@
+import { matchedDangerousShellCommandLabel } from "./dangerous-patterns.js";
+
 export type ApprovalRiskTier = "low" | "medium" | "destructive";
+
+const SHELL_COMMAND_FRAGMENT = String.raw`[^;&|\n]*`;
+const RECURSIVE_FORCE_RM_BUNDLED_FLAGS = new RegExp(
+  [
+    String.raw`\brm\b${SHELL_COMMAND_FRAGMENT}\s+-[a-z]*r[a-z]*f[a-z]*\b`,
+    String.raw`\brm\b${SHELL_COMMAND_FRAGMENT}\s+-[a-z]*f[a-z]*r[a-z]*\b`,
+  ].join("|"),
+  "iu",
+);
+const RECURSIVE_FORCE_RM_SPLIT_FLAGS = new RegExp(
+  String.raw`\brm\b(?=${SHELL_COMMAND_FRAGMENT}\s+(?:-[a-z]*r[a-z]*\b|--recursive\b))(?=${SHELL_COMMAND_FRAGMENT}\s+(?:-[a-z]*f[a-z]*\b|--force\b))`,
+  "iu",
+);
 
 export function classifyApprovalRisk(input: {
   readonly request?: { readonly ctx?: { readonly toolName?: unknown } };
@@ -20,7 +35,10 @@ export function classifyApprovalRisk(input: {
     .join(" ")
     .toLowerCase();
 
-  if (/\b(rm\s+-rf|delete|destroy|wipe|format|mainnet|settle|stake|transfer|slash|escrow)\b/u.test(haystack)) {
+  if (commandLooksDestructive(input.command)) {
+    return "destructive";
+  }
+  if (/\b(delete|destroy|wipe|format|mainnet|settle|stake|transfer|slash|escrow)\b/u.test(haystack)) {
     return "destructive";
   }
   if (/\b(write|edit|patch|chmod|chown|mv|deploy|install|network|curl|wget)\b/u.test(haystack)) {
@@ -39,6 +57,35 @@ export function typedConfirmationWordForRisk(input: {
   if (/\bsettle\b/u.test(haystack)) return "settle";
   if (/\bstake\b/u.test(haystack)) return "stake";
   if (/\btransfer\b/u.test(haystack)) return "transfer";
-  if (/\bdelete|destroy|wipe|rm\s+-rf\b/u.test(haystack)) return "delete";
+  if (/\bdelete|destroy|wipe\b/u.test(haystack)) return "delete";
+  if (input.command && commandLooksLikeRemoval(input.command)) return "delete";
   return "approve";
+}
+
+function dangerousShellCommandLabel(command: string | undefined): string | null {
+  return command ? matchedDangerousShellCommandLabel(command) : null;
+}
+
+function commandLooksDestructive(command: string | undefined): boolean {
+  if (!command) return false;
+  return (
+    dangerousShellCommandLabel(command) !== null ||
+    containsRecursiveForceRemovalText(command)
+  );
+}
+
+function commandLooksLikeRemoval(command: string): boolean {
+  const label = dangerousShellCommandLabel(command);
+  if (label === "rm -rf" || label === "rm -f") return true;
+  return (
+    (/\brm\b/u.test(command.toLowerCase()) && label !== null) ||
+    containsRecursiveForceRemovalText(command)
+  );
+}
+
+function containsRecursiveForceRemovalText(command: string): boolean {
+  return (
+    RECURSIVE_FORCE_RM_BUNDLED_FLAGS.test(command) ||
+    RECURSIVE_FORCE_RM_SPLIT_FLAGS.test(command)
+  );
 }
