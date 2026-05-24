@@ -20,6 +20,7 @@ import {
   isPermissionDeniedToolResult,
   PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
 } from "./tool-result-denial.js";
+import { escapeXml } from "../utils/xml.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -1224,9 +1225,9 @@ export function formatStructuredToolResult(
     // metadata block is appended outside the tags so it remains
     // human-readable in fallback paths.
     const blocks: { type: "text"; text: string }[] = [];
-    blocks.push({ type: "text", text: `<bash-stdout>${stdout}</bash-stdout>` });
+    blocks.push({ type: "text", text: `<bash-stdout>${escapeXml(stdout)}</bash-stdout>` });
     if (stderr.length > 0) {
-      blocks.push({ type: "text", text: `<bash-stderr>${stderr}</bash-stderr>` });
+      blocks.push({ type: "text", text: `<bash-stderr>${escapeXml(stderr)}</bash-stderr>` });
     }
     const meta: string[] = [];
     if (exitCode !== null) meta.push(`exit_code=${exitCode}`);

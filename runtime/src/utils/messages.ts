@@ -95,6 +95,7 @@ import { quote } from './bash/shellQuote.js'
 import { formatNumber, formatTokens } from './format.js'
 import { getPewterLedgerVariant } from './planModeV2.js'
 import { jsonStringify } from './slowOperations.js'
+import { escapeXml, unescapeXml } from './xml.js'
 
 // Hook attachments that have a hookName field (excludes HookPermissionDecisionAttachment)
 type HookAttachmentWithName = Exclude<
@@ -587,9 +588,11 @@ export function formatCommandInputTags(
   commandName: string,
   args: string,
 ): string {
-  return `<${COMMAND_NAME_TAG}>/${commandName}</${COMMAND_NAME_TAG}>
-            <${COMMAND_MESSAGE_TAG}>${commandName}</${COMMAND_MESSAGE_TAG}>
-            <${COMMAND_ARGS_TAG}>${args}</${COMMAND_ARGS_TAG}>`
+  const escapedCommandName = escapeXml(commandName)
+  const escapedArgs = escapeXml(args)
+  return `<${COMMAND_NAME_TAG}>/${escapedCommandName}</${COMMAND_NAME_TAG}>
+            <${COMMAND_MESSAGE_TAG}>${escapedCommandName}</${COMMAND_MESSAGE_TAG}>
+            <${COMMAND_ARGS_TAG}>${escapedArgs}</${COMMAND_ARGS_TAG}>`
 }
 
 /**
@@ -2890,11 +2893,11 @@ export function textForResubmit(
   const content = getUserMessageText(msg)
   if (content === null) return null
   const bash = extractTag(content, 'bash-input')
-  if (bash) return { text: bash, mode: 'bash' }
+  if (bash) return { text: unescapeXml(bash), mode: 'bash' }
   const cmd = extractTag(content, COMMAND_NAME_TAG)
   if (cmd) {
     const args = extractTag(content, COMMAND_ARGS_TAG) ?? ''
-    return { text: `${cmd} ${args}`, mode: 'prompt' }
+    return { text: `${unescapeXml(cmd)} ${unescapeXml(args)}`, mode: 'prompt' }
   }
   return { text: stripIdeContextTags(content), mode: 'prompt' }
 }

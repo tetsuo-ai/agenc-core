@@ -14,6 +14,7 @@ import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../../types/message';
 import { stripDisplayTags } from '../../utils/displayTags.js';
 import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js';
+import { unescapeXml } from '../../utils/xml.js';
 import { type OptionWithDescription, Select } from './CustomSelect/select';
 import { Spinner } from './spinner/Spinner.js';
 import { selectableUserMessagesFilter } from './message-selector-filter.js';
@@ -677,7 +678,7 @@ function UserMessageOption(t0) {
           } else {
             t7 = $[20];
           }
-          t6 = <Box flexDirection="row" width="100%">{t7}<Text color={color} dimColor={dimColor}>{" "}{input}</Text></Box>;
+          t6 = <Box flexDirection="row" width="100%">{t7}<Text color={color} dimColor={dimColor}>{" "}{unescapeXml(input)}</Text></Box>;
           break bb0;
         }
       }

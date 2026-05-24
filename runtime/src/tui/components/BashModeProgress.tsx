@@ -5,6 +5,7 @@ import React from 'react';
 import { Box } from '../ink.js';
 import { BashTool } from '../../tools/BashTool/BashTool';
 import type { ShellProgress } from '../../types/tools';
+import { escapeXml } from '../../utils/xml.js';
 import { ShellInputMessage } from './v2/messagePrimitives.js';
 import { ShellProgressMessage } from './shell/ShellProgressMessage';
 type Props = {
@@ -19,7 +20,7 @@ export function BashModeProgress(t0) {
     progress,
     verbose
   } = t0;
-  const t1 = `<bash-input>${input}</bash-input>`;
+  const t1 = `<bash-input>${escapeXml(input)}</bash-input>`;
   let t2;
   if ($[0] !== t1) {
     t2 = <ShellInputMessage addMargin={false} param={{

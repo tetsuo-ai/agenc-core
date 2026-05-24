@@ -45,6 +45,25 @@ export function unescapeJsonString(raw: string): string {
   }
 }
 
+function unescapeXmlText(raw: string): string {
+  return raw.replace(/&(amp|lt|gt|quot|apos);/g, (match, entity: string) => {
+    switch (entity) {
+      case 'amp':
+        return '&'
+      case 'lt':
+        return '<'
+      case 'gt':
+        return '>'
+      case 'quot':
+        return '"'
+      case 'apos':
+        return "'"
+      default:
+        return match
+    }
+  })
+}
+
 /**
  * Extracts a simple JSON string field value from raw text without full parsing.
  * Looks for `"key":"value"` or `"key": "value"` patterns.
@@ -178,13 +197,13 @@ export function extractFirstPromptFromHead(head: string): string {
         // Skip slash-command messages but remember first as fallback
         const cmdMatch = COMMAND_NAME_RE.exec(result)
         if (cmdMatch) {
-          if (!commandFallback) commandFallback = cmdMatch[1]!
+          if (!commandFallback) commandFallback = unescapeXmlText(cmdMatch[1]!)
           continue
         }
 
         // Format bash input with ! prefix before the generic XML skip
         const bashMatch = /<bash-input>([\s\S]*?)<\/bash-input>/.exec(result)
-        if (bashMatch) return `! ${bashMatch[1]!.trim()}`
+        if (bashMatch) return `! ${unescapeXmlText(bashMatch[1]!.trim())}`
 
         if (SKIP_FIRST_PROMPT_PATTERN.test(result)) continue
 

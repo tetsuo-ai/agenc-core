@@ -24,4 +24,22 @@ describe('UserBashOutputMessage', () => {
     expect(output).not.toContain('<persisted-output>')
     expect(output).not.toContain('(No output)')
   })
+
+  it('decodes escaped stdout and stderr text after extracting structural tags', async () => {
+    const output = await renderToString(
+      <UserBashOutputMessage
+        content={
+          '<bash-stdout>out &lt;tag&gt; &amp;</bash-stdout>' +
+          '<bash-stderr>err &lt;warn&gt; &amp;</bash-stderr>'
+        }
+        verbose={true}
+      />,
+      100,
+    )
+
+    expect(output).toContain('out <tag> &')
+    expect(output).toContain('err <warn> &')
+    expect(output).not.toContain('&lt;tag&gt;')
+    expect(output).not.toContain('&lt;warn&gt;')
+  })
 })
