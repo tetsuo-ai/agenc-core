@@ -268,6 +268,7 @@ export class ProjectTreeStore {
       }
       await mkdir(path.dirname(target.absolutePath), { recursive: true });
       await rename(source.absolutePath, target.absolutePath);
+      this.#renameExpandedPaths(source.relativePath, target.relativePath);
       await this.refresh();
       this.reveal(target.relativePath);
       return { ok: true, path: target.relativePath };
@@ -282,6 +283,7 @@ export class ProjectTreeStore {
 
     try {
       await rm(target.absolutePath, { recursive: true });
+      this.#deleteExpandedPaths(target.relativePath);
       await this.refresh();
       this.reveal(parentPath(target.relativePath));
       return { ok: true, path: target.relativePath };
@@ -292,6 +294,28 @@ export class ProjectTreeStore {
 
   #rowForPath(pathValue: string): ProjectTreeRow | null {
     return this.#snapshot.rows.find((row) => row.path === pathValue) ?? null;
+  }
+
+  #renameExpandedPaths(fromPath: string, toPath: string): void {
+    const next = new Set<string>();
+    for (const expandedPath of this.#expandedPaths) {
+      if (expandedPath === fromPath) {
+        next.add(toPath);
+      } else if (isDescendantPath(expandedPath, fromPath)) {
+        next.add(`${toPath}${expandedPath.slice(fromPath.length)}`);
+      } else {
+        next.add(expandedPath);
+      }
+    }
+    this.#expandedPaths = next;
+  }
+
+  #deleteExpandedPaths(pathValue: string): void {
+    for (const expandedPath of [...this.#expandedPaths]) {
+      if (expandedPath === pathValue || isDescendantPath(expandedPath, pathValue)) {
+        this.#expandedPaths.delete(expandedPath);
+      }
+    }
   }
 
   #emit(): void {
