@@ -2357,8 +2357,11 @@ function PromptInput({
         // When the selected row IS the viewed agent, 'x' types into the
         // steering input. Any other row — dismiss it.
         if (viewSelectionMode === 'viewing-agent' && task.id === viewingAgentTaskId) {
-          onChange(input.slice(0, cursorOffset) + 'x' + input.slice(cursorOffset));
-          setCursorOffset(cursorOffset + 1);
+          const currentInput = lastInternalInputRef.current;
+          const currentOffset = cursorOffsetRef.current;
+          onChange(currentInput.slice(0, currentOffset) + 'x' + currentInput.slice(currentOffset));
+          cursorOffsetRef.current = currentOffset + 1;
+          setCursorOffset(currentOffset + 1);
           return;
         }
         stopOrDismissAgent(task.id, setAppState);
@@ -2411,8 +2414,11 @@ function PromptInput({
     // above, so anything reaching here is genuinely not a footer action.
     // onChange clears footerSelection, so no explicit deselect.
     if (footerItemSelected && char && !key.ctrl && !key.meta && !key.escape && !key.return) {
-      onChange(input.slice(0, cursorOffset) + char + input.slice(cursorOffset));
-      setCursorOffset(cursorOffset + char.length);
+      const currentInput = lastInternalInputRef.current;
+      const currentOffset = cursorOffsetRef.current;
+      onChange(currentInput.slice(0, currentOffset) + char + currentInput.slice(currentOffset));
+      cursorOffsetRef.current = currentOffset + char.length;
+      setCursorOffset(currentOffset + char.length);
       return;
     }
 

@@ -2270,6 +2270,48 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('types through selected footer against current image draft before parent rerender', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'footer-type-image',
+      mediaType: 'image/png',
+    })
+    harness.isBackgroundTask.mockImplementation(
+      task => (task as { background?: boolean }).background === true,
+    )
+    harness.appState.tasks = {
+      task1: { background: true },
+    }
+    harness.appState.footerSelection = 'tasks'
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]')
+
+      latestInputHandler()('x', {
+        ctrl: false,
+        escape: false,
+        meta: false,
+        return: false,
+      })
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]x')
+      expect(harness.appState.footerSelection).toBeNull()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('drives model and thinking picker callbacks from chat keybindings', async () => {
     harness.fastMode.enabled = true
     harness.fastMode.available = true
