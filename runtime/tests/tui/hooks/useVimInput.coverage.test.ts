@@ -224,4 +224,24 @@ describe('useVimInput coverage', () => {
       await rendered.dispose()
     }
   })
+
+  test('leaves insert mode on a grapheme boundary before normal edits', async () => {
+    const rendered = await renderHookHarness()
+
+    try {
+      await rendered.send('😀')
+      expect(rendered.latest().value).toBe('😀')
+      expect(rendered.latest().offset).toBe('😀'.length)
+
+      await rendered.send('', { escape: true })
+      expect(rendered.latest().mode).toBe('NORMAL')
+      expect(rendered.latest().offset).toBe(0)
+
+      await rendered.send('x')
+      expect(rendered.latest().value).toBe('')
+      expect(rendered.latest().offset).toBe(0)
+    } finally {
+      await rendered.dispose()
+    }
+  })
 })
