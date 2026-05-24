@@ -1906,10 +1906,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             parsedDollarSkill,
             command,
             getToolUseContext(
-              transcript.messages as any[],
+              transcriptMessagesRef.current as any[],
               [],
               new AbortController(),
-              mainLoopModel,
             ) as PromptInputContext,
           );
           props.session.enqueueIdleInput?.(loaded.metadata);

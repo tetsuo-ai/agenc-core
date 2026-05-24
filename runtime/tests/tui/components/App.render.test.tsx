@@ -232,6 +232,7 @@ vi.mock("../../utils/commitAttribution.js", () => ({
 vi.mock("../../utils/permissions/permissionSetup.js", () => ({
   createDisabledBypassPermissionsContext: (context: unknown) => context,
   isBypassPermissionsModeDisabled: () => false,
+  parseToolListFromCLI: (tools: string[] = []) => tools,
 }));
 
 vi.mock("../../utils/settings/applySettingsChange.js", () => ({
@@ -240,6 +241,7 @@ vi.mock("../../utils/settings/applySettingsChange.js", () => ({
 
 vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),
+  getSettingsForSource: () => null,
   getSettings_DEPRECATED: () => ({}),
 }));
 
@@ -535,6 +537,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       providerProbe.promptSubmits.push(onSubmit);
       providerProbe.promptProps.push({
         input,
+        onSubmit,
         onShowMessageSelector,
         onMessageActionsEnter,
         onExit,
@@ -1309,6 +1312,88 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(output()).toContain("$skill-name");
       },
     );
+  });
+
+  test("passes current transcript messages to dollar skill commands", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const getPromptForCommand = vi.fn(async (_args: string, context: unknown) => {
+      const messages = (context as { messages?: readonly unknown[] }).messages ?? [];
+      return [{ type: "text", text: `message-count:${messages.length}` }];
+    });
+    mockTuiCommandList.push({
+      name: "reviewer",
+      type: "prompt",
+      loadedFrom: "skills",
+      progressMessage: "Loading reviewer",
+      contentLength: 1,
+      getPromptForCommand,
+    });
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "prior-turn",
+          type: "turn_complete",
+          payload: {
+            turnId: "prior-turn",
+            lastAgentMessage: "Previous response",
+          },
+        },
+      ],
+      enqueueIdleInput: vi.fn(() => 1),
+      submit: vi.fn(async () => {}),
+    } satisfies AgenCBridgeSession;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    const { stdout, stdin } = createTestStreams();
+    const root = await createRoot({
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+    });
+
+    try {
+      root.render(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(providerProbe.messageProps.at(-1)?.messages).toHaveLength(1);
+      expect(providerProbe.promptProps.at(-1)?.commands).toContainEqual(
+        expect.objectContaining({ name: "reviewer", type: "prompt" }),
+      );
+
+      const onSubmit = providerProbe.promptProps.at(-1)?.onSubmit as
+        | ((input: string, helpers: typeof helpers) => Promise<void>)
+        | undefined;
+      expect(onSubmit).toBeDefined();
+
+      await onSubmit!("$reviewer audit this", helpers);
+
+      expect(getPromptForCommand).toHaveBeenCalledWith(
+        "audit this",
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({ type: "assistant" }),
+          ]),
+        }),
+      );
+      expect(session.submit).toHaveBeenCalledWith("", {
+        displayUserMessage: "$reviewer audit this",
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
   });
 
   test("keeps unknown dollar skills out of model submit", async () => {
