@@ -6,7 +6,7 @@ import {
   taskMayReferencePath,
   taskPathLabel,
 } from "../../../src/tui/workbench/agents/activity.js";
-import { partitionAgentTasks, resolveAgentSelection } from "../../../src/tui/workbench/agents/AgentsRail.js";
+import { orderAgentTasks, partitionAgentTasks, resolveAgentSelection } from "../../../src/tui/workbench/agents/AgentsRail.js";
 
 describe("workbench agents rail model", () => {
   it("groups active and background agent tasks", () => {
@@ -55,6 +55,27 @@ describe("workbench agents rail model", () => {
       selectedIndex: 0,
       selectedTask: tasks[1],
     });
+  });
+
+  it("orders active agents before background agents and sorts equal groups by newest start time", () => {
+    const tasks = [
+      { id: "completed-new", type: "local_agent", status: "completed", startTime: 3_000 },
+      { id: "running-old", type: "local_agent", status: "running", startTime: 1_000 },
+      { id: "pending-new", type: "remote_agent", status: "pending", startTime: 2_000 },
+      { id: "failed-missing-start", type: "local_agent", status: "failed" },
+    ];
+
+    expect(orderAgentTasks(tasks).map((task) => task.id)).toEqual([
+      "pending-new",
+      "running-old",
+      "completed-new",
+      "failed-missing-start",
+    ]);
+
+    expect(orderAgentTasks([
+      { id: "failed-a", type: "local_agent", status: "failed" },
+      { id: "failed-b", type: "local_agent", status: "failed" },
+    ]).map((task) => task.id)).toEqual(["failed-a", "failed-b"]);
   });
 
   it("formats elapsed runtime and extracts task paths", () => {
