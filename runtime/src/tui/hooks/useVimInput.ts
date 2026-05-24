@@ -71,13 +71,14 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     // (unless at beginning of line or at offset 0)
     const offset = textInput.offset
     if (offset > 0 && textInput.value[offset - 1] !== '\n') {
-      textInput.setOffset(offset - 1)
+      const cursor = TextCursor.fromText(textInput.value, props.columns, offset)
+      textInput.setOffset(cursor.left().offset)
     }
 
     vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
     setMode('NORMAL')
     onModeChange?.('NORMAL')
-  }, [onModeChange, textInput])
+  }, [onModeChange, props.columns, textInput])
 
   function createOperatorContext(
     cursor: TextCursor,
