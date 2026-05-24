@@ -1804,6 +1804,28 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('keeps completed coordinator agent rows selectable after background status ends', async () => {
+    harness.appState.tasks = {
+      agent1: { id: 'agent-1', type: 'local_agent', status: 'completed' },
+    }
+    harness.appState.footerSelection = 'tasks'
+    harness.appState.coordinatorTaskIndex = 1
+    harness.coordinatorTaskCount = 2
+    harness.visibleAgentTasks = [{ id: 'agent-1', status: 'completed' }]
+
+    const rendered = await renderPromptInput({ input: 'follow up' })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      expect(baseProps.focus).toBe(false)
+      await sleep(25)
+      expect(harness.appState.footerSelection).toBe('tasks')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('types through selected footer and handles help escape shortcuts', async () => {
     harness.isBackgroundTask.mockImplementation(
       task => (task as { background?: boolean }).background === true,
