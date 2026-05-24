@@ -1020,6 +1020,16 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({ action: "accept" }),
     );
 
+    listener?.({
+      type: "mcp_elicitation_complete",
+      payload: { serverName: "srv", elicitationId: 42 },
+    });
+    expect(completeMcpUrl).toHaveBeenCalledWith(
+      "srv",
+      42,
+      expect.objectContaining({ action: "accept" }),
+    );
+
     stop();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(
