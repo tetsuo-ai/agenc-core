@@ -7,6 +7,7 @@ import {
   attachFileRangeCommand,
   materializeAttachmentMentions,
   openBufferCommand,
+  openPreviewCommand,
   attachTaskErrorCommand,
   searchMatchAttachment,
 } from "../../../src/tui/workbench/commands.js";
@@ -20,6 +21,68 @@ describe("workbench command helpers", () => {
       line: 9,
       focus: false,
     });
+  });
+
+  it("normalizes path-backed commands before they update workbench state", () => {
+    expect(openBufferCommand("src\\nested\\app.ts", 9, false)).toMatchObject({
+      path: "src/nested/app.ts",
+    });
+    expect(openPreviewCommand("src\\nested\\app.ts", 9, false)).toMatchObject({
+      path: "src/nested/app.ts",
+    });
+    expect(attachFileCommand("src\\nested\\app.ts")).toMatchObject({
+      attachment: {
+        id: "file:src/nested/app.ts",
+        path: "src/nested/app.ts",
+        label: "src/nested/app.ts",
+      },
+    });
+    expect(attachFileRangeCommand("src\\nested\\app.ts", 4, 7)).toMatchObject({
+      attachment: {
+        id: "file-range:src/nested/app.ts:4-7",
+        path: "src/nested/app.ts",
+        label: "src/nested/app.ts:4-7",
+      },
+    });
+    expect(attachDiffHunkCommand({
+      path: "src\\nested\\app.ts",
+      line: 9,
+      label: "src\\nested\\app.ts diff",
+    })).toMatchObject({
+      attachment: {
+        id: "diff-hunk:src/nested/app.ts:9",
+        path: "src/nested/app.ts",
+        label: "src/nested/app.ts diff",
+      },
+    });
+    expect(attachTaskErrorCommand({
+      taskId: "test-1",
+      file: "src\\nested\\app.test.ts",
+      line: 12,
+      label: "src\\nested\\app.test.ts failure",
+    })).toMatchObject({
+      attachment: {
+        id: "task-error:test-1:src/nested/app.test.ts:12",
+        path: "src/nested/app.test.ts",
+        label: "src/nested/app.test.ts failure",
+      },
+    });
+    expect(searchMatchAttachment("needle", {
+      id: "src\\nested\\app.ts:6:needle",
+      file: "src\\nested\\app.ts",
+      line: 6,
+      text: "needle",
+    })).toMatchObject({
+      id: "search-result:src/nested/app.ts:6:needle",
+      path: "src/nested/app.ts",
+      label: "src/nested/app.ts:6",
+    });
+    expect(attachmentPromptMention({
+      id: "file:src\\nested\\app.ts",
+      kind: "file",
+      label: "src\\nested\\app.ts",
+      path: "src\\nested\\app.ts",
+    })).toBe("@src/nested/app.ts");
   });
 
   it("materializes composer attachments as prompt mentions", () => {
