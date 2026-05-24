@@ -212,7 +212,9 @@ export default class App extends PureComponent<Props, State> {
     }
     // ignore calling setRawMode on an handle stdin it cannot be called
     if (this.isRawModeSupported()) {
-      this.handleSetRawMode(false);
+      while (this.rawModeEnabledCount > 0) {
+        this.handleSetRawMode(false);
+      }
     }
     if (this.caughtRenderError !== null) {
       this.props.onExit(this.caughtRenderError);
@@ -289,7 +291,14 @@ export default class App extends PureComponent<Props, State> {
     }
 
     // Disable raw mode only when no components left that are using it
+    if (this.rawModeEnabledCount === 0) {
+      return;
+    }
     if (--this.rawModeEnabledCount === 0) {
+      if (this.terminalIdentityProbeImmediate) {
+        clearImmediate(this.terminalIdentityProbeImmediate);
+        this.terminalIdentityProbeImmediate = null;
+      }
       this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
       this.props.stdout.write(DISABLE_KITTY_KEYBOARD);
       // Disable terminal focus reporting (DECSET 1004)
@@ -432,7 +441,9 @@ export default class App extends PureComponent<Props, State> {
   };
   handleExit = (error?: Error): void => {
     if (this.isRawModeSupported()) {
-      this.handleSetRawMode(false);
+      while (this.rawModeEnabledCount > 0) {
+        this.handleSetRawMode(false);
+      }
     }
     this.props.onExit(error);
   };
