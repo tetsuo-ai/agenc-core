@@ -175,6 +175,11 @@ describe('Select input option coverage', () => {
               type: 'image',
               content: 'image-bytes',
             },
+            8: {
+              id: 8,
+              type: 'image',
+              content: 'second-image',
+            },
           }}
         />,
       )
@@ -182,10 +187,42 @@ describe('Select input option coverage', () => {
       expect(selectInputHookMock.props?.onEnterImageSelection?.()).toBe(true)
       await waitForRender()
       expect(latestInputOption().imagesSelected).toBe(true)
-      expect(latestInputOption().selectedImageIndex).toBe(0)
+      expect(latestInputOption().selectedImageIndex).toBe(1)
 
       latestInputOption().onSubmit('')
       expect(onChange).toHaveBeenLastCalledWith('prompt')
+
+      await view.rerender(
+        <Select
+          options={options}
+          defaultFocusValue="prompt"
+          onCancel={onCancel}
+          onChange={onChange}
+          pastedContents={{
+            7: {
+              id: 7,
+              type: 'image',
+              content: 'image-bytes',
+            },
+          }}
+        />,
+      )
+      await waitForRender()
+      expect(latestInputOption().imagesSelected).toBe(true)
+      expect(latestInputOption().selectedImageIndex).toBe(0)
+
+      await view.rerender(
+        <Select
+          options={options}
+          defaultFocusValue="prompt"
+          onCancel={onCancel}
+          onChange={onChange}
+          pastedContents={{}}
+        />,
+      )
+      await waitForRender()
+      expect(latestInputOption().imagesSelected).toBe(false)
+      expect(latestInputOption().selectedImageIndex).toBe(0)
     } finally {
       view.unmount()
     }
