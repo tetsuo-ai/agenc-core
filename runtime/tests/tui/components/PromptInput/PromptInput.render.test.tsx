@@ -1153,6 +1153,86 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('allocates image paste IDs after existing draft paste references', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'png-data',
+      mediaType: 'image/png',
+      dimensions: { width: 320, height: 200 },
+    })
+    const onInputChange = vi.fn()
+    const textPaste: PastedContent = {
+      id: 1,
+      type: 'text',
+      content: 'history paste',
+    }
+    const pastedContents = createPastedContentsState({
+      1: textPaste,
+    })
+    const rendered = await renderPromptInput({
+      input: '[Pasted text #1]',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      expect(onInputChange).toHaveBeenCalledWith('[Pasted text #1][Image #2]')
+      expect(pastedContents.current).toEqual({
+        1: textPaste,
+        2: expect.objectContaining({
+          content: 'png-data',
+          dimensions: { width: 320, height: 200 },
+          id: 2,
+          mediaType: 'image/png',
+          type: 'image',
+        }),
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('allocates text paste IDs after existing draft image references', async () => {
+    const onInputChange = vi.fn()
+    const imagePaste: PastedContent = {
+      id: 1,
+      type: 'image',
+      content: 'existing-image',
+      mediaType: 'image/png',
+      filename: 'existing.png',
+    }
+    const pastedContents = createPastedContentsState({
+      1: imagePaste,
+    })
+    const rendered = await renderPromptInput({
+      input: '[Image #1]',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      ;(baseProps.onPaste as (value: string) => void)('x'.repeat(40))
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1][Pasted text #2]')
+      expect(pastedContents.current).toEqual({
+        1: imagePaste,
+        2: {
+          id: 2,
+          type: 'text',
+          content: 'x'.repeat(40),
+        },
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('logs rejected clipboard image shortcut lookups without routing image paste', async () => {
     const error = new Error('clipboard read failed')
     vi.mocked(getImageFromClipboard).mockRejectedValueOnce(error)

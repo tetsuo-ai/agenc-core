@@ -701,7 +701,17 @@ function PromptInput({
   // so guard with a lazy-init pattern to run it exactly once.
   const nextPasteIdRef = useRef(-1);
   if (nextPasteIdRef.current === -1) {
-    nextPasteIdRef.current = getInitialPasteId(messages);
+    nextPasteIdRef.current = getNextPasteIdAfter(messages, pastedContents, input);
+  }
+  const pastedContentsRef = useRef(pastedContents);
+  pastedContentsRef.current = pastedContents;
+  function allocatePasteId(): number {
+    const nextPasteId = Math.max(
+      nextPasteIdRef.current,
+      getNextPasteIdAfter(messages, pastedContentsRef.current, lastInternalInputRef.current),
+    );
+    nextPasteIdRef.current = nextPasteId + 1;
+    return nextPasteId;
   }
   // Armed by onImagePaste; if the very next keystroke is a non-space
   // printable, inputFilter prepends a space before it. Any other input
@@ -1562,7 +1572,7 @@ function PromptInput({
   function onImagePaste(image: string, mediaType?: string, filename?: string, dimensions?: ImageDimensions, sourcePath?: string) {
     logEvent('agenc_paste_image', {});
     onModeChange('prompt');
-    const pasteId = nextPasteIdRef.current++;
+    const pasteId = allocatePasteId();
     const newContent: PastedContent = {
       id: pasteId,
       type: 'image',
@@ -1649,7 +1659,7 @@ function PromptInput({
     // Use special handling for long pasted text (>PASTE_THRESHOLD chars)
     // or if it exceeds the number of lines we want to show
     if (text.length > PASTE_THRESHOLD || numLines > maxLines) {
-      const pasteId = nextPasteIdRef.current++;
+      const pasteId = allocatePasteId();
       const newContent: PastedContent = {
         id: pasteId,
         type: 'text',
@@ -2751,10 +2761,14 @@ function PromptInput({
 }
 
 /**
- * Compute the initial paste ID by finding the max ID used in existing messages.
- * This handles --continue/--resume scenarios where we need to avoid ID collisions.
+ * Compute the next paste ID after every ID already visible to the current
+ * prompt, including resumed messages and restored draft paste references.
  */
-function getInitialPasteId(messages: Message[]): number {
+function getNextPasteIdAfter(
+  messages: Message[],
+  pastedContents: Record<number, PastedContent> = {},
+  input = '',
+): number {
   let maxId = 0;
   for (const message of messages) {
     if (message.type === 'user') {
@@ -2776,6 +2790,14 @@ function getInitialPasteId(messages: Message[]): number {
         }
       }
     }
+  }
+  for (const ref of parseReferences(input)) {
+    if (ref.id > maxId) maxId = ref.id;
+  }
+  for (const [key, content] of Object.entries(pastedContents)) {
+    const keyId = Number(key);
+    if (Number.isFinite(keyId) && keyId > maxId) maxId = keyId;
+    if (content.id > maxId) maxId = content.id;
   }
   return maxId + 1;
 }
