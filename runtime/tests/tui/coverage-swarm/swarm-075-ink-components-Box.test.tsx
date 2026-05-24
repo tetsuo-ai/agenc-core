@@ -206,4 +206,47 @@ describe("Box coverage swarm row 075", () => {
       });
     });
   });
+
+  test("updates mounted box attributes, handlers, and overflow style across rerenders", async () => {
+    await withRoot(async root => {
+      const boxRef = React.createRef<DOMElement>();
+      const firstClick = vi.fn();
+      const secondClick = vi.fn();
+
+      root.render(
+        <Box ref={boxRef} tabIndex={1} onClick={firstClick} overflow="hidden">
+          <Text>stable</Text>
+        </Box>,
+      );
+
+      const firstBox = await requireRef(boxRef);
+      expect(firstBox.attributes.tabIndex).toBe(1);
+      expect(firstBox._eventHandlers?.onClick).toBe(firstClick);
+
+      root.render(
+        <Box ref={boxRef} tabIndex={2} onClick={secondClick} overflowX="scroll">
+          <Text>stable</Text>
+        </Box>,
+      );
+
+      await waitForCondition(
+        () =>
+          boxRef.current?._eventHandlers?.onClick === secondClick &&
+          boxRef.current.attributes.tabIndex === 2,
+        "Box did not update in place",
+      );
+
+      expect(boxRef.current).toBe(firstBox);
+      expect(boxRef.current?._eventHandlers?.onClick).toBe(secondClick);
+      expect(boxRef.current?.style.overflow).toBeUndefined();
+      expect(boxRef.current?.style).toMatchObject({
+        flexDirection: "row",
+        flexGrow: 0,
+        flexShrink: 1,
+        flexWrap: "nowrap",
+        overflowX: "scroll",
+        overflowY: "visible",
+      });
+    });
+  });
 });
