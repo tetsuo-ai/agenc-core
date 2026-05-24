@@ -307,6 +307,11 @@ describe("workbench render contract", () => {
           kind: "file" as const,
           label: "src/app.ts",
           path: "src/app.ts",
+        }, {
+          id: "file:src/stale.ts",
+          kind: "file" as const,
+          label: "src/stale.ts",
+          path: "src/stale.ts",
         }],
         composerAttachmentIds: ["file:src/app.ts"],
       },
@@ -321,6 +326,7 @@ describe("workbench render contract", () => {
 
     expect(output).toContain("Preview:");
     expect(output).toContain("context src/app.ts");
+    expect(output).not.toContain("src/stale.ts");
   });
 
   it.each([
