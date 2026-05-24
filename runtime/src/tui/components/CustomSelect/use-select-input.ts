@@ -266,10 +266,12 @@ export const useSelectInput = <T>({
               const currentValue = inputValues?.get(selectedOption.value) ?? ''
               if (currentValue.trim()) {
                 // Pre-filled input: auto-submit (user can Tab to edit instead)
+                selectedOption.onChange(currentValue)
                 state.onChange?.(selectedOption.value)
                 return
               }
               if (selectedOption.allowEmptySubmitToCancel) {
+                selectedOption.onChange(currentValue)
                 state.onChange?.(selectedOption.value)
                 return
               }

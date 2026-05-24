@@ -169,6 +169,18 @@ describe('useSelectInput numeric shortcuts', () => {
 
   test('routes number keys through input option submit and focus rules', async () => {
     const state = createSelectState(options)
+    const promptOption = options[1] as Extract<
+      OptionWithDescription<string>,
+      { type: 'input' }
+    >
+    const cancelEmptyOption = options[2] as Extract<
+      OptionWithDescription<string>,
+      { type: 'input' }
+    >
+    const emptyPromptOption = options[3] as Extract<
+      OptionWithDescription<string>,
+      { type: 'input' }
+    >
     const inputValues = new Map<string, string>([
       ['prompt', 'ready to submit'],
       ['cancel-empty', ''],
@@ -190,15 +202,18 @@ describe('useSelectInput numeric shortcuts', () => {
       expect(state.focusOption).not.toHaveBeenCalled()
 
       pressKey('2')
+      expect(promptOption.onChange).toHaveBeenCalledWith('ready to submit')
       expect(state.onChange).toHaveBeenCalledWith('prompt')
       expect(state.focusOption).not.toHaveBeenCalled()
 
       pressKey('3')
+      expect(cancelEmptyOption.onChange).toHaveBeenCalledWith('')
       expect(state.onChange).toHaveBeenNthCalledWith(2, 'cancel-empty')
       expect(state.focusOption).not.toHaveBeenCalled()
 
       pressKey('4')
       expect(state.focusOption).toHaveBeenCalledWith('empty-prompt')
+      expect(emptyPromptOption.onChange).not.toHaveBeenCalled()
       expect(state.onChange).toHaveBeenCalledTimes(2)
 
       pressKey('1')
