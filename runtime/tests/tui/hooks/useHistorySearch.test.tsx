@@ -21,6 +21,7 @@ const harness = vi.hoisted(() => ({
     next: ReturnType<typeof vi.fn>;
     return: ReturnType<typeof vi.fn>;
   }>,
+  nextDelays: [] as Array<Promise<void>>,
   readerError: null as Error | null,
   logError: vi.fn(),
   reset() {
@@ -30,6 +31,7 @@ const harness = vi.hoisted(() => ({
     harness.keybinding = new Map();
     harness.keybindings = new Map();
     harness.readers = [];
+    harness.nextDelays = [];
     harness.readerError = null;
     harness.logError.mockClear();
   },
@@ -49,6 +51,8 @@ vi.mock("../history/history.js", () => ({
     let index = 0;
     const reader = {
       next: vi.fn(async () => {
+        const delay = harness.nextDelays.shift();
+        if (delay) await delay;
         if (harness.readerError) throw harness.readerError;
         if (index >= harness.entries.length) {
           return { done: true, value: undefined };
@@ -356,6 +360,50 @@ describe("useHistorySearch", () => {
       expect(rendered.callbacks.onInputChange).not.toHaveBeenCalledWith(
         "needle",
       );
+      expect(rendered.result().historyMatch).toBeUndefined();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("ignores a match that resolves after history search is canceled", async () => {
+    let releaseNext: () => void = () => {};
+    harness.nextDelays = [
+      new Promise<void>(resolve => {
+        releaseNext = resolve;
+      }),
+    ];
+    harness.entries = [
+      { display: "late needle match", pastedContents: { late: true } },
+    ];
+    const rendered = await renderHistoryHarness({
+      currentInput: "keep original",
+      currentCursorOffset: 6,
+      currentPastedContents: { original: true },
+    });
+
+    try {
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      rendered.result().setHistoryQuery("needle");
+      await sleep();
+
+      harness.keybindings.get("historySearch:cancel")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(false));
+      expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith(
+        "keep original",
+      );
+      expect(rendered.callbacks.onCursorChange).toHaveBeenLastCalledWith(6);
+
+      releaseNext();
+      await sleep(50);
+
+      expect(rendered.callbacks.onInputChange).not.toHaveBeenCalledWith(
+        "late needle match",
+      );
+      expect(rendered.callbacks.setPastedContents).not.toHaveBeenCalledWith({
+        late: true,
+      });
       expect(rendered.result().historyMatch).toBeUndefined();
     } finally {
       await rendered.dispose();
