@@ -116,6 +116,82 @@ describe('UserToolErrorMessage swarm-138 coverage', () => {
     expect(featureOnOutput).not.toContain('command looked unsafe')
   })
 
+  test('routes text-bearing array content through control-message renderers', async () => {
+    featureFlags.add('TRANSCRIPT_CLASSIFIER')
+
+    const output = await renderToString(
+      <>
+        <UserToolErrorMessage
+          progressMessagesForMessage={[]}
+          tools={[]}
+          param={toolResult([
+            { type: 'text', text: `before ${INTERRUPT_MESSAGE_FOR_TOOL_USE}` },
+          ])}
+          verbose={false}
+        />
+        <UserToolErrorMessage
+          progressMessagesForMessage={[]}
+          tools={[]}
+          param={toolResult([
+            {
+              type: 'text',
+              text: `${PLAN_REJECTION_PREFIX}Array-form plan content.`,
+            },
+          ])}
+          verbose={false}
+        />
+        <UserToolErrorMessage
+          progressMessagesForMessage={[]}
+          tools={[]}
+          param={toolResult([
+            {
+              type: 'text',
+              text: `${REJECT_MESSAGE_WITH_REASON_PREFIX}Array-form rejection.`,
+            },
+          ])}
+          verbose={false}
+        />
+        <UserToolErrorMessage
+          progressMessagesForMessage={[]}
+          tools={[]}
+          param={toolResult([
+            'Permission for this action has been denied. Reason: array classifier',
+          ])}
+          verbose={false}
+        />
+      </>,
+      { columns: 120, rows: 20 },
+    )
+
+    expect(output).toContain('Interrupted')
+    expect(output).toContain('Array-form plan content.')
+    expect(output).toContain('Tool use rejected')
+    expect(output).toContain('Denied by auto mode classifier')
+    expect(output).not.toContain('array classifier')
+  })
+
+  test('falls back for missing or non-text error content', async () => {
+    const output = await renderToString(
+      <>
+        <UserToolErrorMessage
+          progressMessagesForMessage={[]}
+          tools={[]}
+          param={toolResult(undefined)}
+          verbose={false}
+        />
+        <UserToolErrorMessage
+          progressMessagesForMessage={[]}
+          tools={[]}
+          param={toolResult([{ type: 'image', source: 'ignored' }])}
+          verbose={false}
+        />
+      </>,
+      { columns: 100, rows: 8 },
+    )
+
+    expect(output.match(/Tool execution failed/g)).toHaveLength(2)
+  })
+
   test('delegates tool errors with filtered progress and transcript options', async () => {
     const toolProgress = {
       uuid: 'tool-progress',
