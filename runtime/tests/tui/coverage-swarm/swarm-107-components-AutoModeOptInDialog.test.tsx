@@ -125,9 +125,9 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     ]);
     expect(harness.dialogProps.at(-1)).toMatchObject({
       color: "warning",
-      onCancel: onDecline,
       title: "Enable auto mode?",
     });
+    expect(harness.dialogProps.at(-1)?.onCancel).toEqual(expect.any(Function));
     expect(harness.logEvent).toHaveBeenCalledWith(
       "agenc_auto_mode_opt_in_dialog_shown",
       {},
@@ -203,5 +203,28 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
     expect(onAccept).not.toHaveBeenCalled();
     expect(onDecline).toHaveBeenCalledOnce();
+  });
+
+  test("routes select and dialog cancellation through decline handling", async () => {
+    const onDecline = vi.fn();
+    await renderDialog({ onDecline });
+
+    harness.logEvent.mockClear();
+    latestSelectProps().onCancel();
+
+    expect(harness.logEvent).toHaveBeenCalledWith(
+      "agenc_auto_mode_opt_in_dialog_decline",
+      {},
+    );
+    expect(onDecline).toHaveBeenCalledOnce();
+
+    harness.logEvent.mockClear();
+    harness.dialogProps.at(-1)?.onCancel();
+
+    expect(harness.logEvent).toHaveBeenCalledWith(
+      "agenc_auto_mode_opt_in_dialog_decline",
+      {},
+    );
+    expect(onDecline).toHaveBeenCalledTimes(2);
   });
 });

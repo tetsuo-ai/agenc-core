@@ -98,10 +98,10 @@ describe("AutoModeOptInDialog coverage", () => {
     );
     expect(harness.dialogProps).toMatchObject({
       color: "warning",
-      onCancel: onDecline,
       title: "Enable auto mode?",
     });
-    expect(harness.selectProps?.onCancel).toBe(onDecline);
+    expect(harness.dialogProps?.onCancel).toEqual(expect.any(Function));
+    expect(harness.selectProps?.onCancel).toEqual(expect.any(Function));
     expect(harness.selectProps?.options).toEqual([
       {
         label: "Yes, and make it my default mode",
@@ -151,6 +151,24 @@ describe("AutoModeOptInDialog coverage", () => {
       {},
     );
     expect(onDecline).toHaveBeenCalledTimes(1);
+
+    harness.logEvent.mockClear();
+    harness.selectProps?.onCancel();
+
+    expect(harness.logEvent).toHaveBeenCalledWith(
+      "agenc_auto_mode_opt_in_dialog_decline",
+      {},
+    );
+    expect(onDecline).toHaveBeenCalledTimes(2);
+
+    harness.logEvent.mockClear();
+    harness.dialogProps?.onCancel();
+
+    expect(harness.logEvent).toHaveBeenCalledWith(
+      "agenc_auto_mode_opt_in_dialog_decline",
+      {},
+    );
+    expect(onDecline).toHaveBeenCalledTimes(3);
 
     await renderToString(
       <AutoModeOptInDialog onAccept={onAccept} onDecline={onDecline} />,
