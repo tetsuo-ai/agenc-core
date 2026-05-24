@@ -186,6 +186,7 @@ describe("SearchSurface", () => {
     expect(output).toContain("src/other.ts");
     expect(output).toContain("o keep focus");
     expect(output).toContain("@ attach");
+    expect(output).toContain("A attach all");
     for (const line of output.split(/\r?\n/u)) {
       expect(line.length).toBeLessThanOrEqual(60);
     }
@@ -209,6 +210,262 @@ describe("SearchSurface", () => {
 
     expect(output).toContain("src/other.ts:9");
     expect(output).toContain("@ attach");
+  });
+
+  it("renders the empty query state without starting ripgrep and still closes", async () => {
+    const changes: AppState[] = [];
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "   ",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep(50);
+
+      expect(searchHarness.calls).toHaveLength(0);
+      expect(compact(output())).toContain("Openglobalsearchortypeaqueryfromthecomposer");
+
+      searchHarness.handlers["workbench:closeSurface"]?.();
+
+      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("renders ripgrep failures and ignores failures from aborted streams", async () => {
+    searchHarness.autoFlush = false;
+    let setSearchQuery: ((query: string) => void) | null = null;
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "old",
+            },
+          }}
+        >
+          <SearchQueryController onReady={(setter) => { setSearchQuery = setter; }} />
+          <SearchSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const staleCall = searchHarness.calls[0]!;
+      setSearchQuery?.("new");
+      await sleep(20);
+
+      expect(staleCall.signal.aborted).toBe(true);
+      staleCall.reject(new Error("old ripgrep failed"));
+      await sleep(50);
+
+      expect(compact(output())).not.toContain("oldripgrepfailed");
+      await sleep(150);
+
+      expect(searchHarness.calls).toHaveLength(2);
+      const currentCall = searchHarness.calls[1]!;
+      currentCall.reject("new ripgrep failed");
+      await sleep(50);
+
+      expect(compact(output())).toContain("ripgrepfailed");
+      setSearchQuery?.("again");
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(3);
+      const errorCall = searchHarness.calls[2]!;
+      const beforeErrorOutput = output();
+      errorCall.reject(new Error("current ripgrep failed"));
+      await sleep(50);
+
+      expect(errorCall.signal.aborted).toBe(false);
+      expect(output().length).toBeGreaterThan(beforeErrorOutput.length);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("treats empty result navigation and selected-match actions as no-ops", async () => {
+    searchHarness.autoFlush = false;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      call.resolve();
+      await sleep(50);
+
+      searchHarness.handlers["surface:groupUp"]?.();
+      searchHarness.handlers["surface:groupDown"]?.();
+      searchHarness.handlers["surface:open"]?.();
+      searchHarness.handlers["surface:openKeepFocus"]?.();
+      searchHarness.handlers["surface:attach"]?.();
+      searchHarness.handlers["surface:attachAll"]?.();
+      await sleep(50);
+
+      expect(changes).toHaveLength(0);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("routes navigation, grouping, open, attach, attach-all, and close keybindings", async () => {
+    searchHarness.autoFlush = false;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+    const press = async (action: string) => {
+      searchHarness.handlers[action]?.();
+      await sleep(30);
+    };
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              focusedPane: "composer",
+              searchQuery: "needle",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      call.onLines([
+        "not json",
+        jsonMatchLine("src/a.ts", 1, "needle one"),
+        jsonMatchLine("src/a.ts", 2, "needle two"),
+        jsonMatchLine("src/b.ts", 3, "needle three"),
+      ]);
+      call.resolve();
+      await sleep(50);
+
+      await press("surface:top");
+      await press("surface:groupUp");
+      await press("surface:bottom");
+      await press("surface:groupDown");
+      await press("surface:groupUp");
+      await press("surface:groupDown");
+      await press("surface:pageUp");
+      await press("surface:pageDown");
+      await press("surface:up");
+      await press("surface:top");
+      await press("surface:down");
+      await press("surface:openKeepFocus");
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/a.ts",
+        activeFileLine: 2,
+        focusedPane: "composer",
+      });
+
+      await press("surface:attach");
+
+      expect(changes.at(-1)?.workbench.attachments).toEqual([
+        expect.objectContaining({
+          id: "search-result:src/a.ts:2:needle two",
+          kind: "search-result",
+          path: "src/a.ts",
+          line: 2,
+          query: "needle",
+        }),
+      ]);
+
+      await press("surface:attachAll");
+
+      expect(changes.at(-1)?.workbench.attachments).toEqual([
+        expect.objectContaining({ id: "search-result:src/a.ts:1:needle one" }),
+        expect.objectContaining({ id: "search-result:src/a.ts:2:needle two" }),
+        expect.objectContaining({ id: "search-result:src/b.ts:3:needle three" }),
+      ]);
+
+      await press("surface:open");
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/a.ts",
+        activeFileLine: 2,
+        focusedPane: "surface",
+      });
+
+      await press("workbench:closeSurface");
+
+      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
   });
 
   it("selects the requested search match id after ripgrep results load", async () => {

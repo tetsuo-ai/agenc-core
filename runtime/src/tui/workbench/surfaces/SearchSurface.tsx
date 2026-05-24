@@ -51,7 +51,6 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
         (lines) => {
           if (controller.signal.aborted) return;
           for (const line of lines) {
-            if (next.length >= SEARCH_RESULT_LIMIT) break;
             const match = parseWorkbenchRipgrepJsonLine(line, cwd);
             if (match) next.push(match);
             if (next.length >= SEARCH_RESULT_LIMIT) {
@@ -206,7 +205,7 @@ export function SearchSurfaceView({
           ),
         )}
       </Box>
-      {selectedMatch ? <Text dimColor wrap="truncate-end">enter edit  o keep focus  @ attach  A attach visible: {selectedMatch.file}:{selectedMatch.line}</Text> : null}
+      {selectedMatch ? <Text dimColor wrap="truncate-end">enter edit  o keep focus  @ attach  A attach all: {selectedMatch.file}:{selectedMatch.line}</Text> : null}
     </Box>
   );
 }
