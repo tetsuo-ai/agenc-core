@@ -1,5 +1,4 @@
-import { c as _c } from "react-compiler-runtime";
-import React, { useMemo } from 'react';
+import React from 'react';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { ThemeName } from '../../utils/theme.js';
@@ -45,199 +44,229 @@ export function getAssistantToolUsePendingText(
       return `Bash classifier checking${ellipsis}`;
   }
 }
-export function AssistantToolUseMessage(t0) {
-  const $ = _c(81);
-  const {
-    param,
-    addMargin,
-    tools,
-    commands,
-    verbose,
-    inProgressToolUseIDs,
-    progressMessagesForMessage,
-    inProgressToolCallCount,
-    lookups,
-    isTranscriptMode
-  } = t0;
+
+export function AssistantToolUseMessage({
+  param,
+  addMargin,
+  tools,
+  commands,
+  verbose,
+  inProgressToolUseIDs,
+  progressMessagesForMessage,
+  inProgressToolCallCount,
+  lookups,
+  isTranscriptMode,
+}: Props): React.ReactNode {
   const terminalSize = useTerminalSize();
   const [theme] = useTheme();
   const bg = useSelectedMessageBg();
-  const pendingWorkerRequest = useAppStateMaybeOutsideOfProvider(_temp);
+  const pendingWorkerRequest = useAppStateMaybeOutsideOfProvider(
+    selectPendingWorkerRequest,
+  );
   const isClassifierCheckingRaw = useIsClassifierChecking(param.id);
-  const permissionMode = useAppStateMaybeOutsideOfProvider(_temp2);
-  const hasStrippedRules = useAppStateMaybeOutsideOfProvider(_temp3);
-  const isAutoClassifier = permissionMode === "auto" || permissionMode === "plan" && hasStrippedRules;
+  const permissionMode = useAppStateMaybeOutsideOfProvider(
+    selectPermissionMode,
+  );
+  const hasStrippedRules = useAppStateMaybeOutsideOfProvider(
+    selectHasStrippedRules,
+  );
+  const isAutoClassifier =
+    permissionMode === "auto" ||
+    (permissionMode === "plan" && hasStrippedRules);
   const isClassifierChecking = isClassifierCheckingRaw;
-  let t1;
-  if ($[0] !== param.input || $[1] !== param.name || $[2] !== tools) {
-    bb0: {
-      if (!tools) {
-        t1 = null;
-        break bb0;
-      }
-      const tool = findToolByName(tools, param.name);
-      if (!tool) {
-        t1 = null;
-        break bb0;
-      }
-      const input = tool.inputSchema.safeParse(param.input);
-      const data = input.success ? input.data : undefined;
-      t1 = {
-        tool,
-        input,
-        userFacingToolName: tool.userFacingName(data),
-        userFacingToolNameBackgroundColor: tool.userFacingNameBackgroundColor?.(data),
-        isTransparentWrapper: tool.isTransparentWrapper?.() ?? false
-      };
-    }
-    $[0] = param.input;
-    $[1] = param.name;
-    $[2] = tools;
-    $[3] = t1;
-  } else {
-    t1 = $[3];
-  }
-  const parsed = t1;
+
+  const parsed = parseToolUse(param, tools);
   if (!parsed) {
-    logError(new Error(tools ? `Tool ${param.name} not found` : `Tools array is undefined for tool ${param.name}`));
-    return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Tool use unavailable" detail={tools ? "This transcript references a tool that is not available in this version of AgenC." : "Tool definitions were unavailable while rendering this transcript."} toolName={param.name} />;
+    logError(
+      new Error(
+        tools
+          ? `Tool ${param.name} not found`
+          : `Tools array is undefined for tool ${param.name}`,
+      ),
+    );
+    return (
+      <ToolUseRecoveryMessage
+        addMargin={addMargin}
+        backgroundColor={bg}
+        title="Tool use unavailable"
+        detail={
+          tools
+            ? "This transcript references a tool that is not available in this version of AgenC."
+            : "Tool definitions were unavailable while rendering this transcript."
+        }
+        toolName={param.name}
+      />
+    );
   }
+
   const {
-    tool: tool_0,
-    input: input_0,
-    userFacingToolName,
-    isTransparentWrapper
+    tool,
+    input,
   } = parsed;
-  if (!input_0.success) {
+  if (!input.success) {
     logError(new Error(`Invalid input for tool ${param.name}`));
-    return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Invalid tool input" detail="This transcript contains tool input that no longer matches the tool schema." toolName={param.name} />;
+    return (
+      <ToolUseRecoveryMessage
+        addMargin={addMargin}
+        backgroundColor={bg}
+        title="Invalid tool input"
+        detail="This transcript contains tool input that no longer matches the tool schema."
+        toolName={param.name}
+      />
+    );
   }
-  let t2;
-  if ($[4] !== lookups.resolvedToolUseIDs || $[5] !== param.id) {
-    t2 = lookups.resolvedToolUseIDs.has(param.id);
-    $[4] = lookups.resolvedToolUseIDs;
-    $[5] = param.id;
-    $[6] = t2;
-  } else {
-    t2 = $[6];
-  }
-  const isResolved = t2;
-  let t3;
-  if ($[7] !== inProgressToolUseIDs || $[8] !== isResolved || $[9] !== param.id) {
-    t3 = !inProgressToolUseIDs.has(param.id) && !isResolved;
-    $[7] = inProgressToolUseIDs;
-    $[8] = isResolved;
-    $[9] = param.id;
-    $[10] = t3;
-  } else {
-    t3 = $[10];
-  }
-  const isQueued = t3;
+
+  const userFacingToolName = tool.userFacingName(input.data);
+  const isTransparentWrapper = tool.isTransparentWrapper?.() ?? false;
+  const isResolved = lookups.resolvedToolUseIDs.has(param.id);
+  const isQueued = !inProgressToolUseIDs.has(param.id) && !isResolved;
   const isWaitingForPermission = pendingWorkerRequest?.toolUseId === param.id;
+
   if (isTransparentWrapper) {
     if (isQueued || isResolved) {
       return null;
     }
-    let t4;
-    if ($[11] !== inProgressToolCallCount || $[12] !== isTranscriptMode || $[13] !== lookups || $[14] !== param.id || $[15] !== progressMessagesForMessage || $[16] !== terminalSize || $[17] !== tool_0 || $[18] !== tools || $[19] !== verbose) {
-      t4 = renderToolUseProgressMessage(tool_0, tools, lookups, param.id, progressMessagesForMessage, {
+    const progressDetail = renderToolUseProgressMessage(
+      tool,
+      tools,
+      lookups,
+      param.id,
+      progressMessagesForMessage,
+      {
         verbose,
         inProgressToolCallCount,
-        isTranscriptMode
-      }, terminalSize);
-      $[11] = inProgressToolCallCount;
-      $[12] = isTranscriptMode;
-      $[13] = lookups;
-      $[14] = param.id;
-      $[15] = progressMessagesForMessage;
-      $[16] = terminalSize;
-      $[17] = tool_0;
-      $[18] = tools;
-      $[19] = verbose;
-      $[20] = t4;
-    } else {
-      t4 = $[20];
-    }
-    let t5;
-    if ($[21] !== bg || $[22] !== t4) {
-      t5 = <Box flexDirection="column" width="100%" backgroundColor={bg}>{t4}</Box>;
-      $[21] = bg;
-      $[22] = t4;
-      $[23] = t5;
-    } else {
-      t5 = $[23];
-    }
-    return t5;
+        isTranscriptMode,
+      },
+      terminalSize,
+    );
+
+    return (
+      <Box flexDirection="column" width="100%" backgroundColor={bg}>
+        {progressDetail}
+      </Box>
+    );
   }
+
   if (userFacingToolName === "") {
     return null;
   }
-  let t4;
-  if ($[24] !== commands || $[25] !== input_0.data || $[26] !== input_0.success || $[27] !== theme || $[28] !== tool_0 || $[29] !== verbose) {
-    t4 = input_0.success ? renderToolUseMessage(tool_0, input_0.data, {
-      theme,
-      verbose,
-      commands
-    }) : null;
-    $[24] = commands;
-    $[25] = input_0.data;
-    $[26] = input_0.success;
-    $[27] = theme;
-    $[28] = tool_0;
-    $[29] = verbose;
-    $[30] = t4;
-  } else {
-    t4 = $[30];
-  }
-  const renderedToolUseMessage = t4;
+
+  const renderedToolUseMessage = renderToolUseMessage(tool, input.data, {
+    theme,
+    verbose,
+    commands,
+  });
   if (renderedToolUseMessage === null) {
-    return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Tool details unavailable" detail="AgenC could not render this tool-use row, but the transcript entry is preserved." toolName={param.name} />;
+    return (
+      <ToolUseRecoveryMessage
+        addMargin={addMargin}
+        backgroundColor={bg}
+        title="Tool details unavailable"
+        detail="AgenC could not render this tool-use row, but the transcript entry is preserved."
+        toolName={param.name}
+      />
+    );
   }
-  const t5 = addMargin ? 1 : 0;
-  let t11;
-  if ($[44] !== input_0.data || $[45] !== input_0.success || $[46] !== tool_0) {
-    t11 = input_0.success && tool_0.renderToolUseTag && tool_0.renderToolUseTag(input_0.data);
-    $[44] = input_0.data;
-    $[45] = input_0.success;
-    $[46] = tool_0;
-    $[47] = t11;
-  } else {
-    t11 = $[47];
-  }
-  const t13 = !isResolved && !isQueued && (isWaitingForPermission ? <MessageResponse height={1}><Text dimColor={true}>{getAssistantToolUsePendingText('permission')}</Text></MessageResponse> : isClassifierChecking ? <MessageResponse height={1}><Text dimColor={true}>{isAutoClassifier ? getAssistantToolUsePendingText('auto-classifier') : getAssistantToolUsePendingText('bash-classifier')}</Text></MessageResponse> : renderToolUseProgressMessage(tool_0, tools, lookups, param.id, progressMessagesForMessage, {
-      verbose,
-      inProgressToolCallCount,
-      isTranscriptMode
-    }, terminalSize));
-  let t14;
-  if ($[69] !== isQueued || $[70] !== isResolved || $[71] !== tool_0) {
-    t14 = !isResolved && isQueued && renderToolUseQueuedMessage(tool_0);
-    $[69] = isQueued;
-    $[70] = isResolved;
-    $[71] = tool_0;
-    $[72] = t14;
-  } else {
-    t14 = $[72];
-  }
-  const queuedDetail = typeof t14 === "string" ? <Text dimColor={true}>{t14}</Text> : t14;
-  const toolState: ToolState = lookups.erroredToolUseIDs.has(param.id) ? "failed" : isResolved ? "done" : isQueued ? "queued" : "running";
-  const toolArgs = typeof renderedToolUseMessage === "string" && renderedToolUseMessage.length > 0 ? renderedToolUseMessage : summarizeToolInput(input_0.data);
+
+  const marginTop = addMargin ? 1 : 0;
+  const toolUseTag = tool.renderToolUseTag?.(input.data);
+  const progressDetail = !isResolved && !isQueued ? (
+    isWaitingForPermission ? (
+      <MessageResponse height={1}>
+        <Text dimColor={true}>{getAssistantToolUsePendingText('permission')}</Text>
+      </MessageResponse>
+    ) : isClassifierChecking ? (
+      <MessageResponse height={1}>
+        <Text dimColor={true}>
+          {isAutoClassifier
+            ? getAssistantToolUsePendingText('auto-classifier')
+            : getAssistantToolUsePendingText('bash-classifier')}
+        </Text>
+      </MessageResponse>
+    ) : renderToolUseProgressMessage(
+      tool,
+      tools,
+      lookups,
+      param.id,
+      progressMessagesForMessage,
+      {
+        verbose,
+        inProgressToolCallCount,
+        isTranscriptMode,
+      },
+      terminalSize,
+    )
+  ) : null;
+  const queuedMessage =
+    !isResolved && isQueued ? renderToolUseQueuedMessage(tool) : null;
+  const queuedDetail =
+    typeof queuedMessage === "string"
+      ? <Text dimColor={true}>{queuedMessage}</Text>
+      : queuedMessage;
+  const toolState: ToolState = lookups.erroredToolUseIDs.has(param.id)
+    ? "failed"
+    : isResolved
+      ? "done"
+      : isQueued
+        ? "queued"
+        : "running";
+  const toolArgs =
+    typeof renderedToolUseMessage === "string" &&
+    renderedToolUseMessage.length > 0
+      ? renderedToolUseMessage
+      : summarizeToolInput(input.data);
   const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
-  let t15;
-  if ($[73] !== extraDetail || $[74] !== t11 || $[75] !== t13 || $[76] !== queuedDetail) {
-    t15 = extraDetail || t11 || t13 || queuedDetail ? <Box flexDirection="column">{extraDetail}{t11}{t13}{queuedDetail}</Box> : null;
-    $[73] = extraDetail;
-    $[74] = t11;
-    $[75] = t13;
-    $[76] = queuedDetail;
-    $[77] = t15;
-  } else {
-    t15 = $[77];
-  }
-  return <Box flexDirection="column" marginTop={t5} width="100%" backgroundColor={bg}><V2Tool kind={toolKindForName(param.name, userFacingToolName)} label={userFacingToolName} state={toolState} args={toolArgs} detail={t15} expanded={t15 !== null} /></Box>;
+  const detail = extraDetail || toolUseTag || progressDetail || queuedDetail
+    ? (
+      <Box flexDirection="column">
+        {extraDetail}
+        {toolUseTag}
+        {progressDetail}
+        {queuedDetail}
+      </Box>
+    )
+    : null;
+
+  return (
+    <Box flexDirection="column" marginTop={marginTop} width="100%" backgroundColor={bg}>
+      <V2Tool
+        kind={toolKindForName(param.name, userFacingToolName)}
+        label={userFacingToolName}
+        state={toolState}
+        args={toolArgs}
+        detail={detail}
+        expanded={detail !== null}
+      />
+    </Box>
+  );
 }
-function _temp3(state_1) {
-  return !!state_1.toolPermissionContext.strippedDangerousRules;
+
+function parseToolUse(
+  param: AgenCToolUseBlockParam,
+  tools: Tools | undefined,
+): {
+  tool: Tool;
+  input: ReturnType<Tool['inputSchema']['safeParse']>;
+} | null {
+  if (!tools) {
+    return null;
+  }
+
+  const tool = findToolByName(tools, param.name);
+  if (!tool) {
+    return null;
+  }
+
+  return {
+    tool,
+    input: tool.inputSchema.safeParse(param.input),
+  };
+}
+
+function selectHasStrippedRules(state: {
+  toolPermissionContext: { strippedDangerousRules?: unknown };
+}): boolean {
+  return !!state.toolPermissionContext.strippedDangerousRules;
 }
 
 function toolKindForName(name: string, label: string): ToolKind {
@@ -268,10 +297,14 @@ function summarizeToolInput(input: unknown): string {
   }
 }
 
-function _temp2(state_0) {
-  return state_0.toolPermissionContext.mode;
+function selectPermissionMode(state: {
+  toolPermissionContext: { mode: string };
+}): string {
+  return state.toolPermissionContext.mode;
 }
-function _temp(state) {
+function selectPendingWorkerRequest(state: {
+  pendingWorkerRequest?: { toolUseId: string };
+}): { toolUseId: string } | undefined {
   return state.pendingWorkerRequest;
 }
 function renderToolUseMessage(tool: Tool, input: unknown, {
