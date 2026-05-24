@@ -175,6 +175,30 @@ describe('ThemedBox coverage swarm row 135', () => {
     })
   })
 
+  test('maps legacy gray color names to the inactive theme color', async () => {
+    const ref = React.createRef<DOMElement>()
+    const theme = getTheme('dark')
+
+    await renderNode(
+      <ThemedBox
+        ref={ref}
+        backgroundColor="grey"
+        borderColor="gray"
+      >
+        legacy gray
+      </ThemedBox>,
+    )
+
+    await waitFor(() => {
+      expect(ref.current).not.toBeNull()
+    })
+
+    expect(ref.current?.style).toMatchObject({
+      backgroundColor: theme.inactive,
+      borderColor: theme.inactive,
+    })
+  })
+
   test('leaves omitted color props undefined while forwarding layout props', async () => {
     const ref = React.createRef<DOMElement>()
 
