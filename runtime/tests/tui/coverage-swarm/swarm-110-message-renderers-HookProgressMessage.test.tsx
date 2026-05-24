@@ -125,4 +125,28 @@ describe('HookProgressMessage swarm-110 coverage', () => {
 
     expect(activeNonToolHook).toContain('Running Notification hook...')
   })
+
+  test('omits non-tool hooks when resolved count reaches or exceeds active count', async () => {
+    const equalResolved = await renderHookProgress({
+      hookEvent: 'Notification',
+      toolUseID: 'toolu-equal-resolved',
+      lookups: createLookups({
+        inProgress: [['toolu-equal-resolved', { Notification: 2 }]],
+        resolved: [['toolu-equal-resolved', { Notification: 2 }]],
+      }),
+    })
+
+    expect(equalResolved).toBe('\n')
+
+    const overResolved = await renderHookProgress({
+      hookEvent: 'Notification',
+      toolUseID: 'toolu-over-resolved',
+      lookups: createLookups({
+        inProgress: [['toolu-over-resolved', { Notification: 1 }]],
+        resolved: [['toolu-over-resolved', { Notification: 2 }]],
+      }),
+    })
+
+    expect(overResolved).toBe('\n')
+  })
 })
