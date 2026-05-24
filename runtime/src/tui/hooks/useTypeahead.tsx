@@ -157,8 +157,8 @@ export function formatReplacementValue(options: {
  */
 export function applyShellSuggestion(suggestion: SuggestionItem, input: string, cursorOffset: number, onInputChange: (value: string) => void, setCursorOffset: (offset: number) => void, completionType: ShellCompletionType | undefined): void {
   const beforeCursor = input.slice(0, cursorOffset);
-  const lastSpaceIndex = beforeCursor.lastIndexOf(' ');
-  const wordStart = lastSpaceIndex + 1;
+  const currentWord = beforeCursor.match(/\S*$/);
+  const wordStart = currentWord?.index ?? beforeCursor.length;
 
   // Prepare the replacement text based on completion type
   let replacementText: string;
