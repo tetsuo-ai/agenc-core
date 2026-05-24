@@ -161,7 +161,11 @@ function Highlighted(t0) {
           logForDebugging(`Language not supported while highlighting code, falling back to markdown: ${e}`);
           let t4;
           if ($[5] !== codeWithSpaces || $[6] !== hl) {
-            t4 = cachedHighlight(hl, codeWithSpaces, "markdown");
+            try {
+              t4 = cachedHighlight(hl, codeWithSpaces, "markdown");
+            } catch {
+              t4 = codeWithSpaces;
+            }
             $[5] = codeWithSpaces;
             $[6] = hl;
             $[7] = t4;

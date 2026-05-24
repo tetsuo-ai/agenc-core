@@ -210,6 +210,40 @@ describe('HighlightedCodeFallback coverage swarm row 031', () => {
     )
   })
 
+  test('falls back to unhighlighted code when the markdown retry also fails', async () => {
+    const code = 'let row031_markdown_retry_fails = true;'
+    highlightMock.highlight.mockImplementation(
+      (_receivedCode: string, options: { readonly language: string }) => {
+        if (options.language === 'rs') {
+          throw new Error('Unknown language: rs')
+        }
+        if (options.language === 'markdown') {
+          throw new Error('markdown failed')
+        }
+        return `highlighted:${options.language}:${code}`
+      },
+    )
+
+    const output = await renderToText(
+      <HighlightedCodeFallback code={code} filePath="fixture.rs" />,
+      code,
+      { afterExpected: () => highlightMock.highlight.mock.calls.length >= 2 },
+    )
+
+    expect(output).toContain(code)
+    expect(highlightMock.supportsLanguage).toHaveBeenCalledWith('rs')
+    expect(highlightMock.highlight).toHaveBeenCalledTimes(2)
+    expect(highlightMock.highlight).toHaveBeenNthCalledWith(1, code, {
+      language: 'rs',
+    })
+    expect(highlightMock.highlight).toHaveBeenNthCalledWith(2, code, {
+      language: 'markdown',
+    })
+    expect(highlightMock.logForDebugging).toHaveBeenCalledWith(
+      expect.stringContaining('falling back to markdown: Error: Unknown language: rs'),
+    )
+  })
+
   test('falls back to unhighlighted code when highlighting fails for a non-language reason', async () => {
     const code = 'const row031GenericError = true'
     highlightMock.highlight.mockImplementation(() => {
