@@ -51,6 +51,11 @@ export function useHistorySearch(
   const seenPrompts = useRef<Set<string>>(new Set())
   const searchAbortController = useRef<AbortController | null>(null)
 
+  const abortSearch = useCallback((): void => {
+    searchAbortController.current?.abort()
+    searchAbortController.current = null
+  }, [])
+
   const closeHistoryReader = useCallback((): void => {
     if (historyReader.current) {
       // Must explicitly call .return() to trigger the finally block in readLinesReverse,
@@ -61,6 +66,7 @@ export function useHistorySearch(
   }, [])
 
   const reset = useCallback((): void => {
+    abortSearch()
     setIsSearching(false)
     setHistoryQuery('')
     setHistoryFailedMatch(false)
@@ -71,7 +77,7 @@ export function useHistorySearch(
     setHistoryMatch(undefined)
     closeHistoryReader()
     seenPrompts.current.clear()
-  }, [setIsSearching, closeHistoryReader])
+  }, [setIsSearching, closeHistoryReader, abortSearch])
 
   const searchHistory = useCallback(
     async (resume: boolean, signal?: AbortSignal): Promise<void> => {
@@ -118,6 +124,9 @@ export function useHistorySearch(
           closeHistoryReader()
           return
         }
+        if (signal?.aborted) {
+          return
+        }
         if (item.done) {
           // No match found - keep last match but mark as failed
           setHistoryFailedMatch(true)
@@ -161,8 +170,19 @@ export function useHistorySearch(
     ],
   )
 
+  const runSearchHistory = useCallback(
+    (resume: boolean): void => {
+      searchAbortController.current?.abort()
+      const controller = new AbortController()
+      searchAbortController.current = controller
+      void searchHistory(resume, controller.signal)
+    },
+    [searchHistory],
+  )
+
   // Handler: Start history search (when not searching)
   const handleStartSearch = useCallback(() => {
+    abortSearch()
     setIsSearching(true)
     setOriginalInput(currentInput)
     setOriginalCursorOffset(currentCursorOffset)
@@ -176,12 +196,13 @@ export function useHistorySearch(
     currentCursorOffset,
     currentMode,
     currentPastedContents,
+    abortSearch,
   ])
 
   // Handler: Find next match (when searching)
   const handleNextMatch = useCallback(() => {
-    void searchHistory(true)
-  }, [searchHistory])
+    runSearchHistory(true)
+  }, [runSearchHistory])
 
   // Handler: Accept current match and exit search
   const handleAccept = useCallback(() => {
