@@ -133,6 +133,7 @@ const harness = vi.hoisted(() => {
       suggestionType: undefined as undefined | string,
       suggestions: [] as Array<{ description?: string; label: string }>,
     },
+    ultrareviewConfig: null as null | Record<string, unknown>,
     visibleAgentTasks: [] as Array<{ id: string; status?: string }>,
     viewedTeammate: undefined as
       | undefined
@@ -234,6 +235,7 @@ const harness = vi.hoisted(() => {
       harness.teamsDialogProps = undefined
       harness.terminal = undefined
       harness.thinkingToggleProps = undefined
+      harness.ultrareviewConfig = null
       harness.typeahead = {
         commandArgumentHint: undefined,
         inlineGhostText: undefined,
@@ -274,7 +276,13 @@ vi.mock('../../../services/analytics/index.js', () => ({
 }))
 
 vi.mock('../../../services/analytics/growthbook.js', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => null,
+  getFeatureValue_CACHED_MAY_BE_STALE: (
+    name: string,
+    fallback: unknown,
+  ) =>
+    name === 'agenc_review_bughunter_config'
+      ? harness.ultrareviewConfig
+      : fallback,
 }))
 
 vi.mock('../../../services/PromptSuggestion/promptSuggestion.js', () => ({
@@ -651,6 +659,12 @@ vi.mock('../../../utils/teammateMailbox.js', () => ({
 
 vi.mock('../../../utils/thinking.js', () => ({
   findThinkingTriggerPositions: () => [],
+  findUltrareviewTriggerPositions: (text: string) =>
+    Array.from(text.matchAll(/\bultrareview\b/gi), match => ({
+      word: match[0],
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+    })),
   getRainbowColor: () => 'suggestion',
   isUltrathinkEnabled: () => false,
 }))
@@ -2835,6 +2849,37 @@ describe('PromptInput render surface', () => {
           key: 'option-meta-hint',
           priority: 'immediate',
         }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('clears ultrareview notification when the trigger leaves the input', async () => {
+    harness.ultrareviewConfig = { enabled: true }
+    const rendered = await renderPromptInput({
+      input: 'please ultrareview this change',
+    })
+
+    try {
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'ultrareview-active',
+        }),
+      )
+
+      harness.baseProps = undefined
+      rendered.root.render(
+        <PromptInput
+          {...(basePromptInputProps({
+            input: 'please review this change',
+          }) as never)}
+        />,
+      )
+      await waitForPromptInputProps()
+
+      expect(harness.removeNotification).toHaveBeenCalledWith(
+        'ultrareview-active',
       )
     } finally {
       await rendered.dispose()

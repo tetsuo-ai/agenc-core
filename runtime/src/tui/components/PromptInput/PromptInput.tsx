@@ -90,7 +90,7 @@ import { isInProcessTeammate } from '../../../utils/teammateContext.js';
 import { writeToMailbox } from '../../../utils/teammateMailbox.js';
 import type { TextHighlight } from '../../../utils/textHighlighting.js';
 import type { Theme } from '../../../utils/theme.js';
-import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../utils/thinking.js';
+import { findThinkingTriggerPositions, findUltrareviewTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../utils/thinking.js';
 import { escapeXml } from '../../../utils/xml.js';
 import { findTokenBudgetPositions } from '../../../conversation/token-budget.js';
 
@@ -1139,8 +1139,10 @@ function PromptInput({
         priority: 'immediate',
         timeoutMs: 5000
       });
+    } else {
+      removeNotification('ultrareview-active');
     }
-  }, [addNotification, ultrareviewTriggers.length]);
+  }, [addNotification, removeNotification, ultrareviewTriggers.length]);
 
   // Track input length for stash hint
   const prevInputLengthRef = useRef(input.length);
