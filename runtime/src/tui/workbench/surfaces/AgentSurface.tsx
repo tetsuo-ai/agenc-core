@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useEffect, useMemo, useState } from "react";
 
 import { logError } from "../../../utils/log.js";
@@ -43,6 +42,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
           if (mounted) setTailState({ taskId, content: result.content });
         })
         .catch((error) => {
+          if (!mounted) return;
           logError(error);
           // Keep the last successful tail visible across transient read failures.
         });
