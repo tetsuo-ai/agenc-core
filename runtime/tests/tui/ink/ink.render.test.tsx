@@ -229,6 +229,30 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('does not reassert terminal modes after unmounting', async () => {
+    const harness = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      harness.instance.setAltScreenActive(true, true)
+      harness.root.render(textNode('ready'))
+      await sleep(10)
+
+      harness.root.unmount()
+      harness.stdoutWrites.length = 0
+
+      harness.instance.reassertTerminalModes(true)
+
+      const writes = harness.stdoutWrites.join('')
+      expect(writes).not.toContain(ENABLE_MOUSE_TRACKING)
+      expect(writes).not.toContain(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME)
+    } finally {
+      harness.stdin.end()
+      harness.stdout.end()
+      harness.stderr.end()
+      await sleep(25)
+    }
+  })
+
   test('suspends and resumes stdin listeners and raw mode around external TUI handoff', async () => {
     const harness = await createHarness({ stdinIsRaw: true })
     const readableListener = vi.fn()
