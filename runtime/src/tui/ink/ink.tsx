@@ -1057,7 +1057,9 @@ export default class Ink {
       // Raw OSC 52, or DCS-passthrough-wrapped OSC 52 inside tmux (tmux
       // drops it silently unless allow-passthrough is on — no regression).
       void setClipboard(text).then(raw => {
-        if (raw) this.options.stdout.write(raw);
+        if (raw && !this.isUnmounted && !this.isPaused) {
+          this.options.stdout.write(raw);
+        }
       }).catch(logError);
     }
     return text;
