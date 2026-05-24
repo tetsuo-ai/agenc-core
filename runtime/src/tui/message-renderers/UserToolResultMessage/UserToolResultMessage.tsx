@@ -1,4 +1,3 @@
-import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Text } from '../../ink.js';
 import type { Tools } from '../../../tools/Tool';
@@ -23,6 +22,28 @@ type Props = {
   isTranscriptMode?: boolean;
 };
 
+function getTextToolResultContent(
+  content: AgenCToolResultBlockParam['content'],
+): string | undefined {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+
+  const textParts: string[] = [];
+  for (const block of content) {
+    if (typeof block === 'string') {
+      textParts.push(block);
+    } else if (block && typeof block === 'object' && typeof block.text === 'string') {
+      textParts.push(block.text);
+    }
+  }
+
+  return textParts.length > 0 ? textParts.join('\n') : undefined;
+}
+
 export function formatOrphanToolResultContent(content: AgenCToolResultBlockParam["content"]): string {
   if (isPermissionDeniedToolResult(content)) return PERMISSION_DENIED_TOOL_RESULT_MESSAGE;
   if (typeof content === "string") return content;
@@ -40,19 +61,17 @@ export function formatOrphanToolResultContent(content: AgenCToolResultBlockParam
   return content == null ? "" : String(content);
 }
 
-export function UserToolResultMessage(t0) {
-  const $ = _c(28);
-  const {
-    param,
-    message,
-    lookups,
-    progressMessagesForMessage,
-    style,
-    tools,
-    verbose,
-    width,
-    isTranscriptMode
-  } = t0;
+export function UserToolResultMessage({
+  param,
+  message,
+  lookups,
+  progressMessagesForMessage,
+  style,
+  tools,
+  verbose,
+  width,
+  isTranscriptMode,
+}: Props): React.ReactNode {
   const toolUse = useGetToolFromMessages(param.tool_use_id, tools, lookups);
   if (!toolUse) {
     if (param.is_error) {
@@ -60,69 +79,25 @@ export function UserToolResultMessage(t0) {
     }
     return <Text dimColor={true}>Tool result recovered without matching tool call: {formatOrphanToolResultContent(param.content)}</Text>;
   }
-  if (typeof param.content === "string" && param.content.startsWith(CANCEL_MESSAGE)) {
-    let t1;
-    if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-      t1 = <UserToolCanceledMessage />;
-      $[0] = t1;
-    } else {
-      t1 = $[0];
-    }
-    return t1;
+
+  const textContent = getTextToolResultContent(param.content);
+  if (textContent?.startsWith(CANCEL_MESSAGE)) {
+    return <UserToolCanceledMessage />;
   }
-  if (typeof param.content === "string" && param.content.startsWith(REJECT_MESSAGE) || param.content === INTERRUPT_MESSAGE_FOR_TOOL_USE) {
-    const t1 = toolUse.toolUse.input as {
+
+  if (
+    textContent?.startsWith(REJECT_MESSAGE) ||
+    textContent === INTERRUPT_MESSAGE_FOR_TOOL_USE
+  ) {
+    const input = toolUse.toolUse.input as {
       [key: string]: unknown;
     };
-    let t2;
-    if ($[1] !== isTranscriptMode || $[2] !== lookups || $[3] !== progressMessagesForMessage || $[4] !== style || $[5] !== t1 || $[6] !== toolUse.tool || $[7] !== tools || $[8] !== verbose) {
-      t2 = <UserToolRejectMessage input={t1} progressMessagesForMessage={progressMessagesForMessage} tool={toolUse.tool} tools={tools} lookups={lookups} style={style} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
-      $[1] = isTranscriptMode;
-      $[2] = lookups;
-      $[3] = progressMessagesForMessage;
-      $[4] = style;
-      $[5] = t1;
-      $[6] = toolUse.tool;
-      $[7] = tools;
-      $[8] = verbose;
-      $[9] = t2;
-    } else {
-      t2 = $[9];
-    }
-    return t2;
+    return <UserToolRejectMessage input={input} progressMessagesForMessage={progressMessagesForMessage} tool={toolUse.tool} tools={tools} lookups={lookups} style={style} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
   }
+
   if (param.is_error) {
-    let t1;
-    if ($[10] !== isTranscriptMode || $[11] !== param || $[12] !== progressMessagesForMessage || $[13] !== toolUse.tool || $[14] !== tools || $[15] !== verbose) {
-      t1 = <UserToolErrorMessage progressMessagesForMessage={progressMessagesForMessage} tool={toolUse.tool} tools={tools} param={param} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
-      $[10] = isTranscriptMode;
-      $[11] = param;
-      $[12] = progressMessagesForMessage;
-      $[13] = toolUse.tool;
-      $[14] = tools;
-      $[15] = verbose;
-      $[16] = t1;
-    } else {
-      t1 = $[16];
-    }
-    return t1;
+    return <UserToolErrorMessage progressMessagesForMessage={progressMessagesForMessage} tool={toolUse.tool} tools={tools} param={param} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
   }
-  let t1;
-  if ($[17] !== isTranscriptMode || $[18] !== lookups || $[19] !== message || $[20] !== progressMessagesForMessage || $[21] !== style || $[22] !== toolUse.tool || $[23] !== toolUse.toolUse.id || $[24] !== tools || $[25] !== verbose || $[26] !== width) {
-    t1 = <UserToolSuccessMessage message={message} lookups={lookups} toolUseID={toolUse.toolUse.id} progressMessagesForMessage={progressMessagesForMessage} style={style} tool={toolUse.tool} tools={tools} verbose={verbose} width={width} isTranscriptMode={isTranscriptMode} />;
-    $[17] = isTranscriptMode;
-    $[18] = lookups;
-    $[19] = message;
-    $[20] = progressMessagesForMessage;
-    $[21] = style;
-    $[22] = toolUse.tool;
-    $[23] = toolUse.toolUse.id;
-    $[24] = tools;
-    $[25] = verbose;
-    $[26] = width;
-    $[27] = t1;
-  } else {
-    t1 = $[27];
-  }
-  return t1;
+
+  return <UserToolSuccessMessage message={message} lookups={lookups} toolUseID={toolUse.toolUse.id} progressMessagesForMessage={progressMessagesForMessage} style={style} tool={toolUse.tool} tools={tools} verbose={verbose} width={width} isTranscriptMode={isTranscriptMode} />;
 }
