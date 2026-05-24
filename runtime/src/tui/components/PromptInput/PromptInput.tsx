@@ -2413,26 +2413,27 @@ function PromptInput({
 
     // NOTE: ctrl+_, ctrl+g, ctrl+s are handled via Chat context keybindings above
 
+    const currentInput = lastInternalInputRef.current;
+    const currentOffset = cursorOffsetRef.current;
+
     // Type-to-exit footer: printable chars while a pill is selected refocus
     // the input and type the char. Nav keys are captured by useKeybindings
     // above, so anything reaching here is genuinely not a footer action.
     // onChange clears footerSelection, so no explicit deselect.
     if (footerItemSelected && char && !key.ctrl && !key.meta && !key.escape && !key.return) {
-      const currentInput = lastInternalInputRef.current;
-      const currentOffset = cursorOffsetRef.current;
       onChange(currentInput.slice(0, currentOffset) + char + currentInput.slice(currentOffset));
       setCurrentCursorOffset(currentOffset + char.length);
       return;
     }
 
     // Exit special modes when backspace/escape/delete/ctrl+u is pressed at cursor position 0
-    if (cursorOffset === 0 && (key.escape || key.backspace || key.delete || key.ctrl && char === 'u')) {
+    if (currentOffset === 0 && (key.escape || key.backspace || key.delete || key.ctrl && char === 'u')) {
       onModeChange('prompt');
       setHelpOpen(false);
     }
 
     // Exit help mode when backspace is pressed and input is empty
-    if (helpOpen && input === '' && (key.backspace || key.delete)) {
+    if (helpOpen && currentInput === '' && (key.backspace || key.delete)) {
       setHelpOpen(false);
     }
 
@@ -2470,7 +2471,7 @@ function PromptInput({
         void popAllCommandsFromQueue();
         return;
       }
-      if (messages.length > 0 && !input && !isLoading) {
+      if (messages.length > 0 && currentInput === '' && !isLoading) {
         doublePressEscFromEmpty();
       }
     }

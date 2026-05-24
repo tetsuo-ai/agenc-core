@@ -1101,6 +1101,42 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('handles escape/backspace shortcuts against current text input state before rerender', async () => {
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const onShowMessageSelector = vi.fn()
+    const rendered = await renderPromptInput({
+      input: 'abc',
+      messages: [{ type: 'assistant' }],
+      mode: 'bash',
+      onInputChange,
+      onModeChange,
+      onShowMessageSelector,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      ;(baseProps.onChangeCursorOffset as (offset: number) => void)(0)
+      latestInputHandler()('', {
+        backspace: true,
+        ctrl: false,
+        delete: false,
+        escape: false,
+      })
+
+      expect(onModeChange).toHaveBeenCalledWith('prompt')
+
+      ;(baseProps.onChange as (value: string) => void)('')
+      latestInputHandler()('', { escape: true })
+
+      expect(onInputChange).toHaveBeenCalledWith('')
+      expect(onShowMessageSelector).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('handles mode cycle, image paste miss, and empty prompt submission guards', async () => {
     const onSubmit = vi.fn(async () => {})
     const setToolPermissionContext = vi.fn()
