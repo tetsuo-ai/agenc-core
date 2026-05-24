@@ -1203,11 +1203,14 @@ function PromptInput({
     submitCount,
     viewingAgentName
   });
-  const onChange = useCallback((value: string) => {
+  const onChange = useCallback((value: string, options?: {
+    interpretShortcuts?: boolean;
+  }) => {
+    const interpretShortcuts = options?.interpretShortcuts ?? true;
     const currentInput = lastInternalInputRef.current;
     const currentCursorOffset = cursorOffsetRef.current;
     const currentPastedContents = pastedContentsRef.current;
-    if (value === '?') {
+    if (interpretShortcuts && value === '?') {
       logEvent('agenc_help_toggled', {});
       setHelpOpen(v => !v);
       return;
@@ -1225,11 +1228,11 @@ function PromptInput({
     // mode itself is shown via the prompt prefix in the UI. Without this,
     // typing `!` into empty input would enter bash mode but leave the literal
     // `!` in the buffer (issue #662).
-    const modeEntry = detectModeEntry({
+    const modeEntry = interpretShortcuts ? detectModeEntry({
       value,
       prevInputLength: currentInput.length,
       cursorOffset: currentCursorOffset,
-    });
+    }) : null;
     if (modeEntry) {
       onModeChange(modeEntry.mode);
       const cleaned = modeEntry.strippedValue.replaceAll('\t', '    ');
@@ -1259,7 +1262,9 @@ function PromptInput({
     dismissSearchHint,
     historyIndex
   } = useArrowKeyHistory((value: string, historyMode: HistoryMode, pastedContents: Record<number, PastedContent>) => {
-    onChange(value);
+    onChange(value, {
+      interpretShortcuts: false
+    });
     onModeChange(historyMode);
     setPastedContentsAndRef(pastedContents);
   }, input, pastedContents, setCurrentCursorOffset, mode);
