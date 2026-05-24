@@ -931,7 +931,7 @@ export default class Ink {
    * handleResize.
    */
   reassertTerminalModes = (includeAltScreen = false): void => {
-    if (!this.options.stdout.isTTY) return;
+    if (!this.options.stdout.isTTY || this.isUnmounted) return;
     // Don't touch the terminal during an editor handoff — re-enabling kitty
     // keyboard here would undo enterAlternateScreen's disable and nano would
     // start seeing CSI-u sequences again.
