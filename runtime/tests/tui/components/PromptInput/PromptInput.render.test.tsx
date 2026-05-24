@@ -1545,6 +1545,7 @@ describe('PromptInput render surface', () => {
         nextInternalSubId: vi.fn()
           .mockReturnValueOnce('bash-input-id')
           .mockReturnValueOnce('bash-stdout-id')
+          .mockReturnValueOnce('bash-late-stdout-id')
           .mockReturnValueOnce('bash-stderr-id'),
       },
       setToolJSX,
@@ -1563,6 +1564,15 @@ describe('PromptInput render surface', () => {
           message: {
             content: [
               { text: '<ignored>nope</ignored>', type: 'text' },
+            ],
+          },
+          type: 'user',
+        },
+        {
+          message: {
+            content: [
+              { text: '<ignored>metadata</ignored>', type: 'text' },
+              { text: '<bash-stdout>late</bash-stdout>', type: 'text' },
             ],
           },
           type: 'user',
@@ -1616,6 +1626,14 @@ describe('PromptInput render surface', () => {
           msg: expect.objectContaining({
             payload: expect.objectContaining({
               message: '<bash-stdout>ok</bash-stdout>',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          id: 'bash-late-stdout-id',
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-stdout>late</bash-stdout>',
             }),
           }),
         }),
@@ -1959,6 +1977,47 @@ describe('PromptInput render surface', () => {
         expect.objectContaining({
           content: 'png-data',
           id: 8,
+          type: 'image',
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('allocates pasted image IDs after prior string transcript references', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'png-data',
+      mediaType: 'image/png',
+    })
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      messages: [
+        {
+          message: {
+            content: 'old string ref [Image #9]',
+          },
+          type: 'user',
+        },
+      ],
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #10]')
+      expect(pastedContents.current[10]).toEqual(
+        expect.objectContaining({
+          content: 'png-data',
+          id: 10,
           type: 'image',
         }),
       )

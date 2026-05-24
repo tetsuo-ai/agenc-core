@@ -2767,12 +2767,18 @@ function PromptInput({
  * Compute the next paste ID after every ID already visible to the current
  * prompt, including resumed messages and restored draft paste references.
  */
-function getNextPasteIdAfter(
+export function getNextPasteIdAfter(
   messages: Message[],
   pastedContents: Record<number, PastedContent> = {},
   input = '',
 ): number {
   let maxId = 0;
+  const scanReferences = (text: string) => {
+    const refs = parseReferences(text);
+    for (const ref of refs) {
+      if (ref.id > maxId) maxId = ref.id;
+    }
+  };
   for (const message of messages) {
     if (message.type === 'user') {
       // Check image paste IDs
@@ -2782,21 +2788,18 @@ function getNextPasteIdAfter(
         }
       }
       // Check text paste references in message content
-      if (Array.isArray(message.message.content)) {
+      if (typeof message.message.content === 'string') {
+        scanReferences(message.message.content);
+      } else if (Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
           if (block.type === 'text') {
-            const refs = parseReferences(block.text);
-            for (const ref of refs) {
-              if (ref.id > maxId) maxId = ref.id;
-            }
+            scanReferences(block.text);
           }
         }
       }
     }
   }
-  for (const ref of parseReferences(input)) {
-    if (ref.id > maxId) maxId = ref.id;
-  }
+  scanReferences(input);
   for (const [key, content] of Object.entries(pastedContents)) {
     const keyId = Number(key);
     if (Number.isFinite(keyId) && keyId > maxId) maxId = keyId;
@@ -2809,10 +2812,16 @@ function extractUserMessageText(m: unknown): string | null {
     ?? (m as { content?: unknown }).content;
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return null;
+  let firstText: string | null = null;
   for (const block of content) {
-    if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      firstText ??= block.text;
+      if (block.text.startsWith('<bash-stdout') || block.text.startsWith('<bash-stderr')) {
+        return block.text;
+      }
+    }
   }
-  return null;
+  return firstText;
 }
 function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastModeCooldown: boolean): BorderTextOptions | undefined {
   if (!showFastIcon) return undefined;
