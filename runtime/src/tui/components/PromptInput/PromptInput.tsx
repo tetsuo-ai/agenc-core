@@ -1447,9 +1447,10 @@ function PromptInput({
       };
       const session = ctx.session;
       const emit = typeof session?.emit === 'function' ? session.emit.bind(session) : undefined;
+      let fallbackSubId = 0;
       const nextId = typeof session?.nextInternalSubId === 'function'
         ? session.nextInternalSubId.bind(session)
-        : (() => `bash-${Date.now()}`);
+        : (() => `bash-${Date.now()}-${fallbackSubId++}`);
       const emitTranscriptText = (text: string) => {
         emit?.({
           id: nextId(),

@@ -1683,6 +1683,7 @@ describe('PromptInput render surface', () => {
 
   test('emits bash stderr when local bash execution throws', async () => {
     const emitted: unknown[] = []
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(123456)
     const getToolUseContext = vi.fn(() => ({
       session: {
         emit: (event: unknown) => emitted.push(event),
@@ -1705,6 +1706,7 @@ describe('PromptInput render surface', () => {
 
       expect(emitted).toEqual([
         expect.objectContaining({
+          id: 'bash-123456-0',
           msg: expect.objectContaining({
             payload: expect.objectContaining({
               message: '<bash-input>explode</bash-input>',
@@ -1712,6 +1714,7 @@ describe('PromptInput render surface', () => {
           }),
         }),
         expect.objectContaining({
+          id: 'bash-123456-1',
           msg: expect.objectContaining({
             payload: expect.objectContaining({
               message: '<bash-stderr>shell failed</bash-stderr>',
@@ -1722,6 +1725,7 @@ describe('PromptInput render surface', () => {
       expect(onInputChange).toHaveBeenCalledWith('')
       expect(onModeChange).toHaveBeenCalledWith('prompt')
     } finally {
+      dateNow.mockRestore()
       await rendered.dispose()
     }
   })
