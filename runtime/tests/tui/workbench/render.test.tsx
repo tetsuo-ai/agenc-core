@@ -337,6 +337,91 @@ describe("workbench render contract", () => {
     expect(layoutSizeForColumns(columns)).toBe(size);
   });
 
+  it.each([
+    {
+      name: "focuses the explorer",
+      initialPane: "composer" as const,
+      action: "workbench:focusExplorer",
+      expected: { focusedPane: "explorer" as const },
+    },
+    {
+      name: "moves from the surface to the agents rail when it is visible",
+      initialPane: "surface" as const,
+      action: "workbench:focusSurface",
+      expected: { focusedPane: "agents" as const },
+    },
+    {
+      name: "moves from the composer up to the surface",
+      initialPane: "composer" as const,
+      action: "workbench:focusSurface",
+      expected: { focusedPane: "surface" as const },
+    },
+    {
+      name: "focuses the agents rail",
+      initialPane: "composer" as const,
+      action: "workbench:focusAgents",
+      expected: { focusedPane: "agents" as const },
+    },
+    {
+      name: "focuses the composer",
+      initialPane: "surface" as const,
+      action: "workbench:focusComposer",
+      expected: { focusedPane: "composer" as const },
+    },
+    {
+      name: "moves focus up to the surface",
+      initialPane: "composer" as const,
+      action: "workbench:focusUp",
+      expected: { focusedPane: "surface" as const },
+    },
+    {
+      name: "cycles to the next visible pane",
+      initialPane: "explorer" as const,
+      action: "workbench:focusNext",
+      expected: { focusedPane: "surface" as const },
+    },
+    {
+      name: "opens the diff surface",
+      initialPane: "composer" as const,
+      action: "workbench:openDiff",
+      expected: { activeSurfaceMode: "diff" as const, focusedPane: "surface" as const },
+    },
+    {
+      name: "opens the search surface",
+      initialPane: "composer" as const,
+      action: "workbench:openSearch",
+      expected: { activeSurfaceMode: "search" as const, focusedPane: "surface" as const },
+    },
+  ])("wires WorkbenchLayout keybinding handler: $name", async ({ initialPane, action, expected }) => {
+    projectExplorerHarness.keybindingCalls = [];
+    const changes: Array<ReturnType<typeof getDefaultAppState>> = [];
+
+    await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          workbench: {
+            ...getDefaultAppState().workbench,
+            focusedPane: initialPane,
+          },
+        }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+      </AppStateProvider>,
+      { columns: 148, rows: 30 },
+    );
+
+    const workbenchHandlers = projectExplorerHarness.keybindingCalls.find(
+      (call) => call.options?.context === "Workbench",
+    )?.handlers;
+
+    expect(workbenchHandlers).toBeDefined();
+    workbenchHandlers?.[action]?.();
+
+    expect(changes.at(-1)?.workbench).toMatchObject(expected);
+  });
+
   it("keeps transcript content inside the active work surface", async () => {
     const output = await renderToString(
       <TranscriptSurface>
