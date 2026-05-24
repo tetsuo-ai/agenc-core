@@ -91,6 +91,7 @@ import { writeToMailbox } from '../../../utils/teammateMailbox.js';
 import type { TextHighlight } from '../../../utils/textHighlighting.js';
 import type { Theme } from '../../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../utils/thinking.js';
+import { escapeXml } from '../../../utils/xml.js';
 import { findTokenBudgetPositions } from '../../../conversation/token-budget.js';
 
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
@@ -1526,7 +1527,7 @@ function PromptInput({
       };
       // ShellInputMessage extracts <bash-input>...</bash-input>;
       // UserBashOutputMessage extracts <bash-stdout>/<bash-stderr>.
-      emitTranscriptText(`<bash-input>${trimmedBash}</bash-input>`);
+      emitTranscriptText(`<bash-input>${escapeXml(trimmedBash)}</bash-input>`);
       try {
         // Call processBashCommand directly. The retired input processor also
         // routed mode:'bash' here but its static imports drag in unused
@@ -1548,7 +1549,7 @@ function PromptInput({
         }
       } catch (err) {
         const errText = err instanceof Error ? err.message : String(err);
-        emitTranscriptText(`<bash-stderr>${errText}</bash-stderr>`);
+        emitTranscriptText(`<bash-stderr>${escapeXml(errText)}</bash-stderr>`);
       }
       trackAndSetInput('');
       setCurrentCursorOffset(0);
