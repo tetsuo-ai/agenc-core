@@ -4,6 +4,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../../ink.js';
 import { formatDuration } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 type Props = {
   elapsedTimeSeconds?: number;
   timeoutMs?: number;
@@ -51,7 +52,8 @@ export function ShellTimeDisplay(t0) {
   }
   const elapsed = t3;
   if (timeout) {
-    const t4 = `(${elapsed} · timeout ${timeout})`;
+    const separator = selectAgenCTuiGlyphs().separator;
+    const t4 = `(${elapsed} ${separator} timeout ${timeout})`;
     let t5;
     if ($[6] !== t4) {
       t5 = <Text dimColor={true}>{t4}</Text>;
