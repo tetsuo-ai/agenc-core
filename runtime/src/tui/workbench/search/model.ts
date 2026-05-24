@@ -1,5 +1,6 @@
 import { relativePath } from "../../../utils/permissions/filesystem.js";
 import { isRelativePathOutsideBase } from "../../pathDisplay.js";
+import { normalizeWorkspacePathForReferences } from "../pathReferences.js";
 import type { SearchGroup, SearchMatch } from "../types.js";
 
 export function parseWorkbenchRipgrepJsonLine(line: string, cwd: string): SearchMatch | null {
@@ -47,7 +48,7 @@ export function parseWorkbenchRipgrepJsonLine(line: string, cwd: string): Search
 
 function normalizeWorkbenchSearchPath(rawFile: string, cwd: string): string {
   const rel = isAbsoluteLike(rawFile) ? relativePath(cwd, rawFile) : rawFile;
-  return isRelativePathOutsideBase(rel) ? rawFile : rel;
+  return normalizeWorkspacePathForReferences(isRelativePathOutsideBase(rel) ? rawFile : rel);
 }
 
 function isAbsoluteLike(value: string): boolean {

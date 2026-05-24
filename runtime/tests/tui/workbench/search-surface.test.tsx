@@ -318,6 +318,55 @@ describe("SearchSurface", () => {
     }
   });
 
+  it("opens backslash search result paths as normalized workspace paths", async () => {
+    searchHarness.autoFlush = false;
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "search",
+              searchQuery: "needle",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <SearchSurface focused={false} />
+        </AppStateProvider>,
+      );
+      await sleep(180);
+
+      expect(searchHarness.calls).toHaveLength(1);
+      const call = searchHarness.calls[0]!;
+      call.onLines([
+        jsonMatchLine("src\\nested\\app.ts", 6, "const needle = true"),
+      ]);
+      call.resolve();
+      await sleep(50);
+      searchHarness.handlers["surface:open"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/nested/app.ts",
+        activeFileLine: 6,
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("does not restore the requested search match after manual navigation during streaming", async () => {
     searchHarness.autoFlush = false;
     const changes: AppState[] = [];
