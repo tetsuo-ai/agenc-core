@@ -1304,6 +1304,50 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('separates quick-open insertions after image pills', async () => {
+    harness.features.QUICK_SEARCH = true
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'jpeg-data',
+      mediaType: 'image/jpeg',
+    })
+    const onInputChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setHelpOpen,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      harness.keybindings['app:quickOpen']?.()
+      await sleep(25)
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(harness.quickOpenProps).toBeDefined()
+
+      ;(harness.quickOpenProps?.onInsert as (text: string) => void)(
+        '@src/app.ts',
+      )
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1] @src/app.ts')
+
+      const inputFilter = baseProps.inputFilter as (
+        input: string,
+        key: Record<string, boolean>,
+      ) => string
+      expect(inputFilter('caption', {})).toBe('caption')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('allocates image paste IDs after existing draft paste references', async () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue({
       base64: 'png-data',
