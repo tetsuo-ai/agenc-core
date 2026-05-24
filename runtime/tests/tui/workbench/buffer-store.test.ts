@@ -651,6 +651,26 @@ describe("WorkbenchBufferStore", () => {
     });
   });
 
+  it("cancels the vim command line on Ctrl+C", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput(":", key({ shift: true }), 80);
+    store.handleVimInput("w", key(), 80);
+
+    expect(store.getSnapshot().vimCommandLine).toBe("w");
+    expect(store.handleVimInput("c", key({ ctrl: true }), 80)).toBe(true);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "ready",
+      error: null,
+      vimCommandLine: null,
+    });
+    expect(store.getText()).toBe("alpha\n");
+  });
+
   it("refuses to overwrite disk changes made after open", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\n", "utf8");

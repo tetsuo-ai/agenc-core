@@ -407,7 +407,7 @@ export class WorkbenchBufferStore {
   }
 
   #handleVimCommandLineInput(input: string, key: Key, onCommand?: BufferVimCommandHandler): boolean {
-    if (key.escape) {
+    if (key.escape || (key.ctrl && input.toLowerCase() === "c")) {
       this.#vimCommandLine = null;
       this.#emit();
       return true;
