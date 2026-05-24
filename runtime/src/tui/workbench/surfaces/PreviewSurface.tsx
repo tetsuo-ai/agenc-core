@@ -98,8 +98,9 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
         if (mounted) setGitStateState({ path: statusPath, status: status.get(statusPath) ?? "clean" });
       })
       .catch((error) => {
+        if (!mounted) return;
         logError(error);
-        if (mounted) setGitStateState({ path: statusPath, status: null });
+        setGitStateState({ path: statusPath, status: null });
       });
     return () => {
       mounted = false;
