@@ -78,7 +78,7 @@ export function workbenchReducer(
     case "openDiff":
       return {
         ...openSurface(state, "diff", command.focus ?? true),
-        openDiffId: command.diffId ?? state.openDiffId,
+        openDiffId: command.diffId === undefined ? state.openDiffId : command.diffId,
       };
     case "openShell":
       return {
