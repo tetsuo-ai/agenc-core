@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useEffect, useMemo, useState } from "react";
 
 import { logError } from "../../../utils/log.js";
@@ -8,7 +7,7 @@ import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
-import { attachTaskErrorCommand } from "../commands.js";
+import { attachTaskErrorCommand, openBufferCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { resolveWorkbenchShellTask } from "../tasks/shellTasks.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
@@ -65,12 +64,11 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   useRegisterKeybindingContext("Surface", focused);
   const jumpToSelectedFailure = (focus = true) => {
     if (selectedFailure?.location) {
-      dispatch({
-        type: "openBuffer",
-        path: selectedFailure.location.file,
-        line: selectedFailure.location.line,
+      dispatch(openBufferCommand(
+        selectedFailure.location.file,
+        selectedFailure.location.line,
         focus,
-      });
+      ));
     }
   };
   useKeybindings(

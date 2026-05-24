@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useEffect, useMemo, useState } from "react";
 
 import { logError } from "../../../utils/log.js";
@@ -9,7 +8,7 @@ import { useAppState } from "../../state/AppState.js";
 import { useSetAppState } from "../../state/AppState.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
-import { attachTaskErrorCommand } from "../commands.js";
+import { attachTaskErrorCommand, openBufferCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { resolveWorkbenchShellTask } from "../tasks/shellTasks.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
@@ -65,12 +64,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
   const jumpToFirstLocation = () => {
     const location = locations[0];
     if (location) {
-      dispatch({
-        type: "openBuffer",
-        path: location.file,
-        line: location.line,
-        focus: true,
-      });
+      dispatch(openBufferCommand(location.file, location.line, true));
     }
   };
   useKeybindings(
