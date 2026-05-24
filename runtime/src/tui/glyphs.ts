@@ -10,6 +10,7 @@ export interface AgenCTuiGlyphs {
   readonly enter: string;
   readonly ellipsis: string;
   readonly horizontal: string;
+  readonly ideSelection: string;
   readonly modalDivider: string;
   readonly mcpResource: string;
   readonly pointer: string;
@@ -44,6 +45,7 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   enter: "Enter",
   ellipsis: "...",
   horizontal: "-",
+  ideSelection: "[]",
   modalDivider: "-",
   mcpResource: "*",
   pointer: ">",
@@ -78,6 +80,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   enter: "↵",
   ellipsis: "…",
   horizontal: "─",
+  ideSelection: "⧉",
   modalDivider: "▔",
   mcpResource: "◇",
   pointer: figures.pointer,

@@ -1,5 +1,5 @@
 import React from "react";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import type { MCPServerConnection } from "../../services/mcp/types.js";
 import { renderToString } from "../../utils/staticRender.js";
@@ -19,6 +19,16 @@ function ideClient(type: MCPServerConnection["type"]): MCPServerConnection {
 }
 
 describe("IdeStatusIndicator coverage", () => {
+  const originalGlyphMode = process.env.AGENC_TUI_GLYPHS;
+
+  afterEach(() => {
+    if (originalGlyphMode === undefined) {
+      delete process.env.AGENC_TUI_GLYPHS;
+    } else {
+      process.env.AGENC_TUI_GLYPHS = originalGlyphMode;
+    }
+  });
+
   test("renders selection context only when the IDE client is connected", async () => {
     expect(
       (
@@ -85,5 +95,28 @@ describe("IdeStatusIndicator coverage", () => {
         80,
       ),
     ).resolves.toContain("In app.tsx");
+  });
+
+  test("uses an ASCII-safe IDE glyph when glyph mode is ASCII", async () => {
+    process.env.AGENC_TUI_GLYPHS = "ascii";
+
+    const selectedText = await renderToString(
+      <IdeStatusIndicator
+        ideSelection={{ text: "selected", lineCount: 1 }}
+        mcpClients={[ideClient("connected")]}
+      />,
+      80,
+    );
+    const fileContext = await renderToString(
+      <IdeStatusIndicator
+        ideSelection={{ filePath: "/repo/src/app.tsx", lineCount: 0 }}
+        mcpClients={[ideClient("connected")]}
+      />,
+      80,
+    );
+
+    expect(selectedText).toContain("[] 1 line selected");
+    expect(fileContext).toContain("[] In app.tsx");
+    expect(`${selectedText}\n${fileContext}`).not.toContain("⧉");
   });
 });
