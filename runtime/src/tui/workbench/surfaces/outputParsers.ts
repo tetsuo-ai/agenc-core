@@ -11,11 +11,17 @@ export type TestFailure = {
   readonly message: string;
 };
 
+const SOURCE_EXTENSION_PATTERN = String.raw`[cm]?[jt]sx?|py|rs|go|java|c|cc|cpp|h|hpp`;
+const SOURCE_PATH_PATTERN = String.raw`(?:(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|~[\\/]|[\\/])[^:\r\n]*?|[^\s():\\/\r\n]+[\\/][^:\r\n]*?|[^\s():\\/\r\n]+?)\.(?:${SOURCE_EXTENSION_PATTERN})`;
+const SOURCE_LOCATION_PATTERN = new RegExp(
+  String.raw`(^|[\s([{"'])(${SOURCE_PATH_PATTERN}):(\d+)(?::(\d+))?(?=$|[\s)\]}",'])`,
+  "gu",
+);
+
 export function parseSourceLocations(output: string): SourceLocation[] {
   const seen = new Set<string>();
   const locations: SourceLocation[] = [];
-  const pattern = /(^|[\s([{"'])((?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|~[\\/]|[\\/])?[^\s():\r\n][^():\r\n]*?\.(?:[cm]?[jt]sx?|py|rs|go|java|c|cc|cpp|h|hpp)):(\d+)(?::(\d+))?(?=$|[\s)\]}",'])/gu;
-  for (const match of output.matchAll(pattern)) {
+  for (const match of output.matchAll(SOURCE_LOCATION_PATTERN)) {
     const file = match[2]!;
     const line = Number.parseInt(match[3]!, 10);
     const columnText = match[4];
