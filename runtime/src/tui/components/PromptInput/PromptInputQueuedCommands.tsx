@@ -11,6 +11,7 @@ import type { QueuedCommand } from '../../../types/textInputTypes.js';
 import { isQueuedCommandEditable, isQueuedCommandVisible } from '../../../utils/messageQueueManager.js';
 import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../../utils/messages.js';
 import { jsonParse } from '../../../utils/slowOperations.js';
+import { escapeXml } from '../../../utils/xml.js';
 import { Message } from '../Message.js';
 const EMPTY_SET = new Set<string>();
 
@@ -104,7 +105,7 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
     return normalizeMessages(processedCommands.map(cmd => {
       let content = cmd.value;
       if (cmd.mode === 'bash' && typeof content === 'string') {
-        content = `<bash-input>${content}</bash-input>`;
+        content = `<bash-input>${escapeXml(content)}</bash-input>`;
       }
       // [Image #N] placeholders are inline in the text value (inserted at
       // paste time), so the queue preview shows them without stub blocks.

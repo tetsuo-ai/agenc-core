@@ -98,7 +98,9 @@ describe('messagePrimitives coverage swarm 053', () => {
       <>
         <ShellInputMessage
           addMargin={true}
-          param={textParam('<bash-input>npm test -- --runInBand</bash-input>')}
+          param={textParam(
+            '<bash-input>npm test -- --runInBand &lt;ci&gt; &amp;</bash-input>',
+          )}
         />
         <UserCommandMessage
           addMargin={true}
@@ -132,7 +134,7 @@ describe('messagePrimitives coverage swarm 053', () => {
     )
 
     expect(output).toContain('SHELL')
-    expect(output).toContain('! npm test -- --runInBand')
+    expect(output).toContain('! npm test -- --runInBand <ci> &')
     expect(output).toContain('SKILL')
     expect(output).toContain('$lint')
     expect(output).toContain('/status')

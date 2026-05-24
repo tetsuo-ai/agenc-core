@@ -82,6 +82,7 @@ import { parseJSONL } from './json.js'
 import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
+import { unescapeXml } from './xml.js'
 import {
   extractJsonStringField,
   extractLastJsonStringField,
@@ -1788,7 +1789,7 @@ export function getFirstMeaningfulUserMessageTextContent<T extends Message>(
             continue
           }
           // Return clean formatted command instead of raw XML
-          return `${commandNameTag} ${commandArgs}`
+          return `${unescapeXml(commandNameTag)} ${unescapeXml(commandArgs)}`
         }
       }
 
@@ -1796,7 +1797,7 @@ export function getFirstMeaningfulUserMessageTextContent<T extends Message>(
       // the generic XML skip so bash-mode sessions get a meaningful title.
       const bashInput = extractTag(textContent, 'bash-input')
       if (bashInput) {
-        return `! ${bashInput}`
+        return `! ${unescapeXml(bashInput)}`
       }
 
       // Skip non-meaningful messages (local command output, hook output,
@@ -5134,13 +5135,13 @@ function extractFirstPromptFromChunk(chunk: string): string {
           }
           // Custom command with meaningful args — use clean display
           return commandArgs
-            ? `${commandNameTag} ${commandArgs}`
-            : commandNameTag
+            ? `${unescapeXml(commandNameTag)} ${unescapeXml(commandArgs)}`
+            : unescapeXml(commandNameTag)
         }
 
         // Format bash input with ! prefix before the generic XML skip
         const bashInput = extractTag(result, 'bash-input')
-        if (bashInput) return `! ${bashInput}`
+        if (bashInput) return `! ${unescapeXml(bashInput)}`
 
         if (SKIP_FIRST_PROMPT_PATTERN.test(result)) {
           if (

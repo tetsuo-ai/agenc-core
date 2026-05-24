@@ -351,9 +351,11 @@ export function parseDollarSkillCommand(input: string): {
 }
 
 export function formatDollarSkillInputTags(commandName: string, args: string): string {
-  return `<${COMMAND_NAME_TAG}>$${commandName}</${COMMAND_NAME_TAG}>
-            <${COMMAND_MESSAGE_TAG}>${commandName}</${COMMAND_MESSAGE_TAG}>
-            <${COMMAND_ARGS_TAG}>${args}</${COMMAND_ARGS_TAG}>
+  const escapedCommandName = escapeXml(commandName)
+  const escapedArgs = escapeXml(args)
+  return `<${COMMAND_NAME_TAG}>$${escapedCommandName}</${COMMAND_NAME_TAG}>
+            <${COMMAND_MESSAGE_TAG}>${escapedCommandName}</${COMMAND_MESSAGE_TAG}>
+            <${COMMAND_ARGS_TAG}>${escapedArgs}</${COMMAND_ARGS_TAG}>
             <skill-format>true</skill-format>`
 }
 

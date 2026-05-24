@@ -163,14 +163,18 @@ describe('MessageSelector coverage for non-restorable pick-list rows', () => {
 
   test('shows terminal input text with a no-code-restore warning', async () => {
     const rendered = await renderSelector([
-      userMessage('user-1', '<bash-input>npm test</bash-input>'),
+      userMessage(
+        'user-1',
+        '<bash-input>npm test &lt;target&gt; &amp;</bash-input>',
+      ),
       assistantMessage('assistant-1', 'done'),
     ])
 
     try {
       await waitForOutput(rendered.output, 'No code restore')
 
-      expect(rendered.output()).toContain('! npm test')
+      expect(rendered.output()).toContain('! npm test <target> &')
+      expect(rendered.output()).not.toContain('&lt;target&gt;')
       expect(rendered.output()).toContain('No code restore')
       expect(rendered.output()).toContain('(current)')
       expect(harness.logEvent).toHaveBeenCalledWith(

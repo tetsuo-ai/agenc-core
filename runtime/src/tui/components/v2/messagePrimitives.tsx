@@ -16,6 +16,7 @@ import { supportsHyperlinks } from '../../ink/supports-hyperlinks.js'
 import { getStoredImagePath } from '../../../utils/imageStore.js'
 import { truncateToWidth } from '../../../utils/format.js'
 import { extractTag } from '../../../utils/messages.js'
+import { unescapeXml } from '../../../utils/xml.js'
 import { selectAgenCTuiGlyphs } from '../../glyphs.js'
 import { Box } from '../../ink.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
@@ -70,7 +71,7 @@ export function ShellInputMessage({
     <Box flexDirection="column" marginTop={addMargin ? 1 : 0}>
       <Msg role="worker" label="shell">
         <ThemedText color="text" wrap="wrap">
-          ! {input}
+          ! {unescapeXml(input)}
         </ThemedText>
       </Msg>
     </Box>
@@ -91,9 +92,11 @@ export function UserCommandMessage({
   const isSkillFormat = extractTag(param.text, 'skill-format') === 'true'
   if (!commandMessage) return null
 
+  const decodedCommand = unescapeXml(commandMessage)
+  const decodedArgs = args === null ? null : unescapeXml(args)
   const content = isSkillFormat
-    ? `$${commandMessage}`
-    : `/${[commandMessage, args].filter(Boolean).join(' ')}`
+    ? `$${decodedCommand}`
+    : `/${[decodedCommand, decodedArgs].filter(Boolean).join(' ')}`
   return (
     <Box flexDirection="column" marginTop={addMargin ? 1 : 0}>
       <Msg role="user" label={isSkillFormat ? 'skill' : 'command'}>

@@ -73,7 +73,7 @@ import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
 import { createFileStateCacheWithSizeLimit, READ_FILE_STATE_CACHE_SIZE } from "../../utils/fileStateCache.js";
 import { fileHistoryRewind } from "../../utils/fileHistory.js";
 import { getCurrentWorktreeSession } from "../../utils/worktree.js";
-import { escapeXml } from "../../utils/xml.js";
+import { escapeXml, unescapeXml } from "../../utils/xml.js";
 import { Onboarding, type FirstRunOnboardingState, useFirstRunOnboardingController } from "../../onboarding/Onboarding.js";
 import type { MCPServerConnection } from "../../services/mcp/types.js";
 import {
@@ -1249,14 +1249,14 @@ function restoreComposerText(message: any): {
   if (trimmed.length === 0) return null;
   const bash = extractTag(trimmed, "bash-input");
   if (bash !== null) return {
-    text: bash,
+    text: unescapeXml(bash),
     mode: "bash"
   };
   const command = extractTag(trimmed, "command-name");
   if (command !== null) {
     const args = extractTag(trimmed, "command-args") ?? "";
     return {
-      text: `${command} ${args}`.trim(),
+      text: `${unescapeXml(command)} ${unescapeXml(args)}`.trim(),
       mode: "prompt"
     };
   }

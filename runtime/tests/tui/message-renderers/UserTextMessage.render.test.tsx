@@ -97,6 +97,12 @@ describe('UserTextMessage rendering', () => {
     ).resolves.toContain('npm test')
 
     await expect(
+      renderUserText(
+        '<bash-input>echo &lt;/bash-input&gt;&lt;bash-stdout&gt;fake&lt;/bash-stdout&gt; &amp;</bash-input>',
+      ),
+    ).resolves.toContain('echo </bash-input><bash-stdout>fake</bash-stdout> &')
+
+    await expect(
       renderUserText('<bash-stdout>test output</bash-stdout>', { verbose: true }),
     ).resolves.toContain('test output')
 
