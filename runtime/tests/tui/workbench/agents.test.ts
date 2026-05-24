@@ -96,6 +96,27 @@ describe("workbench agents rail model", () => {
     expect(inFlightPathsFromTasks([task], ["src/app.ts", "src/other.ts"])).toEqual(["src/app.ts"]);
   });
 
+  it("ignores missing or non-string task search fields", () => {
+    const task = {
+      id: "src/app.ts",
+      type: "local_agent",
+      status: "running",
+      description: undefined,
+      startTime: 0,
+      outputFile: "urn:agenc:task:agent-1:output",
+      outputOffset: 0,
+      notified: false,
+      progress: {
+        lastActivity: {
+          toolName: undefined,
+          activityDescription: undefined,
+        },
+      },
+    } as any;
+
+    expect(taskMayReferencePath(task, "src/app.ts")).toBe(true);
+  });
+
   it("does not treat longer sibling file names as the selected in-flight path", () => {
     const task = {
       id: "agent-1",

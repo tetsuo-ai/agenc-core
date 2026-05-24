@@ -55,7 +55,7 @@ export function taskPathLabel(task: TaskState): string | null {
 
 function taskSearchStrings(task: TaskState): string[] {
   const progress = "progress" in task ? task.progress : undefined;
-  const values: string[] = [
+  const values: unknown[] = [
     task.id,
     task.description,
     "command" in task && typeof task.command === "string" ? task.command : "",
@@ -70,7 +70,9 @@ function taskSearchStrings(task: TaskState): string[] {
       stringifyInput(activity.input),
     ]),
   ];
-  return values.filter((value) => value.trim().length > 0);
+  return values.filter((value): value is string =>
+    typeof value === "string" && value.trim().length > 0
+  );
 }
 
 function stringifyInput(input: unknown): string {
