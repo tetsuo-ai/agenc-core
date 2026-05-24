@@ -401,6 +401,38 @@ describe("AutoUpdater coverage swarm row 050", () => {
     }
   });
 
+  test("clears the parent updating flag when unmounted after starting an update", async () => {
+    let resolveInstall!: (status: "success") => void;
+    const installPromise = new Promise<"success">(resolve => {
+      resolveInstall = resolve;
+    });
+    harness.getCurrentInstallationType.mockResolvedValue("npm-global");
+    harness.installGlobalPackage.mockReturnValueOnce(installPromise);
+    const onChangeIsUpdating = vi.fn();
+    const rendered = await renderInRoot(
+      <AutoUpdater
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={() => {}}
+        onChangeIsUpdating={onChangeIsUpdating}
+        showSuccessMessage={true}
+        verbose={true}
+      />,
+    );
+
+    await waitFor(
+      () => onChangeIsUpdating.mock.calls.some(([value]) => value === true),
+      "update start",
+    );
+    await rendered.cleanup();
+    resolveInstall("success");
+    await sleep(20);
+
+    expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
+    expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
+    expect(harness.logEvent).not.toHaveBeenCalled();
+  });
+
   test("installs with the npm-local path and records migrated success", async () => {
     harness.getCurrentInstallationType.mockResolvedValue("npm-local");
     const rendered = await renderInRoot(<StatefulAutoUpdater />);

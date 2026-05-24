@@ -60,8 +60,8 @@ export function AutoUpdater({
   isUpdatingRef.current = isUpdating;
   const checkForUpdates = React.useCallback(async () => {
     let didStartUpdating = false;
-    const stopUpdatingAfterFailure = () => {
-      if (didStartUpdating && mountedRef.current) {
+    const finishStartedUpdate = () => {
+      if (didStartUpdating) {
         onChangeIsUpdating(false);
         didStartUpdating = false;
       }
@@ -117,12 +117,14 @@ export function AutoUpdater({
           await removeInstalledSymlink();
         }
         if (!mountedRef.current) {
+          finishStartedUpdate();
           return;
         }
 
         // Detect actual running installation type
         const installationType = await getCurrentInstallationType();
         if (!mountedRef.current) {
+          finishStartedUpdate();
           return;
         }
         logForDebugging(`AutoUpdater: Detected installation type: ${installationType}`);
@@ -130,8 +132,7 @@ export function AutoUpdater({
         // Skip update for development builds
         if (installationType === 'development') {
           logForDebugging('AutoUpdater: Cannot auto-update development build');
-          onChangeIsUpdating(false);
-          didStartUpdating = false;
+          finishStartedUpdate();
           return;
         }
 
@@ -151,8 +152,7 @@ export function AutoUpdater({
         } else if (installationType === 'native') {
           // This shouldn't happen - native should use NativeAutoUpdater
           logForDebugging('AutoUpdater: Unexpected native installation in non-native updater');
-          onChangeIsUpdating(false);
-          didStartUpdating = false;
+          finishStartedUpdate();
           return;
         } else {
           // Fallback to config-based detection for unknown types
@@ -166,10 +166,10 @@ export function AutoUpdater({
           }
         }
         if (!mountedRef.current) {
+          finishStartedUpdate();
           return;
         }
-        onChangeIsUpdating(false);
-        didStartUpdating = false;
+        finishStartedUpdate();
         if (installStatus === 'success') {
           logEvent('tengu_auto_updater_success', {
             fromVersion: currentVersion as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -195,7 +195,7 @@ export function AutoUpdater({
       }
     } catch (error) {
       logError(error);
-      stopUpdatingAfterFailure();
+      finishStartedUpdate();
     }
     // isUpdating intentionally omitted from deps; we read isUpdatingRef
     // instead so the guard is always current without changing callback
