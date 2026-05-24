@@ -13,6 +13,7 @@ import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { logError } from "../../../utils/log.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
+import { composerAttachmentsForState } from "../reducer.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
@@ -33,8 +34,8 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const [fileAction, setFileAction] = useState(null);
   const maxTreeRows = Math.max(1, terminalRows - 8);
   const attachedPaths = useMemo(
-    () => workbench.attachments.flatMap((item) => item.path ? [item.path] : []),
-    [workbench.attachments],
+    () => composerAttachmentsForState(workbench).flatMap((item) => item.path ? [item.path] : []),
+    [workbench.attachments, workbench.composerAttachmentIds],
   );
 
   useEffect(() => {
