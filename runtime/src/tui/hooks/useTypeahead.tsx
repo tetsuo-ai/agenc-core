@@ -174,12 +174,18 @@ export function applyShellSuggestion(suggestion: SuggestionItem, input: string, 
   setCursorOffset(wordStart + replacementText.length);
 }
 const DM_MEMBER_RE = /(^|\s)@[\w-]*$/;
-function applyTriggerSuggestion(suggestion: SuggestionItem, input: string, cursorOffset: number, triggerRe: RegExp, onInputChange: (value: string) => void, setCursorOffset: (offset: number) => void): void {
+const DM_MEMBER_TAIL_RE = /^[\w-]*/;
+const HASH_CHANNEL_TAIL_RE = /^[a-z0-9_-]*/;
+function applyTriggerSuggestion(suggestion: SuggestionItem, input: string, cursorOffset: number, triggerRe: RegExp, tailRe: RegExp, onInputChange: (value: string) => void, setCursorOffset: (offset: number) => void): void {
   const m = input.slice(0, cursorOffset).match(triggerRe);
   if (!m || m.index === undefined) return;
   const prefixStart = m.index + (m[1]?.length ?? 0);
   const before = input.slice(0, prefixStart);
-  const newInput = before + suggestion.displayText + ' ' + input.slice(cursorOffset);
+  const afterCursor = input.slice(cursorOffset);
+  const afterToken = afterCursor.slice(afterCursor.match(tailRe)?.[0].length ?? 0);
+  const hasExistingSeparator = /^\s/.test(afterToken);
+  const separator = hasExistingSeparator ? '' : ' ';
+  const newInput = before + suggestion.displayText + separator + afterToken;
   onInputChange(newInput);
   setCursorOffset(before.length + suggestion.displayText.length + 1);
 }
@@ -1033,13 +1039,13 @@ export function useTypeahead({
       } else if (suggestionType === 'agent' && suggestions.length > 0 && suggestions[index]?.id?.startsWith('dm-')) {
         const suggestion = suggestions[index];
         if (suggestion) {
-          applyTriggerSuggestion(suggestion, input, cursorOffset, DM_MEMBER_RE, onInputChange, setCursorOffset);
+          applyTriggerSuggestion(suggestion, input, cursorOffset, DM_MEMBER_RE, DM_MEMBER_TAIL_RE, onInputChange, setCursorOffset);
           clearSuggestions();
         }
       } else if (suggestionType === 'slack-channel' && suggestions.length > 0) {
         const suggestion = suggestions[index];
         if (suggestion) {
-          applyTriggerSuggestion(suggestion, input, cursorOffset, HASH_CHANNEL_RE, onInputChange, setCursorOffset);
+          applyTriggerSuggestion(suggestion, input, cursorOffset, HASH_CHANNEL_RE, HASH_CHANNEL_TAIL_RE, onInputChange, setCursorOffset);
           clearSuggestions();
         }
       } else if (suggestionType === 'file' && suggestions.length > 0) {
@@ -1210,12 +1216,12 @@ export function useTypeahead({
         clearSuggestions();
       }
     } else if (suggestionType === 'agent' && selectedSuggestion < suggestions.length && suggestion?.id?.startsWith('dm-')) {
-      applyTriggerSuggestion(suggestion, input, cursorOffset, DM_MEMBER_RE, onInputChange, setCursorOffset);
+      applyTriggerSuggestion(suggestion, input, cursorOffset, DM_MEMBER_RE, DM_MEMBER_TAIL_RE, onInputChange, setCursorOffset);
       debouncedFetchFileSuggestions.cancel();
       clearSuggestions();
     } else if (suggestionType === 'slack-channel' && selectedSuggestion < suggestions.length) {
       if (suggestion) {
-        applyTriggerSuggestion(suggestion, input, cursorOffset, HASH_CHANNEL_RE, onInputChange, setCursorOffset);
+        applyTriggerSuggestion(suggestion, input, cursorOffset, HASH_CHANNEL_RE, HASH_CHANNEL_TAIL_RE, onInputChange, setCursorOffset);
         debouncedFetchSlackChannels.cancel();
         clearSuggestions();
       }

@@ -592,6 +592,57 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('accepting trigger suggestions replaces the whole token at the cursor', async () => {
+    harness.appState.agentNameRegistry.set('Planner', 'agent-planner')
+    harness.appState.tasks = {
+      'agent-planner': { status: 'idle' },
+    }
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      cursorOffset: '@Pla'.length,
+      input: '@Planner now',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'agent',
+        'mid-token agent suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('@Planner now')
+      expect(setCursorOffset).toHaveBeenCalledWith('@Planner '.length)
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      harness.appState.agentNameRegistry = new Map()
+      harness.appState.mcp = {
+        clients: [{ name: 'slack' }],
+        resources: [],
+      }
+      harness.slackSuggestions = [
+        { displayText: '#general', id: 'slack-general', description: 'channel' },
+      ]
+      rendered.rerender({
+        cursorOffset: '#gen'.length,
+        input: '#general now',
+      })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'slack-channel',
+        'mid-token Slack suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('#general now')
+      expect(setCursorOffset).toHaveBeenCalledWith('#general '.length)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('handles directory command completion and resume title execution', async () => {
     harness.directorySuggestions = [
       {
