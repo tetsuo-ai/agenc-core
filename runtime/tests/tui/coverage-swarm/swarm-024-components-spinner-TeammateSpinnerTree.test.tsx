@@ -1,7 +1,10 @@
 import React from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { TeammateSpinnerTree } from "../../../src/tui/components/spinner/TeammateSpinnerTree.js";
+import {
+  isTeammateHideRowSelected,
+  TeammateSpinnerTree,
+} from "../../../src/tui/components/spinner/TeammateSpinnerTree.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 type AppStateSlice = {
@@ -127,6 +130,41 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
     expect(output).toContain("hide");
     expect(output).toContain("enter to collapse");
     expect(output).not.toContain("enter to view");
+  });
+
+  test("keeps the hide row selected when a stale selection index is past the final teammate", async () => {
+    expect(
+      isTeammateHideRowSelected({
+        isInSelectionMode: true,
+        selectedIndex: 9,
+        teammateCount: 1,
+      }),
+    ).toBe(true);
+
+    const output = await renderToString(
+      <TeammateSpinnerTree isInSelectionMode selectedIndex={9} />,
+      120,
+    );
+
+    expect(output).toContain("hide");
+    expect(output).toContain("enter to collapse");
+  });
+
+  test("does not select the hide row outside selection mode or without an index", () => {
+    expect(
+      isTeammateHideRowSelected({
+        isInSelectionMode: false,
+        selectedIndex: 1,
+        teammateCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isTeammateHideRowSelected({
+        isInSelectionMode: true,
+        selectedIndex: undefined,
+        teammateCount: 1,
+      }),
+    ).toBe(false);
   });
 
   test("renders the selected background leader while hide stays unselected", async () => {
