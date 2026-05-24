@@ -15,7 +15,7 @@ import stripAnsi from 'strip-ansi';
 import { type Command, hasCommand } from '../../../commands.js';
 import { useIsModalOverlayActive, useRegisterOverlay } from '../../context/overlayContext.js';
 import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';
-import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../history/history.js';
+import { expandPastedTextRefs, formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../history/history.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { type HistoryMode, useArrowKeyHistory } from '../../hooks/useArrowKeyHistory.js';
 import { useDoublePress } from '../../hooks/useDoublePress.js';
@@ -1420,8 +1420,14 @@ function PromptInput({
     // Handle @name direct message
     if (isAgentSwarmsEnabled()) {
       const directMessage = parseDirectMemberMessage(inputParam);
-      if (directMessage) {
-        const result = await sendDirectMemberMessage(directMessage.recipientName, directMessage.message, teamContext, writeToMailbox);
+      const directMessageRefs = directMessage ? parseReferences(inputParam) : [];
+      const directMessageHasUnsupportedAttachments = hasWorkbenchAttachments || directMessageRefs.some(ref => {
+        const content = pastedContentsRef.current[ref.id];
+        return content?.type === 'image' || ref.match.startsWith('[Image');
+      });
+      if (directMessage && !directMessageHasUnsupportedAttachments) {
+        const directMessageText = expandPastedTextRefs(directMessage.message, pastedContentsRef.current);
+        const result = await sendDirectMemberMessage(directMessage.recipientName, directMessageText, teamContext, writeToMailbox);
         if (result.success) {
           addNotification({
             key: 'direct-message-sent',
@@ -1431,6 +1437,7 @@ function PromptInput({
           });
           trackAndSetInput('');
           setCurrentCursorOffset(0);
+          setPastedContentsAndRef({});
           clearBuffer();
           resetHistory();
           return;
@@ -1580,7 +1587,7 @@ function PromptInput({
     if (hasWorkbenchAttachments) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
     }
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset, setPastedContentsAndRef]);
   const {
     suggestions,
     selectedSuggestion,

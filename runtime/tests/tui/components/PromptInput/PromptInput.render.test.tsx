@@ -824,6 +824,7 @@ vi.mock('./utils.js', async importOriginal => {
 })
 
 import { createRoot } from '../../ink/root.js'
+import { sendDirectMemberMessage } from '../../../utils/directMemberMessage.js'
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'
 import { cacheImagePath, storeImage } from '../../../utils/imageStore.js'
 import { logError } from '../../../utils/log.js'
@@ -985,6 +986,7 @@ describe('PromptInput render surface', () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue(null)
     vi.mocked(cacheImagePath).mockClear()
     vi.mocked(storeImage).mockClear()
+    vi.mocked(sendDirectMemberMessage).mockClear()
     vi.mocked(logError).mockClear()
     vi.mocked(editPromptInEditor).mockClear()
   })
@@ -2879,6 +2881,111 @@ describe('PromptInput render surface', () => {
       expect(onInputChange).toHaveBeenCalledWith('')
       expect(harness.clearBuffer).toHaveBeenCalled()
       expect(harness.history.resetHistory).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('expands pasted text refs before sending direct member messages', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.directMessage = {
+      message: 'review [Pasted text #4]',
+      recipientName: 'teammate',
+    }
+    harness.directMessageResult = {
+      recipientName: 'teammate',
+      success: true,
+    }
+    harness.appState.teamContext = {
+      teamName: 'alpha',
+      teammates: {
+        teammate: { name: 'teammate' },
+      },
+    }
+    const onSubmit = vi.fn(async () => {})
+    const pastedContents = createPastedContentsState({
+      4: {
+        content: 'expanded pasted text',
+        id: 4,
+        type: 'text',
+      },
+    })
+    const rendered = await renderPromptInput({
+      input: '@teammate review [Pasted text #4]',
+      onSubmit,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)(
+        '@teammate review [Pasted text #4]',
+      )
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(sendDirectMemberMessage).toHaveBeenCalledWith(
+        'teammate',
+        'review expanded pasted text',
+        expect.anything(),
+        expect.any(Function),
+      )
+      expect(pastedContents.current).toEqual({})
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('falls through to leader submit when direct-looking input references an image', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.directMessage = {
+      message: 'review [Image #2]',
+      recipientName: 'teammate',
+    }
+    harness.directMessageResult = {
+      recipientName: 'teammate',
+      success: true,
+    }
+    harness.appState.teamContext = {
+      teamName: 'alpha',
+      teammates: {
+        teammate: { name: 'teammate' },
+      },
+    }
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({
+      input: '@teammate review [Image #2]',
+      onSubmit,
+      pastedContents: {
+        2: {
+          content: 'png-data',
+          id: 2,
+          mediaType: 'image/png',
+          type: 'image',
+        },
+      },
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)(
+        '@teammate review [Image #2]',
+      )
+
+      expect(sendDirectMemberMessage).not.toHaveBeenCalled()
+      expect(onSubmit).toHaveBeenCalledWith(
+        '@teammate review [Image #2]',
+        expect.objectContaining({
+          clearBuffer: harness.clearBuffer,
+          resetHistory: expect.any(Function),
+          setCursorOffset: expect.any(Function),
+        }),
+        undefined,
+        expect.objectContaining({
+          mode: 'prompt',
+          vimRoutingState: expect.objectContaining({ enabled: false }),
+        }),
+      )
     } finally {
       await rendered.dispose()
     }
