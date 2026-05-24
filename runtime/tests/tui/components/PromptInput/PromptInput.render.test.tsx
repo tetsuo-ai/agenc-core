@@ -1259,6 +1259,51 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('disarms image pill lazy spacing when newline is inserted', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'jpeg-data',
+      mediaType: 'image/jpeg',
+    })
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      harness.baseProps = undefined
+      rendered.root.render(
+        <PromptInput
+          {...(basePromptInputProps({
+            input: '[Image #1]',
+            onInputChange,
+            pastedContents: pastedContents.current,
+            setPastedContents: pastedContents.setPastedContents,
+          }) as never)}
+        />,
+      )
+      const baseProps = await waitForPromptInputProps()
+
+      harness.keybindings['chat:newline']?.()
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]\n')
+
+      const inputFilter = baseProps.inputFilter as (
+        input: string,
+        key: Record<string, boolean>,
+      ) => string
+      expect(inputFilter('caption', {})).toBe('caption')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('allocates image paste IDs after existing draft paste references', async () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue({
       base64: 'png-data',

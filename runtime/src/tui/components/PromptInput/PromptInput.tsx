@@ -1771,11 +1771,9 @@ function PromptInput({
 
   // Handler for chat:newline - insert a newline at the cursor position
   const handleNewline = useCallback(() => {
-    pushToBuffer(input, cursorOffset, pastedContents);
-    const newInput = input.slice(0, cursorOffset) + '\n' + input.slice(cursorOffset);
-    trackAndSetInput(newInput);
-    setCursorOffset(cursorOffset + 1);
-  }, [input, cursorOffset, trackAndSetInput, setCursorOffset, pushToBuffer, pastedContents]);
+    pendingSpaceAfterPillRef.current = false;
+    insertTextAtCursor('\n');
+  }, [insertTextAtCursor]);
 
   // Handler for chat:externalEditor - edit in $EDITOR
   const handleExternalEditor = useCallback(async () => {
