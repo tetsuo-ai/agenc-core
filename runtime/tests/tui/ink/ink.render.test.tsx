@@ -309,6 +309,89 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('writes delayed clipboard OSC while the instance is still active', async () => {
+    const rawClipboard = '\u001b]52;c;YWxwaGE=\u0007'
+    clipboardMock.setClipboard.mockResolvedValueOnce(rawClipboard)
+    const harness = await createHarness({ columns: 40, rows: 6 })
+
+    try {
+      harness.instance.setAltScreenActive(true)
+      harness.root.render(textNode('alpha beta'))
+      await sleep(10)
+
+      harness.stdoutWrites.length = 0
+      harness.instance.handleMultiClick(1, 0, 2)
+      expect(harness.instance.copySelectionNoClear()).toBe('alpha')
+      await sleep(10)
+
+      expect(harness.stdoutWrites.join('')).toContain(rawClipboard)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test('does not write delayed clipboard OSC after unmounting', async () => {
+    let resolveClipboard: (raw: string) => void = () => {}
+    clipboardMock.setClipboard.mockReturnValueOnce(
+      new Promise<string>(resolve => {
+        resolveClipboard = resolve
+      }),
+    )
+    const harness = await createHarness({ columns: 40, rows: 6 })
+
+    try {
+      harness.instance.setAltScreenActive(true)
+      harness.root.render(textNode('alpha beta'))
+      await sleep(10)
+
+      harness.instance.handleMultiClick(1, 0, 2)
+      expect(harness.instance.copySelectionNoClear()).toBe('alpha')
+
+      harness.root.unmount()
+      harness.stdoutWrites.length = 0
+
+      resolveClipboard('\u001b]52;c;YWxwaGE=\u0007')
+      await sleep(10)
+
+      expect(harness.stdoutWrites.join('')).not.toContain('\u001b]52;')
+    } finally {
+      harness.stdin.end()
+      harness.stdout.end()
+      harness.stderr.end()
+      await sleep(25)
+    }
+  })
+
+  test('does not write delayed clipboard OSC while paused for external handoff', async () => {
+    let resolveClipboard: (raw: string) => void = () => {}
+    clipboardMock.setClipboard.mockReturnValueOnce(
+      new Promise<string>(resolve => {
+        resolveClipboard = resolve
+      }),
+    )
+    const harness = await createHarness({ columns: 40, rows: 6 })
+
+    try {
+      harness.instance.setAltScreenActive(true)
+      harness.root.render(textNode('alpha beta'))
+      await sleep(10)
+
+      harness.instance.handleMultiClick(1, 0, 2)
+      expect(harness.instance.copySelectionNoClear()).toBe('alpha')
+
+      harness.instance.pause()
+      harness.stdoutWrites.length = 0
+
+      resolveClipboard('\u001b]52;c;YWxwaGE=\u0007')
+      await sleep(10)
+
+      expect(harness.stdoutWrites.join('')).not.toContain('\u001b]52;')
+      harness.instance.resume()
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test('looks up rendered hyperlinks, dispatches hit-tested mouse events, and opens mutable hyperlink handlers', async () => {
     const harness = await createHarness({ columns: 40, rows: 6 })
     const clicks: Array<{ localCol?: number; localRow?: number }> = []
