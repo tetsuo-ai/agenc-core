@@ -1409,6 +1409,7 @@ export default class Ink {
   }> = [];
   private wasRawMode = false;
   suspendStdin(): void {
+    if (this.isUnmounted) return;
     const stdin = this.options.stdin;
     if (!stdin.isTTY) {
       return;
@@ -1439,6 +1440,11 @@ export default class Ink {
     }
   }
   resumeStdin(): void {
+    if (this.isUnmounted) {
+      this.stdinListeners = [];
+      this.wasRawMode = false;
+      return;
+    }
     const stdin = this.options.stdin;
     if (!stdin.isTTY) {
       return;
