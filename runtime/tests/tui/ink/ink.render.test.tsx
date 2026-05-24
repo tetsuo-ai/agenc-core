@@ -533,6 +533,56 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('drops stale stdin resumes after detach or unmount', async () => {
+    const detached = await createHarness({ stdinIsRaw: true })
+    const detachedReadable = vi.fn()
+
+    try {
+      detached.stdin.on('readable', detachedReadable)
+
+      detached.instance.suspendStdin()
+      expect(detached.stdin.listeners('readable')).not.toContain(detachedReadable)
+      expect(detached.rawModes).toEqual([false])
+
+      detached.instance.detachForShutdown()
+      const rawModesAfterDetach = [...detached.rawModes]
+      detached.instance.resumeStdin()
+
+      expect(detached.stdin.listeners('readable')).not.toContain(detachedReadable)
+      expect(detached.rawModes).toEqual(rawModesAfterDetach)
+    } finally {
+      instances.delete(detached.stdout as unknown as NodeJS.WriteStream)
+      detached.stdin.end()
+      detached.stdout.end()
+      detached.stderr.end()
+      await sleep(25)
+    }
+
+    const unmounted = await createHarness({ stdinIsRaw: true })
+    const unmountedReadable = vi.fn()
+
+    try {
+      unmounted.stdin.on('readable', unmountedReadable)
+
+      unmounted.instance.suspendStdin()
+      expect(unmounted.stdin.listeners('readable')).not.toContain(unmountedReadable)
+      expect(unmounted.rawModes).toEqual([false])
+
+      unmounted.root.unmount()
+      const rawModesAfterUnmount = [...unmounted.rawModes]
+      unmounted.instance.resumeStdin()
+
+      expect(unmounted.stdin.listeners('readable')).not.toContain(unmountedReadable)
+      expect(unmounted.rawModes).toEqual(rawModesAfterUnmount)
+    } finally {
+      instances.delete(unmounted.stdout as unknown as NodeJS.WriteStream)
+      unmounted.stdin.end()
+      unmounted.stdout.end()
+      unmounted.stderr.end()
+      await sleep(25)
+    }
+  })
+
   test('copies, clears, and extends alt-screen text selection without native clipboard access', async () => {
     const harness = await createHarness({ columns: 40, rows: 6 })
     const selectionChanges: string[] = []
