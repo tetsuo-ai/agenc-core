@@ -423,10 +423,27 @@ vi.mock('../../keybindings/shortcutFormat.js', () => ({
 }))
 
 vi.mock('../../keybindings/useKeybinding.js', () => ({
-  useKeybinding: (action: string, handler: () => unknown) => {
+  useKeybinding: (
+    action: string,
+    handler: () => unknown,
+    options?: { isActive?: boolean },
+  ) => {
+    if (options?.isActive === false) {
+      delete harness.keybindings[action]
+      return
+    }
     harness.keybindings[action] = handler
   },
-  useKeybindings: (handlers: Record<string, () => unknown>) => {
+  useKeybindings: (
+    handlers: Record<string, () => unknown>,
+    options?: { isActive?: boolean },
+  ) => {
+    if (options?.isActive === false) {
+      for (const action of Object.keys(handlers)) {
+        delete harness.keybindings[action]
+      }
+      return
+    }
     Object.assign(harness.keybindings, handlers)
   },
 }))
@@ -2868,6 +2885,37 @@ describe('PromptInput render surface', () => {
       await sleep(2700)
       expect(harness.autoModeOptInProps).toBeDefined()
       expect(harness.baseProps?.focus).toBe(false)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('keeps mode cycling active while its temporary overlays are shown', async () => {
+    harness.features.TRANSCRIPT_CLASSIFIER = true
+    harness.hasAutoModeOptIn = false
+    harness.nextPermissionMode = 'auto'
+    const rendered = await renderPromptInput()
+
+    try {
+      await waitForPromptInputProps()
+
+      expect(harness.keybindings['chat:cycleMode']).toEqual(expect.any(Function))
+      harness.keybindings['chat:cycleMode']?.()
+      await sleep(450)
+
+      expect(harness.autoModeOptInProps).toBeDefined()
+      expect(harness.keybindings['chat:cycleMode']).toEqual(expect.any(Function))
+
+      harness.nextPermissionMode = 'default'
+      harness.cyclePermissionModeNextMode = 'default'
+      harness.keybindings['chat:cycleMode']?.()
+      await sleep(0)
+
+      expect(harness.logEvent).toHaveBeenCalledWith(
+        'agenc_auto_mode_opt_in_dialog_decline',
+        {},
+      )
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
     } finally {
       await rendered.dispose()
     }
