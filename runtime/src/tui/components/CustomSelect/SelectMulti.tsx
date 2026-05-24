@@ -146,7 +146,7 @@ export function SelectMulti<T>(t0: SelectMultiProps<T>) {
       const i = state.visibleFromIndex + index + 1;
       if (option.type === "input") {
         const inputValue = state.inputValues.get(option.value) || "";
-        return <Box key={String(option.value)} gap={1}><SelectInputOption option={option} isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} inputValue={inputValue} onInputChange={(value: string) => {
+        return <Box key={String(option.value)} gap={1}><SelectInputOption option={option} isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} hideIndex={hideIndexes} inputValue={inputValue} onInputChange={(value: string) => {
             state.updateInputValue(option.value, value);
           }} onSubmit={_temp} onExit={() => {
             onCancel();

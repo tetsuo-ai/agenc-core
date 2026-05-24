@@ -398,7 +398,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
             const isSelected = state.value === option_1.value;
             if (option_1.type === "input") {
               const inputValue = inputValues.get(option_1.value) ?? option_1.initialValue ?? "";
-              return <SelectInputOption key={String(option_1.value)} option={option_1} isFocused={isFocused} isSelected={isSelected} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} inputValue={inputValue} onInputChange={(value: string) => {
+              return <SelectInputOption key={String(option_1.value)} option={option_1} isFocused={isFocused} isSelected={isSelected} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} hideIndex={hideIndexes} inputValue={inputValue} onInputChange={(value: string) => {
                 setInputValues((prev_0: Map<T, string>) => {
                   const next_0 = new Map(prev_0);
                   next_0.set(option_1.value, value);
@@ -447,7 +447,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
             const isSelected_0 = state.value === option_2.value;
             if (option_2.type === "input") {
               const inputValue_0 = inputValues.get(option_2.value) ?? option_2.initialValue ?? "";
-              return <SelectInputOption key={String(option_2.value)} option={option_2} isFocused={isFocused_0} isSelected={isSelected_0} shouldShowDownArrow={areMoreOptionsBelow_0 && isLastVisibleOption_0} shouldShowUpArrow={areMoreOptionsAbove_0 && isFirstVisibleOption_0} maxIndexWidth={maxIndexWidth_0} index={i_0} inputValue={inputValue_0} onInputChange={(value_1: string) => {
+              return <SelectInputOption key={String(option_2.value)} option={option_2} isFocused={isFocused_0} isSelected={isSelected_0} shouldShowDownArrow={areMoreOptionsBelow_0 && isLastVisibleOption_0} shouldShowUpArrow={areMoreOptionsAbove_0 && isFirstVisibleOption_0} maxIndexWidth={maxIndexWidth_0} index={i_0} hideIndex={hideIndexes} inputValue={inputValue_0} onInputChange={(value_1: string) => {
                 setInputValues((prev_1: Map<T, string>) => {
                   const next_1 = new Map(prev_1);
                   next_1.set(option_2.value, value_1);
@@ -567,7 +567,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
           const i_2 = state.visibleFromIndex + index_4 + 1;
           const isFocused_2 = !isDisabled && state.focusedValue === option_4.value;
           const isSelected_2 = state.value === option_4.value;
-          return <SelectInputOption key={String(option_4.value)} option={option_4} isFocused={isFocused_2} isSelected={isSelected_2} shouldShowDownArrow={areMoreOptionsBelow_2 && isLastVisibleOption_2} shouldShowUpArrow={areMoreOptionsAbove_2 && isFirstVisibleOption_2} maxIndexWidth={maxIndexWidth_1} index={i_2} inputValue={inputValue_1} onInputChange={(value_3: string) => {
+          return <SelectInputOption key={String(option_4.value)} option={option_4} isFocused={isFocused_2} isSelected={isSelected_2} shouldShowDownArrow={areMoreOptionsBelow_2 && isLastVisibleOption_2} shouldShowUpArrow={areMoreOptionsAbove_2 && isFirstVisibleOption_2} maxIndexWidth={maxIndexWidth_1} index={i_2} hideIndex={hideIndexes} inputValue={inputValue_1} onInputChange={(value_3: string) => {
             setInputValues((prev_2: Map<T, string>) => {
               const next_2 = new Map(prev_2);
               next_2.set(option_4.value, value_3);

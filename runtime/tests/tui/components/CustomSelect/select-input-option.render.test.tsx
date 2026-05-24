@@ -311,6 +311,29 @@ describe("SelectInputOption rendering", () => {
     expect(onRemoveImage).toHaveBeenCalledWith(4);
   });
 
+  test("omits the numeric index when hidden", async () => {
+    const output = await renderOptionToText(
+      <SelectInputOption
+        option={makeInputOption()}
+        isFocused
+        isSelected={false}
+        shouldShowDownArrow={false}
+        shouldShowUpArrow={false}
+        maxIndexWidth={2}
+        index={7}
+        hideIndex
+        inputValue="draft"
+        onInputChange={() => {}}
+        onSubmit={() => {}}
+        layout="compact"
+      />,
+    );
+
+    expect(output).toContain("Prompt");
+    expect(output).toContain("draft");
+    expect(output).not.toContain("7.");
+  });
+
   test("clears image selection when focus leaves the input", async () => {
     const onImagesSelectedChange = vi.fn();
 
