@@ -211,6 +211,7 @@ import type { SuggestionItem } from '../components/PromptInput/PromptInputFooter
 import type { PromptInputMode } from '../../types/textInputTypes.js'
 import { useTypeahead } from './useTypeahead.js'
 import { generateUnifiedSuggestions } from './unifiedSuggestions'
+import { getShellCompletions } from '../../utils/bash/shellCompletion.js'
 import {
   getDirectoryCompletions,
   getPathCompletions,
@@ -235,6 +236,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions)
+const getShellCompletionsMock = vi.mocked(getShellCompletions)
 const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions)
 const getPathCompletionsMock = vi.mocked(getPathCompletions)
 const searchSessionsByCustomTitleMock = vi.mocked(searchSessionsByCustomTitle)
@@ -383,6 +385,20 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
   throw new Error(`Timed out waiting for ${label}`)
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>
+  reject: (reason?: unknown) => void
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, reject, resolve }
+}
+
 const command = (name: string, aliases: readonly string[] = []) => ({
   aliases,
   description: `${name} command`,
@@ -395,6 +411,7 @@ describe('useTypeahead hook paths', () => {
   beforeEach(() => {
     harness.reset()
     generateUnifiedSuggestionsMock.mockClear()
+    getShellCompletionsMock.mockClear()
     getDirectoryCompletionsMock.mockClear()
     searchSessionsByCustomTitleMock.mockClear()
   })
@@ -487,6 +504,79 @@ describe('useTypeahead hook paths', () => {
         () => rendered.getSnapshot().suggestions.some(item => item.id === 'src/app.ts'),
         'file suggestions',
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drops stale Tab-fetched file suggestions after the input changes', async () => {
+    const staleSuggestions = createDeferred<SuggestionItem[]>()
+    generateUnifiedSuggestionsMock.mockImplementationOnce(
+      async () => staleSuggestions.promise,
+    )
+    const rendered = await renderHookHarness({
+      cursorOffset: 'old'.length,
+      input: 'old',
+    })
+
+    try {
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length === 1,
+        'Tab-triggered file suggestion fetch',
+      )
+
+      rendered.rerender({ cursorOffset: 'new'.length, input: 'new' })
+      staleSuggestions.resolve([
+        {
+          id: 'file-old-path.ts',
+          displayText: 'old/path.ts',
+          description: 'file',
+        },
+      ])
+      await sleep(25)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('does not apply stale single shell completion after the input changes', async () => {
+    const staleCompletions = createDeferred<SuggestionItem[]>()
+    getShellCompletionsMock.mockImplementationOnce(
+      async () => staleCompletions.promise,
+    )
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      cursorOffset: 'g'.length,
+      input: 'g',
+      mode: 'bash',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => getShellCompletionsMock.mock.calls.length === 1,
+        'Tab-triggered shell completion fetch',
+      )
+
+      rendered.rerender({ cursorOffset: 'gi'.length, input: 'gi', mode: 'bash' })
+      staleCompletions.resolve([
+        {
+          displayText: 'git',
+          id: 'git',
+          metadata: { completionType: 'command' },
+        },
+      ])
+      await sleep(25)
+
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(setCursorOffset).not.toHaveBeenCalled()
     } finally {
       await rendered.dispose()
     }
