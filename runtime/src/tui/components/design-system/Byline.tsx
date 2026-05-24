@@ -1,13 +1,12 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { c as _c } from "react-compiler-runtime";
-import React, { Children, isValidElement } from 'react';
-import { Text } from '../../ink.js';
-import { selectAgenCTuiGlyphs } from '../../glyphs.js';
+import React, { Children, isValidElement, type ReactElement } from 'react'
+
+import { selectAgenCTuiGlyphs } from '../../glyphs.js'
+import { Text } from '../../ink.js'
+
 type Props = {
   /** The items to join with the active glyph-mode separator */
-  children: React.ReactNode;
-};
+  children: React.ReactNode
+}
 
 /**
  * Joins children with the active glyph-mode separator for inline metadata display.
@@ -15,8 +14,9 @@ type Props = {
  * Named after the publishing term "byline" - the line of metadata typically
  * shown below a title (for example, "John Doe / 5 min read / Mar 12").
  *
- * Automatically filters out null/undefined/false children and only renders
- * separators between valid elements.
+ * Automatically filters out null/undefined/false children and renders
+ * separators between every visible leaf item, including children inside
+ * fragments.
  *
  * @example
  * // Basic usage: "Enter to confirm / Esc to cancel"
@@ -37,44 +37,48 @@ type Props = {
  * </Text>
  *
  */
-export function Byline(t0) {
-  const $ = _c(5);
-  const {
-    children
-  } = t0;
-  let t1;
-  let t2;
-  if ($[0] !== children) {
-    t2 = Symbol.for("react.early_return_sentinel");
-    bb0: {
-      const validChildren = Children.toArray(children);
-      if (validChildren.length === 0) {
-        t2 = null;
-        break bb0;
-      }
-      t1 = validChildren.map(_temp);
-    }
-    $[0] = children;
-    $[1] = t1;
-    $[2] = t2;
-  } else {
-    t1 = $[1];
-    t2 = $[2];
+export function Byline({ children }: Props): React.ReactNode {
+  const validChildren = flattenBylineChildren(children)
+  if (validChildren.length === 0) {
+    return null
   }
-  if (t2 !== Symbol.for("react.early_return_sentinel")) {
-    return t2;
-  }
-  let t3;
-  if ($[3] !== t1) {
-    t3 = <>{t1}</>;
-    $[3] = t1;
-    $[4] = t3;
-  } else {
-    t3 = $[4];
-  }
-  return t3;
+
+  const separator = selectAgenCTuiGlyphs().separator
+  return (
+    <>
+      {validChildren.map((child, index) => (
+        <React.Fragment key={childKey(child, index)}>
+          {index > 0 && <Text dimColor>{` ${separator} `}</Text>}
+          {child}
+        </React.Fragment>
+      ))}
+    </>
+  )
 }
-function _temp(child, index) {
-  const separator = selectAgenCTuiGlyphs().separator;
-  return <React.Fragment key={isValidElement(child) ? child.key ?? index : index}>{index > 0 && <Text dimColor={true}>{` ${separator} `}</Text>}{child}</React.Fragment>;
+
+function flattenBylineChildren(children: React.ReactNode): React.ReactNode[] {
+  const result: React.ReactNode[] = []
+
+  Children.forEach(children, child => {
+    if (child === null || child === undefined || typeof child === 'boolean') {
+      return
+    }
+    if (isFragmentElement(child)) {
+      result.push(...flattenBylineChildren(child.props.children))
+      return
+    }
+    result.push(child)
+  })
+
+  return result
+}
+
+function isFragmentElement(
+  child: React.ReactNode,
+): child is ReactElement<{ children?: React.ReactNode }> {
+  return isValidElement(child) && child.type === React.Fragment
+}
+
+function childKey(child: React.ReactNode, index: number): React.Key {
+  return isValidElement(child) && child.key !== null ? child.key : index
 }
