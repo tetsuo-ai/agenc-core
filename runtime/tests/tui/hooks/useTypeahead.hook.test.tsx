@@ -216,6 +216,7 @@ import {
   getDirectoryCompletions,
   getPathCompletions,
 } from '../../utils/suggestions/directoryCompletion.js'
+import { getShellHistoryCompletion } from '../../utils/suggestions/shellHistoryCompletion.js'
 import { getSlackChannelSuggestions } from '../../utils/suggestions/slackChannelSuggestions.js'
 import { searchSessionsByCustomTitle } from '../../utils/sessionStorage.js'
 
@@ -238,6 +239,7 @@ function sleep(ms: number): Promise<void> {
 
 const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions)
 const getShellCompletionsMock = vi.mocked(getShellCompletions)
+const getShellHistoryCompletionMock = vi.mocked(getShellHistoryCompletion)
 const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions)
 const getPathCompletionsMock = vi.mocked(getPathCompletions)
 const getSlackChannelSuggestionsMock = vi.mocked(getSlackChannelSuggestions)
@@ -414,6 +416,7 @@ describe('useTypeahead hook paths', () => {
     harness.reset()
     generateUnifiedSuggestionsMock.mockClear()
     getShellCompletionsMock.mockClear()
+    getShellHistoryCompletionMock.mockClear()
     getDirectoryCompletionsMock.mockClear()
     searchSessionsByCustomTitleMock.mockClear()
     getSlackChannelSuggestionsMock.mockClear()
@@ -666,6 +669,53 @@ describe('useTypeahead hook paths', () => {
         'single shell completion applied',
       )
       expect(setCursorOffset).toHaveBeenCalledWith('grep '.length)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drops stale bash history ghost text after the mode changes', async () => {
+    const staleHistory = createDeferred<{
+      fullCommand: string
+      suffix: string
+    }>()
+    harness.shellHistoryCompletion =
+      staleHistory.promise as unknown as typeof harness.shellHistoryCompletion
+    const rendered = await renderHookHarness({
+      input: 'git st',
+      mode: 'bash',
+    })
+
+    try {
+      await waitFor(
+        () => getShellHistoryCompletionMock.mock.calls.length === 1,
+        'delayed bash history request',
+      )
+
+      rendered.rerender({
+        input: 'git st',
+        mode: 'prompt',
+      })
+      staleHistory.resolve({
+        fullCommand: 'git status --short',
+        suffix: 'atus --short',
+      })
+      await sleep(50)
+
+      getShellHistoryCompletionMock.mockClear()
+      const freshHistory = createDeferred<null>()
+      harness.shellHistoryCompletion =
+        freshHistory.promise as unknown as typeof harness.shellHistoryCompletion
+      rendered.rerender({
+        input: 'git st',
+        mode: 'bash',
+      })
+      await waitFor(
+        () => getShellHistoryCompletionMock.mock.calls.length === 1,
+        'fresh bash history request',
+      )
+
+      expect(rendered.getSnapshot().inlineGhostText).toBeUndefined()
     } finally {
       await rendered.dispose()
     }

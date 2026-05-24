@@ -562,18 +562,21 @@ export function useTypeahead({
     // Bash mode: check for history-based ghost text completion
     if (mode === 'bash' && value.trim()) {
       latestBashInputRef.current = value;
+      const isStaleBashHistoryRequest = () =>
+        latestBashInputRef.current !== value ||
+        !isCurrentInputState(value, effectiveCursorOffset, mode);
       let historyMatch: Awaited<ReturnType<typeof getShellHistoryCompletion>> = null;
       try {
         historyMatch = await getShellHistoryCompletion(value);
       } catch (error) {
-        if (latestBashInputRef.current !== value) {
+        if (isStaleBashHistoryRequest()) {
           return;
         }
         logError(error);
         setInlineGhostText(undefined);
       }
       // Discard stale results if input changed while waiting
-      if (latestBashInputRef.current !== value) {
+      if (isStaleBashHistoryRequest()) {
         return;
       }
       if (historyMatch) {
