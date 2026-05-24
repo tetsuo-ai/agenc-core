@@ -1975,14 +1975,15 @@ function PromptInput({
     // call cyclePermissionMode to apply side effects (e.g. strip
     // dangerous permissions, activate classifier)
     const {
+      nextMode: preparedNextMode,
       context: preparedContext
     } = cyclePermissionMode(toolPermissionContext, teamContext);
     logEvent('agenc_mode_cycle', {
-      to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+      to: preparedNextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
 
     // Track when user enters plan mode
-    if (nextMode === 'plan') {
+    if (preparedNextMode === 'plan') {
       saveGlobalConfig(current => ({
         ...current,
         lastPlanModeUse: Date.now()
@@ -1997,16 +1998,16 @@ function PromptInput({
       ...prev,
       toolPermissionContext: {
         ...preparedContext,
-        mode: nextMode
+        mode: preparedNextMode
       }
     }));
     setToolPermissionContext({
       ...preparedContext,
-      mode: nextMode
+      mode: preparedNextMode
     });
 
     // If this is a teammate, update config.json so team lead sees the change
-    syncTeammateMode(nextMode, teamContext?.teamName);
+    syncTeammateMode(preparedNextMode, teamContext?.teamName);
 
     // Close help tips if they're open when mode is cycled
     if (helpOpen) {

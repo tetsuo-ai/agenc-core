@@ -103,6 +103,7 @@ const harness = vi.hoisted(() => {
     logEvent: vi.fn(),
     modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: 'plan',
+    cyclePermissionModeNextMode: null as null | string,
     onRender: vi.fn(),
     platform: 'linux',
     promptInputFooterProps: undefined as undefined | Record<string, unknown>,
@@ -202,6 +203,7 @@ const harness = vi.hoisted(() => {
       harness.logEvent.mockClear()
       harness.modelPickerProps = undefined
       harness.nextPermissionMode = 'plan'
+      harness.cyclePermissionModeNextMode = null
       harness.onRender.mockClear()
       harness.platform = 'linux'
       harness.promptInputFooterProps = undefined
@@ -585,7 +587,10 @@ vi.mock('../../utils/permissions/autoModeState.js', () => ({
 }))
 
 vi.mock('../../utils/permissions/getNextPermissionMode.js', () => ({
-  cyclePermissionMode: (context: unknown) => ({ context }),
+  cyclePermissionMode: (context: unknown) => ({
+    context,
+    nextMode: harness.cyclePermissionModeNextMode ?? harness.nextPermissionMode,
+  }),
   getNextPermissionMode: () => harness.nextPermissionMode,
 }))
 
