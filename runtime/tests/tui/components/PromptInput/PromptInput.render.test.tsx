@@ -986,8 +986,11 @@ describe('PromptInput render surface', () => {
     const onModeChange = vi.fn()
     const setHelpOpen = vi.fn()
     const setPastedContents = vi.fn(
-      (updater: (prev: Record<number, unknown>) => Record<number, unknown>) =>
-        updater({}),
+      (
+        next:
+          | Record<number, unknown>
+          | ((prev: Record<number, unknown>) => Record<number, unknown>),
+      ) => (typeof next === 'function' ? next({}) : next),
     )
     const rendered = await renderPromptInput({
       input: '',
@@ -1039,8 +1042,8 @@ describe('PromptInput render surface', () => {
 
       harness.keybindings['chat:stash']?.()
       expect(setStashedPrompt).toHaveBeenCalledWith({
-        text: 'draft',
-        cursorOffset: 'draft'.length,
+        text: 'draft\n',
+        cursorOffset: 'draft\n'.length,
         pastedContents: {},
       })
       expect(onInputChange).toHaveBeenCalledWith('')
@@ -1343,6 +1346,47 @@ describe('PromptInput render surface', () => {
         key: Record<string, boolean>,
       ) => string
       expect(inputFilter('caption', {})).toBe('caption')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('stashes image paste drafts before the parent input rerenders', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'jpeg-data',
+      mediaType: 'image/jpeg',
+    })
+    const onInputChange = vi.fn()
+    const setStashedPrompt = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+      setStashedPrompt,
+    })
+
+    try {
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      harness.keybindings['chat:stash']?.()
+
+      expect(setStashedPrompt).toHaveBeenCalledWith({
+        text: '[Image #1]',
+        cursorOffset: '[Image #1]'.length,
+        pastedContents: {
+          1: expect.objectContaining({
+            content: 'jpeg-data',
+            id: 1,
+            mediaType: 'image/jpeg',
+            type: 'image',
+          }),
+        },
+      })
+      expect(onInputChange).toHaveBeenCalledWith('')
+      expect(pastedContents.current).toEqual({})
     } finally {
       await rendered.dispose()
     }
