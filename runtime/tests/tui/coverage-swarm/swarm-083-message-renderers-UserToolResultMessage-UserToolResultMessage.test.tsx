@@ -7,7 +7,11 @@ vi.mock('bun:bundle', () => ({
 
 import type { Tool, Tools } from '../../../src/tools/Tool.js'
 import { renderToString } from '../../../src/utils/staticRender.js'
-import { REJECT_MESSAGE } from '../../../src/utils/messages.js'
+import {
+  CANCEL_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+  REJECT_MESSAGE,
+} from '../../../src/utils/messages.js'
 import { Text } from '../../../src/tui/ink.js'
 import {
   formatOrphanToolResultContent,
@@ -174,5 +178,84 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
       'rejected runtime/src/rejected.ts progress:1 style:condensed verbose:true transcript:true',
     )
     expect(renderToolUseRejectedMessage).toHaveBeenCalledTimes(1)
+  })
+
+  test('routes matched text-block control tool results before success and error fallbacks', async () => {
+    const toolUse = {
+      id: 'toolu_swarm_083_array_controls',
+      name: 'SwarmArrayControlTool',
+      input: { path: 'runtime/src/array-control.ts' },
+    }
+    const renderToolUseRejectedMessage = vi.fn(
+      (input: { path: string }) => <Text>array rejected {input.path}</Text>,
+    )
+    const renderToolUseErrorMessage = vi.fn(() => <Text>array error</Text>)
+    const renderToolResultMessage = vi.fn(() => <Text>array success</Text>)
+    const tool = {
+      name: 'SwarmArrayControlTool',
+      inputSchema: {
+        safeParse: (input: unknown) => ({ success: true, data: input }),
+      },
+      outputSchema: {
+        safeParse: (output: unknown) => ({ success: true, data: output }),
+      },
+      userFacingName: () => 'SwarmArrayControlTool',
+      renderToolUseRejectedMessage,
+      renderToolUseErrorMessage,
+      renderToolResultMessage,
+    } as unknown as Tool
+    const tools = [tool] as Tools
+
+    const render = (
+      content:
+        | undefined
+        | Array<
+            | string
+            | {
+                readonly type: string
+                readonly text?: string
+                readonly value?: number
+              }
+          >,
+      isError = false,
+    ) =>
+      renderToString(
+        <UserToolResultMessage
+          param={{
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content,
+            is_error: isError,
+          }}
+          message={createMessage(toolUse.id)}
+          lookups={createLookups(toolUse)}
+          progressMessagesForMessage={[]}
+          tools={tools}
+          verbose={false}
+          width={72}
+        />,
+        { columns: 120, rows: 10 },
+      )
+
+    await expect(render([`${CANCEL_MESSAGE} Later.`])).resolves.toContain(
+      'Interrupted by user',
+    )
+    await expect(
+      render([
+        { type: 'text', text: `${REJECT_MESSAGE} extra context` },
+        { type: 'json', value: 1 },
+      ]),
+    ).resolves.toContain('array rejected runtime/src/array-control.ts')
+    await expect(
+      render([{ type: 'text', text: INTERRUPT_MESSAGE_FOR_TOOL_USE }]),
+    ).resolves.toContain('array rejected runtime/src/array-control.ts')
+    await expect(render(undefined)).resolves.toContain('array success')
+    await expect(render([{ type: 'json', value: 2 }], true)).resolves.toContain(
+      'array error',
+    )
+
+    expect(renderToolUseRejectedMessage).toHaveBeenCalledTimes(2)
+    expect(renderToolUseErrorMessage).toHaveBeenCalledTimes(1)
+    expect(renderToolResultMessage).toHaveBeenCalledTimes(1)
   })
 })
