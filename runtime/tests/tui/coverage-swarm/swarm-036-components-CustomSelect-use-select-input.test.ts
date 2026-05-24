@@ -227,6 +227,32 @@ describe('useSelectInput coverage swarm row 036', () => {
     }
   })
 
+  test('does not register disabled selects as active overlays when cancel exists', async () => {
+    const options: OptionWithDescription<string>[] = [
+      { value: 'alpha', label: 'Alpha' },
+    ]
+    const state = createSelectState(options)
+    const unmount = await renderHarness({
+      isDisabled: true,
+      options,
+      state,
+    })
+
+    try {
+      expect(overlayMock.useRegisterOverlay).toHaveBeenCalledWith(
+        'select',
+        false,
+      )
+      expect(keybindingMock.current?.options).toEqual({
+        context: 'Select',
+        isActive: false,
+      })
+      expect(inputMock.current?.options).toEqual({ isActive: false })
+    } finally {
+      unmount()
+    }
+  })
+
   test('drives keybinding navigation, boundary callbacks, accept guards, and cancel', async () => {
     const options: OptionWithDescription<string>[] = [
       { value: 'alpha', label: 'Alpha' },
