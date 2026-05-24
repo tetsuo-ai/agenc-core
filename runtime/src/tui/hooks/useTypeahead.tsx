@@ -1331,11 +1331,12 @@ export function useTypeahead({
     } else if (suggestionType === 'directory' && selectedSuggestion < suggestions.length) {
       if (suggestion) {
         // In command context (e.g., /add-dir), Enter submits the command
-        // rather than applying the directory suggestion. Just clear
-        // suggestions and let the submit handler process the current input.
+        // rather than applying the directory suggestion. Autocomplete already
+        // consumed Enter, so submit explicitly after clearing the picker.
         if (isCommandInput(input)) {
           debouncedFetchFileSuggestions.cancel();
           clearSuggestions();
+          onSubmit(input, /* isSubmittingSlashCommand */ true);
           return;
         }
 
