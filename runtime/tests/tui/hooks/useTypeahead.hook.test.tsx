@@ -827,6 +827,92 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('refreshes agent mention suggestions when the agent registry changes without editing input', async () => {
+    const rendered = await renderHookHarness({
+      cursorOffset: '@Pl'.length,
+      input: '@Pl',
+    })
+
+    try {
+      await sleep(25)
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+
+      harness.appState.agentNameRegistry = new Map([
+        ['Planner', 'agent-planner'],
+      ])
+      harness.appState.tasks = {
+        'agent-planner': { status: 'running' },
+      }
+      rendered.rerender({
+        cursorOffset: '@Pl'.length,
+        input: '@Pl',
+      })
+
+      await waitFor(
+        () =>
+          rendered
+            .getSnapshot()
+            .suggestions.some(item => item.displayText === '@Planner'),
+        'agent registry suggestions after registry update',
+      )
+      expect(rendered.getSnapshot().suggestions[0]).toMatchObject({
+        description: 'send message · running',
+        displayText: '@Planner',
+      })
+
+      harness.appState.tasks = {
+        'agent-planner': { status: 'completed' },
+      }
+      rendered.rerender({
+        cursorOffset: '@Pl'.length,
+        input: '@Pl',
+      })
+
+      await waitFor(
+        () => rendered.getSnapshot().suggestions[0]?.description === 'send message · completed',
+        'agent status refresh for same input',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('refreshes teammate mention suggestions when team context changes without editing input', async () => {
+    const rendered = await renderHookHarness({
+      cursorOffset: '@Fi'.length,
+      input: '@Fi',
+    })
+
+    try {
+      await sleep(25)
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+
+      harness.appState.teamContext = {
+        teammates: {
+          fixer: { name: 'Fixer' },
+          lead: { name: 'team-lead' },
+        },
+      }
+      rendered.rerender({
+        cursorOffset: '@Fi'.length,
+        input: '@Fi',
+      })
+
+      await waitFor(
+        () =>
+          rendered
+            .getSnapshot()
+            .suggestions.some(item => item.displayText === '@Fixer'),
+        'teammate suggestions after team context update',
+      )
+      expect(rendered.getSnapshot().suggestions.map(item => item.displayText)).toEqual([
+        '@Fixer',
+      ])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('handles directory command completion and resume title execution', async () => {
     harness.directorySuggestions = [
       {
