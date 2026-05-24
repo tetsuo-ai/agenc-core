@@ -232,6 +232,16 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
   const inlineDescriptions = t6 === undefined ? false : t6;
   const [imagesSelected, setImagesSelected] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  useEffect(() => {
+    if (!imagesSelected) return;
+    const imageCount = pastedContents ? count(Object.values(pastedContents), _temp2) : 0;
+    if (imageCount === 0) {
+      setImagesSelected(false);
+      setSelectedImageIndex(0);
+    } else if (selectedImageIndex >= imageCount) {
+      setSelectedImageIndex(imageCount - 1);
+    }
+  }, [imagesSelected, pastedContents, selectedImageIndex]);
   let t7;
   if ($[0] !== options) {
     t7 = () => {
