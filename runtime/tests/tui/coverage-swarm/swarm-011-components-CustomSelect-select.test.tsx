@@ -22,6 +22,7 @@ type CapturedSelectOptionProps = {
 
 type CapturedInputOptionProps = {
   imagesSelected?: boolean
+  hideIndex?: boolean
   inputValue: string
   isFocused: boolean
   isSelected: boolean
@@ -376,6 +377,43 @@ describe('Select coverage swarm row 011', () => {
       expect(latestInputOption()).toMatchObject({
         imagesSelected: true,
         selectedImageIndex: 1,
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('propagates hidden indexes to compact input rows', async () => {
+    const options: OptionWithDescription<string>[] = [
+      {
+        type: 'input',
+        value: 'prompt',
+        label: 'Prompt',
+        initialValue: 'draft',
+        onChange: () => {},
+      },
+      {
+        value: 'plain',
+        label: 'Plain option',
+      },
+    ]
+
+    const rendered = await renderSelect(
+      <Select
+        options={options}
+        defaultFocusValue="prompt"
+        hideIndexes={true}
+      />,
+    )
+
+    try {
+      expect(latestInputOption()).toMatchObject({
+        hideIndex: true,
+        inputValue: 'draft',
+        isFocused: true,
+      })
+      expect(harness.selectInputProps).toMatchObject({
+        disableSelection: 'numeric',
       })
     } finally {
       await rendered.dispose()

@@ -25,6 +25,7 @@ type Props<T> = {
   shouldShowUpArrow: boolean;
   maxIndexWidth: number;
   index: number;
+  hideIndex?: boolean;
   inputValue: string;
   onInputChange: (value: string) => void;
   onSubmit: (value: string) => void;
@@ -78,10 +79,10 @@ type Props<T> = {
    */
   onSelectedImageIndexChange?: (index: number) => void;
 };
-export function computeSelectInputColumns(columns: number, maxIndexWidth: number, showLabel: boolean, label: ReactNode, separator = ', '): number {
+export function computeSelectInputColumns(columns: number, maxIndexWidth: number, showLabel: boolean, label: ReactNode, separator = ', ', hideIndex = false): number {
   const safeColumns = Math.max(1, Math.floor(columns || 0));
   const safeMaxIndexWidth = Math.max(0, Math.floor(maxIndexWidth || 0));
-  const indexReserve = safeMaxIndexWidth + 2;
+  const indexReserve = hideIndex ? 0 : safeMaxIndexWidth + 2;
   const labelReserve = showLabel && typeof label === 'string' ? stringWidth(label) + stringWidth(separator) : 0;
   return Math.max(1, safeColumns - indexReserve - labelReserve - 2);
 }
@@ -95,6 +96,7 @@ export function SelectInputOption<T>(t0: Props<T>) {
     shouldShowUpArrow,
     maxIndexWidth,
     index,
+    hideIndex,
     inputValue,
     onInputChange,
     onSubmit,
@@ -128,7 +130,7 @@ export function SelectInputOption<T>(t0: Props<T>) {
   const {
     columns
   } = useTerminalSize();
-  const inputColumns = computeSelectInputColumns(columns, maxIndexWidth, showLabel, option.label, option.labelValueSeparator ?? ", ");
+  const inputColumns = computeSelectInputColumns(columns, maxIndexWidth, showLabel, option.label, option.labelValueSeparator ?? ", ", hideIndex === true);
   const [cursorOffset, setCursorOffset] = useState(inputValue.length);
   const isUserEditing = useRef(false);
   let t5;
@@ -369,26 +371,10 @@ export function SelectInputOption<T>(t0: Props<T>) {
     t27 = $[53];
   }
   useEffect(t26, t27);
-  const descriptionPaddingLeft = layout === "expanded" ? maxIndexWidth + 3 : maxIndexWidth + 4;
+  const indexDescriptionOffset = hideIndex === true ? 0 : maxIndexWidth;
+  const descriptionPaddingLeft = layout === "expanded" ? indexDescriptionOffset + 3 : indexDescriptionOffset + 4;
   const t28 = layout === "compact" ? 0 : undefined;
-  const t29 = `${index}.`;
-  let t30;
-  if ($[54] !== maxIndexWidth || $[55] !== t29) {
-    t30 = t29.padEnd(maxIndexWidth + 2);
-    $[54] = maxIndexWidth;
-    $[55] = t29;
-    $[56] = t30;
-  } else {
-    t30 = $[56];
-  }
-  let t31;
-  if ($[57] !== t30) {
-    t31 = <Text dimColor={true}>{t30}</Text>;
-    $[57] = t30;
-    $[58] = t31;
-  } else {
-    t31 = $[58];
-  }
+  const t31 = hideIndex === true ? null : <Text dimColor={true}>{`${index}.`.padEnd(maxIndexWidth + 2)}</Text>;
   let t32;
   if ($[59] !== cursorOffset || $[60] !== imagesSelected || $[61] !== inputColumns || $[62] !== inputValue || $[63] !== isFocused || $[64] !== onExit || $[65] !== onImagePaste || $[66] !== onInputChange || $[67] !== onSubmit || $[68] !== option || $[69] !== showLabel) {
     t32 = showLabel ? <><Text color={isFocused ? "suggestion" : undefined}>{option.label}</Text>{isFocused ? <><Text color="suggestion">{option.labelValueSeparator ?? ", "}</Text><TextInput value={inputValue} onChange={(value: string) => {
