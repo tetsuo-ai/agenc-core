@@ -261,4 +261,66 @@ describe('Select input option coverage', () => {
       view.unmount()
     }
   })
+
+  test('drops draft values when an input option leaves the option set', async () => {
+    const firstOptions: OptionWithDescription<string>[] = [
+      {
+        type: 'input',
+        value: 'prompt',
+        label: 'Prompt',
+        initialValue: 'seed',
+        onChange: () => {},
+      },
+    ]
+    const textOnlyOptions: OptionWithDescription<string>[] = [
+      {
+        value: 'other',
+        label: 'Other',
+      },
+    ]
+    const reintroducedOptions: OptionWithDescription<string>[] = [
+      {
+        type: 'input',
+        value: 'prompt',
+        label: 'Prompt',
+        onChange: () => {},
+      },
+    ]
+
+    const view = await renderSelect(
+      <Select
+        options={firstOptions}
+        defaultFocusValue="prompt"
+      />,
+    )
+
+    try {
+      expect(latestInputOption().inputValue).toBe('seed')
+
+      latestInputOption().onInputChange('draft')
+      await waitForRender()
+      expect(latestInputOption().inputValue).toBe('draft')
+
+      const inputRenderCount = selectInputOptionMock.props.length
+      await view.rerender(
+        <Select
+          options={textOnlyOptions}
+          defaultFocusValue="other"
+        />,
+      )
+      expect(selectInputOptionMock.props).toHaveLength(inputRenderCount)
+
+      await view.rerender(
+        <Select
+          options={reintroducedOptions}
+          defaultFocusValue="prompt"
+        />,
+      )
+      await waitForRender()
+
+      expect(latestInputOption().inputValue).toBe('')
+    } finally {
+      view.unmount()
+    }
+  })
 })
