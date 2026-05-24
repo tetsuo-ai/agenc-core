@@ -808,6 +808,10 @@ function PromptInput({
   const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => () => {
+    if (autoModeOptInTimeoutRef.current) {
+      clearTimeout(autoModeOptInTimeoutRef.current);
+      autoModeOptInTimeoutRef.current = null;
+    }
     if (modeSwitcherTimeoutRef.current) {
       clearTimeout(modeSwitcherTimeoutRef.current);
       modeSwitcherTimeoutRef.current = null;

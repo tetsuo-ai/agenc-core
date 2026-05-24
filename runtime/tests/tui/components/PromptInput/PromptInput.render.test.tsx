@@ -2826,6 +2826,30 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('clears pending auto-mode opt-in timer on unmount', async () => {
+    vi.useFakeTimers()
+    harness.features.TRANSCRIPT_CLASSIFIER = true
+    harness.hasAutoModeOptIn = false
+    harness.nextPermissionMode = 'auto'
+    const rendered = await renderPromptInput()
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:cycleMode']?.()
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+      rendered.root.unmount()
+      rendered.stdin.end()
+      rendered.stdout.end()
+
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
   test('routes footer close through viewed-agent typing and task dismissal paths', async () => {
     harness.isBackgroundTask.mockImplementation(
       task => (task as { background?: boolean }).background === true,
