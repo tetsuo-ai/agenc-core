@@ -386,6 +386,37 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("carries expanded directory state across renamed subtrees", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-expanded-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
+      await store.refresh();
+      store.reveal("src/nested/app.ts");
+
+      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["src", "src/nested"]);
+
+      await expect(store.renamePath("src", "lib")).resolves.toEqual({
+        ok: true,
+        path: "lib",
+      });
+
+      const snapshot = store.getSnapshot();
+      const rowPaths = snapshot.rows.map((row) => row.path);
+
+      expect([...snapshot.expandedPaths].sort()).toEqual(["lib", "lib/nested"]);
+      expect(rowPaths).toContain("lib/nested/app.ts");
+      expect(rowPaths).not.toContain("src");
+      expect(snapshot.expandedPaths).not.toContain("src");
+      expect(snapshot.expandedPaths).not.toContain("src/nested");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("deletes files and rejects paths outside the workspace", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-"));
     const store = new ProjectTreeStore(repo, 0);
@@ -403,6 +434,32 @@ describe("project tree helpers", () => {
 
       await expect(readFile(join(repo, "src", "gone.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("src/gone.ts");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes expanded directory state when deleting a subtree", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-expanded-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
+      await writeFile(join(repo, "README.md"), "readme\n", "utf8");
+      await store.refresh();
+      store.reveal("src/nested/app.ts");
+
+      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["src", "src/nested"]);
+
+      await expect(store.deletePath("src")).resolves.toEqual({ ok: true, path: "src" });
+
+      const snapshot = store.getSnapshot();
+
+      expect(snapshot.expandedPaths).toEqual([]);
+      expect(snapshot.rows.map((row) => row.path)).not.toContain("src");
+      expect(snapshot.cursorPath).toBe("README.md");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
