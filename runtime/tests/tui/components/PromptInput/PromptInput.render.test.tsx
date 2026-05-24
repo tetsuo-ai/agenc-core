@@ -1082,6 +1082,25 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('inserts keybound text at current cursor offset before rerender', async () => {
+    const onInputChange = vi.fn()
+    const rendered = await renderPromptInput({
+      input: 'abc',
+      onInputChange,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      ;(baseProps.onChangeCursorOffset as (offset: number) => void)(1)
+      harness.keybindings['chat:newline']?.()
+
+      expect(onInputChange).toHaveBeenCalledWith('a\nbc')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('handles mode cycle, image paste miss, and empty prompt submission guards', async () => {
     const onSubmit = vi.fn(async () => {})
     const setToolPermissionContext = vi.fn()

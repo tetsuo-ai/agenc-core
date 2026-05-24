@@ -617,6 +617,20 @@ function PromptInput({
     show: false
   });
   const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  // Ref mirrors cursorOffset for synchronous command handlers that can run
+  // before React commits a cursor state update from TextInput.
+  const cursorOffsetRef = useRef(cursorOffset);
+  cursorOffsetRef.current = cursorOffset;
+  const setCurrentCursorOffset = useCallback(
+    (nextOffset: number | ((prev: number) => number)) => {
+      const next = typeof nextOffset === 'function'
+        ? nextOffset(cursorOffsetRef.current)
+        : nextOffset;
+      cursorOffsetRef.current = next;
+      setCursorOffset(next);
+    },
+    [],
+  );
   // Track the last input value set via internal handlers so external updates
   // (for example speech-to-text injection) can still move the cursor to end
   // without clobbering a pending internal keystroke during render.
@@ -635,8 +649,10 @@ function PromptInput({
     }
 
     lastInternalInputRef.current = input;
-    setCursorOffset(prev => prev === input.length ? prev : input.length);
-  }, [input]);
+    if (cursorOffsetRef.current !== input.length) {
+      setCurrentCursorOffset(input.length);
+    }
+  }, [input, setCurrentCursorOffset]);
   React.useLayoutEffect(() => {
     if (pastedContents === lastPastedContentsPropRef.current) {
       return;
@@ -723,7 +739,7 @@ function PromptInput({
   } = useHistorySearch(entry => {
     setPastedContentsAndRef(entry.pastedContents);
     void onSubmit(entry.display);
-  }, input, trackAndSetInput, setCursorOffset, cursorOffset, onModeChange, mode, isSearchingHistory, setIsSearchingHistory, setPastedContentsAndRef, pastedContents);
+  }, input, trackAndSetInput, setCurrentCursorOffset, cursorOffset, onModeChange, mode, isSearchingHistory, setIsSearchingHistory, setPastedContentsAndRef, pastedContents);
   // Counter for paste IDs (shared between images and text).
   // Compute initial value once from existing messages (for --continue/--resume).
   // useRef(fn()) evaluates fn() on every render and discards the result after
@@ -991,9 +1007,9 @@ function PromptInput({
     const inside = imageRefPositions.find(r => cursorOffset > r.start && cursorOffset < r.end);
     if (inside) {
       const mid = (inside.start + inside.end) / 2;
-      setCursorOffset(cursorOffset < mid ? inside.start : inside.end);
+      setCurrentCursorOffset(cursorOffset < mid ? inside.start : inside.end);
     }
-  }, [cursorOffset, imageRefPositions, setCursorOffset]);
+  }, [cursorOffset, imageRefPositions, setCurrentCursorOffset]);
   const combinedHighlights = useMemo((): TextHighlight[] => {
     const highlights: TextHighlight[] = [];
 
@@ -1179,7 +1195,7 @@ function PromptInput({
     input,
     pastedContents,
     onInputChange: trackAndSetInput,
-    setCursorOffset,
+    setCursorOffset: setCurrentCursorOffset,
     setPastedContents: setPastedContentsAndRef
   });
   const defaultPlaceholder = usePromptInputPlaceholder({
@@ -1219,8 +1235,7 @@ function PromptInput({
       const cleaned = modeEntry.strippedValue.replaceAll('\t', '    ');
       pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
       trackAndSetInput(cleaned);
-      cursorOffsetRef.current = cleaned.length;
-      setCursorOffset(cleaned.length);
+      setCurrentCursorOffset(cleaned.length);
       return;
     }
     const processedValue = value.replaceAll('\t', '    ');
@@ -1236,7 +1251,7 @@ function PromptInput({
       footerSelection: null
     });
     trackAndSetInput(processedValue);
-  }, [trackAndSetInput, onModeChange, pushToBuffer, dismissStashHint, setAppState]);
+  }, [trackAndSetInput, onModeChange, pushToBuffer, dismissStashHint, setAppState, setCurrentCursorOffset]);
   const {
     resetHistory,
     onHistoryUp,
@@ -1247,7 +1262,7 @@ function PromptInput({
     onChange(value);
     onModeChange(historyMode);
     setPastedContentsAndRef(pastedContents);
-  }, input, pastedContents, setCursorOffset, mode);
+  }, input, pastedContents, setCurrentCursorOffset, mode);
 
   // Dismiss search hint when user starts searching
   useEffect(() => {
@@ -1361,7 +1376,7 @@ function PromptInput({
           skipReset: true
         });
         void onSubmitProp(suggestionText, {
-          setCursorOffset,
+          setCursorOffset: setCurrentCursorOffset,
           clearBuffer,
           resetHistory
         }, {
@@ -1398,7 +1413,7 @@ function PromptInput({
             timeoutMs: 3000
           });
           trackAndSetInput('');
-          setCursorOffset(0);
+          setCurrentCursorOffset(0);
           clearBuffer();
           resetHistory();
           return;
@@ -1440,7 +1455,7 @@ function PromptInput({
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
       logEvent('agenc_transcript_input_to_teammate', {});
       await onAgentSubmit(submitInput, activeAgent.task, {
-        setCursorOffset,
+        setCursorOffset: setCurrentCursorOffset,
         clearBuffer,
         resetHistory
       });
@@ -1456,7 +1471,7 @@ function PromptInput({
       input: inputParam,
       addNotification,
       setInput: trackAndSetInput,
-      setCursorOffset,
+      setCursorOffset: setCurrentCursorOffset,
       clearBuffer,
       resetHistory,
       onModeChange
@@ -1522,7 +1537,7 @@ function PromptInput({
         emitTranscriptText(`<bash-stderr>${errText}</bash-stderr>`);
       }
       trackAndSetInput('');
-      setCursorOffset(0);
+      setCurrentCursorOffset(0);
       clearBuffer();
       resetHistory();
       onModeChange('prompt');
@@ -1534,7 +1549,7 @@ function PromptInput({
     // routing of memory mode without round-tripping through input
     // prefix). Bash mode is intercepted above and never reaches here.
     await onSubmitProp(submitInput, {
-      setCursorOffset,
+      setCursorOffset: setCurrentCursorOffset,
       clearBuffer,
       resetHistory
     }, undefined, {
@@ -1548,7 +1563,7 @@ function PromptInput({
     if (hasWorkbenchAttachments) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
     }
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1560,7 +1575,7 @@ function PromptInput({
     commands,
     onInputChange: trackAndSetInput,
     onSubmit,
-    setCursorOffset,
+    setCursorOffset: setCurrentCursorOffset,
     input,
     cursorOffset,
     mode,
@@ -1727,11 +1742,6 @@ function PromptInput({
     if (isNonSpacePrintable(input, key)) return ' ' + input;
     return input;
   }, []);
-  // Ref mirrors cursorOffset for use in synchronous loops (e.g. multi-image
-  // paste) where React batches state updates and the closure value is stale.
-  const cursorOffsetRef = useRef(cursorOffset);
-  cursorOffsetRef.current = cursorOffset;
-
   function insertTextAtCursor(
     text: string,
     bufferPastedContents = pastedContentsRef.current,
@@ -1745,8 +1755,7 @@ function PromptInput({
     const newInput = currentInput.slice(0, currentOffset) + text + currentInput.slice(currentOffset);
     trackAndSetInput(newInput);
     const newOffset = currentOffset + text.length;
-    cursorOffsetRef.current = newOffset;
-    setCursorOffset(newOffset);
+    setCurrentCursorOffset(newOffset);
   }
   const doublePressEscFromEmpty = useDoublePress(() => {}, () => onShowMessageSelector());
 
@@ -1761,8 +1770,7 @@ function PromptInput({
     }
     trackAndSetInput(result.text);
     onModeChange('prompt'); // Always prompt mode for queued commands
-    cursorOffsetRef.current = result.cursorOffset;
-    setCursorOffset(result.cursorOffset);
+    setCurrentCursorOffset(result.cursorOffset);
 
     // Restore images from queued commands to pastedContents
     if (result.images.length > 0) {
@@ -1809,11 +1817,11 @@ function PromptInput({
       const previousState = undo();
       if (previousState) {
         trackAndSetInput(previousState.text);
-        setCursorOffset(previousState.cursorOffset);
+        setCurrentCursorOffset(previousState.cursorOffset);
         setPastedContentsAndRef(previousState.pastedContents);
       }
     }
-  }, [canUndo, undo, trackAndSetInput, setPastedContentsAndRef]);
+  }, [canUndo, undo, trackAndSetInput, setPastedContentsAndRef, setCurrentCursorOffset]);
 
   // Handler for chat:newline - insert a newline at the cursor position
   const handleNewline = useCallback(() => {
@@ -1843,8 +1851,7 @@ function PromptInput({
         // Push current state to buffer before making changes
         pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
         trackAndSetInput(result.content);
-        cursorOffsetRef.current = result.content.length;
-        setCursorOffset(result.content.length);
+        setCurrentCursorOffset(result.content.length);
       }
     } catch (err) {
       if (err instanceof Error) {
@@ -1859,7 +1866,7 @@ function PromptInput({
     } finally {
       setIsExternalEditorActive(false);
     }
-  }, [pushToBuffer, trackAndSetInput, addNotification]);
+  }, [pushToBuffer, trackAndSetInput, addNotification, setCurrentCursorOffset]);
 
   // Handler for chat:stash - stash/unstash prompt
   const handleStash = useCallback(() => {
@@ -1869,8 +1876,7 @@ function PromptInput({
     if (currentInput.trim() === '' && stashedPrompt !== undefined) {
       // Pop stash when input is empty
       trackAndSetInput(stashedPrompt.text);
-      cursorOffsetRef.current = stashedPrompt.cursorOffset;
-      setCursorOffset(stashedPrompt.cursorOffset);
+      setCurrentCursorOffset(stashedPrompt.cursorOffset);
       setPastedContentsAndRef(stashedPrompt.pastedContents);
       setStashedPrompt(undefined);
       pendingSpaceAfterPillRef.current = false;
@@ -1882,8 +1888,7 @@ function PromptInput({
         pastedContents: currentPastedContents
       });
       trackAndSetInput('');
-      cursorOffsetRef.current = 0;
-      setCursorOffset(0);
+      setCurrentCursorOffset(0);
       setPastedContentsAndRef({});
       pendingSpaceAfterPillRef.current = false;
       // Track usage for /discover and stop showing hint
@@ -1895,7 +1900,7 @@ function PromptInput({
         };
       });
     }
-  }, [stashedPrompt, trackAndSetInput, setStashedPrompt, setPastedContentsAndRef]);
+  }, [stashedPrompt, trackAndSetInput, setStashedPrompt, setPastedContentsAndRef, setCurrentCursorOffset]);
 
   // Handler for chat:modelPicker - toggle model picker
   const handleModelPicker = useCallback(() => {
@@ -2360,8 +2365,7 @@ function PromptInput({
           const currentInput = lastInternalInputRef.current;
           const currentOffset = cursorOffsetRef.current;
           onChange(currentInput.slice(0, currentOffset) + 'x' + currentInput.slice(currentOffset));
-          cursorOffsetRef.current = currentOffset + 1;
-          setCursorOffset(currentOffset + 1);
+          setCurrentCursorOffset(currentOffset + 1);
           return;
         }
         stopOrDismissAgent(task.id, setAppState);
@@ -2417,8 +2421,7 @@ function PromptInput({
       const currentInput = lastInternalInputRef.current;
       const currentOffset = cursorOffsetRef.current;
       onChange(currentInput.slice(0, currentOffset) + char + currentInput.slice(currentOffset));
-      cursorOffsetRef.current = currentOffset + char.length;
-      setCursorOffset(currentOffset + char.length);
+      setCurrentCursorOffset(currentOffset + char.length);
       return;
     }
 
@@ -2524,8 +2527,8 @@ function PromptInput({
       line: e.localRow + viewportStart,
       column: e.localCol
     });
-    setCursorOffset(offset);
-  }, [input, textInputColumns, isSearchingHistory, cursorOffset, maxVisibleLines]);
+    setCurrentCursorOffset(offset);
+  }, [input, textInputColumns, isSearchingHistory, cursorOffset, maxVisibleLines, setCurrentCursorOffset]);
   const handleOpenTasksDialog = useCallback((taskId?: string) => setShowBashesDialog(taskId ?? true), [setShowBashesDialog]);
   // Suppress the placeholder while pasting so the input row stays empty
   // while the footer shows "Pasting text…". Otherwise both dim hints
@@ -2687,8 +2690,7 @@ function PromptInput({
       onModeChange(entryMode);
       trackAndSetInput(value);
       setPastedContentsAndRef(entry.pastedContents);
-      cursorOffsetRef.current = value.length;
-      setCursorOffset(value.length);
+      setCurrentCursorOffset(value.length);
       setShowHistoryPicker(false);
     }} onCancel={() => setShowHistoryPicker(false)} />;
   }
@@ -2727,7 +2729,7 @@ function PromptInput({
     disableCursorMovementForUpDownKeys: suggestions.length > 0 || !!footerItemSelected,
     disableEscapeDoublePress: suggestions.length > 0,
     cursorOffset,
-    onChangeCursorOffset: setCursorOffset,
+    onChangeCursorOffset: setCurrentCursorOffset,
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
     focus: composerInputEnabled && !isSearchingHistory && !promptModalOverlayActive && !footerItemSelected,
@@ -2737,7 +2739,7 @@ function PromptInput({
       const previousState = undo();
       if (previousState) {
         trackAndSetInput(previousState.text);
-        setCursorOffset(previousState.cursorOffset);
+        setCurrentCursorOffset(previousState.cursorOffset);
         setPastedContentsAndRef(previousState.pastedContents);
       }
     } : undefined,
