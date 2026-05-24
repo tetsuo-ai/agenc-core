@@ -799,10 +799,10 @@ function PromptInput({
   const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
-  const promptModalOverlayActive =
-    upstreamModalOverlayActive || showModeSwitcher || Boolean(showBashesDialog);
-  const promptKeyboardActive = composerInputEnabled && !promptModalOverlayActive;
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
+  const promptModalOverlayActive =
+    upstreamModalOverlayActive || showModeSwitcher || showAutoModeOptIn || Boolean(showBashesDialog);
+  const promptKeyboardActive = composerInputEnabled && !promptModalOverlayActive;
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] = useState<PermissionMode | null>(null);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
