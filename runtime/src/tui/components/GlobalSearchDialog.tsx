@@ -7,6 +7,7 @@ import { useRegisterOverlay } from '../context/overlayContext';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { useOptionalSetAppState } from '../state/AppState.js';
 import { openPreviewCommand } from '../workbench/commands.js';
+import { normalizeWorkspacePathForReferences } from '../workbench/pathReferences.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Text } from '../ink.js';
@@ -332,7 +333,7 @@ function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearch
       }
       parsed.push({
         ...m_1,
-        file: displayPathRelativeToBase(cwd, m_1.file)
+        file: normalizeWorkspacePathForReferences(displayPathRelativeToBase(cwd, m_1.file))
       });
     }
     if (!parsed.length) {

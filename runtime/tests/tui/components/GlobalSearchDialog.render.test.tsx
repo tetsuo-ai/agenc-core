@@ -490,4 +490,28 @@ describe('GlobalSearchDialog render and interactions', () => {
       await rendered.dispose()
     }
   })
+
+  it('normalizes backslash result paths before inserting prompt text', async () => {
+    const rendered = await renderDialog()
+
+    try {
+      await searchFor('needle', [
+        jsonMatchLine('src\\nested\\app.ts', 6, 'Needle alpha'),
+      ])
+      await waitFor(
+        () => pickerProps().items.length === 1 && pickerProps().matchLabel === '1 matches',
+        'Global search result did not render for backslash insert test',
+      )
+
+      const match = pickerProps().items[0]
+
+      pickerProps().onTab?.handler(match)
+      expect(rendered.onInsert).toHaveBeenCalledWith('@src/nested/app.ts#L6 ')
+
+      pickerProps().onShiftTab?.handler(match)
+      expect(rendered.onInsert).toHaveBeenCalledWith('src/nested/app.ts:6 ')
+    } finally {
+      await rendered.dispose()
+    }
+  })
 })
