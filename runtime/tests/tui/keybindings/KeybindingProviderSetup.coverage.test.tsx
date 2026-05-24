@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import Text from "../ink/components/Text.js";
 import { createRoot } from "../ink/root.js";
-import { useKeybindingContext } from "./KeybindingContext.js";
+import {
+  useKeybindingContext,
+  useRegisterKeybindingContext,
+} from "./KeybindingContext.js";
 import { KeybindingSetup } from "./KeybindingProviderSetup.js";
 import { parseBindings } from "./parser.js";
 
@@ -106,6 +109,43 @@ function Probe({ displays }: { displays: string[] }): React.ReactNode {
   }, [displays, keybindings]);
 
   return <Text>keybinding setup</Text>;
+}
+
+function DuplicateContextChild(): React.ReactNode {
+  useRegisterKeybindingContext("Surface", true);
+
+  return <Text>duplicate child</Text>;
+}
+
+function ActiveContextProbe({
+  snapshots,
+}: {
+  snapshots: boolean[];
+}): React.ReactNode {
+  const keybindings = useKeybindingContext();
+
+  React.useLayoutEffect(() => {
+    snapshots.push(keybindings.activeContexts.has("Surface"));
+  });
+
+  return <Text>active context probe</Text>;
+}
+
+function DuplicateContextHarness({
+  childMounted,
+  snapshots,
+}: {
+  childMounted: boolean;
+  snapshots: boolean[];
+}): React.ReactNode {
+  useRegisterKeybindingContext("Surface", true);
+
+  return (
+    <>
+      {childMounted ? <DuplicateContextChild /> : null}
+      <ActiveContextProbe snapshots={snapshots} />
+    </>
+  );
 }
 
 describe("KeybindingProviderSetup coverage", () => {
@@ -222,5 +262,56 @@ describe("KeybindingProviderSetup coverage", () => {
       () => unsubscribe.mock.calls.length === 1,
       "KeybindingSetup did not unsubscribe on unmount",
     );
+  });
+
+  test("keeps an active context while any duplicate owner is still mounted", async () => {
+    const snapshots: boolean[] = [];
+    const { stdout, stdin } = createTestStreams();
+    const root = await createRoot({
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+    });
+
+    loadKeybindingsSyncWithWarnings.mockReturnValue({
+      bindings: [],
+      warnings: [],
+    });
+
+    try {
+      root.render(
+        <KeybindingSetup>
+          <DuplicateContextHarness
+            childMounted={true}
+            snapshots={snapshots}
+          />
+        </KeybindingSetup>,
+      );
+
+      await waitForCondition(
+        () => snapshots.includes(true),
+        "duplicate context registration did not become active",
+      );
+
+      root.render(
+        <KeybindingSetup>
+          <DuplicateContextHarness
+            childMounted={false}
+            snapshots={snapshots}
+          />
+        </KeybindingSetup>,
+      );
+
+      await waitForCondition(
+        () => snapshots.length >= 2,
+        "duplicate context cleanup did not rerender the probe",
+      );
+
+      expect(snapshots.at(-1)).toBe(true);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
   });
 });
