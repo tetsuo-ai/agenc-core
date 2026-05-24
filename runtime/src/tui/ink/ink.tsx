@@ -1471,6 +1471,7 @@ export default class Ink {
   // cascades through useContext → <AlternateScreen>'s useLayoutEffect dep
   // array → spurious exit+re-enter of the alt screen on every SIGWINCH.
   private writeRaw(data: string): void {
+    if (this.isUnmounted || this.isPaused) return;
     this.options.stdout.write(data);
   }
   private setCursorDeclaration: CursorDeclarationSetter = (decl, clearIfNode) => {
