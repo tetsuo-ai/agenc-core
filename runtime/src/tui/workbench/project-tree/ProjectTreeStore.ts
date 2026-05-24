@@ -468,7 +468,7 @@ function resolveWorkspaceRelativePath(
 ): { readonly ok: true; readonly relativePath: string; readonly absolutePath: string } | { readonly ok: false; readonly error: string } {
   const input = inputPath.replace(/\\/gu, "/");
   if (input.trim().length === 0) return { ok: false, error: "Enter a workspace-relative path." };
-  if (path.posix.isAbsolute(input) || path.isAbsolute(input)) {
+  if (isWindowsDriveQualifiedPath(input) || path.posix.isAbsolute(input) || path.isAbsolute(input)) {
     return { ok: false, error: "Use a workspace-relative path, not an absolute path." };
   }
 
@@ -497,6 +497,10 @@ function resolveWorkspaceRelativePath(
 
 function stripTrailingSlashes(value: string): string {
   return value.replace(/\/+$/u, "");
+}
+
+function isWindowsDriveQualifiedPath(value: string): boolean {
+  return /^[A-Za-z]:/u.test(value);
 }
 
 async function pathExists(absolutePath: string): Promise<boolean> {

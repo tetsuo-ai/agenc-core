@@ -468,6 +468,41 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("rejects drive-qualified Windows paths for workspace mutations", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-drive-path-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, "source.ts"), "source\n", "utf8");
+      await store.refresh();
+
+      await expect(store.createFile("C:\\Users\\me\\outside.ts")).resolves.toEqual({
+        ok: false,
+        error: "Use a workspace-relative path, not an absolute path.",
+      });
+      await expect(store.renamePath("source.ts", "D:/tmp/renamed.ts")).resolves.toEqual({
+        ok: false,
+        error: "Use a workspace-relative path, not an absolute path.",
+      });
+      await expect(store.deletePath("E:\\tmp\\gone.ts")).resolves.toEqual({
+        ok: false,
+        error: "Use a workspace-relative path, not an absolute path.",
+      });
+      await expect(store.createFile("F:drive-relative.ts")).resolves.toEqual({
+        ok: false,
+        error: "Use a workspace-relative path, not an absolute path.",
+      });
+
+      await expect(readFile(join(repo, "source.ts"), "utf8")).resolves.toBe("source\n");
+      await expect(readFile(join(repo, "C:", "Users", "me", "outside.ts"), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("prunes expanded directory state when deleting a subtree", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-expanded-"));
     const store = new ProjectTreeStore(repo, 0);
