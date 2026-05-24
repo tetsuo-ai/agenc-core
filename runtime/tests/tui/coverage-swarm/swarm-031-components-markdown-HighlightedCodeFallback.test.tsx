@@ -179,6 +179,27 @@ describe('HighlightedCodeFallback coverage swarm row 031', () => {
     expect(highlightMock.highlight).not.toHaveBeenCalled()
   })
 
+  test('uses markdown highlighting directly for extensionless paths', async () => {
+    const code = 'row031 extensionless note'
+    const expected = `highlighted:markdown:${code}`
+
+    const output = await renderToText(
+      <HighlightedCodeFallback code={code} filePath="README" />,
+      expected,
+    )
+
+    expect(output).toContain(expected)
+    expect(highlightMock.supportsLanguage).not.toHaveBeenCalled()
+    expect(highlightMock.highlight).toHaveBeenCalledWith(code, {
+      language: 'markdown',
+    })
+    expect(
+      highlightMock.logForDebugging.mock.calls.some(([message]) =>
+        String(message).includes('Language not supported'),
+      ),
+    ).toBe(false)
+  })
+
   test('retries markdown highlighting when the supported language throws an unknown-language error', async () => {
     const code = 'let row031_retry = true;'
     const expected = `highlighted:markdown:${code}`
@@ -266,5 +287,43 @@ describe('HighlightedCodeFallback coverage swarm row 031', () => {
         String(message).includes('falling back to markdown'),
       ),
     ).toBe(false)
+  })
+
+  test('evicts the oldest highlighted entry after cache pressure', async () => {
+    const codes = Array.from(
+      { length: 505 },
+      (_, index) => `const row031_cache_pressure_${index} = true`,
+    )
+    const lastCode = codes.at(-1)!
+
+    await renderToText(
+      <>
+        {codes.map(code => (
+          <HighlightedCodeFallback
+            key={code}
+            code={code}
+            filePath="fixture.js"
+          />
+        ))}
+      </>,
+      `highlighted:js:${lastCode}`,
+      {
+        afterExpected: () => highlightMock.highlight.mock.calls.length >= 505,
+      },
+    )
+
+    highlightMock.highlight.mockClear()
+    await renderToText(
+      <HighlightedCodeFallback code={codes[0]!} filePath="fixture.js" />,
+      `highlighted:js:${codes[0]!}`,
+      {
+        afterExpected: () => highlightMock.highlight.mock.calls.length === 1,
+      },
+    )
+
+    expect(highlightMock.highlight).toHaveBeenCalledTimes(1)
+    expect(highlightMock.highlight).toHaveBeenCalledWith(codes[0], {
+      language: 'js',
+    })
   })
 })
