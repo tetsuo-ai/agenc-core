@@ -29,16 +29,32 @@ import { getFocusManager, getRootNode } from './focus.js'
 import { LayoutDisplay } from './layout/node.js'
 import applyStyles, { type Styles, type TextStyles } from './styles.js'
 
-// We need to conditionally perform devtools connection to avoid
-// accidentally breaking other third-party code.
-// See https://github.com/vadimdemedes/ink/issues/384
-if (process.env.NODE_ENV === 'development') {
+type DevtoolsImporter = () => Promise<unknown>
+
+function isMissingDevtoolsError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ERR_MODULE_NOT_FOUND'
+  )
+}
+
+export async function loadDevtoolsForDevelopment(
+  importDevtools: DevtoolsImporter = () => import('./devtools.js'),
+): Promise<void> {
+  // We need to conditionally perform devtools connection to avoid
+  // accidentally breaking other third-party code.
+  // See https://github.com/vadimdemedes/ink/issues/384
+  if (process.env.NODE_ENV !== 'development') {
+    return
+  }
+
   try {
-    // eslint-disable-next-line custom-rules/no-top-level-dynamic-import -- dev-only; NODE_ENV check is DCE'd in production
-    void import('./devtools.js')
+    await importDevtools()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (error: any) {
-    if (error.code === 'ERR_MODULE_NOT_FOUND') {
+    if (isMissingDevtoolsError(error)) {
       // biome-ignore lint/suspicious/noConsole: intentional warning
       console.warn(
         `
@@ -56,6 +72,8 @@ $ npm install --save-dev react-devtools-core
     }
   }
 }
+
+void loadDevtoolsForDevelopment()
 
 // --
 
@@ -98,6 +116,21 @@ const diff = (before: AnyObject, after: AnyObject): AnyObject | undefined => {
   }
 
   return isChanged ? changed : undefined
+}
+
+const diffProps = (
+  before: AnyObject,
+  after: AnyObject,
+): AnyObject | undefined => {
+  const changed = diff(before, after)
+  if (!changed) {
+    return
+  }
+
+  delete changed['children']
+  delete changed['style']
+
+  return Object.keys(changed).length > 0 ? changed : undefined
 }
 
 const cleanupYogaNode = (node: DOMElement | TextNode): void => {
@@ -410,7 +443,7 @@ const reconciler = createReconciler<
     oldProps: Props,
     newProps: Props,
   ): UpdatePayload | null {
-    const props = diff(oldProps, newProps)
+    const props = diffProps(oldProps, newProps)
     const style = diff(oldProps['style'] as Styles, newProps['style'] as Styles)
 
     if (!props && !style) {
@@ -462,7 +495,7 @@ const reconciler = createReconciler<
     // attributes, event handlers, and textStyles until something forced a
     // remount. Recompute the prop/style diff here so host nodes update
     // correctly in place on rerender.
-    const props = diff(oldProps, newProps)
+    const props = diffProps(oldProps, newProps)
     const style = diff(oldProps['style'] as Styles, newProps['style'] as Styles)
     const nextStyle = newProps['style'] as Styles | undefined
 
@@ -472,11 +505,6 @@ const reconciler = createReconciler<
 
     if (props) {
       for (const [key, value] of Object.entries(props)) {
-        if (key === 'style') {
-          setStyle(node, value as Styles)
-          continue
-        }
-
         if (key === 'textStyles') {
           setTextStyles(node, value as TextStyles)
           continue
@@ -491,8 +519,11 @@ const reconciler = createReconciler<
       }
     }
 
-    if (style && node.yogaNode) {
-      applyStyles(node.yogaNode, style, nextStyle)
+    if (style) {
+      setStyle(node, nextStyle)
+      if (node.yogaNode) {
+        applyStyles(node.yogaNode, style, nextStyle)
+      }
     }
   },
   commitTextUpdate(node: TextNode, _oldText: string, newText: string): void {
