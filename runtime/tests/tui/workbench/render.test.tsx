@@ -138,6 +138,79 @@ describe("workbench render contract", () => {
     expect(output).not.toContain("└");
   });
 
+  it.each([
+    ["modified", "M"],
+    ["added", "A"],
+    ["deleted", "D"],
+    ["renamed", "R"],
+    ["unmerged", "U"],
+    ["untracked", "?"],
+    ["ignored", "!"],
+  ] as const)("renders explorer git state %s with its badge", async (gitState, marker) => {
+    const output = await renderToString(
+      <ProjectExplorerRow
+        width={18}
+        row={{
+          ...row(`src/${gitState}.ts`, "clean", "file", 1),
+          gitState,
+        }}
+      />,
+      18,
+    );
+
+    expect(output).toContain(marker);
+    expect(output).toContain("clean");
+  });
+
+  it("renders loading rows, active rows, and one-column label trims", async () => {
+    const loadingOutput = await renderToString(
+      <ProjectExplorerRow
+        width={12}
+        row={{
+          ...row("loading", "loading", "file", 0),
+          kind: "loading" as never,
+        }}
+      />,
+      12,
+    );
+    const activeOutput = await renderToString(
+      <ProjectExplorerRow
+        width={12}
+        row={{
+          ...row("src/active.ts", "active", "file", 0),
+          active: true,
+        }}
+      />,
+      12,
+    );
+    const narrowOutput = await renderToString(
+      <ProjectExplorerRow
+        width={1}
+        row={row("src/abcdef.ts", "abcdef", "file", 0)}
+      />,
+      8,
+    );
+
+    expect(loadingOutput).toContain("loading");
+    expect(activeOutput).toContain("active");
+    expect(narrowOutput).toContain("a");
+  });
+
+  it("renders collapsed root rows", async () => {
+    const output = await renderToString(
+      <ProjectExplorerRow
+        width={18}
+        row={{
+          ...row("", "agenc-core", "root", 0),
+          expanded: false,
+        }}
+      />,
+      18,
+    );
+
+    expect(output).toContain("agenc-core");
+  });
+
   it("keeps the selected explorer row inside the viewport", () => {
     const rows = Array.from({ length: 20 }, (_, index) => ({
       id: `file-${index}`,
@@ -159,6 +232,22 @@ describe("workbench render contract", () => {
     expect(viewport.rows.some((row) => row.selected)).toBe(true);
     expect(viewport.above).toBeGreaterThan(0);
     expect(viewport.below).toBeGreaterThan(0);
+  });
+
+  it("falls back to the first explorer row when no row is selected", () => {
+    const rows = Array.from({ length: 8 }, (_, index) =>
+      row(`file-${index}.ts`, `file-${index}.ts`, "file", 1),
+    );
+
+    const viewport = projectTreeViewport(rows, 3);
+
+    expect(viewport.rows.map((item) => item.path)).toEqual([
+      "file-0.ts",
+      "file-1.ts",
+      "file-2.ts",
+    ]);
+    expect(viewport.above).toBe(0);
+    expect(viewport.below).toBe(5);
   });
 
   it("keeps expanded explorer rows in source order while clipping deep trees", () => {
@@ -244,6 +333,61 @@ describe("workbench render contract", () => {
     expect(projectExplorerHarness.textInputProps.at(-1)).toMatchObject({
       focus: false,
     });
+  });
+
+  it("lets escape cancel explorer file-action text input through the input filter", async () => {
+    const onCancel = vi.fn();
+    projectExplorerHarness.textInputProps = [];
+
+    await renderToString(
+      <ProjectFileActionPrompt
+        action={{
+          kind: "create",
+          value: "src/new.ts",
+          busy: false,
+          error: null,
+        }}
+        width={40}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onConfirmDelete={vi.fn()}
+        onCancel={onCancel}
+      />,
+      80,
+    );
+
+    const inputFilter = projectExplorerHarness.textInputProps.at(-1)?.inputFilter as (
+      input: string,
+      key: { readonly escape?: boolean },
+    ) => string;
+
+    expect(inputFilter("x", {})).toBe("x");
+    expect(inputFilter("x", { escape: true })).toBe("");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders busy explorer file-action prompts as unfocused working prompts", async () => {
+    projectExplorerHarness.textInputProps = [];
+
+    const output = await renderToString(
+      <ProjectFileActionPrompt
+        action={{
+          kind: "create",
+          value: "src/new.ts",
+          busy: true,
+          error: null,
+        }}
+        width={40}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onConfirmDelete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+      80,
+    );
+
+    expect(projectExplorerHarness.textInputProps.at(-1)?.focus).toBe(false);
+    expect(output).toContain("working...");
   });
 
   it("disables explorer delete confirmations when the explorer is unfocused", async () => {
