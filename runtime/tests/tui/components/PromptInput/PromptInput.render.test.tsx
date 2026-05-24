@@ -1826,6 +1826,40 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('moves from the last coordinator task row to the next footer item', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.isBackgroundTask.mockImplementation(
+      task => (task as { background?: boolean }).background === true,
+    )
+    harness.appState.tasks = {
+      task1: { background: true },
+    }
+    harness.appState.teamContext = {
+      teamName: 'runtime',
+      teammates: {
+        builder: { color: 'cyan', name: 'builder' },
+        'team-lead': { color: 'purple', name: 'team-lead' },
+      },
+    }
+    harness.appState.footerSelection = 'tasks'
+    harness.appState.coordinatorTaskIndex = 1
+    harness.coordinatorTaskCount = 2
+    harness.visibleAgentTasks = [{ id: 'agent-1', status: 'running' }]
+
+    const rendered = await renderPromptInput({ input: 'footer' })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['footer:next']?.()
+
+      expect(harness.appState.coordinatorTaskIndex).toBe(1)
+      expect(harness.appState.footerSelection).toBe('teams')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('types through selected footer and handles help escape shortcuts', async () => {
     harness.isBackgroundTask.mockImplementation(
       task => (task as { background?: boolean }).background === true,

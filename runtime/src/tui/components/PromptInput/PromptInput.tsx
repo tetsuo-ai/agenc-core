@@ -848,18 +848,22 @@ function PromptInput({
   function navigateFooter(delta: 1 | -1, exitAtStart = false): boolean {
     if (tasksSelected && !isTeammateMode && coordinatorTaskCount > 0) {
       if (delta > 0) {
-        setCoordinatorTaskIndex(i => Math.min(coordinatorTaskCount - 1, i + 1));
-        return true;
+        if (coordinatorTaskIndex < coordinatorTaskCount - 1) {
+          setCoordinatorTaskIndex(i => Math.min(coordinatorTaskCount - 1, i + 1));
+          return true;
+        }
+        // Already at the last coordinator row; fall through so normal footer
+        // navigation can move to the next visible footer item.
       }
-      if (coordinatorTaskIndex > minCoordinatorIndex) {
+      if (delta < 0 && coordinatorTaskIndex > minCoordinatorIndex) {
         setCoordinatorTaskIndex(i => Math.max(minCoordinatorIndex, i - 1));
         return true;
       }
-      if (exitAtStart) {
+      if (delta < 0 && exitAtStart) {
         selectFooterItem(null);
         return true;
       }
-      return false;
+      if (delta < 0) return false;
     }
 
     const idx = footerItemSelected ? footerItems.indexOf(footerItemSelected) : -1;
