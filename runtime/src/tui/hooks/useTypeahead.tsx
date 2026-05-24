@@ -1031,6 +1031,43 @@ export function useTypeahead({
     void updateSuggestions(input);
   }, [agentNameRegistry, agents, input, mcpClients, mcpResources, tasks, teamContext, updateSuggestions]);
 
+  const getActiveFileCompletionToken = useCallback(() => {
+    const currentState = currentInputStateRef.current;
+    if (currentState.input !== input || currentState.mode !== mode) return null;
+    const completionToken = extractCompletionToken(
+      currentState.input,
+      currentState.cursorOffset,
+      true,
+    );
+    if (!completionToken) return null;
+    const latestSearchToken = latestSearchTokenRef.current;
+    if (latestSearchToken === null) return null;
+    if (extractSearchToken(completionToken) !== latestSearchToken) {
+      return null;
+    }
+    return completionToken;
+  }, [input, mode]);
+
+  const getActiveDirectoryCompletionToken = useCallback(() => {
+    const currentState = currentInputStateRef.current;
+    if (currentState.input !== input || currentState.mode !== mode) return null;
+    const completionTokenWithAt = extractCompletionToken(
+      currentState.input,
+      currentState.cursorOffset,
+      true,
+    );
+    const completionToken =
+      completionTokenWithAt ??
+      extractCompletionToken(currentState.input, currentState.cursorOffset, false);
+    if (!completionToken) return null;
+    const latestPathToken = latestPathTokenRef.current;
+    if (latestPathToken === null) return null;
+    if (extractSearchToken(completionToken) !== latestPathToken) {
+      return null;
+    }
+    return completionToken;
+  }, [input, mode]);
+
   // Handle tab key press - complete suggestions or trigger file suggestions
   const handleTab = useCallback(async () => {
     // If we have inline ghost text, apply it
@@ -1060,6 +1097,20 @@ export function useTypeahead({
 
     // If we have active suggestions, select one
     if (suggestions.length > 0) {
+      if (suggestionType === 'file' && !getActiveFileCompletionToken()) {
+        debouncedFetchFileSuggestions.cancel();
+        clearSuggestions();
+        return;
+      }
+      if (
+        suggestionType === 'directory' &&
+        !isCommandInput(input) &&
+        !getActiveDirectoryCompletionToken()
+      ) {
+        debouncedFetchFileSuggestions.cancel();
+        clearSuggestions();
+        return;
+      }
       // L7: When the @-driven picker is open and the cursor sits at the end
       // of the current @ token, Tab cycles suggestions instead of
       // auto-accepting the top match. Readline/fzf users expect this; Enter
@@ -1134,8 +1185,7 @@ export function useTypeahead({
           } else {
             // General path completion: replace the path token in input with @-prefixed path
             // Try to get token with @ prefix first to check if already prefixed
-            const completionTokenWithAt = extractCompletionToken(input, cursorOffset, true);
-            const completionToken = completionTokenWithAt ?? extractCompletionToken(input, cursorOffset, false);
+            const completionToken = getActiveDirectoryCompletionToken();
             if (completionToken) {
               const isDir = isPathMetadata(suggestion.metadata) && suggestion.metadata.type === 'directory';
               const result = applyDirectorySuggestion(input, suggestion.id, completionToken.startPos, completionToken.token.length, isDir);
@@ -1182,7 +1232,7 @@ export function useTypeahead({
           clearSuggestions();
         }
       } else if (suggestionType === 'file' && suggestions.length > 0) {
-        const completionToken = extractCompletionToken(input, cursorOffset, true);
+        const completionToken = getActiveFileCompletionToken();
         if (!completionToken) {
           clearSuggestions();
           return;
@@ -1277,6 +1327,12 @@ export function useTypeahead({
           // If token starts with @, search without the @ prefix
           const isAtSymbol = completionInfo.token.startsWith('@');
           const searchToken = isAtSymbol ? completionInfo.token.substring(1) : completionInfo.token;
+          latestSearchTokenRef.current = searchToken;
+          latestSearchInputStateRef.current = {
+            cursorOffset: requestCursorOffset,
+            input: requestInput,
+            mode: requestMode
+          };
           try {
             suggestionItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
           } catch (error) {
@@ -1305,7 +1361,7 @@ export function useTypeahead({
         setMaxColumnWidth(undefined);
       }
     }
-  }, [suggestions, selectedSuggestion, input, suggestionType, commands, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, cursorOffset, updateSuggestions, mcpResources, setSuggestionsState, agents, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, effectiveGhostText, isCurrentInputState]);
+  }, [suggestions, selectedSuggestion, input, suggestionType, commands, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, cursorOffset, updateSuggestions, mcpResources, setSuggestionsState, agents, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, effectiveGhostText, isCurrentInputState, getActiveDirectoryCompletionToken, getActiveFileCompletionToken]);
 
   // Handle enter key press - apply and execute suggestions
   const handleEnter = useCallback(() => {
@@ -1372,7 +1428,7 @@ export function useTypeahead({
       }
     } else if (suggestionType === 'file' && selectedSuggestion < suggestions.length) {
       // Extract completion token directly when needed
-      const completionInfo = extractCompletionToken(input, cursorOffset, true);
+      const completionInfo = getActiveFileCompletionToken();
       if (completionInfo) {
         if (suggestion) {
           const hasAtPrefix = completionInfo.token.startsWith('@');
@@ -1389,6 +1445,9 @@ export function useTypeahead({
           debouncedFetchFileSuggestions.cancel();
           clearSuggestions();
         }
+      } else {
+        debouncedFetchFileSuggestions.cancel();
+        clearSuggestions();
       }
     } else if (suggestionType === 'directory' && selectedSuggestion < suggestions.length) {
       if (suggestion) {
@@ -1403,8 +1462,7 @@ export function useTypeahead({
         }
 
         // General path completion: replace the path token
-        const completionTokenWithAt = extractCompletionToken(input, cursorOffset, true);
-        const completionToken = completionTokenWithAt ?? extractCompletionToken(input, cursorOffset, false);
+        const completionToken = getActiveDirectoryCompletionToken();
         if (completionToken) {
           const isDir = isPathMetadata(suggestion.metadata) && suggestion.metadata.type === 'directory';
           const result = applyDirectorySuggestion(input, suggestion.id, completionToken.startPos, completionToken.token.length, isDir);
@@ -1418,7 +1476,7 @@ export function useTypeahead({
         clearSuggestions();
       }
     }
-  }, [suggestions, selectedSuggestion, suggestionType, commands, input, cursorOffset, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, debouncedFetchFileSuggestions, debouncedFetchSlackChannels]);
+  }, [suggestions, selectedSuggestion, suggestionType, commands, input, cursorOffset, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, getActiveDirectoryCompletionToken, getActiveFileCompletionToken]);
 
   // Handler for autocomplete:accept - accepts current suggestion via Tab or Right Arrow
   const handleAutocompleteAccept = useCallback(() => {
