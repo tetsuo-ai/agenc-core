@@ -1646,6 +1646,86 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('dismissed @ suggestions refresh when MCP resources change for the same input', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'doc-old.md', displayText: 'doc-old.md', description: 'file' },
+    ]
+    const rendered = await renderHookHarness({ input: '@doc', cursorOffset: 4 })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'initial file suggestions',
+      )
+
+      harness.keybindings['autocomplete:dismiss']?.()
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'dismissed suggestions',
+      )
+
+      generateUnifiedSuggestionsMock.mockClear()
+      harness.appState.mcp = {
+        clients: [],
+        resources: [{ name: 'docs' }],
+      }
+      harness.unifiedSuggestions = [
+        {
+          displayText: 'docs://latest',
+          id: 'mcp-resource-docs-latest',
+          description: 'resource',
+        },
+      ]
+      rendered.rerender({ input: '@doc', cursorOffset: 4 })
+
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length > 0,
+        'refetch after MCP resources change',
+      )
+      await waitFor(
+        () =>
+          rendered.getSnapshot().suggestionType === 'file' &&
+          rendered.getSnapshot().suggestions[0]?.id ===
+            'mcp-resource-docs-latest',
+        'fresh MCP resource suggestions after dismissal',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('dismissed @ file suggestions stay dismissed on unrelated task changes', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'doc-old.md', displayText: 'doc-old.md', description: 'file' },
+    ]
+    const rendered = await renderHookHarness({ input: '@doc', cursorOffset: 4 })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'initial file suggestions',
+      )
+
+      harness.keybindings['autocomplete:dismiss']?.()
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'dismissed suggestions',
+      )
+
+      generateUnifiedSuggestionsMock.mockClear()
+      harness.appState.tasks = {
+        'agent-other': { status: 'running' },
+      }
+      rendered.rerender({ input: '@doc', cursorOffset: 4 })
+      await sleep(25)
+
+      expect(generateUnifiedSuggestionsMock).not.toHaveBeenCalled()
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('logs file suggestion provider failures and fails closed', async () => {
     const error = new Error('unified suggestions failed')
     generateUnifiedSuggestionsMock.mockRejectedValueOnce(error)

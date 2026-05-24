@@ -375,7 +375,14 @@ export function useTypeahead({
   const latestBashInputRef = useRef('');
   const currentMcpClientsRef = useRef(mcpClients);
   currentMcpClientsRef.current = mcpClients;
-  const prevSuggestionSourcesRef = useRef({ agents, mcpResources });
+  const prevSuggestionSourcesRef = useRef({
+    agentNameRegistry,
+    agents,
+    mcpClients,
+    mcpResources,
+    tasks,
+    teamContext
+  });
   // Track the latest slack channel token to discard stale results from MCP
   const latestSlackTokenRef = useRef('');
   const latestSlackRequestIdRef = useRef(0);
@@ -975,26 +982,54 @@ export function useTypeahead({
   // shouldn't re-trigger suggestions. The cursorOffsetRef is used to get the current
   // position when needed without causing re-renders.
   useEffect(() => {
-    // If suggestions were dismissed for this exact input, don't re-trigger
-    if (dismissedForInputRef.current === input) {
-      return;
-    }
     // When the actual input text changes (not just updateSuggestions being recreated),
     // reset the search token ref so the same query can be re-fetched.
     // This fixes: type @readme.md, clear, retype @readme.md → no suggestions.
     const previousSources = prevSuggestionSourcesRef.current;
+    const textBeforeCursor = input.substring(0, cursorOffsetRef.current);
+    const atMentionMatch = mode !== 'bash'
+      ? textBeforeCursor.match(/(^|\s)@([\w-]*)$/)
+      : null;
+    const hasAtCompletionToken = mode !== 'bash' && HAS_AT_SYMBOL_RE.test(textBeforeCursor);
+    const hasHashChannelToken = mode === 'prompt' && HASH_CHANNEL_RE.test(textBeforeCursor);
+    const atMentionPartial = (atMentionMatch?.[2] ?? '').toLowerCase();
+    const hasMatchingRegisteredAgent =
+      atMentionMatch !== null &&
+      Array.from(agentNameRegistry.keys()).some(name =>
+        name.toLowerCase().startsWith(atMentionPartial)
+      );
     const suggestionSourcesChanged =
-      previousSources.agents !== agents ||
-      previousSources.mcpResources !== mcpResources;
+      (hasAtCompletionToken && (
+        previousSources.agents !== agents ||
+        previousSources.mcpResources !== mcpResources
+      )) ||
+      (atMentionMatch !== null && (
+        previousSources.agentNameRegistry !== agentNameRegistry ||
+        previousSources.teamContext !== teamContext ||
+        (hasMatchingRegisteredAgent && previousSources.tasks !== tasks)
+      )) ||
+      (hasHashChannelToken && previousSources.mcpClients !== mcpClients);
+    // If suggestions were dismissed for this exact input, don't re-trigger unless
+    // the backing suggestion sources changed and the old dismissal is stale.
+    if (dismissedForInputRef.current === input && !suggestionSourcesChanged) {
+      return;
+    }
     if (prevInputRef.current !== input || suggestionSourcesChanged) {
       prevInputRef.current = input;
-      prevSuggestionSourcesRef.current = { agents, mcpResources };
+      prevSuggestionSourcesRef.current = {
+        agentNameRegistry,
+        agents,
+        mcpClients,
+        mcpResources,
+        tasks,
+        teamContext
+      };
       latestSearchTokenRef.current = null;
     }
     // Clear the dismissed state when input changes
     dismissedForInputRef.current = null;
     void updateSuggestions(input);
-  }, [agents, input, mcpResources, updateSuggestions]);
+  }, [agentNameRegistry, agents, input, mcpClients, mcpResources, tasks, teamContext, updateSuggestions]);
 
   // Handle tab key press - complete suggestions or trigger file suggestions
   const handleTab = useCallback(async () => {
