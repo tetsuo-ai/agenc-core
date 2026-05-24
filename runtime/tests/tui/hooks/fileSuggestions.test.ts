@@ -160,6 +160,19 @@ describe('fileSuggestions pure helpers', () => {
     expect(pathListSignature(original)).not.toBe(pathListSignature(tailChanged))
   })
 
+  test('pathListSignature changes for unsampled large-list renames', () => {
+    const original = Array.from(
+      { length: 1_000 },
+      (_, index) => `src/file-${index}.ts`,
+    )
+    const renamedOddEntry = [...original]
+    renamedOddEntry[501] = 'src/file-501-renamed.ts'
+
+    expect(pathListSignature(renamedOddEntry)).not.toBe(
+      pathListSignature(original),
+    )
+  })
+
   test('getDirectoryNames returns unique parent directories only', () => {
     const dirs = getDirectoryNames([
       'README.md',
