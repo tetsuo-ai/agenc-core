@@ -806,6 +806,11 @@ function PromptInput({
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] = useState<PermissionMode | null>(null);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const modeCycleKeybindingActive =
+    composerInputEnabled &&
+    !upstreamModalOverlayActive &&
+    !Boolean(showBashesDialog) &&
+    (promptKeyboardActive || showModeSwitcher || showAutoModeOptIn || Boolean(autoModeOptInTimeoutRef.current));
 
   useEffect(() => () => {
     if (autoModeOptInTimeoutRef.current) {
@@ -2216,12 +2221,18 @@ function PromptInput({
     'chat:stash': handleStash,
     'chat:modelPicker': handleModelPicker,
     'chat:thinkingToggle': handleThinkingToggle,
-    'chat:cycleMode': handleCycleMode,
     'chat:imagePaste': handleImagePaste
-  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
+  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleImagePaste]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
     isActive: promptKeyboardActive
+  });
+
+  // Keep mode cycling active while its own status/dialog overlays are visible,
+  // without re-enabling ordinary prompt editing behind those overlays.
+  useKeybinding('chat:cycleMode', handleCycleMode, {
+    context: 'Chat',
+    isActive: modeCycleKeybindingActive
   });
 
   // Shift+↑ enters message-actions cursor. Separate isActive so ctrl+r search
