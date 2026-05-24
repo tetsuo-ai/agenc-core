@@ -78,7 +78,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     mode: "search",
     title: () => "SEARCH",
     keybindings: ["j", "k", "J", "K", "enter", "o", "@", "A", "q"],
-    footerHints: "Search: j/k match  J/K file  enter edit  o keep focus  @ attach  A attach visible  q close",
+    footerHints: "Search: j/k match  J/K file  enter edit  o keep focus  @ attach  A attach all  q close",
     renderBody: ({ focused }) => <SearchSurface focused={focused} />,
   },
   {
