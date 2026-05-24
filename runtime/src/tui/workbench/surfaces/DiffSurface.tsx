@@ -58,10 +58,10 @@ export function DiffSurface({
   useRegisterKeybindingContext("Surface", focused);
   useKeybindings(
     {
-      "surface:up": () => setSelected((value) => Math.max(0, value - 1)),
-      "surface:down": () => setSelected((value) => Math.min(Math.max(0, files.length - 1), value + 1)),
-      "surface:pageUp": () => setSelected((value) => Math.max(0, value - 10)),
-      "surface:pageDown": () => setSelected((value) => Math.min(Math.max(0, files.length - 1), value + 10)),
+      "surface:up": () => setSelected((value) => Math.max(0, clampSurfaceSelection(value, files.length) - 1)),
+      "surface:down": () => setSelected((value) => Math.min(Math.max(0, files.length - 1), clampSurfaceSelection(value, files.length) + 1)),
+      "surface:pageUp": () => setSelected((value) => Math.max(0, clampSurfaceSelection(value, files.length) - 10)),
+      "surface:pageDown": () => setSelected((value) => Math.min(Math.max(0, files.length - 1), clampSurfaceSelection(value, files.length) + 10)),
       "surface:top": () => setSelected(0),
       "surface:bottom": () => setSelected(Math.max(0, files.length - 1)),
       "surface:open": () => {

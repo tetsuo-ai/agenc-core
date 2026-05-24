@@ -25,8 +25,9 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 import { createDiffMenuSnapshot } from "../../../src/commands/diff-menu.js";
+import { APPROVED, DENIED } from "../../../src/permissions/review-decision.js";
 import { createRoot } from "../../../src/tui/ink.js";
-import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
+import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
 import { DiffSurface, DiffSurfaceView } from "../../../src/tui/workbench/surfaces/DiffSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
@@ -171,6 +172,178 @@ describe("DiffSurface", () => {
     expect(output).toContain(`${selectedPath} - non-mutating review`);
   });
 
+  it("renders empty changed snapshots and remaining status markers", async () => {
+    const emptyOutput = await renderToString(
+      <DiffSurfaceView
+        snapshot={{ state: "changed", files: [], rawDiff: "", untrackedFiles: [] }}
+        selected={0}
+        decisions={{}}
+        focused={false}
+        pendingApprovalRisk={null}
+      />,
+      { columns: 100, rows: 24 },
+    );
+
+    expect(emptyOutput).toContain("0 files changed");
+
+    const statusOutput = await renderToString(
+      <DiffSurfaceView
+        snapshot={{
+          state: "changed",
+          rawDiff: "",
+          untrackedFiles: [],
+          files: [{
+            path: "src/deleted.ts",
+            status: "deleted",
+            previewLines: ["--- a/src/deleted.ts", "@@ -1 +0,0 @@", "-gone"],
+          }, {
+            path: "src/renamed.ts",
+            status: "renamed",
+            previewLines: ["diff --git a/src/old.ts b/src/renamed.ts", "@@ -1 +1 @@", " context"],
+          }],
+        }}
+        selected={1}
+        decisions={{ "src/deleted.ts": "skip" }}
+        focused={true}
+        pendingApprovalRisk={null}
+      />,
+      { columns: 100, rows: 24 },
+    );
+    const compactStatus = compact(statusOutput);
+
+    expect(compactStatus).toContain("NDsrc/deleted.ts");
+    expect(compactStatus).toContain("Rsrc/renamed.ts");
+    expect(statusOutput).toContain("context");
+  });
+
+  it("handles navigation, file actions, and stale high selections after files shrink", async () => {
+    const snapshot = createDiffMenuSnapshot({
+      rawDiff: Array.from({ length: 45 }, (_, index) => {
+        const suffix = String(index).padStart(2, "0");
+        return [
+          `diff --git a/src/file-${suffix}.ts b/src/file-${suffix}.ts`,
+          "@@ -1 +1 @@",
+          `-old${suffix}`,
+          `+new${suffix}`,
+        ].join("\n");
+      }).join("\n"),
+      nameStatus: Array.from({ length: 45 }, (_, index) => `M\tsrc/file-${String(index).padStart(2, "0")}.ts`).join("\n"),
+      numstat: Array.from({ length: 45 }, (_, index) => `1\t1\tsrc/file-${String(index).padStart(2, "0")}.ts`).join("\n"),
+      untrackedFiles: [],
+    });
+    diffHarness.snapshot = snapshot;
+    const changes: AppState[] = [];
+    const { root, stdin, stdout, output } = await mountDiffSurface({
+      onChangeAppState: ({ newState }) => changes.push(newState),
+    });
+
+    try {
+      await sleep();
+
+      expect(compact(output())).toContain("src/file-00.ts-non-mutatingreview");
+
+      diffHarness.handlers["surface:down"]?.();
+      await sleep();
+      expect(compact(output())).toContain("src/file-01.ts-non-mutatingreview");
+
+      diffHarness.handlers["surface:pageDown"]?.();
+      await sleep();
+      expect(compact(output())).toContain("src/file-11.ts-non-mutatingreview");
+
+      diffHarness.handlers["surface:pageUp"]?.();
+      await sleep();
+      expect(compact(output())).toContain("src/file-01.ts-non-mutatingreview");
+
+      diffHarness.handlers["surface:top"]?.();
+      await sleep();
+      expect(compact(output())).toContain("src/file-00.ts-non-mutatingreview");
+
+      diffHarness.handlers["surface:bottom"]?.();
+      await sleep();
+      expect(compact(output())).toContain("src/file-44.ts-non-mutatingreview");
+
+      (snapshot.files as unknown as unknown[]).splice(2);
+      diffHarness.handlers["surface:up"]?.();
+      await sleep();
+      expect(compact(output())).toContain("src/file-00.ts-non-mutatingreview");
+
+      diffHarness.handlers["surface:accept"]?.();
+      await sleep();
+      expect(compact(output())).toContain("markedaccept");
+      expect(compact(output())).toContain("YMsrc/file-00.ts");
+
+      diffHarness.handlers["surface:reject"]?.();
+      await sleep();
+      expect(compact(output())).toContain("Nskip");
+
+      diffHarness.handlers["surface:attach"]?.();
+      diffHarness.handlers["surface:open"]?.();
+      diffHarness.handlers["surface:top"]?.();
+      diffHarness.handlers["workbench:closeSurface"]?.();
+      await sleep();
+
+      expect(changes.some((state) =>
+        state.workbench?.attachments.some((attachment) =>
+          attachment.kind === "diff-hunk" && attachment.path === "src/file-00.ts"
+        )
+      )).toBe(true);
+      expect(changes.some((state) =>
+        state.workbench?.activeSurfaceMode === "buffer" &&
+        state.workbench.activeFilePath === "src/file-00.ts"
+      )).toBe(true);
+      expect(changes.at(-1)?.workbench?.activeSurfaceMode).toBe("transcript");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("does not dispatch file actions before a diff file is selected", async () => {
+    diffHarness.snapshot = createDiffMenuSnapshot({
+      rawDiff: "",
+      nameStatus: "",
+      numstat: "",
+      untrackedFiles: [],
+    });
+    const changes: AppState[] = [];
+    const { root, stdin, stdout } = await mountDiffSurface({
+      onChangeAppState: ({ newState }) => changes.push(newState),
+    });
+
+    try {
+      diffHarness.handlers["surface:open"]?.();
+      diffHarness.handlers["surface:attach"]?.();
+      diffHarness.handlers["surface:accept"]?.();
+      diffHarness.handlers["surface:reject"]?.();
+      await sleep();
+
+      expect(changes).toEqual([]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it.each([
+    ["not-repo", createDiffMenuSnapshot({ rawDiff: "", nameStatus: "", numstat: "", untrackedFiles: [], notRepo: true }), "repository"],
+    ["clean", createDiffMenuSnapshot({ rawDiff: "", nameStatus: "", numstat: "", untrackedFiles: [] }), "treechanges"],
+  ])("renders %s diff snapshot states", async (_name, snapshot, expectedText) => {
+    diffHarness.snapshot = snapshot;
+    const { root, stdin, stdout, output } = await mountDiffSurface();
+
+    try {
+      await sleep();
+
+      expect(compact(output())).toContain(expectedText);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("keeps destructive pending approvals out of the diff accept shortcut", async () => {
     diffHarness.snapshot = createDiffMenuSnapshot({
       rawDiff: [
@@ -268,6 +441,44 @@ describe("DiffSurface", () => {
     }
   });
 
+  it("resolves non-destructive pending approvals from diff shortcuts", async () => {
+    diffHarness.snapshot = createDiffMenuSnapshot({
+      rawDiff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+      ].join("\n"),
+      nameStatus: "M\tsrc/app.ts",
+      numstat: "1\t1\tsrc/app.ts",
+      untrackedFiles: [],
+    });
+    const request = pendingRequest({
+      id: "approval-low",
+      description: "Read file",
+      input: { command: "cat src/app.ts" },
+      toolName: "Read",
+    });
+    const { root, stdin, stdout, output } = await mountDiffSurface({ pendingApproval: request });
+
+    try {
+      await sleep();
+
+      expect(compact(output())).toContain("lowapproval");
+
+      diffHarness.handlers["surface:accept"]?.();
+      diffHarness.handlers["surface:reject"]?.();
+      await sleep();
+
+      expect(request.resolve).toHaveBeenNthCalledWith(1, APPROVED);
+      expect(request.resolve).toHaveBeenNthCalledWith(2, DENIED);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("renders diff snapshot load failures instead of staying on the loading state", async () => {
     diffHarness.error = new Error("git status failed");
     const { stdin, stdout, output } = createStreams();
@@ -292,7 +503,54 @@ describe("DiffSurface", () => {
       stdout.end();
     }
   });
+
+  it.each([
+    ["plain string failures", "plain failed", "toloaddiff:plainfailed"],
+    ["unknown failures", new Error("   "), "toloaddiff:unknownerror"],
+  ])("renders %s", async (_name, error, expected) => {
+    diffHarness.error = error;
+    const { root, stdin, stdout, output } = await mountDiffSurface();
+
+    try {
+      await sleep();
+
+      expect(compact(output())).toContain(expected);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
 });
+
+async function mountDiffSurface({
+  onChangeAppState,
+  pendingApproval = null,
+}: {
+  readonly onChangeAppState?: (change: { readonly newState: AppState }) => void;
+  readonly pendingApproval?: ReturnType<typeof pendingRequest> | null;
+} = {}): Promise<{
+  readonly root: Awaited<ReturnType<typeof createRoot>>;
+  readonly stdin: TestStdin;
+  readonly stdout: PassThrough;
+  readonly output: () => string;
+}> {
+  const { stdin, stdout, output } = createStreams();
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  });
+  root.render(
+    <AppStateProvider
+      initialState={getDefaultAppState()}
+      onChangeAppState={onChangeAppState}
+    >
+      <DiffSurface focused={true} pendingApproval={pendingApproval} />
+    </AppStateProvider>,
+  );
+  return { root, stdin, stdout, output };
+}
 
 function createStreams(): {
   readonly stdin: TestStdin;
