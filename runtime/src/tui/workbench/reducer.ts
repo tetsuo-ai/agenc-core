@@ -174,6 +174,21 @@ export function visibleWorkbenchPane(state: WorkbenchState): WorkbenchPane {
   return state.focusedPane;
 }
 
+export function composerAttachmentsForState(
+  state: WorkbenchState,
+): readonly WorkbenchAttachment[] {
+  const attachmentsById = new Map(state.attachments.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  const attachments: WorkbenchAttachment[] = [];
+  for (const id of state.composerAttachmentIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const attachment = attachmentsById.get(id);
+    if (attachment) attachments.push(attachment);
+  }
+  return attachments;
+}
+
 function openSurface(
   state: WorkbenchState,
   mode: ActiveSurfaceMode,

@@ -34,6 +34,7 @@ const harness = vi.hoisted(() => {
     },
     viewingAgentTaskId: null,
     viewSelectionMode: null,
+    workbench: undefined as unknown,
   }
 
   return {
@@ -176,6 +177,7 @@ const harness = vi.hoisted(() => {
       }
       appState.viewingAgentTaskId = null
       appState.viewSelectionMode = null
+      appState.workbench = undefined
       harness.updateSettingsForSource.mockClear()
       harness.activeAgent = { type: 'leader' }
       harness.autoModeOptInProps = undefined
@@ -771,6 +773,7 @@ import { createRoot } from '../../ink/root.js'
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'
 import { cacheImagePath, storeImage } from '../../../utils/imageStore.js'
 import { logError } from '../../../utils/log.js'
+import { getDefaultWorkbenchState } from '../../../../src/tui/workbench/reducer.js'
 import PromptInput from './PromptInput.js'
 
 function sleep(ms: number): Promise<void> {
@@ -1093,6 +1096,43 @@ describe('PromptInput render surface', () => {
         expect.objectContaining({
           key: 'no-image-in-clipboard',
         }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('submits only composer-selected workbench attachments', async () => {
+    harness.appState.workbench = {
+      ...getDefaultWorkbenchState(),
+      attachments: [
+        {
+          id: 'file:src/active.ts',
+          kind: 'file',
+          label: 'src/active.ts',
+          path: 'src/active.ts',
+        },
+        {
+          id: 'file:src/stale.ts',
+          kind: 'file',
+          label: 'src/stale.ts',
+          path: 'src/stale.ts',
+        },
+      ],
+      composerAttachmentIds: ['file:src/active.ts'],
+    }
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({ input: 'review', onSubmit })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('review')
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        '@src/active.ts\n\nreview',
+        expect.anything(),
+        undefined,
+        expect.objectContaining({ mode: 'prompt' }),
       )
     } finally {
       await rendered.dispose()

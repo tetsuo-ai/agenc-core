@@ -106,6 +106,7 @@ import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
 import { materializeAttachmentMentions } from '../../workbench/commands.js';
 import { useWorkbenchComposerFocus } from '../../workbench/composerFocusContext.js';
+import { composerAttachmentsForState } from '../../workbench/reducer.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../../workbench/state.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksPanel } from '../tasks/BackgroundTasksPanel.js';
@@ -1292,7 +1293,9 @@ function PromptInput({
     // same "still visible?" derivation as footerItemSelected so a stale
     // selection (pill disappeared) doesn't swallow Enter.
     const state = store.getState();
-    const workbenchAttachments = isWorkbenchEnabled() ? state.workbench?.attachments ?? [] : [];
+    const workbenchAttachments = isWorkbenchEnabled() && state.workbench
+      ? composerAttachmentsForState(state.workbench)
+      : [];
     const hasWorkbenchAttachments = workbenchAttachments.length > 0;
     if (state.footerSelection && footerItems.includes(state.footerSelection)) {
       return;
