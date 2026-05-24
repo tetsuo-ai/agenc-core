@@ -26,9 +26,8 @@ export function AgentsRail({
   const { selectedId, selectedIndex, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
   const selectByDelta = (delta: number) => {
     if (taskList.length === 0) return;
-    const base = selectedIndex < 0 ? 0 : selectedIndex;
-    const next = Math.max(0, Math.min(taskList.length - 1, base + delta));
-    dispatch({ type: "selectAgent", taskId: taskList[next]?.id ?? null });
+    const next = Math.max(0, Math.min(taskList.length - 1, selectedIndex + delta));
+    dispatch({ type: "selectAgent", taskId: taskList[next].id });
   };
 
   useRegisterKeybindingContext("Agents", focused);
@@ -87,10 +86,10 @@ export function resolveAgentSelection(tasks: readonly any[], selectedId: string 
   }
   const selectedIndex = orderedTasks.findIndex((task: any) => task.id === selectedId);
   const resolvedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-  const selectedTask = orderedTasks[resolvedIndex] ?? null;
+  const selectedTask = orderedTasks[resolvedIndex];
   return {
-    selectedId: selectedTask?.id ?? null,
-    selectedIndex: selectedTask ? resolvedIndex : -1,
+    selectedId: selectedTask.id,
+    selectedIndex: resolvedIndex,
     selectedTask,
   };
 }
@@ -138,13 +137,18 @@ function AgentRailRow({
   readonly selected: boolean;
 }): React.ReactElement {
   const progress = task.progress ?? {};
-  const activity = progress.lastActivity?.activityDescription ?? progress.lastActivity?.toolName ?? task.status;
+  const activity =
+    nonBlankString(progress.lastActivity?.activityDescription) ??
+    nonBlankString(progress.lastActivity?.toolName) ??
+    nonBlankString(task.status) ??
+    "unknown";
+  const description = nonBlankString(task.description) ?? nonBlankString(task.id) ?? "agent";
   const stopAction = workbenchStopActionForTask(task);
   const diffCount = progress.diffCount ?? task.diffCount;
   const approvalPending = task.approvalPending === true || task.pendingApproval === true;
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text color={selected ? "suggestion" : undefined} wrap="truncate-end">{statusMarker(task.status)} {task.description ?? task.id}</Text>
+      <Text color={selected ? "suggestion" : undefined} wrap="truncate-end">{statusMarker(task.status)} {description}</Text>
       <Text dimColor wrap="truncate-end">{activity}</Text>
       <Text dimColor wrap="truncate-end">
         {formatTaskElapsed(task)} · tools {progress.toolUseCount ?? 0} tokens {progress.tokenCount ?? 0}
@@ -154,6 +158,10 @@ function AgentRailRow({
       </Text>
     </Box>
   );
+}
+
+function nonBlankString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function statusMarker(status: string): string {
