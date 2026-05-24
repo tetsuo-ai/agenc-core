@@ -1077,10 +1077,15 @@ export function useTypeahead({
             isQuoted: completionToken.isQuoted,
             isComplete: false // partial completion
           });
+          const updatedInput =
+            input.slice(0, completionToken.startPos) +
+            replacementValue +
+            input.slice(completionToken.startPos + completionToken.token.length);
+          const updatedCursorOffset = completionToken.startPos + replacementValue.length;
           applyFileSuggestion(replacementValue, input, completionToken.token, completionToken.startPos, onInputChange, setCursorOffset);
           // Don't clear suggestions so user can continue typing or select a specific option
           // Instead, update for the new prefix
-          void updateSuggestions(input.replace(completionToken.token, replacementValue), cursorOffset);
+          void updateSuggestions(updatedInput, updatedCursorOffset);
         } else if (index < suggestions.length) {
           // Otherwise, apply the selected suggestion
           const suggestion = suggestions[index];
