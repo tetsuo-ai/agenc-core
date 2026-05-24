@@ -69,7 +69,7 @@ async function waitForRender(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 30))
 }
 
-function inputOption(initialValue: string): OptionWithDescription<string> {
+function inputOption(initialValue?: string): OptionWithDescription<string> {
   return {
     type: 'input',
     value: 'prompt',
@@ -154,6 +154,25 @@ describe('Select input initial value coverage', () => {
       expect(selectInputHookMock.props?.inputValues?.get('prompt')).toBe(
         'draft two',
       )
+
+      await view.rerender(
+        <Select
+          options={[inputOption()]}
+          defaultFocusValue="prompt"
+        />,
+      )
+      await waitForRender()
+      expect(latestInputOption().inputValue).toBe('')
+      expect(selectInputHookMock.props?.inputValues?.get('prompt')).toBe('')
+
+      await view.rerender(
+        <Select
+          options={[inputOption('draft three')]}
+          defaultFocusValue="prompt"
+        />,
+      )
+      await waitForRender()
+      expect(latestInputOption().inputValue).toBe('draft three')
 
       latestInputOption().onInputChange('user override')
       await waitForRender()

@@ -237,7 +237,7 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
     t7 = () => {
       const initialMap = new Map<T, string>();
       options.forEach(option => {
-        if (option.type === "input" && option.initialValue) {
+        if (option.type === "input" && option.initialValue !== undefined) {
           initialMap.set(option.value, option.initialValue);
         }
       });
@@ -262,10 +262,10 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
   if ($[3] !== inputValues || $[4] !== options) {
     t9 = () => {
       for (const option_0 of options) {
-        if (option_0.type === "input" && option_0.initialValue !== undefined) {
+        if (option_0.type === "input") {
           const lastInitial = lastInitialValues.current.get(option_0.value) ?? "";
           const currentValue = inputValues.get(option_0.value) ?? "";
-          const newInitial = option_0.initialValue;
+          const newInitial = option_0.initialValue ?? "";
           if (newInitial !== lastInitial && currentValue === lastInitial) {
             setInputValues((prev: Map<T, string>) => {
               const next = new Map(prev);
