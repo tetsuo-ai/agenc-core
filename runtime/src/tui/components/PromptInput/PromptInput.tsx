@@ -622,6 +622,8 @@ function PromptInput({
   // without clobbering a pending internal keystroke during render.
   const lastInternalInputRef = React.useRef(input);
   const lastPropInputRef = React.useRef(input);
+  const pastedContentsRef = useRef(pastedContents);
+  const lastPastedContentsPropRef = useRef(pastedContents);
   React.useLayoutEffect(() => {
     if (input === lastPropInputRef.current) {
       return;
@@ -635,11 +637,38 @@ function PromptInput({
     lastInternalInputRef.current = input;
     setCursorOffset(prev => prev === input.length ? prev : input.length);
   }, [input]);
+  React.useLayoutEffect(() => {
+    if (pastedContents === lastPastedContentsPropRef.current) {
+      return;
+    }
+    lastPastedContentsPropRef.current = pastedContents;
+    if (input === lastInternalInputRef.current) {
+      pastedContentsRef.current = pastedContents;
+    }
+  }, [input, pastedContents]);
   // Wrap onInputChange to track internal changes before they trigger re-render
   const trackAndSetInput = React.useCallback((value: string) => {
     lastInternalInputRef.current = value;
     onInputChange(value);
   }, [onInputChange]);
+  const setPastedContentsAndRef = useCallback(
+    (next: Record<number, PastedContent>) => {
+      pastedContentsRef.current = next;
+      setPastedContents(next);
+    },
+    [setPastedContents],
+  );
+  const updatePastedContentsAndRef = useCallback(
+    (
+      updater: (
+        prev: Record<number, PastedContent>,
+      ) => Record<number, PastedContent>,
+    ) => {
+      const next = updater(pastedContentsRef.current);
+      setPastedContentsAndRef(next);
+    },
+    [setPastedContentsAndRef],
+  );
   const store = useAppStateStore();
   const setAppState = useSetAppState();
   const tasks = useAppState(s => s.tasks);
@@ -692,9 +721,9 @@ function PromptInput({
     historyMatch,
     historyFailedMatch
   } = useHistorySearch(entry => {
-    setPastedContents(entry.pastedContents);
+    setPastedContentsAndRef(entry.pastedContents);
     void onSubmit(entry.display);
-  }, input, trackAndSetInput, setCursorOffset, cursorOffset, onModeChange, mode, isSearchingHistory, setIsSearchingHistory, setPastedContents, pastedContents);
+  }, input, trackAndSetInput, setCursorOffset, cursorOffset, onModeChange, mode, isSearchingHistory, setIsSearchingHistory, setPastedContentsAndRef, pastedContents);
   // Counter for paste IDs (shared between images and text).
   // Compute initial value once from existing messages (for --continue/--resume).
   // useRef(fn()) evaluates fn() on every render and discards the result after
@@ -704,8 +733,6 @@ function PromptInput({
   if (nextPasteIdRef.current === -1) {
     nextPasteIdRef.current = getNextPasteIdAfter(messages, pastedContents, input);
   }
-  const pastedContentsRef = useRef(pastedContents);
-  pastedContentsRef.current = pastedContents;
   function allocatePasteId(): number {
     const nextPasteId = Math.max(
       nextPasteIdRef.current,
@@ -1153,7 +1180,7 @@ function PromptInput({
     pastedContents,
     onInputChange: trackAndSetInput,
     setCursorOffset,
-    setPastedContents
+    setPastedContents: setPastedContentsAndRef
   });
   const defaultPlaceholder = usePromptInputPlaceholder({
     input,
@@ -1215,7 +1242,7 @@ function PromptInput({
   } = useArrowKeyHistory((value: string, historyMode: HistoryMode, pastedContents: Record<number, PastedContent>) => {
     onChange(value);
     onModeChange(historyMode);
-    setPastedContents(pastedContents);
+    setPastedContentsAndRef(pastedContents);
   }, input, pastedContents, setCursorOffset, mode);
 
   // Dismiss search hint when user starts searching
@@ -1598,7 +1625,7 @@ function PromptInput({
     void storeImage(newContent);
 
     // Update UI
-    setPastedContents(prev => ({
+    updatePastedContentsAndRef(prev => ({
       ...prev,
       [pasteId]: newContent
     }));
@@ -1615,8 +1642,8 @@ function PromptInput({
   // the ref. onImagePaste batches setPastedContents + insertTextAtCursor in the
   // same event, so this effect sees the placeholder already present.
   useEffect(() => {
-    const referencedIds = new Set(parseReferences(input).map(r => r.id));
-    setPastedContents(prev => {
+    const referencedIds = new Set(parseReferences(lastInternalInputRef.current).map(r => r.id));
+    updatePastedContentsAndRef(prev => {
       const orphaned = Object.values(prev).filter(c => c.type === 'image' && !referencedIds.has(c.id));
       if (orphaned.length === 0) return prev;
       const next = {
@@ -1625,7 +1652,7 @@ function PromptInput({
       for (const img of orphaned) delete next[img.id];
       return next;
     });
-  }, [input, setPastedContents]);
+  }, [input, updatePastedContentsAndRef]);
   function onTextPaste(rawText: string) {
     pendingSpaceAfterPillRef.current = false;
     // Clean up pasted text - strip ANSI escape codes and normalize line endings and tabs
@@ -1672,7 +1699,7 @@ function PromptInput({
         type: 'text',
         content: text
       };
-      setPastedContents(prev => ({
+      updatePastedContentsAndRef(prev => ({
         ...prev,
         [pasteId]: newContent
       }));
@@ -1720,7 +1747,7 @@ function PromptInput({
 
     // Restore images from queued commands to pastedContents
     if (result.images.length > 0) {
-      setPastedContents(prev => {
+      updatePastedContentsAndRef(prev => {
         const newContents = {
           ...prev
         };
@@ -1731,7 +1758,7 @@ function PromptInput({
       });
     }
     return true;
-  }, [trackAndSetInput, onModeChange, input, cursorOffset, setPastedContents]);
+  }, [trackAndSetInput, onModeChange, input, cursorOffset, updatePastedContentsAndRef]);
 
   // Insert the at-mentioned reference (the file and, optionally, a line range) when
   // we receive an at-mentioned notification the IDE.
@@ -1764,10 +1791,10 @@ function PromptInput({
       if (previousState) {
         trackAndSetInput(previousState.text);
         setCursorOffset(previousState.cursorOffset);
-        setPastedContents(previousState.pastedContents);
+        setPastedContentsAndRef(previousState.pastedContents);
       }
     }
-  }, [canUndo, undo, trackAndSetInput, setPastedContents]);
+  }, [canUndo, undo, trackAndSetInput, setPastedContentsAndRef]);
 
   // Handler for chat:newline - insert a newline at the cursor position
   const handleNewline = useCallback(() => {
@@ -1813,22 +1840,29 @@ function PromptInput({
 
   // Handler for chat:stash - stash/unstash prompt
   const handleStash = useCallback(() => {
-    if (input.trim() === '' && stashedPrompt !== undefined) {
+    const currentInput = lastInternalInputRef.current;
+    const currentCursorOffset = cursorOffsetRef.current;
+    const currentPastedContents = pastedContentsRef.current;
+    if (currentInput.trim() === '' && stashedPrompt !== undefined) {
       // Pop stash when input is empty
       trackAndSetInput(stashedPrompt.text);
+      cursorOffsetRef.current = stashedPrompt.cursorOffset;
       setCursorOffset(stashedPrompt.cursorOffset);
-      setPastedContents(stashedPrompt.pastedContents);
+      setPastedContentsAndRef(stashedPrompt.pastedContents);
       setStashedPrompt(undefined);
-    } else if (input.trim() !== '') {
+      pendingSpaceAfterPillRef.current = false;
+    } else if (currentInput.trim() !== '') {
       // Push to stash (save text, cursor position, and pasted contents)
       setStashedPrompt({
-        text: input,
-        cursorOffset,
-        pastedContents
+        text: currentInput,
+        cursorOffset: currentCursorOffset,
+        pastedContents: currentPastedContents
       });
       trackAndSetInput('');
+      cursorOffsetRef.current = 0;
       setCursorOffset(0);
-      setPastedContents({});
+      setPastedContentsAndRef({});
+      pendingSpaceAfterPillRef.current = false;
       // Track usage for /discover and stop showing hint
       saveGlobalConfig(c => {
         if (c.hasUsedStash) return c;
@@ -1838,7 +1872,7 @@ function PromptInput({
         };
       });
     }
-  }, [input, cursorOffset, stashedPrompt, trackAndSetInput, setStashedPrompt, pastedContents, setPastedContents]);
+  }, [stashedPrompt, trackAndSetInput, setStashedPrompt, setPastedContentsAndRef]);
 
   // Handler for chat:modelPicker - toggle model picker
   const handleModelPicker = useCallback(() => {
@@ -2623,7 +2657,7 @@ function PromptInput({
       const value = getValueFromInput(entry.display);
       onModeChange(entryMode);
       trackAndSetInput(value);
-      setPastedContents(entry.pastedContents);
+      setPastedContentsAndRef(entry.pastedContents);
       setCursorOffset(value.length);
       setShowHistoryPicker(false);
     }} onCancel={() => setShowHistoryPicker(false)} />;
@@ -2674,7 +2708,7 @@ function PromptInput({
       if (previousState) {
         trackAndSetInput(previousState.text);
         setCursorOffset(previousState.cursorOffset);
-        setPastedContents(previousState.pastedContents);
+        setPastedContentsAndRef(previousState.pastedContents);
       }
     } : undefined,
     highlights: combinedHighlights,
