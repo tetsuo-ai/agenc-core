@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -195,6 +195,108 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("starts one refresh interval and clears it on dispose", () => {
+    vi.useFakeTimers();
+    const store = new ProjectTreeStore("/repo", 25);
+    const refresh = vi.spyOn(store, "refresh").mockResolvedValue(undefined);
+
+    try {
+      store.start();
+      store.start();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(75);
+
+      expect(refresh).toHaveBeenCalledTimes(4);
+
+      store.dispose();
+      vi.advanceTimersByTime(75);
+
+      expect(refresh).toHaveBeenCalledTimes(4);
+    } finally {
+      store.dispose();
+      refresh.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores navigation commands before any selectable rows exist", () => {
+    const store = new ProjectTreeStore("/repo", 0);
+    const snapshots: string[] = [];
+    const unsubscribe = store.subscribe(() => {
+      snapshots.push(JSON.stringify(store.getSnapshot()));
+    });
+
+    try {
+      store.move(1);
+      store.moveToStart();
+      store.moveToEnd();
+      store.toggle();
+      store.expand();
+      store.collapse();
+      store.reveal();
+
+      expect(store.getCursorPath()).toBeNull();
+      expect(store.getCursorRow()).toBeNull();
+      expect(snapshots).toEqual([]);
+
+      store.setActivePath(null);
+      expect(store.getSnapshot().activePath).toBeNull();
+      expect(snapshots).toHaveLength(1);
+    } finally {
+      unsubscribe();
+      store.dispose();
+    }
+  });
+
+  it("keeps stale refresh completions from overwriting the latest snapshot", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-stale-refresh-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, "latest.ts"), "latest\n", "utf8");
+
+      const firstRefresh = store.refresh();
+      const secondRefresh = store.refresh();
+      await Promise.all([firstRefresh, secondRefresh]);
+
+      expect(store.getSnapshot()).toMatchObject({
+        loading: false,
+        error: null,
+        cursorPath: "latest.ts",
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reports refresh failures from invalid workspaces and ignores stale failures", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-refresh-error-"));
+    const invalidCwd = join(repo, "not-a-directory");
+    const store = new ProjectTreeStore(invalidCwd, 0);
+
+    try {
+      await writeFile(invalidCwd, "file\n", "utf8");
+
+      const firstRefresh = store.refresh();
+      const secondRefresh = store.refresh();
+      await Promise.all([firstRefresh, secondRefresh]);
+
+      const snapshot = store.getSnapshot();
+
+      expect(snapshot.loading).toBe(false);
+      expect(snapshot.error).toEqual(expect.stringContaining("ENOTDIR"));
+      expect(snapshot.rows.find((row) => row.kind === "error")).toMatchObject({
+        label: "No project files",
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes hidden cursor paths to the nearest visible row", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-store-"));
     const store = new ProjectTreeStore(repo, 0);
@@ -276,6 +378,125 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("normalizes search-hit and in-flight path sets without emitting unchanged snapshots", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-path-sets-"));
+    const store = new ProjectTreeStore(repo, 0);
+    const snapshots: string[] = [];
+    const unsubscribe = store.subscribe(() => {
+      snapshots.push(JSON.stringify(store.getSnapshot()));
+    });
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
+
+      await store.refresh();
+      store.reveal("src/nested/app.ts");
+      const baselineEmits = snapshots.length;
+
+      store.setSearchHitPaths(["src\\nested\\app.ts"]);
+      store.setSearchHitPaths(["src/nested/app.ts"]);
+      store.setInFlightPaths(["src\\nested\\missing.ts"]);
+      store.setInFlightPaths(["src/nested/app.ts"]);
+
+      const snapshot = store.getSnapshot();
+      const row = snapshot.rows.find((item) => item.path === "src/nested/app.ts");
+
+      expect(snapshots).toHaveLength(baselineEmits + 3);
+      expect(row).toMatchObject({
+        inFlight: true,
+        searchHit: true,
+      });
+    } finally {
+      unsubscribe();
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("navigates, expands, collapses, and reveals project tree rows", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-navigation-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "README.md"), "readme\n", "utf8");
+      await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
+      await writeFile(join(repo, "src", "other.ts"), "other\n", "utf8");
+
+      await store.refresh();
+
+      expect(store.getCursorPath()).toBe("README.md");
+      expect(store.getCursorRow()).toMatchObject({
+        kind: "file",
+        path: "README.md",
+      });
+
+      store.expand("README.md");
+      expect(store.getSnapshot().expandedPaths).toEqual([]);
+
+      store.move(-1);
+      expect(store.getCursorPath()).toBe("src");
+
+      store.toggle();
+      expect(store.getSnapshot().expandedPaths).toContain("src");
+
+      store.collapse("src");
+      expect(store.getSnapshot().expandedPaths).not.toContain("src");
+
+      store.collapse("README.md");
+      expect(store.getCursorPath()).toBe("src");
+
+      store.toggle();
+      expect(store.getSnapshot().expandedPaths).toContain("src");
+
+      store.expand("missing.ts");
+      expect(store.getSnapshot().expandedPaths).toContain("src");
+
+      store.move(1);
+      expect(store.getCursorPath()).toBe("src/nested");
+
+      store.expand("src/nested");
+      store.move(1);
+      expect(store.getCursorPath()).toBe("src/nested/app.ts");
+
+      store.collapse("src/nested/app.ts");
+      expect(store.getCursorPath()).toBe("src/nested");
+
+      store.reveal("src/nested/app.ts");
+      expect(store.getCursorPath()).toBe("src/nested/app.ts");
+
+      store.toggle("src");
+      expect(store.getCursorPath()).toBe("src");
+      expect(store.getSnapshot().expandedPaths).not.toContain("src");
+
+      store.movePage(1);
+      expect(store.getCursorPath()).toBe("README.md");
+
+      store.expand("src");
+      store.reveal("src");
+      store.setViewportRows(2.9);
+      store.movePage(1);
+      expect(store.getCursorPath()).toBe("src/nested");
+
+      store.moveToEnd();
+      expect(store.getCursorPath()).toBe("README.md");
+
+      store.moveToStart();
+      expect(store.getCursorPath()).toBe("src");
+
+      store.setActivePath("src/nested/app.ts");
+      store.reveal();
+      expect(store.getCursorPath()).toBe("src/nested/app.ts");
+
+      store.toggle("src/nested/app.ts");
+      expect(store.getCursorPath()).toBe("src/nested/app.ts");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("keeps ignored-only fallback directories out of non-git workspaces", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-ignored-only-"));
     const store = new ProjectTreeStore(repo, 0);
@@ -296,6 +517,27 @@ describe("project tree helpers", () => {
         error: null,
         loading: false,
       });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to top-level paths when gitignore excludes scanner output", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-top-level-fallback-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, ".gitignore"), "local/\n.gitignore\n", "utf8");
+      await mkdir(join(repo, "local"), { recursive: true });
+
+      await store.refresh();
+
+      const paths = store.getSnapshot().rows.map((row) => row.path);
+
+      expect(paths).toContain(".gitignore");
+      expect(paths).toContain("local");
+      expect(store.getCursorPath()).toBe(".gitignore");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -335,6 +577,81 @@ describe("project tree helpers", () => {
       expect(await readFile(join(repo, "src", "new-file.ts"), "utf8")).toBe("");
       expect(store.getCursorPath()).toBe("src/new-file.ts");
       expect(store.getSnapshot().rows.map((row) => row.path)).toContain("src/new-file.ts");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid file creation paths before touching disk", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-create-invalid-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await store.refresh();
+
+      await expect(store.createFile("   ")).resolves.toEqual({
+        ok: false,
+        error: "Enter a workspace-relative path.",
+      });
+      await expect(store.createFile("src/")).resolves.toEqual({
+        ok: false,
+        error: "Enter a file path, not a directory path.",
+      });
+      await expect(store.createFile(".")).resolves.toEqual({
+        ok: false,
+        error: "Path must stay inside the workspace.",
+      });
+      await expect(store.createFile("/tmp/outside.ts")).resolves.toEqual({
+        ok: false,
+        error: "Use a workspace-relative path, not an absolute path.",
+      });
+      await expect(store.renamePath("../outside.ts", "inside.ts")).resolves.toEqual({
+        ok: false,
+        error: "Path must stay inside the workspace.",
+      });
+      await expect(store.renamePath("inside.ts", ".")).resolves.toEqual({
+        ok: false,
+        error: "Path must stay inside the workspace.",
+      });
+      await expect(store.deletePath(".")).resolves.toEqual({
+        ok: false,
+        error: "Path must stay inside the workspace.",
+      });
+
+      expect(await readdir(repo)).toEqual([]);
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("returns stable errors for existing creates and missing renames or deletes", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-mutation-errors-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, "exists.ts"), "exists\n", "utf8");
+      await store.refresh();
+
+      await expect(store.createFile("exists.ts")).resolves.toEqual({
+        ok: false,
+        error: "Cannot create exists.ts: path already exists.",
+      });
+      await expect(store.renamePath("missing.ts", "renamed.ts")).resolves.toEqual({
+        ok: false,
+        error: "Cannot rename missing.ts: path does not exist.",
+      });
+      await expect(store.deletePath("missing.ts")).resolves.toEqual({
+        ok: false,
+        error: "Cannot delete missing.ts: path does not exist.",
+      });
+      await expect(store.renamePath("exists.ts", "bad\0target.ts")).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("Cannot rename exists.ts:"),
+      });
+
+      expect(await readFile(join(repo, "exists.ts"), "utf8")).toBe("exists\n");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -419,12 +736,15 @@ describe("project tree helpers", () => {
     const store = new ProjectTreeStore(repo, 0);
 
     try {
+      await mkdir(join(repo, "docs"), { recursive: true });
       await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "docs", "guide.md"), "guide\n", "utf8");
       await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
       await store.refresh();
+      store.reveal("docs/guide.md");
       store.reveal("src/nested/app.ts");
 
-      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["src", "src/nested"]);
+      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["docs", "src", "src/nested"]);
 
       await expect(store.renamePath("src", "lib")).resolves.toEqual({
         ok: true,
@@ -434,7 +754,8 @@ describe("project tree helpers", () => {
       const snapshot = store.getSnapshot();
       const rowPaths = snapshot.rows.map((row) => row.path);
 
-      expect([...snapshot.expandedPaths].sort()).toEqual(["lib", "lib/nested"]);
+      expect([...snapshot.expandedPaths].sort()).toEqual(["docs", "lib", "lib/nested"]);
+      expect(rowPaths).toContain("docs/guide.md");
       expect(rowPaths).toContain("lib/nested/app.ts");
       expect(rowPaths).not.toContain("src");
       expect(snapshot.expandedPaths).not.toContain("src");
@@ -532,21 +853,25 @@ describe("project tree helpers", () => {
     const store = new ProjectTreeStore(repo, 0);
 
     try {
+      await mkdir(join(repo, "docs"), { recursive: true });
       await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "docs", "guide.md"), "guide\n", "utf8");
       await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
       await writeFile(join(repo, "README.md"), "readme\n", "utf8");
       await store.refresh();
+      store.reveal("docs/guide.md");
       store.reveal("src/nested/app.ts");
 
-      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["src", "src/nested"]);
+      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["docs", "src", "src/nested"]);
 
       await expect(store.deletePath("src")).resolves.toEqual({ ok: true, path: "src" });
 
       const snapshot = store.getSnapshot();
 
-      expect(snapshot.expandedPaths).toEqual([]);
+      expect(snapshot.expandedPaths).toEqual(["docs"]);
+      expect(snapshot.rows.map((row) => row.path)).toContain("docs/guide.md");
       expect(snapshot.rows.map((row) => row.path)).not.toContain("src");
-      expect(snapshot.cursorPath).toBe("README.md");
+      expect(snapshot.cursorPath).toBe("docs");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
