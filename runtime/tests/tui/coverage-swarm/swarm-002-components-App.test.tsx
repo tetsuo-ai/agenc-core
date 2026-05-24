@@ -5,6 +5,7 @@ import type {
   McpPrimitiveSchemaDefinition,
   RequestUserInputEvent,
 } from "../../elicitation/types.js";
+import { isMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 import { getCommandQueue, resetCommandQueue } from "../../utils/messageQueueManager.js";
 import {
   createElicitationQueue,
@@ -261,7 +262,7 @@ describe("App coverage swarm row 002", () => {
       | ((event: {
           msg: {
             type?: unknown;
-            payload: { serverName: string; elicitationId: string };
+            payload?: { serverName?: unknown; elicitationId?: unknown };
           };
         }) => void)
       | undefined;
@@ -317,6 +318,16 @@ describe("App coverage swarm row 002", () => {
     await Promise.resolve();
     expect(resolved).toBe(false);
 
+    expect(() => {
+      eventListener?.({
+        msg: {
+          type: "mcp_elicitation_complete",
+        },
+      });
+    }).not.toThrow();
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
     eventListener?.({
       msg: {
         type: "mcp_elicitation_complete",
@@ -324,7 +335,9 @@ describe("App coverage swarm row 002", () => {
       },
     });
 
-    await expect(pendingUrl).resolves.toEqual({ action: "accept" });
+    const completionResponse = await pendingUrl;
+    expect(completionResponse).toEqual({ action: "accept" });
+    expect(isMcpUrlCompletionResponse(completionResponse)).toBe(true);
     expect(prompted.at(-1)).toBeNull();
 
     controller.cleanup();
