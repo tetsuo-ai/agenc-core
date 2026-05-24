@@ -271,20 +271,34 @@ export function Select<T>(t0: SelectProps<T>): React.ReactNode {
   let t9;
   if ($[3] !== inputValues || $[4] !== options) {
     t9 = () => {
+      const inputOptionValues = new Set<T>();
+      let nextInputValues: Map<T, string> | undefined;
       for (const option_0 of options) {
         if (option_0.type === "input") {
+          inputOptionValues.add(option_0.value);
           const lastInitial = lastInitialValues.current.get(option_0.value) ?? "";
           const currentValue = inputValues.get(option_0.value) ?? "";
           const newInitial = option_0.initialValue ?? "";
           if (newInitial !== lastInitial && currentValue === lastInitial) {
-            setInputValues((prev: Map<T, string>) => {
-              const next = new Map(prev);
-              next.set(option_0.value, newInitial);
-              return next;
-            });
+            nextInputValues ??= new Map(inputValues);
+            nextInputValues.set(option_0.value, newInitial);
           }
           lastInitialValues.current.set(option_0.value, newInitial);
         }
+      }
+      for (const value of inputValues.keys()) {
+        if (!inputOptionValues.has(value)) {
+          nextInputValues ??= new Map(inputValues);
+          nextInputValues.delete(value);
+        }
+      }
+      for (const value of Array.from(lastInitialValues.current.keys())) {
+        if (!inputOptionValues.has(value)) {
+          lastInitialValues.current.delete(value);
+        }
+      }
+      if (nextInputValues) {
+        setInputValues(nextInputValues);
       }
     };
     t10 = [options, inputValues];
