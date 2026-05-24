@@ -882,6 +882,36 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('submits add-dir commands on enter while directory suggestions are visible', async () => {
+    harness.directorySuggestions = [
+      {
+        displayText: 'src',
+        id: 'src',
+        metadata: { type: 'directory' },
+      },
+    ]
+    const onSubmit = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '/add-dir s',
+      onSubmit,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'directory',
+        'directory suggestions',
+      )
+
+      const enter = createKey('return')
+      rendered.getSnapshot().handleKeyDown(enter)
+
+      expect(enter.defaultPrevented).toBe(true)
+      expect(onSubmit).toHaveBeenCalledWith('/add-dir s', true)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('ignores stale /add-dir directory completions that resolve out of order', async () => {
     let resolveSlowCompletion: (items: unknown[]) => void = () => {}
     harness.directoryCompletionResponses.set(
