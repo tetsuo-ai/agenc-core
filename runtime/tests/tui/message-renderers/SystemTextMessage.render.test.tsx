@@ -1,8 +1,17 @@
+import { PassThrough } from 'node:stream'
+
 import React from 'react'
 import { describe, expect, test, vi } from 'vitest'
 
+import type { DOMElement, DOMNode } from '../ink/dom.js'
+import instances from '../ink/instances.js'
+import { createRoot } from '../ink/root.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { SystemTextMessage } from './SystemTextMessage.js'
+
+const browserMock = vi.hoisted(() => ({
+  openPath: vi.fn(),
+}))
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
@@ -12,9 +21,7 @@ vi.mock('../../utils/config.js', () => ({
   getGlobalConfig: () => ({ showTurnDuration: true }),
 }))
 
-vi.mock('../../utils/browser.js', () => ({
-  openPath: () => {},
-}))
+vi.mock('../../utils/browser.js', () => browserMock)
 
 vi.mock('../state/AppState.js', () => ({
   useAppStateStore: () => ({
@@ -40,6 +47,91 @@ async function renderSystemMessage(
     />,
     { columns: options.columns ?? 100, rows: 24 },
   )
+}
+
+type TestStdin = PassThrough & {
+  isTTY: boolean
+  ref: () => void
+  setRawMode: (mode: boolean) => void
+  unref: () => void
+}
+
+function createStreams(): { stdin: TestStdin; stdout: PassThrough } {
+  const stdin = new PassThrough() as TestStdin
+  const stdout = new PassThrough()
+
+  stdin.isTTY = true
+  stdin.ref = () => {}
+  stdin.setRawMode = () => {}
+  stdin.unref = () => {}
+  stdout.on('data', () => {})
+  ;(stdout as unknown as { columns: number }).columns = 100
+  ;(stdout as unknown as { rows: number }).rows = 24
+  ;(stdout as unknown as { isTTY: boolean }).isTTY = true
+
+  return { stdin, stdout }
+}
+
+function getRootNode(stdout: PassThrough): DOMElement {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream)
+  if (!instance?.rootNode) throw new Error('Ink root node not found')
+  return instance.rootNode
+}
+
+function collectText(node: DOMNode): string {
+  if (node.nodeName === '#text') return node.nodeValue
+  return node.childNodes.map(collectText).join('')
+}
+
+function findClickableBoxByText(node: DOMNode, text: string): DOMElement | undefined {
+  if (
+    node.nodeName !== '#text' &&
+    node.nodeName === 'ink-box' &&
+    typeof node._eventHandlers?.onClick === 'function' &&
+    collectText(node).includes(text)
+  ) {
+    return node
+  }
+  if (node.nodeName === '#text') return undefined
+  for (const child of node.childNodes) {
+    const found = findClickableBoxByText(child, text)
+    if (found) return found
+  }
+  return undefined
+}
+
+function textStyles(
+  node: DOMNode,
+  text: string,
+  inheritedStyles: Record<string, unknown> = {},
+): Record<string, unknown> | undefined {
+  if (node.nodeName === '#text') {
+    return node.nodeValue === text ? inheritedStyles : undefined
+  }
+  const nextStyles = node.textStyles
+    ? { ...inheritedStyles, ...node.textStyles }
+    : inheritedStyles
+  for (const child of node.childNodes) {
+    const found = textStyles(child, text, nextStyles)
+    if (found) return found
+  }
+  return undefined
+}
+
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  message: string,
+): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 2_000) {
+    if (predicate()) return
+    await sleep(10)
+  }
+  throw new Error(message)
 }
 
 describe('SystemTextMessage rendering', () => {
@@ -170,6 +262,33 @@ describe('SystemTextMessage rendering', () => {
     expect(transcriptOutput).toContain('prompt: Review this')
   })
 
+  test('suppresses below-threshold stop-hook summaries without warnings', async () => {
+    await expect(
+      renderSystemMessage({
+        subtype: 'stop_hook_summary',
+        hookCount: 1,
+        hookInfos: [{ command: 'quick', durationMs: 1 }],
+        hookErrors: [],
+        preventedContinuation: false,
+        totalDurationMs: 1,
+      }),
+    ).resolves.toBe('\n')
+  })
+
+  test('renders visible API retry errors', async () => {
+    const output = await renderSystemMessage({
+      subtype: 'api_error',
+      level: 'error',
+      error: new Error('provider unavailable'),
+      retryAttempt: 4,
+      retryInMs: 3000,
+      maxRetries: 6,
+    })
+
+    expect(output).toContain('provider unavailable')
+    expect(output).toContain('Retrying in 3 seconds... (attempt 4/6)')
+  })
+
   test('renders turn-duration and memory-saved messages', async () => {
     const durationOutput = await renderSystemMessage({
       subtype: 'turn_duration',
@@ -192,6 +311,59 @@ describe('SystemTextMessage rendering', () => {
     expect(memoryOutput).toContain('Updated 2 memories')
     expect(memoryOutput).toContain('agenc-memory-one.md')
     expect(memoryOutput).toContain('agenc-memory-two.md')
+  })
+
+  test('wires memory file hover and click handlers to the rendered path row', async () => {
+    const { stdin, stdout } = createStreams()
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      root.render(
+        <SystemTextMessage
+          message={{
+            type: 'system',
+            subtype: 'memory_saved',
+            writtenPaths: ['/tmp/agenc-memory-one.md'],
+          } as never}
+          addMargin={false}
+          verbose={false}
+        />,
+      )
+
+      await waitForCondition(
+        () => Boolean(findClickableBoxByText(getRootNode(stdout), 'agenc-memory-one.md')),
+        'memory file row did not mount',
+      )
+
+      const box = findClickableBoxByText(getRootNode(stdout), 'agenc-memory-one.md')
+      expect(box?._eventHandlers?.onMouseEnter).toBeTypeOf('function')
+      expect(box?._eventHandlers?.onMouseLeave).toBeTypeOf('function')
+
+      ;(box?._eventHandlers?.onMouseEnter as (() => void) | undefined)?.()
+      await waitForCondition(
+        () => textStyles(getRootNode(stdout), 'agenc-memory-one.md')?.underline === true,
+        'memory file row did not apply hover underline',
+      )
+
+      const hoveredBox = findClickableBoxByText(getRootNode(stdout), 'agenc-memory-one.md')
+      ;(hoveredBox?._eventHandlers?.onMouseLeave as (() => void) | undefined)?.()
+      await waitForCondition(
+        () => textStyles(getRootNode(stdout), 'agenc-memory-one.md')?.underline !== true,
+        'memory file row did not clear hover underline',
+      )
+
+      ;(hoveredBox?._eventHandlers?.onClick as (() => void) | undefined)?.()
+      expect(browserMock.openPath).toHaveBeenCalledWith('/tmp/agenc-memory-one.md')
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep()
+    }
   })
 
   test('returns no output for intentionally hidden system messages', async () => {
