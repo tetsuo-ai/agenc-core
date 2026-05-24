@@ -57,7 +57,7 @@ function lookups(options: {
 function toolUseParam(
   id: string,
   name: string,
-  input: Record<string, unknown>,
+  input: unknown,
 ): AgenCToolUseBlockParam {
   return {
     type: 'tool_use',
@@ -98,6 +98,7 @@ function makeTool(options: {
 async function renderToolUse(options: {
   readonly param: AgenCToolUseBlockParam
   readonly tool: Tool
+  readonly addMargin?: boolean
   readonly inProgress?: boolean
   readonly resolved?: boolean
   readonly errored?: boolean
@@ -105,7 +106,7 @@ async function renderToolUse(options: {
   return renderToString(
     <AssistantToolUseMessage
       param={options.param}
-      addMargin={false}
+      addMargin={options.addMargin ?? false}
       tools={[options.tool]}
       commands={[]}
       verbose={false}
@@ -246,6 +247,21 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
     expect(output).toContain('queued/path.ts')
     expect(output).toContain('queued as node')
     expect(output).toContain('○')
+  })
+
+  it('falls back to empty non-object summaries and default progress detail', async () => {
+    const param = toolUseParam('toolu_undefined_input', 'PlainRead', undefined)
+    const output = await renderToolUse({
+      param,
+      addMargin: true,
+      tool: makeTool({
+        name: 'PlainRead',
+        label: 'Plain Read',
+      }),
+    })
+
+    expect(output).toContain('Plain Read')
+    expect(output).not.toContain('undefined')
   })
 
   it('suppresses queued and resolved transparent wrappers', async () => {

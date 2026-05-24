@@ -83,6 +83,7 @@ async function renderClassifierToolUse(): Promise<string> {
 }
 
 async function renderToolUseWith(options: {
+  addMargin?: boolean
   param?: AgenCToolUseBlockParam
   tools?: Tool[] | undefined
 } = {}): Promise<string> {
@@ -91,7 +92,7 @@ async function renderToolUseWith(options: {
   return renderToString(
     <AssistantToolUseMessage
       param={nextParam}
-      addMargin={false}
+      addMargin={options.addMargin ?? false}
       tools={tools as never}
       commands={[]}
       verbose={false}
@@ -147,7 +148,7 @@ describe('AssistantToolUseMessage recovery rendering', () => {
   })
 
   it('renders a visible fallback when tool definitions are unavailable', async () => {
-    const output = await renderToolUseWith({ tools: undefined })
+    const output = await renderToolUseWith({ addMargin: true, tools: undefined })
 
     expect(output).toContain('Tool use unavailable')
     expect(output).toContain('Tool definitions were unavailable')
@@ -168,11 +169,15 @@ describe('AssistantToolUseMessage recovery rendering', () => {
   })
 
   it('renders a visible fallback for invalid old-format inputs', async () => {
+    const userFacingName = vi.fn(() => {
+      throw new Error('label should not render for invalid input')
+    })
     const invalidTool = {
       ...tool,
       inputSchema: {
         safeParse: () => ({ success: false }),
       },
+      userFacingName,
     } as unknown as Tool
 
     const output = await renderToolUseWith({
@@ -182,6 +187,7 @@ describe('AssistantToolUseMessage recovery rendering', () => {
     expect(output).toContain('Invalid tool input')
     expect(output).toContain('no longer matches the tool schema')
     expect(output).toContain('Tool: Bash')
+    expect(userFacingName).not.toHaveBeenCalled()
   })
 
   it('renders a visible fallback when tool details cannot render', async () => {
