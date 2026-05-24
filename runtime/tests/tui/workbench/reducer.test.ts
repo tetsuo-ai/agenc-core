@@ -557,6 +557,26 @@ describe("workbenchReducer", () => {
     expect(transcript.activeSurfaceMode).toBe("transcript");
   });
 
+  it("clears stale diff ids when openDiff receives an explicit null", () => {
+    const approvalDiff = workbenchReducer(undefined, {
+      type: "openDiff",
+      diffId: "approval-1",
+    });
+    const genericDiff = workbenchReducer(approvalDiff, {
+      type: "openDiff",
+    });
+    const clearedDiff = workbenchReducer(approvalDiff, {
+      type: "openDiff",
+      diffId: null,
+    });
+
+    expect(genericDiff.openDiffId).toBe("approval-1");
+    expect(clearedDiff).toMatchObject({
+      activeSurfaceMode: "diff",
+      openDiffId: null,
+    });
+  });
+
   it("clears stale selected search match ids when opening a new query", () => {
     const first = workbenchReducer(undefined, {
       type: "openSearch",
