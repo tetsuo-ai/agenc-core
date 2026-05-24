@@ -1,5 +1,4 @@
 import { feature } from 'bun:bundle';
-import figures from 'figures';
 import * as React from 'react';
 import { SentryErrorBoundary } from '../../components/SentryErrorBoundary.js';
 import { Box, Text, useTheme } from '../../ink.js';
@@ -10,6 +9,7 @@ import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierAppro
 import { extractTag, type buildMessageLookups } from '../../../utils/messages.js';
 import { MessageResponse } from '../../components/MessageResponse';
 import { HookProgressMessage } from '../HookProgressMessage';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 type Props = {
   message: NormalizedUserMessage;
   lookups: ReturnType<typeof buildMessageLookups>;
@@ -68,6 +68,7 @@ export function UserToolSuccessMessage({
   isTranscriptMode
 }: Props): React.ReactNode {
   const [theme] = useTheme();
+  const glyphs = selectAgenCTuiGlyphs();
   // Hook stays inside feature() ternary so external builds don't pay a
   // per-scrollback-message store subscription — same pattern as
   // UserPromptMessage.tsx.
@@ -90,8 +91,8 @@ export function UserToolSuccessMessage({
             <Text>{fallbackContent}</Text>
             {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                     <Text dimColor>
-                      <Text color="success">{figures.tick}</Text>
-                      {' Auto-approved · matched '}
+                      <Text color="success">{glyphs.statusSuccess}</Text>
+                      {` Auto-approved ${glyphs.separator} matched `}
                       {`"${classifierRule}"`}
                     </Text>
                   </MessageResponse> : null}
@@ -116,8 +117,8 @@ export function UserToolSuccessMessage({
             <Text>{fallbackContent}</Text>
             {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                     <Text dimColor>
-                      <Text color="success">{figures.tick}</Text>
-                      {' Auto-approved · matched '}
+                      <Text color="success">{glyphs.statusSuccess}</Text>
+                      {` Auto-approved ${glyphs.separator} matched `}
                       {`"${classifierRule}"`}
                     </Text>
                   </MessageResponse> : null}
@@ -156,8 +157,8 @@ export function UserToolSuccessMessage({
         {renderedMessage}
         {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                 <Text dimColor>
-                  <Text color="success">{figures.tick}</Text>
-                  {' Auto-approved \u00b7 matched '}
+                  <Text color="success">{glyphs.statusSuccess}</Text>
+                  {` Auto-approved ${glyphs.separator} matched `}
                   {`"${classifierRule}"`}
                 </Text>
               </MessageResponse> : null}

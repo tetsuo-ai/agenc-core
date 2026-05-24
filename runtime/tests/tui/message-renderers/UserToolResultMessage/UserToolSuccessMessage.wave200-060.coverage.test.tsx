@@ -28,6 +28,16 @@ function createLookups(toolUseID: string) {
 }
 
 describe('UserToolSuccessMessage wave200-060 coverage', () => {
+  const originalGlyphMode = process.env.AGENC_TUI_GLYPHS
+
+  afterEach(() => {
+    if (originalGlyphMode === undefined) {
+      delete process.env.AGENC_TUI_GLYPHS
+    } else {
+      process.env.AGENC_TUI_GLYPHS = originalGlyphMode
+    }
+  })
+
   test('renders parsed successful output with filtered progress, input, approval, and hook status', async () => {
     const toolUseID = 'toolu_success_wave200_060'
     setClassifierApproval(toolUseID, 'Bash(ls:*)')
@@ -121,5 +131,77 @@ describe('UserToolSuccessMessage wave200-060 coverage', () => {
     expect(output).toContain('"Bash(ls:*)"')
     expect(output).toContain('Running PostToolUse hook')
     expect(output).not.toContain('fallback should stay hidden')
+  })
+
+  test('uses ASCII glyphs for auto-approval rows when glyph mode is ASCII', async () => {
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+    const toolUseID = 'toolu_success_ascii_approval'
+    const fallbackToolUseID = 'toolu_success_ascii_fallback_approval'
+    setClassifierApproval(toolUseID, 'Bash(cat:*)')
+    setClassifierApproval(fallbackToolUseID, 'Bash(echo:*)')
+
+    const tool = {
+      renderToolResultMessage: () => <Text>ascii tool result</Text>,
+      userFacingName: () => 'ASCII tool',
+    } as unknown as Tool
+
+    const output = await renderToString(
+      <UserToolSuccessMessage
+        message={{
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: toolUseID,
+                content: 'fallback should stay hidden',
+              },
+            ],
+          },
+          toolUseResult: { ok: true },
+        } as never}
+        lookups={createLookups(toolUseID)}
+        toolUseID={toolUseID}
+        progressMessagesForMessage={[]}
+        tool={tool}
+        tools={[tool] as Tools}
+        verbose={false}
+        width={72}
+      />,
+      { columns: 100, rows: 12 },
+    )
+    const fallbackOutput = await renderToString(
+      <UserToolSuccessMessage
+        message={{
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: fallbackToolUseID,
+                content: '<persisted-output>ascii fallback output</persisted-output>',
+              },
+            ],
+          },
+          toolUseResult: null,
+        } as never}
+        lookups={createLookups(fallbackToolUseID)}
+        toolUseID={fallbackToolUseID}
+        progressMessagesForMessage={[]}
+        tools={[]}
+        verbose={false}
+        width={72}
+      />,
+      { columns: 100, rows: 12 },
+    )
+
+    expect(output).toContain('OK Auto-approved - matched "Bash(cat:*)"')
+    expect(fallbackOutput).toContain('ascii fallback output')
+    expect(fallbackOutput).toContain(
+      'OK Auto-approved - matched "Bash(echo:*)"',
+    )
+    expect(`${output}\n${fallbackOutput}`).not.toMatch(/[✓✔·]/u)
   })
 })
