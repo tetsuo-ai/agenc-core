@@ -1298,6 +1298,128 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('refreshes Slack channel suggestions when MCP clients change without editing input', async () => {
+    const resources = harness.appState.mcp.resources
+    harness.slackSuggestions = [
+      { displayText: '#general', id: 'slack-general', description: 'channel' },
+    ]
+    const rendered = await renderHookHarness({
+      cursorOffset: '#gen'.length,
+      input: '#gen',
+    })
+
+    try {
+      await sleep(25)
+      expect(getSlackChannelSuggestionsMock).not.toHaveBeenCalled()
+
+      harness.appState.mcp = {
+        clients: [{ name: 'slack' }],
+        resources,
+      }
+      rendered.rerender({
+        cursorOffset: '#gen'.length,
+        input: '#gen',
+      })
+
+      await waitFor(
+        () =>
+          getSlackChannelSuggestionsMock.mock.calls.some(
+            call => call[1] === 'gen',
+          ),
+        'Slack suggestions after MCP client connection',
+      )
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'slack-channel',
+        'visible Slack suggestions after MCP client connection',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('clears Slack channel suggestions when the Slack MCP client disconnects', async () => {
+    const resources = harness.appState.mcp.resources
+    harness.appState.mcp = {
+      clients: [{ name: 'slack' }],
+      resources,
+    }
+    harness.slackSuggestions = [
+      { displayText: '#general', id: 'slack-general', description: 'channel' },
+    ]
+    const rendered = await renderHookHarness({
+      cursorOffset: '#gen'.length,
+      input: '#gen',
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'slack-channel',
+        'initial Slack suggestions',
+      )
+
+      harness.appState.mcp = {
+        clients: [],
+        resources,
+      }
+      rendered.rerender({
+        cursorOffset: '#gen'.length,
+        input: '#gen',
+      })
+
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'none',
+        'cleared Slack suggestions after MCP client disconnect',
+      )
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drops stale Slack channel results after the Slack MCP client disconnects', async () => {
+    const resources = harness.appState.mcp.resources
+    let resolveSlowChannels: (items: unknown[]) => void = () => {}
+    harness.appState.mcp = {
+      clients: [{ name: 'slack' }],
+      resources,
+    }
+    harness.slackSuggestions = new Promise(resolve => {
+      resolveSlowChannels = resolve
+    }) as unknown as unknown[]
+    const rendered = await renderHookHarness({
+      cursorOffset: '#gen'.length,
+      input: '#gen',
+    })
+
+    try {
+      await waitFor(
+        () =>
+          getSlackChannelSuggestionsMock.mock.calls.some(
+            call => call[1] === 'gen',
+          ),
+        'delayed Slack completion request',
+      )
+
+      harness.appState.mcp = {
+        clients: [],
+        resources,
+      }
+      rendered.rerender({
+        cursorOffset: '#gen'.length,
+        input: '#gen',
+      })
+      resolveSlowChannels([
+        { displayText: '#general', id: 'slack-general', description: 'channel' },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('enters partial slash commands without executing until the command text is exact', async () => {
     const onInputChange = vi.fn()
     const onSubmit = vi.fn()
