@@ -73,6 +73,7 @@ import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
 import { createFileStateCacheWithSizeLimit, READ_FILE_STATE_CACHE_SIZE } from "../../utils/fileStateCache.js";
 import { fileHistoryRewind } from "../../utils/fileHistory.js";
 import { getCurrentWorktreeSession } from "../../utils/worktree.js";
+import { escapeXml } from "../../utils/xml.js";
 import { Onboarding, type FirstRunOnboardingState, useFirstRunOnboardingController } from "../../onboarding/Onboarding.js";
 import type { MCPServerConnection } from "../../services/mcp/types.js";
 import {
@@ -1655,7 +1656,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       });
     };
 
-    emitTranscriptText(`<bash-input>${trimmedBash}</bash-input>`);
+    emitTranscriptText(`<bash-input>${escapeXml(trimmedBash)}</bash-input>`);
     try {
       const { processBashCommand } = await import("../input/processBashCommand.js");
       const result = await processBashCommand(
@@ -1678,7 +1679,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
     } catch (err_1) {
       const message_1 = err_1 instanceof Error ? err_1.message : String(err_1);
-      emitTranscriptText(`<bash-stderr>${message_1}</bash-stderr>`);
+      emitTranscriptText(`<bash-stderr>${escapeXml(message_1)}</bash-stderr>`);
     }
   }, [getToolUseContext]);
   const submit = useCallback(async (value: string, options?: LiveSubmitOptions) => {
