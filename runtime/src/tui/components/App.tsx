@@ -749,7 +749,11 @@ export function installElicitationResolvers(session: Pick<AgenCTuiElicitationSes
   };
   const unsubscribeCompletion = session.eventLog?.subscribe(event => {
     if (event.msg.type !== "mcp_elicitation_complete") return;
-    completeMcpUrl(event.msg.payload.serverName, event.msg.payload.elicitationId);
+    const payload = event.msg.payload;
+    if (typeof payload?.serverName !== "string" || (typeof payload.elicitationId !== "string" && typeof payload.elicitationId !== "number")) {
+      return;
+    }
+    completeMcpUrl(payload.serverName, payload.elicitationId, createMcpUrlCompletionResponse());
   });
   return {
     submit(value) {
