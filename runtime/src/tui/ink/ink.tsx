@@ -304,7 +304,7 @@ export default class Ink {
     }
   }
   private handleResume = () => {
-    if (!this.options.stdout.isTTY) {
+    if (!this.options.stdout.isTTY || this.isUnmounted || this.isPaused) {
       return;
     }
 

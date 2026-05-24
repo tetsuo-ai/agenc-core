@@ -52,6 +52,7 @@ type TestStdin = PassThrough & {
 
 type InkInternals = Ink & {
   frontFrame: Frame
+  handleResume: () => void
   prevFrameContaminated: boolean
   rootNode: DOMElement
   selection: Ink['selection']
@@ -250,6 +251,50 @@ describe('Ink instance rendering paths', () => {
       harness.stdout.end()
       harness.stderr.end()
       await sleep(25)
+    }
+  })
+
+  test('ignores stale terminal resume after unmounting or while paused', async () => {
+    const unmounted = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      unmounted.instance.setAltScreenActive(true, true)
+      unmounted.root.render(textNode('ready'))
+      await sleep(10)
+
+      unmounted.root.unmount()
+      unmounted.stdoutWrites.length = 0
+
+      unmounted.instance.handleResume()
+
+      const writes = unmounted.stdoutWrites.join('')
+      expect(writes).not.toContain(ENABLE_MOUSE_TRACKING)
+      expect(writes).not.toContain(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME)
+    } finally {
+      unmounted.stdin.end()
+      unmounted.stdout.end()
+      unmounted.stderr.end()
+      await sleep(25)
+    }
+
+    const paused = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      paused.instance.setAltScreenActive(true, true)
+      paused.root.render(textNode('ready'))
+      await sleep(10)
+
+      paused.instance.pause()
+      paused.stdoutWrites.length = 0
+
+      paused.instance.handleResume()
+
+      const writes = paused.stdoutWrites.join('')
+      expect(writes).not.toContain(ENABLE_MOUSE_TRACKING)
+      expect(writes).not.toContain(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME)
+      paused.instance.resume()
+    } finally {
+      await paused.dispose()
     }
   })
 
