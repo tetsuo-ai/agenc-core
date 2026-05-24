@@ -304,6 +304,7 @@ export function useTypeahead({
     return maxLen + 6; // +1 for "/" prefix, +5 for padding
   }, [commands]);
   const [maxColumnWidth, setMaxColumnWidth] = useState<number | undefined>(undefined);
+  const mcpClients = useAppState(s => s.mcp.clients);
   const mcpResources = useAppState(s => s.mcp.resources);
   const store = useAppStateStore();
   const promptSuggestion = useAppState(s => s.promptSuggestion);
@@ -370,9 +371,12 @@ export function useTypeahead({
   const latestResumeTitleArgsRef = useRef<string | null>(null);
   // Track the latest bash input to discard stale results from history completion
   const latestBashInputRef = useRef('');
+  const currentMcpClientsRef = useRef(mcpClients);
+  currentMcpClientsRef.current = mcpClients;
   const prevSuggestionSourcesRef = useRef({ agents, mcpResources });
   // Track the latest slack channel token to discard stale results from MCP
   const latestSlackTokenRef = useRef('');
+  const latestSlackRequestIdRef = useRef(0);
   // Track suggestions via ref to avoid updateSuggestions being recreated on selection changes
   const suggestionsRef = useRef(suggestions);
   suggestionsRef.current = suggestions;
@@ -485,10 +489,15 @@ export function useTypeahead({
   const fetchSlackChannels = useCallback(async (
     partial: string,
     requestState: InputStateSnapshot = currentInputStateRef.current,
+    clientsSnapshot = currentMcpClientsRef.current,
   ): Promise<void> => {
+    const requestId = latestSlackRequestIdRef.current + 1;
+    latestSlackRequestIdRef.current = requestId;
     latestSlackTokenRef.current = partial;
     const isStaleRequest = () =>
+      latestSlackRequestIdRef.current !== requestId ||
       latestSlackTokenRef.current !== partial ||
+      currentMcpClientsRef.current !== clientsSnapshot ||
       !isCurrentInputState(
         requestState.input,
         requestState.cursorOffset,
@@ -496,7 +505,7 @@ export function useTypeahead({
       );
     let channels: SuggestionItem[];
     try {
-      channels = await getSlackChannelSuggestions(store.getState().mcp.clients, partial);
+      channels = await getSlackChannelSuggestions(clientsSnapshot, partial);
     } catch (error) {
       if (isStaleRequest()) return;
       logError(error);
@@ -511,9 +520,7 @@ export function useTypeahead({
     }));
     setSuggestionType(channels.length > 0 ? 'slack-channel' : 'none');
     setMaxColumnWidth(undefined);
-  },
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- store is a stable context ref
-  [setSuggestionsState, clearSuggestions, isCurrentInputState]);
+  }, [setSuggestionsState, clearSuggestions, isCurrentInputState]);
 
   // First keystroke after # needs the MCP round-trip; subsequent keystrokes
   // that share the same first-word segment hit the cache synchronously.
@@ -650,14 +657,16 @@ export function useTypeahead({
     // Check for # to trigger Slack channel suggestions (requires Slack MCP server)
     if (mode === 'prompt') {
       const hashMatch = value.substring(0, effectiveCursorOffset).match(HASH_CHANNEL_RE);
-      if (hashMatch && hasSlackMcpServer(store.getState().mcp.clients)) {
+      if (hashMatch && hasSlackMcpServer(mcpClients)) {
         debouncedFetchSlackChannels(hashMatch[2]!, {
           cursorOffset: effectiveCursorOffset,
           input: value,
           mode,
-        });
+        }, mcpClients);
         return;
-      } else if (suggestionType === 'slack-channel') {
+      } else if (suggestionType === 'slack-channel' || latestSlackTokenRef.current !== '') {
+        latestSlackRequestIdRef.current += 1;
+        latestSlackTokenRef.current = '';
         debouncedFetchSlackChannels.cancel();
         clearSuggestions();
       }
@@ -944,10 +953,20 @@ export function useTypeahead({
         clearSuggestions();
       }
     }
-  }, [suggestionType, commands, setSuggestionsState, clearSuggestions, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, mode, suppressSuggestions,
-  // Note: using suggestionsRef instead of suggestions to avoid recreating
-  // this callback when only selectedSuggestion changes (not the suggestions list)
-  allCommandsMaxWidth]);
+  }, [
+    suggestionType,
+    commands,
+    setSuggestionsState,
+    clearSuggestions,
+    debouncedFetchFileSuggestions,
+    debouncedFetchSlackChannels,
+    mode,
+    suppressSuggestions,
+    mcpClients,
+    // Note: using suggestionsRef instead of suggestions to avoid recreating
+    // this callback when only selectedSuggestion changes (not the suggestions list)
+    allCommandsMaxWidth
+  ]);
 
   // Update suggestions when input changes
   // Note: We intentionally don't depend on cursorOffset here - cursor movement alone
