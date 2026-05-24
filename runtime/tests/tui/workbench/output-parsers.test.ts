@@ -26,6 +26,17 @@ describe("workbench output parsers", () => {
     ]);
   });
 
+  it("keeps source paths that contain parenthesized segments", () => {
+    expect(
+      parseSourceLocations(
+        "src/app/(admin)/page.test.tsx:31:5\n" +
+          "    at render (src/app/(admin)/page.test.tsx:31:5)",
+      ),
+    ).toEqual([
+      { file: "src/app/(admin)/page.test.tsx", line: 31, column: 5 },
+    ]);
+  });
+
   it("extracts Vitest-style failure summaries", () => {
     const failures = parseVitestFailures(`
  FAIL  tests/app.test.ts > renders app
@@ -55,6 +66,23 @@ describe("workbench output parsers", () => {
         id: "tests/app with spaces.test.ts > renders app:tests/app with spaces.test.ts:42",
         name: "tests/app with spaces.test.ts > renders app",
         location: { file: "tests/app with spaces.test.ts", line: 42, column: 7 },
+        message: "AssertionError: expected false to be true",
+      },
+    ]);
+  });
+
+  it("extracts Vitest failure locations whose paths contain parenthesized segments", () => {
+    const failures = parseVitestFailures(`
+ FAIL  tests/app/(admin)/page.test.tsx > renders app route
+ AssertionError: expected false to be true
+ tests/app/(admin)/page.test.tsx:42:7
+`);
+
+    expect(failures).toEqual([
+      {
+        id: "tests/app/(admin)/page.test.tsx > renders app route:tests/app/(admin)/page.test.tsx:42",
+        name: "tests/app/(admin)/page.test.tsx > renders app route",
+        location: { file: "tests/app/(admin)/page.test.tsx", line: 42, column: 7 },
         message: "AssertionError: expected false to be true",
       },
     ]);
