@@ -1223,6 +1223,42 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('separates IDE mentions after image pills and clears lazy spacing', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'jpeg-data',
+      mediaType: 'image/jpeg',
+    })
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      harness.ideAtMentionedHandler?.({
+        filePath: '/repo/src/file.ts',
+      })
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1] @src/file.ts ')
+
+      const inputFilter = baseProps.inputFilter as (
+        input: string,
+        key: Record<string, boolean>,
+      ) => string
+      expect(inputFilter('caption', {})).toBe('caption')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('allocates image paste IDs after existing draft paste references', async () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue({
       base64: 'png-data',

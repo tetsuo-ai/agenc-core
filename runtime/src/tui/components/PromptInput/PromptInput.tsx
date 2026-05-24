@@ -1744,10 +1744,15 @@ function PromptInput({
     } else {
       atMentionedText = `@${relativePath} `;
     }
-    const cursorChar = input[cursorOffset - 1] ?? ' ';
+    // IDE events can arrive before the parent rerenders after a paste, so make
+    // the spacing decision from the same fresh refs used for insertion.
+    const currentInput = lastInternalInputRef.current;
+    const currentOffset = cursorOffsetRef.current;
+    const cursorChar = currentInput[currentOffset - 1] ?? ' ';
     if (!/\s/.test(cursorChar)) {
       atMentionedText = ` ${atMentionedText}`;
     }
+    pendingSpaceAfterPillRef.current = false;
     insertTextAtCursor(atMentionedText);
   };
   useIdeAtMentioned(mcpClients, onIdeAtMentioned);
