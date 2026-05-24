@@ -46,6 +46,15 @@ describe("workbench search model", () => {
     expect(parseWorkbenchRipgrepJsonLine(JSON.stringify({ type: "begin" }), "/repo")).toBeNull();
   });
 
+  it("normalizes backslash search result paths before they become workbench references", () => {
+    expect(parseWorkbenchRipgrepJsonLine(jsonMatchLine("src\\nested\\app.ts", 6, "needle"), "/repo")).toEqual({
+      id: "src/nested/app.ts:6:needle",
+      file: "src/nested/app.ts",
+      line: 6,
+      text: "needle",
+    });
+  });
+
   it("groups matches by file and exposes visible header rows", () => {
     const groups = groupSearchMatches([
       { id: "a:1:x", file: "a.ts", line: 1, text: "x" },
