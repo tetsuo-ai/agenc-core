@@ -77,7 +77,7 @@ async function waitFor(assertion: () => void): Promise<void> {
   throw lastError
 }
 
-async function renderNode(node: React.ReactNode): Promise<void> {
+async function renderNode(node: React.ReactNode): Promise<MountedRoot> {
   const { stderr, stdin, stdout } = createStreams()
   const root = await createRoot({
     patchConsole: false,
@@ -88,6 +88,7 @@ async function renderNode(node: React.ReactNode): Promise<void> {
 
   mountedRoots.push({ root, stdin, stdout })
   root.render(node)
+  return { root, stdin, stdout }
 }
 
 afterEach(async () => {
@@ -226,5 +227,57 @@ describe('ThemedBox coverage swarm row 135', () => {
     expect(ref.current?.style.borderLeftColor).toBeUndefined()
     expect(ref.current?.style.borderRightColor).toBeUndefined()
     expect(ref.current?.style.borderTopColor).toBeUndefined()
+  })
+
+  test('updates resolved theme colors and forwarded props on rerender', async () => {
+    const ref = React.createRef<DOMElement>()
+    const darkTheme = getTheme('dark')
+    const lightTheme = getTheme('light')
+
+    const mounted = await renderNode(
+      <ThemeProvider key="dark" initialState="dark" onThemeSave={vi.fn()}>
+        <ThemedBox
+          ref={ref}
+          backgroundColor="surfaceBackground"
+          borderColor="success"
+          paddingX={1}
+          width={10}
+        >
+          dark
+        </ThemedBox>
+      </ThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(ref.current?.style).toMatchObject({
+        backgroundColor: darkTheme.surfaceBackground,
+        borderColor: darkTheme.success,
+        paddingX: 1,
+        width: 10,
+      })
+    })
+
+    mounted.root.render(
+      <ThemeProvider key="light" initialState="light" onThemeSave={vi.fn()}>
+        <ThemedBox
+          ref={ref}
+          backgroundColor="agencWash"
+          borderColor="error"
+          paddingX={3}
+          width={18}
+        >
+          light
+        </ThemedBox>
+      </ThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(ref.current?.style).toMatchObject({
+        backgroundColor: lightTheme.agencWash,
+        borderColor: lightTheme.error,
+        paddingX: 3,
+        width: 18,
+      })
+    })
   })
 })
