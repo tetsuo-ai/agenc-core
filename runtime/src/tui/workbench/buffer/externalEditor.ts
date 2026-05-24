@@ -78,7 +78,7 @@ export function openFileInBufferExternalEditor(filePath: string, line?: number):
       enteredAlternateScreen = true;
     }
     const result = crossSpawn.sync(base, args, syncOpts);
-    return !result.error && (typeof result.status !== "number" || result.status === 0);
+    return !result.error && result.status === 0 && !result.signal;
   } catch {
     return false;
   } finally {

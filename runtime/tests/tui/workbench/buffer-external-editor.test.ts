@@ -107,6 +107,57 @@ describe("buffer external editor", () => {
     )).toBeUndefined();
   });
 
+  it("uses PATH probing for default fallback editor resolution", () => {
+    whichMock.mockImplementation((command: string) => command === "vi" ? "/usr/bin/vi" : undefined);
+
+    expect(resolveBufferExternalEditor()).toBe("vi");
+
+    expect(whichMock).toHaveBeenCalledWith("nvim");
+    expect(whichMock).toHaveBeenCalledWith("vim");
+    expect(whichMock).toHaveBeenCalledWith("vi");
+  });
+
+  it("uses notepad as the Windows default editor without probing PATH", () => {
+    const isCommandAvailable = vi.fn(() => false);
+
+    expect(resolveBufferExternalEditor(
+      {},
+      {
+        platform: "win32",
+        isCommandAvailable,
+      },
+    )).toBe("notepad");
+    expect(isCommandAvailable).not.toHaveBeenCalled();
+  });
+
+  it("does not launch when no external editor can be resolved", () => {
+    whichMock.mockReturnValue(undefined);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(spawnMock.sync).not.toHaveBeenCalled();
+    expect(instancesMock.get).not.toHaveBeenCalled();
+  });
+
+  it("does not launch when the configured editor executable is unavailable", () => {
+    process.env.VISUAL = "vim";
+    whichMock.mockReturnValue(undefined);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(spawnMock.sync).not.toHaveBeenCalled();
+    expect(instancesMock.get).not.toHaveBeenCalled();
+  });
+
+  it("does not launch without an active Ink instance to restore", () => {
+    process.env.VISUAL = "vim";
+    instancesMock.get.mockReturnValue(undefined);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(spawnMock.sync).not.toHaveBeenCalled();
+  });
+
   it("uses terminal editors in the alternate screen and restores after failure", () => {
     process.env.VISUAL = "vim --clean";
     const ink = mockInkInstance();
@@ -123,6 +174,69 @@ describe("buffer external editor", () => {
     expect(ink.enterAlternateScreen).toHaveBeenCalledOnce();
     expect(ink.exitAlternateScreen).toHaveBeenCalledOnce();
     expect(ink.pause).not.toHaveBeenCalled();
+  });
+
+  it("treats editors terminated by signal as failed launches", () => {
+    process.env.VISUAL = "vim";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+    spawnMock.sync.mockReturnValue({ status: null, signal: "SIGTERM" });
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "vim",
+      ["+12", "/tmp/file.ts"],
+      { stdio: "inherit" },
+    );
+    expect(ink.enterAlternateScreen).toHaveBeenCalledOnce();
+    expect(ink.exitAlternateScreen).toHaveBeenCalledOnce();
+  });
+
+  it("omits line addresses for terminal editors that do not support them", () => {
+    process.env.VISUAL = "ed";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "ed",
+      ["/tmp/file.ts"],
+      { stdio: "inherit" },
+    );
+    expect(ink.enterAlternateScreen).toHaveBeenCalledOnce();
+    expect(ink.exitAlternateScreen).toHaveBeenCalledOnce();
+  });
+
+  it("restores alternate screen when terminal editor spawn throws", () => {
+    process.env.VISUAL = "vim";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+    spawnMock.sync.mockImplementation(() => {
+      throw new Error("spawn failed");
+    });
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(ink.enterAlternateScreen).toHaveBeenCalledOnce();
+    expect(ink.exitAlternateScreen).toHaveBeenCalledOnce();
+  });
+
+  it("does not exit alternate screen when entering it fails before handoff", () => {
+    process.env.VISUAL = "vim";
+    const ink = mockInkInstance({
+      enterAlternateScreen: vi.fn(() => {
+        throw new Error("alt-screen failed");
+      }),
+    });
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(ink.enterAlternateScreen).toHaveBeenCalledOnce();
+    expect(ink.exitAlternateScreen).not.toHaveBeenCalled();
+    expect(spawnMock.sync).not.toHaveBeenCalled();
   });
 
   it("uses GUI editors with blocking wait args and restores stdin", () => {
@@ -144,6 +258,88 @@ describe("buffer external editor", () => {
     expect(ink.enterAlternateScreen).not.toHaveBeenCalled();
   });
 
+  it("keeps existing GUI wait args and uses Sublime's line address form", () => {
+    process.env.VISUAL = "subl --wait";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "subl",
+      ["--wait", "/tmp/file.ts:12"],
+      { stdio: "inherit" },
+    );
+    expect(ink.pause).toHaveBeenCalledOnce();
+    expect(ink.suspendStdin).toHaveBeenCalledOnce();
+    expect(ink.resumeStdin).toHaveBeenCalledOnce();
+    expect(ink.resume).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["code -w", ["-w", "-g", "/tmp/file.ts:12"]],
+    ["code --wait-for-window-close", ["--wait-for-window-close", "-g", "/tmp/file.ts:12"]],
+  ])("keeps existing VS Code wait args from %s", (visual, expectedArgs) => {
+    process.env.VISUAL = visual;
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "code",
+      expectedArgs,
+      { stdio: "inherit" },
+    );
+  });
+
+  it("opens GUI editors without line arguments when no line is provided", () => {
+    process.env.VISUAL = "code";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts")).toBe(true);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "code",
+      ["-w", "/tmp/file.ts"],
+      { stdio: "inherit" },
+    );
+  });
+
+  it("omits line addresses for GUI editors that do not support them", () => {
+    process.env.VISUAL = "gedit";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "gedit",
+      ["/tmp/file.ts"],
+      { stdio: "inherit" },
+    );
+  });
+
+  it("treats GUI editors terminated by signal as failed launches", () => {
+    process.env.VISUAL = "code";
+    const ink = mockInkInstance();
+    instancesMock.get.mockReturnValue(ink);
+    spawnMock.sync.mockReturnValue({ status: null, signal: "SIGTERM" });
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "code",
+      ["-w", "-g", "/tmp/file.ts:12"],
+      { stdio: "inherit" },
+    );
+    expect(ink.pause).toHaveBeenCalledOnce();
+    expect(ink.suspendStdin).toHaveBeenCalledOnce();
+    expect(ink.resumeStdin).toHaveBeenCalledOnce();
+    expect(ink.resume).toHaveBeenCalledOnce();
+  });
+
   it("restores GUI pause state if suspending stdin fails before spawn", () => {
     process.env.VISUAL = "code";
     const ink = mockInkInstance({
@@ -159,6 +355,24 @@ describe("buffer external editor", () => {
     expect(ink.suspendStdin).toHaveBeenCalledOnce();
     expect(ink.resumeStdin).not.toHaveBeenCalled();
     expect(ink.resume).toHaveBeenCalledOnce();
+    expect(spawnMock.sync).not.toHaveBeenCalled();
+  });
+
+  it("does not resume GUI state when pausing fails before handoff", () => {
+    process.env.VISUAL = "code";
+    const ink = mockInkInstance({
+      pause: vi.fn(() => {
+        throw new Error("pause failed");
+      }),
+    });
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(false);
+
+    expect(ink.pause).toHaveBeenCalledOnce();
+    expect(ink.suspendStdin).not.toHaveBeenCalled();
+    expect(ink.resumeStdin).not.toHaveBeenCalled();
+    expect(ink.resume).not.toHaveBeenCalled();
     expect(spawnMock.sync).not.toHaveBeenCalled();
   });
 });
