@@ -457,6 +457,37 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("alpha\nomega\n");
   });
 
+  it("clears transient buffer state when reopening the current file at another line", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\nomega\n", "utf8");
+    lspHarness.requestBufferHover.mockResolvedValue("alpha hover");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    await expect(store.requestHover()).resolves.toBe("alpha hover");
+
+    store.handleVimInput(":", key({ shift: true }), 80);
+    for (const char of "nope") {
+      store.handleVimInput(char, key(), 80);
+    }
+    store.handleVimInput("", key({ return: true }), 80);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      hoverText: "alpha hover",
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt", 2));
+
+    expect(store.getSnapshot()).toMatchObject({
+      status: "ready",
+      filePath: "target.txt",
+      position: { line: 2 },
+      error: null,
+      conflictKind: null,
+      hoverText: null,
+    });
+    expect(store.getText()).toBe("alpha\nomega\n");
+  });
+
   it("requires inline edits to be saved or reverted before opening the external editor", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\n", "utf8");
