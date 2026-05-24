@@ -93,7 +93,28 @@ describe("workbench agents rail model", () => {
     } as any;
 
     expect(formatTaskElapsed(task, 66_500)).toBe("1m05s");
+    expect(formatTaskElapsed({ ...task, endTime: 3_661_000 }, 99_999_999)).toBe("1h00m");
+    expect(formatTaskElapsed({ ...task, totalPausedMs: undefined }, 61_000)).toBe("1m00s");
     expect(taskPathLabel(task)).toBe("/repo/worktree");
+    expect(taskPathLabel({ ...task, cwd: "  /repo/trimmed  " })).toBe("/repo/trimmed");
+    expect(taskPathLabel({
+      ...task,
+      cwd: undefined,
+      outputFile: "urn:agenc:task:agent-1:output",
+    })).toBe(null);
+    expect(taskPathLabel({
+      ...task,
+      cwd: undefined,
+      remoteTaskMetadata: {
+        cwd: "",
+        worktreePath: "  /repo/remote-worktree  ",
+      },
+    })).toBe("/repo/remote-worktree");
+    expect(taskPathLabel({
+      ...task,
+      cwd: undefined,
+      remoteTaskMetadata: null,
+    })).toBe(null);
   });
 
   it("identifies in-flight paths from active agent activity", () => {
@@ -115,6 +136,78 @@ describe("workbench agents rail model", () => {
 
     expect(taskMayReferencePath(task, "src/app.ts")).toBe(true);
     expect(inFlightPathsFromTasks([task], ["src/app.ts", "src/other.ts"])).toEqual(["src/app.ts"]);
+  });
+
+  it("rejects empty path candidates before searching task activity", () => {
+    const task = {
+      id: "agent-1",
+      type: "local_agent",
+      status: "running",
+      description: "editing src/app.ts",
+      startTime: 0,
+      outputFile: "urn:agenc:task:agent-1:output",
+      outputOffset: 0,
+      notified: false,
+    } as any;
+
+    expect(taskMayReferencePath(task, null)).toBe(false);
+    expect(taskMayReferencePath(task, undefined)).toBe(false);
+    expect(taskMayReferencePath(task, "./")).toBe(false);
+    expect(taskMayReferencePath(task, "  src/app.ts  ")).toBe(true);
+    expect(inFlightPathsFromTasks([{ ...task, type: "local_bash" }], ["src/app.ts"])).toEqual([]);
+  });
+
+  it("searches command, prompt, title, path metadata, and tool inputs for path references", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const remoteTask = {
+      id: "agent-remote",
+      type: "remote_agent",
+      status: "running",
+      description: "remote work",
+      startTime: 0,
+      outputFile: "urn:agenc:task:agent-remote:output",
+      outputOffset: 0,
+      notified: false,
+      command: "review src/command.ts",
+      title: "inspect src/title.ts",
+      remoteTaskMetadata: {
+        path: "src/metadata.ts",
+      },
+      progress: {
+        lastActivity: {
+          toolName: "Read",
+          activityDescription: "read src/activity.ts",
+          input: { file_path: "C:\\repo\\src\\windows.ts" },
+        },
+        recentActivities: [
+          { toolName: "Edit", input: "src/string-input.ts" },
+          { toolName: "Noop", input: null },
+          { toolName: "Circular", input: circular },
+        ],
+      },
+    } as any;
+    const localTask = {
+      id: "agent-local",
+      type: "local_agent",
+      status: "running",
+      description: "local work",
+      startTime: 0,
+      outputFile: "urn:agenc:task:agent-local:output",
+      outputOffset: 0,
+      notified: false,
+      prompt: "change src/prompt.ts",
+      worktreePath: "src/worktree.ts",
+    } as any;
+
+    expect(taskMayReferencePath(remoteTask, "src/command.ts")).toBe(true);
+    expect(taskMayReferencePath(remoteTask, "src/title.ts")).toBe(true);
+    expect(taskMayReferencePath(remoteTask, "src/metadata.ts")).toBe(true);
+    expect(taskMayReferencePath(remoteTask, "src/activity.ts")).toBe(true);
+    expect(taskMayReferencePath(remoteTask, "src/windows.ts")).toBe(true);
+    expect(taskMayReferencePath(remoteTask, "src/string-input.ts")).toBe(true);
+    expect(taskMayReferencePath(localTask, "src/prompt.ts")).toBe(true);
+    expect(taskMayReferencePath(localTask, "src/worktree.ts")).toBe(true);
   });
 
   it("ignores missing or non-string task search fields", () => {

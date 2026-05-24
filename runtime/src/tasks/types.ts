@@ -78,6 +78,9 @@ export interface AgentProgress {
 export interface LocalAgentTaskState extends TaskStateBase<"local_agent"> {
   readonly agentId: string;
   readonly prompt: string;
+  readonly cwd?: string;
+  readonly worktreePath?: string;
+  readonly path?: string;
   readonly selectedAgent?: unknown;
   readonly agentType: string;
   readonly model?: string;
