@@ -334,6 +334,23 @@ export function useTypeahead({
   // We only want to re-fetch suggestions when the actual search token changes
   const cursorOffsetRef = useRef(cursorOffset);
   cursorOffsetRef.current = cursorOffset;
+  const currentInputStateRef = useRef({ cursorOffset, input, mode });
+  currentInputStateRef.current = { cursorOffset, input, mode };
+  const isCurrentInputState = useCallback(
+    (
+      expectedInput: string,
+      expectedCursorOffset: number,
+      expectedMode: PromptInputMode,
+    ) => {
+      const current = currentInputStateRef.current;
+      return (
+        current.input === expectedInput &&
+        current.cursorOffset === expectedCursorOffset &&
+        current.mode === expectedMode
+      );
+    },
+    [],
+  );
 
   // Track the latest search token to discard stale results from slow async operations
   const latestSearchTokenRef = useRef<string | null>(null);
@@ -1112,12 +1129,18 @@ export function useTypeahead({
         }
       }
     } else if (input.trim() !== '') {
+      const requestInput = input;
+      const requestCursorOffset = cursorOffset;
+      const requestMode = mode;
       let suggestionType: SuggestionType;
       let suggestionItems: SuggestionItem[];
       if (mode === 'bash') {
         suggestionType = 'shell';
         // This should be very fast, taking <10ms
         const bashSuggestions = await generateBashSuggestions(input, cursorOffset);
+        if (!isCurrentInputState(requestInput, requestCursorOffset, requestMode)) {
+          return;
+        }
         if (bashSuggestions.length === 1) {
           // If single suggestion, apply it immediately
           const suggestion = bashSuggestions[0];
@@ -1142,9 +1165,15 @@ export function useTypeahead({
           try {
             suggestionItems = await generateUnifiedSuggestions(searchToken, mcpResources, agents, isAtSymbol);
           } catch (error) {
+            if (!isCurrentInputState(requestInput, requestCursorOffset, requestMode)) {
+              return;
+            }
             logError(error);
             clearSuggestions();
             suggestionItems = [];
+          }
+          if (!isCurrentInputState(requestInput, requestCursorOffset, requestMode)) {
+            return;
           }
         } else {
           suggestionItems = [];
@@ -1161,7 +1190,7 @@ export function useTypeahead({
         setMaxColumnWidth(undefined);
       }
     }
-  }, [suggestions, selectedSuggestion, input, suggestionType, commands, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, cursorOffset, updateSuggestions, mcpResources, setSuggestionsState, agents, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, effectiveGhostText]);
+  }, [suggestions, selectedSuggestion, input, suggestionType, commands, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, cursorOffset, updateSuggestions, mcpResources, setSuggestionsState, agents, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, effectiveGhostText, isCurrentInputState]);
 
   // Handle enter key press - apply and execute suggestions
   const handleEnter = useCallback(() => {
