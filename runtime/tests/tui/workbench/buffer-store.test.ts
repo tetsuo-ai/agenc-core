@@ -23,7 +23,12 @@ vi.mock("../../../src/utils/log.js", () => logHarness);
 
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 import type { Key } from "../../../src/tui/ink.js";
-import { type BufferVimCommand, WorkbenchBufferStore } from "../../../src/tui/workbench/buffer/BufferStore.js";
+import {
+  getWorkbenchBufferStore,
+  resetWorkbenchBufferStoreForTesting,
+  type BufferVimCommand,
+  WorkbenchBufferStore,
+} from "../../../src/tui/workbench/buffer/BufferStore.js";
 import {
   BufferBinaryFileError,
   BufferFileTooLargeError,
@@ -83,6 +88,15 @@ describe("WorkbenchBufferStore", () => {
     expect(await readFile(file, "utf8")).toBe("Aalpha\r\nomega\r\n");
   });
 
+  it("uses the singleton buffer store until reset for tests", () => {
+    resetWorkbenchBufferStoreForTesting();
+    const first = getWorkbenchBufferStore();
+    expect(getWorkbenchBufferStore()).toBe(first);
+
+    resetWorkbenchBufferStoreForTesting();
+    expect(getWorkbenchBufferStore()).not.toBe(first);
+  });
+
   it("preserves UTF-16LE files on save", async () => {
     const file = join(dir, "utf16.txt");
     await writeFile(file, Buffer.from("\ufeffalpha\r\n", "utf16le"));
@@ -106,6 +120,25 @@ describe("WorkbenchBufferStore", () => {
     await expect(store.save()).resolves.toBe(true);
     expect(await readFile(file, "utf8")).toBe("alpha\n");
     expect(store.getSnapshot().dirty).toBe(false);
+  });
+
+  it("reports non-conflict save errors without clearing the dirty buffer", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    await writeFile(file, Buffer.from([0x61, 0x00, 0x62]));
+    store.insert("draft ");
+
+    await expect(store.save()).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      conflictKind: null,
+      dirty: true,
+      error: "target.txt appears to be binary and cannot be edited in BUFFER.",
+    });
+    expect(store.getText()).toBe("draft alpha\n");
   });
 
   it("logs failed save notifications without failing the save", async () => {
@@ -187,6 +220,98 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("");
   });
 
+  it("handles empty-buffer public operations as no-ops", async () => {
+    const store = new WorkbenchBufferStore();
+
+    expect(store.getText()).toBe("");
+    expect(store.getVisibleLines()).toEqual([]);
+    await expect(store.revert()).resolves.toBeUndefined();
+    await expect(store.save()).resolves.toBe(false);
+    await expect(store.openExternalEditor()).resolves.toBe(false);
+    await expect(store.requestHover()).resolves.toBeNull();
+    await expect(store.goToDefinition()).resolves.toBe(false);
+    expect(store.handleVimInput("i", key(), 80)).toBe(false);
+    expect(() => {
+      store.insert("ignored");
+      store.newline();
+      store.backspace();
+      store.deleteForward();
+      store.move("down");
+      store.undo();
+      store.redo();
+    }).not.toThrow();
+    expect(store.getSnapshot()).toMatchObject({
+      status: "idle",
+      dirty: false,
+      lineCount: 0,
+      position: { line: 1, column: 0, offset: 0 },
+      selection: { anchor: 0, head: 0 },
+    });
+  });
+
+  it("notifies subscribers and reports visible viewport lines", async () => {
+    await writeFile(join(dir, "target.txt"), "one\ntwo\nthree\nfour\n", "utf8");
+    const store = new WorkbenchBufferStore();
+    let calls = 0;
+    const unsubscribe = store.subscribe(() => {
+      calls += 1;
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    expect(calls).toBeGreaterThan(0);
+
+    const beforeNoop = calls;
+    store.setViewportRows(20);
+    expect(calls).toBe(beforeNoop);
+
+    store.setViewportRows(1.8);
+    expect(store.getSnapshot().viewportRows).toBe(1);
+    expect(store.getVisibleLines().map(line => [line.number, line.text])).toEqual([[1, "one"]]);
+
+    store.move("down");
+    store.move("down");
+    expect(store.getSnapshot()).toMatchObject({
+      position: { line: 3 },
+      scrollLine: 2,
+    });
+    expect(store.getVisibleLines().map(line => [line.number, line.text])).toEqual([[3, "three"]]);
+
+    store.move("up");
+    expect(store.getSnapshot()).toMatchObject({
+      position: { line: 2 },
+      scrollLine: 1,
+    });
+
+    unsubscribe();
+    const afterUnsubscribe = calls;
+    store.move("down");
+    expect(calls).toBe(afterUnsubscribe);
+  });
+
+  it("refuses to close dirty buffers unless discard is explicit", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.insert("draft ");
+
+    expect(store.close()).toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "conflict",
+      conflictKind: "disk",
+      dirty: true,
+      filePath: "target.txt",
+      error: "Unsaved edits. Save, revert, or close-discard before closing.",
+    });
+
+    expect(store.close({ discard: true })).toBe(true);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "idle",
+      filePath: null,
+      dirty: false,
+    });
+  });
+
   it("opens the current file in the external editor and reloads after it exits", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\nomega\n", "utf8");
@@ -229,6 +354,43 @@ describe("WorkbenchBufferStore", () => {
       status: "error",
       filePath: "target.txt",
       error: "Failed to open external editor: editor crashed",
+    });
+    expect(store.getText()).toBe("alpha\n");
+  });
+
+  it("formats non-Error external editor exceptions", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore({
+      openExternalEditor: () => {
+        throw "editor string failure";
+      },
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(store.openExternalEditor()).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      error: "Failed to open external editor: editor string failure",
+    });
+  });
+
+  it("reports unavailable external editors without changing the buffer", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore({
+      openExternalEditor: () => false,
+    });
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    await expect(store.openExternalEditor()).resolves.toBe(false);
+    expect(store.getSnapshot()).toMatchObject({
+      status: "error",
+      filePath: "target.txt",
+      dirty: false,
+      error: "No external editor is available for BUFFER. Set $VISUAL or $EDITOR, or install nvim/vim.",
     });
     expect(store.getText()).toBe("alpha\n");
   });
@@ -374,6 +536,25 @@ describe("WorkbenchBufferStore", () => {
       conflictKind: "disk",
       filePath: "target.txt",
       dirty: true,
+    });
+    expect(store.getText()).toBe("draft alpha\n");
+  });
+
+  it("blocks direct file opens when inline edits are dirty", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    await writeFile(join(dir, "next.txt"), "omega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+    store.insert("draft ");
+
+    await expect(runWithCwdOverride(dir, () => store.open("next.txt"))).resolves.toBeUndefined();
+    expect(store.getSnapshot()).toMatchObject({
+      status: "conflict",
+      conflictKind: "disk",
+      filePath: "target.txt",
+      dirty: true,
+      error: "Unsaved edits. Save, revert, or close-discard before opening another file.",
     });
     expect(store.getText()).toBe("draft alpha\n");
   });
@@ -536,6 +717,67 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("omega\n");
   });
 
+  it("publishes insert mode immediately when vim commands enter insert", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.handleVimInput("i", key(), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("INSERT");
+    expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 0 });
+
+    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+
+    expect(store.handleVimInput("o", key(), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("INSERT");
+    expect(store.getText()).toBe("alpha\n\nomega\n");
+  });
+
+  it("lets modified and empty normal-mode inputs fall through", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.handleVimInput("x", key({ ctrl: true }), 80)).toBe(false);
+    expect(store.handleVimInput("x", key({ super: true }), 80)).toBe(false);
+    expect(store.handleVimInput("x", key({ meta: true }), 80)).toBe(false);
+    expect(store.handleVimInput("", key(), 80)).toBe(false);
+    expect(store.handleVimInput("", key({ tab: true }), 80)).toBe(true);
+    expect(store.getText()).toBe("alpha\n");
+    expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 0 });
+  });
+
+  it("maps normal-mode navigation keys through the vim motion layer", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.handleVimInput(".", key(), 80)).toBe(true);
+    expect(store.getText()).toBe("alpha\nomega\n");
+    expect(() => store.move("left")).not.toThrow();
+    expect(store.getSnapshot().position.offset).toBe(0);
+
+    expect(store.handleVimInput("", key({ rightArrow: true }), 80)).toBe(true);
+    expect(store.getSnapshot().position.offset).toBe(1);
+    expect(store.handleVimInput("", key({ leftArrow: true }), 80)).toBe(true);
+    expect(store.getSnapshot().position.offset).toBe(0);
+    expect(store.handleVimInput("", key({ downArrow: true }), 80)).toBe(true);
+    expect(store.getSnapshot().position.line).toBe(2);
+    expect(store.handleVimInput("", key({ upArrow: true }), 80)).toBe(true);
+    expect(store.getSnapshot().position.line).toBe(1);
+    expect(store.handleVimInput("", key({ backspace: true }), 80)).toBe(true);
+    expect(store.getSnapshot().position.offset).toBe(0);
+    expect(store.handleVimInput("", key({ delete: true }), 80)).toBe(true);
+    expect(store.getText()).toBe("lpha\nomega\n");
+  });
+
   it("lets normal-mode enter fall through to the buffer keybinding", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\nomega\n", "utf8");
@@ -551,6 +793,23 @@ describe("WorkbenchBufferStore", () => {
     store.handleVimInput("i", key(), 80);
     expect(store.handleVimInput("", key({ return: true }), 80)).toBe(true);
     expect(store.getText()).toBe("\nalpha\nomega\n");
+    expect(store.getSnapshot().vimMode).toBe("INSERT");
+  });
+
+  it("handles insert-mode editing controls and navigation fallthrough", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    expect(store.handleVimInput("i", key(), 80)).toBe(true);
+    expect(store.handleVimInput("", key({ rightArrow: true }), 80)).toBe(false);
+    expect(store.handleVimInput("", key({ tab: true }), 80)).toBe(true);
+    expect(store.handleVimInput("B", key({ shift: true }), 80)).toBe(true);
+    expect(store.handleVimInput("", key({ backspace: true }), 80)).toBe(true);
+    expect(store.handleVimInput("", key(), 80)).toBe(true);
+    expect(store.getText()).toBe("\talpha\n");
     expect(store.getSnapshot().vimMode).toBe("INSERT");
   });
 
@@ -582,6 +841,9 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().vimMode).toBe("NORMAL");
     expect(store.handleVimInput("", key({ shift: true, rightArrow: true }), 80)).toBe(false);
     expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 0 });
+
+    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
 
     expect(store.handleVimInput("", key({ rightArrow: true }), 80)).toBe(true);
     expect(store.getSnapshot().selection).toEqual({ anchor: 1, head: 1 });
@@ -628,6 +890,121 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getText()).toBe("Zcdef\nomega\n");
   });
 
+  it("handles visual-mode cancellation, empty paste, uppercase yank, and last-line motion", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "abcdef\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput("v", key(), 80);
+    expect(store.handleVimInput("", key({ return: true }), 80)).toBe(true);
+    expect(store.handleVimInput("r", key(), 80)).toBe(true);
+    expect(store.handleVimInput("P", key({ shift: true }), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("VISUAL");
+
+    expect(store.handleVimInput("G", key({ shift: true }), 80)).toBe(true);
+    expect(store.getSnapshot().selection.head).toBe(13);
+    expect(store.handleVimInput("Y", key({ shift: true }), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+
+    store.handleVimInput("v", key(), 80);
+    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+  });
+
+  it("pastes a saved register over an active visual selection", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "abcdef\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput("v", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("y", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("v", key(), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput("P", key({ shift: true }), 80);
+
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+    expect(store.getText()).toBe("abadef\nomega\n");
+  });
+
+  it("dot-repeats recorded vim changes from the buffer context", async () => {
+    const openStore = async (text: string): Promise<WorkbenchBufferStore> => {
+      const file = join(dir, `repeat-${Math.random().toString(36).slice(2)}.txt`);
+      await writeFile(file, text, "utf8");
+      const store = new WorkbenchBufferStore();
+      await runWithCwdOverride(dir, () => store.open(file));
+      return store;
+    };
+
+    let store = await openStore("abcd\n");
+    store.handleVimInput("x", key(), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("cd\n");
+    store.handleVimInput("u", key(), 80);
+    expect(store.getText()).toBe("bcd\n");
+
+    store = await openStore("abcd\n");
+    store.handleVimInput("r", key(), 80);
+    store.handleVimInput("Z", key({ shift: true }), 80);
+    store.handleVimInput("l", key(), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("ZZcd\n");
+
+    store = await openStore("ab\n");
+    store.handleVimInput("~", key(), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("AB\n");
+
+    store = await openStore("a\nb\nc\n");
+    store.handleVimInput("J", key({ shift: true }), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("a b c\n");
+
+    store = await openStore("a\n");
+    store.handleVimInput("o", key(), 80);
+    store.handleVimInput("", key({ escape: true }), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("a\n\n\n");
+
+    store = await openStore("a\n");
+    store.handleVimInput(">", key({ shift: true }), 80);
+    store.handleVimInput(">", key({ shift: true }), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("    a\n");
+
+    store = await openStore("alpha beta gamma\n");
+    store.handleVimInput("d", key(), 80);
+    store.handleVimInput("w", key(), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("gamma\n");
+
+    store = await openStore("abcabc\n");
+    store.handleVimInput("d", key(), 80);
+    store.handleVimInput("f", key(), 80);
+    store.handleVimInput("c", key(), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("\n");
+
+    store = await openStore("alpha beta\n");
+    store.handleVimInput("d", key(), 80);
+    store.handleVimInput("i", key(), 80);
+    store.handleVimInput("w", key(), 80);
+    store.handleVimInput(".", key(), 80);
+    expect(store.getText()).toBe("beta\n");
+
+    store = await openStore("abcabc\n");
+    store.handleVimInput("f", key(), 80);
+    store.handleVimInput("c", key(), 80);
+    store.handleVimInput(";", key(), 80);
+    expect(store.getSnapshot().position.offset).toBe(5);
+  });
+
   it("supports vim command-line save and quit commands", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\n", "utf8");
@@ -660,6 +1037,73 @@ describe("WorkbenchBufferStore", () => {
     }
     store.handleVimInput("", key({ return: true }), 80, handleCommand);
     expect(commands.pop()).toEqual({ type: "quit", discard: true, all: true });
+  });
+
+  it("parses vim command-line aliases and editing controls", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const store = new WorkbenchBufferStore();
+    const commands: BufferVimCommand[] = [];
+    const handleCommand = (command: BufferVimCommand): void => {
+      commands.push(command);
+    };
+    const sendCommand = (command: string): void => {
+      store.handleVimInput(":", key({ shift: true }), 80, handleCommand);
+      for (const char of command) {
+        store.handleVimInput(char, key({ shift: char === "!" }), 80, handleCommand);
+      }
+      store.handleVimInput("", key({ return: true }), 80, handleCommand);
+    };
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    store.handleVimInput(":", key({ shift: true }), 80, handleCommand);
+    for (const char of "write") {
+      store.handleVimInput(char, key(), 80, handleCommand);
+    }
+    expect(store.getSnapshot().vimCommandLine).toBe("write");
+    expect(store.handleVimInput("", key({ backspace: true }), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBe("writ");
+    expect(store.handleVimInput("", key({ delete: true }), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBe("wri");
+    store.handleVimInput("", key({ backspace: true }), 80, handleCommand);
+    store.handleVimInput("", key({ backspace: true }), 80, handleCommand);
+    store.handleVimInput("", key({ backspace: true }), 80, handleCommand);
+    expect(store.getSnapshot().vimCommandLine).toBe("");
+    expect(store.handleVimInput("", key({ backspace: true }), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBe("");
+    expect(store.handleVimInput("x", key({ meta: true }), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBe("");
+    expect(store.handleVimInput("", key(), 80, handleCommand)).toBe(true);
+    expect(store.handleVimInput("", key({ escape: true }), 80, handleCommand)).toBe(true);
+    expect(store.getSnapshot().vimCommandLine).toBeNull();
+
+    for (const [raw, expected] of [
+      ["write", { type: "save", force: false }],
+      ["write!", { type: "save", force: true }],
+      ["quit", { type: "quit", discard: false, all: false }],
+      ["quit!", { type: "quit", discard: true, all: false }],
+      ["qall", { type: "quit", discard: false, all: true }],
+      ["quitall", { type: "quit", discard: false, all: true }],
+      ["wq", { type: "saveQuit", force: false, all: false }],
+      ["x", { type: "saveQuit", force: false, all: false }],
+      ["xit", { type: "saveQuit", force: false, all: false }],
+      ["exit", { type: "saveQuit", force: false, all: false }],
+      ["x!", { type: "saveQuit", force: true, all: false }],
+      ["xit!", { type: "saveQuit", force: true, all: false }],
+      ["exit!", { type: "saveQuit", force: true, all: false }],
+      ["wqa", { type: "saveQuit", force: false, all: true }],
+      ["wqall", { type: "saveQuit", force: false, all: true }],
+      ["xa", { type: "saveQuit", force: false, all: true }],
+      ["xall", { type: "saveQuit", force: false, all: true }],
+      ["wqa!", { type: "saveQuit", force: true, all: true }],
+      ["wqall!", { type: "saveQuit", force: true, all: true }],
+      ["xa!", { type: "saveQuit", force: true, all: true }],
+      ["xall!", { type: "saveQuit", force: true, all: true }],
+    ] as const) {
+      sendCommand(raw);
+      expect(commands.pop()).toEqual(expected);
+    }
   });
 
   it("keeps unknown vim commands in the buffer status instead of leaking input", async () => {
