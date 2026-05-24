@@ -175,11 +175,22 @@ export function KeybindingSetup({
   // Using a ref instead of state for synchronous updates - input handlers need
   // to see the current value immediately, not after a React render cycle.
   const activeContextsRef = useRef<Set<KeybindingContextName>>(new Set());
+  const activeContextCountsRef = useRef<Map<KeybindingContextName, number>>(new Map());
   const registerActiveContext = useCallback((context: KeybindingContextName) => {
+    activeContextCountsRef.current.set(
+      context,
+      (activeContextCountsRef.current.get(context) ?? 0) + 1,
+    );
     activeContextsRef.current.add(context);
   }, []);
-  const unregisterActiveContext = useCallback((context_0: KeybindingContextName) => {
-    activeContextsRef.current.delete(context_0);
+  const unregisterActiveContext = useCallback((context: KeybindingContextName) => {
+    const currentCount = activeContextCountsRef.current.get(context) ?? 0;
+    if (currentCount <= 1) {
+      activeContextCountsRef.current.delete(context);
+      activeContextsRef.current.delete(context);
+      return;
+    }
+    activeContextCountsRef.current.set(context, currentCount - 1);
   }, []);
 
   // Clear chord timeout when component unmounts or chord changes
