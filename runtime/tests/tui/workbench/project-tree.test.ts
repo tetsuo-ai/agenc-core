@@ -248,6 +248,34 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("normalizes backslash active and attached paths before matching tree rows", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-backslash-state-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src", "nested"), { recursive: true });
+      await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
+
+      await store.refresh();
+      store.setActivePath("src\\nested\\app.ts");
+      store.setAttachedPaths(["src\\nested\\app.ts"]);
+
+      const snapshot = store.getSnapshot();
+      const activeRow = snapshot.rows.find((row) => row.path === "src/nested/app.ts");
+
+      expect(snapshot.cursorPath).toBe("src/nested/app.ts");
+      expect([...snapshot.expandedPaths].sort()).toEqual(["src", "src/nested"]);
+      expect(activeRow).toMatchObject({
+        active: true,
+        attached: true,
+        selected: true,
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("keeps ignored-only fallback directories out of non-git workspaces", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-ignored-only-"));
     const store = new ProjectTreeStore(repo, 0);
