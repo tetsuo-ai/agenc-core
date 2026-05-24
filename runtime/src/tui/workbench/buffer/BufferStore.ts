@@ -775,6 +775,10 @@ export class WorkbenchBufferStore {
     if (this.#file?.absolutePath === absolutePath && !allowDirtyReplace) {
       if (this.#document) {
         this.#document = moveBufferCursorToLine(this.#document, line);
+        this.#status = "ready";
+        this.#error = null;
+        this.#conflictKind = null;
+        this.#hoverText = null;
         this.#ensureCursorVisible();
         this.#emit();
         return true;
