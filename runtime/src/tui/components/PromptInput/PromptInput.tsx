@@ -1344,7 +1344,7 @@ function PromptInput({
     }
 
     // Check for images early - we need this for suggestion logic below
-    const hasImages = Object.values(pastedContents).some(c => c.type === 'image');
+    const hasImages = Object.values(pastedContentsRef.current).some(c => c.type === 'image');
 
     // If input is empty OR matches the suggestion, submit it
     // But if there are images attached, don't auto-accept the suggestion -
@@ -1548,7 +1548,7 @@ function PromptInput({
     if (hasWorkbenchAttachments) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
     }
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification]);
   const {
     suggestions,
     selectedSuggestion,
@@ -2185,10 +2185,10 @@ function PromptInput({
       action: 'chat:submit',
       context: 'Chat',
       handler: () => {
-        void onSubmit(input);
+        void onSubmit(lastInternalInputRef.current);
       }
     });
-  }, [keybindingContext, promptKeyboardActive, onSubmit, input]);
+  }, [keybindingContext, promptKeyboardActive, onSubmit]);
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as

@@ -2423,6 +2423,47 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('registered chat submit handler submits current image draft before parent rerender', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'registered-submit-image',
+      mediaType: 'image/png',
+    })
+    const onInputChange = vi.fn()
+    const onSubmit = vi.fn(async () => {})
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      onSubmit,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+      const registration = harness.keybindingRegistrations.find(
+        item => item.action === 'chat:submit',
+      )
+      expect(registration).toBeDefined()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]')
+
+      ;(registration?.handler as () => void)()
+      await sleep(25)
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        '[Image #1]',
+        expect.anything(),
+        undefined,
+        expect.objectContaining({ mode: 'prompt' }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('allocates pasted image IDs after prior transcript references', async () => {
     vi.mocked(getImageFromClipboard).mockResolvedValue({
       base64: 'png-data',
