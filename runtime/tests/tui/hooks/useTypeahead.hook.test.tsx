@@ -216,6 +216,7 @@ import {
   getDirectoryCompletions,
   getPathCompletions,
 } from '../../utils/suggestions/directoryCompletion.js'
+import { getSlackChannelSuggestions } from '../../utils/suggestions/slackChannelSuggestions.js'
 import { searchSessionsByCustomTitle } from '../../utils/sessionStorage.js'
 
 type SuggestionsState = {
@@ -239,6 +240,7 @@ const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions)
 const getShellCompletionsMock = vi.mocked(getShellCompletions)
 const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions)
 const getPathCompletionsMock = vi.mocked(getPathCompletions)
+const getSlackChannelSuggestionsMock = vi.mocked(getSlackChannelSuggestions)
 const searchSessionsByCustomTitleMock = vi.mocked(searchSessionsByCustomTitle)
 
 function createKey(
@@ -414,6 +416,7 @@ describe('useTypeahead hook paths', () => {
     getShellCompletionsMock.mockClear()
     getDirectoryCompletionsMock.mockClear()
     searchSessionsByCustomTitleMock.mockClear()
+    getSlackChannelSuggestionsMock.mockClear()
   })
 
   test('generates slash command suggestions and navigates them with autocomplete keybindings', async () => {
@@ -888,6 +891,46 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('drops /add-dir directory completions after the mode changes', async () => {
+    let resolveSlowCompletion: (items: unknown[]) => void = () => {}
+    harness.directoryCompletionResponses.set(
+      's',
+      new Promise(resolve => {
+        resolveSlowCompletion = resolve
+      }),
+    )
+    const rendered = await renderHookHarness({
+      input: '/add-dir s',
+      cursorOffset: '/add-dir s'.length,
+    })
+
+    try {
+      await waitFor(
+        () => getDirectoryCompletionsMock.mock.calls.some(call => call[0] === 's'),
+        'delayed directory completion request',
+      )
+
+      rendered.rerender({
+        input: '/add-dir s',
+        cursorOffset: '/add-dir s'.length,
+        mode: 'bash',
+      })
+      resolveSlowCompletion([
+        {
+          displayText: 'src',
+          id: 'src',
+          metadata: { type: 'directory' },
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('ignores stale @ path completions after input leaves the path token', async () => {
     let resolveSlowPathCompletion: (items: unknown[]) => void = () => {}
     harness.directoryCompletionResponses.set(
@@ -936,6 +979,46 @@ describe('useTypeahead hook paths', () => {
 
       expect(rendered.getSnapshot().suggestionType).toBe('file')
       expect(rendered.getSnapshot().suggestions[0]?.id).toBe('plain.md')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drops @ path completions after the mode changes', async () => {
+    let resolveSlowPathCompletion: (items: unknown[]) => void = () => {}
+    harness.directoryCompletionResponses.set(
+      '/tm',
+      new Promise(resolve => {
+        resolveSlowPathCompletion = resolve
+      }),
+    )
+    const rendered = await renderHookHarness({
+      input: '@/tm',
+      cursorOffset: '@/tm'.length,
+    })
+
+    try {
+      await waitFor(
+        () => getPathCompletionsMock.mock.calls.some(call => call[0] === '/tm'),
+        'delayed path completion request',
+      )
+
+      rendered.rerender({
+        input: '@/tm',
+        cursorOffset: '@/tm'.length,
+        mode: 'bash',
+      })
+      resolveSlowPathCompletion([
+        {
+          displayText: '/tmp/project',
+          id: '/tmp/project',
+          metadata: { type: 'directory' },
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
     } finally {
       await rendered.dispose()
     }
@@ -994,6 +1077,94 @@ describe('useTypeahead hook paths', () => {
         displayText: 'New sprint',
         metadata: { sessionId: 'session-new' },
       })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drops /resume title completions after the mode changes', async () => {
+    let resolveSlowTitle: (items: unknown[]) => void = () => {}
+    harness.sessionTitleResponses.set(
+      'Sprint',
+      new Promise(resolve => {
+        resolveSlowTitle = resolve
+      }),
+    )
+    const rendered = await renderHookHarness({
+      input: '/resume Sprint',
+      cursorOffset: '/resume Sprint'.length,
+    })
+
+    try {
+      await waitFor(
+        () =>
+          searchSessionsByCustomTitleMock.mock.calls.some(
+            call => call[0] === 'Sprint',
+          ),
+        'delayed title completion request',
+      )
+
+      rendered.rerender({
+        input: '/resume Sprint',
+        cursorOffset: '/resume Sprint'.length,
+        mode: 'bash',
+      })
+      resolveSlowTitle([
+        {
+          customTitle: 'Sprint planning',
+          messageCount: 12,
+          modified: new Date('2026-05-20T00:00:00.000Z'),
+          sessionId: 'session-42',
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drops Slack channel completions after the mode changes', async () => {
+    let resolveSlowChannels: (items: unknown[]) => void = () => {}
+    harness.appState.mcp = {
+      clients: [{ name: 'slack' }],
+      resources: [],
+    }
+    harness.slackSuggestions = new Promise(resolve => {
+      resolveSlowChannels = resolve
+    }) as unknown as unknown[]
+    const rendered = await renderHookHarness({
+      input: '#gen',
+      cursorOffset: '#gen'.length,
+    })
+
+    try {
+      await waitFor(
+        () =>
+          getSlackChannelSuggestionsMock.mock.calls.some(
+            call => call[1] === 'gen',
+          ),
+        'delayed Slack completion request',
+      )
+
+      rendered.rerender({
+        input: '#gen',
+        cursorOffset: '#gen'.length,
+        mode: 'bash',
+      })
+      resolveSlowChannels([
+        {
+          displayText: '#general',
+          id: 'slack-general',
+          description: 'channel',
+        },
+      ])
+      await sleep(50)
+
+      expect(rendered.getSnapshot().suggestionType).toBe('none')
+      expect(rendered.getSnapshot().suggestions).toEqual([])
     } finally {
       await rendered.dispose()
     }
