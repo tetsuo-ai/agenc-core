@@ -698,7 +698,9 @@ export function VirtualMessageList({
     // Non-search jump (sticky header click, etc). No scan, no positions.
     jumpToIndex: (i: number) => {
       const s = scrollRef.current;
-      if (s) s.scrollTo(targetFor(i));
+      const js = jumpState.current;
+      if (!s || i < 0 || i >= js.messages.length) return;
+      s.scrollTo(targetFor(i));
     },
     setSearchQuery: (q: string) => {
       // New search invalidates everything.
