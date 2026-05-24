@@ -4,6 +4,7 @@ import { globby } from "globby";
 
 import { buildProjectTreeRows, visibleTreePaths } from "./buildTree.js";
 import { collectGitStatus, listGitFiles, type GitStatusByPath } from "./gitStatus.js";
+import { normalizeWorkspacePathForReferences } from "../pathReferences.js";
 import type { ProjectTreeRow, ProjectTreeSnapshot } from "../types.js";
 
 type Listener = () => void;
@@ -122,29 +123,30 @@ export class ProjectTreeStore {
   }
 
   setActivePath(pathValue: string | null): void {
-    this.#activePath = pathValue;
-    if (pathValue) {
-      this.reveal(pathValue);
+    const nextPath = normalizeProjectTreeReference(pathValue);
+    this.#activePath = nextPath;
+    if (nextPath) {
+      this.reveal(nextPath);
     }
     this.#emit();
   }
 
   setAttachedPaths(paths: Iterable<string>): void {
-    const next = new Set(paths);
+    const next = normalizedPathSet(paths);
     if (sameSet(this.#attachedPaths, next)) return;
     this.#attachedPaths = next;
     this.#emit();
   }
 
   setSearchHitPaths(paths: Iterable<string>): void {
-    const next = new Set(paths);
+    const next = normalizedPathSet(paths);
     if (sameSet(this.#searchHitPaths, next)) return;
     this.#searchHitPaths = next;
     this.#emit();
   }
 
   setInFlightPaths(paths: Iterable<string>): void {
-    const next = new Set(paths);
+    const next = normalizedPathSet(paths);
     if (sameSet(this.#inFlightPaths, next)) return;
     this.#inFlightPaths = next;
     this.#emit();
@@ -185,51 +187,55 @@ export class ProjectTreeStore {
   }
 
   toggle(pathValue = this.#cursorPath): void {
-    if (!pathValue) return;
-    const row = this.#rowForPath(pathValue);
+    const normalizedPath = normalizeProjectTreeReference(pathValue);
+    if (!normalizedPath) return;
+    const row = this.#rowForPath(normalizedPath);
     if (!row || row.kind !== "directory") return;
-    if (this.#expandedPaths.has(pathValue)) {
-      this.#expandedPaths.delete(pathValue);
-      if (this.#cursorPath && isDescendantPath(this.#cursorPath, pathValue)) {
-        this.#cursorPath = pathValue;
+    if (this.#expandedPaths.has(normalizedPath)) {
+      this.#expandedPaths.delete(normalizedPath);
+      if (this.#cursorPath && isDescendantPath(this.#cursorPath, normalizedPath)) {
+        this.#cursorPath = normalizedPath;
       }
     } else {
-      this.#expandedPaths.add(pathValue);
+      this.#expandedPaths.add(normalizedPath);
     }
     this.#emit();
   }
 
   expand(pathValue = this.#cursorPath): void {
-    if (!pathValue) return;
-    const row = this.#rowForPath(pathValue);
+    const normalizedPath = normalizeProjectTreeReference(pathValue);
+    if (!normalizedPath) return;
+    const row = this.#rowForPath(normalizedPath);
     if (!row || row.kind !== "directory") return;
-    this.#expandedPaths.add(pathValue);
+    this.#expandedPaths.add(normalizedPath);
     this.#emit();
   }
 
   collapse(pathValue = this.#cursorPath): void {
-    if (!pathValue) return;
-    const row = this.#rowForPath(pathValue);
-    if (row?.kind === "directory" && this.#expandedPaths.has(pathValue)) {
-      this.#expandedPaths.delete(pathValue);
-      if (this.#cursorPath && isDescendantPath(this.#cursorPath, pathValue)) {
-        this.#cursorPath = pathValue;
+    const normalizedPath = normalizeProjectTreeReference(pathValue);
+    if (!normalizedPath) return;
+    const row = this.#rowForPath(normalizedPath);
+    if (row?.kind === "directory" && this.#expandedPaths.has(normalizedPath)) {
+      this.#expandedPaths.delete(normalizedPath);
+      if (this.#cursorPath && isDescendantPath(this.#cursorPath, normalizedPath)) {
+        this.#cursorPath = normalizedPath;
       }
     } else {
-      const parent = parentPath(pathValue);
+      const parent = parentPath(normalizedPath);
       if (parent !== null) this.#cursorPath = parent;
     }
     this.#emit();
   }
 
   reveal(pathValue: string | null = this.#activePath): void {
-    if (!pathValue) return;
-    let parent = parentPath(pathValue);
+    const normalizedPath = normalizeProjectTreeReference(pathValue);
+    if (!normalizedPath) return;
+    let parent = parentPath(normalizedPath);
     while (parent !== null) {
       this.#expandedPaths.add(parent);
       parent = parentPath(parent);
     }
-    this.#cursorPath = pathValue;
+    this.#cursorPath = normalizedPath;
     this.#emit();
   }
 
@@ -392,6 +398,14 @@ function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean
     if (!right.has(value)) return false;
   }
   return true;
+}
+
+function normalizeProjectTreeReference(pathValue: string | null): string | null {
+  return pathValue === null ? null : normalizeWorkspacePathForReferences(pathValue);
+}
+
+function normalizedPathSet(paths: Iterable<string>): Set<string> {
+  return new Set([...paths].map((pathValue) => normalizeWorkspacePathForReferences(pathValue)));
 }
 
 function firstFilePath(paths: readonly string[]): string | null {

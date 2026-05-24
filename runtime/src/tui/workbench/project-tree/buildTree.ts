@@ -178,7 +178,7 @@ function compareNodes(left: TreeNode, right: TreeNode): number {
 }
 
 function normalizeRelativePath(value: string): string {
-  return value.split(path.sep).join("/");
+  return value.replace(/\\/gu, "/").split(path.sep).join("/");
 }
 
 function emptyRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
