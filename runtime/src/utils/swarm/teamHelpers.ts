@@ -125,7 +125,7 @@ export function getTeamFilePath(teamName: string): string {
 
 /**
  * Reads a team file by name (sync — for sync contexts like React render paths)
- * @internal Exported for team discovery UI
+ * Exported for team discovery UI.
  */
 // sync IO: called from sync context
 export function readTeamFile(teamName: string): TeamFile | null {

@@ -30,6 +30,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
 import type { AgentId } from 'src/types/ids.js'
+import { projectSnippedView } from '../services/compact/snipProjection.js'
 // Retired intro attachments render empty text for old transcripts.
 const companionIntroText = (_name: string, _species: string): string => ''
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
@@ -4628,10 +4629,6 @@ export function getMessagesAfterCompactBoundary<
   const boundaryIndex = findLastCompactBoundaryIndex(messages)
   const sliced = boundaryIndex === -1 ? messages : messages.slice(boundaryIndex)
   if (!options?.includeSnipped && feature('HISTORY_SNIP')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { projectSnippedView } =
-      require('../services/compact/snipProjection.js') as typeof import('../services/compact/snipProjection.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
     return projectSnippedView(sliced as Message[]) as T[]
   }
   return sliced

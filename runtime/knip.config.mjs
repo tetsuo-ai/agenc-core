@@ -187,6 +187,7 @@ const sessionContractExportFiles = [
   'src/session/run-turn.ts',
   'src/session/session-store.ts',
   'src/session/session.ts',
+  'src/session/startup-prewarm.ts',
   'src/session/tasks.ts',
   'src/session/turn-context.ts',
 ];
@@ -437,8 +438,17 @@ const binConfigTaskOnboardingContractExportFiles = [
   // CLI bootstrap ingress helpers, config schema/compatibility helpers,
   // onboarding flows, and task registry surfaces are covered by focused tests
   // or consumed through dynamic runtime paths outside this Knip graph.
+  'src/bin/_deps/current-session.ts',
   'src/bin/_deps/session-ingress-auth.ts',
   'src/bin/_deps/session-storage.ts',
+  'src/bin/bootstrap-services.ts',
+  'src/bin/mcp-cli.ts',
+  'src/bin/providers-cli.ts',
+  'src/bin/slash.ts',
+  'src/bin/structured-output-tool.ts',
+  'src/bin/task-store.ts',
+  'src/bin/tui-local-events.ts',
+  'src/bin/web-fetch-preapproved.ts',
   'src/config/init.ts',
   'src/config/loader.ts',
   'src/config/profiles.ts',
@@ -497,6 +507,17 @@ const intentionalConversationRecoveryStateShellIssueIgnores = Object.fromEntries
     file,
     ['exports'],
   ]),
+);
+const transactionGuardContractExportFiles = [
+  // Transaction guard internals are exercised by focused contract tests while
+  // production reaches only the narrower runtime entrypoints.
+  'src/transaction-guard/config.ts',
+  'src/transaction-guard/docket.ts',
+  'src/transaction-guard/errors.ts',
+  'src/transaction-guard/ollama-courtguard.ts',
+];
+const intentionalTransactionGuardIssueIgnores = Object.fromEntries(
+  transactionGuardContractExportFiles.map((file) => [file, ['exports']]),
 );
 const remainingRuntimeContractExportFiles = [
   // The final cleanup tranche leaves only daemon/client protocol, command,
@@ -615,6 +636,7 @@ export default {
     ...intentionalAppAgentErrorIssueIgnores,
     ...intentionalBinConfigTaskOnboardingIssueIgnores,
     ...intentionalConversationRecoveryStateShellIssueIgnores,
+    ...intentionalTransactionGuardIssueIgnores,
     ...intentionalRemainingRuntimeIssueIgnores,
   },
   ignoreBinaries: [
