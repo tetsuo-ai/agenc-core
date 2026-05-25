@@ -59,6 +59,19 @@ function assertFrameShape(session, dimension, label) {
   }
 }
 
+function assertExplorerRailVisible(session, dimension, label) {
+  if (dimension.cols < 100) return;
+  const rows = frameRows(session, dimension);
+  const frame = rows.join("\n");
+  const hasTreeRow = rows.some((row) => /^\s+[v>] \S/u.test(row.slice(0, 26)));
+  if (!frame.includes("WORKSPACE") || !hasTreeRow) {
+    fail("workspace explorer rail disappeared during transcript scroll", {
+      label,
+      frame: JSON.stringify(frame.slice(0, 1200)),
+    });
+  }
+}
+
 async function waitForFrame(session, dimension, predicate, label, timeoutMs = 10_000) {
   const startedAt = Date.now();
   let lastFrame = "";
@@ -78,6 +91,12 @@ async function sendRepeated(session, bytes, count, pauseMs = 70) {
     session.send(bytes);
     await sleep(pauseMs);
   }
+}
+
+function sgrWheel(button, dimension) {
+  const col = Math.min(dimension.cols - 4, Math.max(35, Math.floor(dimension.cols / 2)));
+  const row = Math.min(dimension.rows - 6, 10);
+  return `\x1b[<${button};${col};${row}M`;
 }
 
 async function runOne(dimension) {
@@ -101,6 +120,7 @@ async function runOne(dimension) {
     });
     await session.waitForIdle({ idleWindow: 1_000, timeout: 20_000 });
     assertFrameShape(session, dimension, `${label} long output tail`);
+    assertExplorerRailVisible(session, dimension, `${label} long output tail`);
     await waitForFrame(
       session,
       dimension,
@@ -108,9 +128,32 @@ async function runOne(dimension) {
       `${label} tail visible`,
     );
 
+    await sendRepeated(session, sgrWheel(64, dimension), 20, 30);
+    await session.waitForIdle({ idleWindow: 800, timeout: 10_000 });
+    assertFrameShape(session, dimension, `${label} mouse wheel scrolled up`);
+    assertExplorerRailVisible(session, dimension, `${label} mouse wheel scrolled up`);
+    await waitForFrame(
+      session,
+      dimension,
+      (frame) => /WBANCHOR-0[0-8][0-9]/u.test(frame),
+      `${label} old anchor visible after mouse wheel`,
+    );
+
+    await sendRepeated(session, sgrWheel(65, dimension), 40, 30);
+    await session.waitForIdle({ idleWindow: 800, timeout: 10_000 });
+    assertFrameShape(session, dimension, `${label} mouse wheel scrolled down`);
+    assertExplorerRailVisible(session, dimension, `${label} mouse wheel scrolled down`);
+    await waitForFrame(
+      session,
+      dimension,
+      (frame) => frame.includes("WBANCHOR-120"),
+      `${label} tail restored after mouse wheel`,
+    );
+
     await sendRepeated(session, "\x1b[5~", 18);
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     assertFrameShape(session, dimension, `${label} scrolled up`);
+    assertExplorerRailVisible(session, dimension, `${label} scrolled up`);
     await waitForFrame(
       session,
       dimension,
@@ -121,6 +164,7 @@ async function runOne(dimension) {
     await sendRepeated(session, "\x1b[6~", 18);
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     assertFrameShape(session, dimension, `${label} scrolled down`);
+    assertExplorerRailVisible(session, dimension, `${label} scrolled down`);
     await waitForFrame(
       session,
       dimension,

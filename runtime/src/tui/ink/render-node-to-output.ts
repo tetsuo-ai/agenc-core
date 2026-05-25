@@ -892,9 +892,16 @@ function renderNodeToOutput(
             const delta = contentCached.y - contentY
             const regionTop = Math.floor(y + contentYoga.getComputedTop())
             const regionBottom = regionTop + innerHeight - 1
+            // DECSTBM/SU/SD and output.shift operate on complete terminal
+            // rows. Split-pane scrollboxes must repaint their bounded rect;
+            // otherwise a transcript wheel shift also moves sibling panes.
+            const canShiftFullRows =
+              Math.floor(x) <= 0 &&
+              Math.floor(x) + Math.floor(width) >= output.width
             if (
               cached?.y === y &&
               cached.height === height &&
+              canShiftFullRows &&
               innerHeight > 0 &&
               Math.abs(delta) < innerHeight
             ) {
