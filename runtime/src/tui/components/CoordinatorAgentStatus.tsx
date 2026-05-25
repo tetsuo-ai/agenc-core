@@ -115,7 +115,7 @@ export function CoordinatorTaskPanel(): React.ReactNode {
     const interval = setInterval((tasksRef_0, setAppState_0, setTick_0) => {
       const now = Date.now();
       for (const t of Object.values(tasksRef_0.current)) {
-        if (isPanelAgentTask(t) && (t.evictAfter ?? Infinity) <= now) {
+        if (isPanelAgentTask(t) && isTerminalStatus(t.status) && (t.evictAfter ?? Infinity) <= now) {
           evictTerminalTask(t.id, setAppState_0);
         }
       }

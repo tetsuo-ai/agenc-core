@@ -310,4 +310,25 @@ describe("CoordinatorTaskPanel rendering", () => {
       await rendered.dispose();
     }
   });
+
+  test("does not evict reactivated running agents with stale terminal deadlines", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.tasks = {
+      reactivated: task("reactivated", {
+        endTime: 999_000,
+        evictAfter: 999_999,
+        progress: { summary: "running after a follow-up message" },
+        status: "running",
+      }),
+    };
+    const rendered = await renderPanel();
+
+    try {
+      await sleep(1_075);
+      expect(harness.evicted).toEqual([]);
+      expect(rendered.output()).toContain("running after a follow-up message");
+    } finally {
+      await rendered.dispose();
+    }
+  });
 });

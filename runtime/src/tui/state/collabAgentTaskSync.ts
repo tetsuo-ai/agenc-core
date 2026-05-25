@@ -238,7 +238,7 @@ function applyPatch(
   const evictAfter =
     ended && previousAgent?.retain !== true
       ? previousAgent?.evictAfter ?? now + PANEL_GRACE_MS
-      : previousAgent?.evictAfter;
+      : undefined;
   return {
     id: patch.id,
     type: "local_agent",
@@ -247,7 +247,7 @@ function applyPatch(
     startTime: previousAgent?.startTime ?? now,
     outputFile: previousAgent?.outputFile ?? outputUri(patch.id),
     outputOffset: previousAgent?.outputOffset ?? 0,
-    notified: ended ? true : previousAgent?.notified ?? false,
+    notified: ended ? true : false,
     agentId: patch.id,
     prompt,
     agentType: patch.role ?? previousAgent?.agentType ?? "agent",
@@ -263,18 +263,14 @@ function applyPatch(
     diskLoaded: previousAgent?.diskLoaded ?? false,
     selectedAgent: previousAgent?.selectedAgent ?? { name: title },
     ...(previousAgent?.progress !== undefined ? { progress: previousAgent.progress } : {}),
-    ...(ended
-      ? { endTime: previousAgent?.endTime ?? now }
-      : previousAgent?.endTime !== undefined
-        ? { endTime: previousAgent.endTime }
-        : {}),
+    ...(ended ? { endTime: previousAgent?.endTime ?? now } : {}),
     ...(previousAgent?.abortController !== undefined
       ? { abortController: previousAgent.abortController }
       : {}),
     ...(previousAgent?.unregisterCleanup !== undefined
       ? { unregisterCleanup: previousAgent.unregisterCleanup }
       : {}),
-    ...(previousAgent?.result !== undefined ? { result: previousAgent.result } : {}),
+    ...(ended && previousAgent?.result !== undefined ? { result: previousAgent.result } : {}),
     ...(evictAfter !== undefined ? { evictAfter } : {}),
   };
 }
