@@ -43,6 +43,7 @@ export function WorkbenchLayout({
   const dispatch = useWorkbenchDispatch();
   const layoutSize = layoutSizeForColumns(columns);
   const focusedPane = visibleWorkbenchPane(workbench);
+  const editorOwnsKeys = focusedPane === "surface" && workbench.activeSurfaceMode === "buffer";
   const showExplorer = workbench.explorerVisible && layoutSize !== "narrow";
   const showAgents = workbench.agentsVisible && layoutSize === "wide";
   const visiblePanes = useMemo(
@@ -50,7 +51,7 @@ export function WorkbenchLayout({
     [showExplorer, showAgents],
   );
 
-  useRegisterKeybindingContext("Workbench", true);
+  useRegisterKeybindingContext("Workbench", !editorOwnsKeys);
   useRegisterKeybindingContext("Composer", focusedPane === "composer");
   useKeybindings(
     {
@@ -63,7 +64,7 @@ export function WorkbenchLayout({
       "workbench:openDiff": () => dispatch({ type: "openDiff", focus: true }),
       "workbench:openSearch": () => dispatch({ type: "openSearch" }),
     },
-    { context: "Workbench", isActive: true },
+    { context: "Workbench", isActive: !editorOwnsKeys },
   );
 
   const explorerWidth = layoutSize === "wide" ? 30 : 26;

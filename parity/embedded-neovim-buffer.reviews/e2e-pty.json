@@ -1,0 +1,115 @@
+{
+  "rowId": "e2e-pty",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T05:26:05-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "adds a PTY scenario that launches workbench mode with embedded Neovim BUFFER enabled",
+      "drives insert, edit, write, undo, dirty quit refusal, force quit, search navigation, visual yank paste, named register basics, macro replay, resize, mouse isolation, and process cleanup",
+      "verifies file contents on disk after Neovim write operations",
+      "verifies killing the TUI leaves no Neovim child process alive",
+      "verifies missing Neovim uses inline fallback with a clear visible reason",
+      "keeps advanced Vim command behavior owned by embedded Neovim in the PTY flow instead of the inline Vim layer"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "embedded Neovim undo changes file contents after write and before later edits continue",
+      "dirty colon q keeps the workbench running and shows the Neovim refusal",
+      "colon q bang exits BUFFER without writing edited text",
+      "resizing during insert mode preserves typed text, cursor position, and Neovim grid visibility",
+      "mouse wheel over BUFFER does not move the workspace tree rows",
+      "mouse click over BUFFER moves the Neovim cursor without moving the workspace tree rows",
+      "a forced TUI kill while Neovim has dirty edits cleans up the embedded child process without writing dirty text"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/SKILL.md",
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/parity/embedded-neovim-buffer.json",
+      "/home/tetsuo/git/AgenC/agenc-core/TODO.md",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-e2e/runner.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-workbench-buffer-neovim.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/scripts/check-tui-workbench-visual-smoke.mjs",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/package.json",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
+      "CI=1 NO_COLOR=1 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim",
+      "CI=1 NO_COLOR=1 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke"
+    ],
+    "behaviorEvidence": {
+      "adds a PTY scenario that launches workbench mode with embedded Neovim BUFFER enabled": [
+        "TODO.md:199-210 requires PTY end-to-end BUFFER coverage, including launch, edit, fallback, resize, mouse, and cleanup.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:15-23 sets workbench mode, BUFFER provider auto-selection, and test auth environment.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:30-49 starts the TUI, opens BUFFER, waits for embedded Neovim, and asserts a child nvim process exists.",
+        "runtime/scripts/check-tui-workbench-buffer-neovim.mjs:9-18 runs the Neovim-filtered PTY scenarios with AGENC_TUI_WORKBENCH enabled.",
+        "runtime/package.json:33-34 exposes the TUI e2e runner and the workbench-buffer-neovim wrapper command."
+      ],
+      "drives insert, edit, write, undo, dirty quit refusal, force quit, search navigation, visual yank paste, named register basics, macro replay, resize, mouse isolation, and process cleanup": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:51-79 covers insert, write, and undo before a second write.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:86-118 covers visual yank/paste, named register, and macro replay inputs.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:120-181 covers resize, cursor-position probing, BUFFER mouse wheel isolation, and BUFFER mouse click routing.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:183-255 covers advanced save assertions, search navigation, dirty :q refusal, :q! discard, and child cleanup.",
+        "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs:47-61 covers dirty mid-edit TUI kill cleanup."
+      ],
+      "verifies file contents on disk after Neovim write operations": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:64-79 reads target.txt after writes and asserts the original marker is written then removed by undo.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:189-208 reads target.txt after advanced commands and asserts macro, register, resize, click routing, and visual paste effects.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:251-254 reads target.txt after :q! and asserts dirty text was not written."
+      ],
+      "verifies killing the TUI leaves no Neovim child process alive": [
+        "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs:13-20 configures the kill-cleanup PTY scenario with workbench, provider, and test auth token.",
+        "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs:32-46 opens BUFFER and asserts a child nvim process exists before kill.",
+        "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs:47-61 creates dirty text, kills the TUI, waits for child pids to disappear, and asserts dirty text was not written.",
+        "runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs:28-47 finds descendant Neovim child pids, and lines 49-62 wait for those pids to disappear."
+      ],
+      "verifies missing Neovim uses inline fallback with a clear visible reason": [
+        "runtime/scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs:12-19 configures embedded Neovim mode with test auth.",
+        "runtime/scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs:25-50 points AGENC_BUFFER_NVIM at a missing binary, waits for visible fallback text, and asserts no nvim child spawned."
+      ],
+      "keeps advanced Vim command behavior owned by embedded Neovim in the PTY flow instead of the inline Vim layer": [
+        "TODO.md:107-115 states commands like :w, :q, :q!, search, visual mode, macros, registers, and undo are owned by Neovim, not reinterpreted by AgenC.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:42-49 requires the embedded Neovim screen and live child process before advanced Vim commands are driven.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:86-118 and 210-224 drive visual, register, macro, and search commands through the embedded session."
+      ]
+    },
+    "edgeCaseEvidence": {
+      "embedded Neovim undo changes file contents after write and before later edits continue": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:64-79 writes E2E_MARK, runs undo, writes again, and asserts E2E_MARK is absent from disk before later edits continue at lines 86-118."
+      ],
+      "dirty colon q keeps the workbench running and shows the Neovim refusal": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:228-240 inserts DIRTY_MARK, sends :q, waits for E37/unsaved refusal text, and asserts BUFFER remains visible."
+      ],
+      "colon q bang exits BUFFER without writing edited text": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:243-255 sends :q!, reads target.txt, asserts DIRTY_MARK was not written, and waits for the embedded child process to exit."
+      ],
+      "resizing during insert mode preserves typed text, cursor position, and Neovim grid visibility": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:120-132 resizes during insert mode, waits for RESIZE_MARK_AFTER, and asserts normal mode plus preserved text remain in the frame.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:133-143 writes getline('.') and col('.') from Neovim after resize and asserts both the current line and cursor column remain on RESIZE_MARK_AFTER.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:199-201 asserts the preserved resize text was written to disk."
+      ],
+      "mouse wheel over BUFFER does not move the workspace tree rows": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:146-159 snapshots workspace rows before and after BUFFER wheel input and fails if they differ."
+      ],
+      "mouse click over BUFFER moves the Neovim cursor without moving the workspace tree rows": [
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:161-181 snapshots workspace rows before and after click input and then inserts CLICK_ROUTE_ at the clicked Neovim line.",
+        "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:202-205 asserts the saved alpha line contains CLICK_ROUTE_."
+      ],
+      "a forced TUI kill while Neovim has dirty edits cleans up the embedded child process without writing dirty text": [
+        "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs:47-61 creates KILL_DIRTY_MARK, verifies it is visible before kill, kills the TUI, waits for Neovim child pids to disappear, and asserts KILL_DIRTY_MARK is absent from disk."
+      ]
+    }
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "rowId": "input-routing",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T06:00:41-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "translates printable input, named keys, escape, control keys, alt keys, shift modified keys, paste, mouse, focus, and resize into Neovim input or UI calls",
+      "routes editor-owned keys to the active provider before workbench or composer keybindings handle them",
+      "keeps global escape and surface switching behavior explicit and conflict free",
+      "routes mouse wheel and clicks only to the pane under the pointer",
+      "sends resize events to Neovim when the BUFFER pane dimensions change",
+      "delegates colon command input such as :wq to embedded Neovim instead of parsing it through the inline Vim command layer"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "escape in insert mode is forwarded to Neovim instead of closing the workbench surface",
+      "ctrl-s triggers provider save without inserting control text into the buffer",
+      "bracketed paste forwards the pasted text as one paste operation with paste mode boundaries",
+      "mouse wheel over BUFFER does not scroll the workspace explorer",
+      "mouse wheel events without parseable pointer coordinates do not get captured by BUFFER",
+      "click outside the BUFFER pane does not call provider click and can be handled by the pane under the pointer",
+      "workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor",
+      "embedded command input for :wq forwards colon, letters, and enter to Neovim exactly as editor input",
+      "resize to one row and one column sends a valid Neovim resize request"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "parity/embedded-neovim-buffer.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts",
+      "runtime/src/tui/keybindings/defaultBindings.ts",
+      "runtime/src/tui/keybindings/KeybindingContext.tsx",
+      "runtime/src/tui/keybindings/KeybindingProviderSetup.tsx",
+      "runtime/src/tui/keybindings/useKeybinding.ts",
+      "runtime/src/tui/workbench/WorkbenchLayout.tsx",
+      "runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx",
+      "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
+      "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-surface.test.tsx"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-input.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+    ],
+    "behaviorEvidence": {
+      "translates printable input, named keys, escape, control keys, alt keys, shift modified keys, paste, mouse, focus, and resize into Neovim input or UI calls": [
+        "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts:8-31 translates key, paste, and resize events.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:244-278 forwards paste, key, click, and resize events to the embedded session.",
+        "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:55-80 sends input, paste, resize, focus, and click RPC calls.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:48-97 asserts printable, named, escape, control, alt, shift-modified, paste, resize, and wheel translation.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:206-269 asserts provider paste, escape, wheel, resize, focus, click, and command input forwarding."
+      ],
+      "routes editor-owned keys to the active provider before workbench or composer keybindings handle them": [
+        "runtime/src/tui/keybindings/KeybindingProviderSetup.tsx:277-354 runs focused input captures before later handlers when escape, wheel, or unmatched editor input is present.",
+        "runtime/src/tui/keybindings/useKeybinding.ts:200-215 registers early raw input capture for focused editor surfaces.",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:91-134 registers Buffer context, keybindings, and raw input capture for focused BUFFER input.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:119-162 asserts escape and wheel capture before global handlers.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:887-931 asserts focused insert text does not leak to later input handlers."
+      ],
+      "keeps global escape and surface switching behavior explicit and conflict free": [
+        "runtime/src/tui/workbench/WorkbenchLayout.tsx:46-68 disables Workbench keybindings while the BUFFER editor owns keys.",
+        "runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx:117-123 disables generic Surface close handling for BUFFER.",
+        "runtime/src/tui/keybindings/defaultBindings.ts:340-349 defines surface-switching chords under the Workbench context, and runtime/src/tui/keybindings/defaultBindings.ts:401-431 defines BUFFER-owned commands separately.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:143-162 asserts escape reaches Buffer capture rather than chat close handling.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:1351-1451 asserts focused BUFFER ctrl+w h stays in the provider and does not move focus."
+      ],
+      "routes mouse wheel and clicks only to the pane under the pointer": [
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:115-134 filters wheel input by BUFFER content bounds before provider input capture.",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:164-172 routes clicks only from the BUFFER content box and only when focused.",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:207-233 parses wheel coordinates and rejects coordinate-less or out-of-bounds wheel events.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:164-203 asserts wheel over BUFFER bypasses explorer while out-of-bounds and coordinate-less wheel events fall through.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:1209-1343 asserts outside and unfocused clicks do not call provider click while inside clicks do."
+      ],
+      "sends resize events to Neovim when the BUFFER pane dimensions change": [
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:73-78 sends normalized pane dimensions to the provider when terminal size changes.",
+        "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:140-143 forwards provider resize calls.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:270-278 normalizes resize dimensions and sends them to the session.",
+        "runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts:50-55 sends nvim_ui_try_resize after resizing the grid snapshot.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:85-90 and runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:256-268 assert one-by-one resize forwarding.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:1102-1201 asserts the surface sends pane resize dimensions to the provider."
+      ],
+      "delegates colon command input such as :wq to embedded Neovim instead of parsing it through the inline Vim command layer": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:244-258 sends printable ':'/'w'/'q' and return through session.input without using onInlineCommand.",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:115-129 passes executeVimCommand only as inline command callback while provider-owned input remains delegated to the active provider.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:250-266 asserts ':', 'w', 'q', and enter are forwarded to Neovim input.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:1047-1093 separately covers inline :wq, keeping embedded command ownership distinct from fallback inline command handling."
+      ]
+    },
+    "edgeCaseEvidence": {
+      "escape in insert mode is forwarded to Neovim instead of closing the workbench surface": [
+        "runtime/src/tui/keybindings/KeybindingProviderSetup.tsx:277-284 gives escape to active input captures before normal keybinding resolution.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:143-162 asserts escape is captured by Buffer and does not call a close handler.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:250-262 asserts provider escape input reaches the embedded session as <Esc>."
+      ],
+      "ctrl-s triggers provider save without inserting control text into the buffer": [
+        "runtime/src/tui/keybindings/defaultBindings.ts:401-405 binds ctrl+s to buffer:save.",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:254-263 maps buffer:save to store.save.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:99-117 asserts ctrl-s calls save and does not invoke raw editor input capture."
+      ],
+      "bracketed paste forwards the pasted text as one paste operation with paste mode boundaries": [
+        "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts:18-24 wraps paste text with PasteStart and PasteEnd.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:247-253 sends paste event components through session input and paste calls.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:76-83 asserts paste translation boundaries.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:244-248 asserts provider forwards pasted text as one paste operation between boundaries."
+      ],
+      "mouse wheel over BUFFER does not scroll the workspace explorer": [
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:115-120 filters wheel capture by BUFFER bounds.",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:207-217 validates wheel point against the BUFFER node rectangle.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:164-189 asserts explorer scroll is not called for an inside BUFFER wheel event."
+      ],
+      "mouse wheel events without parseable pointer coordinates do not get captured by BUFFER": [
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:220-233 returns null for wheel input without SGR or legacy coordinates.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:198-203 asserts coordinate-less wheel events are not captured by BUFFER and reach explorer handling."
+      ],
+      "click outside the BUFFER pane does not call provider click and can be handled by the pane under the pointer": [
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx:164-172 limits provider click calls to the BUFFER content box.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:1209-1343 asserts outside clicks call the outside handler and do not call provider.click; inside focused clicks do call provider.click; unfocused BUFFER clicks do not."
+      ],
+      "workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor": [
+        "runtime/src/tui/workbench/WorkbenchLayout.tsx:46-68 keeps Workbench context inactive while the focused surface is BUFFER.",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx:1351-1451 asserts ctrl+w h reaches provider.handleInput and focus never moves to explorer."
+      ],
+      "embedded command input for :wq forwards colon, letters, and enter to Neovim exactly as editor input": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:244-258 forwards printable and return input to session.input.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:250-266 asserts ':', 'w', 'q', and <CR> are sent to session.input."
+      ],
+      "resize to one row and one column sends a valid Neovim resize request": [
+        "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts:27-32 clamps resize rows and columns to at least one.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:270-278 clamps provider resize dimensions before forwarding.",
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:85-90 and runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts:256-268 assert zero/negative resize input forwards { rows: 1, columns: 1 }."
+      ]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "rowId": "docs-config",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T09:00:07Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "documents embedded Neovim as the default BUFFER provider when a usable binary exists",
+      "documents configuration knobs for executable path, clean mode, user init mode, fallback mode, and timeouts",
+      "documents visible fallback reasons and troubleshooting steps",
+      "documents that inline mode is a basic fallback and external editor is an explicit handoff",
+      "documents the validation commands that protect the embedded Neovim BUFFER surface"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "documentation states missing executable behavior without suggesting exact Vim behavior in inline mode",
+      "documentation states unsupported version behavior with the user-facing fallback message",
+      "documentation states how to opt into user init loading without changing the default clean mode",
+      "documentation states process cleanup behavior after a TUI crash",
+      "documentation lists the contract checker and PTY validation commands"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/parity/embedded-neovim-buffer.json",
+      "/home/tetsuo/git/AgenC/agenc-core/TODO.md",
+      "/home/tetsuo/git/AgenC/agenc-core/docs/embedded-neovim-buffer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-docs-config.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-docs-config.contract.test.ts --reporter=dot"
+    ]
+  }
+}

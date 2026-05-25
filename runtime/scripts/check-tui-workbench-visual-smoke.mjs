@@ -49,17 +49,20 @@ async function runOne(dimension) {
   const session = new TuiSession({
     cols: dimension.cols,
     rows: dimension.rows,
-    env: { AGENC_TUI_WORKBENCH: "1" },
+    env: {
+      AGENC_TUI_WORKBENCH: "1",
+      AGENC_OAUTH_TOKEN: "test-workbench-visual-token",
+    },
   });
   const label = `${dimension.cols}x${dimension.rows}`;
   try {
     await session.start({ firstPaintMs: 1_000, postReplyMs: 1_000 });
     await session.waitForPrompt({ timeout: 20_000 });
-    assertFrame(session, dimension, `${label} cold start`, ["agenc", "mode"]);
+    assertFrame(session, dimension, `${label} cold start`, ["AgenC Workbench", "TRANSCRIPT", "WORKSPA"]);
 
     session.send("\x17h");
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
-    assertFrame(session, dimension, `${label} explorer focus`, ["Explorer"]);
+    assertFrame(session, dimension, `${label} explorer focus`, ["WORKSPACE", "WORKSPA"]);
 
     session.send("\x17l");
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });

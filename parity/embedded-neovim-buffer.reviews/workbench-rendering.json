@@ -1,0 +1,312 @@
+{
+  "rowId": "workbench-rendering",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T12:35:05Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "renders provider snapshots inside the bounded BUFFER pane only",
+      "keeps explorer, agents rail, transcript, editor, and composer render regions visually isolated",
+      "renders cursor, mode, command line, status, errors, fallback reason, and provider identity truthfully",
+      "handles narrow and short terminals without overlapping adjacent panes",
+      "does not rely on inline document state when the embedded Neovim provider is active"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "a long Neovim line is clipped to the pane width without extending into the agents rail",
+      "a command line longer than the pane width truncates inside the BUFFER footer",
+      "a one column pane renders without throwing and without negative widths",
+      "an inactive BUFFER pane shows provider status without stealing composer focus",
+      "long provider fallback, status, and error text truncates inside the BUFFER pane",
+      "a mouse scroll inside the editor pane leaves the project explorer scroll offset unchanged"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/parity/embedded-neovim-buffer.json",
+      "/home/tetsuo/git/AgenC/agenc-core/TODO.md",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/useBufferStore.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchFooter.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/types.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/state.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+    ],
+    "testResult": "2 test files passed, 37 tests passed",
+    "behaviorEvidence": [
+      {
+        "behavior": "renders provider snapshots inside the bounded BUFFER pane only",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:33",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:34",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:142",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:164",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:168",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:175",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:176",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:46",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:55",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:58",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:60",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:61",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:161",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:173"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:62",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:71",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:77",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:82",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:182",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:196",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:197",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1102",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1191",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1193"
+        ]
+      },
+      {
+        "behavior": "keeps explorer, agents rail, transcript, editor, and composer render regions visually isolated",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:44",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:47",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:48",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:73",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:76",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:77",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:78",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:79",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:86",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx:122",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx:126",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:118",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:121",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:164",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:169"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:182",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:188",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:190",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:192",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:193",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:195",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:199",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:208",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:211",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:212",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:220",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:226",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:231",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1209",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1311",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1315",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1351",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1445",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1450"
+        ]
+      },
+      {
+        "behavior": "renders cursor, mode, command line, status, errors, fallback reason, and provider identity truthfully",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:140",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:141",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:147",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:150",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:153",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:156",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:188",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:190",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:192",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:153",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:161",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:163",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:167",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchFooter.tsx:14",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchFooter.tsx:15"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:87",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:103",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:220",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:228",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:229",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:230",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:236",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:247",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:248",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:249",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:314",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:317",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1102",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1191",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1192",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1200",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1646",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1758",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1761",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1765"
+        ]
+      },
+      {
+        "behavior": "handles narrow and short terminals without overlapping adjacent panes",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:73",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:75",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:76",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:125",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:126",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:144",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:164",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:188",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:44",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:47",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:48",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:70",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:73",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:93",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/WorkbenchLayout.tsx:126",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:55",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:173"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:160",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:167",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:173",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:202",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:208",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:212",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:214",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:217"
+        ]
+      },
+      {
+        "behavior": "does not rely on inline document state when the embedded Neovim provider is active",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/useBufferStore.ts:8",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/useBufferStore.ts:10",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:33",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:34",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:53",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:142",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:175",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:177",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:264",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:274",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:276",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:59",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:61",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:76",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:80",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:85"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:62",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:63",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:71",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:182",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:183",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:196",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:180",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:255",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:271",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:274",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1102",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1118",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1134",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1193"
+        ]
+      }
+    ],
+    "edgeCaseEvidence": [
+      {
+        "edgeCase": "a long Neovim line is clipped to the pane width without extending into the agents rail",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:182",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:184",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:192",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:196",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:197",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:199"
+        ]
+      },
+      {
+        "edgeCase": "a command line longer than the pane width truncates inside the BUFFER footer",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:178",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:185",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:198"
+        ]
+      },
+      {
+        "edgeCase": "a one column pane renders without throwing and without negative widths",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:160",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:167",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:169",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:173",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:175"
+        ]
+      },
+      {
+        "edgeCase": "an inactive BUFFER pane shows provider status without stealing composer focus",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:220",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:226",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:228",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:230",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:231",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:232",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:233"
+        ]
+      },
+      {
+        "edgeCase": "long provider fallback, status, and error text truncates inside the BUFFER pane",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:236",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:240",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:241",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:242",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:247",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:250",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:251",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:252",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:254"
+        ]
+      },
+      {
+        "edgeCase": "a mouse scroll inside the editor pane leaves the project explorer scroll offset unchanged",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:257",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:259",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:276",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:277",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:278",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:280",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:281",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:282",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:284",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:285",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:297",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:304",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:310",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx:311"
+        ]
+      }
+    ]
+  }
+}

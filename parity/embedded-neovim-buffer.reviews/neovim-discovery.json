@@ -1,0 +1,55 @@
+{
+  "rowId": "neovim-discovery",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T11:59:52Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "discovers the configured Neovim executable before searching PATH",
+      "executes the candidate with a bounded version probe and parses the reported version",
+      "accepts only binaries that support embedded mode",
+      "returns structured fallback reasons for missing executables, failed probes, timeouts, and unsupported versions",
+      "builds default spawn arguments with embedded clean mode unless configuration permits user init loading"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "an empty configured executable is treated as absent and PATH discovery is still attempted",
+      "a probe that exits nonzero records stderr in the fallback reason without throwing",
+      "a probe that hangs past the timeout kills the probe process and returns a timeout result",
+      "a version line with extra suffix text still parses the numeric major minor patch values",
+      "user init loading is disabled by default and enabled only by explicit configuration"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/parity/embedded-neovim-buffer.json",
+      "/home/tetsuo/git/AgenC/agenc-core/TODO.md",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/utils/which.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-discovery.contract.test.ts --reporter=dot"
+    ],
+    "behaviorEvidence": {
+      "discovers the configured Neovim executable before searching PATH": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:107-116 trims and checks the configured executable before falling back to which(\"nvim\"). Assertion: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:72-85 resolves and discovers a configured relative executable from PATH.",
+      "executes the candidate with a bounded version probe and parses the reported version": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:56 calls the version probe; lines 153-193 spawn --version with a timeout; lines 125-133 parse NVIM version output. Assertions: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:33-41 checks parser output, lines 48-60 checks discovery of a supported probe script, and lines 255-270 checks timeout behavior.",
+      "accepts only binaries that support embedded mode": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:85-96 builds embedded args and rejects failed embedded probes; lines 200-237 spawn the candidate with embedded args and report failures. Assertions: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:171-180 rejects a candidate that fails embedded mode, lines 204-216 accepts a long-running embedded probe and verifies cleanup, and lines 218-227 reports embedded spawn errors.",
+      "returns structured fallback reasons for missing executables, failed probes, timeouts, and unsupported versions": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:20-38 defines structured result variants; lines 47-83 return missing, timeout, failed, and unsupported-version reasons from discovery; lines 88-95 return embedded probe failures. Assertions: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:87-97 covers missing binary, lines 129-145 covers unsupported and malformed probe failures, lines 158-169 covers stderr probe failure, and lines 255-270 covers timeout.",
+      "builds default spawn arguments with embedded clean mode unless configuration permits user init loading": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:85-87 applies explicit useUserInit config; lines 119-123 return --embed --clean -n by default and --embed with user init. Assertions: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:43-46 checks both arg lists, lines 48-59 checks default discovery args, and lines 146-155 checks explicit user init."
+    },
+    "edgeCaseEvidence": {
+      "an empty configured executable is treated as absent and PATH discovery is still attempted": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:107-116 trims configuredExecutable and falls back to which(\"nvim\") when the trimmed string is empty. Assertion: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:99-111 discovers PATH nvim with executable set to spaces.",
+      "a probe that exits nonzero records stderr in the fallback reason without throwing": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:181-184 returns a failed probe message using stderr, signal, or exit code; lines 65-72 surface it as a structured probe-failed result. Assertion: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:158-169 expects reasonCode probe-failed and stderr text in the reason.",
+      "a probe that hangs past the timeout kills the probe process and returns a timeout result": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:168-171 kills the version probe on timeout and resolves timeout. Assertion: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:255-270 expects reasonCode probe-timeout and verifies the recorded PID is no longer alive.",
+      "a version line with extra suffix text still parses the numeric major minor patch values": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:125-133 uses a regex that accepts suffix text and returns numeric major, minor, and patch values. Assertion: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:33-40 expects NVIM v0.12.0-dev to parse to 0, 12, 0 with the raw suffix line.",
+      "user init loading is disabled by default and enabled only by explicit configuration": "Implementation: runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts:85-87 enables user init only when config.useUserInit is true; lines 119-123 build clean default args otherwise. Assertions: runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts:43-46 checks clean default and user-init args, and lines 146-155 checks discovery with explicit useUserInit."
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "rowId": "fallback-inline",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T12:23:01Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "wraps the existing inline BUFFER store behind the provider API",
+      "labels inline mode as basic fallback in snapshots and status text",
+      "preserves existing open, edit, save, revert, hover, definition, undo, redo, and close behavior",
+      "keeps inline command handling scoped to fallback mode",
+      "reports fallback reasons from provider selection to the visible surface"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "inline fallback opens when Neovim discovery reports no usable executable",
+      "inline fallback save still blocks when an agent edit is in flight",
+      "inline fallback close refuses dirty edits unless discard is requested",
+      "inline fallback status text contains the fallback reason exactly once",
+      "inline fallback capabilities report terminal UI and exact Vim semantics as unavailable"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "parity/embedded-neovim-buffer.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "runtime/src/tui/workbench/buffer/editing.ts",
+      "runtime/src/tui/vim/motions.ts",
+      "runtime/src/tui/vim/operators.ts",
+      "runtime/src/tui/vim/text-objects.ts",
+      "runtime/src/tui/vim/transitions.ts",
+      "runtime/src/tui/vim/types.ts",
+      "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
+      "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-surface.test.tsx"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-fallback-inline.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+    ]
+  }
+}

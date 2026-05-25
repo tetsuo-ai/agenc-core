@@ -1,0 +1,197 @@
+{
+  "rowId": "ui-attach-grid",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T03:23:48-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "attaches Neovim as an external UI with line grid support sized to the BUFFER pane",
+      "reduces grid line, clear, scroll, resize, highlight, cursor, mode, command line, popup menu, and message events into a render snapshot",
+      "bounds rendered rows and columns to the current pane size",
+      "preserves cell text, width, highlight id, and cursor metadata",
+      "updates mode and command line state from Neovim UI events without interpreting Vim commands in AgenC"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "a grid resize smaller than existing content trims rows and cursor coordinates to valid bounds",
+      "a line grid event containing double width cells occupies the correct number of columns",
+      "a scroll event with negative rows moves content in the correct direction inside the bounded grid",
+      "a cursor event targeting an inactive grid does not corrupt the active grid cursor",
+      "a command line hide event clears command line state while preserving normal mode text"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/parity/embedded-neovim-buffer.json",
+      "/home/tetsuo/git/AgenC/agenc-core/TODO.md",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-grid.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+    ],
+    "testResult": "3 test files passed, 39 tests passed",
+    "behaviorEvidence": [
+      {
+        "behavior": "attaches Neovim as an external UI with line grid support sized to the BUFFER pane",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts:27",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts:31",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts:36",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:105",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:112",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:259",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:73"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:196",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:197",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:51",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:58",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1174"
+        ]
+      },
+      {
+        "behavior": "reduces grid line, clear, scroll, resize, highlight, cursor, mode, command line, popup menu, and message events into a render snapshot",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:95",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:124",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:126",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:132",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:135",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:138",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:141",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:147",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:150",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:158",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:164"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:10",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:25",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:39",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:70",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:99",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:112",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:132"
+        ]
+      },
+      {
+        "behavior": "bounds rendered rows and columns to the current pane size",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:87",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:107",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:112",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:116",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:172",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:55",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/render.tsx:161"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:30",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:31",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:32",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:107",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:58",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1174"
+        ]
+      },
+      {
+        "behavior": "preserves cell text, width, highlight id, and cursor metadata",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:3",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:21",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:41",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:208",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:214",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:251"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:17",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:18",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:128",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:130",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:131",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:132"
+        ]
+      },
+      {
+        "behavior": "updates mode and command line state from Neovim UI events without interpreting Vim commands in AgenC",
+        "implementation": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:147",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:150",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts:155",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:136",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:185",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:187",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/surfaces/BufferSurface.tsx:260"
+        ],
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:45",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:56",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:283",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:284",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:285",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:286",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1169",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-surface.test.tsx:1173"
+        ]
+      }
+    ],
+    "edgeCaseEvidence": [
+      {
+        "edgeCase": "a grid resize smaller than existing content trims rows and cursor coordinates to valid bounds",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:22",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:30",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:33"
+        ]
+      },
+      {
+        "edgeCase": "a line grid event containing double width cells occupies the correct number of columns",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:103",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:128",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:130",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:131"
+        ]
+      },
+      {
+        "edgeCase": "a scroll event with negative rows moves content in the correct direction inside the bounded grid",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:78",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:88",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:96",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:97"
+        ]
+      },
+      {
+        "edgeCase": "a cursor event targeting an inactive grid does not corrupt the active grid cursor",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:147",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:148"
+        ]
+      },
+      {
+        "edgeCase": "a command line hide event clears command line state while preserving normal mode text",
+        "tests": [
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:50",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:56",
+          "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts:57"
+        ]
+      }
+    ]
+  }
+}

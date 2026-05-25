@@ -1,0 +1,107 @@
+{
+  "rowId": "external-editor",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T12:15:13Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "keeps external editor launch as an explicit action from the BUFFER provider surface",
+      "resolves editor commands from VISUAL, EDITOR, and known fallbacks without changing embedded provider defaults",
+      "blocks external editor handoff when the active provider has dirty embedded edits that have not been saved or discarded",
+      "refreshes the active provider snapshot after an external editor exits",
+      "surfaces external editor launch failures without terminating the TUI"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "a quoted editor command with arguments launches the executable and preserves arguments",
+      "a missing external editor executable returns a clear error status",
+      "external editor handoff is refused while embedded provider reports dirty state",
+      "external editor exit with file changes reloads the inline fallback snapshot",
+      "external editor cancellation leaves the embedded Neovim child process untouched"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "parity/embedded-neovim-buffer.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/externalEditor.ts",
+      "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "runtime/src/utils/editor.ts",
+      "runtime/tests/tui/workbench/buffer-external-editor-provider.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-external-editor.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-external-editor-provider.contract.test.ts tests/tui/workbench/buffer-external-editor.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-fallback-inline.contract.test.ts --reporter=dot"
+    ],
+    "behaviorEvidence": {
+      "keeps external editor launch as an explicit action from the BUFFER provider surface": [
+        "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts:58-77 launches only when the explicit external provider is opened.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:200-219 exposes external handoff only through openExternalEditor.",
+        "runtime/src/tui/workbench/buffer/BufferStore.ts:253-275 exposes inline fallback handoff only through openExternalEditor.",
+        "runtime/tests/tui/workbench/buffer-external-editor-provider.contract.test.ts:21-37 asserts the launcher is not called before explicit provider open.",
+        "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts:109-135 asserts inline command handling is scoped away from external and Neovim providers."
+      ],
+      "resolves editor commands from VISUAL, EDITOR, and known fallbacks without changing embedded provider defaults": [
+        "runtime/src/tui/workbench/buffer/externalEditor.ts:24-52 resolves VISUAL, EDITOR, Windows notepad, then nvim/vim/vi/nano fallbacks.",
+        "runtime/src/tui/workbench/buffer/externalEditor.ts:59-68 splits editor commands and preserves configured args when spawning.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:107-114 starts embedded Neovim with discovery-provided args.",
+        "runtime/tests/tui/workbench/buffer-external-editor.test.ts:88-127 asserts VISUAL, EDITOR, terminal fallback, and PATH probing behavior.",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:23-32 asserts embedded Neovim still starts with --embed --clean -n defaults."
+      ],
+      "blocks external editor handoff when the active provider has dirty embedded edits that have not been saved or discarded": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:200-205 reads current dirty state before launching and refuses dirty handoff.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:307-314 refreshes dirty state from the embedded session.",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:236-250 asserts immediate handoff waits for the dirty probe and refuses launch while dirty."
+      ],
+      "refreshes the active provider snapshot after an external editor exits": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:218 reopens the active Neovim provider after a successful external editor handoff.",
+        "runtime/src/tui/workbench/buffer/BufferStore.ts:275 reloads the inline fallback store after external editor exit.",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:252-258 asserts successful Neovim handoff restarts the provider session.",
+        "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts:194-215 asserts inline fallback content is reloaded from disk after external editor changes."
+      ],
+      "surfaces external editor launch failures without terminating the TUI": [
+        "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts:60-76 catches launcher failures and publishes an error snapshot.",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:207-217 catches launcher failures and leaves the provider active.",
+        "runtime/src/tui/workbench/buffer/BufferStore.ts:262-273 converts launcher false/throw results into error state.",
+        "runtime/tests/tui/workbench/buffer-external-editor-provider.contract.test.ts:39-86 asserts false, Error, and non-Error launch failures resolve to provider error snapshots.",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:259-290 asserts false, Error, and non-Error launch failures resolve false without restarting the embedded session."
+      ]
+    },
+    "edgeCaseEvidence": {
+      "a quoted editor command with arguments launches the executable and preserves arguments": [
+        "runtime/src/tui/workbench/buffer/externalEditor.ts:59-68 applies splitEditorCommand output to spawn args.",
+        "runtime/tests/tui/workbench/buffer-external-editor.test.ts:188-202 asserts quoted VISUAL arguments are preserved in spawn argv."
+      ],
+      "a missing external editor executable returns a clear error status": [
+        "runtime/src/tui/workbench/buffer/externalEditor.ts:55-63 returns false when no editor is resolved or executable availability fails.",
+        "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts:67-75 turns a failed launch into providerStatus error and a clear message.",
+        "runtime/tests/tui/workbench/buffer-external-editor.test.ts:142-159 asserts no spawn occurs without a resolved or available executable.",
+        "runtime/tests/tui/workbench/buffer-external-editor-provider.contract.test.ts:39-50 asserts the provider exposes an error snapshot containing No external editor."
+      ],
+      "external editor handoff is refused while embedded provider reports dirty state": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:200-205 refuses handoff on dirty embedded state.",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:236-250 asserts the launcher is not called when the embedded dirty probe resolves true."
+      ],
+      "external editor exit with file changes reloads the inline fallback snapshot": [
+        "runtime/src/tui/workbench/buffer/BufferStore.ts:253-275 reloads the inline store after external editor exit.",
+        "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts:194-215 asserts an external write is visible in inline provider lines and on disk."
+      ],
+      "external editor cancellation leaves the embedded Neovim child process untouched": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:214-217 returns false on failed launch before reopening the provider.",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:259-269 asserts failed handoff does not add startSession or cleanup calls and keeps filePath unchanged."
+      ]
+    }
+  }
+}

@@ -1,0 +1,615 @@
+{
+  "contractName": "embedded-neovim-buffer",
+  "scope": "Embedded Neovim BUFFER implementation from TODO.md",
+  "generatedAt": "2026-05-25T06:09:59.650Z",
+  "sourceRoot": "..",
+  "sourceSnapshotHash": "bf4cd31b229feebfe4d592926e391e0f10ff5aa95294d96b0708d33ecd8b456f",
+  "targetRoot": "..",
+  "sourceFiles": [
+    {
+      "path": "TODO.md",
+      "sha256": "932a77d5811f7d44452e97e31bfae3bbd6b2da1e128fc660b5208ff62eaa527e"
+    },
+    {
+      "path": "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "sha256": "563aec769d187f1ae4ba133ca7ddeb99c942db79c17ea9e4f96ef3209e9ae8fd"
+    },
+    {
+      "path": "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "sha256": "3c83ead3f70c6a0e4c722f1623c1bcaf3713b84c35589e6591051202f48428ef"
+    },
+    {
+      "path": "runtime/src/tui/workbench/buffer/editing.ts",
+      "sha256": "37637605077751668301b23b809be76df3a9931f9e9132126dd6fde15a641008"
+    },
+    {
+      "path": "runtime/src/tui/workbench/buffer/lsp.ts",
+      "sha256": "cbbec7455a343f4b22556df3970c4ca6d90150b21dd5f1a8a4847238e0ad334f"
+    },
+    {
+      "path": "runtime/src/tui/vim/motions.ts",
+      "sha256": "7dae6f1af38a31cee3becdbf7f1977c8312604372efc86963240127bf836f04c"
+    },
+    {
+      "path": "runtime/src/tui/vim/operators.ts",
+      "sha256": "6370136bceac52a225cd1c01b0fa7c040259320f9e40604319000fd45968ddbb"
+    },
+    {
+      "path": "runtime/src/tui/vim/text-objects.ts",
+      "sha256": "14b2f8f52fc3062764dbd38fc144fd7b9aae910a3ee8f7d82a0a0c72caa00c6c"
+    },
+    {
+      "path": "runtime/src/tui/vim/transitions.ts",
+      "sha256": "9c411aa6d2bb31db65db385892684061c5266b738fae2d4ba4b1dfdd151dce47"
+    },
+    {
+      "path": "runtime/src/tui/vim/types.ts",
+      "sha256": "e94fa0c49e7abb08d7ba5253e1cd3d1704f6fe38bad3ab4d5b9f811d7e64c3d2"
+    },
+    {
+      "path": "runtime/src/tui/workbench/buffer/externalEditor.ts",
+      "sha256": "466f8c4fbec7f2d2d785510419c0e5adb21aad13cb613907cf77a1c776140532"
+    }
+  ],
+  "targetFiles": [
+    "runtime/src/tui/workbench/buffer/providers/types.ts",
+    "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+    "runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts",
+    "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+    "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+    "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimProcess.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimRpc.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts",
+    "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
+    "runtime/src/tui/workbench/buffer/BufferStore.ts",
+    "runtime/src/tui/workbench/buffer/fileSnapshot.ts",
+    "runtime/src/tui/workbench/buffer/externalEditor.ts",
+    "runtime/src/tui/workbench/buffer/render.tsx",
+    "runtime/src/tui/workbench/buffer/useBufferStore.ts",
+    "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+    "runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx",
+    "runtime/src/tui/workbench/WorkbenchLayout.tsx",
+    "runtime/src/tui/workbench/WorkbenchFooter.tsx",
+    "runtime/src/tui/keybindings/defaultBindings.ts",
+    "runtime/src/tui/keybindings/KeybindingContext.tsx",
+    "runtime/src/tui/keybindings/KeybindingProviderSetup.tsx",
+    "runtime/src/tui/keybindings/useKeybinding.ts",
+    "runtime/src/tui/workbench/reducer.ts",
+    "runtime/src/tui/workbench/state.ts",
+    "runtime/package.json",
+    "scripts/check-embedded-neovim-buffer.mjs",
+    "runtime/scripts/check-tui-workbench-visual-smoke.mjs",
+    "runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
+    "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
+    "runtime/scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs",
+    "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs",
+    "runtime/scripts/check-tui-workbench-buffer-neovim.mjs",
+    "docs/embedded-neovim-buffer.md"
+  ],
+  "testFiles": [
+    "runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-rpc.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx",
+    "runtime/tests/tui/workbench/buffer-surface.test.tsx",
+    "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-external-editor-provider.contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-external-editor.test.ts",
+    "runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts",
+    "runtime/tests/tui/workbench/buffer-docs-config.contract.test.ts",
+    "scripts/check-embedded-neovim-buffer.mjs"
+  ],
+  "rows": [
+    {
+      "id": "provider-boundary",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+        "runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts"
+      ],
+      "requiredBehaviors": [
+        "defines a provider API for open, close, save, force save, dirty state, status, input, click, resize, focus, cleanup, snapshots, and capability reporting",
+        "selects embedded Neovim as the default provider when discovery reports a usable binary",
+        "selects the inline provider only when embedded Neovim is unusable or configuration explicitly requests inline mode",
+        "keeps the external editor path as an explicit provider action instead of the default BUFFER mode",
+        "reports capability flags truthfully, including exact Vim semantics only for the embedded Neovim provider"
+      ],
+      "edgeCases": [
+        "provider selection returns inline fallback with a concrete reason when discovery returns a missing binary result",
+        "provider selection returns inline fallback with a concrete reason when discovery returns an unsupported version result",
+        "provider selection honors an explicit inline configuration even when a usable binary exists",
+        "capabilities for the inline provider never mark exact Vim semantics as available",
+        "closing a selected provider calls its cleanup path exactly once when the surface changes quickly"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "neovim-discovery",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
+      "requiredBehaviors": [
+        "discovers the configured Neovim executable before searching PATH",
+        "executes the candidate with a bounded version probe and parses the reported version",
+        "accepts only binaries that support embedded mode",
+        "returns structured fallback reasons for missing executables, failed probes, timeouts, and unsupported versions",
+        "builds default spawn arguments with embedded clean mode unless configuration permits user init loading"
+      ],
+      "edgeCases": [
+        "an empty configured executable is treated as absent and PATH discovery is still attempted",
+        "a probe that exits nonzero records stderr in the fallback reason without throwing",
+        "a probe that hangs past the timeout kills the probe process and returns a timeout result",
+        "a version line with extra suffix text still parses the numeric major minor patch values",
+        "user init loading is disabled by default and enabled only by explicit configuration"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-discovery.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "rpc-transport",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/neovim/NeovimRpc.ts",
+      "requiredBehaviors": [
+        "encodes Neovim msgpack-RPC requests and notifications, and decodes responses and errors using request ids",
+        "decodes streaming msgpack data split across arbitrary stdout chunks",
+        "resolves requests only when the matching response id arrives",
+        "dispatches Neovim notifications to registered handlers without blocking request resolution",
+        "rejects pending requests when the process exits or the transport closes"
+      ],
+      "edgeCases": [
+        "two responses arriving out of order resolve the matching pending requests",
+        "a response with an error object rejects the matching request with method and id context",
+        "a malformed RPC frame is surfaced as a transport error and closes pending requests",
+        "a notification for an unregistered method is recorded without crashing the transport",
+        "calling request after close rejects immediately and writes no bytes",
+        "transport close is the cancellation boundary for all pending requests"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-neovim-rpc.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-rpc.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ui-attach-grid",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts",
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx"
+      ],
+      "requiredBehaviors": [
+        "attaches Neovim as an external UI with line grid support sized to the BUFFER pane",
+        "reduces grid line, clear, scroll, resize, highlight, cursor, mode, command line, popup menu, and message events into a render snapshot",
+        "bounds rendered rows and columns to the current pane size",
+        "preserves cell text, width, highlight id, and cursor metadata",
+        "updates mode and command line state from Neovim UI events without interpreting Vim commands in AgenC"
+      ],
+      "edgeCases": [
+        "a grid resize smaller than existing content trims rows and cursor coordinates to valid bounds",
+        "a line grid event containing double width cells occupies the correct number of columns",
+        "a scroll event with negative rows moves content in the correct direction inside the bounded grid",
+        "a cursor event targeting an inactive grid does not corrupt the active grid cursor",
+        "a command line hide event clears command line state while preserving normal mode text"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-neovim-grid.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-grid.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "input-routing",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts",
+    "targetFiles": [
+      "runtime/src/tui/keybindings/defaultBindings.ts",
+      "runtime/src/tui/keybindings/KeybindingContext.tsx",
+      "runtime/src/tui/keybindings/KeybindingProviderSetup.tsx",
+      "runtime/src/tui/keybindings/useKeybinding.ts",
+      "runtime/src/tui/workbench/WorkbenchLayout.tsx",
+      "runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+        "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
+        "runtime/src/tui/workbench/buffer/providers/types.ts",
+        "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+        "runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts"
+      ],
+      "requiredBehaviors": [
+        "translates printable input, named keys, escape, control keys, alt keys, shift modified keys, paste, mouse, focus, and resize into Neovim input or UI calls",
+        "routes editor-owned keys to the active provider before workbench or composer keybindings handle them",
+        "keeps global escape and surface switching behavior explicit and conflict free",
+        "routes mouse wheel and clicks only to the pane under the pointer",
+        "sends resize events to Neovim when the BUFFER pane dimensions change",
+        "delegates colon command input such as :wq to embedded Neovim instead of parsing it through the inline Vim command layer"
+      ],
+      "edgeCases": [
+        "escape in insert mode is forwarded to Neovim instead of closing the workbench surface",
+        "ctrl-s triggers provider save without inserting control text into the buffer",
+        "bracketed paste forwards the pasted text as one paste operation with paste mode boundaries",
+        "mouse wheel over BUFFER does not scroll the workspace explorer",
+        "mouse wheel events without parseable pointer coordinates do not get captured by BUFFER",
+        "click outside the BUFFER pane does not call provider click and can be handled by the pane under the pointer",
+        "workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor",
+        "embedded command input for :wq forwards colon, letters, and enter to Neovim exactly as editor input",
+        "resize to one row and one column sends a valid Neovim resize request"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-neovim-input.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-input.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "buffer-lifecycle",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimProcess.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "runtime/src/tui/workbench/reducer.ts",
+      "runtime/src/tui/workbench/state.ts",
+      "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs"
+    ],
+      "requiredBehaviors": [
+        "opens a file in supervised embedded Neovim and attaches UI before accepting input",
+        "implements save, force save, quit, force quit, dirty close prevention, surface switch cleanup, app exit cleanup, and crash cleanup",
+        "tracks dirty state from Neovim buffer options and write events",
+        "prevents orphaned Neovim child processes after normal close, parent exit, and test failure",
+        "surfaces lifecycle errors in provider status without crashing the whole TUI"
+      ],
+      "edgeCases": [
+        "dirty quit returns a refusal status while keeping the provider alive",
+        "force quit discards edits and resolves cleanup after Neovim exits",
+        "process exit before UI attach rejects open and clears pending requests",
+      "double close waits on one cleanup path and does not send duplicate quit commands",
+      "startup failure after spawn but before UI attach completes kills the spawned child process",
+      "dirty surface switch is refused before BUFFER unmount cleanup can discard embedded Neovim edits",
+      "BufferSurface unmount on surface switch cleans up the active provider instead of leaving an embedded Neovim process alive",
+      "provider replacement waits for active Neovim cleanup before opening the replacement provider",
+      "superseded Neovim open after session start cleans up the stale spawned session",
+      "cleanup during in-flight Neovim startup cancels the open and cleans up the late spawned session",
+      "cleanup during in-flight Neovim startup ignores a late start failure without publishing stale errors",
+      "parent cleanup kills the child process group when Neovim ignores graceful quit"
+    ],
+    "tests": [
+      "runtime/tests/tui/workbench/buffer-surface.test.tsx",
+      "runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts"
+    ],
+    "commands": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-surface.test.tsx tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
+      "npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim"
+    ],
+      "status": "required"
+    },
+    {
+      "id": "file-safety",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/fileSnapshot.ts",
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/BufferStore.ts",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx"
+      ],
+      "requiredBehaviors": [
+        "resolves file paths safely relative to the AgenC cwd before any provider opens a file",
+        "rejects binary files and files over the configured size limit before embedded Neovim launches when possible",
+        "preserves encoding and line ending metadata across read and write paths",
+        "detects disk conflicts and in-flight agent edit conflicts deterministically before saving",
+        "keeps active file and cursor state synchronized after provider cursor movement and file writes"
+      ],
+      "edgeCases": [
+        "a path escaping the workspace through parent segments is rejected before provider open",
+        "a file containing a NUL byte is rejected with a user-facing binary file message",
+        "a file over the maximum size returns a size-specific error before Neovim spawn",
+        "a workspace symlink resolving outside the workspace is rejected before file reads",
+        "a disk mtime change after open blocks non-force save with conflict status",
+        "a CRLF file saved without text changes keeps CRLF line endings"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-file-safety.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "lsp-bridge-notifications",
+      "source": "TODO.md",
+      "sourceFiles": [
+        "runtime/src/tui/workbench/buffer/lsp.ts",
+        "runtime/src/tui/workbench/buffer/BufferStore.ts"
+      ],
+      "target": "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/BufferStore.ts",
+        "runtime/src/tui/workbench/buffer/providers/types.ts",
+        "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts"
+      ],
+      "requiredBehaviors": [
+        "preserves existing AgenC-side LSP open, change, save, and close notifications for inline fallback buffers",
+        "keeps LSP notification failures from breaking inline editing or changing visible buffer status",
+        "marks inline fallback as the only provider with AgenC-side LSP passthrough",
+        "marks embedded Neovim as not claiming AgenC-side LSP passthrough until a real Neovim LSP bridge exists"
+      ],
+      "edgeCases": [
+        "opening an inline fallback buffer notifies the LSP bridge with absolute path and content",
+        "editing inline fallback text notifies the LSP bridge with the updated document text",
+        "saving and closing inline fallback buffers notify the LSP bridge in order",
+        "a thrown LSP notification does not revert inline buffer edits or set an error state",
+        "embedded Neovim capabilities explicitly report LSP passthrough as unavailable"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-lsp-bridge.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "workbench-rendering",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "sourceFiles": [
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx"
+      ],
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/render.tsx",
+        "runtime/src/tui/workbench/buffer/useBufferStore.ts",
+        "runtime/src/tui/workbench/surfaces/ActiveWorkSurface.tsx",
+        "runtime/src/tui/workbench/WorkbenchLayout.tsx",
+        "runtime/src/tui/workbench/WorkbenchFooter.tsx"
+      ],
+      "requiredBehaviors": [
+        "renders provider snapshots inside the bounded BUFFER pane only",
+        "keeps explorer, agents rail, transcript, editor, and composer render regions visually isolated",
+        "renders cursor, mode, command line, status, errors, fallback reason, and provider identity truthfully",
+        "handles narrow and short terminals without overlapping adjacent panes",
+        "does not rely on inline document state when the embedded Neovim provider is active"
+      ],
+      "edgeCases": [
+        "a long Neovim line is clipped to the pane width without extending into the agents rail",
+        "a command line longer than the pane width truncates inside the BUFFER footer",
+        "a one column pane renders without throwing and without negative widths",
+        "an inactive BUFFER pane shows provider status without stealing composer focus",
+        "long provider fallback, status, and error text truncates inside the BUFFER pane",
+        "a mouse scroll inside the editor pane leaves the project explorer scroll offset unchanged"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "fallback-inline",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+      "sourceFiles": [
+        "runtime/src/tui/workbench/buffer/BufferStore.ts",
+        "runtime/src/tui/workbench/buffer/editing.ts",
+        "runtime/src/tui/vim/motions.ts",
+        "runtime/src/tui/vim/operators.ts",
+        "runtime/src/tui/vim/text-objects.ts",
+        "runtime/src/tui/vim/transitions.ts",
+        "runtime/src/tui/vim/types.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+        "runtime/src/tui/workbench/surfaces/BufferSurface.tsx"
+      ],
+      "requiredBehaviors": [
+        "wraps the existing inline BUFFER store behind the provider API",
+        "labels inline mode as basic fallback in snapshots and status text",
+        "preserves existing open, edit, save, revert, hover, definition, undo, redo, and close behavior",
+        "keeps inline command handling scoped to fallback mode",
+        "reports fallback reasons from provider selection to the visible surface"
+      ],
+      "edgeCases": [
+        "inline fallback opens when Neovim discovery reports no usable executable",
+        "inline fallback save still blocks when an agent edit is in flight",
+        "inline fallback close refuses dirty edits unless discard is requested",
+        "inline fallback status text contains the fallback reason exactly once",
+        "inline fallback capabilities report terminal UI and exact Vim semantics as unavailable"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-surface.test.tsx"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-fallback-inline.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "external-editor",
+      "source": "TODO.md",
+      "target": "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+      "sourceFiles": [
+        "runtime/src/tui/workbench/buffer/externalEditor.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/tui/workbench/buffer/externalEditor.ts",
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+        "runtime/src/tui/workbench/buffer/BufferStore.ts"
+      ],
+      "requiredBehaviors": [
+        "keeps external editor launch as an explicit action from the BUFFER provider surface",
+        "resolves editor commands from VISUAL, EDITOR, and known fallbacks without changing embedded provider defaults",
+        "blocks external editor handoff when the active provider has dirty embedded edits that have not been saved or discarded",
+        "refreshes the active provider snapshot after an external editor exits",
+        "surfaces external editor launch failures without terminating the TUI"
+      ],
+      "edgeCases": [
+        "a quoted editor command with arguments launches the executable and preserves arguments",
+        "a missing external editor executable returns a clear error status",
+        "external editor handoff is refused while embedded provider reports dirty state",
+        "external editor exit with file changes reloads the inline fallback snapshot",
+        "external editor cancellation leaves the embedded Neovim child process untouched"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-external-editor-provider.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-external-editor.test.ts",
+        "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+        "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-external-editor-provider.contract.test.ts tests/tui/workbench/buffer-external-editor.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-fallback-inline.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "e2e-pty",
+      "source": "TODO.md",
+      "target": "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
+      "targetFiles": [
+        "runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
+        "runtime/scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs",
+        "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs",
+        "runtime/scripts/check-tui-workbench-buffer-neovim.mjs",
+        "runtime/package.json"
+      ],
+      "requiredBehaviors": [
+        "adds a PTY scenario that launches workbench mode with embedded Neovim BUFFER enabled",
+        "drives insert, edit, write, undo, dirty quit refusal, force quit, search navigation, visual yank paste, named register basics, macro replay, resize, mouse isolation, and process cleanup",
+        "verifies file contents on disk after Neovim write operations",
+        "verifies killing the TUI leaves no Neovim child process alive",
+        "verifies missing Neovim uses inline fallback with a clear visible reason",
+        "keeps advanced Vim command behavior owned by embedded Neovim in the PTY flow instead of the inline Vim layer"
+      ],
+      "edgeCases": [
+        "embedded Neovim undo changes file contents after write and before later edits continue",
+        "dirty colon q keeps the workbench running and shows the Neovim refusal",
+        "colon q bang exits BUFFER without writing edited text",
+        "resizing during insert mode preserves typed text, cursor position, and Neovim grid visibility",
+        "mouse wheel over BUFFER does not move the workspace tree rows",
+        "mouse click over BUFFER moves the Neovim cursor without moving the workspace tree rows",
+        "a forced TUI kill while Neovim has dirty edits cleans up the embedded child process without writing dirty text"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
+        "CI=1 NO_COLOR=1 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim",
+        "CI=1 NO_COLOR=1 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "completion-gates",
+      "source": "TODO.md",
+      "target": "scripts/check-embedded-neovim-buffer.mjs",
+      "targetFiles": [
+        "scripts/check-embedded-neovim-buffer.mjs",
+        "runtime/package.json",
+        "runtime/scripts/check-tui-workbench-visual-smoke.mjs",
+        "runtime/scripts/check-tui-workbench-buffer-neovim.mjs"
+      ],
+      "requiredBehaviors": [
+        "runs TypeScript typecheck as a completion gate",
+        "runs production unused-code analysis as a completion gate",
+        "runs focused row tests, PTY validation, and visual smoke through row commands",
+        "runs the runtime build and package entrypoint verification as a completion gate",
+        "runs the AgenC TUI validation gate before completion",
+        "requires every row to declare executable commands and runs them during final checker execution",
+        "provides a project-local implementation-contract checker wrapper for final review enforcement"
+      ],
+      "edgeCases": [
+        "typecheck must pass after generated Neovim and workbench files are included",
+        "unused-production analysis must pass with the new provider modules and scripts reachable",
+        "build must regenerate runtime dist and verify package entrypoints",
+        "AgenC TUI validation must run from this repository path after source changes",
+        "the project-local checker wrapper must enforce inventory, edge cases, reviews, row-command presence, and row-command execution by default"
+      ],
+      "tests": [
+        "scripts/check-embedded-neovim-buffer.mjs"
+      ],
+      "commands": [
+        "npm run typecheck",
+        "npm run check:unused:production --workspace=@tetsuo-ai/runtime",
+        "npm run build",
+        "node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full",
+        "AGENC_EMBEDDED_NEOVIM_CONTRACT_ROW_REVIEW=1 node scripts/check-embedded-neovim-buffer.mjs"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "docs-config",
+      "source": "TODO.md",
+      "target": "docs/embedded-neovim-buffer.md",
+      "requiredBehaviors": [
+        "documents embedded Neovim as the default BUFFER provider when a usable binary exists",
+        "documents configuration knobs for executable path, clean mode, user init mode, fallback mode, and timeouts",
+        "documents visible fallback reasons and troubleshooting steps",
+        "documents that inline mode is a basic fallback and external editor is an explicit handoff",
+        "documents the validation commands that protect the embedded Neovim BUFFER surface"
+      ],
+      "edgeCases": [
+        "documentation states missing executable behavior without suggesting exact Vim behavior in inline mode",
+        "documentation states unsupported version behavior with the user-facing fallback message",
+        "documentation states how to opt into user init loading without changing the default clean mode",
+        "documentation states process cleanup behavior after a TUI crash",
+        "documentation lists the contract checker and PTY validation commands"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/buffer-docs-config.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-docs-config.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    }
+  ]
+}

@@ -16,6 +16,10 @@ type InkInstance = {
 };
 
 export type BufferExternalEditorLauncher = (filePath: string, line?: number) => boolean;
+type BufferExternalEditorEnv = {
+  readonly VISUAL?: string;
+  readonly EDITOR?: string;
+};
 
 export const BUFFER_EXTERNAL_EDITOR_FALLBACKS = ["nvim", "vim", "vi", "nano"] as const;
 
@@ -30,7 +34,7 @@ const GUI_WAIT_ARGS = new Map<string, readonly string[]>([
 ]);
 
 export function resolveBufferExternalEditor(
-  env: Pick<NodeJS.ProcessEnv, "VISUAL" | "EDITOR"> = process.env,
+  env: BufferExternalEditorEnv = process.env,
   options: {
     readonly platform?: NodeJS.Platform;
     readonly isCommandAvailable?: (command: string) => boolean;

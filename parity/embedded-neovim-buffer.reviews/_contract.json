@@ -1,0 +1,29 @@
+{
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "contract-reviewer",
+  "reviewedAt": "2026-05-25T12:39:37Z",
+  "verdict": "APPROVED",
+  "missingRows": [],
+  "missingInventory": [],
+  "missingCrossCutting": [],
+  "issues": [],
+  "evidence": {
+    "sourceRootScanned": "/home/tetsuo/git/AgenC/agenc-core",
+    "rowsAudited": [
+      "provider-boundary",
+      "neovim-discovery",
+      "rpc-transport",
+      "ui-attach-grid",
+      "input-routing",
+      "buffer-lifecycle",
+      "file-safety",
+      "lsp-bridge-notifications",
+      "workbench-rendering",
+      "fallback-inline",
+      "external-editor",
+      "e2e-pty",
+      "completion-gates",
+      "docs-config"
+    ]
+  }
+}

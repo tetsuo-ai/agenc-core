@@ -1,0 +1,48 @@
+import { readFile } from "node:fs/promises";
+
+import { describe, expect, it } from "vitest";
+
+describe("embedded Neovim BUFFER PTY gate files", () => {
+  it("defines the workbench Neovim scenarios and wrapper command", async () => {
+    const scenario = await readFile("scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs", "utf8");
+    const missingFallback = await readFile("scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs", "utf8");
+    const killCleanup = await readFile("scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs", "utf8");
+    const helpers = await readFile("scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs", "utf8");
+    const wrapper = await readFile("scripts/check-tui-workbench-buffer-neovim.mjs", "utf8");
+    const visualSmoke = await readFile("scripts/check-tui-workbench-visual-smoke.mjs", "utf8");
+
+    expect(scenario).toContain("AGENC_TUI_WORKBENCH");
+    expect(scenario).toContain("AGENC_BUFFER_PROVIDER");
+    expect(scenario).toContain("AGENC_OAUTH_TOKEN");
+    expect(missingFallback).toContain("AGENC_OAUTH_TOKEN");
+    expect(killCleanup).toContain("AGENC_OAUTH_TOKEN");
+    expect(scenario).toContain("WORKSPACE");
+    expect(scenario).toContain("E2E_MARK");
+    expect(scenario).toContain(":w");
+    expect(scenario).toContain("q!");
+    expect(scenario).toContain("E2E_MARK");
+    expect(scenario).toContain("MACRO_MARK");
+    expect(scenario).toContain("REGISTER_MARK");
+    expect(scenario).toContain("RESIZE_MARK_AFTER");
+    expect(scenario).toContain("resize-cursor.txt");
+    expect(scenario).toContain("DIRTY_MARK");
+    expect(scenario).toContain("search navigation did not visibly change");
+    expect(scenario).toContain("force quit wrote dirty text");
+    expect(scenario).toContain("workspaceSnapshot");
+    expect(scenario).toContain("term.resize");
+    expect(missingFallback).toContain("AGENC_BUFFER_NVIM");
+    expect(missingFallback).toContain("missing Neovim fallback visible");
+    expect(missingFallback).toContain("Inline BUFFER is available as the basic fallback");
+    expect(killCleanup).toContain("session.kill()");
+    expect(killCleanup).toContain("KILL_DIRTY_MARK");
+    expect(killCleanup).toContain("TUI-killed embedded Neovim");
+    expect(helpers).toContain("listDescendantNeovimPids");
+    expect(helpers).toContain("waitForPidsGone");
+    expect(helpers).toContain("workspaceSnapshot");
+    expect(helpers).toContain("ps");
+    expect(wrapper).toContain("workbench-buffer-neovim");
+    expect(visualSmoke).toContain("AGENC_OAUTH_TOKEN");
+    expect(visualSmoke).toContain("AgenC Workbench");
+    expect(visualSmoke).toContain("WORKSPA");
+  });
+});

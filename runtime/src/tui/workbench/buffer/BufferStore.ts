@@ -52,7 +52,12 @@ import {
 } from "./editing.js";
 import { openFileInBufferExternalEditor, type BufferExternalEditorLauncher } from "./externalEditor.js";
 import type { BufferFileEncoding, BufferLineEndings, BufferFileSnapshot } from "./fileSnapshot.js";
-import { BufferSaveConflictError, readBufferFileSnapshot, saveBufferFileSnapshot } from "./fileSnapshot.js";
+import {
+  BufferSaveConflictError,
+  readBufferFileSnapshot,
+  resolveBufferFilePath,
+  saveBufferFileSnapshot,
+} from "./fileSnapshot.js";
 import {
   notifyBufferLspChanged,
   notifyBufferLspClosed,
@@ -418,7 +423,7 @@ export class WorkbenchBufferStore {
       this.#vimCommandLine = null;
       const command = parseVimCommand(rawCommand);
       if (!command) {
-        this.#setProblem("error", `Unknown Vim command: :${rawCommand.trim()}`, null);
+        this.#setProblem("error", `Unsupported Vim command: :${rawCommand.trim()}`, null);
         return true;
       }
       this.#emit();
@@ -776,7 +781,16 @@ export class WorkbenchBufferStore {
     displayPath = filePath,
     options: BufferLoadOptions = {},
   ): Promise<boolean> {
-    const absolutePath = resolve(getCwd(), filePath);
+    let absolutePath: string;
+    try {
+      absolutePath = resolveBufferFilePath(filePath);
+    } catch (error) {
+      this.#status = "error";
+      this.#error = errorMessage(error);
+      this.#conflictKind = null;
+      this.#emit();
+      return false;
+    }
     if (this.#file?.absolutePath === absolutePath && !allowDirtyReplace) {
       if (this.#document) {
         this.#document = moveBufferCursorToLine(this.#document, line);
@@ -928,7 +942,7 @@ function displayPathForAbsolute(absolutePath: string): string {
     : relativePath;
 }
 
-function errorMessage(error: unknown): string {
+function errorMessage(error: any): string {
   return error instanceof Error ? error.message : String(error);
 }
 
