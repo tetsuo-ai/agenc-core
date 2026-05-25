@@ -204,7 +204,7 @@ describe("CoordinatorTaskPanel rendering", () => {
     vi.useFakeTimers();
     vi.setSystemTime(20_000);
     coordinatorMock.appState.tasks = {
-      expired: makeTask("expired", { evictAfter: 19_000 }),
+      expired: makeTask("expired", { endTime: 18_000, evictAfter: 19_000, status: "completed" }),
       retained: makeTask("retained", { evictAfter: undefined }),
     };
 

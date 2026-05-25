@@ -3,14 +3,14 @@ import { describe, expect, it } from "vitest";
 import { syncCollabAgentEventToAppState } from "./collabAgentTaskSync.js";
 import type { AppState } from "./AppStateStore.js";
 
-function applyEvent(state: AppState, event: unknown): AppState {
+function applyEvent(state: AppState, event: unknown, now = 1234): AppState {
   let next = state;
   syncCollabAgentEventToAppState(
     event,
     (updater) => {
       next = updater(next as never) as AppState;
     },
-    1234,
+    now,
   );
   return next;
 }
@@ -205,6 +205,57 @@ describe("syncCollabAgentEventToAppState", () => {
       notified: true,
     });
     expect(completed.tasks.agent_1).not.toHaveProperty("evictAfter");
+  });
+
+  it("reactivates terminal agents without stale terminal-only metadata", () => {
+    const spawned = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "Librarian",
+        status: { status: "running" },
+      },
+    }, 1_000);
+    const completed = applyEvent(spawned, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        status: "completed",
+      },
+    }, 2_000);
+    const completedWithResult = {
+      ...completed,
+      tasks: {
+        ...completed.tasks,
+        agent_1: {
+          ...completed.tasks.agent_1!,
+          result: { final: "old result" },
+        },
+      },
+    };
+
+    const runningAgain = applyEvent(completedWithResult, {
+      type: "collab_agent_interaction_begin",
+      payload: {
+        receiverThreadId: "agent_1",
+        prompt: "continue investigating",
+        receiverAgentRoleDisplayName: "Default",
+      },
+    }, 40_000);
+
+    expect(runningAgain.tasks.agent_1).toMatchObject({
+      status: "running",
+      description: "Librarian",
+      prompt: "continue investigating",
+      agentType: "Default",
+      startTime: 1_000,
+      notified: false,
+    });
+    expect(runningAgain.tasks.agent_1).not.toHaveProperty("endTime");
+    expect(runningAgain.tasks.agent_1).not.toHaveProperty("evictAfter");
+    expect(runningAgain.tasks.agent_1).not.toHaveProperty("result");
   });
 
   it("updates spawned agents from collab wait completion summaries", () => {
