@@ -382,7 +382,7 @@ export default class Ink {
   };
   resolveExitPromise: () => void = () => {};
   rejectExitPromise: (reason?: Error) => void = () => {};
-  unsubscribeExit: () => void = () => {};
+  unsubscribeExit: () => void = noop;
 
   /**
    * Pause Ink and hand the terminal over to an external TUI (e.g. git
@@ -795,7 +795,7 @@ export default class Ink {
     // quarter interval (~250fps, setTimeout practical floor) for max scroll
     // speed. Regular renders stay at FRAME_INTERVAL_MS via the throttle.
     if (frame.scrollDrainPending) {
-      this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS >> 2);
+      this.drainTimer = setTimeout(this.onRender, FRAME_INTERVAL_MS >> 2);
     }
     const yogaMs = getLastYogaMs();
     const commitMs = getLastCommitMs();
@@ -970,6 +970,7 @@ export default class Ink {
    * as restoring the saved cursor position — clobbering the resume hint.
    */
   detachForShutdown(): void {
+    if (this.isUnmounted) return;
     this.isUnmounted = true;
     // Cancel any pending throttled render so it doesn't fire between
     // cleanupTerminalModes() and process.exit() and write to main screen.
