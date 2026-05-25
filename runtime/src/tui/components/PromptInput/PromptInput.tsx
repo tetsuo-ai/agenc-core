@@ -781,7 +781,7 @@ function PromptInput({
   // exist. When only local_agent tasks are running (coordinator/fork mode), the
   // pill is absent, so the -1 sentinel would leave nothing visually selected.
   // In that case, skip -1 and treat 0 as the minimum selectable index.
-  const hasBgTaskPill = useMemo(() => Object.values(tasks).some(t => isBackgroundTask(t)), [tasks]);
+  const hasBgTaskPill = useMemo(() => Object.values(tasks).some(t => isBackgroundTask(t) && t.type !== 'local_agent'), [tasks]);
   const minCoordinatorIndex = hasBgTaskPill ? -1 : 0;
   // Clamp index when tasks complete and the list shrinks beneath the cursor
   useEffect(() => {

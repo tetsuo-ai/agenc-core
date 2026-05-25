@@ -59,7 +59,7 @@ export {
   type StopTaskResult,
 } from "./stopTask.js";
 
-export { getPillLabel, pillNeedsCta } from "./pillLabel.js";
+export { getPillLabel } from "./pillLabel.js";
 
 import { BackgroundTaskLifecycle } from "./lifecycle.js";
 

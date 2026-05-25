@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getPillLabel, pillNeedsCta } from "./pillLabel.js";
+import { getPillLabel } from "./pillLabel.js";
 import {
   createTaskStateBase,
   type BackgroundTaskState,
@@ -110,10 +110,5 @@ describe("getPillLabel", () => {
       getPillLabel([remote("remote-1"), shell("shell-1")] as BackgroundTaskState[]),
     ).toBe("2 background tasks");
     expect(getPillLabel([])).toBe("0 background tasks");
-  });
-
-  it("does not add a footer CTA for ordinary remote tasks", () => {
-    expect(pillNeedsCta([remote("remote-1")])).toBe(false);
-    expect(pillNeedsCta([remote("remote-1"), remote("remote-2")])).toBe(false);
   });
 });
