@@ -212,6 +212,49 @@ describe("PreviewSurface git state", () => {
     }
   });
 
+  it("ignores stale git status successes after switching preview targets", async () => {
+    let setPreviewTarget: ((filePath: string) => void) | null = null;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "preview",
+              activeFilePath: "old.ts",
+              activeFileLine: 1,
+            },
+          }}
+        >
+          <PreviewTargetController onReady={(setter) => { setPreviewTarget = setter; }} />
+          <PreviewSurface focused={false} />
+        </AppStateProvider>,
+      );
+
+      const oldStatusRead = await waitForStatusRead(0);
+      setPreviewTarget?.("new.ts");
+      await waitForStatusRead(1);
+
+      oldStatusRead.resolve(new Map([["old.ts", "modified"]]));
+      await sleep();
+
+      expect(screenLine(stdout, 0)).toContain("new.ts [read-only");
+      expect(screenLine(stdout, 0)).not.toContain("modified");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("logs git status refresh failures without showing stale status", async () => {
     const statusError = new Error("status unavailable");
     const { stdin, stdout } = createStreams();
