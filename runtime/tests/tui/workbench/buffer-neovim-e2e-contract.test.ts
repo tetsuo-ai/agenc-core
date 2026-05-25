@@ -8,12 +8,14 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     const missingFallback = await readFile("scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs", "utf8");
     const killCleanup = await readFile("scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs", "utf8");
     const runtimeExit = await readFile("scripts/check-tui-e2e/scenarios/123-workbench-buffer-neovim-runtime-exit.mjs", "utf8");
+    const visualRender = await readFile("scripts/check-tui-e2e/scenarios/124-workbench-buffer-neovim-visual-render.mjs", "utf8");
     const helpers = await readFile("scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs", "utf8");
     const wrapper = await readFile("scripts/check-tui-workbench-buffer-neovim.mjs", "utf8");
     const visualSmoke = await readFile("scripts/check-tui-workbench-visual-smoke.mjs", "utf8");
 
     expect(scenario).toContain("AGENC_TUI_WORKBENCH");
     expect(scenario).toContain("AGENC_BUFFER_PROVIDER");
+    expect(scenario).toContain("AGENC_BUFFER_NVIM_USE_INIT");
     expect(scenario).toContain("AGENC_OAUTH_TOKEN");
     expect(missingFallback).toContain("AGENC_OAUTH_TOKEN");
     expect(killCleanup).toContain("AGENC_OAUTH_TOKEN");
@@ -27,7 +29,8 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(scenario).toContain("RESIZE_MARK_AFTER");
     expect(scenario).toContain("resize-cursor.txt");
     expect(scenario).toContain("DIRTY_MARK");
-    expect(scenario).toContain("search navigation did not visibly change");
+    expect(scenario).toContain("waitForStyledSearchPaint");
+    expect(scenario).toContain("dirty quit closed embedded Neovim");
     expect(scenario).toContain("force quit wrote dirty text");
     expect(scenario).toContain("workspaceSnapshot");
     expect(scenario).toContain("term.resize");
@@ -42,6 +45,10 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(runtimeExit).toContain("normal-mode movement keys modified the file");
     expect(runtimeExit).toContain("Workbench transcript after embedded Neovim :q!");
     expect(runtimeExit).toContain("Workbench stayed on BUFFER after embedded Neovim :q!");
+    expect(visualRender).toContain("visible selection highlight");
+    expect(visualRender).toContain("visualChunk");
+    expect(visualRender).toContain("full-screen clear/flicker");
+    expect(visualRender).toContain("alpha beta gamma");
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");
     expect(helpers).toContain("waitForFrameText");
