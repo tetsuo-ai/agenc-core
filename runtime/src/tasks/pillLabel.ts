@@ -80,10 +80,3 @@ export function getPillLabel(
 
   return `${n} background ${n === 1 ? "task" : "tasks"}`;
 }
-
-export function pillNeedsCta(
-  tasks: readonly BackgroundTaskState[],
-): boolean {
-  void tasks;
-  return false;
-}

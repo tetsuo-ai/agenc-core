@@ -1,4 +1,3 @@
-import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useMemo, useState } from 'react';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
@@ -6,7 +5,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../../state/teammateViewHelpers.js';
-import { getPillLabel, pillNeedsCta } from 'src/tasks/pillLabel.js';
+import { getPillLabel } from 'src/tasks/pillLabel.js';
 import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
@@ -14,7 +13,7 @@ import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from 's
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { getTeammateFooterLayout } from './BackgroundTaskStatus.layout.js';
-import { shouldHideTasksFooter } from './taskStatusUtils';
+
 type Props = {
   tasksSelected: boolean;
   isViewingTeammate?: boolean;
@@ -22,385 +21,230 @@ type Props = {
   isLeaderIdle?: boolean;
   onOpenDialog?: (taskId?: string) => void;
 };
-export function BackgroundTaskStatus(t0) {
-  const $ = _c(51);
-  const {
-    tasksSelected,
-    isViewingTeammate,
-    teammateFooterIndex: t1,
-    isLeaderIdle: t2,
-    onOpenDialog
-  } = t0;
-  const teammateFooterIndex = t1 === undefined ? 0 : t1;
-  const isLeaderIdle = t2 === undefined ? false : t2;
+
+type FooterTask = Exclude<BackgroundTaskState, { readonly type: 'local_agent' }>;
+type TeammateTask = Extract<FooterTask, { readonly type: 'in_process_teammate' }>;
+
+type AgentPillModel = {
+  color?: keyof Theme;
+  idx: number;
+  isIdle: boolean;
+  name: string;
+  taskId?: string;
+};
+
+function isFooterTask(task: TaskState): task is FooterTask {
+  return isBackgroundTask(task) && task.type !== 'local_agent';
+}
+
+function isTeammateTask(task: FooterTask): task is TeammateTask {
+  return task.type === 'in_process_teammate';
+}
+
+function sortTeammatesByName(a: TeammateTask, b: TeammateTask): number {
+  return a.identity.agentName.localeCompare(b.identity.agentName);
+}
+
+function sortActiveBeforeIdle(a: Omit<AgentPillModel, 'idx'>, b: Omit<AgentPillModel, 'idx'>): number {
+  if (a.isIdle !== b.isIdle) {
+    return Number(a.isIdle) - Number(b.isIdle);
+  }
+  return 0;
+}
+
+function teammateToPill(task: TeammateTask): Omit<AgentPillModel, 'idx'> {
+  return {
+    name: task.identity.agentName,
+    color: getAgentThemeColor(task.identity.color),
+    isIdle: task.isIdle,
+    taskId: task.id,
+  };
+}
+
+function withIndex(pill: Omit<AgentPillModel, 'idx'>, idx: number): AgentPillModel {
+  return { ...pill, idx };
+}
+
+function pillWidth(pill: AgentPillModel, index: number): number {
+  return stringWidth(`@${pill.name}`) + (index > 0 ? 1 : 0);
+}
+
+function clampIndex(index: number, total: number): number {
+  return Math.max(0, Math.min(index, Math.max(0, total - 1)));
+}
+
+export function BackgroundTaskStatus({
+  tasksSelected,
+  isViewingTeammate,
+  teammateFooterIndex = 0,
+  isLeaderIdle = false,
+  onOpenDialog,
+}: Props): React.ReactNode {
   const setAppState = useSetAppState();
-  const {
-    columns
-  } = useTerminalSize();
+  const { columns } = useTerminalSize();
   const glyphs = selectAgenCTuiGlyphs();
-  const expandShortcut = glyphs.arrowDown === "v" ? "shift + down" : `shift + ${glyphs.arrowDown}`;
-  const tasks = useAppState(_temp);
-  const viewingAgentTaskId = useAppState(_temp2);
-  let t3;
-  if ($[0] !== tasks) {
-    t3 = (Object.values(tasks ?? {}) as TaskState[]).filter(_temp3);
-    $[0] = tasks;
-    $[1] = t3;
-  } else {
-    t3 = $[1];
-  }
-  const runningTasks = t3;
-  const expandedView = useAppState(_temp4);
-  const showSpinnerTree = expandedView === "teammates";
-  const allTeammates = !showSpinnerTree && runningTasks.length > 0 && runningTasks.every(_temp5);
-  let t4;
-  if ($[2] !== runningTasks) {
-    t4 = runningTasks.filter(_temp6).sort(_temp7);
-    $[2] = runningTasks;
-    $[3] = t4;
-  } else {
-    t4 = $[3];
-  }
-  const teammateEntries = t4;
-  let t5;
-  if ($[4] !== isLeaderIdle) {
-    t5 = {
-      name: "main",
-      color: undefined as keyof Theme | undefined,
-      isIdle: isLeaderIdle,
-      taskId: undefined as string | undefined
-    };
-    $[4] = isLeaderIdle;
-    $[5] = t5;
-  } else {
-    t5 = $[5];
-  }
-  const mainPill = t5;
-  let t6;
-  if ($[6] !== mainPill || $[7] !== tasksSelected || $[8] !== teammateEntries) {
-    const teammatePills = teammateEntries.map(_temp8);
+  const expandShortcut = glyphs.arrowDown === 'v' ? 'shift + down' : `shift + ${glyphs.arrowDown}`;
+  const tasks = useAppState(s => s.tasks);
+  const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId);
+  const expandedView = useAppState(s => s.expandedView);
+  const showSpinnerTree = expandedView === 'teammates';
+  const footerTasks = useMemo(
+    () => (Object.values(tasks) as TaskState[]).filter(isFooterTask),
+    [tasks],
+  );
+  const teammateEntries = useMemo(
+    () => footerTasks.filter(isTeammateTask).sort(sortTeammatesByName),
+    [footerTasks],
+  );
+  const allTeammates =
+    !showSpinnerTree &&
+    footerTasks.length > 0 &&
+    footerTasks.every(isTeammateTask);
+  const onlySpinnerTreeTeammates =
+    showSpinnerTree &&
+    footerTasks.length > 0 &&
+    footerTasks.every(isTeammateTask);
+
+  const mainPill = useMemo<Omit<AgentPillModel, 'idx'>>(() => ({
+    name: 'main',
+    color: undefined,
+    isIdle: isLeaderIdle,
+    taskId: undefined,
+  }), [isLeaderIdle]);
+
+  const allPills = useMemo(() => {
+    const teammatePills = teammateEntries.map(teammateToPill);
     if (!tasksSelected) {
-      teammatePills.sort(_temp9);
+      teammatePills.sort(sortActiveBeforeIdle);
     }
-    const pills = [mainPill, ...teammatePills];
-    t6 = pills.map(_temp0);
-    $[6] = mainPill;
-    $[7] = tasksSelected;
-    $[8] = teammateEntries;
-    $[9] = t6;
-  } else {
-    t6 = $[9];
-  }
-  const allPills = t6;
-  let t7;
-  if ($[10] !== allPills) {
-    t7 = allPills.map(_temp1);
-    $[10] = allPills;
-    $[11] = t7;
-  } else {
-    t7 = $[11];
-  }
-  const pillWidths = t7;
-  if (allTeammates || !showSpinnerTree && isViewingTeammate) {
-    const selectedIdx = tasksSelected ? teammateFooterIndex : -1;
-    let t8;
-    if ($[12] !== allPills || $[13] !== viewingAgentTaskId) {
-      t8 = viewingAgentTaskId ? allPills.findIndex(t_3 => t_3.taskId === viewingAgentTaskId) : 0;
-      $[12] = allPills;
-      $[13] = viewingAgentTaskId;
-      $[14] = t8;
-    } else {
-      t8 = $[14];
-    }
-    const viewedIdx = t8;
-    const t9 = selectedIdx >= 0 ? selectedIdx : 0;
-    let t10;
-    if ($[15] !== columns || $[16] !== pillWidths || $[17] !== t9) {
-      t10 = getTeammateFooterLayout(pillWidths, columns, t9);
-      $[15] = columns;
-      $[16] = pillWidths;
-      $[17] = t9;
-      $[18] = t10;
-    } else {
-      t10 = $[18];
-    }
+    return [mainPill, ...teammatePills].map(withIndex);
+  }, [mainPill, tasksSelected, teammateEntries]);
+
+  const pillWidths = useMemo(
+    () => allPills.map(pillWidth),
+    [allPills],
+  );
+
+  if (allTeammates || (!showSpinnerTree && isViewingTeammate)) {
+    const selectedIdx = tasksSelected ? clampIndex(teammateFooterIndex, allPills.length) : -1;
+    const viewedIdx = viewingAgentTaskId
+      ? allPills.findIndex(pill => pill.taskId === viewingAgentTaskId)
+      : 0;
+    const layoutFocusIdx = selectedIdx >= 0 ? selectedIdx : viewedIdx >= 0 ? viewedIdx : 0;
     const {
       startIndex,
       endIndex,
       showLeftArrow,
       showRightArrow,
       showExpandHint,
-      visiblePillWidths
-    } = t10;
-    let t11;
-    if ($[19] !== allPills || $[20] !== endIndex || $[21] !== startIndex) {
-      t11 = allPills.slice(startIndex, endIndex);
-      $[19] = allPills;
-      $[20] = endIndex;
-      $[21] = startIndex;
-      $[22] = t11;
-    } else {
-      t11 = $[22];
-    }
-    const visiblePills = t11;
-    const t12 = showLeftArrow && <Text dimColor={true}>{glyphs.arrowLeft} </Text>;
-    let t13;
-    if ($[25] !== selectedIdx || $[26] !== setAppState || $[27] !== viewedIdx || $[28] !== visiblePillWidths || $[29] !== visiblePills) {
-      t13 = visiblePills.map((pill_1, i_1) => {
-        const needsSeparator = i_1 > 0;
-        return <React.Fragment key={pill_1.name}>{needsSeparator && <Text> </Text>}<AgentPill name={pill_1.name} color={pill_1.color} maxWidth={visiblePillWidths[i_1]} isSelected={selectedIdx === pill_1.idx} isViewed={viewedIdx === pill_1.idx} isIdle={pill_1.isIdle} onClick={() => pill_1.taskId ? enterTeammateView(pill_1.taskId, setAppState) : exitTeammateView(setAppState)} /></React.Fragment>;
-      });
-      $[25] = selectedIdx;
-      $[26] = setAppState;
-      $[27] = viewedIdx;
-      $[28] = visiblePillWidths;
-      $[29] = visiblePills;
-      $[30] = t13;
-    } else {
-      t13 = $[30];
-    }
-    const t14 = showRightArrow && <Text dimColor={true}> {glyphs.arrowRight}</Text>;
-    const t15 = showExpandHint && <Text dimColor={true}> {glyphs.separator} <KeyboardShortcutHint shortcut={expandShortcut} action="expand" /></Text>;
-    let t16;
-    if ($[35] !== t12 || $[36] !== t13 || $[37] !== t14 || $[38] !== t15) {
-      t16 = <>{t12}{t13}{t14}{t15}</>;
-      $[35] = t12;
-      $[36] = t13;
-      $[37] = t14;
-      $[38] = t15;
-      $[39] = t16;
-    } else {
-      t16 = $[39];
-    }
-    return t16;
+      visiblePillWidths,
+    } = getTeammateFooterLayout(pillWidths, columns, layoutFocusIdx);
+    const visiblePills = allPills.slice(startIndex, endIndex);
+
+    return (
+      <>
+        {showLeftArrow && <Text dimColor={true}>{glyphs.arrowLeft} </Text>}
+        {visiblePills.map((pill, index) => (
+          <React.Fragment key={`${pill.idx}:${pill.name}`}>
+            {index > 0 && <Text> </Text>}
+            <AgentPill
+              name={pill.name}
+              color={pill.color}
+              maxWidth={visiblePillWidths[index]}
+              isSelected={selectedIdx === pill.idx}
+              isViewed={viewedIdx === pill.idx}
+              isIdle={pill.isIdle}
+              onClick={() => pill.taskId ? enterTeammateView(pill.taskId, setAppState) : exitTeammateView(setAppState)}
+            />
+          </React.Fragment>
+        ))}
+        {showRightArrow && <Text dimColor={true}> {glyphs.arrowRight}</Text>}
+        {showExpandHint && (
+          <Text dimColor={true}>
+            {' '}{glyphs.separator}{' '}
+            <KeyboardShortcutHint shortcut={expandShortcut} action="expand" />
+          </Text>
+        )}
+      </>
+    );
   }
-  if (shouldHideTasksFooter(tasks ?? {}, showSpinnerTree)) {
+
+  if (onlySpinnerTreeTeammates) {
     return null;
   }
-  if (runningTasks.length === 0) {
+  if (footerTasks.length === 0) {
     return null;
   }
-  let t8;
-  if ($[40] !== runningTasks) {
-    t8 = getPillLabel(runningTasks);
-    $[40] = runningTasks;
-    $[41] = t8;
-  } else {
-    t8 = $[41];
-  }
-  let t9;
-  if ($[42] !== onOpenDialog || $[43] !== t8 || $[44] !== tasksSelected) {
-    t9 = <SummaryPill selected={tasksSelected} onClick={onOpenDialog}>{t8}</SummaryPill>;
-    $[42] = onOpenDialog;
-    $[43] = t8;
-    $[44] = tasksSelected;
-    $[45] = t9;
-  } else {
-    t9 = $[45];
-  }
-  const t10 = pillNeedsCta(runningTasks) && <Text dimColor={true}> {glyphs.separator} {glyphs.arrowDown} to view</Text>;
-  let t11;
-  if ($[48] !== t10 || $[49] !== t9) {
-    t11 = <>{t9}{t10}</>;
-    $[48] = t10;
-    $[49] = t9;
-    $[50] = t11;
-  } else {
-    t11 = $[50];
-  }
-  return t11;
+
+  const label = getPillLabel(footerTasks);
+  return (
+    <>
+      <SummaryPill selected={tasksSelected} onClick={onOpenDialog}>{label}</SummaryPill>
+    </>
+  );
 }
-function _temp1(pill_0, i_0) {
-  const pillText = `@${pill_0.name}`;
-  return stringWidth(pillText) + (i_0 > 0 ? 1 : 0);
-}
-function _temp0(pill, i) {
-  return {
-    ...pill,
-    idx: i
-  };
-}
-function _temp9(a_0, b_0) {
-  if (a_0.isIdle !== b_0.isIdle) {
-    return a_0.isIdle ? 1 : -1;
-  }
-  return 0;
-}
-function _temp8(t_2) {
-  return {
-    name: t_2.identity.agentName,
-    color: getAgentThemeColor(t_2.identity.color),
-    isIdle: t_2.isIdle,
-    taskId: t_2.id
-  };
-}
-function _temp7(a, b) {
-  return a.identity.agentName.localeCompare(b.identity.agentName);
-}
-function _temp6(t_1) {
-  return t_1.type === "in_process_teammate";
-}
-function _temp5(t_0) {
-  return t_0.type === "in_process_teammate";
-}
-function _temp4(s_1) {
-  return s_1.expandedView;
-}
-function _temp3(t) {
-  return isBackgroundTask(t);
-}
-function _temp2(s_0) {
-  return s_0.viewingAgentTaskId;
-}
-function _temp(s) {
-  return s.tasks;
-}
+
 type AgentPillProps = {
   name: string;
   color?: keyof Theme;
-  maxWidth?: number;
+  maxWidth: number;
   isSelected: boolean;
   isViewed: boolean;
   isIdle: boolean;
-  onClick?: () => void;
+  onClick: () => void;
 };
-function AgentPill(t0) {
-  const $ = _c(19);
-  const {
-    name,
-    color,
-    maxWidth,
-    isSelected,
-    isViewed,
-    isIdle,
-    onClick
-  } = t0;
+
+function AgentPill({
+  name,
+  color,
+  maxWidth,
+  isSelected,
+  isViewed,
+  isIdle,
+  onClick,
+}: AgentPillProps): React.ReactNode {
   const [hover, setHover] = useState(false);
   const highlighted = isSelected || hover;
   const rawLabelText = `@${name}`;
-  const labelText = maxWidth === undefined ? rawLabelText : truncate(rawLabelText, Math.max(1, maxWidth), true);
-  let label;
+  const labelText = truncate(rawLabelText, Math.max(1, maxWidth), true);
+
+  let label: React.ReactNode;
   if (highlighted) {
-    let t1;
-    if ($[0] !== color || $[1] !== isViewed || $[2] !== labelText) {
-      t1 = color ? <Text backgroundColor={color} color="inverseText" bold={isViewed}>{labelText}</Text> : <Text color="background" inverse={true} bold={isViewed}>{labelText}</Text>;
-      $[0] = color;
-      $[1] = isViewed;
-      $[2] = labelText;
-      $[3] = t1;
-    } else {
-      t1 = $[3];
-    }
-    label = t1;
+    label = color
+      ? <Text backgroundColor={color} color="inverseText" bold={isViewed}>{labelText}</Text>
+      : <Text color="background" inverse={true} bold={isViewed}>{labelText}</Text>;
+  } else if (isIdle) {
+    label = <Text dimColor={true} bold={isViewed}>{labelText}</Text>;
+  } else if (isViewed) {
+    label = <Text color={color} bold={true}>{labelText}</Text>;
   } else {
-    if (isIdle) {
-      let t1;
-      if ($[4] !== isViewed || $[5] !== labelText) {
-        t1 = <Text dimColor={true} bold={isViewed}>{labelText}</Text>;
-        $[4] = isViewed;
-        $[5] = labelText;
-        $[6] = t1;
-      } else {
-        t1 = $[6];
-      }
-      label = t1;
-    } else {
-      if (isViewed) {
-        let t1;
-        if ($[7] !== color || $[8] !== labelText) {
-          t1 = <Text color={color} bold={true}>{labelText}</Text>;
-          $[7] = color;
-          $[8] = labelText;
-          $[9] = t1;
-        } else {
-          t1 = $[9];
-        }
-        label = t1;
-      } else {
-        const t1 = !color;
-        let t2;
-        if ($[10] !== color || $[11] !== labelText || $[12] !== t1) {
-          t2 = <Text color={color} dimColor={t1}>{labelText}</Text>;
-          $[10] = color;
-          $[11] = labelText;
-          $[12] = t1;
-          $[13] = t2;
-        } else {
-          t2 = $[13];
-        }
-        label = t2;
-      }
-    }
+    label = <Text color={color} dimColor={!color}>{labelText}</Text>;
   }
-  if (!onClick) {
-    return label;
-  }
-  let t1;
-  let t2;
-  if ($[14] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = () => setHover(true);
-    t2 = () => setHover(false);
-    $[14] = t1;
-    $[15] = t2;
-  } else {
-    t1 = $[14];
-    t2 = $[15];
-  }
-  let t3;
-  if ($[16] !== label || $[17] !== onClick) {
-    t3 = <Box onClick={onClick} onMouseEnter={t1} onMouseLeave={t2}>{label}</Box>;
-    $[16] = label;
-    $[17] = onClick;
-    $[18] = t3;
-  } else {
-    t3 = $[18];
-  }
-  return t3;
+
+  return <Box onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>{label}</Box>;
 }
-function SummaryPill(t0) {
-  const $ = _c(8);
-  const {
-    selected,
-    onClick,
-    children
-  } = t0;
+
+type SummaryPillProps = {
+  selected: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+};
+
+function SummaryPill({
+  selected,
+  onClick,
+  children,
+}: SummaryPillProps): React.ReactNode {
   const [hover, setHover] = useState(false);
-  const t1 = selected || hover;
-  let t2;
-  if ($[0] !== children || $[1] !== t1) {
-    t2 = <Text color="background" inverse={t1}>{children}</Text>;
-    $[0] = children;
-    $[1] = t1;
-    $[2] = t2;
-  } else {
-    t2 = $[2];
-  }
-  const label = t2;
+  const label = <Text color="background" inverse={selected || hover}>{children}</Text>;
+
   if (!onClick) {
     return label;
   }
-  let t3;
-  let t4;
-  if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = () => setHover(true);
-    t4 = () => setHover(false);
-    $[3] = t3;
-    $[4] = t4;
-  } else {
-    t3 = $[3];
-    t4 = $[4];
-  }
-  let t5;
-  if ($[5] !== label || $[6] !== onClick) {
-    t5 = <Box onClick={onClick} onMouseEnter={t3} onMouseLeave={t4}>{label}</Box>;
-    $[5] = label;
-    $[6] = onClick;
-    $[7] = t5;
-  } else {
-    t5 = $[7];
-  }
-  return t5;
+
+  return <Box onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>{label}</Box>;
 }
+
 function getAgentThemeColor(colorName: string | undefined): keyof Theme | undefined {
   if (!colorName) return undefined;
   if (AGENT_COLORS.includes(colorName as AgentColorName)) {
