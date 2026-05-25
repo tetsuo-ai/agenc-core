@@ -87,9 +87,11 @@ export function CoordinatorTaskPanel(): React.ReactNode {
   const coordinatorTaskIndex = useAppState(s_2 => s_2.coordinatorTaskIndex);
   const footerSelection = useAppState(s_3 => s_3.footerSelection);
   const tasksSelected = footerSelection === 'tasks';
-  const selectedIndex = tasksSelected ? coordinatorTaskIndex : undefined;
   const setAppState = useSetAppState();
   const visibleTasks = getVisibleAgentTasks(tasks);
+  const selectedIndex = tasksSelected
+    ? Math.max(0, Math.min(coordinatorTaskIndex, visibleTasks.length))
+    : undefined;
   const hasTasks = Object.values(tasks).some(isPanelAgentTask);
   const visibilityKey = getCoordinatorTaskPanelVisibilityKey(visibleTasks);
   const visibilityKeyRef = React.useRef('');
@@ -189,10 +191,15 @@ function taskStatusColor(task: LocalAgentTaskState): 'agenc' | 'worker' | 'muted
 }
 
 function taskLastAction(task: LocalAgentTaskState): string {
-  return task.progress?.summary
+  const error = typeof task.error === 'string' && task.error.trim().length > 0
+    ? task.error.trim()
+    : undefined;
+  const description = task.description.trim();
+  return error
+    ?? task.progress?.summary
     ?? task.progress?.lastActivity?.activityDescription
     ?? task.progress?.lastActivity?.toolName
-    ?? task.description
+    ?? (description.length > 0 ? description : undefined)
     ?? 'idle';
 }
 
@@ -245,7 +252,7 @@ function FleetRow({
   readonly age: string;
   readonly lastAction: string;
   readonly nameRole: string;
-  readonly onClick?: () => void;
+  readonly onClick: () => void;
   readonly selected?: boolean;
   readonly status: string;
   readonly statusColor: 'agenc' | 'worker' | 'muted3';
@@ -272,7 +279,6 @@ function FleetRow({
       <Box width={ageWidth}><ThemedText color="muted3" wrap="truncate-end">{age}</ThemedText></Box>
     </ThemedBox>
   );
-  if (!onClick) return row;
   return <Box onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>{row}</Box>;
 }
 
@@ -327,7 +333,7 @@ type AgentLineProps = {
   name?: string;
   isSelected?: boolean;
   isViewed?: boolean;
-  onClick?: () => void;
+  onClick: () => void;
 };
 function AgentLine(t0) {
   const {

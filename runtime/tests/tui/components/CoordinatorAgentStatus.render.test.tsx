@@ -71,6 +71,7 @@ type AgentTask = {
   description: string;
   diskLoaded: boolean;
   endTime?: number;
+  error?: string;
   evictAfter?: number;
   id: string;
   isBackgrounded: boolean;
@@ -81,14 +82,20 @@ type AgentTask = {
     lastActivity?: Record<string, unknown>;
     summary?: string;
     tokenCount?: number;
+    toolUseCount?: number;
   };
   prompt: string;
   retain: boolean;
   retrieved: boolean;
+  selectedAgent?: {
+    memory?: string;
+    source?: string;
+  };
   startTime: number;
-  status: "completed" | "failed" | "killed" | "running";
+  status: "completed" | "failed" | "killed" | "pending" | "running";
   totalPausedMs?: number;
   type: "local_agent";
+  worktreePath?: string;
 };
 
 function createStreams(): {
@@ -194,6 +201,19 @@ describe("CoordinatorTaskPanel rendering", () => {
     }
   });
 
+  test("renders nothing and skips the eviction interval when no agent tasks exist", async () => {
+    harness.state.tasks = {};
+    const rendered = await renderPanel();
+
+    try {
+      await sleep(1_075);
+      expect(rendered.output().trim()).toBe("");
+      expect(harness.evicted).toEqual([]);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("renders visible agents with names, progress, queued counts, and selection hints", async () => {
     harness.state.footerSelection = "tasks";
     harness.state.coordinatorTaskIndex = 1;
@@ -249,6 +269,73 @@ describe("CoordinatorTaskPanel rendering", () => {
     }
   });
 
+  test("falls back to generic role and idle action when agent metadata is sparse", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 1;
+    harness.state.tasks = {
+      "agent-sparse": task("agent-sparse", {
+        agentType: "unmapped-role",
+        description: "   ",
+      }),
+    };
+
+    const rendered = await renderPanel();
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("agent-sparse · Agent");
+      expect(output).toContain("idle");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("shows active tool progress in the focused agent block", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 1;
+    harness.state.tasks = {
+      "agent-tools": task("agent-tools", {
+        progress: {
+          summary: "using a tool",
+          toolUseCount: 2,
+        },
+      }),
+    };
+
+    const rendered = await renderPanel();
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("progress ◐ 2 tools");
+      expect(output).toContain("using a tool");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("omits the focused block when main row is selected with a stale viewed agent id", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 0;
+    harness.state.viewingAgentTaskId = "missing-agent";
+    harness.state.tasks = {
+      "agent-a": task("agent-a", {
+        progress: { summary: "visible row remains" },
+      }),
+    };
+
+    const rendered = await renderPanel();
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("AGENT FLEET");
+      expect(output).toContain("visible row remains");
+      expect(output).not.toContain("scope session");
+      expect(output).not.toContain("last output");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("uses viewed-agent styling without action hints and truncates narrow descriptions", async () => {
     harness.columns = 46;
     harness.state.footerSelection = "tasks";
@@ -271,6 +358,89 @@ describe("CoordinatorTaskPanel rendering", () => {
       expect(output).toContain("last output");
       expect(output).not.toContain("x to stop");
       expect(output).not.toContain("require truncation in a narrow panel");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("keeps a focused agent block when the selected footer index is stale", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 99;
+    harness.state.agentNameRegistry = new Map([
+      ["First", "agent-a"],
+      ["FocusedLast", "agent-b"],
+    ]);
+    harness.state.tasks = {
+      "agent-a": task("agent-a", {
+        startTime: 990_000,
+      }),
+      "agent-b": task("agent-b", {
+        description: "focused fallback agent",
+        progress: { summary: "selected from stale index" },
+        selectedAgent: { memory: "repo-memory" },
+        startTime: 995_000,
+        worktreePath: "/tmp/focused-agent",
+      }),
+    };
+
+    const rendered = await renderPanel();
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("FocusedLast · Runner");
+      expect(output).toContain("scope repo-memory");
+      expect(output).toContain("worktree /tmp/focused-agent");
+      expect(output).toContain("selected from stale index");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("surfaces failed agent errors as the current action", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 1;
+    harness.state.agentNameRegistry = new Map([["Verifier", "agent-failed"]]);
+    harness.state.tasks = {
+      "agent-failed": task("agent-failed", {
+        description: "generic failure task",
+        endTime: 999_000,
+        error: "tool exploded while applying patch",
+        status: "failed",
+      }),
+    };
+
+    const rendered = await renderPanel();
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("Verifier · Runner");
+      expect(output).toContain("failed");
+      expect(output).toContain("tool exploded while applying patch");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("focuses the viewed pending agent when the footer is not selected", async () => {
+    harness.state.footerSelection = "none";
+    harness.state.viewingAgentTaskId = "agent-pending";
+    harness.state.agentNameRegistry = new Map([["Planner", "agent-pending"]]);
+    harness.state.tasks = {
+      "agent-pending": task("agent-pending", {
+        description: "queued analysis",
+        selectedAgent: { source: "project-agent" },
+        status: "pending",
+      }),
+    };
+
+    const rendered = await renderPanel();
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("Planner · Runner");
+      expect(output).toContain("pending");
+      expect(output).toContain("scope project-agent");
+      expect(output).toContain("queued analysis");
     } finally {
       await rendered.dispose();
     }
@@ -306,6 +476,27 @@ describe("CoordinatorTaskPanel rendering", () => {
     try {
       await sleep(1_075);
       expect(harness.evicted).toEqual(["expired"]);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("keeps completed agents without an eviction deadline visible after the panel tick", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.tasks = {
+      retained: task("retained", {
+        endTime: undefined,
+        evictAfter: undefined,
+        status: "completed",
+      }),
+    };
+    const rendered = await renderPanel();
+
+    try {
+      await sleep(1_075);
+      expect(harness.evicted).toEqual([]);
+      expect(rendered.output()).toContain("retained · Runner");
+      expect(rendered.output()).toContain("● completed");
     } finally {
       await rendered.dispose();
     }
