@@ -282,9 +282,15 @@ describe("embedded Neovim input translation", () => {
 
     expect(provider.handleInput({ input: "alpha\nbeta", key: key({}), context: { rows: 8, columns: 40 } })).toBe(true);
     await flush();
-    expect(session.input).toHaveBeenCalledWith("<PasteStart>");
+    expect(session.input).toHaveBeenCalledWith("alpha\nbeta");
+    expect(session.paste).not.toHaveBeenCalled();
+
+    session.input.mockClear();
+    session.paste.mockClear();
+    expect(provider.handleInput({ input: "alpha\nbeta", key: key({}), isPaste: true, context: { rows: 8, columns: 40 } })).toBe(true);
+    await flush();
     expect(session.paste).toHaveBeenCalledWith("alpha\nbeta");
-    expect(session.input).toHaveBeenCalledWith("<PasteEnd>");
+    expect(session.input).not.toHaveBeenCalled();
 
     expect(provider.handleInput({ input: "", key: key({ escape: true }), context: { rows: 8, columns: 40 } })).toBe(true);
     expect(provider.handleInput({ input: "", key: key({ wheelDown: true }), context: { rows: 8, columns: 40 } })).toBe(true);

@@ -8,7 +8,7 @@ import {
 } from "../../fileSnapshot.js";
 import { startEmbeddedNeovim, type EmbeddedNeovimSession, type StartEmbeddedNeovimOptions } from "../../neovim/NeovimLifecycle.js";
 import type { NeovimDiscoveryResult } from "../../neovim/NeovimDiscovery.js";
-import { translateKeyToNeovimInput, translatePasteToNeovimInput } from "../../neovim/NeovimInput.js";
+import { translateKeyToNeovimInput } from "../../neovim/NeovimInput.js";
 import { createNeovimRenderSnapshot, type NeovimRenderSnapshot } from "../../neovim/NeovimGrid.js";
 import type { BufferMove } from "../../editing.js";
 import type {
@@ -244,17 +244,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   handleInput(event: BufferProviderInput): boolean {
     const session = this.#session;
     if (!session) return false;
-    if (event.input.length > 1 && !hasSpecialKey(event.key)) {
-      for (const translated of translatePasteToNeovimInput(event.input)) {
-        if (translated.type === "keys") void session.input(translated.keys);
-        if (translated.type === "paste") void session.paste(translated.text);
-      }
-      void this.#refreshDirty();
+    if (event.isPaste === true) {
+      void session.paste(event.input).catch((error) => this.#setInputError(error));
       return true;
     }
     const keys = translateKeyToNeovimInput(event.input, event.key);
     if (!keys) return false;
-    void session.input(keys).then(() => this.#refreshDirty());
+    void this.#sendInput(session, keys);
     return true;
   }
 
@@ -302,6 +298,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     this.#dirty = await this.#readCurrentDirtyState();
     if (!this.#dirty) await this.#refreshFileSnapshot();
     this.#emitSnapshot();
+  }
+
+  async #sendInput(session: EmbeddedNeovimSession, keys: string): Promise<void> {
+    await session.input(keys).catch((error) => this.#setInputError(error));
+  }
+
+  #setInputError(error: unknown): void {
+    this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
   }
 
   async #readCurrentDirtyState(): Promise<boolean> {
@@ -408,10 +412,4 @@ function neovimModeToVimMode(mode: string): BufferProviderSnapshot["vimMode"] {
   if (mode.startsWith("insert")) return "INSERT";
   if (mode.startsWith("visual") || mode === "v" || mode === "V") return "VISUAL";
   return "NORMAL";
-}
-
-function hasSpecialKey(key: BufferProviderInput["key"]): boolean {
-  return key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.pageDown || key.pageUp ||
-    key.home || key.end || key.return || key.escape || key.tab || key.backspace || key.delete ||
-    key.wheelUp || key.wheelDown;
 }

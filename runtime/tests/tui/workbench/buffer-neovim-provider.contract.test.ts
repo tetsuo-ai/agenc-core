@@ -69,11 +69,27 @@ describe("embedded Neovim BUFFER provider", () => {
     await flush();
     expect(harness.session.input).toHaveBeenLastCalledWith("i");
 
+    harness.session.isDirty.mockClear();
+    expect(provider.handleInput({ input: "o", key: baseKey(), context: { rows: 8, columns: 40 } })).toBe(true);
+    expect(provider.handleInput({ input: "K", key: baseKey(), context: { rows: 8, columns: 40 } })).toBe(true);
+    await flush();
+    expect(harness.session.input).toHaveBeenCalledWith("o");
+    expect(harness.session.input).toHaveBeenCalledWith("K");
+    expect(harness.session.isDirty).not.toHaveBeenCalled();
+
+    harness.session.input.mockClear();
+    harness.session.paste.mockClear();
     expect(provider.handleInput({ input: "hello", key: baseKey(), context: { rows: 8, columns: 40 } })).toBe(true);
     await flush();
-    expect(harness.session.input).toHaveBeenCalledWith("<PasteStart>");
+    expect(harness.session.input).toHaveBeenCalledWith("hello");
+    expect(harness.session.paste).not.toHaveBeenCalled();
+
+    harness.session.input.mockClear();
+    harness.session.paste.mockClear();
+    expect(provider.handleInput({ input: "hello", key: baseKey(), isPaste: true, context: { rows: 8, columns: 40 } })).toBe(true);
+    await flush();
     expect(harness.session.paste).toHaveBeenCalledWith("hello");
-    expect(harness.session.input).toHaveBeenCalledWith("<PasteEnd>");
+    expect(harness.session.input).not.toHaveBeenCalled();
 
     expect(provider.handleInput({ input: "", key: { ...baseKey(), escape: true }, context: { rows: 8, columns: 40 } })).toBe(true);
     await flush();

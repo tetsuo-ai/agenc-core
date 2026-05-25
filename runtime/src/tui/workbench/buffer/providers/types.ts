@@ -66,6 +66,7 @@ export type BufferProviderInputContext = {
 export type BufferProviderInput = {
   readonly input: string;
   readonly key: Key;
+  readonly isPaste?: boolean;
   readonly context: BufferProviderInputContext;
   readonly onInlineCommand?: (command: BufferVimCommand) => void;
 };

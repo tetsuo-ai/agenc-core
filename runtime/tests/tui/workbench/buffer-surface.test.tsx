@@ -1213,6 +1213,118 @@ describe("BufferSurface", () => {
     }
   });
 
+  it("returns to the transcript when embedded Neovim exits from inside BUFFER", async () => {
+    await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
+    let providerListener: (() => void) | null = null;
+    let providerStatus: "ready" | "closed" = "ready";
+    let providerMessage: string | null = null;
+    const identity = {
+      kind: "neovim" as const,
+      label: "embedded Neovim test",
+      fallbackReason: null,
+      capabilities: NEOVIM_BUFFER_CAPABILITIES,
+    };
+    const provider = {
+      identity,
+      subscribe: vi.fn((listener: () => void) => {
+        providerListener = listener;
+        return () => {};
+      }),
+      getSnapshot: vi.fn(() => ({
+        ...emptyProviderSnapshot(identity),
+        status: providerStatus === "closed" ? "idle" as const : "ready" as const,
+        providerStatus,
+        providerMessage,
+        filePath: "target.ts",
+        absolutePath: join(dir, "target.ts"),
+        terminal: {
+          ...createNeovimRenderSnapshot(4, 24),
+          lines: ["alpha", "beta", "", ""],
+          mode: "normal",
+          commandLine: null,
+          cursor: { grid: 1, row: 0, column: 0 },
+        },
+        vimMode: "NORMAL" as const,
+        position: { line: 1, column: 0, offset: 0 },
+      })),
+      getVisibleLines: vi.fn(() => []),
+      open: vi.fn(async () => {}),
+      save: vi.fn(async () => true),
+      revert: vi.fn(async () => {}),
+      close: vi.fn(async () => true),
+      openExternalEditor: vi.fn(async () => false),
+      undo: vi.fn(() => false),
+      redo: vi.fn(() => false),
+      move: vi.fn(() => false),
+      requestHover: vi.fn(async () => null),
+      goToDefinition: vi.fn(async () => false),
+      handleInput: vi.fn(() => true),
+      click: vi.fn(() => true),
+      resize: vi.fn(),
+      focus: vi.fn(),
+      cleanup: vi.fn(async () => {}),
+    };
+    getWorkbenchBufferProviderController().setSelectionFactoryForTesting(async () => ({
+      kind: "neovim",
+      provider,
+      discovery: {
+        usable: true,
+        executable: "nvim",
+        version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
+        args: ["--embed", "--clean", "-n"],
+        useUserInit: false,
+      },
+    }));
+    const changes: ReturnType<typeof getDefaultAppState>[] = [];
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+                focusedPane: "surface",
+              },
+            }}
+            onChangeAppState={({ newState }) => {
+              changes.push(newState);
+            }}
+          >
+            <KeybindingSetup>
+              <WorkbenchLayout transcript={<Text>transcript after close</Text>} composer={<Text>composer</Text>} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      expect(output()).toContain("embedded Neovim test");
+
+      providerStatus = "closed";
+      providerMessage = "Embedded Neovim exited.";
+      providerListener?.();
+      await sleep();
+
+      expect(changes.some((state) => state.workbench.activeSurfaceMode === "transcript")).toBe(true);
+      expect(output()).toContain("transcript after close");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("routes mouse clicks only from inside the BUFFER content pane", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const identity = {
