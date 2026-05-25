@@ -268,7 +268,6 @@ export async function forkSession(
 
 /**
  * A scheduled task from `<dir>/.agenc/scheduled_tasks.json`.
- * @internal
  */
 export type CronTask = {
   id: string
@@ -296,7 +295,6 @@ export type CronJitterConfig = {
 
 /**
  * Event yielded by `watchScheduledTasks()`.
- * @internal
  */
 export type ScheduledTaskEvent =
   | { type: 'fire'; task: CronTask }
@@ -352,7 +350,6 @@ export function buildMissedTaskNotification(_missed: CronTask[]): string {
 
 /**
  * A user message typed on agenc.tech, extracted from the bridge WS.
- * @internal
  */
 export type InboundPrompt = {
   content: string | unknown[]
