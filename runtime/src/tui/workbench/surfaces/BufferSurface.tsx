@@ -84,6 +84,14 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     };
   }, [focused, store]);
 
+  useEffect(() => {
+    if (!focused) return;
+    if (workbench.activeSurfaceMode !== "buffer") return;
+    if (snapshot.provider.kind !== "neovim") return;
+    if (snapshot.providerStatus !== "closed") return;
+    dispatch({ type: "closeSurface" });
+  }, [dispatch, focused, snapshot.provider.kind, snapshot.providerStatus, workbench.activeSurfaceMode]);
+
   useEffect(() => () => {
     void store.cleanup();
   }, [store]);
@@ -126,6 +134,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
             rows: Math.max(1, rows - 9),
           },
           executeVimCommand,
+          event.keypress.isPasted,
         );
       },
       [columns, executeVimCommand, rows, store],

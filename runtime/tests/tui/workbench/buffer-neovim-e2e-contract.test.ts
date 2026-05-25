@@ -7,6 +7,7 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     const scenario = await readFile("scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs", "utf8");
     const missingFallback = await readFile("scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs", "utf8");
     const killCleanup = await readFile("scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs", "utf8");
+    const runtimeExit = await readFile("scripts/check-tui-e2e/scenarios/123-workbench-buffer-neovim-runtime-exit.mjs", "utf8");
     const helpers = await readFile("scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs", "utf8");
     const wrapper = await readFile("scripts/check-tui-workbench-buffer-neovim.mjs", "utf8");
     const visualSmoke = await readFile("scripts/check-tui-workbench-visual-smoke.mjs", "utf8");
@@ -37,6 +38,10 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(killCleanup).toContain("KILL_DIRTY_MARK");
     expect(killCleanup).toContain("waitForFrameText");
     expect(killCleanup).toContain("TUI-killed embedded Neovim");
+    expect(runtimeExit).toContain("jklh");
+    expect(runtimeExit).toContain("normal-mode movement keys modified the file");
+    expect(runtimeExit).toContain("Workbench transcript after embedded Neovim :q!");
+    expect(runtimeExit).toContain("Workbench stayed on BUFFER after embedded Neovim :q!");
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");
     expect(helpers).toContain("waitForFrameText");

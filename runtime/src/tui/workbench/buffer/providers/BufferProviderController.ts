@@ -129,8 +129,9 @@ export class BufferProviderController {
     key: BufferProviderInput["key"],
     context: BufferProviderInput["context"],
     onInlineCommand?: (command: BufferVimCommand) => void,
+    isPaste = false,
   ): boolean {
-    return this.#provider?.handleInput({ input, key, context, onInlineCommand }) ?? false;
+    return this.#provider?.handleInput({ input, key, isPaste, context, onInlineCommand }) ?? false;
   }
 
   click(row: number, column: number): boolean {
