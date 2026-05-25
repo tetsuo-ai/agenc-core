@@ -109,6 +109,7 @@ import {
   stopAgenCDaemonPromptAgent,
 } from "../app-server-client/index.js";
 import {
+  emitLocalTuiEvent,
   emitLocalTuiPhaseEvent,
   emitLocalTuiSlashResult,
 } from "./tui-local-events.js";
@@ -2259,6 +2260,7 @@ type TuiSessionShape = {
   ) => Promise<void>;
   enqueueIdleInput?: (input: unknown) => number;
   subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+  emit?: (event: unknown) => void;
   emitPhaseEvent?: (event: PhaseEvent) => void;
   clearDaemonSession?: () => Promise<void>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
@@ -2463,6 +2465,10 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
 
   const base = params.baseSession as Record<string, unknown>;
+  const originalEmit =
+    typeof base.emit === "function"
+      ? (base.emit as (event: unknown) => void).bind(base)
+      : undefined;
   const session: TuiSessionShape & Record<string, unknown> = {
     ...base,
     // The Ink TUI's slash dispatcher in `App.tsx` calls `dispatchSlashCommand`
@@ -2553,6 +2559,14 @@ async function createDeferredDaemonPromptTuiSession(params: {
     emitPhaseEvent: (event) => {
       emitLocalTuiPhaseEvent(liveSession, subscribers, event);
     },
+    emit: (event) => {
+      if (typeof liveSession?.emit === "function") {
+        liveSession.emit(event);
+        return;
+      }
+      originalEmit?.(event);
+      emitLocalTuiEvent(subscribers, event);
+    },
     subscribeToEvents: (cb) => {
       subscribers.add(cb);
       if (liveSession !== null) {
@@ -2642,6 +2656,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       opts?: { readonly displayUserMessage?: string | null },
     ) => Promise<void>;
     subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+    emit?: (event: unknown) => void;
     emitPhaseEvent?: (event: PhaseEvent) => void;
   },
 >(
@@ -2657,6 +2672,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
   const originalSubmit = session.submit?.bind(session);
   if (originalSubmit === undefined) return session;
   const originalSubscribe = session.subscribeToEvents?.bind(session);
+  const originalEmit = session.emit?.bind(session);
   const originalEmitPhaseEvent = session.emitPhaseEvent?.bind(session);
   const localSubscribers = new Set<(event: unknown) => void>();
   let wrapped!: Session;
@@ -2690,6 +2706,10 @@ function wrapDaemonTuiSessionWithPromptPreparation<
         unsubscribeOriginal?.();
       };
     }) as Session["subscribeToEvents"],
+    emit: ((event: unknown) => {
+      originalEmit?.(event);
+      emitLocalTuiEvent(localSubscribers, event);
+    }) as Session["emit"],
     emitPhaseEvent: ((event: PhaseEvent) => {
       emitLocalTuiPhaseEvent(
         { emitPhaseEvent: originalEmitPhaseEvent },

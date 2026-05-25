@@ -1,7 +1,8 @@
 // @ts-nocheck
-import React from "react";
+import React, { type RefObject } from "react";
 
 import { Box } from "../../ink.js";
+import type { ScrollBoxHandle } from "../../ink/components/ScrollBox.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import type { PendingRequest } from "../../permission-requests.js";
@@ -20,6 +21,7 @@ export type WorkbenchSurfaceRenderProps = {
   readonly focused: boolean;
   readonly transcript: React.ReactNode;
   readonly pendingApproval?: PendingRequest | null;
+  readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
 };
 
 export type WorkbenchSurfaceDescriptor = {
@@ -37,7 +39,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     title: () => "TRANSCRIPT",
     keybindings: ["q"],
     footerHints: "Surface: ctrl+w h explorer  ctrl+w j composer  ctrl+w d diff",
-    renderBody: ({ transcript }) => <TranscriptSurface>{transcript}</TranscriptSurface>,
+    renderBody: ({ transcript, scrollRef }) => <TranscriptSurface scrollRef={scrollRef}>{transcript}</TranscriptSurface>,
   },
   {
     mode: "preview",
@@ -102,10 +104,12 @@ export function ActiveWorkSurface({
   focused,
   transcript,
   pendingApproval,
+  scrollRef,
 }: {
   readonly focused: boolean;
   readonly transcript: React.ReactNode;
   readonly pendingApproval?: PendingRequest | null;
+  readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
 }): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -120,7 +124,7 @@ export function ActiveWorkSurface({
 
   return (
     <Box flexDirection="column" flexGrow={1} height="100%" overflow="hidden" paddingX={1}>
-      {descriptor.renderBody({ focused, transcript, pendingApproval })}
+      {descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef })}
     </Box>
   );
 }

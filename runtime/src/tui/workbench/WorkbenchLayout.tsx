@@ -1,7 +1,9 @@
 // @ts-nocheck
-import React, { useMemo } from "react";
+import React, { useMemo, type RefObject } from "react";
 
 import { Box, Text } from "../ink.js";
+import { ModalContext } from "../context/modalContext.js";
+import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useKeybindings } from "../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../keybindings/KeybindingContext.js";
@@ -22,7 +24,9 @@ type Props = {
   readonly composer: React.ReactNode;
   readonly overlay?: React.ReactNode;
   readonly modal?: React.ReactNode;
+  readonly modalScrollRef?: RefObject<ScrollBoxHandle | null>;
   readonly pendingApproval?: PendingRequest | null;
+  readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
 };
 
 export function WorkbenchLayout({
@@ -30,7 +34,9 @@ export function WorkbenchLayout({
   composer,
   overlay,
   modal,
+  modalScrollRef,
   pendingApproval,
+  scrollRef,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
@@ -68,7 +74,7 @@ export function WorkbenchLayout({
       {rows >= 8 ? <WorkbenchStatusBar columns={columns} /> : null}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         {showExplorer ? <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} /> : null}
-        <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} />
+        <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} />
         {showAgents ? <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} /> : null}
       </Box>
       {overlay ? (
@@ -95,9 +101,15 @@ export function WorkbenchLayout({
         </Box>
       ) : null}
       {modal ? (
-        <Box position="absolute" left={0} right={0} bottom={0} flexDirection="column" opaque borderTop borderColor="gray" paddingX={1}>
-          {modal}
-        </Box>
+        <ModalContext value={{
+          rows: Math.max(0, rows - 4),
+          columns: Math.max(0, columns - 2),
+          scrollRef: modalScrollRef ?? null,
+        }}>
+          <Box position="absolute" left={0} right={0} bottom={0} flexDirection="column" opaque borderTop borderColor="gray" paddingX={1}>
+            {modal}
+          </Box>
+        </ModalContext>
       ) : null}
       {workbench.pendingBlockedOverlay ? (
         <Box position="absolute" left={0} right={0} top={1} flexDirection="column" opaque borderColor="warning" borderBottom paddingX={1}>

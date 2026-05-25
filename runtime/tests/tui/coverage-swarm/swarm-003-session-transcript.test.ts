@@ -600,11 +600,15 @@ describe("session transcript coverage swarm row 003", () => {
 
       eventLogCallback?.(evt("log-event", "user_message", { message: "from log" }));
       phaseCallback?.({ type: "context_compacted" });
+      phaseCallback?.(evt("phase-msg-event", "user_message", {
+        message: "from msg envelope",
+      }));
       phaseCallback?.(null);
       await flushEffects();
 
       expect(JSON.stringify(harness.latest().messages)).toContain("from log");
       expect(JSON.stringify(harness.latest().messages)).toContain("Context compacted");
+      expect(JSON.stringify(harness.latest().messages)).toContain("from msg envelope");
 
       await harness.render(propertySession);
 
