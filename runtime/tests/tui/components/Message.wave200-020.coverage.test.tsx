@@ -114,8 +114,8 @@ function baseProps(message: Props['message']): Props {
   } as Props
 }
 
-describe('Message compiler cache reuse', () => {
-  test('reuses cached child elements when stable message props render again', async () => {
+describe('Message non-static render freshness', () => {
+  test('refreshes child props when mutable tool progress state changes', async () => {
     harness.reset()
 
     const messages = [
@@ -207,11 +207,23 @@ describe('Message compiler cache reuse', () => {
         ]),
       )
 
-      const callCountAfterFirstRender = harness.calls.length
+      expect(
+        harness.calls.find(call => call.name === 'AssistantToolUseMessage')?.props,
+      ).toMatchObject({ inProgressToolCallCount: 1 })
+
+      props
+        .find(messageProps => messageProps.message.uuid === 'assistant-cache')
+        ?.inProgressToolUseIDs.add('tool-next')
       root.render(renderStableMessages())
       await sleep()
 
-      expect(harness.calls).toHaveLength(callCountAfterFirstRender)
+      const toolUseCalls = harness.calls.filter(
+        call => call.name === 'AssistantToolUseMessage',
+      )
+      expect(toolUseCalls).toHaveLength(2)
+      expect(toolUseCalls.at(-1)?.props).toMatchObject({
+        inProgressToolCallCount: 2,
+      })
     } finally {
       root.unmount()
       stdin.end()

@@ -254,7 +254,7 @@ describe('Message coverage swarm row 022', () => {
     }
   })
 
-  test('reuses cached system renderers for stable compact, snip, local command, and text messages', async () => {
+  test('routes compact, snip, local command, and text system messages', async () => {
     harness.features.add('HISTORY_SNIP')
 
     const messages = [
@@ -286,17 +286,14 @@ describe('Message coverage swarm row 022', () => {
       )
       expect(harness.calls.some(call => call.props.message === messages[2])).toBe(false)
 
-      const callCountAfterFirstRender = harness.calls.length
-      mounted.render()
-      await sleep()
-
-      expect(harness.calls).toHaveLength(callCountAfterFirstRender)
+      expect(harness.calls.filter(call => call.name === 'UserTextMessage')).toHaveLength(1)
+      expect(harness.calls.filter(call => call.name === 'SystemTextMessage')).toHaveLength(1)
     } finally {
       await mounted.dispose()
     }
   })
 
-  test('routes connector fallback, assistant cache reuse, and non-advisor server tool errors', async () => {
+  test('routes connector fallback, thinking blocks, advisor blocks, and non-advisor server tool errors', async () => {
     harness.features.add('CONNECTOR_TEXT')
 
     const assistant = {
@@ -359,11 +356,12 @@ describe('Message coverage swarm row 022', () => {
         ]),
       )
 
-      const callCountAfterFirstRender = harness.calls.length
-      mounted.render()
-      await sleep()
-
-      expect(harness.calls).toHaveLength(callCountAfterFirstRender)
+      expect(harness.calls.filter(call => call.name === 'AssistantTextMessage')).toHaveLength(
+        2,
+      )
+      expect(harness.calls.filter(call => call.name === 'AssistantThinkingMessage')).toHaveLength(
+        1,
+      )
     } finally {
       await mounted.dispose()
     }

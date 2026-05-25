@@ -356,4 +356,16 @@ describe('Message render dispatch', () => {
       await rendered.dispose()
     }
   })
+
+  test('ignores unknown top-level message types defensively', async () => {
+    const rendered = await renderMessages([
+      { type: 'future_message_type', uuid: 'future-message' },
+    ] as Array<Props['message']>)
+
+    try {
+      expect(harness.calls).toEqual([])
+    } finally {
+      await rendered.dispose()
+    }
+  })
 })
