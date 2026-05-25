@@ -3,6 +3,8 @@ import * as React from "react";
 import {
   isBackgroundTask,
   isTaskType,
+  type InProcessTeammateTaskState,
+  type LocalAgentTaskState,
   type TaskState,
 } from "../../../tasks/types.js";
 import { tailFile } from "../../../utils/fsOperations.js";
@@ -30,7 +32,7 @@ type TaskDetailRow = {
   readonly section: string;
   readonly label: string;
   readonly value: string;
-  readonly color?: ThemeColor;
+  readonly color: ThemeColor;
 };
 
 type ShellOutputTail = {
@@ -52,15 +54,30 @@ function formatBackgroundAgentRole(roleName: string | undefined): string {
   return agentRolePresentation(roleName)?.label ?? "Agent";
 }
 
+function formatLocalAgentIdentity(
+  task: LocalAgentTaskState,
+  nameByAgentId: ReadonlyMap<string, string>,
+): string {
+  const displayName =
+    nameByAgentId.get(task.id) ??
+    nameByAgentId.get(task.agentId) ??
+    task.agentId;
+  return `${displayName} · ${formatBackgroundAgentRole(task.agentType)}`;
+}
+
+function formatTeammateIdentity(task: InProcessTeammateTaskState): string {
+  return `${task.identity.agentName} · ${formatBackgroundAgentRole(agentRoleFromDefinition(task.selectedAgent))}`;
+}
+
 function formatBackgroundAgentIdentity(
   task: TaskState,
   nameByAgentId: ReadonlyMap<string, string>,
 ): string | null {
   if (task.type === "local_agent") {
-    return `${nameByAgentId.get(task.id) ?? nameByAgentId.get(task.agentId) ?? task.agentId} · ${formatBackgroundAgentRole(task.agentType)}`;
+    return formatLocalAgentIdentity(task, nameByAgentId);
   }
   if (task.type === "in_process_teammate") {
-    return `${task.identity.agentName} · ${formatBackgroundAgentRole(agentRoleFromDefinition(task.selectedAgent))}`;
+    return formatTeammateIdentity(task);
   }
   return null;
 }
@@ -75,10 +92,11 @@ function taskTitle(task: TaskState): string {
   if ("prompt" in task && typeof task.prompt === "string" && task.prompt.trim()) {
     return task.prompt;
   }
-  return task.description || task.id;
+  const description = task.description.trim();
+  return description || task.id;
 }
 
-function taskStatusColor(status: string): "success" | "error" | "agenc" | "inactive" | "subtle" {
+function taskStatusColor(status: TaskState["status"]): "success" | "error" | "agenc" {
   switch (status) {
     case "completed":
       return "success";
@@ -88,8 +106,6 @@ function taskStatusColor(status: string): "success" | "error" | "agenc" | "inact
     case "running":
     case "pending":
       return "agenc";
-    default:
-      return "subtle";
   }
 }
 
@@ -106,8 +122,6 @@ function taskKindIcon(task: TaskState): string {
       return "$";
     case "local_agent":
       return "◇";
-    default:
-      return "·";
   }
 }
 
@@ -121,8 +135,6 @@ function taskKindLabel(task: TaskState): string {
       return "bash";
     case "local_agent":
       return "local";
-    default:
-      return "task";
   }
 }
 
@@ -134,7 +146,7 @@ function taskKindColor(task: TaskState): "worker" | "agenc" | "text2" | "subtle"
       return "agenc";
     case "local_bash":
       return "text2";
-    default:
+    case "local_agent":
       return "subtle";
   }
 }
@@ -157,24 +169,6 @@ function taskDetailStatusLabel(task: TaskState): string {
   return task.status === "completed" ? "completed" : taskStatusLabel(task.status);
 }
 
-function taskDetail(task: TaskState): string | null {
-  const progress = "progress" in task ? task.progress : undefined;
-  const parts: string[] = [];
-  if (progress?.toolUseCount !== undefined) {
-    parts.push(`${formatNumber(progress.toolUseCount)} tools`);
-  }
-  if (progress?.tokenCount !== undefined) {
-    parts.push(`${formatNumber(progress.tokenCount)} tokens`);
-  }
-  if (progress?.lastActivity?.activityDescription) {
-    parts.push(progress.lastActivity.activityDescription);
-  }
-  if ("error" in task && typeof task.error === "string" && task.error.trim()) {
-    parts.push(task.error);
-  }
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
-
 function taskTarget(task: TaskState): string {
   switch (task.type) {
     case "remote_agent":
@@ -185,8 +179,6 @@ function taskTarget(task: TaskState): string {
       return "local shell";
     case "local_agent":
       return "self";
-    default:
-      return "background";
   }
 }
 
@@ -225,12 +217,41 @@ function stringifyUnknown(value: unknown): string {
   }
 }
 
+function formatProgressActivity(activity: {
+  readonly activityDescription?: string;
+  readonly toolName?: string;
+  readonly input?: unknown;
+}): string {
+  return activity.activityDescription ?? [activity.toolName, stringifyUnknown(activity.input)].filter(Boolean).join(" ");
+}
+
+function taskDetail(task: TaskState): string | null {
+  const progress = "progress" in task ? task.progress : undefined;
+  const parts: string[] = [];
+  if (progress?.toolUseCount !== undefined) {
+    parts.push(`${formatNumber(progress.toolUseCount)} tools`);
+  }
+  if (progress?.tokenCount !== undefined) {
+    parts.push(`${formatNumber(progress.tokenCount)} tokens`);
+  }
+  if (progress?.lastActivity) {
+    const activity = formatProgressActivity(progress.lastActivity);
+    if (activity) {
+      parts.push(activity);
+    }
+  }
+  if ("error" in task && typeof task.error === "string" && task.error.trim()) {
+    parts.push(task.error);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 function addDetailRows(
   rows: TaskDetailRow[],
   section: string,
   label: string,
   value: unknown,
-  color?: ThemeColor,
+  color: ThemeColor = "text2",
 ): void {
   const text = stringifyUnknown(value).trim();
   if (!text) {
@@ -239,7 +260,7 @@ function addDetailRows(
   for (const line of text.split(/\r?\n/u)) {
     const trimmed = line.trimEnd();
     if (trimmed) {
-      rows.push({ section, label, value: trimmed, ...(color ? { color } : {}) });
+      rows.push({ section, label, value: trimmed, color });
     }
   }
 }
@@ -256,14 +277,12 @@ function addProgressRows(rows: TaskDetailRow[], task: TaskState): void {
     ].filter(Boolean);
     addDetailRows(rows, "progress", "usage", parts.join(" · "), "text2");
   }
-  if (lastActivity?.activityDescription) {
-    addDetailRows(rows, "progress", "latest", lastActivity.activityDescription, "subtle");
+  if (lastActivity) {
+    addDetailRows(rows, "progress", "latest", formatProgressActivity(lastActivity), "subtle");
   }
   if (recentActivities && recentActivities.length > 0) {
     recentActivities.forEach((activity, index) => {
-      const description =
-        activity.activityDescription ??
-        [activity.toolName, stringifyUnknown(activity.input)].filter(Boolean).join(" ");
+      const description = formatProgressActivity(activity);
       addDetailRows(rows, "progress", `activity ${index + 1}`, description, "subtle");
     });
   }
@@ -289,7 +308,6 @@ function buildTaskDetailRows(
   nameByAgentId: ReadonlyMap<string, string> = new Map(),
 ): readonly TaskDetailRow[] {
   const rows: TaskDetailRow[] = [];
-  const agentIdentity = formatBackgroundAgentIdentity(task, nameByAgentId);
   addDetailRows(rows, "task", "status", taskDetailStatusLabel(task), taskStatusColor(task.status));
   addDetailRows(rows, "task", "type", `${taskKindLabel(task)} · ${task.type}`, taskKindColor(task));
   addDetailRows(rows, "task", "title", taskTitle(task), "text2");
@@ -316,7 +334,7 @@ function buildTaskDetailRows(
       }
       break;
     case "local_agent":
-      addDetailRows(rows, "agent", "agent", agentIdentity ?? `${task.agentId} · Agent`, "worker");
+      addDetailRows(rows, "agent", "agent", formatLocalAgentIdentity(task, nameByAgentId), "worker");
       addDetailRows(rows, "agent", "model", task.model, "inactive");
       addDetailRows(rows, "agent", "prompt", task.prompt, "text2");
       addMessageRows(rows, "agent", "pending", task.pendingMessages);
@@ -325,7 +343,7 @@ function buildTaskDetailRows(
       addDetailRows(rows, "agent", "result", task.result, "subtle");
       break;
     case "in_process_teammate":
-      addDetailRows(rows, "teammate", "identity", agentIdentity ?? `${task.identity.agentName} · Agent`, "worker");
+      addDetailRows(rows, "teammate", "identity", formatTeammateIdentity(task), "worker");
       addDetailRows(rows, "teammate", "id", task.identity.agentId, "inactive");
       addDetailRows(rows, "teammate", "team", task.identity.teamName, "inactive");
       addDetailRows(rows, "teammate", "mode", task.permissionMode, "subtle");
@@ -358,15 +376,7 @@ function buildTaskDetailRows(
       break;
   }
 
-  return rows.length > 0
-    ? rows
-    : [{ section: "task", label: "empty", value: "No detail available", color: "inactive" }];
-}
-
-function taskActionLabel(task: TaskState): string {
-  const stopAction = tuiStopActionForTask(task);
-  if (stopAction === "remote-unavailable") return "Stop unavailable";
-  return stopAction ? "Stop" : "View output";
+  return rows;
 }
 
 function isBackgroundDialogTask(task: unknown): task is TaskState {
@@ -472,7 +482,6 @@ export function BackgroundTasksPanel({
     () => selectedTask ? buildTaskDetailRows(selectedTask, selectedShellOutputTail, nameByAgentId) : [],
     [nameByAgentId, selectedShellOutputTail, selectedTask],
   );
-  const selectedTaskDetail = selectedTask ? taskDetail(selectedTask) : null;
   const selectedTaskStopAction = tuiStopActionForTask(selectedTask);
   const selectedTaskCanStop =
     selectedTaskStopAction !== null && selectedTaskStopAction !== "remote-unavailable";
@@ -520,24 +529,16 @@ export function BackgroundTasksPanel({
   }, [showDetail, selectedTask?.id, selectedTask?.status, selectedTask?.type]);
   const selectRelative = React.useCallback(
     (delta: number) => {
-      if (sorted.length === 0) {
-        return;
-      }
       const nextIndex = (selectedIndex + delta + sorted.length) % sorted.length;
       setSelectedTaskId(sorted[nextIndex]!.id);
     },
     [selectedIndex, sorted],
   );
   const stopSelectedTask = React.useCallback(() => {
-    if (selectedTask) {
-      stopTuiTask(selectedTask, setAppState);
-    }
+    stopTuiTask(selectedTask!, setAppState);
   }, [selectedTask, setAppState]);
   const selectDetailRelative = React.useCallback(
     (delta: number) => {
-      if (detailRows.length === 0) {
-        return;
-      }
       setDetailIndex((current) =>
         Math.min(Math.max(0, current + delta), Math.max(0, detailRows.length - 1)),
       );
@@ -641,7 +642,7 @@ export function BackgroundTasksPanel({
           <ThemedText key="label" color={active ? "agenc" : "subtle"} wrap="truncate-end">
             {row.label}
           </ThemedText>,
-          <ThemedText key="value" color={row.color ?? "text2"} wrap="truncate-end">
+          <ThemedText key="value" color={row.color} wrap="truncate-end">
             {truncateToWidth(row.value, detailValueWidth)}
           </ThemedText>,
         ]}
@@ -649,49 +650,52 @@ export function BackgroundTasksPanel({
     );
   }
 
+  const listSelectedTask = selectedTask!;
+  const listSelectedTaskDetail = taskDetail(listSelectedTask);
+  const listSelectedTaskStopAction = tuiStopActionForTask(listSelectedTask);
+  const listSelectedTaskCanStop =
+    listSelectedTaskStopAction !== null && listSelectedTaskStopAction !== "remote-unavailable";
+
   return (
     <MenuModal
       title="background tasks"
       count={summary}
       summary="unified background panel"
-      headerRight={selectedTaskCanStop ? "↑↓ select · ⏎ open · x stop" : "↑↓ select · ⏎ open"}
+      headerRight={listSelectedTaskCanStop ? "↑↓ select · ⏎ open · x stop" : "↑↓ select · ⏎ open"}
       columns={[2, 8, 18, 28, 18, 12, 8, 8]}
       headers={["", "kind", "id · status", "label", "target", "progress", "elapsed", "cost"]}
       items={sorted}
       activeIndex={selectedIndex}
       footer={[
         { keyName: "⏎", label: "open" },
-        ...(selectedTaskCanStop ? [{ keyName: "x", label: "stop" }] : []),
+        ...(listSelectedTaskCanStop ? [{ keyName: "x", label: "stop" }] : []),
         { keyName: "l", label: "detail" },
       ]}
-      hint={truncateToWidth(
-        showDetail ? "detail open · ←/b returns to list" : "kinds · remote · teammate · bash · local",
-        taskTextWidth,
-      )}
-      preview={selectedTask ? (
+      hint={truncateToWidth("kinds · remote · teammate · bash · local", taskTextWidth)}
+      preview={
         <Box flexDirection="column">
-          <ThemedText color={taskStatusColor(selectedTask.status)} bold={true}>
+          <ThemedText color={taskStatusColor(listSelectedTask.status)} bold={true}>
             Task details
           </ThemedText>
           <ThemedText color="text2" wrap="truncate-end">
-            {truncateToWidth(`${selectedTask.status} · ${selectedTask.type} · ${formatBackgroundAgentIdentity(selectedTask, nameByAgentId) ?? taskTitle(selectedTask)}`, taskTextWidth)}
+            {truncateToWidth(`${listSelectedTask.status} · ${listSelectedTask.type} · ${formatBackgroundAgentIdentity(listSelectedTask, nameByAgentId) ?? taskTitle(listSelectedTask)}`, taskTextWidth)}
           </ThemedText>
-          <ThemedText color="inactive">{truncateToWidth(`id: ${selectedTask.id}`, taskTextWidth)}</ThemedText>
-          {selectedTaskDetail ? (
-            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(selectedTaskDetail, taskTextWidth)}</ThemedText>
+          <ThemedText color="inactive">{truncateToWidth(`id: ${listSelectedTask.id}`, taskTextWidth)}</ThemedText>
+          {listSelectedTaskDetail ? (
+            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(listSelectedTaskDetail, taskTextWidth)}</ThemedText>
           ) : null}
-          {"command" in selectedTask && selectedTask.command ? (
-            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`command: ${selectedTask.command}`, taskTextWidth)}</ThemedText>
+          {"command" in listSelectedTask && listSelectedTask.command ? (
+            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`command: ${listSelectedTask.command}`, taskTextWidth)}</ThemedText>
           ) : null}
-          {"prompt" in selectedTask && selectedTask.prompt ? (
-            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${selectedTask.prompt}`, taskTextWidth)}</ThemedText>
+          {"prompt" in listSelectedTask && listSelectedTask.prompt ? (
+            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${listSelectedTask.prompt}`, taskTextWidth)}</ThemedText>
           ) : null}
-          <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`view output: ${selectedTask.outputFile}`, taskTextWidth)}</ThemedText>
-          {taskActionLabel(selectedTask) === "Stop unavailable" ? (
+          <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`view output: ${listSelectedTask.outputFile}`, taskTextWidth)}</ThemedText>
+          {listSelectedTaskStopAction === "remote-unavailable" ? (
             <ThemedText color="inactive">Remote task stop is not available from this session.</ThemedText>
           ) : null}
         </Box>
-      ) : null}
+      }
       renderRow={(task, _index, active) => [
         <ThemedText key="icon" color={taskKindColor(task)}>{taskKindIcon(task)}</ThemedText>,
         <ThemedText key="kind" color={taskKindColor(task)}>{taskKindLabel(task)}</ThemedText>,
