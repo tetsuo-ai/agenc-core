@@ -1883,6 +1883,84 @@ describe("main() smoke", () => {
     }
   });
 
+  it("bootTUIEntry publishes deferred local transcript events before daemon startup", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-local-emit-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-local-emit-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+
+    process.argv = ["node", "agenc", "--provider", "grok", "--model", "grok-4.3"];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_local_emit",
+      sessionId: "session_tui_local_emit",
+      cwd: tmpCwd,
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      emit?: (event: unknown) => void;
+      subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+      const localEvents: unknown[] = [];
+      const unsubscribe = session.subscribeToEvents?.((event) => {
+        localEvents.push(event);
+      });
+      const event = {
+        id: "local-bash-output",
+        msg: {
+          type: "user_message",
+          payload: {
+            message: "<bash-stdout>WBANCHOR-001</bash-stdout>",
+            displayText: "<bash-stdout>WBANCHOR-001</bash-stdout>",
+          },
+        },
+      };
+
+      session.emit?.(event);
+      unsubscribe?.();
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+      expect(localEvents).toEqual([event]);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it.each(["/help", "/permissions"])(
     "bootTUIEntry does not send first %s input as a daemon prompt",
     async (slashInput) => {

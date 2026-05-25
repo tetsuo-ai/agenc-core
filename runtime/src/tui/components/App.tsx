@@ -15,7 +15,8 @@ import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
 import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
-import { applyWorkbenchCommand, isWorkbenchEnabled } from "../workbench/state.js";
+import { applyWorkbenchCommand, getWorkbenchStateFromAppState, isWorkbenchEnabled } from "../workbench/state.js";
+import { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { AlternateScreen } from "../ink/components/AlternateScreen.js";
@@ -82,6 +83,7 @@ import {
   readCompletionPipelineState,
   type CompletionPipelineState,
 } from "../completion-pipeline.js";
+export { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
@@ -1403,6 +1405,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const modalScrollRef = useRef<ScrollBoxHandle | null>(null);
   const fullscreen = isFullscreenEnvEnabled();
   const workbenchEnabled = fullscreen && isWorkbenchEnabled();
+  const workbenchState = useAppState(getWorkbenchStateFromAppState);
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
   // 50ms animation tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow
   // owns the per-frame clock and reads these refs directly.
@@ -2406,14 +2409,20 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const body = <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers screen={screen as any} setScreen={setScreen as any} showAllInTranscript={showAllInTranscript} setShowAllInTranscript={setShowAllInTranscript} messageCount={transcript.messages.length} />
-      <ScrollKeybindingHandler scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef} isActive={fullscreen && !workbenchEnabled && permissionRequests.length === 0} />
+      <ScrollKeybindingHandler scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef} isActive={shouldEnableTranscriptScrollKeybindings({
+        fullscreen,
+        workbenchEnabled,
+        permissionRequestCount: permissionRequests.length,
+        modalVisible: modalToolJSX !== null,
+        activeSurfaceMode: workbenchState.activeSurfaceMode
+      })} isModal={modalToolJSX !== null} />
       <CancelRequestHandler
     // Daemon-mode no-op: permission requests are owned by the daemon
     // and resolved via session.cancelTurn cascade.
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} />
-      {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} pendingApproval={permissionRequests[0] ?? null} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
+      {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} pendingApproval={permissionRequests[0] ?? null} scrollRef={scrollRef} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
       {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}

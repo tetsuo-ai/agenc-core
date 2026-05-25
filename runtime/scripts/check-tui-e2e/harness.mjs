@@ -247,16 +247,29 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
   let row = 0;
   let col = 0;
   let wrapPending = false;
+  let scrollTop = 0;
+  let scrollBottom = rows - 1;
 
   const scrollUp = (count = 1) => {
     for (let idx = 0; idx < count; idx += 1) {
-      grid.shift();
-      grid.push(Array.from({ length: cols }, () => " "));
+      for (let y = scrollTop; y < scrollBottom; y += 1) {
+        grid[y] = grid[y + 1] ?? Array.from({ length: cols }, () => " ");
+      }
+      grid[scrollBottom] = Array.from({ length: cols }, () => " ");
+    }
+  };
+
+  const scrollDown = (count = 1) => {
+    for (let idx = 0; idx < count; idx += 1) {
+      for (let y = scrollBottom; y > scrollTop; y -= 1) {
+        grid[y] = grid[y - 1] ?? Array.from({ length: cols }, () => " ");
+      }
+      grid[scrollTop] = Array.from({ length: cols }, () => " ");
     }
   };
 
   const lineFeed = () => {
-    if (row >= rows - 1) {
+    if (row >= scrollBottom) {
       scrollUp();
     } else {
       row += 1;
@@ -343,6 +356,21 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
           else if (mode === 2) clearLine(row, 0, cols - 1);
         } else if (final === "S") {
           scrollUp(first);
+        } else if (final === "T") {
+          scrollDown(first);
+        } else if (final === "r") {
+          if (sequence === "r" || params.every((param) => param === 0)) {
+            scrollTop = 0;
+            scrollBottom = rows - 1;
+          } else {
+            const top = clamp((params[0] || 1) - 1, 0, rows - 1);
+            const bottom = clamp((params[1] || rows) - 1, 0, rows - 1);
+            if (bottom > top) {
+              scrollTop = top;
+              scrollBottom = bottom;
+            }
+          }
+          moveCursor(0, 0);
         }
         i = end;
         continue;

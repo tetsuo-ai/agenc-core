@@ -29,6 +29,10 @@ let mockHasConsoleBillingAccess = false;
 let mockWorktreeSession: unknown = null;
 let mockGlobalConfig: Record<string, unknown> = {};
 const mockTuiCommandList = vi.hoisted(() => [] as Array<Record<string, any>>);
+const fullscreenProbe = vi.hoisted(() => ({
+  fullscreen: false,
+  mouseTracking: false,
+}));
 const apiKeyVerificationProbe = vi.hoisted(() => ({
   reverify: vi.fn(async () => {}),
   status: "valid" as "loading" | "valid" | "invalid" | "missing" | "error",
@@ -49,6 +53,8 @@ const providerProbe = {
   messageSelectorProps: [] as Array<Record<string, unknown>>,
   mcpConnectivityProps: [] as Array<Record<string, unknown>>,
   fullscreenLayoutProps: [] as Array<Record<string, React.ReactNode>>,
+  scrollKeybindingProps: [] as Array<Record<string, unknown>>,
+  workbenchLayoutProps: [] as Array<Record<string, React.ReactNode>>,
   spinnerProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
     clearBuffer(): void;
@@ -259,9 +265,9 @@ vi.mock("../../utils/envUtils.js", () => ({
 }));
 
 vi.mock("../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => false,
+  isFullscreenEnvEnabled: () => fullscreenProbe.fullscreen,
   isMouseClicksDisabled: () => true,
-  isMouseTrackingEnabled: () => false,
+  isMouseTrackingEnabled: () => fullscreenProbe.mouseTracking,
 }));
 
 vi.mock("../../utils/log.js", () => ({
@@ -478,6 +484,38 @@ vi.mock("./FullscreenLayout.js", async () => {
   };
 });
 
+vi.mock("./ScrollKeybindingHandler.js", async () => {
+  const React = await import("react");
+  return {
+    ScrollKeybindingHandler: (props: Record<string, unknown>) => {
+      providerProbe.scrollKeybindingProps.push(props);
+      return React.createElement(React.Fragment, null);
+    },
+  };
+});
+
+vi.mock("../workbench/WorkbenchLayout.js", async () => {
+  const React = await import("react");
+  return {
+    WorkbenchLayout: (props: {
+      transcript?: React.ReactNode;
+      composer?: React.ReactNode;
+      overlay?: React.ReactNode;
+      modal?: React.ReactNode;
+    } & Record<string, unknown>) => {
+      providerProbe.workbenchLayoutProps.push(props);
+      return React.createElement(
+        React.Fragment,
+        null,
+        props.transcript,
+        props.composer,
+        props.overlay,
+        props.modal,
+      );
+    },
+  };
+});
+
 vi.mock("./dialogs/CostThresholdDialog.js", async () => {
   const React = await import("react");
   return {
@@ -621,6 +659,8 @@ function resetShellSurfaceProbe(): void {
   providerProbe.messageProps.length = 0;
   providerProbe.mcpConnectivityProps.length = 0;
   providerProbe.fullscreenLayoutProps.length = 0;
+  providerProbe.scrollKeybindingProps.length = 0;
+  providerProbe.workbenchLayoutProps.length = 0;
   providerProbe.spinnerProps.length = 0;
   providerProbe.promptProps.length = 0;
   providerProbe.promptSubmits.length = 0;
@@ -634,6 +674,9 @@ function resetShellSurfaceProbe(): void {
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
   mockGlobalConfig = {};
+  fullscreenProbe.fullscreen = false;
+  fullscreenProbe.mouseTracking = false;
+  delete process.env.AGENC_TUI_WORKBENCH;
 }
 
 function containsElementNamed(node: React.ReactNode, name: string): boolean {
@@ -846,7 +889,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   });
 
   test("gates prompt input when another TUI surface owns input", async () => {
-    const { shouldShowPromptInputState } = await import("./App.js");
+    const {
+      shouldEnableTranscriptScrollKeybindings,
+      shouldShowPromptInputState,
+    } = await import("./App.js");
 
     expect(
       shouldShowPromptInputState({
@@ -897,6 +943,49 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         toolShouldHidePromptInput: true,
       }),
     ).toBe(false);
+
+    expect(shouldEnableTranscriptScrollKeybindings({
+      fullscreen: false,
+      workbenchEnabled: false,
+      permissionRequestCount: 0,
+      modalVisible: false,
+      activeSurfaceMode: "transcript",
+    })).toBe(false);
+    expect(shouldEnableTranscriptScrollKeybindings({
+      fullscreen: true,
+      workbenchEnabled: false,
+      permissionRequestCount: 0,
+      modalVisible: false,
+      activeSurfaceMode: "preview",
+    })).toBe(true);
+    expect(shouldEnableTranscriptScrollKeybindings({
+      fullscreen: true,
+      workbenchEnabled: true,
+      permissionRequestCount: 1,
+      modalVisible: false,
+      activeSurfaceMode: "transcript",
+    })).toBe(false);
+    expect(shouldEnableTranscriptScrollKeybindings({
+      fullscreen: true,
+      workbenchEnabled: true,
+      permissionRequestCount: 0,
+      modalVisible: true,
+      activeSurfaceMode: "preview",
+    })).toBe(true);
+    expect(shouldEnableTranscriptScrollKeybindings({
+      fullscreen: true,
+      workbenchEnabled: true,
+      permissionRequestCount: 0,
+      modalVisible: false,
+      activeSurfaceMode: "preview",
+    })).toBe(false);
+    expect(shouldEnableTranscriptScrollKeybindings({
+      fullscreen: true,
+      workbenchEnabled: true,
+      permissionRequestCount: 0,
+      modalVisible: false,
+      activeSurfaceMode: "transcript",
+    })).toBe(true);
   });
 
   test("parses MCP primitive field edge cases", async () => {
@@ -1095,6 +1184,41 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         setVimMode: expect.any(Function),
       }),
     );
+  });
+
+  test("connects fullscreen workbench transcript to the scroll owner", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    process.env.AGENC_TUI_WORKBENCH = "1";
+
+    await renderApp(
+      <AgenCTuiApp
+        session={createSession()}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    const messageScrollRef = providerProbe.messageProps.at(-1)?.scrollRef;
+    const workbenchProps = providerProbe.workbenchLayoutProps.at(-1);
+    const scrollProps = providerProbe.scrollKeybindingProps.at(-1);
+
+    expect(messageScrollRef).toBeDefined();
+    expect(workbenchProps).toEqual(
+      expect.objectContaining({
+        scrollRef: messageScrollRef,
+        modalScrollRef: expect.any(Object),
+      }),
+    );
+    expect(scrollProps).toEqual(
+      expect.objectContaining({
+        scrollRef: messageScrollRef,
+        isActive: true,
+        isModal: false,
+      }),
+    );
+    expect(providerProbe.fullscreenLayoutProps).toHaveLength(0);
   });
 
   test("passes API key verification status into PromptInput and verifies on startup", async () => {

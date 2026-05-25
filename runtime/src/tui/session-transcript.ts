@@ -2488,7 +2488,11 @@ export function useSessionTranscript(
       dispatch({ kind: "append", event });
     });
     const unsubscribePhase = session.subscribeToEvents?.((event) => {
-      if (event && typeof event === "object" && "type" in event) {
+      if (
+        event &&
+        typeof event === "object" &&
+        ("type" in event || "msg" in event)
+      ) {
         dispatch({ kind: "append", event: event as SessionTranscriptEvent });
       }
     });

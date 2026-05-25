@@ -58,8 +58,8 @@ vi.mock("../../../src/tui/workbench/surfaces/TestSurface.js", () => ({
 }));
 
 vi.mock("../../../src/tui/workbench/surfaces/TranscriptSurface.js", () => ({
-  TranscriptSurface: ({ children }: { readonly children: React.ReactNode }) => {
-    activeSurfaceHarness.renderCalls.push({ name: "transcript", props: {} });
+  TranscriptSurface: ({ children, scrollRef }: { readonly children: React.ReactNode; readonly scrollRef?: unknown }) => {
+    activeSurfaceHarness.renderCalls.push({ name: "transcript", props: { scrollRef } });
     return React.createElement(React.Fragment, null, children);
   },
 }));
@@ -105,12 +105,18 @@ describe("ActiveWorkSurface", () => {
           focused={true}
           transcript={<Text>transcript body</Text>}
           pendingApproval={pendingApproval as never}
+          scrollRef={{ current: null }}
         />
       </AppStateProvider>,
       100,
     );
 
     expect(activeSurfaceHarness.renderCalls.at(-1)?.name).toBe(mode);
+    if (mode === "transcript") {
+      expect(activeSurfaceHarness.renderCalls.at(-1)?.props).toEqual({
+        scrollRef: { current: null },
+      });
+    }
     if (mode !== "transcript") {
       expect(activeSurfaceHarness.renderCalls.at(-1)?.props).toMatchObject({
         focused: true,
