@@ -34,7 +34,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
       return;
     }
     const taskId = task.id;
-    setTailState({ taskId, content: "" });
+    setTailState((current) => current.taskId === taskId ? current : { taskId, content: "" });
     let mounted = true;
     const readTail = () => {
       tailFile(getTaskOutputPath(taskId), 16_000)
@@ -75,6 +75,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
   const stopAction = workbenchStopActionForTask(task);
   const pathLabel = taskPathLabel(task);
   const recentActivities = progress.recentActivities ?? [];
+  const currentActivity = progress.lastActivity?.activityDescription ?? progress.lastActivity?.toolName;
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="AGENT" detail={`${task.status} - ${task.description}`} focused={focused} />
@@ -84,7 +85,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
       {pathLabel ? <Text wrap="truncate-end">path {pathLabel}</Text> : null}
       {progress.toolUseCount !== undefined ? <Text>tools {progress.toolUseCount}</Text> : null}
       {progress.tokenCount !== undefined ? <Text>tokens {progress.tokenCount}</Text> : null}
-      {progress.lastActivity?.activityDescription ? <Text wrap="truncate-end">now {progress.lastActivity.activityDescription}</Text> : null}
+      {currentActivity ? <Text wrap="truncate-end">now {currentActivity}</Text> : null}
       {recentActivities.length > 0 ? (
         <Box flexDirection="column">
           {recentActivities.slice(-3).map((activity, index) => (

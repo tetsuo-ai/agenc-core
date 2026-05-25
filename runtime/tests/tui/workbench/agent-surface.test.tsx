@@ -34,6 +34,7 @@ vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../../src/utils/task/diskOutput.js", () => ({
+  evictTaskOutput: vi.fn(async () => {}),
   getTaskOutputPath: (taskId: string) => `/tmp/${taskId}.log`,
 }));
 
@@ -166,6 +167,86 @@ describe("AgentSurface", () => {
     });
   });
 
+  it("renders an empty agent surface and keeps empty-surface actions inert", async () => {
+    const changes: AppState[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "agent",
+              selectedAgentTaskId: "missing-agent",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <AgentSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(screenText(stdout))).toContain("Nobackgroundagentselected");
+
+      keybindingHarness.handlers["surface:open"]?.();
+      keybindingHarness.handlers["surface:stop"]?.();
+
+      expect(changes).toHaveLength(0);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("stops the selected local agent from the agent surface", async () => {
+    const changes: AppState[] = [];
+    const abortController = new AbortController();
+    const unregisterCleanup = vi.fn();
+
+    await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            "agent-1": {
+              ...agentTask("agent-1", "current agent", "running", 1_000),
+              abortController,
+              unregisterCleanup,
+            },
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "agent",
+            selectedAgentTaskId: "agent-1",
+          },
+        }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <AgentSurface focused={true} />
+      </AppStateProvider>,
+      100,
+    );
+
+    keybindingHarness.handlers["surface:stop"]?.();
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(unregisterCleanup).toHaveBeenCalledOnce();
+    expect(changes.at(-1)?.tasks["agent-1"]).toMatchObject({
+      status: "killed",
+      abortController: undefined,
+      unregisterCleanup: undefined,
+    });
+  });
+
   it("clears stale tail content immediately when switching selected agent tasks", async () => {
     keybindingHarness.tails["agent-old"] = [
       "old agent output",
@@ -270,6 +351,53 @@ describe("AgentSurface", () => {
     }
   });
 
+  it("keeps the current agent tail visible while a same-task status refresh is pending", async () => {
+    keybindingHarness.tails["agent-1"] = "current agent output";
+    let updateAgent: ((taskId: string, update: Record<string, unknown>) => void) | null = null;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "agent-1": agentTask("agent-1", "current agent", "running", 1_000),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "agent",
+              selectedAgentTaskId: "agent-1",
+            },
+          }}
+        >
+          <AgentTaskUpdater onReady={(updater) => { updateAgent = updater; }} />
+          <AgentSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(compact(screenText(stdout))).toContain("currentagentoutput");
+
+      keybindingHarness.deferredTaskIds.add("agent-1");
+      updateAgent?.("agent-1", { status: "completed", endTime: 2_000 });
+      await sleep(25);
+
+      expect(compact(screenText(stdout))).toContain("completed-currentagent");
+      expect(compact(screenText(stdout))).toContain("currentagentoutput");
+      expect(compact(screenText(stdout))).not.toContain("(nooutput)");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("ignores stale tail read failures after switching selected agent tasks", async () => {
     keybindingHarness.deferredTaskIds.add("agent-old");
     keybindingHarness.tails["agent-new"] = "new agent output";
@@ -318,6 +446,119 @@ describe("AgentSurface", () => {
       stdout.end();
     }
   });
+
+  it("ignores stale tail read successes after switching selected agent tasks", async () => {
+    keybindingHarness.deferredTaskIds.add("agent-old");
+    keybindingHarness.tails["agent-new"] = "new agent output";
+    let selectAgent: ((taskId: string) => void) | null = null;
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: {
+              "agent-old": agentTask("agent-old", "old agent", "running", 1_000),
+              "agent-new": agentTask("agent-new", "new agent", "running", 2_000),
+            },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "agent",
+              selectedAgentTaskId: "agent-old",
+            },
+          }}
+        >
+          <AgentTaskSelector onReady={(setter) => { selectAgent = setter; }} />
+          <AgentSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+      expect(keybindingHarness.pendingReads.has("agent-old")).toBe(true);
+
+      selectAgent?.("agent-new");
+      await sleep(25);
+
+      keybindingHarness.pendingReads.get("agent-old")?.({ content: "old stale output" });
+      await sleep(25);
+
+      expect(compact(screenText(stdout))).toContain("newagentoutput");
+      expect(compact(screenText(stdout))).not.toContain("oldstaleoutput");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("renders rich progress, path, remote stop availability, and recent activity fallbacks", async () => {
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            "agent-1": {
+              id: "agent-1",
+              type: "remote_agent",
+              status: "running",
+              description: "remote review",
+              startTime: 1_000,
+              outputFile: "urn:agenc:task:agent-1:output",
+              outputOffset: 0,
+              notified: false,
+              command: "review",
+              title: "review",
+              sessionId: "session",
+              todoList: {},
+              log: [],
+              pollStartedAt: 1_000,
+              remoteTaskType: "ultrareview",
+              remoteTaskMetadata: {
+                cwd: "/repo",
+              },
+              progress: {
+                toolUseCount: 3,
+                tokenCount: 42,
+                lastActivity: {
+                  toolName: "Edit",
+                },
+                recentActivities: [
+                  { activityDescription: "old activity" },
+                  { activityDescription: "read file" },
+                  { toolName: "Search" },
+                  {},
+                ],
+              },
+            },
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "agent",
+            selectedAgentTaskId: "agent-1",
+          },
+        }}
+      >
+        <AgentSurface focused={true} />
+      </AppStateProvider>,
+      100,
+    );
+
+    expect(output).toContain("path /repo");
+    expect(output).toContain("tools 3");
+    expect(output).toContain("tokens 42");
+    expect(output).toContain("now Edit");
+    expect(output).toContain("recent read file");
+    expect(output).toContain("recent Search");
+    expect(output).toContain("recent activity");
+    expect(output).not.toContain("old activity");
+    expect(output).toContain("stop unavailable from this session");
+    expect(output).not.toContain("enter transcript");
+  });
 });
 
 function AgentTaskSelector({
@@ -333,6 +574,29 @@ function AgentTaskSelector({
         workbench: {
           ...state.workbench,
           selectedAgentTaskId,
+        },
+      }));
+    });
+  }, [onReady, setAppState]);
+  return null;
+}
+
+function AgentTaskUpdater({
+  onReady,
+}: {
+  readonly onReady: (updateAgent: (taskId: string, update: Record<string, unknown>) => void) => void;
+}): null {
+  const setAppState = useSetAppState();
+  React.useEffect(() => {
+    onReady((taskId: string, update: Record<string, unknown>) => {
+      setAppState((state) => ({
+        ...state,
+        tasks: {
+          ...state.tasks,
+          [taskId]: {
+            ...state.tasks[taskId],
+            ...update,
+          } as any,
         },
       }));
     });
