@@ -8,7 +8,7 @@
     "behaviorsAudited": [
       "translates printable input, named keys, escape, control keys, alt keys, shift modified keys, paste, mouse, focus, and resize into Neovim input or UI calls",
       "routes editor-owned keys to the active provider before workbench or composer keybindings handle them",
-      "keeps global escape and surface switching behavior explicit and conflict free",
+      "keeps global escape, BUFFER escape hatches, and surface switching behavior explicit and conflict free",
       "routes mouse wheel and clicks only to the pane under the pointer",
       "sends resize events to Neovim when the BUFFER pane dimensions change",
       "delegates colon command input such as :wq to embedded Neovim instead of parsing it through the inline Vim command layer"
@@ -23,7 +23,8 @@
       "mouse wheel over BUFFER does not scroll the workspace explorer",
       "mouse wheel events without parseable pointer coordinates do not get captured by BUFFER",
       "click outside the BUFFER pane does not call provider click and can be handled by the pane under the pointer",
-      "workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor",
+      "Workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor",
+      "BUFFER escape-hatch chords while embedded Neovim owns keys can return focus to composer, explorer, or agents",
       "embedded command input for :wq forwards colon, letters, and enter to Neovim exactly as editor input",
       "resize to one row and one column sends a valid Neovim resize request"
     ],

@@ -15,7 +15,9 @@ describe("embedded Neovim BUFFER docs and config", () => {
     expect(text).toContain("selects the explicit external-editor handoff provider");
     expect(text).toContain("AGENC_BUFFER_NVIM=/path/to/nvim");
     expect(text).toContain("AGENC_BUFFER_NVIM_TIMEOUT_MS=1200");
-    expect(text).toContain("AGENC_BUFFER_NVIM_USE_INIT=1");
+    expect(text).toContain("AGENC_BUFFER_NVIM_USE_INIT=0");
+    expect(text).toContain("prefers user init");
+    expect(text).toContain("falls back to clean embedded");
     expect(text).toContain("nvim --embed --clean -n");
     expect(text).toContain("basic fallback");
     expect(text).toContain("does not claim exact Vim behavior");

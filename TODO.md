@@ -80,8 +80,9 @@ Required behavior:
 
 - discover usable `nvim`
 - reject unsupported or missing `nvim` with a clear fallback reason
-- spawn `nvim --embed --clean` by default unless config explicitly opts into a
-  user init
+- prefer `nvim --embed` with user init by default so normal Neovim behavior is
+  available; allow config to force `nvim --embed --clean -n` for hermetic mode
+  and fall back to clean mode when default user-init startup fails
 - implement msgpack-RPC request/response/notification handling
 - attach as a Neovim UI with a bounded grid matching the BUFFER pane
 - maintain grid cells, highlights, cursor, mode, command line, popup menu, and

@@ -18,7 +18,7 @@
     "edgeCasesAudited": [
       "documentation states missing executable behavior without suggesting exact Vim behavior in inline mode",
       "documentation states unsupported version behavior with the user-facing fallback message",
-      "documentation states how to opt into user init loading without changing the default clean mode",
+      "documentation states how to disable user init loading while preserving the default user config preference",
       "documentation states process cleanup behavior after a TUI crash",
       "documentation lists the contract checker and PTY validation commands"
     ],

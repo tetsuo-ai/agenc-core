@@ -12,7 +12,12 @@ supervision, pane rendering, file safety, and lifecycle cleanup.
 - `AGENC_BUFFER_PROVIDER=external` selects the explicit external-editor handoff provider.
 - `AGENC_BUFFER_NVIM=/path/to/nvim` overrides executable discovery.
 - `AGENC_BUFFER_NVIM_TIMEOUT_MS=1200` controls the discovery probe timeout.
-- `AGENC_BUFFER_NVIM_USE_INIT=1` allows user init loading. The default is clean embedded mode: `nvim --embed --clean -n`.
+- By default, embedded BUFFER prefers user init loading so your normal Neovim
+  configuration, plugins, and syntax behavior are available.
+- `AGENC_BUFFER_NVIM_USE_INIT=0` disables user init loading and starts clean
+  embedded mode: `nvim --embed --clean -n`.
+- When the default user-init probe fails, AgenC falls back to clean embedded
+  mode so BUFFER remains usable and reports the selected provider in the header.
 
 Inline mode is a basic fallback. It keeps file editing available when embedded
 Neovim cannot start, and it does not claim exact Vim behavior. External editor

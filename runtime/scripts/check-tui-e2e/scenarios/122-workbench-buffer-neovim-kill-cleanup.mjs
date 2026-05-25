@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import {
   listDescendantNeovimPids,
   waitForPidsGone,
+  waitForFrameText,
   waitForScreen,
 } from "../helpers/workbench-buffer-neovim.mjs";
 
@@ -40,6 +41,7 @@ export default async function (session) {
       timeout: 20_000,
       label: "embedded Neovim ready",
     });
+    await waitForFrameText(session, /kill-cleanup/u, "loaded target.txt in embedded Neovim", 20_000);
     const neovimPids = await listDescendantNeovimPids(session.term?.pid);
     if (neovimPids.length === 0) {
       throw new Error("embedded Neovim process was not a child of the TUI before kill");
@@ -49,10 +51,7 @@ export default async function (session) {
     session.send("o");
     await sleep(80);
     await session.type("KILL_DIRTY_MARK", { perCharMs: 15 });
-    await waitForScreen(session, /KILL_DIRTY_MARK/u, {
-      timeout: 10_000,
-      label: "dirty Neovim edit before kill",
-    });
+    await waitForFrameText(session, /KILL_DIRTY_MARK/u, "dirty Neovim edit before kill", 10_000);
     session.kill();
     await waitForPidsGone(neovimPids, 8_000, "TUI-killed embedded Neovim");
     const saved = await readFile(join(cwd, "target.txt"), "utf8");

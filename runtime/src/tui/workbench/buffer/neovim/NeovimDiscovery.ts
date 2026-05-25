@@ -82,25 +82,27 @@ export async function discoverNeovim(
     };
   }
 
-  const useUserInit = config.useUserInit === true;
-  const args = buildNeovimEmbedArgs(useUserInit);
-  const embedProbe = await probeNeovimEmbed(executable, args, config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  if (embedProbe.type === "failed") {
-    return {
-      usable: false,
-      reasonCode: "probe-failed",
-      reason: `Embedded Neovim is unavailable because ${executable} failed the embedded mode probe: ${embedProbe.message}`,
-      executable,
-      version: probe.version,
-    };
+  let failedEmbedMessage: string | null = null;
+  for (const candidate of embedArgCandidates(config.useUserInit)) {
+    const embedProbe = await probeNeovimEmbed(executable, candidate.args, config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (embedProbe.type === "ok") {
+      return {
+        usable: true,
+        executable,
+        version: probe.version,
+        useUserInit: candidate.useUserInit,
+        args: candidate.args,
+      };
+    }
+    failedEmbedMessage = embedProbe.message;
   }
 
   return {
-    usable: true,
+    usable: false,
+    reasonCode: "probe-failed",
+    reason: `Embedded Neovim is unavailable because ${executable} failed the embedded mode probe: ${failedEmbedMessage ?? "embedded mode did not start"}`,
     executable,
     version: probe.version,
-    useUserInit,
-    args,
   };
 }
 
@@ -120,6 +122,22 @@ export function buildNeovimEmbedArgs(useUserInit: boolean): readonly string[] {
   return useUserInit
     ? ["--embed"]
     : ["--embed", "--clean", "-n"];
+}
+
+function embedArgCandidates(useUserInit: boolean | undefined): readonly {
+  readonly useUserInit: boolean;
+  readonly args: readonly string[];
+}[] {
+  if (useUserInit === true) {
+    return [{ useUserInit: true, args: buildNeovimEmbedArgs(true) }];
+  }
+  if (useUserInit === false) {
+    return [{ useUserInit: false, args: buildNeovimEmbedArgs(false) }];
+  }
+  return [
+    { useUserInit: true, args: buildNeovimEmbedArgs(true) },
+    { useUserInit: false, args: buildNeovimEmbedArgs(false) },
+  ];
 }
 
 export function parseNeovimVersion(output: string): NeovimVersion | null {

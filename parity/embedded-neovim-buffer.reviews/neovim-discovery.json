@@ -10,7 +10,7 @@
       "executes the candidate with a bounded version probe and parses the reported version",
       "accepts only binaries that support embedded mode",
       "returns structured fallback reasons for missing executables, failed probes, timeouts, and unsupported versions",
-      "builds default spawn arguments with embedded clean mode unless configuration permits user init loading"
+      "prefers user init loading for default embedded spawn arguments and falls back to embedded clean mode when default startup fails"
     ],
     "missingBehaviors": []
   },
@@ -20,7 +20,8 @@
       "a probe that exits nonzero records stderr in the fallback reason without throwing",
       "a probe that hangs past the timeout kills the probe process and returns a timeout result",
       "a version line with extra suffix text still parses the numeric major minor patch values",
-      "user init loading is disabled by default and enabled only by explicit configuration"
+      "clean embedded mode is selected when configuration disables user init loading",
+      "default user init loading falls back to clean embedded mode when the initial embedded startup probe fails"
     ],
     "missingEdgeCases": []
   },

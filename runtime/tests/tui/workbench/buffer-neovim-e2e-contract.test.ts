@@ -35,9 +35,11 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(missingFallback).toContain("Inline BUFFER is available as the basic fallback");
     expect(killCleanup).toContain("session.kill()");
     expect(killCleanup).toContain("KILL_DIRTY_MARK");
+    expect(killCleanup).toContain("waitForFrameText");
     expect(killCleanup).toContain("TUI-killed embedded Neovim");
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");
+    expect(helpers).toContain("waitForFrameText");
     expect(helpers).toContain("workspaceSnapshot");
     expect(helpers).toContain("ps");
     expect(wrapper).toContain("workbench-buffer-neovim");

@@ -155,6 +155,7 @@ export async function startEmbeddedNeovim(
   try {
     await ui.attach();
     await editFile(rpc, options.filePath, options.line, options.column);
+    await configureEmbeddedEditing(rpc);
     await installDirtyAutocmds(rpc);
   } catch (error) {
     ui.dispose();
@@ -181,6 +182,16 @@ async function editFile(
   const escaped = await rpc.request("nvim_call_function", ["fnameescape", [filePath]]);
   await rpc.request("nvim_command", [`edit ${stringValue(escaped)}`]);
   await rpc.request("nvim_win_set_cursor", [0, [Math.max(1, line), Math.max(0, column)]]);
+}
+
+async function configureEmbeddedEditing(rpc: NeovimRpcTransport): Promise<void> {
+  for (const command of [
+    "set termguicolors",
+    "syntax enable",
+    "filetype plugin indent on",
+  ]) {
+    await rpc.request("nvim_command", [command]);
+  }
 }
 
 async function installDirtyAutocmds(rpc: NeovimRpcTransport): Promise<void> {

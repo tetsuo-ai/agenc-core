@@ -205,6 +205,9 @@ describe("BufferSurface", () => {
     });
 
     handlers["buffer:save"]?.();
+    handlers["workbench:focusExplorer"]?.();
+    handlers["workbench:focusAgents"]?.();
+    handlers["workbench:focusComposer"]?.();
     await handlers["buffer:revert"]?.();
     await handlers["buffer:close"]?.();
     await handlers["buffer:closeDiscard"]?.();
@@ -232,6 +235,9 @@ describe("BufferSurface", () => {
     await flush();
 
     expect(store.save).toHaveBeenCalledWith({ hasInFlightAgent: true });
+    expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "explorer" });
+    expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "agents" });
+    expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "composer" });
     expect(store.close).toHaveBeenCalledWith();
     expect(store.close).toHaveBeenCalledWith({ discard: true });
     expect(dispatch).toHaveBeenCalledWith({ type: "closeSurface" });
@@ -1191,7 +1197,8 @@ describe("BufferSurface", () => {
       const frame = output();
       expect(frame).toContain("embedded Neovim test");
       expect(frame).toContain("alpha");
-      expect(frame).toContain("ctrl+ssave");
+      expect(frame).toContain("shift+tabcomposer");
+      expect(frame).toContain("ctrl+xhexplorer");
 
       terminalCommandLine = "set number relativenumber wrapscan";
       providerListener?.();

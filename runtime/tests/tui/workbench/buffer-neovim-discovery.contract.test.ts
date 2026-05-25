@@ -40,12 +40,12 @@ describe("embedded Neovim discovery", () => {
     expect(parseNeovimVersion("not neovim")).toBeNull();
   });
 
-  it("builds clean embedded args by default and plain embedded args with user init", () => {
+  it("builds clean embedded args for hermetic mode and plain embedded args with user init", () => {
     expect(buildNeovimEmbedArgs(false)).toEqual(["--embed", "--clean", "-n"]);
     expect(buildNeovimEmbedArgs(true)).toEqual(["--embed"]);
   });
 
-  it("accepts a probe script that prints a supported Neovim version", async () => {
+  it("prefers user init by default when a supported Neovim starts embedded mode", async () => {
     const executable = join(dir, "nvim-probe");
     await writeFile(executable, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0-dev\\n'; exit 0; fi\nexit 0\n", "utf8");
     await chmod(executable, 0o755);
@@ -55,8 +55,27 @@ describe("embedded Neovim discovery", () => {
     expect(result.usable).toBe(true);
     if (result.usable) {
       expect(result.executable).toBe(executable);
-      expect(result.args).toEqual(["--embed", "--clean", "-n"]);
+      expect(result.args).toEqual(["--embed"]);
+      expect(result.useUserInit).toBe(true);
     }
+  });
+
+  it("falls back to clean embedded mode when default user init cannot start", async () => {
+    const executable = join(dir, "nvim-user-init-fails");
+    await writeFile(
+      executable,
+      "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nif [ \"$2\" = \"--clean\" ]; then exit 0; fi\necho 'init boom' >&2\nexit 5\n",
+      "utf8",
+    );
+    await chmod(executable, 0o755);
+
+    const result = await discoverNeovim({ executable, timeoutMs: 500 });
+
+    expect(result).toMatchObject({
+      usable: true,
+      args: ["--embed", "--clean", "-n"],
+      useUserInit: false,
+    });
   });
 
   it("uses the default probe timeout when no timeout is configured", async () => {
@@ -126,7 +145,7 @@ describe("embedded Neovim discovery", () => {
     await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("honors user init config and rejects unsupported or malformed probe output", async () => {
+  it("honors explicit user init config and rejects unsupported or malformed probe output", async () => {
     const oldExecutable = join(dir, "nvim-old");
     const badExecutable = join(dir, "nvim-bad");
     const initExecutable = join(dir, "nvim-init");
@@ -152,6 +171,20 @@ describe("embedded Neovim discovery", () => {
       usable: true,
       args: ["--embed"],
       useUserInit: true,
+    });
+  });
+
+  it("honors explicit clean init config", async () => {
+    const executable = join(dir, "nvim-clean");
+    await writeFile(executable, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nif [ \"$2\" = \"--clean\" ]; then exit 0; fi\nexit 9\n", "utf8");
+    await chmod(executable, 0o755);
+
+    const result = await discoverNeovim({ executable, timeoutMs: 500, useUserInit: false });
+
+    expect(result).toMatchObject({
+      usable: true,
+      args: ["--embed", "--clean", "-n"],
+      useUserInit: false,
     });
   });
 

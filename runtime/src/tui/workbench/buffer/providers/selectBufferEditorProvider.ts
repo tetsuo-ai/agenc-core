@@ -84,7 +84,7 @@ export function bufferProviderConfigFromEnv(env: NodeJS.ProcessEnv = process.env
   return {
     mode: parseMode(env.AGENC_BUFFER_PROVIDER),
     executable: env.AGENC_BUFFER_NVIM,
-    useUserInit: env.AGENC_BUFFER_NVIM_USE_INIT === "1" || env.AGENC_BUFFER_NVIM_USE_INIT === "true",
+    useUserInit: parseUseUserInit(env.AGENC_BUFFER_NVIM_USE_INIT),
     timeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_TIMEOUT_MS),
   };
 }
@@ -98,4 +98,12 @@ function parsePositiveInteger(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseUseUserInit(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
+  if (normalized === "0" || normalized === "false" || normalized === "no") return false;
+  return undefined;
 }

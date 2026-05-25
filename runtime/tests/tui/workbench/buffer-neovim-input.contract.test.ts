@@ -5,6 +5,7 @@ import { nodeCache } from "../../../src/tui/ink/node-cache.js";
 import { createChordInputHandler } from "../../../src/tui/keybindings/KeybindingProviderSetup.js";
 import { DEFAULT_BINDINGS } from "../../../src/tui/keybindings/defaultBindings.js";
 import { parseBindings } from "../../../src/tui/keybindings/parser.js";
+import type { ParsedKeystroke } from "../../../src/tui/keybindings/types.js";
 import {
   translateKeyToNeovimInput,
   translatePasteToNeovimInput,
@@ -114,6 +115,44 @@ describe("embedded Neovim input translation", () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(capture).not.toHaveBeenCalled();
     expect(event.didStopImmediatePropagation()).toBe(true);
+  });
+
+  it("routes BUFFER escape-hatch focus chords before raw Neovim capture", () => {
+    const focusComposer = vi.fn();
+    const focusExplorer = vi.fn();
+    const capture = vi.fn(() => true);
+    const pendingChordRef: { current: ParsedKeystroke[] | null } = { current: null };
+    const handler = createChordInputHandler({
+      bindings: parseBindings(DEFAULT_BINDINGS),
+      pendingChordRef,
+      setPendingChord: vi.fn((pending) => {
+        pendingChordRef.current = pending;
+      }),
+      activeContexts: new Set(["Buffer"]),
+      handlerRegistryRef: {
+        current: new Map([
+          ["workbench:focusComposer", new Set([{ action: "workbench:focusComposer", context: "Buffer" as const, handler: focusComposer }])],
+          ["workbench:focusExplorer", new Set([{ action: "workbench:focusExplorer", context: "Buffer" as const, handler: focusExplorer }])],
+        ]),
+      },
+      inputCaptureRegistryRef: { current: new Set([{ context: "Buffer" as const, handler: capture }]) },
+    });
+
+    const shiftTab = createInputEvent(key({ tab: true, shift: true }));
+    handler("", key({ tab: true, shift: true }), shiftTab as any);
+    expect(focusComposer).toHaveBeenCalledTimes(1);
+    expect(capture).not.toHaveBeenCalled();
+    expect(shiftTab.didStopImmediatePropagation()).toBe(true);
+
+    const prefix = createInputEvent(key({ ctrl: true }));
+    handler("x", key({ ctrl: true }), prefix as any);
+    const explorer = createInputEvent(key({}));
+    handler("h", key({}), explorer as any);
+
+    expect(focusExplorer).toHaveBeenCalledTimes(1);
+    expect(capture).not.toHaveBeenCalled();
+    expect(prefix.didStopImmediatePropagation()).toBe(true);
+    expect(explorer.didStopImmediatePropagation()).toBe(true);
   });
 
   it("forwards escape and wheel events to active BUFFER capture instead of global surface handlers", () => {

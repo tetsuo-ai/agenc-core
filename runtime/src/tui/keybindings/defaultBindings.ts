@@ -401,6 +401,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
   {
     context: 'Buffer',
     bindings: {
+      'shift+tab': 'workbench:focusComposer',
+      'ctrl+x h': 'workbench:focusExplorer',
+      'ctrl+x j': 'workbench:focusComposer',
+      'ctrl+x l': 'workbench:focusAgents',
       'ctrl+s': 'buffer:save',
       'ctrl+x y': 'buffer:redo',
       'ctrl+x r': 'buffer:revert',
