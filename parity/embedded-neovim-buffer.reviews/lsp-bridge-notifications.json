@@ -1,0 +1,64 @@
+{
+  "rowId": "lsp-bridge-notifications",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T04:26:18-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "preserves existing AgenC-side LSP open, change, save, and close notifications for inline fallback buffers",
+      "keeps LSP notification failures from breaking inline editing or changing visible buffer status",
+      "marks inline fallback as the only provider with AgenC-side LSP passthrough",
+      "marks embedded Neovim as not claiming AgenC-side LSP passthrough until a real Neovim LSP bridge exists"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "opening an inline fallback buffer notifies the LSP bridge with absolute path and content",
+      "editing inline fallback text notifies the LSP bridge with the updated document text",
+      "saving and closing inline fallback buffers notify the LSP bridge in order",
+      "a thrown LSP notification does not revert inline buffer edits or set an error state",
+      "embedded Neovim capabilities explicitly report LSP passthrough as unavailable"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "parity/embedded-neovim-buffer.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/lsp.ts",
+      "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-lsp-bridge.contract.test.ts --reporter=dot"
+    ],
+    "commandResults": [
+      "PASS: 1 test file passed, 3 tests passed, duration 5.01s"
+    ],
+    "sourceEvidence": [
+      "TODO.md:20-23 identifies BufferStore as the current owner of file open/save, dirty-state checks, and LSP notifications.",
+      "TODO.md:57-64 requires provider capability reporting, including lspPassthrough.",
+      "TODO.md:120-132 requires the Neovim path to notify the existing LSP bridge only if that provider remains responsible for AgenC-side LSP state."
+    ],
+    "behaviorEvidence": [
+      "Inline fallback delegates open/save/close/input editing to WorkbenchBufferStore in runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts:51-64 and :94-100; WorkbenchBufferStore imports the existing LSP bridge functions in runtime/src/tui/workbench/buffer/BufferStore.ts:61-68.",
+      "Open/change/save/close notifications are implemented in runtime/src/tui/workbench/buffer/BufferStore.ts:847, :769-772, :240, and :193, with previous-file close on file replacement in :836-838; the contract test asserts open/change/save/close calls in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:37-53.",
+      "LSP notification failures are isolated by safeNotifyBufferLsp in runtime/src/tui/workbench/buffer/BufferStore.ts:949-955, and the underlying bridge also catches async failures in runtime/src/tui/workbench/buffer/lsp.ts:18-45; the contract test throws from notifyBufferLspChanged and asserts retained text plus ready/null-error status in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:56-73.",
+      "Inline LSP passthrough is true in runtime/src/tui/workbench/buffer/providers/types.ts:102-110 and applied to InlineBufferProvider identity in runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts:28-35; the assertion is in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:76-78.",
+      "Embedded Neovim LSP passthrough is false in runtime/src/tui/workbench/buffer/providers/types.ts:112-120 and applied to NeovimBufferProvider identity in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:60-72; the assertion is in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:76-78."
+    ],
+    "edgeCaseEvidence": [
+      "Absolute-path open notification with file content is asserted in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:41-43.",
+      "Updated document text on edit notification is asserted in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:45-46.",
+      "Save then close notification flow is asserted in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:48-52.",
+      "Thrown notification isolation is asserted in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:62-72.",
+      "Embedded Neovim LSP passthrough remains unavailable by assertion in runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts:76-78."
+    ]
+  }
+}

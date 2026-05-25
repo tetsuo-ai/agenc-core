@@ -43,9 +43,18 @@ function restoreEditorEnv(): void {
   }
 }
 
-function mockInkInstance(overrides: Partial<ReturnType<typeof createInkInstance>> = {}) {
+type InkInstanceCustomFields = {
+  readonly enterAlternateScreen?: ReturnType<typeof vi.fn>;
+  readonly exitAlternateScreen?: ReturnType<typeof vi.fn>;
+  readonly pause?: ReturnType<typeof vi.fn>;
+  readonly resume?: ReturnType<typeof vi.fn>;
+  readonly suspendStdin?: ReturnType<typeof vi.fn>;
+  readonly resumeStdin?: ReturnType<typeof vi.fn>;
+};
+
+function createInkInstanceWith(custom: InkInstanceCustomFields = {}) {
   const instance = createInkInstance();
-  return { ...instance, ...overrides };
+  return { ...instance, ...custom };
 }
 
 function createInkInstance() {
@@ -67,7 +76,7 @@ describe("buffer external editor", () => {
     spawnMock.sync.mockReset();
     spawnMock.sync.mockReturnValue({ status: 0 });
     instancesMock.get.mockReset();
-    instancesMock.get.mockReturnValue(mockInkInstance());
+    instancesMock.get.mockReturnValue(createInkInstanceWith());
     whichMock.mockReset();
     whichMock.mockReturnValue("/usr/bin/editor");
   });
@@ -160,7 +169,7 @@ describe("buffer external editor", () => {
 
   it("uses terminal editors in the alternate screen and restores after failure", () => {
     process.env.VISUAL = "vim --clean";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
     spawnMock.sync.mockReturnValue({ status: 1 });
 
@@ -176,9 +185,25 @@ describe("buffer external editor", () => {
     expect(ink.pause).not.toHaveBeenCalled();
   });
 
+  it("preserves quoted editor command arguments when launching terminal editors", () => {
+    process.env.VISUAL = "'vim' '--cmd' 'set number'";
+    const ink = createInkInstanceWith();
+    instancesMock.get.mockReturnValue(ink);
+
+    expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
+
+    expect(spawnMock.sync).toHaveBeenCalledWith(
+      "vim",
+      ["--cmd", "set number", "+12", "/tmp/file.ts"],
+      { stdio: "inherit" },
+    );
+    expect(ink.enterAlternateScreen).toHaveBeenCalledOnce();
+    expect(ink.exitAlternateScreen).toHaveBeenCalledOnce();
+  });
+
   it("treats editors terminated by signal as failed launches", () => {
     process.env.VISUAL = "vim";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
     spawnMock.sync.mockReturnValue({ status: null, signal: "SIGTERM" });
 
@@ -195,7 +220,7 @@ describe("buffer external editor", () => {
 
   it("omits line addresses for terminal editors that do not support them", () => {
     process.env.VISUAL = "ed";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
 
     expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
@@ -211,7 +236,7 @@ describe("buffer external editor", () => {
 
   it("restores alternate screen when terminal editor spawn throws", () => {
     process.env.VISUAL = "vim";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
     spawnMock.sync.mockImplementation(() => {
       throw new Error("spawn failed");
@@ -225,7 +250,7 @@ describe("buffer external editor", () => {
 
   it("does not exit alternate screen when entering it fails before handoff", () => {
     process.env.VISUAL = "vim";
-    const ink = mockInkInstance({
+    const ink = createInkInstanceWith({
       enterAlternateScreen: vi.fn(() => {
         throw new Error("alt-screen failed");
       }),
@@ -241,7 +266,7 @@ describe("buffer external editor", () => {
 
   it("uses GUI editors with blocking wait args and restores stdin", () => {
     process.env.VISUAL = "code";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
 
     expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
@@ -260,7 +285,7 @@ describe("buffer external editor", () => {
 
   it("keeps existing GUI wait args and uses Sublime's line address form", () => {
     process.env.VISUAL = "subl --wait";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
 
     expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
@@ -281,7 +306,7 @@ describe("buffer external editor", () => {
     ["code --wait-for-window-close", ["--wait-for-window-close", "-g", "/tmp/file.ts:12"]],
   ])("keeps existing VS Code wait args from %s", (visual, expectedArgs) => {
     process.env.VISUAL = visual;
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
 
     expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
@@ -295,7 +320,7 @@ describe("buffer external editor", () => {
 
   it("opens GUI editors without line arguments when no line is provided", () => {
     process.env.VISUAL = "code";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
 
     expect(openFileInBufferExternalEditor("/tmp/file.ts")).toBe(true);
@@ -309,7 +334,7 @@ describe("buffer external editor", () => {
 
   it("omits line addresses for GUI editors that do not support them", () => {
     process.env.VISUAL = "gedit";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
 
     expect(openFileInBufferExternalEditor("/tmp/file.ts", 12)).toBe(true);
@@ -323,7 +348,7 @@ describe("buffer external editor", () => {
 
   it("treats GUI editors terminated by signal as failed launches", () => {
     process.env.VISUAL = "code";
-    const ink = mockInkInstance();
+    const ink = createInkInstanceWith();
     instancesMock.get.mockReturnValue(ink);
     spawnMock.sync.mockReturnValue({ status: null, signal: "SIGTERM" });
 
@@ -342,7 +367,7 @@ describe("buffer external editor", () => {
 
   it("restores GUI pause state if suspending stdin fails before spawn", () => {
     process.env.VISUAL = "code";
-    const ink = mockInkInstance({
+    const ink = createInkInstanceWith({
       suspendStdin: vi.fn(() => {
         throw new Error("stdin handoff failed");
       }),
@@ -360,7 +385,7 @@ describe("buffer external editor", () => {
 
   it("does not resume GUI state when pausing fails before handoff", () => {
     process.env.VISUAL = "code";
-    const ink = mockInkInstance({
+    const ink = createInkInstanceWith({
       pause: vi.fn(() => {
         throw new Error("pause failed");
       }),

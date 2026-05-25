@@ -254,7 +254,7 @@ export function KeybindingSetup({
 type HandlerRegistration = {
   action: string;
   context: KeybindingContextName;
-  handler: () => void;
+  handler: () => void | false | Promise<void>;
 };
 
 type ChordInputHandlerOptions = {
@@ -275,8 +275,12 @@ export function createChordInputHandler({
   inputCaptureRegistryRef
 }: ChordInputHandlerOptions): (input: string, key: Key, event: InputEvent) => void {
   return (input, key, event) => {
-    if ((key.wheelUp || key.wheelDown) && pendingChordRef.current === null) {
-      return;
+    if ((key.wheelUp || key.wheelDown || key.escape) && pendingChordRef.current === null) {
+      if (runInputCaptures(input, key, event, activeContexts, inputCaptureRegistryRef)) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (key.wheelUp || key.wheelDown) return;
     }
     const registry = handlerRegistryRef.current;
     const handlerContexts = new Set<KeybindingContextName>();
@@ -304,21 +308,25 @@ export function createChordInputHandler({
       case "match":
         {
           setPendingChord(null);
-          if (wasInChord) {
-            const contextsSet = new Set(contexts);
-            let handled = false;
-            if (registry) {
-              const handlers_0 = registry.get(result.action);
-              if (handlers_0 && handlers_0.size > 0) {
-                for (const registration_0 of handlers_0) {
-                  if (contextsSet.has(registration_0.context)) {
-                    registration_0.handler();
-                    handled = true;
-                    break;
-                  }
+          const contextsSet = new Set(contexts);
+          let handled = false;
+          let consumed = false;
+          if (registry) {
+            const handlers_0 = registry.get(result.action);
+            if (handlers_0 && handlers_0.size > 0) {
+              for (const registration_0 of handlers_0) {
+                if (contextsSet.has(registration_0.context)) {
+                  consumed = registration_0.handler() !== false;
+                  handled = true;
+                  break;
                 }
               }
             }
+          }
+          if (handled && consumed) {
+            event.stopImmediatePropagation();
+          }
+          if (wasInChord) {
             event.stopImmediatePropagation();
             if (!handled) {
               logForDebugging(`[keybindings] Chord matched ${result.action} without an active handler`);
@@ -341,7 +349,7 @@ export function createChordInputHandler({
       case "none":
     }
     const stopped = typeof event.didStopImmediatePropagation === "function" && event.didStopImmediatePropagation();
-    if (!stopped && runInputCaptures(input, key, activeContexts, inputCaptureRegistryRef)) {
+    if (!stopped && runInputCaptures(input, key, event, activeContexts, inputCaptureRegistryRef)) {
       event.stopImmediatePropagation();
     }
   };
@@ -350,13 +358,14 @@ export function createChordInputHandler({
 function runInputCaptures(
   input: string,
   key: Key,
+  event: InputEvent,
   activeContexts: Set<KeybindingContextName>,
   inputCaptureRegistryRef: React.RefObject<Set<InputCaptureRegistration>>,
 ): boolean {
   const registry = inputCaptureRegistryRef.current;
   if (!registry || registry.size === 0) return false;
   for (const registration of registry) {
-    if (activeContexts.has(registration.context) && registration.handler(input, key)) {
+    if (activeContexts.has(registration.context) && registration.handler(input, key, event)) {
       return true;
     }
   }

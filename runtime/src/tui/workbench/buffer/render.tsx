@@ -5,6 +5,7 @@ import { Ansi, Box, Text } from "../../ink.js";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { nextGraphemeOffset, selectionBounds } from "./editing.js";
 import type { BufferVisibleLine, WorkbenchBufferSnapshot } from "./BufferStore.js";
+import type { NeovimRenderSnapshot } from "./neovim/NeovimGrid.js";
 
 export function BufferLine({
   line,
@@ -39,6 +40,41 @@ export function BufferLine({
         />
       </Text>
     </Box>
+  );
+}
+
+export function NeovimGridView({
+  terminal,
+  focused,
+  width,
+}: {
+  readonly terminal: NeovimRenderSnapshot;
+  readonly focused: boolean;
+  readonly width: number;
+}): React.ReactElement {
+  const maxWidth = Math.max(1, width);
+  return (
+    <>
+      {terminal.lines.map((line, row) => (
+        <Box key={row} height={1}>
+          <Text wrap="truncate-end">
+            {renderTerminalLine(line, row, terminal.cursor.row, terminal.cursor.column, focused, maxWidth)}
+          </Text>
+        </Box>
+      ))}
+      {terminal.messages.map((message, index) => (
+        <Box key={`message-${index}`} height={1}>
+          <Text color="warning" wrap="truncate-end">{truncateByWidth(message, maxWidth)}</Text>
+        </Box>
+      ))}
+      {terminal.popupMenu ? (
+        <Box height={1}>
+          <Text color="suggestion" wrap="truncate-end">
+            {truncateByWidth(terminal.popupMenu.items.join("  "), maxWidth)}
+          </Text>
+        </Box>
+      ) : null}
+    </>
   );
 }
 
@@ -114,7 +150,27 @@ function renderCursorText(text: string, displayFrom: number, cursorOffset: numbe
   );
 }
 
-function truncateByWidth(text: string, maxWidth: number): string {
+function renderTerminalLine(
+  line: string,
+  row: number,
+  cursorRow: number,
+  cursorColumn: number,
+  focused: boolean,
+  width: number,
+): React.ReactNode {
+  const text = truncateByWidth(line, width);
+  if (!focused || row !== cursorRow) return text;
+  const column = Math.max(0, Math.min(cursorColumn, text.length));
+  return (
+    <>
+      {text.slice(0, column)}
+      <Text inverse>{text[column] ?? " "}</Text>
+      {text.slice(column + 1)}
+    </>
+  );
+}
+
+export function truncateByWidth(text: string, maxWidth: number): string {
   if (maxWidth <= 0) return "";
   let width = 0;
   let output = "";

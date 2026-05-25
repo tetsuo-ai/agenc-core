@@ -1,0 +1,41 @@
+{
+  "rowId": "rpc-transport",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T02:58:49-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "encodes Neovim msgpack-RPC requests and notifications, and decodes responses and errors using request ids",
+      "decodes streaming msgpack data split across arbitrary stdout chunks",
+      "resolves requests only when the matching response id arrives",
+      "dispatches Neovim notifications to registered handlers without blocking request resolution",
+      "rejects pending requests when the process exits or the transport closes"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "two responses arriving out of order resolve the matching pending requests",
+      "a response with an error object rejects the matching request with method and id context",
+      "a malformed RPC frame is surfaced as a transport error and closes pending requests",
+      "a notification for an unregistered method is recorded without crashing the transport",
+      "calling request after close rejects immediately and writes no bytes",
+      "transport close is the cancellation boundary for all pending requests"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/AgenC/agenc-core/parity/embedded-neovim-buffer.json",
+      "/home/tetsuo/git/AgenC/agenc-core/TODO.md",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/src/tui/workbench/buffer/neovim/NeovimRpc.ts",
+      "/home/tetsuo/git/AgenC/agenc-core/runtime/tests/tui/workbench/buffer-neovim-rpc.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-rpc.contract.test.ts --reporter=dot"
+    ]
+  }
+}

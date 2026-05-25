@@ -1,6 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { createContext, type ReactNode, type RefObject, useCallback, useContext, useLayoutEffect, useMemo } from 'react';
 import type { Key } from '../ink.js';
+import type { InputEvent } from '../ink/events/input-event.js';
 import { type ChordResolveResult, getBindingDisplayText, resolveKeyWithChordState } from './resolver.js';
 import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './types.js';
 
@@ -8,11 +9,11 @@ import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './ty
 type HandlerRegistration = {
   action: string;
   context: KeybindingContextName;
-  handler: () => void;
+  handler: () => void | false | Promise<void>;
 };
 export type InputCaptureRegistration = {
   context: KeybindingContextName;
-  handler: (input: string, key: Key) => boolean;
+  handler: (input: string, key: Key, event: InputEvent) => boolean;
 };
 type KeybindingContextValue = {
   /** Resolve a key input to an action name (with chord support) */
@@ -154,7 +155,7 @@ export function useOptionalKeybindingContext() {
  *
  * When a context is registered, its keybindings take precedence over Global bindings.
  * This allows context-specific bindings (like ThemePicker's ctrl+t) to override
- * global bindings (like the Follow-up toggle) when the context is active.
+ * global bindings when the context is active.
  *
  * @example
  * ```tsx

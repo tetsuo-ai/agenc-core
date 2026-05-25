@@ -1,0 +1,72 @@
+{
+  "rowId": "file-safety",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T12:11:56Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "resolves file paths safely relative to the AgenC cwd before any provider opens a file",
+      "rejects binary files and files over the configured size limit before embedded Neovim launches when possible",
+      "preserves encoding and line ending metadata across read and write paths",
+      "detects disk conflicts and in-flight agent edit conflicts deterministically before saving",
+      "keeps active file and cursor state synchronized after provider cursor movement and file writes"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "a path escaping the workspace through parent segments is rejected before provider open",
+      "a file containing a NUL byte is rejected with a user-facing binary file message",
+      "a file over the maximum size returns a size-specific error before Neovim spawn",
+      "a workspace symlink resolving outside the workspace is rejected before file reads",
+      "a disk mtime change after open blocks non-force save with conflict status",
+      "a CRLF file saved without text changes keeps CRLF line endings"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "parity/embedded-neovim-buffer.json",
+      "parity/embedded-neovim-buffer.reviews/file-safety.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/fileSnapshot.ts",
+      "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+      "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "runtime/src/tui/workbench/agents/activity.ts",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
+      "runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-file-safety.contract.test.ts --reporter=dot"
+    ],
+    "commandEvidence": [
+      "PASS: 1 test file passed, 22 tests passed, duration 5.10s"
+    ],
+    "sourceEvidence": [
+      "TODO.md:118-134 requires the Neovim provider to integrate with AgenC file safety, open files relative to AgenC cwd, preserve binary/max-file rejection before embedded mode when possible, update active file/cursor state, and handle disk and agent conflicts deterministically.",
+      "TODO.md:157-160 scopes the file-safety row to path resolution, binary files, max-size files, disk conflicts, in-flight agent edits, and line-ending preservation where applicable."
+    ],
+    "behaviorEvidence": [
+      "Path safety is implemented by resolveBufferFilePath using getCwd, realpath base resolution, absolute/relative resolution, and inside-base checks at runtime/src/tui/workbench/buffer/fileSnapshot.ts:55-64 and runtime/src/tui/workbench/buffer/fileSnapshot.ts:83-88. Inline open rejects unsafe paths before loading at runtime/src/tui/workbench/buffer/BufferStore.ts:777-793, and embedded open reads a safe snapshot before startSession at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:90-145. Tests assert parent-segment escape, absolute outside paths, symlink escape, and provider pre-open rejection at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:41-77 and runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:226-248.",
+      "Binary and size rejection are implemented by stat size checks and NUL-byte detection at runtime/src/tui/workbench/buffer/fileSnapshot.ts:142-152. Embedded Neovim reads the file snapshot before startSession at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:97-110 and reports read errors without spawning at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:141-145. Tests assert binary and max-size user-facing errors at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:79-89, no embedded start for binary files at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:200-224, and no embedded start for oversized files at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:250-267.",
+      "Encoding and line-ending metadata are detected and encoded in runtime/src/tui/workbench/buffer/fileSnapshot.ts:90-127, returned in read snapshots at runtime/src/tui/workbench/buffer/fileSnapshot.ts:150-162, preserved through the shared write helper at runtime/src/tui/workbench/buffer/fileSnapshot.ts:195-197, and refreshed in embedded provider metadata at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:338-348. Tests assert CRLF preservation at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:99-112, UTF-16LE BOM preservation at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:114-127, and embedded metadata refresh after save at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:371-406.",
+      "Disk conflict detection is implemented in saveBufferFileSnapshot with mtime and content checks at runtime/src/tui/workbench/buffer/fileSnapshot.ts:177-193 and in embedded provider pre-save checks at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:148-172 and runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:327-336. In-flight agent conflicts are rejected before saving by inline store at runtime/src/tui/workbench/buffer/BufferStore.ts:212-250, embedded provider at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:148-156, and BufferSurface save plumbing at runtime/src/tui/workbench/surfaces/BufferSurface.tsx:42-49, runtime/src/tui/workbench/surfaces/BufferSurface.tsx:260-263, and runtime/src/tui/workbench/surfaces/BufferSurface.tsx:301-304. Tests assert mtime conflicts, same-mtime content conflicts, inline agent conflicts, embedded agent conflicts, and embedded disk conflict pre-save without session.save at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:129-198 and runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:269-332.",
+      "Active file, cursor, and metadata synchronization is implemented by embedded onSnapshot updates at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:115-119, cursor conversion into provider snapshots at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:351-376, metadata refresh at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:338-348, controller snapshot propagation at runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:183-186, and BufferSurface rendering from synchronized snapshot fields at runtime/src/tui/workbench/surfaces/BufferSurface.tsx:140-148. Tests assert cursor/file metadata after provider movement at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:334-369 and refreshed encoding/lineEndings after successful save at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:371-406."
+    ],
+    "edgeCaseEvidence": [
+      "Parent-segment workspace escape rejection is asserted at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:41-47 and provider pre-open rejection is asserted at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:226-248.",
+      "NUL-byte binary rejection and user-facing binary messaging are asserted at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:79-89 and runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:200-224.",
+      "Size-specific max-file rejection before embedded Neovim spawn is asserted at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:79-89 and runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:250-267.",
+      "Workspace symlink escape rejection before reads is asserted at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:64-77.",
+      "Disk mtime conflict blocking non-force saves is asserted for the shared write path at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:129-138 and for the embedded provider at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:269-300.",
+      "CRLF save without text changes preserving CRLF line endings is asserted at runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts:99-112."
+    ]
+  }
+}

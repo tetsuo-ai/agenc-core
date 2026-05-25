@@ -1,0 +1,95 @@
+{
+  "rowId": "buffer-lifecycle",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T06:02:47-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "opens a file in supervised embedded Neovim and attaches UI before accepting input",
+      "implements save, force save, quit, force quit, dirty close prevention, surface switch cleanup, app exit cleanup, and crash cleanup",
+      "tracks dirty state from Neovim buffer options and write events",
+      "prevents orphaned Neovim child processes after normal close, parent exit, and test failure",
+      "surfaces lifecycle errors in provider status without crashing the whole TUI"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "dirty quit returns a refusal status while keeping the provider alive",
+      "force quit discards edits and resolves cleanup after Neovim exits",
+      "process exit before UI attach rejects open and clears pending requests",
+      "double close waits on one cleanup path and does not send duplicate quit commands",
+      "startup failure after spawn but before UI attach completes kills the spawned child process",
+      "dirty surface switch is refused before BUFFER unmount cleanup can discard embedded Neovim edits",
+      "BufferSurface unmount on surface switch cleans up the active provider instead of leaving an embedded Neovim process alive",
+      "provider replacement waits for active Neovim cleanup before opening the replacement provider",
+      "superseded Neovim open after session start cleans up the stale spawned session",
+      "cleanup during in-flight Neovim startup cancels the open and cleans up the late spawned session",
+      "cleanup during in-flight Neovim startup ignores a late start failure without publishing stale errors",
+      "parent cleanup kills the child process group when Neovim ignores graceful quit"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "parity/embedded-neovim-buffer.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
+      "runtime/src/tui/workbench/buffer/BufferStore.ts",
+      "runtime/src/tui/workbench/buffer/neovim/NeovimProcess.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "runtime/src/tui/workbench/reducer.ts",
+      "runtime/src/tui/workbench/state.ts",
+      "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
+      "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs",
+      "runtime/tests/tui/workbench/buffer-surface.test.tsx",
+      "runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts",
+      "runtime/scripts/check-tui-workbench-buffer-neovim.mjs",
+      "runtime/scripts/check-tui-e2e/runner.mjs",
+      "runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
+      "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
+      "runtime/scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-surface.test.tsx tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
+      "npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim"
+    ],
+    "commandResults": [
+      "PASS: 5 test files passed, 68 tests passed, duration 9.49s",
+      "PASS: 3/3 workbench-buffer-neovim PTY scenarios passed"
+    ],
+    "sourceEvidence": [
+      "TODO.md:66-92 requires supervised embedded Neovim, UI attach, input forwarding, clean shutdown, and no orphaned process behavior.",
+      "TODO.md:118-134 requires dirty-state tracking, deterministic file safety, and dirty close/surface-switch prevention.",
+      "TODO.md:155-157 scopes buffer-lifecycle to open, save, force-save, quit, force-quit, dirty close prevention, surface switch, app exit, and crash cleanup.",
+      "TODO.md:180-210 requires lifecycle cleanup tests and PTY coverage for save, dirty quit refusal, force quit, and no orphaned Neovim processes."
+    ],
+    "behaviorEvidence": [
+      "Open waits for read snapshot and startSession before assigning a usable session in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:90-140, and handleInput refuses input without a session at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:244-258. startEmbeddedNeovim spawns, attaches the UI, edits the file, and installs dirty autocmds before returning a session in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:137-173. Tests assert the open options, ready snapshot, terminal grid, pane size, and empty pre-session input refusal in runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:17-61 and :358-368.",
+      "Save, force-save, quit, force-quit, cleanup, and dirty close prevention are implemented in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:148-197 and runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:83-134. Surface command routing and unmount cleanup are implemented in runtime/src/tui/workbench/surfaces/BufferSurface.tsx:87-89 and :254-317, dirty surface-switch refusal is implemented in runtime/src/tui/workbench/state.ts:22-64, and parent/app exit cleanup is implemented in runtime/src/tui/workbench/buffer/neovim/NeovimProcess.ts:86-112. Assertions cover save/force-save and dirty close in runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:119-172, command routing in runtime/tests/tui/workbench/buffer-surface.test.tsx:296-327, surface switch and unmount cleanup in runtime/tests/tui/workbench/buffer-surface.test.tsx:1431-1610, and real Neovim save/force quit behavior in runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:226-273.",
+      "Dirty state is read from nvim_buf_get_option in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:89-93, emitted from TextChanged/BufWrite/FileChanged autocmds in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:186-194, and propagated through the provider callbacks and refresh logic in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:120-123 and :299-316. Tests assert dirty true/false notifications and dirty read failure handling in runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:384-394 and real session dirty/save transitions in runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:254-265.",
+      "No-orphan cleanup is implemented by idempotent session cleanup in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:121-134, startup failure cleanup in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:155-165, detached process-group termination and tracked parent-exit cleanup in runtime/src/tui/workbench/buffer/neovim/NeovimProcess.ts:19-35 and :42-112, and PTY runner failure cleanup in runtime/scripts/check-tui-e2e/runner.mjs:173-185. Tests assert cleanup idempotency and timeout kill in runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:24-98, process-group and parent cleanup in :198-223, real close process death in :267-272, and PTY child cleanup in runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:44-47 and :181-193 plus runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs:42-47.",
+      "Lifecycle errors are surfaced as provider status without throwing through NeovimBufferProvider catch/onError paths in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:124-145, save/focus/resize/click error handlers in :165-170, :264-276, and :280-282, and process stderr error forwarding in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:196-213. Tests assert open/read/startup errors, session callback errors, save errors, and post-exit closed status in runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:216-270 and :374-406, with startup stderr asserted in runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:148-167."
+    ],
+    "edgeCaseEvidence": [
+      "Dirty quit refusal is implemented in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:95-112 and runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:182-191, and asserted in runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:147-157, runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:259-262, and runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:166-179.",
+      "Force quit discard and cleanup are implemented in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:115-134 and runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:188-197, and asserted in runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:159-164, runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:263-272, and runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs:181-193.",
+      "Process exit before UI attach is handled by startup cleanup and rethrow in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:155-165 and by provider open error/generation handling in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:141-145; assertions cover startup exit/error and recovery in runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:148-167 and runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:260-269.",
+      "Double close is serialized by the session quit promise and cleanup promise in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:95-105 and :121-124; assertions prove one quit/quit! command for concurrent closes in runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:114-145.",
+      "Startup failure after spawn kills the live child in runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:155-165; runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:170-196 asserts the spawned process dies and the tracked process count returns to zero.",
+      "Dirty surface switching is blocked before unmount cleanup by runtime/src/tui/workbench/state.ts:22-64; runtime/tests/tui/workbench/buffer-surface.test.tsx:1431-1503 asserts the surface remains BUFFER, the approval overlay is set, and provider cleanup is not called.",
+      "BufferSurface unmount calls controller cleanup in runtime/src/tui/workbench/surfaces/BufferSurface.tsx:87-89 and the controller performs one active-provider cleanup in runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:149-166; runtime/tests/tui/workbench/buffer-surface.test.tsx:1505-1610 asserts cleanup starts and is called once.",
+      "Provider replacement waits for active provider cleanup in runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:173-180; runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:225-262 asserts replacement.open is not called until active cleanup resolves.",
+      "Superseded open after session start cleans up the stale session in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:134-136; runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:272-311 asserts staleSession.cleanup is called once while the active session remains open.",
+      "Cleanup during in-flight startup increments the provider generation and resets idle state in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:286-297; the late-resolved session is cleaned by runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:134-136, and runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:313-338 asserts the late session cleanup and idle/null snapshot.",
+      "Cleanup during in-flight startup ignores late start failure through the stale-generation guard in runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:141-144; runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:340-355 rejects the pending start after cleanup and asserts providerStatus idle, filePath null, and error null.",
+      "Parent cleanup kills ignored graceful quits through detached process-group signaling and forced tracked cleanup in runtime/src/tui/workbench/buffer/neovim/NeovimProcess.ts:19-35, :42-61, and :86-97; runtime/tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts:211-223 asserts a child ignoring SIGTERM is gone and the tracked process count is zero."
+    ]
+  }
+}

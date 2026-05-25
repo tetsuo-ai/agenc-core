@@ -1,5 +1,9 @@
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+
+import { getCwd } from "../../../utils/cwd.js";
+import { isRelativePathOutsideBase } from "../../pathDisplay.js";
 
 export type BufferFileEncoding = "utf8" | "utf16le";
 export type BufferLineEndings = "LF" | "CRLF";
@@ -38,6 +42,48 @@ export class BufferSaveConflictError extends Error {
   constructor(readonly path: string) {
     super(`${path} changed on disk after the buffer was opened. Revert or reopen before saving.`);
     this.name = "BufferSaveConflictError";
+  }
+}
+
+export class BufferUnsafePathError extends Error {
+  constructor(readonly path: string) {
+    super(`${path} is outside the current AgenC workspace and cannot be opened in BUFFER.`);
+    this.name = "BufferUnsafePathError";
+  }
+}
+
+export function resolveBufferFilePath(filePath: string, basePath = getCwd()): string {
+  const absoluteBasePath = realpathOrResolved(basePath);
+  const absolutePath = isAbsolute(filePath)
+    ? resolve(filePath)
+    : resolve(absoluteBasePath, filePath);
+  assertPathInsideBase(absolutePath, absoluteBasePath, filePath);
+  const realAbsolutePath = realpathIfExists(absolutePath);
+  if (realAbsolutePath) assertPathInsideBase(realAbsolutePath, absoluteBasePath, filePath);
+  return absolutePath;
+}
+
+function realpathOrResolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function realpathIfExists(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function assertPathInsideBase(path: string, basePath: string, displayPath: string): void {
+  const relativePath = relative(basePath, path);
+  if (isRelativePathOutsideBase(relativePath)) {
+    throw new BufferUnsafePathError(displayPath);
   }
 }
 
@@ -84,25 +130,32 @@ export async function readBufferFileSnapshot(
   filePath: string,
   options: { readonly maxBytes?: number; readonly displayPath?: string } = {},
 ): Promise<BufferFileSnapshot> {
-  const absolutePath = resolve(filePath);
+  const absolutePath = resolveBufferFilePath(filePath);
+  return readAbsoluteBufferFileSnapshot(absolutePath, options.displayPath ?? filePath, options.maxBytes);
+}
+
+async function readAbsoluteBufferFileSnapshot(
+  absolutePath: string,
+  displayPath: string,
+  maxBytes = BUFFER_MAX_FILE_BYTES,
+): Promise<BufferFileSnapshot> {
   const stats = await stat(absolutePath);
   if (!stats.isFile()) {
-    throw new Error(`Path is not a regular file: ${filePath}`);
+    throw new Error(`Path is not a regular file: ${displayPath}`);
   }
-  const maxBytes = options.maxBytes ?? BUFFER_MAX_FILE_BYTES;
   if (stats.size > maxBytes) {
-    throw new BufferFileTooLargeError(filePath, stats.size, maxBytes);
+    throw new BufferFileTooLargeError(displayPath, stats.size, maxBytes);
   }
 
   const buffer = await readFile(absolutePath);
   const encoding = detectEncoding(buffer);
-  assertEditableBytes(filePath, buffer, encoding);
+  assertEditableBytes(displayPath, buffer, encoding);
   const rawText = decodeText(buffer, encoding);
   return {
-    filePath: options.displayPath ?? filePath,
+    filePath: displayPath,
     absolutePath,
     content: normalizeText(rawText),
-    mtimeMs: Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : 0,
+    mtimeMs: stats.mtimeMs,
     size: stats.size,
     encoding,
     lineEndings: detectLineEndings(rawText),
@@ -122,7 +175,7 @@ export async function saveBufferFileSnapshot(
   options: { readonly force?: boolean } = {},
 ): Promise<BufferFileSnapshot> {
   const force = options.force === true;
-  await stat(snapshot.absolutePath).catch((error: unknown) => {
+  const currentStats = await stat(snapshot.absolutePath).catch((error) => {
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT" && force) return;
     if (code === "ENOENT") throw new BufferSaveConflictError(snapshot.filePath);
@@ -130,6 +183,9 @@ export async function saveBufferFileSnapshot(
   });
 
   if (!force) {
+    if (currentStats && currentStats.mtimeMs !== snapshot.mtimeMs) {
+      throw new BufferSaveConflictError(snapshot.filePath);
+    }
     const currentContent = await readCurrentContent(snapshot);
     if (currentContent !== snapshot.content && currentContent !== content) {
       throw new BufferSaveConflictError(snapshot.filePath);
@@ -138,7 +194,5 @@ export async function saveBufferFileSnapshot(
 
   await mkdir(dirname(snapshot.absolutePath), { recursive: true });
   await writeFile(snapshot.absolutePath, encodeText(content, snapshot), snapshot.encoding);
-  return readBufferFileSnapshot(snapshot.absolutePath, {
-    displayPath: snapshot.filePath,
-  });
+  return readAbsoluteBufferFileSnapshot(snapshot.absolutePath, snapshot.filePath);
 }

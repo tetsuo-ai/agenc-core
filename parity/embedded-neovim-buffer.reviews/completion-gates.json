@@ -1,0 +1,70 @@
+{
+  "rowId": "completion-gates",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T11:14:30Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "runs TypeScript typecheck as a completion gate",
+      "runs production unused-code analysis as a completion gate",
+      "runs focused row tests, PTY validation, and visual smoke through row commands",
+      "runs the runtime build and package entrypoint verification as a completion gate",
+      "runs the AgenC TUI validation gate before completion",
+      "requires every row to declare executable commands and runs them during final checker execution",
+      "provides a project-local implementation-contract checker wrapper for final review enforcement"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "typecheck must pass after generated Neovim and workbench files are included",
+      "unused-production analysis must pass with the new provider modules and scripts reachable",
+      "build must regenerate runtime dist and verify package entrypoints",
+      "AgenC TUI validation must run from this repository path after source changes",
+      "the project-local checker wrapper must enforce inventory, edge cases, reviews, row-command presence, and row-command execution by default"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/SKILL.md",
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/.claude/skills/implementation-contract/scripts/check_contract.mjs",
+      "TODO.md",
+      "package.json",
+      "parity/embedded-neovim-buffer.json",
+      "parity/embedded-neovim-buffer.reviews/completion-gates.json",
+      "runtime/package.json",
+      "runtime/scripts/check-tui-workbench-buffer-neovim.mjs",
+      "runtime/scripts/check-tui-workbench-visual-smoke.mjs",
+      "scripts/check-embedded-neovim-buffer.mjs"
+    ],
+    "testsExecuted": [
+      "npm run typecheck",
+      "npm run check:unused:production --workspace=@tetsuo-ai/runtime",
+      "npm run build",
+      "node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full",
+      "AGENC_EMBEDDED_NEOVIM_CONTRACT_ROW_REVIEW=1 node scripts/check-embedded-neovim-buffer.mjs",
+      "npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke"
+    ],
+    "behaviorEvidence": [
+      "Typecheck is required by TODO.md:214, wired by parity/embedded-neovim-buffer.json:579, delegated from package.json:22 to runtime/package.json:30, and passed in the reviewer run.",
+      "Production unused-code analysis is required by TODO.md:215, wired by parity/embedded-neovim-buffer.json:580, implemented by runtime/package.json:47, and passed in the reviewer run.",
+      "Focused row tests, PTY validation, and visual smoke are required by TODO.md:216-218. All rows declare commands at parity/embedded-neovim-buffer.json:141-142,167-168,194-195,227-228,273-274,320-322,354-355,389-390,427-428,469-470,506-507,542-545,578-583,608-609; the e2e row includes the buffer PTY gate and visual smoke at parity/embedded-neovim-buffer.json:542-545. runtime/package.json:34 and runtime/package.json:39 expose those scripts, runtime/scripts/check-tui-workbench-buffer-neovim.mjs:9-19 runs the filtered PTY scenario, and runtime/scripts/check-tui-workbench-visual-smoke.mjs:48-77 exercises the visual workbench flow.",
+      "Runtime build and package entrypoint verification are required by TODO.md:219, wired by parity/embedded-neovim-buffer.json:581, delegated by package.json:12, implemented by runtime/package.json:26 and runtime/package.json:31, and passed with package entrypoints verified.",
+      "AgenC TUI validation is required by TODO.md:220, wired with the repository path by parity/embedded-neovim-buffer.json:582, and passed in the reviewer run.",
+      "Every row must declare executable commands and final checker execution must run them per TODO.md:221-222. scripts/check-embedded-neovim-buffer.mjs:9-18 defaults to --require-commands and --run-commands; check_contract.mjs:367-385 validates command arrays and check_contract.mjs:999-1049 executes row commands.",
+      "The project-local wrapper is scripts/check-embedded-neovim-buffer.mjs:6-24. It resolves the local matrix and implementation-contract checker, applies fail-closed defaults, and only suppresses --require-reviews plus --run-commands during AGENC_EMBEDDED_NEOVIM_CONTRACT_ROW_REVIEW=1 to avoid circular row-review dependence."
+    ],
+    "edgeCaseEvidence": [
+      "The typecheck edge case passed with the current generated Neovim and workbench files included through npm run typecheck.",
+      "The unused-production edge case passed through npm run check:unused:production --workspace=@tetsuo-ai/runtime.",
+      "The build edge case passed through npm run build; runtime/package.json:26 regenerates runtime dist, writes the build version, and invokes check:package-entrypoints.",
+      "The TUI validation edge case passed through node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full.",
+      "The wrapper default edge case is implemented by scripts/check-embedded-neovim-buffer.mjs:9-18. Row-review mode removes only --require-reviews and --run-commands at scripts/check-embedded-neovim-buffer.mjs:16-18, preserving --require-inventory, --require-edge-cases, and --require-commands; the row-review invocation passed.",
+      "The visual smoke CI-auth path is deterministic in runtime/scripts/check-tui-workbench-visual-smoke.mjs:52-55 via AGENC_OAUTH_TOKEN, and stronger anchors are asserted at runtime/scripts/check-tui-workbench-visual-smoke.mjs:61,65,72. The direct visual smoke command passed across 148x40, 120x30, 80x24, and 60x20."
+    ]
+  }
+}

@@ -11,7 +11,7 @@ type Options = {
   isActive?: boolean
 }
 
-type InputCaptureHandler = (input: string, key: Key) => boolean
+type InputCaptureHandler = (input: string, key: Key, event: InputEvent) => boolean
 
 /**
  * Ink-native hook for handling a keybinding.
@@ -48,7 +48,7 @@ export function useKeybinding(
 
   const handleInput = useCallback(
     (input: string, key: Key, event: InputEvent) => {
-      // If no keybinding context available, skip resolution
+      // Without a keybinding context, this handler has nothing to resolve.
       if (!keybindingContext) return
 
       // Build context list: registered active contexts + this context + Global
@@ -146,7 +146,7 @@ export function useKeybindings(
 
   const handleInput = useCallback(
     (input: string, key: Key, event: InputEvent) => {
-      // If no keybinding context available, skip resolution
+      // Without a keybinding context, this handler has nothing to resolve.
       if (!keybindingContext) return
 
       // Build context list: registered active contexts + this context + Global

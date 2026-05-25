@@ -51,8 +51,8 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   {
     mode: "buffer",
     title: (state) => state.activeFilePath ?? "BUFFER",
-    keybindings: ["enter", "ctrl+s", "u", "ctrl+y", "ctrl+w q", "ctrl+w x"],
-    footerHints: "Buffer: enter $EDITOR  ctrl+s save  u undo  ctrl+y redo  ctrl+w q close",
+    keybindings: ["ctrl+s", "ctrl+x ctrl+e", "ctrl+x q", "ctrl+x x"],
+    footerHints: "Buffer: embedded nvim  ctrl+s save  ctrl+x ctrl+e external  ctrl+x q close",
     renderBody: ({ focused }) => <BufferSurface focused={focused} />,
   },
   {

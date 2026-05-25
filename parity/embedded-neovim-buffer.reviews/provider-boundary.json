@@ -1,0 +1,67 @@
+{
+  "rowId": "provider-boundary",
+  "contractName": "embedded-neovim-buffer",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-05-25T06:01:11-06:00",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "defines a provider API for open, close, save, force save, dirty state, status, input, click, resize, focus, cleanup, snapshots, and capability reporting",
+      "selects embedded Neovim as the default provider when discovery reports a usable binary",
+      "selects the inline provider only when embedded Neovim is unusable or configuration explicitly requests inline mode",
+      "keeps the external editor path as an explicit provider action instead of the default BUFFER mode",
+      "reports capability flags truthfully, including exact Vim semantics only for the embedded Neovim provider"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "provider selection returns inline fallback with a concrete reason when discovery returns a missing binary result",
+      "provider selection returns inline fallback with a concrete reason when discovery returns an unsupported version result",
+      "provider selection honors an explicit inline configuration even when a usable binary exists",
+      "capabilities for the inline provider never mark exact Vim semantics as available",
+      "closing a selected provider calls its cleanup path exactly once when the surface changes quickly"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "parity/embedded-neovim-buffer.json",
+      "TODO.md",
+      "runtime/src/tui/workbench/buffer/providers/types.ts",
+      "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
+      "runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
+      "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts",
+      "runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts",
+      "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts --reporter=dot"
+    ],
+    "commandResults": [
+      "PASS: 2 test files passed, 32 tests passed, duration 5.28s"
+    ],
+    "sourceEvidence": [
+      "TODO.md:34-64 defines the editor provider boundary and required capabilities.",
+      "TODO.md:141-143 names provider-boundary as the row for provider API, capability flags, fallback selection, and no false exact-Vim claims."
+    ],
+    "behaviorEvidence": [
+      "Provider API is implemented by BufferEditorProvider in runtime/src/tui/workbench/buffer/providers/types.ts:80-99, save force options in :52-55, provider snapshots in :39-44 and :122-164, and controller delegation in runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:65-166; assertions exercise open/save force/revert/external/undo/redo/move/hover/definition/input/click/resize/focus/close/snapshots in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:348-397 and conservative pre-selection fallbacks in :399-420.",
+      "Embedded Neovim default selection is implemented in runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts:34-63 and asserted in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:80-94.",
+      "Inline fallback selection for explicit inline mode and unusable Neovim is implemented in runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts:37-45 and :56-80 and asserted in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:33-57, :96-114, and :116-146.",
+      "External editor remains explicit via runtime/src/tui/workbench/buffer/providers/selectBufferEditorProvider.ts:46-54 and runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts:20-34; assertions are in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:59-78 and runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts:236-285.",
+      "Capability flags are defined in runtime/src/tui/workbench/buffer/providers/types.ts:102-120, applied by InlineBufferProvider at runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts:28-35, ExternalEditorProvider at runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts:20-34, and NeovimBufferProvider at runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts:60-72; assertions are in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:33-57, :59-78, and :178-191."
+    ],
+    "edgeCaseEvidence": [
+      "Missing binary fallback reason is asserted in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:121-133.",
+      "Unsupported version fallback reason is asserted in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:137-146.",
+      "Explicit inline configuration with a usable binary present is asserted in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:33-57.",
+      "Inline provider exact Vim semantics remain false in runtime/src/tui/workbench/buffer/providers/types.ts:102-110 and are asserted in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:45-55.",
+      "Concurrent controller cleanup is guarded in runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts:149-166 and asserted to call provider cleanup once in runtime/tests/tui/workbench/buffer-provider-boundary.contract.test.ts:193-223."
+    ]
+  }
+}
