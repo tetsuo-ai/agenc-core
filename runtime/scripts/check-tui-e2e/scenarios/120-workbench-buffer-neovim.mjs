@@ -19,6 +19,7 @@ export const meta = {
   env: {
     AGENC_TUI_WORKBENCH: "1",
     AGENC_BUFFER_PROVIDER: "auto",
+    AGENC_BUFFER_NVIM_USE_INIT: "0",
     AGENC_OAUTH_TOKEN: "test-workbench-buffer-token",
   },
 };
@@ -215,16 +216,13 @@ export default async function (session) {
     await session.type("MACRO_MARK", { perCharMs: 15 });
     session.send("\r");
     await sleep(200);
-    const searchBefore = session.text;
+    await waitForFrameText(session, /MACRO_MARK/u, "search target visible before navigation", 10_000);
+    const rawBeforeN = session.raw.length;
     session.send("n");
-    await sleep(120);
-    const searchAfterN = session.text;
+    await waitForStyledSearchPaint(session, rawBeforeN, "next search navigation");
+    const rawBeforeShiftN = session.raw.length;
     session.send("N");
-    await sleep(120);
-    const searchAfterShiftN = session.text;
-    if (searchBefore === searchAfterN || searchAfterN === searchAfterShiftN) {
-      throw new Error("search navigation did not visibly change the BUFFER screen");
-    }
+    await waitForStyledSearchPaint(session, rawBeforeShiftN, "previous search navigation");
     session.send("\x1b");
     await session.waitForIdle({ idleWindow: 300, timeout: 10_000 });
 
@@ -239,12 +237,20 @@ export default async function (session) {
     session.send("q");
     await sleep(80);
     session.send("\r");
-    await session.waitFor(/E37: No write since last change|Unsaved Neovim edits/i, { timeout: 10_000, label: "dirty quit refusal" });
+    await sleep(600);
+    const afterDirtyQuitPids = await listDescendantNeovimPids(session.term?.pid);
+    if (!neovimPids.some((pid) => afterDirtyQuitPids.includes(pid))) {
+      throw new Error("dirty quit closed embedded Neovim instead of keeping the editor alive");
+    }
+    const afterDirtyQuit = await readFile(join(cwd, "target.txt"), "utf8");
+    if (afterDirtyQuit.includes("DIRTY_MARK")) {
+      throw new Error(`dirty quit wrote dirty text that should have stayed unsaved: ${afterDirtyQuit}`);
+    }
     if (!/BUFFER/i.test(session.text)) {
       throw new Error("dirty :q closed BUFFER instead of keeping the editor alive");
     }
 
-    session.send("\r");
+    session.send("\x1b");
     await sleep(120);
     session.send(":");
     await sleep(80);
@@ -276,4 +282,17 @@ function findFrameCell(session, text) {
 
 function sgrClick(column, row) {
   return `\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`;
+}
+
+async function waitForStyledSearchPaint(session, rawStart, label) {
+  const deadline = Date.now() + 3_000;
+  let chunk = "";
+  while (Date.now() < deadline) {
+    chunk = session.raw.slice(rawStart);
+    const hasStyledSearchCell = /\x1b\[[0-9;]*7[0-9;]*m[A-Z_]/u.test(chunk) ||
+      /\x1b\[48;(?:2|5);[0-9;]*m[A-Z_]/u.test(chunk);
+    if (hasStyledSearchCell) return;
+    await sleep(50);
+  }
+  throw new Error(`${label} did not repaint a styled search match: ${JSON.stringify(chunk.slice(-400))}`);
 }

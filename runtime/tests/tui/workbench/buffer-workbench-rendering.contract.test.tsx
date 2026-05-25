@@ -40,7 +40,7 @@ import { Box, Text } from "../../../src/tui/ink.js";
 import { nodeCache } from "../../../src/tui/ink/node-cache.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import { createNeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
-import { BufferLine, NeovimGridView, truncateByWidth } from "../../../src/tui/workbench/buffer/render.js";
+import { BufferLine, NeovimGridView, terminalAnsiLines, truncateByWidth } from "../../../src/tui/workbench/buffer/render.js";
 import {
   getWorkbenchBufferProviderController,
   resetWorkbenchBufferProviderControllerForTesting,
@@ -133,6 +133,30 @@ describe("BUFFER workbench rendering", () => {
     expect(output).toContain("\x1B[38;2;255;95;135m");
     expect(output).toContain("\x1B[38;2;95;215;255m");
     expect(output).toContain("const");
+  });
+
+  it("serializes Neovim visual selections into styled terminal rows", () => {
+    const text = "alpha beta gamma";
+    const terminal = {
+      ...createNeovimRenderSnapshot(1, 24),
+      lines: [text],
+      cells: [[...text].map((cellText, index) => ({
+        text: cellText,
+        width: 1,
+        highlightId: index < "alpha beta".length ? 9 : 0,
+      }))],
+      highlights: [
+        { id: 9, attributes: { reverse: true } },
+      ],
+      mode: "visual",
+    };
+
+    const renderedLine = terminalAnsiLines(terminal, true, 24)[0] ?? "";
+
+    expect(renderedLine).toContain("\x1B[7m");
+    expect(renderedLine).toContain("alpha beta");
+    expect(renderedLine.indexOf("\x1B[7m")).toBeLessThan(renderedLine.indexOf("alpha"));
+    expect(renderedLine).toContain("\x1B[0m gamma");
   });
 
   it("renders inline buffer cursor and selection boundary cases", async () => {

@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream'
 
+import chalk from 'chalk'
 import React from 'react'
 import { describe, expect, test, vi } from 'vitest'
 
@@ -267,6 +268,51 @@ describe('Ink instance rendering paths', () => {
       harness.stdout.end()
       harness.stderr.end()
       await sleep(25)
+    }
+  })
+
+  test('repaints same-text rows when only text style changes', async () => {
+    const harness = await createHarness({ columns: 20, rows: 5 })
+    const previousChalkLevel = chalk.level
+    chalk.level = 3
+
+    try {
+      harness.root.render(
+        React.createElement(
+          'ink-text',
+          {
+            style: RAW_TEXT_STYLE,
+            textStyles: {},
+          },
+          'alpha',
+        ),
+      )
+      await sleep(25)
+      expect(harness.stdoutWrites.join('')).toContain('alpha')
+
+      harness.stdoutWrites.length = 0
+      harness.root.render(
+        React.createElement(
+          'ink-text',
+          {
+            style: RAW_TEXT_STYLE,
+            textStyles: { inverse: true },
+          },
+          'alpha',
+        ),
+      )
+      await sleep(25)
+      expect(requireElement(harness.stdout, 'ink-text').textStyles).toEqual({
+        inverse: true,
+      })
+      expect(cellAt(harness.instance.frontFrame.screen, 0, 0)?.styleId).not.toBe(0)
+
+      const writes = harness.stdoutWrites.join('')
+      expect(writes).toContain('\x1b[7m')
+      expect(writes).toContain('alpha')
+    } finally {
+      chalk.level = previousChalkLevel
+      await harness.dispose()
     }
   })
 

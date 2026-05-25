@@ -1,7 +1,7 @@
 import React from "react";
 
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
-import { Ansi, Box, Text } from "../../ink.js";
+import { Ansi, Box, RawAnsi, Text } from "../../ink.js";
 import type { Color } from "../../ink/styles.js";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { nextGraphemeOffset, selectionBounds } from "./editing.js";
@@ -54,15 +54,10 @@ export function NeovimGridView({
   readonly width: number;
 }): React.ReactElement {
   const maxWidth = Math.max(1, width);
+  const terminalLines = terminalAnsiLines(terminal, focused, maxWidth);
   return (
     <>
-      {terminal.lines.map((line, row) => (
-        <Box key={row} height={1}>
-          <Text wrap="truncate-end">
-            {renderTerminalCells(terminalLineCells(terminal, row), terminal.highlights, row, terminal.cursor.row, terminal.cursor.column, focused, maxWidth)}
-          </Text>
-        </Box>
-      ))}
+      <RawAnsi lines={terminalLines} width={maxWidth} />
       {terminal.messages.map((message, index) => (
         <Box key={`message-${index}`} height={1}>
           <Text color="warning" wrap="truncate-end">{truncateByWidth(message, maxWidth)}</Text>
@@ -76,6 +71,25 @@ export function NeovimGridView({
         </Box>
       ) : null}
     </>
+  );
+}
+
+export function terminalAnsiLines(
+  terminal: NeovimRenderSnapshot,
+  focused: boolean,
+  width: number,
+): string[] {
+  const maxWidth = Math.max(1, width);
+  return terminal.lines.map((_line, row) =>
+    renderTerminalCellsToAnsi(
+      terminalLineCells(terminal, row),
+      terminal.highlights,
+      row,
+      terminal.cursor.row,
+      terminal.cursor.column,
+      focused,
+      maxWidth,
+    ),
   );
 }
 
@@ -151,7 +165,7 @@ function renderCursorText(text: string, displayFrom: number, cursorOffset: numbe
   );
 }
 
-function renderTerminalCells(
+function renderTerminalCellsToAnsi(
   cells: readonly NeovimCell[],
   highlights: readonly NeovimHighlight[],
   row: number,
@@ -159,10 +173,11 @@ function renderTerminalCells(
   cursorColumn: number,
   focused: boolean,
   width: number,
-): React.ReactNode {
+): string {
   const highlightMap = new Map(highlights.map((highlight) => [highlight.id, highlight]));
-  const parts: React.ReactNode[] = [];
+  let output = "";
   let renderedWidth = 0;
+  let activeStyleKey = "";
   for (let column = 0; column < cells.length && renderedWidth < width; column += 1) {
     const cell = cells[column]!;
     if (cell.width === 0) continue;
@@ -170,13 +185,26 @@ function renderTerminalCells(
     const cursor = focused && row === cursorRow && column === cursorColumn;
     const text = cell.text.length > 0 ? cell.text : " ";
     const style = terminalTextStyle(highlightMap.get(cell.highlightId), cursor);
-    parts.push(renderTerminalCellText(text, style, `${column}:${cell.highlightId}:${cursor ? "cursor" : "text"}`));
+    const nextStyleKey = terminalTextStyleKey(style);
+    if (nextStyleKey !== activeStyleKey) {
+      if (activeStyleKey.length > 0) output += "\x1b[0m";
+      const nextAnsi = terminalTextStyleAnsi(style);
+      if (nextAnsi.length > 0) output += nextAnsi;
+      activeStyleKey = nextStyleKey;
+    }
+    output += text;
     renderedWidth += cell.width;
   }
   if (focused && row === cursorRow && cursorColumn >= cells.length && renderedWidth < width) {
-    parts.push(<Text key="cursor-end" inverse> </Text>);
+    if (activeStyleKey !== "inverse") {
+      if (activeStyleKey.length > 0) output += "\x1b[0m";
+      output += "\x1b[7m";
+      activeStyleKey = "inverse";
+    }
+    output += " ";
   }
-  return <>{parts}</>;
+  if (activeStyleKey.length > 0) output += "\x1b[0m";
+  return output;
 }
 
 type TerminalTextStyle = {
@@ -188,28 +216,6 @@ type TerminalTextStyle = {
   readonly strikethrough?: boolean;
   readonly inverse?: boolean;
 };
-
-function renderTerminalCellText(
-  text: string,
-  style: TerminalTextStyle,
-  key: string,
-): React.ReactNode {
-  if (!hasTerminalTextStyle(style)) return <React.Fragment key={key}>{text}</React.Fragment>;
-  return (
-    <Text
-      key={key}
-      color={style.color}
-      backgroundColor={style.backgroundColor}
-      bold={style.bold}
-      italic={style.italic}
-      underline={style.underline}
-      strikethrough={style.strikethrough}
-      inverse={style.inverse}
-    >
-      {text}
-    </Text>
-  );
-}
 
 function terminalTextStyle(
   highlight: NeovimHighlight | undefined,
@@ -228,16 +234,6 @@ function terminalTextStyle(
   return style;
 }
 
-function hasTerminalTextStyle(style: TerminalTextStyle): boolean {
-  return style.color !== undefined ||
-    style.backgroundColor !== undefined ||
-    style.bold === true ||
-    style.italic === true ||
-    style.underline === true ||
-    style.strikethrough === true ||
-    style.inverse === true;
-}
-
 function rgbNumberToHex(value: NeovimHighlight["attributes"][string]): Color | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const rgb = Math.max(0, Math.min(0xFFFFFF, Math.floor(value)));
@@ -245,6 +241,49 @@ function rgbNumberToHex(value: NeovimHighlight["attributes"][string]): Color | u
   const green = (rgb >> 8) & 0xFF;
   const blue = rgb & 0xFF;
   return `#${hexByte(red)}${hexByte(green)}${hexByte(blue)}` as Color;
+}
+
+function rgbNumberToSgr(value: Color | undefined, mode: 38 | 48): string | null {
+  if (!value?.startsWith("#") || value.length !== 7) return null;
+  const red = Number.parseInt(value.slice(1, 3), 16);
+  const green = Number.parseInt(value.slice(3, 5), 16);
+  const blue = Number.parseInt(value.slice(5, 7), 16);
+  if (![red, green, blue].every(Number.isFinite)) return null;
+  return `${mode};2;${red};${green};${blue}`;
+}
+
+function terminalTextStyleAnsi(style: TerminalTextStyle): string {
+  const codes: string[] = [];
+  const foreground = rgbNumberToSgr(style.color, 38);
+  const background = rgbNumberToSgr(style.backgroundColor, 48);
+  if (foreground) codes.push(foreground);
+  if (background) codes.push(background);
+  if (style.bold === true) codes.push("1");
+  if (style.italic === true) codes.push("3");
+  if (style.underline === true) codes.push("4");
+  if (style.strikethrough === true) codes.push("9");
+  if (style.inverse === true) codes.push("7");
+  return codes.length > 0 ? `\x1b[${codes.join(";")}m` : "";
+}
+
+function terminalTextStyleKey(style: TerminalTextStyle): string {
+  const hasStyle = style.color !== undefined ||
+    style.backgroundColor !== undefined ||
+    style.bold === true ||
+    style.italic === true ||
+    style.underline === true ||
+    style.strikethrough === true ||
+    style.inverse === true;
+  if (!hasStyle) return "";
+  return [
+    style.color ?? "",
+    style.backgroundColor ?? "",
+    style.bold === true ? "b" : "",
+    style.italic === true ? "i" : "",
+    style.underline === true ? "u" : "",
+    style.strikethrough === true ? "s" : "",
+    style.inverse === true ? "inverse" : "",
+  ].join("|");
 }
 
 function hexByte(value: number): string {

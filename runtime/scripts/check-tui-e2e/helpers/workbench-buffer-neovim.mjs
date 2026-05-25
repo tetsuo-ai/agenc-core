@@ -12,8 +12,11 @@ export function workspaceAnchor(text) {
 }
 
 export function workspaceSnapshot(text) {
+  const workspaceColumnWidth = 21;
   return text
     .split(/\n/u)
+    .map((entry) => entry.slice(0, workspaceColumnWidth).trimEnd())
+    .filter((entry) => !/^AgenC Workbench/u.test(entry))
     .filter((entry) => /WORKSPACE|target\.txt|agenc|README|package|docs|runtime/u.test(entry))
     .slice(0, 12)
     .map((entry) => entry.trim())
