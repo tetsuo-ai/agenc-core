@@ -15,6 +15,7 @@ const result = spawnSync(
     env: {
       ...process.env,
       AGENC_TUI_WORKBENCH: "1",
+      AGENC_BUFFER_NVIM_USE_INIT: "0",
     },
   },
 );

@@ -145,7 +145,7 @@ describe("embedded Neovim BUFFER provider boundary", () => {
     expect(old.reason).toContain("requires nvim");
   });
 
-  it("parses provider configuration from environment with conservative defaults", () => {
+  it("parses provider configuration from environment with user-init default preference", () => {
     expect(bufferProviderConfigFromEnv({
       AGENC_BUFFER_PROVIDER: "neovim",
       AGENC_BUFFER_NVIM: "custom-nvim",
@@ -162,6 +162,7 @@ describe("embedded Neovim BUFFER provider boundary", () => {
       AGENC_BUFFER_PROVIDER: "external",
     } as NodeJS.ProcessEnv)).toMatchObject({
       mode: "external",
+      useUserInit: undefined,
     });
 
     expect(bufferProviderConfigFromEnv({

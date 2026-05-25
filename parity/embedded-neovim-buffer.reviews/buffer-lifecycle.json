@@ -6,7 +6,7 @@
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
-      "opens a file in supervised embedded Neovim and attaches UI before accepting input",
+      "opens a file in supervised embedded Neovim, configures embedded editing defaults, and attaches UI before accepting input",
       "implements save, force save, quit, force quit, dirty close prevention, surface switch cleanup, app exit cleanup, and crash cleanup",
       "tracks dirty state from Neovim buffer options and write events",
       "prevents orphaned Neovim child processes after normal close, parent exit, and test failure",
@@ -19,6 +19,7 @@
       "dirty quit returns a refusal status while keeping the provider alive",
       "force quit discards edits and resolves cleanup after Neovim exits",
       "process exit before UI attach rejects open and clears pending requests",
+      "embedded startup enables true-color, syntax, and filetype behavior before dirty tracking begins",
       "double close waits on one cleanup path and does not send duplicate quit commands",
       "startup failure after spawn but before UI attach completes kills the spawned child process",
       "dirty surface switch is refused before BUFFER unmount cleanup can discard embedded Neovim edits",

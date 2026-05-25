@@ -3,16 +3,16 @@
   "scope": "Embedded Neovim BUFFER implementation from TODO.md",
   "generatedAt": "2026-05-25T06:09:59.650Z",
   "sourceRoot": "..",
-  "sourceSnapshotHash": "bf4cd31b229feebfe4d592926e391e0f10ff5aa95294d96b0708d33ecd8b456f",
+  "sourceSnapshotHash": "f0380bab91ebba576750a06caee5eee189680c7a0d82e357cf930b0917914e1f",
   "targetRoot": "..",
   "sourceFiles": [
     {
       "path": "TODO.md",
-      "sha256": "932a77d5811f7d44452e97e31bfae3bbd6b2da1e128fc660b5208ff62eaa527e"
+      "sha256": "98914df3601009bd29409e571df73cfc9465e9bb40dd964321f2a269f5b2c4ca"
     },
     {
       "path": "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
-      "sha256": "563aec769d187f1ae4ba133ca7ddeb99c942db79c17ea9e4f96ef3209e9ae8fd"
+      "sha256": "99fbe56a7848335743ce6b3d5bd06567975feef0e8542ecc8a445ee2eb629aae"
     },
     {
       "path": "runtime/src/tui/workbench/buffer/BufferStore.ts",
@@ -153,14 +153,15 @@
         "executes the candidate with a bounded version probe and parses the reported version",
         "accepts only binaries that support embedded mode",
         "returns structured fallback reasons for missing executables, failed probes, timeouts, and unsupported versions",
-        "builds default spawn arguments with embedded clean mode unless configuration permits user init loading"
+        "prefers user init loading for default embedded spawn arguments and falls back to embedded clean mode when default startup fails"
       ],
       "edgeCases": [
         "an empty configured executable is treated as absent and PATH discovery is still attempted",
         "a probe that exits nonzero records stderr in the fallback reason without throwing",
         "a probe that hangs past the timeout kills the probe process and returns a timeout result",
         "a version line with extra suffix text still parses the numeric major minor patch values",
-        "user init loading is disabled by default and enabled only by explicit configuration"
+        "clean embedded mode is selected when configuration disables user init loading",
+        "default user init loading falls back to clean embedded mode when the initial embedded startup probe fails"
       ],
       "tests": [
         "runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts"
@@ -251,7 +252,7 @@
       "requiredBehaviors": [
         "translates printable input, named keys, escape, control keys, alt keys, shift modified keys, paste, mouse, focus, and resize into Neovim input or UI calls",
         "routes editor-owned keys to the active provider before workbench or composer keybindings handle them",
-        "keeps global escape and surface switching behavior explicit and conflict free",
+        "keeps global escape, BUFFER escape hatches, and surface switching behavior explicit and conflict free",
         "routes mouse wheel and clicks only to the pane under the pointer",
         "sends resize events to Neovim when the BUFFER pane dimensions change",
         "delegates colon command input such as :wq to embedded Neovim instead of parsing it through the inline Vim command layer"
@@ -263,7 +264,8 @@
         "mouse wheel over BUFFER does not scroll the workspace explorer",
         "mouse wheel events without parseable pointer coordinates do not get captured by BUFFER",
         "click outside the BUFFER pane does not call provider click and can be handled by the pane under the pointer",
-        "workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor",
+        "Workbench surface-switching chords while BUFFER is focused do not move workbench focus away from the editor",
+        "BUFFER escape-hatch chords while embedded Neovim owns keys can return focus to composer, explorer, or agents",
         "embedded command input for :wq forwards colon, letters, and enter to Neovim exactly as editor input",
         "resize to one row and one column sends a valid Neovim resize request"
       ],
@@ -291,7 +293,7 @@
       "runtime/scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs"
     ],
       "requiredBehaviors": [
-        "opens a file in supervised embedded Neovim and attaches UI before accepting input",
+        "opens a file in supervised embedded Neovim, configures embedded editing defaults, and attaches UI before accepting input",
         "implements save, force save, quit, force quit, dirty close prevention, surface switch cleanup, app exit cleanup, and crash cleanup",
         "tracks dirty state from Neovim buffer options and write events",
         "prevents orphaned Neovim child processes after normal close, parent exit, and test failure",
@@ -301,6 +303,7 @@
         "dirty quit returns a refusal status while keeping the provider alive",
         "force quit discards edits and resolves cleanup after Neovim exits",
         "process exit before UI attach rejects open and clears pending requests",
+      "embedded startup enables true-color, syntax, and filetype behavior before dirty tracking begins",
       "double close waits on one cleanup path and does not send duplicate quit commands",
       "startup failure after spawn but before UI attach completes kills the spawned child process",
       "dirty surface switch is refused before BUFFER unmount cleanup can discard embedded Neovim edits",
@@ -409,13 +412,14 @@
       "requiredBehaviors": [
         "renders provider snapshots inside the bounded BUFFER pane only",
         "keeps explorer, agents rail, transcript, editor, and composer render regions visually isolated",
-        "renders cursor, mode, command line, status, errors, fallback reason, and provider identity truthfully",
+        "renders cursor, mode, command line, status, errors, fallback reason, provider identity, and Neovim cell highlights truthfully",
         "handles narrow and short terminals without overlapping adjacent panes",
         "does not rely on inline document state when the embedded Neovim provider is active"
       ],
       "edgeCases": [
         "a long Neovim line is clipped to the pane width without extending into the agents rail",
         "a command line longer than the pane width truncates inside the BUFFER footer",
+        "a Neovim line with highlight attributes renders cell foreground, background, and emphasis styles instead of dropping color",
         "a one column pane renders without throwing and without negative widths",
         "an inactive BUFFER pane shows provider status without stealing composer focus",
         "long provider fallback, status, and error text truncates inside the BUFFER pane",
@@ -599,7 +603,7 @@
       "edgeCases": [
         "documentation states missing executable behavior without suggesting exact Vim behavior in inline mode",
         "documentation states unsupported version behavior with the user-facing fallback message",
-        "documentation states how to opt into user init loading without changing the default clean mode",
+        "documentation states how to disable user init loading while preserving the default user config preference",
         "documentation states process cleanup behavior after a TUI crash",
         "documentation lists the contract checker and PTY validation commands"
       ],

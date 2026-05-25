@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { renderPtyRows } from "../harness.mjs";
+
 const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -16,6 +18,21 @@ export function workspaceSnapshot(text) {
     .slice(0, 12)
     .map((entry) => entry.trim())
     .join("\n");
+}
+
+export function frameText(session) {
+  return renderPtyRows(session.raw, { cols: session.cols, rows: session.rows }).join("\n");
+}
+
+export async function waitForFrameText(session, pattern, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  let frame = "";
+  while (Date.now() < deadline) {
+    frame = frameText(session);
+    if (pattern.test(frame)) return;
+    await sleep(100);
+  }
+  throw new Error(`${label} did not render in the latest PTY frame: ${frame.slice(-1200)}`);
 }
 
 export async function listNeovimPids() {

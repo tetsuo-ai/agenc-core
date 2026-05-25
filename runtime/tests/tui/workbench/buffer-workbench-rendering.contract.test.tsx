@@ -104,6 +104,37 @@ describe("BUFFER workbench rendering", () => {
     expect(output).not.toContain("abc\x1B[7md\x1B[27mef");
   });
 
+  it("renders Neovim highlight attributes as terminal color instead of dropping them", async () => {
+    const terminal = {
+      ...createNeovimRenderSnapshot(1, 16),
+      lines: ["const x = 1;"],
+      cells: [[
+        { text: "c", width: 1, highlightId: 3 },
+        { text: "o", width: 1, highlightId: 3 },
+        { text: "n", width: 1, highlightId: 3 },
+        { text: "s", width: 1, highlightId: 3 },
+        { text: "t", width: 1, highlightId: 3 },
+        { text: " ", width: 1, highlightId: 0 },
+        { text: "x", width: 1, highlightId: 4 },
+      ]],
+      highlights: [
+        { id: 3, attributes: { foreground: 0xFF5F87, bold: true } },
+        { id: 4, attributes: { foreground: 0x5FD7FF, italic: true, underline: true } },
+      ],
+    };
+
+    const output = await renderToAnsiString(
+      <Box flexDirection="column" width={16}>
+        <NeovimGridView terminal={terminal} focused={false} width={16} />
+      </Box>,
+      { columns: 16, color: true },
+    );
+
+    expect(output).toContain("\x1B[38;2;255;95;135m");
+    expect(output).toContain("\x1B[38;2;95;215;255m");
+    expect(output).toContain("const");
+  });
+
   it("renders inline buffer cursor and selection boundary cases", async () => {
     const line = { number: 1, text: "abcdef", from: 0, to: 6 };
 
@@ -315,6 +346,8 @@ describe("BUFFER workbench rendering", () => {
     const descriptor = WORKBENCH_SURFACES.find((surface) => surface.mode === "buffer");
 
     expect(descriptor?.footerHints).toContain("embedded nvim");
+    expect(descriptor?.footerHints).toContain("shift+tab composer");
+    expect(descriptor?.footerHints).toContain("ctrl+x h explorer");
     expect(descriptor?.footerHints).toContain("ctrl+x ctrl+e external");
     expect(descriptor?.footerHints).toContain("ctrl+x q close");
   });

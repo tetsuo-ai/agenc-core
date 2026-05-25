@@ -130,10 +130,13 @@ describe("workbench keybinding contract", () => {
       x: "surface:stop",
     });
     expect(byContext.get("Buffer")).toMatchObject({
-      enter: "buffer:externalEditor",
+      "shift+tab": "workbench:focusComposer",
+      "ctrl+x h": "workbench:focusExplorer",
+      "ctrl+x j": "workbench:focusComposer",
+      "ctrl+x l": "workbench:focusAgents",
       "ctrl+s": "buffer:save",
-      "ctrl+w q": "buffer:close",
-      "ctrl+w x": "buffer:closeDiscard",
+      "ctrl+x q": "buffer:close",
+      "ctrl+x x": "buffer:closeDiscard",
     });
     expect(byContext.get("Buffer")).not.toHaveProperty("q");
     expect(byContext.get("Buffer")).not.toHaveProperty("ctrl+z");

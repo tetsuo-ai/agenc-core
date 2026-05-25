@@ -190,7 +190,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
           {terminal
             ? terminal.commandLine !== null
               ? `${terminal.mode.toUpperCase()}  :${terminal.commandLine}`
-              : `${terminal.mode.toUpperCase()}  :w/:q owned by Neovim  ctrl+s save  ctrl+x ctrl+e external`
+              : `${terminal.mode.toUpperCase()}  shift+tab composer  ctrl+x h explorer  ctrl+x ctrl+e external`
             : snapshot.vimCommandLine !== null
             ? `:${snapshot.vimCommandLine}`
             : snapshot.vimMode === "VISUAL"
@@ -260,6 +260,15 @@ export function createBufferSurfaceKeyHandlers({
   return {
     "buffer:save": () => {
       void store.save({ hasInFlightAgent });
+    },
+    "workbench:focusExplorer": () => {
+      dispatch({ type: "focus", pane: "explorer" });
+    },
+    "workbench:focusAgents": () => {
+      dispatch({ type: "focus", pane: "agents" });
+    },
+    "workbench:focusComposer": () => {
+      dispatch({ type: "focus", pane: "composer" });
     },
     "buffer:revert": () => snapshot.provider.capabilities.terminalUi ? false : store.revert(),
     "buffer:close": async () => {

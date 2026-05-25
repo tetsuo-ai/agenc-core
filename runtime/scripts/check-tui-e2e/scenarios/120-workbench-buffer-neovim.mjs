@@ -6,6 +6,7 @@ import { renderPtyRows } from "../harness.mjs";
 import {
   listDescendantNeovimPids,
   waitForPidsGone,
+  waitForFrameText,
   waitForScreen,
   workspaceSnapshot,
 } from "../helpers/workbench-buffer-neovim.mjs";
@@ -43,6 +44,8 @@ export default async function (session) {
       timeout: 20_000,
       label: "embedded Neovim ready",
     });
+    await waitForFrameText(session, /alpha[\s\S]*beta/u, "loaded target.txt in embedded Neovim", 20_000);
+    await waitForFrameText(session, /NORMAL[\s\S]*(ready|target\.txt)|target\.txt[\s\S]*NORMAL/u, "normal Neovim file frame", 20_000);
     const neovimPids = await listDescendantNeovimPids(session.term?.pid);
     if (neovimPids.length === 0) {
       throw new Error("embedded Neovim process was not a child of the TUI");
@@ -54,6 +57,7 @@ export default async function (session) {
     await sleep(80);
     await session.type("E2E_MARK", { perCharMs: 20 });
     session.send("\x1b");
+    await waitForFrameText(session, /NORMAL/u, "normal mode after E2E_MARK insert", 10_000);
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     session.send(":");
     await sleep(80);
@@ -78,10 +82,7 @@ export default async function (session) {
       throw new Error(`Neovim undo did not remove marker before write: ${undoSaved}`);
     }
     session.send("\x1b");
-    await waitForScreen(session, /NORMAL\s+:w/i, {
-      timeout: 10_000,
-      label: "normal mode after first write",
-    });
+    await waitForFrameText(session, /NORMAL[\s\S]*(ready|written|target\.txt)|target\.txt[\s\S]*NORMAL/u, "normal mode after first write", 10_000);
 
     await session.type("gg", { perCharMs: 60 });
     await sleep(80);
@@ -96,7 +97,7 @@ export default async function (session) {
     await session.type("o", { perCharMs: 60 });
     await session.type("REGISTER_MARK", { perCharMs: 15 });
     session.send("\x1b");
-    await sleep(80);
+    await waitForFrameText(session, /NORMAL/u, "normal mode after register marker insert", 10_000);
     await session.type("\"ayy", { perCharMs: 60 });
     await sleep(120);
     await session.type("G", { perCharMs: 60 });
@@ -111,7 +112,7 @@ export default async function (session) {
     await session.type("o", { perCharMs: 60 });
     await session.type("MACRO_MARK", { perCharMs: 15 });
     session.send("\x1b");
-    await sleep(80);
+    await waitForFrameText(session, /NORMAL/u, "normal mode before stopping macro recording", 10_000);
     await session.type("q", { perCharMs: 60 });
     await sleep(80);
     await session.type("@a", { perCharMs: 60 });
@@ -128,6 +129,7 @@ export default async function (session) {
       await session.type("_AFTER", { perCharMs: 15 });
       await waitForFrameText(session, /RESIZE_MARK_AFTER/u, "resized Neovim grid");
       session.send("\x1b");
+      await waitForFrameText(session, /NORMAL/u, "normal mode after resized insert", 10_000);
       await session.waitForIdle({ idleWindow: 400, timeout: 10_000 });
       await waitForFrameText(session, /NORMAL[\s\S]*RESIZE_MARK_AFTER|RESIZE_MARK_AFTER[\s\S]*NORMAL/u, "normal mode after resized grid");
       session.send(":");
@@ -178,6 +180,7 @@ export default async function (session) {
     }
     await session.type("iCLICK_ROUTE_", { perCharMs: 15 });
     session.send("\x1b");
+    await waitForFrameText(session, /NORMAL/u, "normal mode after click-route insert", 10_000);
     await session.waitForIdle({ idleWindow: 400, timeout: 10_000 });
 
     session.send(":");
@@ -229,6 +232,7 @@ export default async function (session) {
     await sleep(80);
     await session.type("DIRTY_MARK", { perCharMs: 20 });
     session.send("\x1b");
+    await waitForFrameText(session, /NORMAL/u, "normal mode after dirty marker insert", 10_000);
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     session.send(":");
     await sleep(80);
@@ -256,21 +260,6 @@ export default async function (session) {
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
-}
-
-function frameText(session) {
-  return renderPtyRows(session.raw, { cols: session.cols, rows: session.rows }).join("\n");
-}
-
-async function waitForFrameText(session, pattern, label, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  let frame = "";
-  while (Date.now() < deadline) {
-    frame = frameText(session);
-    if (pattern.test(frame)) return;
-    await sleep(100);
-  }
-  throw new Error(`${label} did not render in the latest PTY frame: ${frame.slice(-1200)}`);
 }
 
 function findFrameCell(session, text) {
