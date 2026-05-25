@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import React, { useEffect, useMemo, useState } from "react";
 
@@ -44,6 +43,7 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
     () => absolutePath ? peekLSPDiagnosticsForFile(absolutePath) : [],
     [absolutePath, content],
   );
+  const lines = content.length > 0 ? content.split("\n") : [];
 
   useEffect(() => {
     setStartLine(Math.max(0, (workbench.activeFileLine ?? 1) - 1));
@@ -130,7 +130,6 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
     return <EmptySurface title="PREVIEW" message="No file selected" />;
   }
 
-  const lines = content.length > 0 ? content.split("\n") : [];
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="PREVIEW" detail={`${activePath} [read-only${gitState && gitState !== "clean" ? `, ${gitState}` : ""}]`} focused={focused} />
@@ -154,9 +153,7 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
       </Box>
       <Box height={1}>
         <Text dimColor>q transcript  j/k scroll  e edit  @ attach range</Text>
-        {activePath ? (
-          <Text dimColor> </Text>
-        ) : null}
+        <Text dimColor> </Text>
       </Box>
     </Box>
   );
