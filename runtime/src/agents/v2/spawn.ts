@@ -5,7 +5,12 @@ import { delegate } from "../delegate.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
 import { assertValidAgentName, ROOT_AGENT_PATH } from "../registry.js";
-import { formatRoleList, listAgentRoles, requireAgentRole } from "../role.js";
+import {
+  formatRoleList,
+  listAgentRoles,
+  requireAgentRole,
+  type AgentRole,
+} from "../role.js";
 import {
   canonicalAgentRoleName,
   formatAgentRoleLabel,
@@ -199,10 +204,12 @@ async function resolveSpawnServiceTier(opts: {
   readonly session: Session;
   readonly model?: string;
   readonly requestedServiceTier?: string;
+  readonly roleServiceTier?: string;
 }): Promise<{ readonly serviceTier?: string } | ToolResult> {
   const parentServiceTier = opts.session.sessionConfiguration.serviceTier;
   if (
     opts.requestedServiceTier === undefined &&
+    opts.roleServiceTier === undefined &&
     parentServiceTier === undefined
   ) {
     return {};
@@ -235,7 +242,11 @@ async function resolveSpawnServiceTier(opts: {
       true,
     );
   }
-  for (const candidate of [opts.requestedServiceTier, parentServiceTier]) {
+  for (const candidate of [
+    opts.roleServiceTier,
+    opts.requestedServiceTier,
+    parentServiceTier,
+  ]) {
     if (
       candidate !== undefined &&
       modelSupportsServiceTier(modelInfo, candidate)
@@ -244,6 +255,20 @@ async function resolveSpawnServiceTier(opts: {
     }
   }
   return {};
+}
+
+function roleModel(role: AgentRole | undefined): string | undefined {
+  return role?.config.model;
+}
+
+function roleReasoningEffort(
+  role: AgentRole | undefined,
+): ReasoningEffort | undefined {
+  return role?.config.reasoningEffort;
+}
+
+function roleServiceTier(role: AgentRole | undefined): string | undefined {
+  return role?.config.serviceTier;
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
@@ -404,8 +429,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return failSpawn("Subagents cannot spawn agents. Ask the main session to spawn agents.");
     }
 
+    let resolvedRole: AgentRole | undefined;
     try {
-      if (role !== undefined) requireAgentRole(role);
+      if (role !== undefined) {
+        resolvedRole = requireAgentRole(role);
+      }
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
@@ -433,11 +461,50 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(overrideReason);
       return overrideError;
     }
+    const roleConfiguredModel = roleModel(resolvedRole);
+    const roleConfiguredReasoningEffort = roleReasoningEffort(resolvedRole);
+    const roleConfiguredServiceTier = roleServiceTier(resolvedRole);
+    const effectiveModel = roleConfiguredModel ?? model;
+    const effectiveReasoningEffort =
+      roleConfiguredReasoningEffort ?? reasoningEffort;
+    const roleOverrideError =
+      roleConfiguredModel !== undefined ||
+      roleConfiguredReasoningEffort !== undefined
+        ? await validateSpawnModelOverrides({
+            session,
+            ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+            ...(effectiveReasoningEffort !== undefined
+              ? { reasoningEffort: effectiveReasoningEffort }
+              : {}),
+          })
+        : null;
+    if (roleOverrideError) {
+      const overrideReason =
+        typeof roleOverrideError.content === "string"
+          ? (() => {
+              try {
+                const parsed = JSON.parse(roleOverrideError.content) as {
+                  error?: unknown;
+                };
+                return typeof parsed.error === "string"
+                  ? parsed.error
+                  : roleOverrideError.content;
+              } catch {
+                return roleOverrideError.content;
+              }
+            })()
+          : "spawn_agent role override validation failed";
+      emitSpawnFailureEnd(overrideReason);
+      return roleOverrideError;
+    }
     const serviceTierResult = await resolveSpawnServiceTier({
       session,
-      ...(model !== undefined ? { model } : {}),
+      ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
       ...(requestedServiceTier !== undefined
         ? { requestedServiceTier }
+        : {}),
+      ...(roleConfiguredServiceTier !== undefined
+        ? { roleServiceTier: roleConfiguredServiceTier }
         : {}),
     });
     if ("content" in serviceTierResult) {
@@ -479,8 +546,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(forkMode !== undefined ? { forkMode } : {}),
         runInBackground: true,
         ...(role !== undefined ? { role } : {}),
-        ...(model !== undefined ? { model } : {}),
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+        ...(effectiveReasoningEffort !== undefined
+          ? { reasoningEffort: effectiveReasoningEffort }
+          : {}),
         ...(serviceTierResult.serviceTier !== undefined
           ? { serviceTier: serviceTierResult.serviceTier }
           : {}),

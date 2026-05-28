@@ -1545,17 +1545,22 @@ function buildChildSession(
   provider: LLMProvider,
   startupPrewarm?: StartupPrewarmStore,
 ): ChildSession {
+  const roleConfig = params.live.role.config;
+  const childModel = params.model ?? roleConfig.model;
+  const childReasoningEffort =
+    params.reasoningEffort ?? roleConfig.reasoningEffort;
+  const childServiceTier = params.serviceTier ?? roleConfig.serviceTier;
   const sessionConfiguration = cloneSessionConfiguration(
     params.parent,
     params.live,
     params.worktree,
     {
-      ...(params.model !== undefined ? { model: params.model } : {}),
-      ...(params.reasoningEffort !== undefined
-        ? { reasoningEffort: params.reasoningEffort }
+      ...(childModel !== undefined ? { model: childModel } : {}),
+      ...(childReasoningEffort !== undefined
+        ? { reasoningEffort: childReasoningEffort }
         : {}),
-      ...(params.serviceTier !== undefined
-        ? { serviceTier: params.serviceTier }
+      ...(childServiceTier !== undefined
+        ? { serviceTier: childServiceTier }
         : {}),
     },
   );
