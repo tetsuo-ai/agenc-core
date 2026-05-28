@@ -73,6 +73,13 @@ function fakeSession(): Session {
     effectiveContextWindowPercent: 95,
     supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     defaultReasoningLevel: "medium",
+    serviceTiers: [
+      {
+        id: "priority",
+        name: "Fast",
+        description: "1.5x speed, increased usage",
+      },
+    ],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",
     usedFallbackModelMetadata: false,
@@ -369,6 +376,12 @@ describe("model-facing tools", () => {
           ?.inputSchema as { properties?: Record<string, unknown> } | undefined
       )?.properties,
     ).not.toHaveProperty("fork_context");
+    expect(
+      (
+        registry.tools.find((tool) => tool.name === "spawn_agent")
+          ?.inputSchema as { properties?: Record<string, unknown> } | undefined
+      )?.properties,
+    ).toHaveProperty("service_tier");
     expect(
       registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
     ).toMatchObject({
@@ -2025,6 +2038,142 @@ describe("model-facing tools", () => {
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         forkMode: { kind: "full_history" },
+      }),
+    );
+  });
+
+  it("accepts explicit service_tier for spawn_agent and validates the effective child model", async () => {
+    const supportedModelInfo = {
+      ...fakeSession().modelInfo,
+      slug: "gpt-5.4",
+      serviceTiers: [
+        {
+          id: "priority",
+          name: "Fast",
+          description: "1.5x speed, increased usage",
+        },
+      ],
+    };
+    const unsupportedModelInfo = {
+      ...fakeSession().modelInfo,
+      slug: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      serviceTiers: [],
+    };
+    const session = fakeSession();
+    (session.services as unknown as {
+      modelsManager: {
+        tryListModels: () => readonly unknown[];
+        listModels: () => Promise<readonly unknown[]>;
+        getModelInfo: (model: string) => Promise<unknown>;
+      };
+    }).modelsManager = {
+      tryListModels: () => [supportedModelInfo, unsupportedModelInfo],
+      listModels: async () => [supportedModelInfo, unsupportedModelInfo],
+      getModelInfo: async (model: string) =>
+        model === supportedModelInfo.slug
+          ? supportedModelInfo
+          : unsupportedModelInfo,
+    };
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-fast",
+          agentPath: "/root/fast_task",
+          nickname: "Fast Task",
+          role: { name: "default" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-fast",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-fast",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+    const spawn = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+
+    const accepted = await spawn.execute({
+      message: "inspect",
+      task_name: "fast_task",
+      model: "gpt-5.4",
+      service_tier: "priority",
+    });
+
+    expect(accepted.isError).not.toBe(true);
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "gpt-5.4",
+        serviceTier: "priority",
+      }),
+    );
+
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "slow_task",
+      model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      service_tier: "priority",
+    });
+
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      "Service tier `priority` is not supported for model `gpt-5.3-codex`. Supported service tiers: none", // branding-scan: allow OpenAI model identifier
+    );
+    expect(delegateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows explicit service_tier on full-history spawn_agent forks", async () => {
+    const session = fakeSession();
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-history",
+          agentPath: "/root/history_task",
+          nickname: "History Task",
+          role: { name: "default" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-history",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-history",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+
+    const result = await createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "continue context-heavy work",
+      task_name: "history_task",
+      fork_turns: "all",
+      service_tier: "priority",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forkMode: { kind: "full_history" },
+        serviceTier: "priority",
       }),
     );
   });

@@ -49,6 +49,13 @@ describe("ModelRegistry", () => {
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
       supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      serviceTiers: [
+        {
+          id: "priority",
+          name: "Fast",
+          description: "1.5x speed, increased usage",
+        },
+      ],
     });
   });
 

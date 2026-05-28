@@ -1,6 +1,6 @@
 import type { Tool, ToolResult } from "../../tools/types.js";
 import type { Session } from "../../session/session.js";
-import type { ReasoningEffort } from "../../session/turn-context.js";
+import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
@@ -134,6 +134,22 @@ function normalizeSpawnTaskName(value: string | undefined): string | undefined {
   return normalized.length > 0 ? normalized : trimmed;
 }
 
+function serviceTierIds(modelInfo: ModelInfo): readonly string[] {
+  return (modelInfo.serviceTiers ?? []).map((tier) => tier.id);
+}
+
+function modelSupportsServiceTier(
+  modelInfo: ModelInfo,
+  serviceTier: string,
+): boolean {
+  return serviceTierIds(modelInfo).includes(serviceTier);
+}
+
+function formatSupportedServiceTiers(modelInfo: ModelInfo): string {
+  const supported = serviceTierIds(modelInfo);
+  return supported.length > 0 ? supported.join(", ") : "none";
+}
+
 async function validateSpawnModelOverrides(opts: {
   readonly session: Session;
   readonly model?: string;
@@ -179,6 +195,57 @@ async function validateSpawnModelOverrides(opts: {
   return null;
 }
 
+async function resolveSpawnServiceTier(opts: {
+  readonly session: Session;
+  readonly model?: string;
+  readonly requestedServiceTier?: string;
+}): Promise<{ readonly serviceTier?: string } | ToolResult> {
+  const parentServiceTier = opts.session.sessionConfiguration.serviceTier;
+  if (
+    opts.requestedServiceTier === undefined &&
+    parentServiceTier === undefined
+  ) {
+    return {};
+  }
+  const model =
+    opts.model ??
+    opts.session.sessionConfiguration.collaborationMode.model ??
+    opts.session.modelInfo.slug;
+  if (!model) {
+    return json(
+      {
+        error:
+          "spawn_agent could not resolve the child model for service tier validation",
+      },
+      true,
+    );
+  }
+  const modelInfo =
+    model === opts.session.modelInfo.slug
+      ? opts.session.modelInfo
+      : await opts.session.services.modelsManager.getModelInfo(model);
+  if (
+    opts.requestedServiceTier !== undefined &&
+    !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)
+  ) {
+    return json(
+      {
+        error: `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
+      },
+      true,
+    );
+  }
+  for (const candidate of [opts.requestedServiceTier, parentServiceTier]) {
+    if (
+      candidate !== undefined &&
+      modelSupportsServiceTier(modelInfo, candidate)
+    ) {
+      return { serviceTier: candidate };
+    }
+  }
+  return {};
+}
+
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const roleNames = [...new Set(
     listAgentRoles().flatMap((role) => [
@@ -206,6 +273,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       },
       model: { type: "string" },
       reasoning_effort: { type: "string" },
+      service_tier: { type: "string" },
       fork_turns: { type: "string" },
     },
     required: ["message", "task_name"],
@@ -225,6 +293,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "agent_type",
         "model",
         "reasoning_effort",
+        "service_tier",
         "fork_turns",
         "fork_context",
       ]),
@@ -237,6 +306,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       "agent_type",
       "model",
       "reasoning_effort",
+      "service_tier",
       "fork_turns",
     ]) {
       if (args[key] !== undefined && typeof args[key] !== "string") {
@@ -286,6 +356,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         true,
       );
     }
+    const requestedServiceTier = stringValue(args.service_tier);
     const callId = callIdFromArgs(args, "agent");
 
     emit(session, {
@@ -362,6 +433,32 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(overrideReason);
       return overrideError;
     }
+    const serviceTierResult = await resolveSpawnServiceTier({
+      session,
+      ...(model !== undefined ? { model } : {}),
+      ...(requestedServiceTier !== undefined
+        ? { requestedServiceTier }
+        : {}),
+    });
+    if ("content" in serviceTierResult) {
+      const overrideReason =
+        typeof serviceTierResult.content === "string"
+          ? (() => {
+              try {
+                const parsed = JSON.parse(serviceTierResult.content) as {
+                  error?: unknown;
+                };
+                return typeof parsed.error === "string"
+                  ? parsed.error
+                  : serviceTierResult.content;
+              } catch {
+                return serviceTierResult.content;
+              }
+            })()
+          : "spawn_agent service tier validation failed";
+      emitSpawnFailureEnd(overrideReason);
+      return serviceTierResult;
+    }
     if (!taskName) {
       return failSpawn("task_name is required");
     }
@@ -384,6 +481,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(role !== undefined ? { role } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(serviceTierResult.serviceTier !== undefined
+          ? { serviceTier: serviceTierResult.serviceTier }
+          : {}),
       });
       if (outcome.kind === "rejected") {
         throw new Error(outcome.reason);

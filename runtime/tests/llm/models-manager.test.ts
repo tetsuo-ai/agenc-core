@@ -49,6 +49,13 @@ describe("StaticModelsManager", () => {
       contextWindow: 272_000,
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
+      serviceTiers: [
+        {
+          id: "priority",
+          name: "Fast",
+          description: "1.5x speed, increased usage",
+        },
+      ],
       usedFallbackModelMetadata: false,
     });
     expect(info.supportedReasoningLevels).toEqual([

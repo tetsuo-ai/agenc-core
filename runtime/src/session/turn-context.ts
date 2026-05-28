@@ -62,6 +62,12 @@ export interface AuthManager {
 }
 
 /** agenc runtime `ModelInfo` shape backed by the runtime models manager. */
+export interface ModelServiceTier {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+}
+
 export interface ModelInfo {
   readonly slug: string;
   readonly contextWindow?: number;
@@ -72,6 +78,7 @@ export interface ModelInfo {
   readonly maxOutputTokensCappedDefault?: boolean;
   readonly supportedReasoningLevels: ReadonlyArray<ReasoningEffort>;
   readonly defaultReasoningLevel?: ReasoningEffort;
+  readonly serviceTiers?: ReadonlyArray<ModelServiceTier>;
   readonly defaultReasoningSummary: ReasoningSummary;
   readonly truncationPolicy: TruncationPolicy;
   readonly supportsToolUse?: boolean;
