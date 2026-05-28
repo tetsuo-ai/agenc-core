@@ -700,6 +700,37 @@ export class TuiSession {
   }
 
   /**
+   * Assert that a tool completed successfully in rollout, even when its
+   * success payload does not include the file contents being verified.
+   */
+  async assertRolloutToolCompleted({ label = "tool completion", toolName } = {}) {
+    const items = await this.readRolloutItems();
+    const startedToolsByCallId = new Map();
+    for (const item of items) {
+      const msg = item?.payload?.msg;
+      if (msg?.type === "tool_call_started") {
+        const payload = msg.payload ?? {};
+        if (typeof payload.callId === "string" && typeof payload.toolName === "string") {
+          startedToolsByCallId.set(payload.callId, payload.toolName);
+        }
+        continue;
+      }
+      if (msg?.type !== "tool_call_completed") continue;
+      const payload = msg.payload ?? {};
+      const completedToolName =
+        typeof payload.toolName === "string"
+          ? payload.toolName
+          : typeof payload.callId === "string"
+            ? startedToolsByCallId.get(payload.callId)
+            : undefined;
+      if (toolName !== undefined && completedToolName !== toolName) continue;
+      if (payload.isError === false) return;
+    }
+    const suffix = toolName === undefined ? "" : ` for ${toolName}`;
+    throw new Error(`${label}: no successful rollout tool completion${suffix}`);
+  }
+
+  /**
    * Wait for the permission overlay to appear in the captured output. The
    * workbench approval card renders the current prompt as "needs approval"
    * / "enter approve" rather than the old numbered prompt copy.
