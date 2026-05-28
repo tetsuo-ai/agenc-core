@@ -21,9 +21,9 @@
  * daemon-side rollout has the same data the daemon sent to vllm,
  * just one layer up.
  */
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,6 +31,8 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const PROJECTS_DIR = path.join(homedir(), ".agenc", "projects");
+const TRUST_FILE = path.join(homedir(), ".agenc", "trusted-projects.json");
+let pipelineCwd = process.cwd();
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -44,6 +46,50 @@ const color = (c, s) => (process.stdout.isTTY ? `${COLORS[c]}${s}${COLORS.reset}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function ensureProjectTrusted(projectPath) {
+  await mkdir(path.dirname(TRUST_FILE), { recursive: true });
+  let trust = { version: 1, trustedProjects: [] };
+  try {
+    const raw = await readFile(TRUST_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.trustedProjects)) {
+      trust = parsed;
+      if (!Number.isFinite(trust.version)) trust.version = 1;
+    }
+  } catch {
+    // Missing or corrupt trust file: rebuild the minimum valid shape.
+  }
+  const candidates = new Set([path.resolve(projectPath)]);
+  try {
+    candidates.add(await realpath(projectPath));
+  } catch {
+    // The resolved path is best-effort only.
+  }
+  const existing = new Set(
+    (trust.trustedProjects ?? []).map((entry) => entry?.path).filter(Boolean),
+  );
+  let mutated = false;
+  for (const candidate of candidates) {
+    if (!existing.has(candidate)) {
+      trust.trustedProjects.push({
+        path: candidate,
+        trustedAt: new Date().toISOString(),
+      });
+      mutated = true;
+    }
+  }
+  if (mutated) {
+    await writeFile(TRUST_FILE, JSON.stringify(trust, null, 2), "utf8");
+  }
+}
+
+async function preparePipelineWorkspace() {
+  const cwd = await mkdtemp(path.join(tmpdir(), "agenc-llm-pipeline-"));
+  await writeFile(path.join(cwd, "README.md"), "llm pipeline cwd\n", "utf8");
+  await ensureProjectTrusted(cwd);
+  return cwd;
+}
+
 /**
  * Run agenc -p with a prompt and capture stdout. Returns { stdout, stderr, exitCode }.
  */
@@ -55,6 +101,7 @@ async function runOneShot(prompt, { yolo = false, timeoutMs = 120_000 } = {}) {
     const child = spawn(process.execPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
+      cwd: pipelineCwd,
     });
     let stdout = "";
     let stderr = "";
@@ -128,10 +175,11 @@ scenarios.push({
   name: "01-session-meta-first",
   description: "Rollout starts with session_meta describing model/cwd/version.",
   async run() {
-    await runOneShot("reply with the single word HELLO and nothing else", {
+    const result = await runOneShot("reply with the single word HELLO and nothing else", {
       yolo: true,
       timeoutMs: 180_000,
     });
+    assertOneShotSucceeded(result);
     await sleep(500); // give the daemon a moment to flush
     const { items, path: rolloutPath } = await readMostRecentRollout();
     if (items.length === 0) throw new Error(`empty rollout: ${rolloutPath}`);
@@ -155,10 +203,11 @@ scenarios.push({
   description:
     "turn_context (sandbox/approvalPolicy/cwd/etc) is recorded before the first user input.",
   async run() {
-    await runOneShot("reply with the single word HELLO and nothing else", {
+    const result = await runOneShot("reply with the single word HELLO and nothing else", {
       yolo: true,
       timeoutMs: 180_000,
     });
+    assertOneShotSucceeded(result);
     await sleep(500);
     const { items } = await readMostRecentRollout();
     const turnIdx = items.findIndex((i) => i.type === "turn_context");
@@ -192,10 +241,11 @@ scenarios.push({
   name: "03-yolo-sets-approvalPolicy-never",
   description: "agenc --yolo -p produces turn_context with approvalPolicy='never'.",
   async run() {
-    await runOneShot("reply with the single word YES", {
+    const result = await runOneShot("reply with the single word YES", {
       yolo: true,
       timeoutMs: 180_000,
     });
+    assertOneShotSucceeded(result);
     await sleep(500);
     const { items } = await readMostRecentRollout();
     const tc = items.find((i) => i.type === "turn_context");
@@ -220,10 +270,11 @@ scenarios.push({
   description:
     "Tool invocations record tool_call_started + tool_call_completed with proper id/name/args.",
   async run() {
-    await runOneShot(
+    const result = await runOneShot(
       "Use the Bash tool to run: echo PIPELINE-TOOL-CHECK",
       { yolo: true, timeoutMs: 240_000 },
     );
+    assertOneShotSucceeded(result);
     await sleep(500);
     const { items } = await readMostRecentRollout();
     const started = items.find(
@@ -270,10 +321,11 @@ scenarios.push({
   name: "05-token-count-tracked",
   description: "Each tool call surfaces a token_count event (compaction prerequisite).",
   async run() {
-    await runOneShot(
+    const result = await runOneShot(
       "Use the Bash tool to run: echo TOKEN-CHECK",
       { yolo: true, timeoutMs: 240_000 },
     );
+    assertOneShotSucceeded(result);
     await sleep(500);
     const { items } = await readMostRecentRollout();
     const tokenEvents = items.filter(
@@ -300,10 +352,11 @@ scenarios.push({
   name: "06-turn-completes",
   description: "Successful run ends with turn_complete event (no hung session).",
   async run() {
-    await runOneShot("reply with the single word DONE", {
+    const result = await runOneShot("reply with the single word DONE", {
       yolo: true,
       timeoutMs: 180_000,
     });
+    assertOneShotSucceeded(result);
     await sleep(500);
     const { items } = await readMostRecentRollout();
     const complete = items.find(
@@ -323,10 +376,11 @@ scenarios.push({
   name: "07-assistant-response-recorded",
   description: "Assistant response is recorded as a response_item with role='assistant'.",
   async run() {
-    await runOneShot("reply with the single word RECORDED", {
+    const result = await runOneShot("reply with the single word RECORDED", {
       yolo: true,
       timeoutMs: 180_000,
     });
+    assertOneShotSucceeded(result);
     await sleep(500);
     const { items } = await readMostRecentRollout();
     const assistantItems = items.filter(
@@ -345,7 +399,9 @@ scenarios.push({
 /* -------------------------------------------------------------------- */
 
 async function main() {
+  pipelineCwd = await preparePipelineWorkspace();
   console.log(color("bold", `agenc LLM pipeline gate (${scenarios.length} scenarios)`));
+  console.log(color("dim", `  cwd: ${pipelineCwd}`));
   console.log("");
   let passed = 0;
   const failed = [];
@@ -374,6 +430,15 @@ async function main() {
     console.log(`    - ${f.name}: ${f.error.message}`);
   }
   return 1;
+}
+
+function assertOneShotSucceeded(result) {
+  if (result.exitCode === 0) return;
+  const stderr = result.stderr.trim();
+  const stdout = result.stdout.trim();
+  throw new Error(
+    `agenc -p exited ${result.exitCode}${stderr ? `: ${stderr}` : ""}${!stderr && stdout ? `: ${stdout}` : ""}`,
+  );
 }
 
 main()
