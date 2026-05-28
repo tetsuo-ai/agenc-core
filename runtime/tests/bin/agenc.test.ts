@@ -42,6 +42,7 @@ import {
   resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
+  shouldLoadMcpCliConfig,
   validateAgencHome,
   type ConfigReloadLatch,
 } from "./agenc.js";
@@ -1426,6 +1427,45 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("main() smoke", () => {
+  it("loads mcp serve config only when the route needs configured defaults", () => {
+    expect(shouldLoadMcpCliConfig(["mcp"])).toBe(false);
+    expect(shouldLoadMcpCliConfig(["mcp", "list"])).toBe(false);
+    expect(shouldLoadMcpCliConfig(["mcp", "serve", "--help"])).toBe(false);
+    expect(shouldLoadMcpCliConfig(["mcp", "serve"])).toBe(true);
+    expect(shouldLoadMcpCliConfig(["mcp", "serve", "--transport", "sse"])).toBe(
+      true,
+    );
+    expect(shouldLoadMcpCliConfig(["mcp", "serve", "--transport=sse"])).toBe(
+      true,
+    );
+    expect(
+      shouldLoadMcpCliConfig(["mcp", "serve", "--transport", "stdio"]),
+    ).toBe(false);
+    expect(shouldLoadMcpCliConfig(["mcp", "serve", "--transport=stdio"])).toBe(
+      false,
+    );
+    expect(
+      shouldLoadMcpCliConfig([
+        "mcp",
+        "serve",
+        "--transport",
+        "sse",
+        "--transport",
+        "stdio",
+      ]),
+    ).toBe(false);
+    expect(
+      shouldLoadMcpCliConfig([
+        "mcp",
+        "serve",
+        "--transport",
+        "sse",
+        "--bad-arg",
+      ]),
+    ).toBe(false);
+    expect(shouldLoadMcpCliConfig(["mcp", "serve", "--bad-arg"])).toBe(false);
+  });
+
   it("main() short-circuits --help before TUI/CLI routing", async () => {
     const prevArgv = [...process.argv];
     const stdoutSpy = vi

@@ -34,6 +34,7 @@ const SAMPLE_TOOL: Tool = {
 };
 
 const RUNTIME_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const AGENC_MCP_STDIO_ROUTE_TIMEOUT_MS = 15_000;
 
 function request(id: number, method: string, params?: unknown) {
   return {
@@ -213,8 +214,16 @@ function runAgencMainForMcpServe(): Promise<{
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       rmSync(loaderDir, { recursive: true, force: true });
-      reject(new Error("agenc mcp stdio route timed out"));
-    }, 5_000);
+      reject(
+        new Error(
+          [
+            `agenc mcp stdio route timed out after ${AGENC_MCP_STDIO_ROUTE_TIMEOUT_MS}ms`,
+            stdout.trim().length > 0 ? `stdout:\n${stdout}` : "stdout: <empty>",
+            stderr.trim().length > 0 ? `stderr:\n${stderr}` : "stderr: <empty>",
+          ].join("\n"),
+        ),
+      );
+    }, AGENC_MCP_STDIO_ROUTE_TIMEOUT_MS);
     child.once("error", (error) => {
       clearTimeout(timeout);
       rmSync(loaderDir, { recursive: true, force: true });

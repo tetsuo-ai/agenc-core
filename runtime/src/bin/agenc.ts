@@ -3178,6 +3178,34 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
   }
 }
 
+export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
+  if (argv[0] !== "mcp" || argv[1] !== "serve") return false;
+  const rest = argv.slice(2);
+  if (rest.length === 0) return true;
+
+  let explicitTransport: "stdio" | "sse" | null = null;
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i]!;
+    if (arg === "--help" || arg === "-h") return false;
+    if (arg === "--transport") {
+      const value = rest[i + 1];
+      if (value !== "stdio" && value !== "sse") return false;
+      explicitTransport = value;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--transport=")) {
+      const value = arg.slice("--transport=".length);
+      if (value !== "stdio" && value !== "sse") return false;
+      explicitTransport = value;
+      continue;
+    }
+    return false;
+  }
+
+  return explicitTransport === "sse";
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // main — Wave 5-B routing entrypoint
 // ─────────────────────────────────────────────────────────────────────
@@ -3242,7 +3270,9 @@ export async function main(): Promise<number> {
   if (authCommand !== null) {
     return runAgenCAuthCli(authCommand);
   }
-  const mcpConfig = argv[0] === "mcp" ? await loadMcpCliConfig() : undefined;
+  const mcpConfig = shouldLoadMcpCliConfig(argv)
+    ? await loadMcpCliConfig()
+    : undefined;
   const mcpCommand = parseAgenCMcpCliArgs(argv, mcpConfig);
   if (mcpCommand !== null) {
     return runAgenCMcpCli(mcpCommand);
