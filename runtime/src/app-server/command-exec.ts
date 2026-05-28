@@ -3,14 +3,25 @@
  *
  * Shape difference from the reference:
  *   - AgenC exposes dot-separated `commandExec.*` JSON-RPC methods.
- *   - Sandbox and permission-profile overrides are accepted by the protocol
- *     but fail closed here until the daemon sandbox rows own that wiring.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { basename, resolve } from "node:path";
 import type { Writable } from "node:stream";
 
 import { AgenCDaemonAgentLifecycleError } from "./agent-lifecycle.js";
+import {
+  externalFileSystemPolicy,
+  permissionProfileFromRuntimePermissions,
+  restrictedFileSystemPolicy,
+  SandboxManager,
+  unrestrictedFileSystemPolicy,
+  type FileSystemSandboxEntry,
+  type NetworkSandboxPolicy,
+  type PermissionProfile,
+  type SandboxablePreference,
+  type WindowsSandboxLevel,
+} from "../sandbox/engine/index.js";
 import {
   AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC,
   AGENC_TOOL_UNIFIED_EXEC_METRIC,
@@ -38,6 +49,14 @@ const DEFAULT_OUTPUT_BYTES_CAP = 1024 * 1024;
 const EXEC_TIMEOUT_EXIT_CODE = 124;
 const IO_DRAIN_TIMEOUT_MS = 2_000;
 const FORCE_KILL_DELAY_MS = 500;
+const PTY_ARGV0_EXECVE_SCRIPT =
+  "const [program, argv0, ...args] = process.argv.slice(1);" +
+  "const execve = process.execve;" +
+  "if (typeof execve !== 'function') {" +
+  "console.error('PTY argv0 handoff requires process.execve support');" +
+  "process.exit(126);" +
+  "}" +
+  "execve(program, [argv0, ...args], process.env);";
 
 export interface CommandExecContext {
   readonly connectionId: string;
@@ -87,6 +106,43 @@ interface CommandExecSession {
   timeoutHandle: NodeJS.Timeout | null;
 }
 
+export type CommandExecSandboxManager = Pick<
+  SandboxManager,
+  "selectInitial" | "transform"
+>;
+
+export interface AgenCCommandExecServiceOptions {
+  readonly sandboxManager?: CommandExecSandboxManager;
+  readonly agencLinuxSandboxExe?: string;
+  readonly useLegacyLandlock?: boolean;
+  readonly windowsSandboxLevel?: WindowsSandboxLevel;
+  readonly windowsSandboxPrivateDesktop?: boolean;
+}
+
+interface SpawnCommand {
+  readonly program: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: Record<string, string>;
+  readonly argv0?: string;
+}
+
+interface CommandExecSandboxRequest {
+  readonly permissionProfile: PermissionProfile;
+  readonly sandboxPolicyCwd: string;
+  readonly preference: SandboxablePreference;
+}
+
+type LegacySandboxPolicyType =
+  | "dangerFullAccess"
+  | "danger_full_access"
+  | "readOnly"
+  | "read_only"
+  | "workspaceWrite"
+  | "workspace_write"
+  | "externalSandbox"
+  | "external_sandbox";
+
 class OutputAccumulator {
   readonly #chunks: Buffer[] = [];
   readonly #cap: number | null;
@@ -134,7 +190,21 @@ class OutputAccumulator {
 export class AgenCCommandExecService implements AgenCCommandExec {
   readonly #sessions = new Map<string, CommandExecSession>();
   readonly #keysByConnection = new Map<string, Set<string>>();
+  readonly #sandboxManager: CommandExecSandboxManager;
+  readonly #agencLinuxSandboxExe: string | undefined;
+  readonly #useLegacyLandlock: boolean;
+  readonly #windowsSandboxLevel: WindowsSandboxLevel;
+  readonly #windowsSandboxPrivateDesktop: boolean;
   #nextGeneratedProcessId = 1;
+
+  constructor(options: AgenCCommandExecServiceOptions = {}) {
+    this.#sandboxManager = options.sandboxManager ?? new SandboxManager();
+    this.#agencLinuxSandboxExe = options.agencLinuxSandboxExe;
+    this.#useLegacyLandlock = options.useLegacyLandlock ?? false;
+    this.#windowsSandboxLevel = options.windowsSandboxLevel ?? "disabled";
+    this.#windowsSandboxPrivateDesktop =
+      options.windowsSandboxPrivateDesktop ?? false;
+  }
 
   async start(
     params: CommandExecStartParams,
@@ -184,12 +254,6 @@ export class AgenCCommandExecService implements AgenCCommandExec {
         "commandExec.start cannot combine sandboxPolicy with permissionProfile",
       );
     }
-    if (params.sandboxPolicy != null || params.permissionProfile != null) {
-      throw invalidArgument(
-        "commandExec.start sandboxPolicy and permissionProfile are not implemented yet",
-      );
-    }
-
     const processId =
       params.processId ?? `generated-${this.#nextGeneratedProcessId++}`;
     const key = sessionKey(context.connectionId, processId);
@@ -363,17 +427,19 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     params: CommandExecStartParams,
     context: CommandExecContext,
   ): void {
-    const [program, ...args] = params.command;
-    if (program === undefined) {
-      throw invalidArgument("commandExec.start requires command");
-    }
+    const spawnCommand = this.#buildSpawnCommand(params);
     if (session.tty) {
-      const pty = loadPty().spawn(program, args, {
+      const ptyCommand = commandForPtyArgv0(
+        spawnCommand.program,
+        spawnCommand.args,
+        spawnCommand.argv0,
+      );
+      const pty = loadPty().spawn(ptyCommand.program, [...ptyCommand.args], {
         name: "xterm-256color",
         cols: params.size?.cols ?? 80,
         rows: params.size?.rows ?? 24,
-        cwd: params.cwd ?? process.cwd(),
-        env: buildEnv(params.env),
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
         encoding: null,
       });
       session.pty = pty;
@@ -386,11 +452,12 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       return;
     }
 
-    const child = spawn(program, args, {
-      cwd: params.cwd ?? process.cwd(),
-      env: buildEnv(params.env),
+    const child = spawn(spawnCommand.program, [...spawnCommand.args], {
+      cwd: spawnCommand.cwd,
+      env: spawnCommand.env,
       stdio: [session.streamStdin ? "pipe" : "ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      argv0: spawnCommand.argv0 ?? basename(spawnCommand.program),
     });
     session.child = child;
     child.stdout?.on("data", (data: Buffer) => {
@@ -420,6 +487,62 @@ export class AgenCCommandExecService implements AgenCCommandExec {
         finalizeSession(session, exitCode);
       });
     });
+  }
+
+  #buildSpawnCommand(params: CommandExecStartParams): SpawnCommand {
+    const [program, ...args] = params.command;
+    if (program === undefined) {
+      throw invalidArgument("commandExec.start requires command");
+    }
+    const cwd = resolve(params.cwd ?? process.cwd());
+    const env = buildEnv(params.env);
+    const sandboxRequest = commandExecSandboxRequest(params, cwd);
+    if (sandboxRequest === undefined) {
+      return {
+        program,
+        args,
+        cwd,
+        env,
+        argv0: basename(program),
+      };
+    }
+
+    const sandbox = this.#sandboxManager.selectInitial({
+      fileSystemPolicy: sandboxRequest.permissionProfile.fileSystem,
+      networkPolicy: sandboxRequest.permissionProfile.network,
+      preference: sandboxRequest.preference,
+      windowsSandboxLevel: this.#windowsSandboxLevel,
+      hasManagedNetworkRequirements: false,
+    });
+    if (sandbox === "none" && sandboxRequest.preference === "require") {
+      throw new Error(
+        "sandbox isolation was required for commandExec.start but no platform sandbox is available",
+      );
+    }
+    const transformed = this.#sandboxManager.transform({
+      command: { program, args, cwd, env },
+      permissions: sandboxRequest.permissionProfile,
+      sandbox,
+      enforceManagedNetwork: false,
+      sandboxPolicyCwd: sandboxRequest.sandboxPolicyCwd,
+      ...(this.#agencLinuxSandboxExe !== undefined
+        ? { agencLinuxSandboxExe: this.#agencLinuxSandboxExe }
+        : {}),
+      useLegacyLandlock: this.#useLegacyLandlock,
+      windowsSandboxLevel: this.#windowsSandboxLevel,
+      windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
+    });
+    const [transformedProgram, ...transformedArgs] = transformed.command;
+    if (transformedProgram === undefined) {
+      throw new Error("sandbox transform returned an empty command");
+    }
+    return {
+      program: transformedProgram,
+      args: transformedArgs,
+      cwd: transformed.cwd,
+      env: { ...transformed.env },
+      argv0: transformed.arg0 ?? basename(transformedProgram),
+    };
   }
 
   #armTimeout(session: CommandExecSession, params: CommandExecStartParams): void {
@@ -560,6 +683,250 @@ function createSession(params: {
   };
 }
 
+function commandExecSandboxRequest(
+  params: CommandExecStartParams,
+  commandCwd: string,
+): CommandExecSandboxRequest | undefined {
+  if (params.permissionProfile !== undefined && params.permissionProfile !== null) {
+    const permissionProfile = permissionProfileForCommandProfileId(
+      params.permissionProfile,
+      commandCwd,
+    );
+    return {
+      permissionProfile,
+      sandboxPolicyCwd: commandCwd,
+      preference: sandboxPreferenceForPermissionProfile(permissionProfile),
+    };
+  }
+  if (params.sandboxPolicy !== undefined && params.sandboxPolicy !== null) {
+    const sandboxPolicyCwd = process.cwd();
+    const permissionProfile = permissionProfileForLegacySandboxPolicy(
+      params.sandboxPolicy,
+      sandboxPolicyCwd,
+    );
+    return {
+      permissionProfile,
+      sandboxPolicyCwd,
+      preference: sandboxPreferenceForPermissionProfile(permissionProfile),
+    };
+  }
+  return undefined;
+}
+
+function commandForPtyArgv0(
+  program: string,
+  args: readonly string[],
+  argv0: string | undefined,
+): { readonly program: string; readonly args: readonly string[] } {
+  if (argv0 === undefined || argv0 === basename(program)) {
+    return { program, args };
+  }
+  return {
+    program: process.execPath,
+    args: ["-e", PTY_ARGV0_EXECVE_SCRIPT, program, argv0, ...args],
+  };
+}
+
+function permissionProfileForCommandProfileId(
+  profileId: string,
+  cwd: string,
+): PermissionProfile {
+  switch (profileId) {
+    case ":danger-full-access":
+      return permissionProfileFromRuntimePermissions(
+        unrestrictedFileSystemPolicy(),
+        "enabled",
+      );
+    case ":read-only":
+      return permissionProfileFromRuntimePermissions(
+        readOnlyFileSystemPolicy(),
+        "restricted",
+      );
+    case ":workspace":
+      return permissionProfileFromRuntimePermissions(
+        workspaceWriteFileSystemPolicy(cwd, {}),
+        "restricted",
+      );
+    default:
+      throw invalidArgument(
+        `commandExec.start unsupported permissionProfile: ${JSON.stringify(profileId)}`,
+      );
+  }
+}
+
+function permissionProfileForLegacySandboxPolicy(
+  policy: JsonObject,
+  cwd: string,
+): PermissionProfile {
+  const type = legacySandboxPolicyType(policy);
+  switch (type) {
+    case "dangerFullAccess":
+    case "danger_full_access":
+      return permissionProfileFromRuntimePermissions(
+        unrestrictedFileSystemPolicy(),
+        "enabled",
+      );
+    case "externalSandbox":
+    case "external_sandbox":
+      return permissionProfileFromRuntimePermissions(
+        externalFileSystemPolicy(),
+        externalNetworkPolicy(policy.networkAccess ?? policy.network_access),
+      );
+    case "readOnly":
+    case "read_only":
+      rejectRemovedReadOnlyAccess(policy.access, "readOnly.access");
+      return permissionProfileFromRuntimePermissions(
+        readOnlyFileSystemPolicy(),
+        booleanNetworkPolicy(policy.networkAccess ?? policy.network_access),
+      );
+    case "workspaceWrite":
+    case "workspace_write":
+      rejectRemovedReadOnlyAccess(
+        policy.readOnlyAccess ?? policy.read_only_access,
+        "workspaceWrite.readOnlyAccess",
+      );
+      return permissionProfileFromRuntimePermissions(
+        workspaceWriteFileSystemPolicy(cwd, {
+          writableRoots: stringArrayField(
+            policy.writableRoots ?? policy.writable_roots,
+            "writableRoots",
+          ),
+          excludeTmpdirEnvVar: booleanField(
+            policy.excludeTmpdirEnvVar ?? policy.exclude_tmpdir_env_var,
+            "excludeTmpdirEnvVar",
+          ),
+          excludeSlashTmp: booleanField(
+            policy.excludeSlashTmp ?? policy.exclude_slash_tmp,
+            "excludeSlashTmp",
+          ),
+        }),
+        booleanNetworkPolicy(policy.networkAccess ?? policy.network_access),
+      );
+  }
+}
+
+function sandboxPreferenceForPermissionProfile(
+  permissionProfile: PermissionProfile,
+): SandboxablePreference {
+  return permissionProfile.fileSystem.kind === "restricted" ? "require" : "auto";
+}
+
+function legacySandboxPolicyType(policy: JsonObject): LegacySandboxPolicyType {
+  const type = policy.type ?? policy.kind ?? policy.value;
+  if (typeof type !== "string" || type.trim().length === 0) {
+    throw invalidArgument(
+      "commandExec.start param 'sandboxPolicy.type' must be a non-empty string",
+    );
+  }
+  switch (type) {
+    case "dangerFullAccess":
+    case "danger_full_access":
+    case "readOnly":
+    case "read_only":
+    case "workspaceWrite":
+    case "workspace_write":
+    case "externalSandbox":
+    case "external_sandbox":
+      return type;
+    default:
+      throw invalidArgument(
+        `commandExec.start unsupported sandboxPolicy type: ${JSON.stringify(type)}`,
+      );
+  }
+}
+
+function readOnlyFileSystemPolicy() {
+  return restrictedFileSystemPolicy([specialEntry("root", "read")]);
+}
+
+function workspaceWriteFileSystemPolicy(
+  cwd: string,
+  options: {
+    readonly writableRoots?: readonly string[];
+    readonly excludeTmpdirEnvVar?: boolean;
+    readonly excludeSlashTmp?: boolean;
+  },
+) {
+  const entries: FileSystemSandboxEntry[] = [
+    specialEntry("root", "read"),
+    specialEntry("project_roots", "write"),
+  ];
+  for (const writableRoot of options.writableRoots ?? []) {
+    entries.push({
+      path: { kind: "path", path: resolve(cwd, writableRoot) },
+      access: "write",
+    });
+  }
+  if (options.excludeTmpdirEnvVar !== true) {
+    entries.push(specialEntry("tmpdir", "write"));
+  }
+  if (options.excludeSlashTmp !== true) {
+    entries.push(specialEntry("slash_tmp", "write"));
+  }
+  return restrictedFileSystemPolicy(entries);
+}
+
+function specialEntry(
+  kind: "root" | "project_roots" | "tmpdir" | "slash_tmp",
+  access: FileSystemSandboxEntry["access"],
+): FileSystemSandboxEntry {
+  return {
+    path: { kind: "special", value: { kind } },
+    access,
+  };
+}
+
+function booleanNetworkPolicy(value: unknown): NetworkSandboxPolicy {
+  return value === true ? "enabled" : "restricted";
+}
+
+function externalNetworkPolicy(value: unknown): NetworkSandboxPolicy {
+  if (value === "enabled" || value === true) return "enabled";
+  if (value === "restricted" || value === undefined || value === null || value === false) {
+    return "restricted";
+  }
+  throw invalidArgument(
+    "commandExec.start param 'sandboxPolicy.networkAccess' must be 'enabled' or 'restricted'",
+  );
+}
+
+function booleanField(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  throw invalidArgument(
+    `commandExec.start param 'sandboxPolicy.${field}' must be a boolean`,
+  );
+}
+
+function stringArrayField(value: unknown, field: string): readonly string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    throw invalidArgument(
+      `commandExec.start param 'sandboxPolicy.${field}' must be an array`,
+    );
+  }
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== "string" || item.length === 0) {
+      throw invalidArgument(
+        `commandExec.start param 'sandboxPolicy.${field}[${index}]' must be a non-empty string`,
+      );
+    }
+  }
+  return value;
+}
+
+function rejectRemovedReadOnlyAccess(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  if (
+    value === "restricted" ||
+    (isPlainJsonObject(value) && value.type === "restricted")
+  ) {
+    throw invalidArgument(
+      `commandExec.start ${field} is no longer supported; use permissionProfile for restricted reads`,
+    );
+  }
+}
+
 function validateStartParams(params: CommandExecStartParams): void {
   if (!Array.isArray(params.command) || params.command.length === 0) {
     throw invalidArgument("commandExec.start requires command");
@@ -625,7 +992,7 @@ function validateStartParams(params: CommandExecStartParams): void {
     validateTerminalSize("commandExec.start", params.size);
   }
   validateOptionalObject(params.sandboxPolicy, "commandExec.start", "sandboxPolicy");
-  validateOptionalObject(
+  validateOptionalString(
     params.permissionProfile,
     "commandExec.start",
     "permissionProfile",
@@ -689,6 +1056,19 @@ function validateOptionalObject(
   if (value === undefined || value === null) return;
   if (!isPlainJsonObject(value)) {
     throw invalidArgument(`${methodName} param '${field}' must be an object or null`);
+  }
+}
+
+function validateOptionalString(
+  value: unknown,
+  methodName: string,
+  field: string,
+): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw invalidArgument(
+      `${methodName} param '${field}' must be a non-empty string or null`,
+    );
   }
 }
 

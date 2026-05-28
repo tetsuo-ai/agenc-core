@@ -8,6 +8,10 @@ import {
 } from "./command-exec.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+import type {
+  SandboxExecRequest,
+  SandboxTransformRequest,
+} from "../sandbox/engine/index.js";
 
 const idleScript = "setInterval(() => {}, 1000)";
 
@@ -212,6 +216,138 @@ describe("AgenC daemon command exec", () => {
     ).resolves.toEqual({
       exitCode: 0,
       stdout: JSON.stringify(["", " "]),
+      stderr: "",
+    });
+  });
+
+  it("routes legacy sandboxPolicy commands through the sandbox transform before spawning", async () => {
+    const sandboxManager = {
+      selectInitial: vi.fn(() => "linux_seccomp" as const),
+      transform: vi.fn((request: SandboxTransformRequest): SandboxExecRequest => ({
+        command: [
+          process.execPath,
+          "-e",
+          "process.stdout.write(JSON.stringify({marker: process.env.AGENC_SANDBOX_MARKER, argv: process.argv.slice(1)}))",
+          request.command.program,
+          ...request.command.args,
+        ],
+        cwd: request.command.cwd,
+        env: {
+          ...request.command.env,
+          AGENC_SANDBOX_MARKER: `${request.permissions.fileSystem.kind}:${request.permissions.network}`,
+        },
+        sandbox: request.sandbox,
+        windowsSandboxLevel: request.windowsSandboxLevel,
+        windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+        permissionProfile: request.permissions,
+        fileSystemSandboxPolicy: request.permissions.fileSystem,
+        networkSandboxPolicy: request.permissions.network,
+      })),
+    };
+    const service = new AgenCCommandExecService({
+      sandboxManager,
+      agencLinuxSandboxExe: "/tmp/agenc-linux-sandbox-test",
+    });
+
+    const result = await service.start(
+      {
+        command: [process.execPath, "-e", "process.stdout.write('inner')"],
+        sandboxPolicy: { type: "readOnly", networkAccess: true },
+        timeoutMs: 2000,
+      },
+      { connectionId: "sandbox-policy" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      marker: "restricted:enabled",
+      argv: [process.execPath, "-e", "process.stdout.write('inner')"],
+    });
+    expect(sandboxManager.selectInitial).toHaveBeenCalledWith(
+      expect.objectContaining({
+        networkPolicy: "enabled",
+        preference: "require",
+      }),
+    );
+    expect(sandboxManager.transform).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandbox: "linux_seccomp",
+        sandboxPolicyCwd: process.cwd(),
+        permissions: expect.objectContaining({
+          fileSystem: expect.objectContaining({ kind: "restricted" }),
+          network: "enabled",
+        }),
+      }),
+    );
+  });
+
+  it("accepts built-in permissionProfile ids as command-scoped sandbox profiles", async () => {
+    const sandboxManager = {
+      selectInitial: vi.fn(() => "linux_seccomp" as const),
+      transform: vi.fn((request: SandboxTransformRequest): SandboxExecRequest => ({
+        command: [request.command.program, ...request.command.args],
+        cwd: request.command.cwd,
+        env: request.command.env,
+        sandbox: request.sandbox,
+        windowsSandboxLevel: request.windowsSandboxLevel,
+        windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+        permissionProfile: request.permissions,
+        fileSystemSandboxPolicy: request.permissions.fileSystem,
+        networkSandboxPolicy: request.permissions.network,
+      })),
+    };
+    const service = new AgenCCommandExecService({
+      sandboxManager,
+      agencLinuxSandboxExe: "/tmp/agenc-linux-sandbox-test",
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('profile')"],
+          cwd: ".",
+          permissionProfile: ":workspace",
+          timeoutMs: 2000,
+        },
+        { connectionId: "permission-profile" },
+      ),
+    ).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "profile",
+      stderr: "",
+    });
+
+    expect(sandboxManager.transform).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxPolicyCwd: expect.stringMatching(/runtime$/u),
+        permissions: expect.objectContaining({
+          fileSystem: expect.objectContaining({
+            kind: "restricted",
+            entries: expect.arrayContaining([
+              expect.objectContaining({ access: "write" }),
+            ]),
+          }),
+          network: "restricted",
+        }),
+      }),
+    );
+  });
+
+  it("honors external sandboxPolicy without adding another managed sandbox", async () => {
+    const service = new AgenCCommandExecService();
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('external')"],
+          sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" },
+          timeoutMs: 2000,
+        },
+        { connectionId: "external-sandbox" },
+      ),
+    ).resolves.toEqual({
+      exitCode: 0,
+      stdout: "external",
       stderr: "",
     });
   });
