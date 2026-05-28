@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   apiKeySource: "none" as "ANTHROPIC_API_KEY" | "apiKeyHelper" | "/login managed key" | "none",
   apiKeyConfigured: false,
   agentTokens: 0,
+  throwApiKeyLookup: false,
   subscriber: false,
   supportedIde: false,
   terminalIdeType: null as string | null,
@@ -42,8 +43,18 @@ vi.mock("../../utils/format.js", () => ({
 }));
 
 vi.mock("../../utils/auth.js", () => ({
-  getAnthropicApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
-  getproviderApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
+  getAnthropicApiKeyWithSource: () => {
+    if (mocks.throwApiKeyLookup) {
+      throw new Error("ANTHROPIC_API_KEY or AGENC_OAUTH_TOKEN env var is required");
+    }
+    return { source: mocks.apiKeySource };
+  },
+  getproviderApiKeyWithSource: () => {
+    if (mocks.throwApiKeyLookup) {
+      throw new Error("ANTHROPIC_API_KEY or AGENC_OAUTH_TOKEN env var is required");
+    }
+    return { source: mocks.apiKeySource };
+  },
   getApiKeyFromConfigOrMacOSKeychain: () =>
     mocks.apiKeyConfigured ? "configured-key" : null,
   getAuthTokenSource: () => mocks.authTokenSource,
@@ -91,6 +102,7 @@ describe("startup status notice definitions", () => {
     mocks.apiKeySource = "none";
     mocks.apiKeyConfigured = false;
     mocks.agentTokens = 0;
+    mocks.throwApiKeyLookup = false;
     mocks.subscriber = false;
     mocks.supportedIde = false;
     mocks.terminalIdeType = null;
@@ -121,6 +133,18 @@ describe("startup status notice definitions", () => {
     const ids = getActiveNotices(baseContext()).map((notice) => notice.id);
 
     expect(ids).toContain("api-key-conflict");
+  });
+
+  it("does not throw when auth notice API-key source lookup fails", async () => {
+    mocks.throwApiKeyLookup = true;
+    mocks.apiKeyConfigured = true;
+
+    const { getActiveNotices } = await import("./statusNoticeDefinitions.js");
+
+    expect(() => getActiveNotices(baseContext())).not.toThrow();
+    expect(getActiveNotices(baseContext()).map((notice) => notice.id)).not.toContain(
+      "api-key-conflict",
+    );
   });
 
   it("renders both-auth-methods cleanup guidance with AgenC logout text", async () => {
