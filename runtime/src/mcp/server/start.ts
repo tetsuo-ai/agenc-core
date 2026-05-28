@@ -15,6 +15,13 @@ import { McpServerFramework } from "../../mcp-server/framework.js";
 import { McpHttpSseServerTransport } from "../../mcp-server/http-sse.js";
 import { McpStdioServerTransport } from "../../mcp-server/stdio.js";
 import { mcpToolRegistryFromAgenCTools } from "../../mcp-server/tools.js";
+import type {
+  McpCallToolResult,
+  McpToolCallContext,
+  McpToolCallParams,
+  McpToolDefinition,
+  McpToolProvider,
+} from "../../mcp-server/types.js";
 import {
   buildToolRegistry,
   type ToolRegistry,
@@ -103,7 +110,7 @@ export async function runMcpStdioServe(
   io: McpServerStartIo,
   options: McpServerStartOptions = {},
 ): Promise<void> {
-  const server = createMcpFramework(resolveToolRegistry(options));
+  const server = createMcpFramework(createLazyMcpToolProvider(options));
   await new Promise<void>((resolve, reject) => {
     const transport = new McpStdioServerTransport({
       input: io.stdin,
@@ -123,7 +130,8 @@ export async function startMcpSseServe(
   const registry = resolveToolRegistry(options);
   const host = normalizeMcpSseLoopbackHost(command.host);
   const transport = new McpHttpSseServerTransport({
-    serverFactory: () => createMcpFramework(registry),
+    serverFactory: () =>
+      createMcpFramework(mcpToolRegistryFromAgenCTools(registry)),
   });
   const server = transport.createNodeServer();
   await new Promise<void>((resolve, reject) => {
@@ -193,9 +201,30 @@ function resolveToolRegistry(options: McpServerStartOptions): ToolRegistry {
   });
 }
 
-function createMcpFramework(registry: ToolRegistry): McpServerFramework {
+function createLazyMcpToolProvider(
+  options: McpServerStartOptions,
+): McpToolProvider {
+  let provider: McpToolProvider | null = null;
+  const getProvider = (): McpToolProvider => {
+    provider ??= mcpToolRegistryFromAgenCTools(resolveToolRegistry(options));
+    return provider;
+  };
+  return {
+    listTools(): readonly McpToolDefinition[] {
+      return getProvider().listTools();
+    },
+    callTool(
+      params: McpToolCallParams,
+      context: McpToolCallContext,
+    ): Promise<McpCallToolResult> {
+      return getProvider().callTool(params, context);
+    },
+  };
+}
+
+function createMcpFramework(toolProvider: McpToolProvider): McpServerFramework {
   return new McpServerFramework({
     serverInfo: { version: VERSION },
-    toolProvider: mcpToolRegistryFromAgenCTools(registry),
+    toolProvider,
   });
 }

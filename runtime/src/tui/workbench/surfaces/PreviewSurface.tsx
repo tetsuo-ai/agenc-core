@@ -190,13 +190,15 @@ export function SurfaceHeader({
 export function EmptySurface({
   title,
   message,
+  detail,
 }: {
   readonly title: string;
   readonly message: string;
+  readonly detail?: string;
 }): React.ReactElement {
   return (
     <Box flexDirection="column" width="100%" height="100%">
-      <SurfaceHeader title={title} />
+      <SurfaceHeader title={title} detail={detail} />
       <Text dimColor>{message}</Text>
     </Box>
   );

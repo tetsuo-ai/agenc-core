@@ -328,7 +328,7 @@ describe("DiffSurface", () => {
 
   it.each([
     ["not-repo", createDiffMenuSnapshot({ rawDiff: "", nameStatus: "", numstat: "", untrackedFiles: [], notRepo: true }), "repository"],
-    ["clean", createDiffMenuSnapshot({ rawDiff: "", nameStatus: "", numstat: "", untrackedFiles: [] }), "treechanges"],
+    ["clean", createDiffMenuSnapshot({ rawDiff: "", nameStatus: "", numstat: "", untrackedFiles: [] }), "uncomm"],
   ])("renders %s diff snapshot states", async (_name, snapshot, expectedText) => {
     diffHarness.snapshot = snapshot;
     const { root, stdin, stdout, output } = await mountDiffSurface();
@@ -337,6 +337,7 @@ describe("DiffSurface", () => {
       await sleep();
 
       expect(compact(output())).toContain(expectedText);
+      expect(compact(output())).toContain("gitdiffHEAD");
     } finally {
       root.unmount();
       stdin.end();
