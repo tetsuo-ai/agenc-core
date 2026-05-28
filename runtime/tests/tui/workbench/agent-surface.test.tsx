@@ -75,7 +75,7 @@ describe("AgentSurface", () => {
     keybindingHarness.tails = {};
   });
 
-  it("falls back to the running newest agent when the selected agent id is stale", async () => {
+  it("falls back to the first observed agent when the selected agent id is stale", async () => {
     const oldAgent = {
       id: "agent-old",
       type: "local_agent",
@@ -117,8 +117,8 @@ describe("AgentSurface", () => {
       100,
     );
 
-    expect(output).toContain("AGENT - running - new running agent");
-    expect(output).not.toContain("old completed agent");
+    expect(output).toContain("AGENT - completed - old completed agent");
+    expect(output).not.toContain("new running agent");
   });
 
   it("opens in-process teammate transcripts from the agent surface", async () => {

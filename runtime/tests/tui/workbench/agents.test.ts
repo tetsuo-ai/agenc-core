@@ -44,20 +44,20 @@ describe("workbench agents rail model", () => {
     });
   });
 
-  it("resolves stale agent selection to the active newest agent before completed tasks", () => {
+  it("resolves stale agent selection to the first observed agent", () => {
     const tasks = [
       { id: "agent-old", type: "local_agent", status: "completed", startTime: 1_000 },
       { id: "agent-new", type: "local_agent", status: "running", startTime: 2_000 },
     ];
 
     expect(resolveAgentSelection(tasks, "agent-gone")).toMatchObject({
-      selectedId: "agent-new",
+      selectedId: "agent-old",
       selectedIndex: 0,
-      selectedTask: tasks[1],
+      selectedTask: tasks[0],
     });
   });
 
-  it("orders active agents before background agents and sorts equal groups by newest start time", () => {
+  it("preserves first-seen agent order and appends newly observed agents", () => {
     const tasks = [
       { id: "completed-new", type: "local_agent", status: "completed", startTime: 3_000 },
       { id: "running-old", type: "local_agent", status: "running", startTime: 1_000 },
@@ -66,16 +66,28 @@ describe("workbench agents rail model", () => {
     ];
 
     expect(orderAgentTasks(tasks).map((task) => task.id)).toEqual([
+      "completed-new",
+      "running-old",
       "pending-new",
+      "failed-missing-start",
+    ]);
+
+    expect(orderAgentTasks(tasks, ["running-old", "completed-new"]).map((task) => task.id)).toEqual([
       "running-old",
       "completed-new",
+      "pending-new",
       "failed-missing-start",
     ]);
 
     expect(orderAgentTasks([
+      { id: "failed-gone", type: "local_agent", status: "failed" },
       { id: "failed-a", type: "local_agent", status: "failed" },
       { id: "failed-b", type: "local_agent", status: "failed" },
-    ]).map((task) => task.id)).toEqual(["failed-a", "failed-b"]);
+    ], ["failed-a", "failed-gone"]).map((task) => task.id)).toEqual([
+      "failed-a",
+      "failed-gone",
+      "failed-b",
+    ]);
   });
 
   it("formats elapsed runtime and extracts task paths", () => {
