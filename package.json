@@ -18,6 +18,7 @@
     "validate:openclaude-footer-live-parity": "npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 54-yolo-footer-glyph",
     "validate:tui-openclaude-core-parity": "npm --workspace=@tetsuo-ai/runtime run validate:tui-openclaude-core-parity",
     "check:agent-surface-contract": "node scripts/check-agent-surface-contract.mjs",
+    "check:agent-surface-contract:reviewed": "node scripts/check-agent-surface-contract.mjs --require-reviews",
     "check:tui-v2-design-audit": "npm run check:tui-v2-design-audit --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
