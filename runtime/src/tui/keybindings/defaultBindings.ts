@@ -97,6 +97,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
     context: 'Autocomplete',
     bindings: {
       tab: 'autocomplete:accept',
+      enter: 'autocomplete:confirm',
       escape: 'autocomplete:dismiss',
       up: 'autocomplete:previous',
       down: 'autocomplete:next',

@@ -1889,6 +1889,36 @@ describe('useTypeahead hook paths', () => {
     }
   })
 
+  test('autocomplete confirm keybinding applies file suggestions from an @ token', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'src/app.ts', displayText: 'src/app.ts', description: 'file' },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@sr',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'file suggestion',
+      )
+
+      harness.keybindings['autocomplete:confirm']?.()
+      expect(onInputChange).toHaveBeenCalledWith('@src/app.ts ')
+      expect(setCursorOffset).toHaveBeenCalledWith('@src/app.ts '.length)
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'cleared file suggestion',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('enter applies general path directory suggestions outside slash commands', async () => {
     harness.directorySuggestions = [
       {

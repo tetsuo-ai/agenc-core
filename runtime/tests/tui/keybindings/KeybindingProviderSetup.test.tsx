@@ -250,4 +250,19 @@ describe("KeybindingProviderSetup", () => {
       ),
     ).toEqual({ type: "match", action: "footer:openSelected" });
   });
+
+  test("resolves enter to autocomplete before chat submit while suggestions are active", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+    const event = parseInputEvent("\r");
+
+    expect(
+      resolveKeyWithChordState(
+        event.input,
+        event.key,
+        ["Autocomplete", "Chat", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "autocomplete:confirm" });
+  });
 });

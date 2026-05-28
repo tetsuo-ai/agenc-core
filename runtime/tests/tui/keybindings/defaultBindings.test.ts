@@ -28,6 +28,11 @@ describe("default keybindings", () => {
       "ctrl+shift+c": "selection:copy",
       "cmd+c": "selection:copy",
     });
+
+    expect(bindingsFor("Autocomplete")).toMatchObject({
+      enter: "autocomplete:confirm",
+      tab: "autocomplete:accept",
+    });
   });
 
   test("enables user customization in AgenC without remote feature gates", () => {
