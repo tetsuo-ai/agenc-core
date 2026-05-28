@@ -577,6 +577,39 @@ describe("AgentControl", () => {
     expect(msg.metadata?.kind).toBe("inter_agent_communication");
   });
 
+  it("maybeStartCompletionWatcher() notifies the parent after every completed child turn", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
+    const parent = await control.spawn({ parentPath: "/root" });
+    const child = await control.spawn({ parentPath: parent.agentPath });
+
+    control.maybeStartCompletionWatcher({
+      childThreadId: child.agentId,
+      parentThreadId: parent.agentId,
+    });
+    child.status.markCompleted("turn-1", "first done");
+    await new Promise<void>((r) => setTimeout(r, 10));
+    expect(
+      parent.downInbox.drain().map((msg) =>
+        "content" in msg ? msg.content : "",
+      ),
+    ).toEqual([
+      `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"first done"}}\n</subagent_notification>`,
+    ]);
+
+    child.status.markRunning("turn-2");
+    child.status.markCompleted("turn-2", "second done");
+    await new Promise<void>((r) => setTimeout(r, 10));
+    expect(
+      parent.downInbox.drain().map((msg) =>
+        "content" in msg ? msg.content : "",
+      ),
+    ).toEqual([
+      `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"second done"}}\n</subagent_notification>`,
+    ]);
+  });
+
   it("maybeStartCompletionWatcher() queues root-child completion through the root session mailbox", async () => {
     const session = stubSession({ conversationId: "root-thread" });
     const registry = new AgentRegistry();

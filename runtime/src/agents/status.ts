@@ -5,8 +5,13 @@
  * state transitions of a spawned subagent from creation through
  * terminal states.
  *
- * Final states: `completed`, `errored`, `shutdown`, `not_found`.
+ * Final states for wait/list semantics: `completed`, `errored`, `shutdown`,
+ * `not_found`.
  * Non-final: `pending_init`, `running`, `interrupted`.
+ *
+ * A completed turn is reusable: `followup_task` may move the same live agent
+ * from `completed` back to `running` for its next turn. Shutdown, errored, and
+ * not_found remain irreversible.
  *
  * `interrupted` is intentionally non-final (matches reference runtime
  * `status.rs` — `is_final` returns false for `Running | PendingInit |
@@ -58,6 +63,12 @@ export type AgentStatusJson =
 
 const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
   "completed",
+  "errored",
+  "shutdown",
+  "not_found",
+]);
+
+const IRREVERSIBLE_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
   "errored",
   "shutdown",
   "not_found",
@@ -243,16 +254,19 @@ export class AgentStatusTracker {
     return this.subject.subscribe(listener);
   }
 
+  changes(): AsyncIterable<AgentStatus> {
+    return this.subject.changes();
+  }
+
   complete(): void {
     this.subject.complete();
   }
 
   private set(status: AgentStatus): void {
-    // Only genuinely terminal states are sticky (`completed`,
-    // `errored`, `shutdown`). `interrupted` is non-final — the
-    // tracker may transition back to `running` (e.g. resume) or
-    // onward to a truly terminal state.
-    if (isFinal(this.subject.value)) return;
+    // Only irreversible states are sticky. `completed` is final for wait/list
+    // semantics, but a live agent can still accept followup_task and start a
+    // later turn.
+    if (IRREVERSIBLE_STATES.has(this.subject.value.status)) return;
     this.subject.next(status);
   }
 }

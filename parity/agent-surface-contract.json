@@ -201,6 +201,7 @@
         "enforces the default child depth cap while preserving configured per-session overrides",
         "maps role configuration into child model, tools, permission, prompt, service tier, and runtime limits",
         "normalizes final and nonfinal agent statuses consistently for list and TUI consumers",
+        "allows completed live agents to transition back to running for later follow-up turns while keeping errored, shutdown, and not_found irreversible",
         "routes child terminal notifications through inter-agent communication for live and root parents, with a no-turn not_found fallback when the child handle is missing"
       ],
       "edgeCases": [
@@ -211,6 +212,7 @@
         "a role TOML layer with model, reasoning, and service_tier exposes those locked settings in the spawn tool description",
         "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status",
         "a child completion whose parent is the root thread is delivered to the root session mailbox without triggering a turn",
+        "a child completion watcher emits a distinct parent notification for each completed turn after a follow-up restarts the same live child",
         "a completion watcher for a missing child handle emits a not_found subagent notification to the parent without triggering a turn"
       ],
       "tests": [
@@ -350,6 +352,7 @@
         "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
         "applies role allowlists and tool policies before child tools execute",
         "spawn_agent v2 accepts service_tier, validates it against the effective child model, applies role model/reasoning/service_tier after valid request overrides, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
+        "followup_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
         "close_agent emits the close-end event with the previous status even when close request delivery fails"
       ],
@@ -362,6 +365,7 @@
         "spawn_agent gives role service_tier precedence over a valid requested service_tier when the resolved model supports both",
         "spawn_agent allows an explicit service_tier when fork_turns is all while still rejecting full-history model and effort overrides",
         "a child spawned with service_tier priority forwards priority into the provider request options",
+        "followup_task sends triggerTurn true to a completed live child and still emits begin/end interaction events with the current status",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",
         "a close_agent shutdown failure still emits collab_close_end and returns a structured tool error",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",

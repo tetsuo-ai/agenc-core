@@ -2988,7 +2988,7 @@ describe("model-facing tools", () => {
     expect(waitForMailboxChange).toHaveBeenCalledWith(10_000);
   });
 
-  it("rejects messages to terminal live agents instead of reporting false delivery", async () => {
+  it("followup_task accepts a completed live agent and triggers the next turn", async () => {
     const session = fakeSession();
     const emitted: unknown[] = [];
     (session as unknown as { emit: typeof session.emit }).emit = (event) => {
@@ -3044,11 +3044,14 @@ describe("model-facing tools", () => {
         message: "report now",
       });
 
-      expect(result.isError).toBe(true);
-      expect(JSON.parse(result.content).error).toBe(
-        "target agent /root/task_1 is completed and cannot accept new messages",
-      );
-      expect(sendInterAgentCommunication).not.toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toBe("");
+      expect(sendInterAgentCommunication).toHaveBeenCalledWith("agent-1", {
+        author: "/root",
+        recipient: "/root/task_1",
+        content: "report now",
+        triggerTurn: true,
+      });
       expect(
         emitted.map((event) => (event as { msg: { type: string } }).msg.type),
       ).toEqual([
