@@ -1175,15 +1175,6 @@ export function buildFilteredRegistry(
   };
 }
 
-const V2_AGENT_TOOL_NAMES = new Set([
-  "spawn_agent",
-  "wait_agent",
-  "close_agent",
-  "followup_task",
-  "send_message",
-  "list_agents",
-]);
-
 const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
   "TaskCreate",
   "TaskGet",
@@ -1205,12 +1196,10 @@ const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
 
 const THREAD_SPAWN_DEPTH_CAPPED_TOOL_NAMES = new Set([
   ...THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES,
-  ...V2_AGENT_TOOL_NAMES,
 ]);
 
 const THREAD_SPAWN_SUBAGENT_TOOL_NAMES = new Set([
   ...THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES,
-  "spawn_agent",
 ]);
 
 export function resolveThreadSpawnDisabledTools(opts: {

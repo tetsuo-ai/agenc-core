@@ -167,6 +167,36 @@ describe("AgentControl", () => {
     expect(child.depth).toBe(2);
   });
 
+  it("allows a per-call depth cap without changing the session cap", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 1 });
+    const parent = await control.spawn({
+      parentPath: "/root",
+      agentName: "parent",
+    });
+
+    await expect(
+      control.spawn({ parentPath: parent.agentPath, agentName: "blocked" }),
+    ).rejects.toBeInstanceOf(MaxDepthExceededError);
+
+    const child = await control.spawn({
+      parentPath: parent.agentPath,
+      agentName: "child",
+      depthCap: 2,
+    });
+    expect(child.agentPath).toBe("/root/parent/child");
+    expect(child.depth).toBe(2);
+
+    await expect(
+      control.spawn({
+        parentPath: child.agentPath,
+        agentName: "too_deep",
+        depthCap: 2,
+      }),
+    ).rejects.toBeInstanceOf(MaxDepthExceededError);
+  });
+
   it("interrupt() cascades to descendants and fires AbortController", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();

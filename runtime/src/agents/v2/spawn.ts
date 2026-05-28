@@ -4,7 +4,10 @@ import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
-import { assertValidAgentName, ROOT_AGENT_PATH } from "../registry.js";
+import {
+  assertValidAgentName,
+  depthOfAgentPath,
+} from "../registry.js";
 import {
   formatRoleList,
   listAgentRoles,
@@ -83,7 +86,6 @@ identifiers (the root agent is named "/root", its children are
 from the Environment section of this prompt — never assume "/root" or
 "/root/<x>" is a real directory.
 
-Only the root task may call spawn_agent. Spawned agents cannot spawn additional agents.
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.`;
@@ -425,10 +427,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(reason);
       return json({ error: reason }, true);
     };
-    if (current.agentPath !== ROOT_AGENT_PATH) {
-      return failSpawn("Subagents cannot spawn agents. Ask the main session to spawn agents.");
-    }
-
     let resolvedRole: AgentRole | undefined;
     try {
       if (role !== undefined) {
@@ -543,6 +541,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         registry,
         taskPrompt: prompt,
         agentName: taskName,
+        depthCap: depthOfAgentPath(current.agentPath) + 1,
         ...(forkMode !== undefined ? { forkMode } : {}),
         runInBackground: true,
         ...(role !== undefined ? { role } : {}),
