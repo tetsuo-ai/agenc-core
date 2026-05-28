@@ -70,6 +70,18 @@ function sequence(values: readonly string[]): () => string {
   };
 }
 
+async function waitFor(
+  condition: () => boolean,
+  description: string,
+): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
+}
+
 describe("agenc agent start CLI", () => {
   it("parses the background-agent start command without claiming prompts", () => {
     expect(parseAgenCAgentCliArgs(["hello"])).toBeNull();
@@ -1444,6 +1456,120 @@ autostart = false
       status: "disconnected",
       message: "Daemon connection closed",
     });
+  });
+
+  it("reconnects persistent TUI clients on the next request after daemon restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-reconnect-"));
+    const socketPath = join(dir, "daemon.sock");
+    const initialized: Array<{
+      readonly label: string;
+      readonly authCookie: unknown;
+    }> = [];
+    const makeServer = (label: string): AgenCUnixSocketServer =>
+      new AgenCUnixSocketServer({
+        socketPath,
+        onMessage: async (message, context) => {
+          if (message.method === "initialize") {
+            initialized.push({
+              label,
+              authCookie: (message.params as { authCookie?: unknown })
+                .authCookie,
+            });
+            await context.send({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                type: "initialized",
+                protocolVersion: "1.0.0",
+                capabilities: {},
+              },
+            });
+            return;
+          }
+          if (message.method === "message.stream") {
+            await context.send({
+              jsonrpc: "2.0",
+              method: "event.session_event",
+              sessionId: "session_reconnect",
+              params: { label },
+            });
+            await context.send({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                messageId: `message_${label}`,
+                streamId: "stream_reconnect",
+                acceptedAt: "2026-05-01T12:00:05.000Z",
+              },
+            });
+          }
+        },
+      });
+
+    let server = makeServer("before");
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "reconnect-cookie",
+      timeoutMs: 200,
+    });
+    const states: unknown[] = [];
+    const received: unknown[] = [];
+    const unsubscribeState = client.subscribeToConnectionState((state) => {
+      states.push(state);
+    });
+    const unsubscribeSession = client.subscribeToSessionEvents(
+      "session_reconnect",
+      (event) => {
+        received.push(event);
+      },
+    );
+    try {
+      await server.close();
+      await waitFor(
+        () => client.getConnectionState().status === "disconnected",
+        "persistent client disconnect after daemon close",
+      );
+      server = makeServer("after");
+      await server.listen();
+
+      await expect(
+        client.request("message.stream", {
+          sessionId: "session_reconnect",
+          content: "continue",
+          streamId: "stream_reconnect",
+        }),
+      ).resolves.toEqual({
+        messageId: "message_after",
+        streamId: "stream_reconnect",
+        acceptedAt: "2026-05-01T12:00:05.000Z",
+      });
+    } finally {
+      unsubscribeSession();
+      unsubscribeState();
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    expect(initialized).toEqual([
+      { label: "before", authCookie: "reconnect-cookie" },
+      { label: "after", authCookie: "reconnect-cookie" },
+    ]);
+    expect(states).toContainEqual({
+      status: "disconnected",
+      message: "Daemon connection closed",
+    });
+    expect(states).toContainEqual({ status: "reconnecting" });
+    expect(states).toContainEqual({ status: "connected" });
+    expect(received).toEqual([
+      {
+        jsonrpc: "2.0",
+        method: "event.session_event",
+        sessionId: "session_reconnect",
+        params: { label: "after" },
+      },
+    ]);
   });
 
   it("does not retry agent.create after the side-effecting request is sent", async () => {
