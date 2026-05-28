@@ -1825,7 +1825,12 @@ describe("model-facing tools", () => {
     const zeroTimeout = await wait.execute({ timeout_ms: 0 });
     expect(zeroTimeout.isError).toBe(true);
     expect(JSON.parse(zeroTimeout.content).error).toBe(
-      "timeout_ms must be greater than zero",
+      "timeout_ms must be at least 10000",
+    );
+    const tooLargeTimeout = await wait.execute({ timeout_ms: 3_600_001 });
+    expect(tooLargeTimeout.isError).toBe(true);
+    expect(JSON.parse(tooLargeTimeout.content).error).toBe(
+      "timeout_ms must be at most 3600000",
     );
     for (const timeout_ms of ["1000", {}, []]) {
       const invalidTimeout = await wait.execute({ timeout_ms });
@@ -1834,11 +1839,9 @@ describe("model-facing tools", () => {
         "timeout_ms must be a number",
       );
     }
-    for (const targets of ["task_1", {}, []]) {
-      const invalidTargets = await wait.execute({ targets });
-      expect(invalidTargets.isError).toBe(true);
-      expect(JSON.parse(invalidTargets.content).error).toMatch(/targets must/);
-    }
+    const targets = await wait.execute({ targets: ["/root/worker"] });
+    expect(targets.isError).toBe(true);
+    expect(JSON.parse(targets.content).error).toBe("unknown field `targets`");
 
     const invalidRole = await spawnAgent.execute({
       message: "inspect",
@@ -2592,37 +2595,22 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("wait_agent waits against actual descendant agent statuses", async () => {
+  it("wait_agent waits for parent mailbox updates without enumerating agent statuses", async () => {
     const session = fakeSession();
     const emitted: unknown[] = [];
     (session as unknown as { emit: typeof session.emit }).emit = (event) => {
       emitted.push(event);
     };
-    const completedStatus = {
-      status: "completed" as const,
-      turnId: "turn-1",
-      endedAtMs: 1,
-      lastMessage: "done",
+    const waitForMailboxChange = vi.fn(async () => true);
+    const sessionWithMailboxWait = session as unknown as {
+      waitForMailboxChange: typeof waitForMailboxChange;
     };
+    sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
     const control = {
-      listAgents: vi.fn(() => [
-        {
-          agentName: "/root",
-          agentStatus: { status: "pending_init" as const },
-          lastTaskMessage: "Main thread",
-        },
-        {
-          agentName: "/root/worker",
-          agentStatus: completedStatus,
-          lastTaskMessage: "inspect",
-        },
-      ]),
+      listAgents: vi.fn(() => []),
       getLive: vi.fn(() => undefined),
       resolveAgentReference: vi.fn(() => "agent-1"),
-      subscribeStatus: vi.fn(async () => ({
-        value: completedStatus,
-        unsubscribe: vi.fn(),
-      })),
+      subscribeStatus: vi.fn(),
     };
     _setAgentControlForTesting(session, {
       control: control as never,
@@ -2640,21 +2628,61 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content)).toEqual({
         message: "Wait completed.",
         timed_out: false,
-        statuses: {
-          "/root/worker": { completed: "done" },
-        },
       });
-      expect(control.listAgents).toHaveBeenCalledWith({ pathPrefix: "/root" });
-      expect(control.subscribeStatus).toHaveBeenCalledWith("agent-1");
+      expect(waitForMailboxChange).toHaveBeenCalledWith(30_000);
+      expect(control.listAgents).not.toHaveBeenCalled();
+      expect(control.subscribeStatus).not.toHaveBeenCalled();
       expect(
         emitted.map((event) => (event as { msg: { type: string } }).msg.type),
       ).toEqual(["collab_waiting_begin", "collab_waiting_end"]);
       expect(
-        (emitted[1] as { msg: { payload: { statuses: unknown } } }).msg.payload.statuses,
-      ).toEqual({ "/root/worker": completedStatus });
+        (
+          emitted[0] as {
+            msg: { payload: { receiverThreadIds: unknown[] } };
+          }
+        ).msg.payload.receiverThreadIds,
+      ).toEqual([]);
+      expect(
+        (
+          emitted[1] as {
+            msg: {
+              payload: { statuses: unknown; agentStatuses: unknown[] };
+            };
+          }
+        ).msg.payload.statuses,
+      ).toEqual({});
+      expect(
+        (
+          emitted[1] as {
+            msg: { payload: { agentStatuses: unknown[] } };
+          }
+        ).msg.payload.agentStatuses,
+      ).toEqual([]);
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
+  });
+
+  it("wait_agent reports timeout when no parent mailbox update arrives", async () => {
+    const session = fakeSession();
+    const waitForMailboxChange = vi.fn(async () => false);
+    const sessionWithMailboxWait = session as unknown as {
+      waitForMailboxChange: typeof waitForMailboxChange;
+    };
+    sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
+    const wait = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "wait_agent")!;
+
+    const result = await wait.execute({ timeout_ms: 10_000 });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content)).toEqual({
+      message: "Wait timed out.",
+      timed_out: true,
+    });
+    expect(waitForMailboxChange).toHaveBeenCalledWith(10_000);
   });
 
   it("rejects messages to terminal live agents instead of reporting false delivery", async () => {
