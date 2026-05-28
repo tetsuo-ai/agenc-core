@@ -252,6 +252,9 @@ test('parses control, meta, printable, and navigation key variants', () => {
     expect.objectContaining({ name: 'return', raw: undefined }),
   )
   expect(parseKey('\n').name).toBe('enter')
+  const lineFeedEnter = parseInputEvent('\n')
+  expect(lineFeedEnter.input).toBe('')
+  expect(lineFeedEnter.key.return).toBe(true)
   expect(parseKey('\t').name).toBe('tab')
   expect(parseKey('\b').name).toBe('backspace')
   const [escapedBackspace] = parseMultipleKeypresses(INITIAL_STATE, '\x1b\b')

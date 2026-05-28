@@ -19,13 +19,16 @@ function makeEvent(
 }
 
 describe('consumeAutocompleteEnterKey', () => {
-  it('consumes bare Enter while suggestions are visible', () => {
-    const event = makeEvent()
+  it.each(['return', 'enter', 'Enter'])(
+    'consumes bare %s while suggestions are visible',
+    keyName => {
+      const event = makeEvent({ key: keyName })
 
-    expect(consumeAutocompleteEnterKey(event, 1)).toBe(true)
-    expect(event.preventDefault).toHaveBeenCalledOnce()
-    expect(event.stopImmediatePropagation).toHaveBeenCalledOnce()
-  })
+      expect(consumeAutocompleteEnterKey(event, 1)).toBe(true)
+      expect(event.preventDefault).toHaveBeenCalledOnce()
+      expect(event.stopImmediatePropagation).toHaveBeenCalledOnce()
+    },
+  )
 
   it('leaves Enter alone when there is no active suggestion list', () => {
     const event = makeEvent()
