@@ -1,6 +1,8 @@
 import type { BackgroundTaskSnapshot } from "./lifecycle.js";
 import type { LocalAgentTaskState, TaskState } from "./types.js";
 
+const PANEL_GRACE_MS = 30_000;
+
 export interface TaskAppStateBridge {
   setAppState?: (updater: (prev: unknown) => unknown) => void;
 }
@@ -26,15 +28,37 @@ function localAgentTaskFromSnapshot(
   if (snapshot.type !== "local_agent") return null;
   const previousAgent =
     previous?.type === "local_agent" ? (previous as LocalAgentTaskState) : undefined;
-  const progress = snapshot.progress;
   const threadName = stringMetadata(snapshot.metadata, "threadName");
   const agentRole = stringMetadata(snapshot.metadata, "agentRole");
   const model = stringMetadata(snapshot.metadata, "model");
+  const finalMessage = stringMetadata(snapshot.metadata, "finalMessage");
   const cwd = stringMetadata(snapshot.metadata, "cwd") ?? previousAgent?.cwd;
   const worktreePath =
     stringMetadata(snapshot.metadata, "worktreePath") ??
     previousAgent?.worktreePath;
   const path = stringMetadata(snapshot.metadata, "path") ?? previousAgent?.path;
+  const terminal =
+    snapshot.status === "completed" ||
+    snapshot.status === "failed" ||
+    snapshot.status === "killed";
+  const progress = finalMessage !== undefined
+    ? {
+        ...snapshot.progress,
+        toolUseCount:
+          snapshot.progress?.toolUseCount ??
+          previousAgent?.progress?.toolUseCount ??
+          0,
+        tokenCount:
+          snapshot.progress?.tokenCount ??
+          previousAgent?.progress?.tokenCount ??
+          0,
+        summary: finalMessage,
+      }
+    : snapshot.progress;
+  const evictAfter =
+    terminal && previousAgent?.retain !== true
+      ? previousAgent?.evictAfter ?? Date.now() + PANEL_GRACE_MS
+      : previousAgent?.evictAfter;
   return {
     id: snapshot.id,
     type: "local_agent",
@@ -75,9 +99,7 @@ function localAgentTaskFromSnapshot(
       ? { unregisterCleanup: previousAgent.unregisterCleanup }
       : {}),
     ...(previousAgent?.result !== undefined ? { result: previousAgent.result } : {}),
-    ...(previousAgent?.evictAfter !== undefined
-      ? { evictAfter: previousAgent.evictAfter }
-      : {}),
+    ...(evictAfter !== undefined ? { evictAfter } : {}),
   };
 }
 

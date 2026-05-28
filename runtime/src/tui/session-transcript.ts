@@ -1144,6 +1144,25 @@ function parseSubagentNotification(message: string): {
   }
 }
 
+function collabMailboxUpdateDetails(updates: unknown): readonly string[] {
+  if (!Array.isArray(updates)) return [];
+  return updates.flatMap((entry): readonly string[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const value = entry as Record<string, unknown>;
+    const content = nonEmptyString(value.content);
+    if (!content) return [];
+    const parsed = parseSubagentNotification(content);
+    if (parsed) {
+      const detail = parsed.details.length > 0
+        ? `: ${parsed.details.join(" · ")}`
+        : "";
+      return [`${parsed.title}${detail}`];
+    }
+    const role = nonEmptyString(value.role) ?? "message";
+    return [`${role}: ${truncatePreview(content, 160)}`];
+  });
+}
+
 function collectSettledCollabSpawnCallIds(
   events: readonly SessionTranscriptEvent[],
 ): ReadonlySet<string> {
@@ -2267,6 +2286,7 @@ export function adaptTranscriptEvents(
             );
           }
         }
+        details.push(...collabMailboxUpdateDetails(payload.mailboxUpdates));
         out.push(
           makeCollabAgentMessage(
             timedOut ? "Wait call timed out" : "Finished waiting",

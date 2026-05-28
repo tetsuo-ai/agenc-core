@@ -510,8 +510,8 @@ function AgentsDefinitionsEditor({
 
   return (
     <Popup
-      title="agents · definitions editor"
-      status={`${activeCount} active · ${registeredCount} registered${scrollStatus}`}
+      title="agents"
+      status={`${activeCount} delegate-capable · ${registeredCount} registered${scrollStatus}`}
       footer={[
         { keyName: "up/down", label: "select" },
         { keyName: "enter", label: "detail" },
@@ -523,7 +523,7 @@ function AgentsDefinitionsEditor({
     >
       <Box flexDirection="column">
         <ThemedText color="muted3" wrap="truncate-end">
-          {activeCount} active · {registeredCount} registered
+          {activeCount} delegate-capable · {registeredCount} registered · q/esc close
         </ThemedText>
         <Box flexDirection="row">
           <Box width={2} />
@@ -589,10 +589,11 @@ function AgentDetailModal({
   return (
     <Popup
       title={`agent detail · ${agentIdentityLabel(agent)}`}
-      status="e edit · d delete · esc back"
+      status="e edit · d delete · q close · esc back"
       footer={[
         { keyName: "e", label: "edit" },
         { keyName: "d", label: "delete" },
+        { keyName: "q", label: "close" },
         { keyName: "esc", label: "back" },
       ]}
     >
@@ -619,7 +620,7 @@ function AgentDeleteModal({
       title="delete agent"
       count={agent.agentType}
       summary={editableAgent(agent) ? "confirmation required" : "read-only"}
-      headerRight="y/n · enter"
+      headerRight="y/n · q close · enter"
       columns={[5, 80]}
       headers={["pick", "effect"]}
       items={rows}
@@ -644,6 +645,8 @@ function AgentDeleteModal({
       footer={[
         { keyName: "y", label: "delete" },
         { keyName: "n", label: "cancel" },
+        { keyName: "q", label: "close" },
+        { keyName: "esc", label: "back" },
       ]}
       hint="built-in, plugin, and flag agents are read-only"
     />
@@ -685,7 +688,7 @@ function AgentFormModal({
             ? `${validation.warnings.length} warning(s)`
             : "valid"
       }
-      headerRight="type · ctrl+s save · esc"
+      headerRight="type · ctrl+s save · ctrl+c close · esc"
       columns={[3, 15, 78]}
       headers={["", "field", "value"]}
       items={rows}
@@ -729,6 +732,8 @@ function AgentFormModal({
         { keyName: "up/down", label: "field" },
         { keyName: "type", label: "edit" },
         { keyName: "ctrl+s", label: "save" },
+        { keyName: "ctrl+c", label: "close" },
+        { keyName: "esc", label: "back" },
       ]}
       hint="space cycles source · backspace deletes"
     />
@@ -956,6 +961,11 @@ function AgentsMenuModal({
   }, [modeAgent, setAppState]);
 
   useInput((input, key) => {
+    if (key.ctrl && input === "c") {
+      closeWithMessage();
+      return;
+    }
+
     if (mode.name === "list") {
       if (key.escape || input === "q") {
         closeWithMessage();
@@ -988,7 +998,11 @@ function AgentsMenuModal({
     }
 
     if (mode.name === "detail") {
-      if (key.escape || input === "q") {
+      if (input === "q") {
+        closeWithMessage();
+        return;
+      }
+      if (key.escape) {
         setMode({ name: "list" });
         return;
       }
@@ -1003,7 +1017,11 @@ function AgentsMenuModal({
     }
 
     if (mode.name === "delete") {
-      if (key.escape || input === "n" || input === "q") {
+      if (input === "q") {
+        closeWithMessage();
+        return;
+      }
+      if (key.escape || input === "n") {
         setMode({ name: "detail", agent: mode.agent });
         return;
       }

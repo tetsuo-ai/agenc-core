@@ -71,6 +71,7 @@ export interface AgentProgressActivity {
 export interface AgentProgress {
   readonly toolUseCount?: number;
   readonly tokenCount?: number;
+  readonly summary?: string;
   readonly lastActivity?: AgentProgressActivity;
   readonly recentActivities?: readonly AgentProgressActivity[];
 }
