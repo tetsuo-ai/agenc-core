@@ -484,6 +484,8 @@ export interface Config {
   readonly multiAgentV2: {
     readonly maxConcurrentThreadsPerSession?: number;
     readonly minWaitTimeoutMs?: number;
+    readonly defaultWaitTimeoutMs?: number;
+    readonly maxWaitTimeoutMs?: number;
     readonly usageHintEnabled: boolean;
     readonly usageHintText: string;
     readonly rootAgentUsageHintText?: string;

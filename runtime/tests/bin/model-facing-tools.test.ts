@@ -2988,6 +2988,64 @@ describe("model-facing tools", () => {
     expect(waitForMailboxChange).toHaveBeenCalledWith(10_000);
   });
 
+  it("wait_agent uses configured default and max timeout bounds", async () => {
+    const session = fakeSession();
+    (session as unknown as {
+      config: {
+        multiAgentV2: {
+          minWaitTimeoutMs: number;
+          defaultWaitTimeoutMs: number;
+          maxWaitTimeoutMs: number;
+        };
+      };
+    }).config = {
+      multiAgentV2: {
+        minWaitTimeoutMs: 500,
+        defaultWaitTimeoutMs: 1_250,
+        maxWaitTimeoutMs: 2_000,
+      },
+    };
+    const waitForMailboxChange = vi.fn(async () => true);
+    const sessionWithMailboxWait = session as unknown as {
+      waitForMailboxChange: typeof waitForMailboxChange;
+    };
+    sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
+    const wait = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "wait_agent")!;
+
+    const defaulted = await wait.execute({});
+    const tooLarge = await wait.execute({ timeout_ms: 2_001 });
+
+    expect(defaulted.isError).toBeUndefined();
+    expect(waitForMailboxChange).toHaveBeenCalledWith(1_250);
+    expect(JSON.parse(tooLarge.content)).toEqual({
+      error: "timeout_ms must be at most 2000",
+    });
+    expect(tooLarge.isError).toBe(true);
+    expect(
+      wait.inputSchema.properties?.timeout_ms &&
+        "description" in wait.inputSchema.properties.timeout_ms
+        ? wait.inputSchema.properties.timeout_ms.description
+        : undefined,
+    ).toBe("Optional timeout in milliseconds. Defaults to 1250, min 500, max 2000.");
+  });
+
+  it("wait_agent rejects fractional timeout_ms values", async () => {
+    const wait = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => fakeSession(),
+    }).find((tool) => tool.name === "wait_agent")!;
+
+    const result = await wait.execute({ timeout_ms: 10_000.5 });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toEqual({
+      error: "timeout_ms must be an integer",
+    });
+  });
+
   it("followup_task accepts a completed live agent and triggers the next turn", async () => {
     const session = fakeSession();
     const emitted: unknown[] = [];

@@ -21,22 +21,66 @@ function waitTimeoutMs(
   const sessionOrError = getSessionOrError(opts);
   if (!("conversationId" in sessionOrError)) return sessionOrError;
   const supplied = numberValue(args.timeout_ms);
-  const configuredMin = sessionOrError.config?.multiAgentV2?.minWaitTimeoutMs;
-  const minTimeoutMs = Math.min(
-    MAX_WAIT_TIMEOUT_MS,
-    Math.max(1, configuredMin ?? MIN_WAIT_TIMEOUT_MS),
-  );
-  const maxTimeoutMs = MAX_WAIT_TIMEOUT_MS;
+  const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } =
+    effectiveWaitTimeoutOptions(sessionOrError);
   if (supplied !== undefined && supplied < minTimeoutMs) {
     return json({ error: `timeout_ms must be at least ${minTimeoutMs}` }, true);
   }
   if (supplied !== undefined && supplied > maxTimeoutMs) {
     return json({ error: `timeout_ms must be at most ${maxTimeoutMs}` }, true);
   }
-  return supplied ?? DEFAULT_WAIT_TIMEOUT_MS;
+  return supplied ?? defaultTimeoutMs;
+}
+
+function configuredTimeoutOption(value: unknown, fallback: number): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value)
+  ) {
+    return fallback;
+  }
+  return value;
+}
+
+function effectiveWaitTimeoutOptions(session: {
+  readonly config?: {
+    readonly multiAgentV2?: {
+      readonly minWaitTimeoutMs?: number;
+      readonly defaultWaitTimeoutMs?: number;
+      readonly maxWaitTimeoutMs?: number;
+    };
+  };
+}): {
+  readonly defaultTimeoutMs: number;
+  readonly minTimeoutMs: number;
+  readonly maxTimeoutMs: number;
+} {
+  const cfg = session.config?.multiAgentV2;
+  const minTimeoutMs = configuredTimeoutOption(
+    cfg?.minWaitTimeoutMs,
+    MIN_WAIT_TIMEOUT_MS,
+  );
+  const defaultTimeoutMs = configuredTimeoutOption(
+    cfg?.defaultWaitTimeoutMs,
+    DEFAULT_WAIT_TIMEOUT_MS,
+  );
+  const maxTimeoutMs = configuredTimeoutOption(
+    cfg?.maxWaitTimeoutMs,
+    MAX_WAIT_TIMEOUT_MS,
+  );
+  return { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs };
 }
 
 export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
+  const session = opts.getSession();
+  const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } = session
+    ? effectiveWaitTimeoutOptions(session)
+    : {
+        defaultTimeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
+        minTimeoutMs: MIN_WAIT_TIMEOUT_MS,
+        maxTimeoutMs: MAX_WAIT_TIMEOUT_MS,
+      };
   const execute = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
@@ -49,6 +93,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       (typeof args.timeout_ms !== "number" || !Number.isFinite(args.timeout_ms))
     ) {
       return json({ error: "timeout_ms must be a number" }, true);
+    }
+    if (
+      typeof args.timeout_ms === "number" &&
+      !Number.isInteger(args.timeout_ms)
+    ) {
+      return json({ error: "timeout_ms must be an integer" }, true);
     }
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
@@ -117,8 +167,8 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         timeout_ms: {
           type: "number",
           description:
-            `Optional timeout in milliseconds. Defaults to ${DEFAULT_WAIT_TIMEOUT_MS}, ` +
-            `min ${MIN_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}.`,
+            `Optional timeout in milliseconds. Defaults to ${defaultTimeoutMs}, ` +
+            `min ${minTimeoutMs}, max ${maxTimeoutMs}.`,
         },
       },
       additionalProperties: false,

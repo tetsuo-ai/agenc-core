@@ -3614,6 +3614,8 @@ function deriveMinimalSessionConfig(
     features,
     multiAgentV2: {
       minWaitTimeoutMs: 10_000,
+      defaultWaitTimeoutMs: 30_000,
+      maxWaitTimeoutMs: 3_600_000,
       usageHintEnabled: false,
       usageHintText: "",
       hideSpawnAgentMetadata: false,

@@ -354,12 +354,16 @@
         "spawn_agent v2 accepts service_tier, validates it against the effective child model, applies role model/reasoning/service_tier after valid request overrides, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
         "followup_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
+        "wait_agent v2 validates, defaults, and describes timeout_ms from configured min, default, and max wait timeout options",
         "close_agent emits the close-end event with the previous status even when close request delivery fails"
       ],
       "edgeCases": [
         "wait_agent returns completed when any parent mailbox update arrives before the timeout",
         "wait_agent returns timed_out when no parent mailbox update arrives before the timeout",
         "wait_agent rejects timeout_ms below the configured minimum instead of silently clamping",
+        "wait_agent uses the configured default timeout when timeout_ms is omitted",
+        "wait_agent rejects timeout_ms above the configured maximum instead of using the global maximum",
+        "wait_agent rejects fractional timeout_ms values instead of passing fractional milliseconds into the mailbox wait",
         "wait_agent rejects removed v1 targets input as an unknown field",
         "spawn_agent rejects an explicit service_tier unsupported by the role-resolved child model before delegation",
         "spawn_agent gives role service_tier precedence over a valid requested service_tier when the resolved model supports both",
