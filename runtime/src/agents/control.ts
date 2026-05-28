@@ -1248,20 +1248,22 @@ export class AgentControl {
     child: LiveAgent,
     parentId: ThreadId,
   ): Promise<void> {
-    await new Promise<void>((resolve) => {
-      if (isFinal(child.status.value)) {
-        resolve();
-        return;
-      }
-      const unsubscribe = child.status.subscribe((status) => {
-        if (isFinal(status)) {
-          unsubscribe();
-          resolve();
-        }
-      });
-    });
+    let lastNotifiedStatusKey: string | undefined;
+    for await (const status of child.status.changes()) {
+      if (!isFinal(status)) continue;
+      const statusKey = completionStatusKey(status);
+      if (statusKey === lastNotifiedStatusKey) continue;
+      lastNotifiedStatusKey = statusKey;
+      await this.sendCompletionNotification(child, parentId, status);
+      if (status.status !== "completed") return;
+    }
+  }
 
-    const final = child.status.value;
+  private async sendCompletionNotification(
+    child: LiveAgent,
+    parentId: ThreadId,
+    final: AgentStatus,
+  ): Promise<void> {
     const message = formatSubagentNotification({
       agentPath: child.agentPath,
       status: final,
@@ -1646,6 +1648,21 @@ function parentAgentPathFor(agentPath: AgentPath): AgentPath | undefined {
   if (index <= 0) return undefined;
   const parentPath = agentPath.slice(0, index);
   return parentPath.length > 0 ? (parentPath as AgentPath) : undefined;
+}
+
+function completionStatusKey(status: AgentStatus): string {
+  switch (status.status) {
+    case "completed":
+    case "errored":
+    case "interrupted":
+    case "running":
+      return `${status.status}:${status.turnId}`;
+    case "shutdown":
+      return `${status.status}:${status.endedAtMs}`;
+    case "pending_init":
+    case "not_found":
+      return status.status;
+  }
 }
 
 /** Port of reference runtime `agent_matches_prefix` (`control.rs:1173`). */

@@ -57,7 +57,7 @@ vi.mock("../../tasks/InProcessTeammateTask/types.js", () => ({
 
 vi.mock("../../utils/collapseReadSearch.js", () => ({
   summarizeRecentActivities: (
-    activities: readonly Array<{ readonly activityDescription?: string }>,
+    activities: ReadonlyArray<{ readonly activityDescription?: string }>,
   ) => activities.map(activity => activity.activityDescription).filter(Boolean).join(" + "),
 }));
 

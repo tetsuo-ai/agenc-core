@@ -30,12 +30,17 @@ describe("AgentStatusTracker", () => {
     if (s.status === "interrupted") expect(s.reason).toBe("parent_interrupt");
   });
 
-  it("final→final overrides are ignored (sticky final pair)", () => {
+  it("allows a completed agent to start another turn", () => {
     const t = new AgentStatusTracker();
     t.markCompleted("turn-1");
-    // final→final: ignored.
-    t.markShutdown();
-    expect(t.value.status).toBe("completed");
+    t.markRunning("turn-2");
+    expect(t.value).toMatchObject({ status: "running", turnId: "turn-2" });
+    t.markCompleted("turn-2", "done again");
+    expect(t.value).toMatchObject({
+      status: "completed",
+      turnId: "turn-2",
+      lastMessage: "done again",
+    });
   });
 
   it("isFinal classifies terminal states", () => {
@@ -67,6 +72,17 @@ describe("AgentStatusTracker", () => {
     t.markShutdown();
     t.markRunning("turn-1");
     expect(t.value.status).toBe("shutdown");
+  });
+
+  it("errored stays sticky and rejects further transitions", () => {
+    const t = new AgentStatusTracker();
+    t.markErrored("turn-1", "boom");
+    t.markRunning("turn-2");
+    expect(t.value).toMatchObject({
+      status: "errored",
+      turnId: "turn-1",
+      error: "boom",
+    });
   });
 
   it("subscribe delivers replay of current state", () => {
