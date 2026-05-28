@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { InputEvent } from '../ink/events/input-event.js'
 import { type Key, useInput } from '../ink.js'
 import { useOptionalKeybindingContext } from './KeybindingContext.js'
@@ -39,12 +39,23 @@ export function useKeybinding(
 ): void {
   const { context = 'Global', isActive = true } = options
   const keybindingContext = useOptionalKeybindingContext()
+  const handlerRef = useRef(handler)
+
+  useLayoutEffect(() => {
+    handlerRef.current = handler
+  }, [handler])
+
+  const invokeLatestHandler = useCallback(() => handlerRef.current(), [])
 
   // Register handler with the context for ChordInterceptor to invoke
   useEffect(() => {
     if (!keybindingContext || !isActive) return
-    return keybindingContext.registerHandler({ action, context, handler })
-  }, [action, context, handler, keybindingContext, isActive])
+    return keybindingContext.registerHandler({
+      action,
+      context,
+      handler: invokeLatestHandler,
+    })
+  }, [action, context, invokeLatestHandler, keybindingContext, isActive])
 
   const handleInput = useCallback(
     (input: string, key: Key, event: InputEvent) => {
@@ -68,7 +79,7 @@ export function useKeybinding(
           // Chord completed (if any) - clear pending state
           keybindingContext.setPendingChord(null)
           if (result.action === action) {
-            if (handler() !== false) {
+            if (invokeLatestHandler() !== false) {
               event.stopImmediatePropagation()
             }
           }
@@ -92,7 +103,7 @@ export function useKeybinding(
           break
       }
     },
-    [action, context, handler, keybindingContext],
+    [action, context, invokeLatestHandler, keybindingContext],
   )
 
   useInput(handleInput, { isActive })
@@ -125,15 +136,26 @@ export function useKeybindings(
 ): void {
   const { context = 'Global', isActive = true } = options
   const keybindingContext = useOptionalKeybindingContext()
+  const handlersRef = useRef(handlers)
+  const actionKey = useMemo(() => Object.keys(handlers).sort().join('\0'), [handlers])
+
+  useLayoutEffect(() => {
+    handlersRef.current = handlers
+  }, [handlers])
 
   // Register all handlers with the context for ChordInterceptor to invoke
   useEffect(() => {
     if (!keybindingContext || !isActive) return
 
     const unregisterFns: Array<() => void> = []
-    for (const [action, handler] of Object.entries(handlers)) {
+    const actionNames = actionKey === '' ? [] : actionKey.split('\0')
+    for (const action of actionNames) {
       unregisterFns.push(
-        keybindingContext.registerHandler({ action, context, handler }),
+        keybindingContext.registerHandler({
+          action,
+          context,
+          handler: () => handlersRef.current[action]?.(),
+        }),
       )
     }
 
@@ -142,7 +164,7 @@ export function useKeybindings(
         unregister()
       }
     }
-  }, [context, handlers, keybindingContext, isActive])
+  }, [actionKey, context, keybindingContext, isActive])
 
   const handleInput = useCallback(
     (input: string, key: Key, event: InputEvent) => {
@@ -165,8 +187,8 @@ export function useKeybindings(
         case 'match':
           // Chord completed (if any) - clear pending state
           keybindingContext.setPendingChord(null)
-          if (result.action in handlers) {
-            const handler = handlers[result.action]
+          if (result.action in handlersRef.current) {
+            const handler = handlersRef.current[result.action]
             if (handler && handler() !== false) {
               event.stopImmediatePropagation()
             }
@@ -191,7 +213,7 @@ export function useKeybindings(
           break
       }
     },
-    [context, handlers, keybindingContext],
+    [context, keybindingContext],
   )
 
   useInput(handleInput, { isActive })

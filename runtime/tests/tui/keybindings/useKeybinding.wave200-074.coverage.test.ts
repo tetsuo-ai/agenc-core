@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   context: undefined as undefined | {
     activeContexts: Set<string>
+    registrations: Array<{
+      action: string
+      context: string
+      handler: () => void | false | Promise<void>
+    }>
     registerHandler: ReturnType<typeof vi.fn>
     resolve: ReturnType<typeof vi.fn>
     setPendingChord: ReturnType<typeof vi.fn>
@@ -103,9 +108,16 @@ function sleep(ms = 25): Promise<void> {
 
 function makeContext() {
   harness.unregisters = []
+  const registrations: Array<{
+    action: string
+    context: string
+    handler: () => void | false | Promise<void>
+  }> = []
   const context = {
     activeContexts: new Set(['Autocomplete', 'Chat']),
-    registerHandler: vi.fn(() => {
+    registrations,
+    registerHandler: vi.fn(registration => {
+      registrations.push(registration)
       const unregister = vi.fn()
       harness.unregisters.push(unregister)
       return unregister
@@ -118,6 +130,7 @@ function makeContext() {
 }
 
 async function renderNode(node: React.ReactNode): Promise<{
+  rerender: (nextNode: React.ReactNode) => Promise<void>
   dispose: () => Promise<void>
 }> {
   const { stdin, stdout } = createStreams()
@@ -129,6 +142,10 @@ async function renderNode(node: React.ReactNode): Promise<{
   root.render(node)
   await sleep()
   return {
+    rerender: async (nextNode: React.ReactNode) => {
+      root.render(nextNode)
+      await sleep()
+    },
     dispose: async () => {
       root.unmount()
       stdin.end()
@@ -196,8 +213,26 @@ describe('useKeybinding wave200 coverage', () => {
       expect(singularContext.registerHandler).toHaveBeenCalledWith({
         action: 'chat:submit',
         context: 'Chat',
-        handler: singularHandler,
+        handler: expect.any(Function),
       })
+
+      const registeredSingularHandler = singularContext.registrations[0]?.handler
+      if (!registeredSingularHandler) {
+        throw new Error('singular registry handler was not captured')
+      }
+      registeredSingularHandler()
+      expect(singularHandler).toHaveBeenCalledTimes(1)
+
+      const nextSingularHandler = vi.fn()
+      await singular.rerender(
+        React.createElement(SingularProbe, {
+          handler: nextSingularHandler,
+        }),
+      )
+      expect(singularContext.registerHandler).toHaveBeenCalledTimes(1)
+      registeredSingularHandler()
+      expect(singularHandler).toHaveBeenCalledTimes(1)
+      expect(nextSingularHandler).toHaveBeenCalledTimes(1)
 
       singularContext.resolve.mockReturnValueOnce({
         type: 'match',
@@ -211,17 +246,17 @@ describe('useKeybinding wave200 coverage', () => {
         ['Autocomplete', 'Chat', 'Global'],
       )
       expect(singularContext.setPendingChord).toHaveBeenLastCalledWith(null)
-      expect(singularHandler).toHaveBeenCalledTimes(1)
+      expect(nextSingularHandler).toHaveBeenCalledTimes(2)
       expect(matched.stopImmediatePropagation).toHaveBeenCalledTimes(1)
 
-      singularHandler.mockReturnValueOnce(false)
+      nextSingularHandler.mockReturnValueOnce(false)
       singularContext.resolve.mockReturnValueOnce({
         type: 'match',
         action: 'chat:submit',
       })
       const fallThrough = event()
       singularInput('s', key(), fallThrough)
-      expect(singularHandler).toHaveBeenCalledTimes(2)
+      expect(nextSingularHandler).toHaveBeenCalledTimes(3)
       expect(fallThrough.stopImmediatePropagation).not.toHaveBeenCalled()
 
       singularContext.resolve.mockReturnValueOnce({
@@ -230,7 +265,7 @@ describe('useKeybinding wave200 coverage', () => {
       })
       const otherAction = event()
       singularInput('c', key(), otherAction)
-      expect(singularHandler).toHaveBeenCalledTimes(2)
+      expect(nextSingularHandler).toHaveBeenCalledTimes(3)
       expect(otherAction.stopImmediatePropagation).not.toHaveBeenCalled()
 
       const pendingChord = [{ key: 'x', ctrl: true }]
@@ -287,6 +322,29 @@ describe('useKeybinding wave200 coverage', () => {
 
     try {
       expect(aggregateContext.registerHandler).toHaveBeenCalledTimes(3)
+      const registeredSubmitHandler = aggregateContext.registrations.find(
+        registration => registration.action === 'chat:submit',
+      )?.handler
+      if (!registeredSubmitHandler) {
+        throw new Error('aggregate registry handler was not captured')
+      }
+      registeredSubmitHandler()
+      expect(submitHandler).toHaveBeenCalledTimes(1)
+
+      const nextSubmitHandler = vi.fn()
+      await aggregate.rerender(
+        React.createElement(AggregateProbe, {
+          handlers: {
+            'chat:cancel': cancelHandler,
+            'chat:maybe': undefined,
+            'chat:submit': nextSubmitHandler,
+          },
+        }),
+      )
+      expect(aggregateContext.registerHandler).toHaveBeenCalledTimes(3)
+      registeredSubmitHandler()
+      expect(submitHandler).toHaveBeenCalledTimes(1)
+      expect(nextSubmitHandler).toHaveBeenCalledTimes(1)
 
       aggregateContext.resolve.mockReturnValueOnce({
         type: 'match',
@@ -299,17 +357,17 @@ describe('useKeybinding wave200 coverage', () => {
         key(),
         ['Autocomplete', 'Chat', 'Global'],
       )
-      expect(submitHandler).toHaveBeenCalledTimes(1)
+      expect(nextSubmitHandler).toHaveBeenCalledTimes(2)
       expect(aggregateMatched.stopImmediatePropagation).toHaveBeenCalledTimes(1)
 
-      submitHandler.mockReturnValueOnce(false)
+      nextSubmitHandler.mockReturnValueOnce(false)
       aggregateContext.resolve.mockReturnValueOnce({
         type: 'match',
         action: 'chat:submit',
       })
       const aggregateFallThrough = event()
       aggregateInput('s', key(), aggregateFallThrough)
-      expect(submitHandler).toHaveBeenCalledTimes(2)
+      expect(nextSubmitHandler).toHaveBeenCalledTimes(3)
       expect(aggregateFallThrough.stopImmediatePropagation).not.toHaveBeenCalled()
 
       aggregateContext.resolve.mockReturnValueOnce({
