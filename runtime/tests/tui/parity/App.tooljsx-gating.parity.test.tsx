@@ -105,4 +105,13 @@ describe("R3 toolJSX gating reaches the Messages animation gate", () => {
       /toolUseConfirmQueue\s*=[\s\S]{0,200}buildToolUseConfirmQueue\s*\(\s*permissionRequests\s*,\s*availableTools\s*\)/,
     );
   });
+
+  test("B3.5 pending permissions do not auto-focus the diff surface; diff review stays opt-in", () => {
+    const source = readSource();
+    expect(source).not.toMatch(/firstPermissionRequestId/);
+    expect(source).not.toMatch(
+      /permissionRequests[\s\S]{0,400}applyWorkbenchCommand[\s\S]{0,200}type:\s*["']openDiff["']/,
+    );
+    expect(source).toMatch(/<ApprovalSurfaceBridge\b[\s\S]{0,200}request\s*=\s*\{\s*permissionRequests\[0\]\s*\}/);
+  });
 });

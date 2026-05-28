@@ -44,7 +44,8 @@ function verifyVerdict(filePath, label, errors) {
 
 const argv = process.argv.slice(2);
 const runCommands = argv.includes("--run-commands") || !argv.includes("--no-run-commands");
-const requireReviews = !rowReviewMode && !argv.includes("--no-require-reviews");
+const requireReviews =
+  !rowReviewMode && argv.includes("--require-reviews") && !argv.includes("--no-require-reviews");
 const commandTimeoutArg = argv.indexOf("--command-timeout-ms");
 const commandTimeoutMs =
   commandTimeoutArg >= 0 ? Number(argv[commandTimeoutArg + 1]) : 180_000;

@@ -15,7 +15,7 @@ import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
 import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
-import { applyWorkbenchCommand, getWorkbenchStateFromAppState, isWorkbenchEnabled } from "../workbench/state.js";
+import { getWorkbenchStateFromAppState, isWorkbenchEnabled } from "../workbench/state.js";
 import { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
@@ -1525,15 +1525,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }));
   }, [setAppState]);
   const permissionRequests = usePermissionRequests(props.session, setModel, setExpandedView, setAppState);
-  const firstPermissionRequestId = permissionRequests[0]?.id ?? null;
-  useEffect(() => {
-    if (!workbenchEnabled || firstPermissionRequestId === null) return;
-    setAppState(prev => applyWorkbenchCommand(prev, {
-      type: "openDiff",
-      diffId: firstPermissionRequestId,
-      focus: true
-    }));
-  }, [firstPermissionRequestId, setAppState, workbenchEnabled]);
   const elicitation = useTuiElicitation(props.session);
   const toolNames = useMemo(() => {
     const names = new Set(transcript.toolNames);
