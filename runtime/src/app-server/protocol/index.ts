@@ -921,7 +921,7 @@ export interface CommandExecStartParams extends JsonObject {
   readonly env?: CommandExecEnv | null;
   readonly size?: CommandExecTerminalSize | null;
   readonly sandboxPolicy?: JsonObject | null;
-  readonly permissionProfile?: JsonObject | null;
+  readonly permissionProfile?: string | null;
 }
 
 export interface CommandExecResponse extends JsonObject {

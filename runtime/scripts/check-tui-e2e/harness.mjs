@@ -464,6 +464,10 @@ export function normalizePtyOutput(raw, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function frameLooksBusy(frame) {
+  return /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame);
+}
+
 export class TuiSession {
   constructor({ args = [], cols = 140, rows = 40, env = {}, cwd, useTempHome = false } = {}) {
     this.args = args;
@@ -627,7 +631,10 @@ export class TuiSession {
     let stableSince = Date.now();
     while (Date.now() - start < timeout) {
       if (this.buffer.length === lastSize) {
-        if (Date.now() - stableSince >= idleWindow) {
+        const frame = this.latestFrame;
+        if (frameLooksBusy(frame)) {
+          stableSince = Date.now();
+        } else if (Date.now() - stableSince >= idleWindow) {
           this.watermark = this.buffer.length;
           return;
         }
@@ -712,8 +719,14 @@ export class TuiSession {
    * success payload does not include the file contents being verified.
    */
   async assertRolloutToolCompleted({ label = "tool completion", toolName } = {}) {
-    for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
-      if (payload.isError === false) return;
+    const timeout = 15_000;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
+        if (payload.isError === false) return;
+      }
+      if (this.exited) break;
+      await sleep(250);
     }
     const suffix = toolName === undefined ? "" : ` for ${toolName}`;
     throw new Error(`${label}: no successful rollout tool completion${suffix}`);
