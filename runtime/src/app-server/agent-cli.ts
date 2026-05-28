@@ -84,21 +84,20 @@ export interface AgenCDaemonRequestOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface AgenCDaemonTuiConnectionState {
+  readonly status: "connected" | "reconnecting" | "disconnected";
+  readonly message?: string;
+}
+
 export interface AgenCJsonLineDaemonTuiClient extends AgenCJsonLineDaemonRequestClient {
   subscribeToNotifications(cb: (event: JsonObject) => void): () => void;
   subscribeToSessionEvents(
     sessionId: string,
     cb: (event: JsonObject) => void,
   ): () => void;
-  getConnectionState(): {
-    readonly status: "connected" | "disconnected";
-    readonly message?: string;
-  };
+  getConnectionState(): AgenCDaemonTuiConnectionState;
   subscribeToConnectionState(
-    cb: (state: {
-      readonly status: "connected" | "disconnected";
-      readonly message?: string;
-    }) => void,
+    cb: (state: AgenCDaemonTuiConnectionState) => void,
   ): () => void;
   close(): Promise<void>;
 }
@@ -336,15 +335,220 @@ export async function createConnectedAgenCJsonLineDaemonTuiClient(
   const timeoutMs =
     options.timeoutMs ?? resolveAgenCDaemonRequestTimeoutMs(options.env);
   const authCookie = await (options.authCookie ?? readDaemonCookie(cookiePath));
-  const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
-  await client.request("initialize", {
-    protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-    protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-    clientName: "agenc-agent-tui",
-    authCookie,
-    capabilities: {},
+  return createReconnectableDaemonTuiClient({
+    socketPath,
+    timeoutMs,
+    initializeParams: {
+      protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+      protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+      clientName: "agenc-agent-tui",
+      authCookie,
+      capabilities: {},
+    },
   });
+}
+
+async function createReconnectableDaemonTuiClient(options: {
+  readonly socketPath: string;
+  readonly timeoutMs: number;
+  readonly initializeParams: JsonObject;
+}): Promise<AgenCJsonLineDaemonTuiClient> {
+  const { socketPath, timeoutMs, initializeParams } = options;
+  const sessionListeners = new Map<string, Set<(event: JsonObject) => void>>();
+  const notificationListeners = new Set<(event: JsonObject) => void>();
+  const connectionStateListeners = new Set<
+    (state: AgenCDaemonTuiConnectionState) => void
+  >();
+  const sessionUnsubscribers = new Map<string, () => void>();
+  let innerClient: AgenCJsonLineDaemonTuiClient | null = null;
+  let unsubscribeNotifications: (() => void) | null = null;
+  let unsubscribeConnectionState: (() => void) | null = null;
+  let reconnecting: Promise<AgenCJsonLineDaemonTuiClient> | null = null;
+  let closedByClient = false;
+  let connectionState: AgenCDaemonTuiConnectionState = {
+    status: "reconnecting",
+  };
+
+  const setConnectionState = (state: AgenCDaemonTuiConnectionState): void => {
+    connectionState = state;
+    for (const listener of connectionStateListeners) {
+      listener(state);
+    }
+  };
+  const dispatchNotification = (event: JsonObject): void => {
+    for (const listener of notificationListeners) {
+      notifyDaemonListener(listener, event);
+    }
+  };
+  const dispatchSessionEvent = (sessionId: string, event: JsonObject): void => {
+    const listeners = sessionListeners.get(sessionId);
+    if (listeners === undefined) return;
+    for (const listener of listeners) {
+      notifyDaemonListener(listener, event);
+    }
+  };
+  const detachInnerClient = (): void => {
+    unsubscribeNotifications?.();
+    unsubscribeNotifications = null;
+    unsubscribeConnectionState?.();
+    unsubscribeConnectionState = null;
+    for (const unsubscribe of sessionUnsubscribers.values()) {
+      unsubscribe();
+    }
+    sessionUnsubscribers.clear();
+  };
+  const subscribeInnerSession = (sessionId: string): void => {
+    const current = innerClient;
+    if (current === null || sessionUnsubscribers.has(sessionId)) return;
+    sessionUnsubscribers.set(
+      sessionId,
+      current.subscribeToSessionEvents(sessionId, (event) => {
+        dispatchSessionEvent(sessionId, event);
+      }),
+    );
+  };
+  const attachInnerClient = (nextClient: AgenCJsonLineDaemonTuiClient): void => {
+    detachInnerClient();
+    innerClient = nextClient;
+    unsubscribeNotifications =
+      nextClient.subscribeToNotifications(dispatchNotification);
+    unsubscribeConnectionState = nextClient.subscribeToConnectionState(
+      (state) => {
+        if (closedByClient) return;
+        setConnectionState(state);
+      },
+    );
+    for (const sessionId of sessionListeners.keys()) {
+      subscribeInnerSession(sessionId);
+    }
+    setConnectionState(nextClient.getConnectionState());
+  };
+  const connectAndInitializeOnce =
+    async (): Promise<AgenCJsonLineDaemonTuiClient> => {
+      const nextClient = await connectPersistentDaemonClient(
+        socketPath,
+        timeoutMs,
+      );
+      try {
+        await nextClient.request("initialize", initializeParams);
+      } catch (error) {
+        await nextClient.close().catch(() => {});
+        throw error;
+      }
+      if (closedByClient) {
+        await nextClient.close().catch(() => {});
+        throw new Error("Daemon connection is closed");
+      }
+      attachInnerClient(nextClient);
+      return nextClient;
+    };
+  const connectAndInitializeWithRetry =
+    async (): Promise<AgenCJsonLineDaemonTuiClient> => {
+      const deadline = Date.now() + timeoutMs;
+      let lastError: unknown;
+      setConnectionState({ status: "reconnecting" });
+      while (!closedByClient) {
+        try {
+          return await connectAndInitializeOnce();
+        } catch (error) {
+          lastError = error;
+          const message =
+            error instanceof Error ? error.message : String(error);
+          setConnectionState({ status: "reconnecting", message });
+          if (Date.now() >= deadline) break;
+          await sleepForDaemonReconnect(
+            Math.min(100, Math.max(10, deadline - Date.now())),
+          );
+        }
+      }
+      const error =
+        lastError instanceof Error
+          ? lastError
+          : new Error(String(lastError ?? "Daemon connection is closed"));
+      setConnectionState({ status: "disconnected", message: error.message });
+      throw error;
+    };
+  const ensureConnected =
+    async (): Promise<AgenCJsonLineDaemonTuiClient> => {
+      if (closedByClient) {
+        throw new Error("Daemon connection is closed");
+      }
+      const current = innerClient;
+      if (current?.getConnectionState().status === "connected") {
+        return current;
+      }
+      if (reconnecting !== null) return reconnecting;
+      const staleClient = innerClient;
+      detachInnerClient();
+      innerClient = null;
+      if (staleClient !== null) await staleClient.close().catch(() => {});
+      reconnecting = connectAndInitializeWithRetry().finally(() => {
+        reconnecting = null;
+      });
+      return reconnecting;
+    };
+
+  const client: AgenCJsonLineDaemonTuiClient = {
+    request: async (method, params = {}, requestOptions = {}) => {
+      if (requestOptions.signal?.aborted === true) {
+        throw new Error("Daemon request cancelled");
+      }
+      const current = await ensureConnected();
+      return current.request(method, params, requestOptions);
+    },
+    subscribeToNotifications: (cb) => {
+      notificationListeners.add(cb);
+      return () => {
+        notificationListeners.delete(cb);
+      };
+    },
+    subscribeToSessionEvents: (sessionId, cb) => {
+      let listeners = sessionListeners.get(sessionId);
+      if (listeners === undefined) {
+        listeners = new Set();
+        sessionListeners.set(sessionId, listeners);
+      }
+      listeners.add(cb);
+      subscribeInnerSession(sessionId);
+      return () => {
+        listeners?.delete(cb);
+        if (listeners?.size === 0) {
+          sessionListeners.delete(sessionId);
+          const unsubscribe = sessionUnsubscribers.get(sessionId);
+          unsubscribe?.();
+          sessionUnsubscribers.delete(sessionId);
+        }
+      };
+    },
+    getConnectionState: () => connectionState,
+    subscribeToConnectionState: (cb) => {
+      connectionStateListeners.add(cb);
+      return () => {
+        connectionStateListeners.delete(cb);
+      };
+    },
+    close: async () => {
+      if (closedByClient) return;
+      closedByClient = true;
+      const current = innerClient;
+      detachInnerClient();
+      innerClient = null;
+      setConnectionState({
+        status: "disconnected",
+        message: "Daemon connection closed",
+      });
+      await current?.close();
+    },
+  };
+
+  await ensureConnected();
   return client;
+}
+
+function sleepForDaemonReconnect(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function startAgenCAgent(
@@ -616,19 +820,13 @@ function connectPersistentDaemonClient(
     const notificationListeners = new Set<(event: JsonObject) => void>();
     const bufferedSessionEvents = new Map<string, JsonObject[]>();
     const connectionStateListeners = new Set<
-      (state: {
-        readonly status: "connected" | "disconnected";
-        readonly message?: string;
-      }) => void
+      (state: AgenCDaemonTuiConnectionState) => void
     >();
     let buffer = "";
     let nextRequestId = 1;
     let connected = false;
     let closed = false;
-    let connectionState: {
-      readonly status: "connected" | "disconnected";
-      readonly message?: string;
-    } = {
+    let connectionState: AgenCDaemonTuiConnectionState = {
       status: "connected",
     };
     const timeout = setTimeout(() => {

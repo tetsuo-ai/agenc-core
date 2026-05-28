@@ -31,7 +31,6 @@ export const meta = {
   args: ["--yolo"],
   timeoutMs: 240_000,
   slimCwd: true,
-  skip: "blocked on persistent-client auto-reconnect — see GAP-DMN-PERSISTENT-RECONNECT",
 };
 
 export default async function (session) {
