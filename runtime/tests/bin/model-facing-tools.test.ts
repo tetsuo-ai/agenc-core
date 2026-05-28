@@ -2380,7 +2380,7 @@ describe("model-facing tools", () => {
     expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
   });
 
-  it("rejects subagent spawn_agent and emits a begin/end-errored lifecycle pair", async () => {
+  it("allows subagent spawn_agent and emits a begin/end lifecycle pair", async () => {
     const session = fakeSession();
     (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
     const emit = vi.fn();
@@ -2399,6 +2399,25 @@ describe("model-facing tools", () => {
           : undefined,
       ),
     };
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "grandchild-1",
+          agentPath: "/root/child_1/grandchild",
+          nickname: "Molly",
+          role: { name: "worker" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-grandchild",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(() => new Promise(() => {})),
+      },
+    });
     _setAgentControlForTesting(session, {
       control: control as never,
       registry: {} as never,
@@ -2416,37 +2435,37 @@ describe("model-facing tools", () => {
         fork_turns: "none",
       });
 
-      expect(result.isError).toBe(true);
-      expect(JSON.parse(result.content).error).toBe(
-        "Subagents cannot spawn agents. Ask the main session to spawn agents.",
+      expect(result.isError).not.toBe(true);
+      expect(JSON.parse(result.content)).toEqual({
+        task_name: "/root/child_1/grandchild",
+        nickname: "Molly",
+      });
+      expect(delegateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parent: session,
+          parentPath: "/root/child_1",
+          taskPrompt: "inspect",
+          agentName: "grandchild",
+          depthCap: 2,
+          runInBackground: true,
+        }),
       );
-      expect(delegateMock).not.toHaveBeenCalled();
-      // Upstream parity: every spawn attempt that passes basic argument
-      // parsing emits a `collab_agent_spawn_begin` followed by a
-      // `collab_agent_spawn_end` with errored status, so the TUI can
-      // render a single structured "Task" row instead of falling back
-      // to the generic `spawn_agent({...})` row on validation failures.
-      // `session.emit` receives `{ id, msg }` envelopes; the event
-      // shape lives on `msg`.
       const eventTypes = emit.mock.calls.map((call: readonly unknown[]) => {
         const envelope = call[0] as { msg?: { type?: string } } | undefined;
         return envelope?.msg?.type;
       });
-      expect(eventTypes).toEqual([
-        "collab_agent_spawn_begin",
-        "collab_agent_spawn_end",
-      ]);
-      const endEnvelope = emit.mock.calls[1]?.[0] as
+      expect(eventTypes.at(0)).toBe("collab_agent_spawn_begin");
+      expect(eventTypes).toContain("collab_agent_status");
+      expect(eventTypes.at(-1)).toBe("collab_agent_spawn_end");
+      const endEnvelope = emit.mock.calls.at(-1)?.[0] as
         | {
             msg?: {
               payload?: { status?: { status?: string; error?: string } };
             };
           }
         | undefined;
-      expect(endEnvelope?.msg?.payload?.status?.status).toBe("errored");
-      expect(endEnvelope?.msg?.payload?.status?.error).toBe(
-        "Subagents cannot spawn agents. Ask the main session to spawn agents.",
-      );
+      expect(endEnvelope?.msg?.payload?.status?.status).toBe("running");
+      expect(endEnvelope?.msg?.payload?.status?.error).toBeUndefined();
     } finally {
       _clearAgentControlCacheForTesting(session);
     }

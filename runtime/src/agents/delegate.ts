@@ -69,6 +69,7 @@ export interface DelegateOpts {
   readonly forceSynchronous?: boolean;
   readonly toolAllowlist?: ReadonlyArray<string>;
   readonly childToolPolicy?: ChildToolPolicy;
+  readonly depthCap?: number;
   readonly maxTurns?: number;
   readonly externalSignal?: AbortSignal;
   readonly silent?: boolean;
@@ -148,6 +149,7 @@ export async function delegate(
       parentPath: opts.parentPath,
       ...(opts.role !== undefined ? { roleName: opts.role } : {}),
       ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
+      ...(opts.depthCap !== undefined ? { depthCap: opts.depthCap } : {}),
     });
   } catch (err) {
     // Teardown worktree if we created one — slot reservation rolled back.

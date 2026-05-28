@@ -1025,9 +1025,9 @@ describe("runAgent", () => {
     }
   });
 
-  it("filters disabled V2 agent tools from child tool specs and dispatch", async () => {
+  it("keeps V2 agent tools available to child agents at the configured depth cap", async () => {
     const registry = buildFilteredRegistry(
-      mkNamedRegistry(["spawn_agent", "system.echo"]),
+      mkNamedRegistry(["spawn_agent", "wait_agent", "TaskList", "system.echo"]),
       {
         childConversationId: "child-123",
         disabledTools: resolveThreadSpawnDisabledTools({
@@ -1037,21 +1037,30 @@ describe("runAgent", () => {
       },
     );
 
-    expect(registry.tools.map((tool) => tool.name)).toEqual(["system.echo"]);
+    expect(registry.tools.map((tool) => tool.name)).toEqual([
+      "spawn_agent",
+      "wait_agent",
+      "system.echo",
+    ]);
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toEqual([
+      "spawn_agent",
+      "wait_agent",
       "system.echo",
     ]);
     await expect(
       registry.dispatch({ id: "call-1", name: "spawn_agent", arguments: "{}" }),
+    ).resolves.toEqual({ content: "{}" });
+    await expect(
+      registry.dispatch({ id: "call-task-list", name: "TaskList", arguments: "{}" }),
     ).resolves.toMatchObject({
       isError: true,
       content: JSON.stringify({
-        error: "tool not allowed for subagent: spawn_agent",
+        error: "tool not allowed for subagent: TaskList",
       }),
     });
   });
 
-  it("filters spawn, task, and main-thread coordination tools from V2 child agents", async () => {
+  it("filters task and main-thread coordination tools from V2 child agents", async () => {
     const leakedToolNames = [
       "TaskCreate",
       "TaskGet",
@@ -1089,11 +1098,12 @@ describe("runAgent", () => {
 
     const advertisedNames = registry.tools.map((tool) => tool.name);
     expect(advertisedNames).toEqual([
+      "spawn_agent",
       "wait_agent",
       "StructuredOutput",
       "system.echo",
     ]);
-    for (const toolName of ["spawn_agent", ...leakedToolNames]) {
+    for (const toolName of leakedToolNames) {
       expect(advertisedNames).not.toContain(toolName);
       await expect(
         registry.dispatch({ id: `call-${toolName}`, name: toolName, arguments: "{}" }),

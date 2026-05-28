@@ -185,6 +185,7 @@ export interface SpawnAgentOptions {
   readonly agentName?: string;
   readonly agentPath?: AgentPath;
   readonly preferredNickname?: string;
+  readonly depthCap?: number;
   /** Caller-supplied metadata fields to merge into the allocated
    *  record (e.g. inherited `agentRole` from a resume payload). */
   readonly metadata?: { readonly [K in keyof AgentMetadata]?: AgentMetadata[K] };
@@ -310,6 +311,7 @@ export class AgentControl {
     readonly agentName?: string;
     readonly agentPath?: AgentPath;
     readonly preferredNickname?: string;
+    readonly depthCap?: number;
   }): Promise<LiveAgent> {
     if (this.threadManager) {
       return this.threadManager.spawnLiveAgent(opts);
@@ -324,9 +326,11 @@ export class AgentControl {
     readonly agentName?: string;
     readonly agentPath?: AgentPath;
     readonly preferredNickname?: string;
+    readonly depthCap?: number;
   }): Promise<LiveAgent> {
     const parentDepth = depthOfAgentPath(opts.parentPath);
     const childDepth = parentDepth + 1;
+    const depthCap = opts.depthCap ?? this.maxDepth;
     const role = requireAgentRole(opts.roleName);
     const baseChildConfig = getChildBaseConfig(this.session) ?? {};
     void applyRoleToConfig(role, baseChildConfig);
@@ -336,12 +340,12 @@ export class AgentControl {
         ? joinAgentPath(opts.parentPath, opts.agentName)
         : undefined);
 
-    if (childDepth > this.maxDepth) {
+    if (childDepth > depthCap) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
         cause: "max_depth_exceeded",
-        message: `subagent depth ${childDepth} exceeds cap ${this.maxDepth}`,
+        message: `subagent depth ${childDepth} exceeds cap ${depthCap}`,
       });
-      throw new MaxDepthExceededError(childDepth, this.maxDepth);
+      throw new MaxDepthExceededError(childDepth, depthCap);
     }
 
     // I-63: atomic slot acquisition.
@@ -500,6 +504,9 @@ export class AgentControl {
     } else if (options.metadata?.agentNickname) {
       (spawnOpts as { preferredNickname?: string }).preferredNickname =
         options.metadata.agentNickname;
+    }
+    if (options.depthCap !== undefined) {
+      (spawnOpts as { depthCap?: number }).depthCap = options.depthCap;
     }
     const live = await this.spawn(spawnOpts);
     // Fork annotation: the live handle is already wired; the parent-
