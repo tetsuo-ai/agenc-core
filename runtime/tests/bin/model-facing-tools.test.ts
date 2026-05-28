@@ -30,6 +30,7 @@ import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
+  SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
 import { _resetAgentRolesForTesting, registerAgentRole } from "../agents/role.js";
 
@@ -2950,6 +2951,7 @@ describe("model-facing tools", () => {
       emitted.push(event);
     };
     const control = {
+      registerSessionRoot: vi.fn(),
       getLive: vi.fn((threadId: string) =>
         threadId === "agent-1"
           ? {
@@ -3172,6 +3174,7 @@ describe("model-facing tools", () => {
     };
     const sendInterAgentCommunication = vi.fn();
     const control = {
+      registerSessionRoot: vi.fn(),
       getLive: vi.fn((threadId: string) =>
         threadId === "agent-1"
           ? {
@@ -3336,6 +3339,114 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("send_message resolves the current root target from child context", async () => {
+    const session = fakeSession();
+    const mailboxSend = vi.fn(() => 1);
+    (session as unknown as { mailbox: { hasPending: () => boolean; send: typeof mailboxSend } }).mailbox = {
+      hasPending: () => false,
+      send: mailboxSend,
+    };
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const child = await control.spawn({
+      parentPath: "/root",
+      threadId: "agent-worker",
+      agentName: "worker",
+    });
+    expect(control.listAgents().some((agent) => agent.agentName === "/root")).toBe(
+      false,
+    );
+    _setAgentControlForTesting(session, { control, registry });
+    try {
+      const sendMessage = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "send_message")!;
+
+      const result = await sendMessage.execute({
+        [SESSION_ID_ARG]: child.agentId,
+        target: "/root",
+        message: "done",
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toBe("");
+      expect(mailboxSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          author: "/root/worker",
+          recipient: "/root",
+          content: "done",
+          triggerTurn: false,
+          direction: "up",
+        }),
+      );
+      expect(control.listAgents().some((agent) => agent.agentName === "/root")).toBe(
+        true,
+      );
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
+  it("followup_task rejects the current root target from child context", async () => {
+    const session = fakeSession();
+    const mailboxSend = vi.fn(() => 1);
+    (session as unknown as { mailbox: { hasPending: () => boolean; send: typeof mailboxSend } }).mailbox = {
+      hasPending: () => false,
+      send: mailboxSend,
+    };
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const child = await control.spawn({
+      parentPath: "/root",
+      threadId: "agent-worker",
+      agentName: "worker",
+    });
+    _setAgentControlForTesting(session, { control, registry });
+    try {
+      const followup = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "followup_task")!;
+
+      const result = await followup.execute({
+        [SESSION_ID_ARG]: child.agentId,
+        target: "/root",
+        message: "run this",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe(
+        "Tasks can't be assigned to the root agent",
+      );
+      expect(mailboxSend).not.toHaveBeenCalled();
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
+  it("close_agent rejects the current root target after resolving it", async () => {
+    const session = fakeSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    _setAgentControlForTesting(session, { control, registry });
+    try {
+      const close = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "close_agent")!;
+
+      const result = await close.execute({ target: "/root" });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe(
+        "root is not a spawned agent",
+      );
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("rejects closing the root agent", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -3359,6 +3470,7 @@ describe("model-facing tools", () => {
       startedAtMs: 1,
     };
     const control = {
+      registerSessionRoot: vi.fn(),
       resolveAgentReference: vi.fn(() => "550e8400-e29b-41d4-a716-446655440003"),
       getLive: vi.fn(() => ({
         agentId: "550e8400-e29b-41d4-a716-446655440003",
@@ -3417,6 +3529,7 @@ describe("model-facing tools", () => {
     };
     const unsubscribe = vi.fn();
     const control = {
+      registerSessionRoot: vi.fn(),
       resolveAgentReference: vi.fn(() => "550e8400-e29b-41d4-a716-446655440004"),
       getLive: vi.fn((threadId: string) =>
         threadId === "550e8400-e29b-41d4-a716-446655440004"

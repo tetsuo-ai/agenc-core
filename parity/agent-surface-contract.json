@@ -11,6 +11,10 @@
       "sha256": "53828c3def4a8e356789e0b59bd101ae843b9bab45c73af6e48cd6ab12394c83"
     },
     {
+      "path": "core/src/agent/agent_resolver.rs",
+      "sha256": "339d52319dfef0bd946fe721c3178e13f8fd39dd05aa8972623f539135985616"
+    },
+    {
       "path": "core/src/agent/registry.rs",
       "sha256": "2caa3524fe451546c516d28d3f7085dad6e731f8c2d7b2c4e54897c11c556843"
     },
@@ -135,6 +139,7 @@
     "runtime/src/llm/types.ts",
     "runtime/src/phases/stream-model.ts",
     "runtime/src/agents/v2/PARITY.md",
+    "runtime/src/agents/v2/common.ts",
     "runtime/src/agents/v2/spawn.ts",
     "runtime/src/agents/v2/send-message.ts",
     "runtime/src/agents/v2/wait.ts",
@@ -332,6 +337,7 @@
       "id": "task-tool-bridge",
       "source": [
         "core/src/agent/control.rs",
+        "core/src/agent/agent_resolver.rs",
         "core/src/agent/role.rs",
         "core/src/thread_manager.rs",
         "core/src/tools/handlers/multi_agents_common.rs",
@@ -364,6 +370,7 @@
         "runtime/src/tools/tasks/background.ts",
         "runtime/src/tools/tasks/task-board.ts",
         "runtime/src/agents/v2/PARITY.md",
+        "runtime/src/agents/v2/common.ts",
         "runtime/src/agents/v2/spawn.ts",
         "runtime/src/agents/v2/send-message.ts",
         "runtime/src/agents/v2/wait.ts",
@@ -389,6 +396,7 @@
         "spawn_agent v2 defaults omitted fork_turns to the Rust default of all, documents that schema default, and requires fork_turns none for clean-fork role/model/reasoning overrides",
         "spawn_agent v2 permits a child agent to spawn descendants under its current agent path and applies a per-call child depth allowance instead of rejecting on the session max-depth cap",
         "followup_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state",
+        "send_message, followup_task, and close_agent v2 register the current root thread before resolving id or path targets so canonical /root maps to the active root session",
         "list_agents v2 registers the current root thread before listing so the root entry is present even before any child spawn has registered it",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
         "wait_agent v2 validates, defaults, and describes timeout_ms from configured min, default, and max wait timeout options",
@@ -412,6 +420,9 @@
         "spawn_agent allows an explicit service_tier when fork_turns is all while still rejecting full-history model and effort overrides",
         "spawn_agent called from a depth-one child with agent_max_depth set to one spawns a grandchild under the child path and emits begin/end lifecycle events",
         "list_agents called before any child spawn on an unregistered AgentControl returns the registered /root entry instead of an empty agent list",
+        "send_message called from a child to /root on an unregistered AgentControl queues an upward non-triggering inter-agent communication to the root session",
+        "followup_task called from a child to /root on an unregistered AgentControl returns the root-task rejection without enqueuing root mail",
+        "close_agent called with /root on an unregistered AgentControl returns the root-not-spawned rejection instead of an unresolved path error",
         "a child spawned with service_tier priority forwards priority into the provider request options",
         "child session tool filtering keeps v2 agent tools visible at the configured depth cap while still blocking main-thread coordination tools",
         "followup_task sends triggerTurn true to a completed live child and still emits begin/end interaction events with the current status",

@@ -158,6 +158,7 @@ export function resolveAgentId(
   opts: MultiAgentV2Options,
 ): ThreadId {
   const { control } = opts.ensureAgentControl(session);
+  control.registerSessionRoot(session.conversationId);
   if (target === session.conversationId) return target;
   if (control.getLive(target)) return target;
   return control.resolveAgentReference({
