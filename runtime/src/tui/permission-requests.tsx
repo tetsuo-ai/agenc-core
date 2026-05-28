@@ -157,6 +157,12 @@ export function buildToolUseConfirm(
         permissionUpdates.length > 0 ? APPROVED_FOR_SESSION : APPROVED,
       );
     },
+    onAllowForSession(updatedInput: unknown) {
+      if (request.ctx.toolName === ASK_USER_QUESTION_TOOL_NAME) {
+        recordAskUserQuestionUpdatedInput(request.ctx.callId, updatedInput);
+      }
+      request.resolve(APPROVED_FOR_SESSION);
+    },
     onReject(feedback?: string) {
       if (request.ctx.toolName === ASK_USER_QUESTION_TOOL_NAME) {
         const action = planInterviewActionFromFeedback(feedback);
@@ -190,6 +196,7 @@ type ProjectedToolUseConfirm = NonNullable<ReturnType<typeof buildToolUseConfirm
     permissionUpdates?: readonly unknown[],
     feedback?: string,
   ): void;
+  onAllowForSession(updatedInput: unknown): void;
   onReject(feedback?: string): void;
   onAbort(): void;
 };
@@ -316,6 +323,10 @@ function AgenCApprovalOverlay({
   const approve = useCallback(() => {
     toolUseConfirm.onAllow(toolUseConfirm.input, []);
   }, [toolUseConfirm]);
+  const approveForSession = useCallback(() => {
+    if (destructive) return;
+    toolUseConfirm.onAllowForSession(toolUseConfirm.input);
+  }, [destructive, toolUseConfirm]);
   const reject = useCallback(() => {
     toolUseConfirm.onReject();
   }, [toolUseConfirm]);
@@ -333,6 +344,26 @@ function AgenCApprovalOverlay({
       "app:interrupt": abort,
     },
     { context: "Confirmation" },
+  );
+
+  useInput(
+    (input, _key, event) => {
+      if (input === "1") {
+        event.stopImmediatePropagation();
+        approve();
+        return;
+      }
+      if (input === "2") {
+        event.stopImmediatePropagation();
+        approveForSession();
+        return;
+      }
+      if (input === "3") {
+        event.stopImmediatePropagation();
+        reject();
+      }
+    },
+    { isActive: !destructive },
   );
 
   useInput(
@@ -381,7 +412,11 @@ function AgenCApprovalOverlay({
           { label: "confirmation", value: destructive ? `type ${requiredWord}` : "enter" },
         ]}
         note={toolUseConfirm.description}
-        confirmLabel={destructive ? `type '${requiredWord}' to approve` : "enter approve"}
+        confirmLabel={
+          destructive
+            ? `type '${requiredWord}' to approve`
+            : "enter approve · 2 session · 3 deny"
+        }
         requireTypedConfirmation={destructive}
         typedConfirmationValue={typed}
         typedConfirmationTarget={requiredWord}
