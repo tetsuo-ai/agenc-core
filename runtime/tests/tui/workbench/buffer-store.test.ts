@@ -122,7 +122,7 @@ describe("WorkbenchBufferStore", () => {
     expect(store.getSnapshot().dirty).toBe(false);
   });
 
-  it("reports non-conflict save errors without clearing the dirty buffer", async () => {
+  it("reports disk save conflicts without clearing the dirty buffer", async () => {
     const file = join(dir, "target.txt");
     await writeFile(file, "alpha\n", "utf8");
     const store = new WorkbenchBufferStore();
@@ -133,10 +133,10 @@ describe("WorkbenchBufferStore", () => {
 
     await expect(store.save()).resolves.toBe(false);
     expect(store.getSnapshot()).toMatchObject({
-      status: "error",
-      conflictKind: null,
+      status: "conflict",
+      conflictKind: "disk",
       dirty: true,
-      error: "target.txt appears to be binary and cannot be edited in BUFFER.",
+      error: "target.txt changed on disk after the buffer was opened. Revert or reopen before saving.",
     });
     expect(store.getText()).toBe("draft alpha\n");
   });
@@ -1202,7 +1202,9 @@ describe("WorkbenchBufferStore", () => {
     await writeFile(large, "too big", "utf8");
     await writeFile(binary, Buffer.from([0x61, 0x00, 0x62]));
 
-    await expect(readBufferFileSnapshot(large, { maxBytes: 3 })).rejects.toBeInstanceOf(BufferFileTooLargeError);
-    await expect(readBufferFileSnapshot(binary)).rejects.toBeInstanceOf(BufferBinaryFileError);
+    await runWithCwdOverride(dir, async () => {
+      await expect(readBufferFileSnapshot(large, { maxBytes: 3 })).rejects.toBeInstanceOf(BufferFileTooLargeError);
+      await expect(readBufferFileSnapshot(binary)).rejects.toBeInstanceOf(BufferBinaryFileError);
+    });
   });
 });

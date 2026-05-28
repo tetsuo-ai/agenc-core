@@ -83,6 +83,7 @@ describe("verifyApiKey", () => {
         provider: "openai-compatible",
         apiKey: "compatible-test-key",
         config: defaultConfig(),
+        env: { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:8000/v1" },
         fetchImpl,
       }),
     ).resolves.toEqual({ status: "valid" });

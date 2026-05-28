@@ -128,9 +128,9 @@ function encodeText(content: string, snapshot: BufferFileSnapshot): string {
 
 export async function readBufferFileSnapshot(
   filePath: string,
-  options: { readonly maxBytes?: number; readonly displayPath?: string } = {},
+  options: { readonly maxBytes?: number; readonly displayPath?: string; readonly basePath?: string } = {},
 ): Promise<BufferFileSnapshot> {
-  const absolutePath = resolveBufferFilePath(filePath);
+  const absolutePath = resolveBufferFilePath(filePath, options.basePath);
   return readAbsoluteBufferFileSnapshot(absolutePath, options.displayPath ?? filePath, options.maxBytes);
 }
 
