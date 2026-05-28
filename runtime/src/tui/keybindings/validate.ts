@@ -9,7 +9,7 @@ import type {
   KeybindingContextName,
   ParsedBinding,
 } from './types.js'
-import { KEYBINDING_CONTEXT_NAMES } from './types.js'
+import { KEYBINDING_ACTION_NAMES, KEYBINDING_CONTEXT_NAMES } from './types.js'
 
 /**
  * Build a `${context}::${normalizedKey}` → action lookup for the runtime
@@ -88,12 +88,21 @@ function isKeybindingBlockArray(arr: unknown): arr is KeybindingBlock[] {
  */
 const VALID_CONTEXTS: readonly KeybindingContextName[] =
   KEYBINDING_CONTEXT_NAMES
+const VALID_ACTIONS = new Set<string>(KEYBINDING_ACTION_NAMES)
+const COMMAND_BINDING_RE = /^command:[a-zA-Z0-9:\-_]+$/
 
 /**
  * Type guard to check if a string is a valid context name.
  */
 function isValidContext(value: string): value is KeybindingContextName {
   return (VALID_CONTEXTS as readonly string[]).includes(value)
+}
+
+function isValidAction(value: unknown): value is string | null {
+  if (value === null) return true
+  if (typeof value !== 'string') return false
+  if (value.startsWith('command:')) return COMMAND_BINDING_RE.test(value)
+  return VALID_ACTIONS.has(value)
 }
 
 /**
@@ -206,7 +215,7 @@ function validateBlock(
       })
     } else if (typeof action === 'string' && action.startsWith('command:')) {
       // Validate command binding format
-      if (!/^command:[a-zA-Z0-9:\-_]+$/.test(action)) {
+      if (!COMMAND_BINDING_RE.test(action)) {
         warnings.push({
           type: 'invalid_action',
           severity: 'warning',
@@ -228,6 +237,16 @@ function validateBlock(
           suggestion: 'Move this binding to a block with "context": "Chat"',
         })
       }
+    } else if (typeof action === 'string' && !VALID_ACTIONS.has(action)) {
+      warnings.push({
+        type: 'invalid_action',
+        severity: 'error',
+        message: `Unknown action "${action}" for "${key}"`,
+        key,
+        context: contextName,
+        action,
+        suggestion: 'Remove this binding or replace it with a supported action from the default keybindings.',
+      })
     }
   }
 
@@ -315,6 +334,37 @@ export function validateUserConfig(userBlocks: unknown): KeybindingWarning[] {
   }
 
   return warnings
+}
+
+/**
+ * Drop structurally valid but runtime-unsafe entries before merging user
+ * bindings with defaults. Validation warnings are still reported from the
+ * original file, but unknown actions cannot shadow default handlers.
+ */
+export function sanitizeBindingsForRuntime(
+  userBlocks: KeybindingBlock[],
+): KeybindingBlock[] {
+  const sanitized: KeybindingBlock[] = []
+
+  for (const block of userBlocks) {
+    if (!isValidContext(block.context)) continue
+
+    const bindings: KeybindingBlock['bindings'] = {}
+    for (const [key, action] of Object.entries(block.bindings)) {
+      if (isValidAction(action)) {
+        bindings[key] = action
+      }
+    }
+
+    if (Object.keys(bindings).length > 0) {
+      sanitized.push({
+        context: block.context,
+        bindings,
+      })
+    }
+  }
+
+  return sanitized
 }
 
 /**

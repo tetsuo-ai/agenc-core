@@ -65,6 +65,7 @@ describe("keybinding validation", () => {
           " ": "chat:submit",
           a: 42,
           b: "command:bad command",
+          c: "modal:confirm",
         },
       },
       {
@@ -97,6 +98,13 @@ describe("keybinding validation", () => {
           action: "command:bad command",
           key: "b",
           severity: "warning",
+          type: "invalid_action",
+        }),
+        expect.objectContaining({
+          action: "modal:confirm",
+          key: "c",
+          message: 'Unknown action "modal:confirm" for "c"',
+          severity: "error",
           type: "invalid_action",
         }),
         expect.objectContaining({

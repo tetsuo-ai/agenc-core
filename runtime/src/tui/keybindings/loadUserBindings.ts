@@ -20,6 +20,7 @@ import { parseBindings } from './parser.js'
 import type { KeybindingBlock, ParsedBinding } from './types.js'
 import {
   checkDuplicateKeysInJson,
+  sanitizeBindingsForRuntime,
   type KeybindingWarning,
   validateBindings,
 } from './validate.js'
@@ -157,7 +158,8 @@ export async function loadKeybindings(): Promise<KeybindingsLoadResult> {
       }
     }
 
-    const userParsed = parseBindings(userBlocks)
+    const runtimeUserBlocks = sanitizeBindingsForRuntime(userBlocks)
+    const userParsed = parseBindings(runtimeUserBlocks)
     logForDebugging(
       `[keybindings] Loaded ${userParsed.length} user bindings from ${userPath}`,
     )
@@ -279,7 +281,8 @@ export function loadKeybindingsSyncWithWarnings(): KeybindingsLoadResult {
       return { bindings: cachedBindings, warnings: cachedWarnings }
     }
 
-    const userParsed = parseBindings(userBlocks)
+    const runtimeUserBlocks = sanitizeBindingsForRuntime(userBlocks)
+    const userParsed = parseBindings(runtimeUserBlocks)
     logForDebugging(
       `[keybindings] Loaded ${userParsed.length} user bindings from ${userPath}`,
     )
