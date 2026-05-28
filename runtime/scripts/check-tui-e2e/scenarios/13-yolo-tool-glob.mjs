@@ -1,28 +1,34 @@
 /**
  * Yolo + Glob tool round-trip.
  *
- * Asks the model to glob the agenc-core runtime/src/bin directory. The
- * file `agenc.ts` is guaranteed to exist there, so we assert its name
- * appears in the captured transcript.
+ * Asks the model to glob a file created inside the scenario workspace and
+ * verifies the completed rollout contains the filename. This keeps the
+ * scenario inside the tool allowlist instead of relying on repo paths
+ * outside the spawned cwd.
  */
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+
 export const meta = {
-  description: "--yolo: model uses Glob, matched filename renders.",
+  description: "--yolo: model uses Glob, matched filename is recorded.",
   args: ["--yolo"],
-  timeoutMs: 180_000,
+  timeoutMs: 90_000,
   slimCwd: true,
-  skip: "model perf ceiling on yolo + Glob; bypass proven by LLM pipeline gate",
+  useTempHome: true,
 };
 
 export default async function (session) {
+  const fileName = `agenc-e2e-glob-${Date.now()}.ts`;
+  await writeFile(path.join(session.cwd, fileName), "export const marker = true;\n", "utf8");
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.type(
-    "Use the Glob tool to list TypeScript files under /home/tetsuo/git/AgenC/agenc-core/runtime/src/bin/ matching the pattern 'agenc*.ts'.",
+    `Use the Glob tool to list files in ${session.cwd} matching the pattern 'agenc-e2e-glob-*.ts'.`,
   );
   await session.submit();
-  await session.waitFor(/agenc\.ts/, {
-    timeout: 150_000,
-    label: "glob match",
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 90_000 });
+  await session.assertRolloutToolOutput(fileName, {
+    label: "Glob output",
+    toolName: "Glob",
   });
-  await session.waitForIdle({ timeout: 30_000 });
 }
