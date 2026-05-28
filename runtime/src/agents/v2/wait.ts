@@ -72,6 +72,53 @@ function effectiveWaitTimeoutOptions(session: {
   return { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs };
 }
 
+type WaitMailboxUpdate = {
+  readonly role: string;
+  readonly content: string;
+};
+
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (
+          part !== null &&
+          typeof part === "object" &&
+          "text" in part &&
+          typeof (part as { readonly text?: unknown }).text === "string"
+        ) {
+          return (part as { readonly text: string }).text;
+        }
+        return "";
+      })
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+function drainMailboxUpdates(session: unknown): readonly WaitMailboxUpdate[] {
+  const drain = (session as {
+    readonly drainPendingInputMessages?: () => readonly {
+      readonly role?: unknown;
+      readonly content?: unknown;
+    }[];
+  }).drainPendingInputMessages;
+  if (typeof drain !== "function") return [];
+  return drain.call(session)
+    .map((message): WaitMailboxUpdate | null => {
+      const role = typeof message.role === "string" && message.role.length > 0
+        ? message.role
+        : "user";
+      const content = contentToText(message.content);
+      if (content.length === 0) return null;
+      return { role, content };
+    })
+    .filter((message): message is WaitMailboxUpdate => message !== null);
+}
+
 export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
   const session = opts.getSession();
   const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } = session
@@ -134,6 +181,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       );
     }
     const timedOut = !mailboxChanged;
+    const updates = timedOut ? [] : drainMailboxUpdates(sessionOrError);
     emit(sessionOrError, {
       type: "collab_waiting_end",
       payload: {
@@ -142,11 +190,13 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         statuses: {},
         timedOut,
         agentStatuses: [],
+        ...(updates.length > 0 ? { mailboxUpdates: updates } : {}),
       },
     });
     return json({
       message: timedOut ? "Wait timed out." : "Wait completed.",
       timed_out: timedOut,
+      ...(updates.length > 0 ? { updates } : {}),
     });
   };
 
@@ -154,9 +204,9 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     name: "wait_agent",
     description:
       "Wait for a mailbox update from any live agent, including queued messages " +
-      "and final-status notifications. Does not return the content; returns either " +
-      "a summary of which agents have updates (if any), " +
-      "or a timeout summary if no mailbox update arrives before the deadline.",
+      "and final-status notifications. When updates arrive, returns the drained " +
+      "mailbox content so you can report completed agent findings immediately. " +
+      "If no mailbox update arrives before the deadline, returns a timeout summary.",
     metadata: toolMetadata("agent", { keywords: ["agent", "wait", "status"] }),
     isReadOnly: true,
     recoveryCategory: "side-effecting",

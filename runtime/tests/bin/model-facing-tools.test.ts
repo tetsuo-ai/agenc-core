@@ -3080,6 +3080,69 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("wait_agent returns drained mailbox updates for the current turn", async () => {
+    const session = fakeSession();
+    const emitted: unknown[] = [];
+    (session as unknown as { emit: typeof session.emit }).emit = (event) => {
+      emitted.push(event);
+    };
+    const waitForMailboxChange = vi.fn(async () => true);
+    const drainPendingInputMessages = vi.fn(() => [
+      {
+        role: "user",
+        content: "Message from reviewer:\nfinished provider-boundary audit",
+      },
+    ]);
+    const sessionWithMailboxWait = session as unknown as {
+      waitForMailboxChange: typeof waitForMailboxChange;
+      drainPendingInputMessages: typeof drainPendingInputMessages;
+    };
+    sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
+    sessionWithMailboxWait.drainPendingInputMessages = drainPendingInputMessages;
+    _setAgentControlForTesting(session, {
+      control: {
+        listAgents: vi.fn(() => []),
+        getLive: vi.fn(() => undefined),
+        resolveAgentReference: vi.fn(() => "agent-1"),
+      } as never,
+      registry: {} as never,
+    });
+    try {
+      const wait = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "wait_agent")!;
+
+      const result = await wait.execute({});
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({
+        message: "Wait completed.",
+        timed_out: false,
+        updates: [
+          {
+            role: "user",
+            content: "Message from reviewer:\nfinished provider-boundary audit",
+          },
+        ],
+      });
+      expect(drainPendingInputMessages).toHaveBeenCalledOnce();
+      expect(
+        (
+          emitted[1] as {
+            msg: {
+              payload: {
+                mailboxUpdates: readonly { readonly content: string }[];
+              };
+            };
+          }
+        ).msg.payload.mailboxUpdates[0]?.content,
+      ).toContain("finished provider-boundary audit");
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("wait_agent reports timeout when no parent mailbox update arrives", async () => {
     const session = fakeSession();
     const waitForMailboxChange = vi.fn(async () => false);

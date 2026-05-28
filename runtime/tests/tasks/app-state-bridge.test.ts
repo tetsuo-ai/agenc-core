@@ -114,6 +114,42 @@ describe("syncBackgroundTaskSnapshotToAppState", () => {
     });
   });
 
+  it("surfaces final agent messages as completed task summaries", () => {
+    let appState: unknown = { tasks: {} };
+    syncBackgroundTaskSnapshotToAppState(
+      {
+        setAppState(updater) {
+          appState = updater(appState);
+        },
+      },
+      snapshot({
+        status: "completed",
+        endedAtMs: 20,
+        metadata: {
+          threadName: "reviewer",
+          finalMessage: "Found the remaining provider-boundary work.",
+        },
+        progress: {
+          toolUseCount: 4,
+          tokenCount: 500,
+        },
+      }),
+    );
+
+    expect(appState).toMatchObject({
+      tasks: {
+        "agent-1": {
+          status: "completed",
+          progress: {
+            toolUseCount: 4,
+            tokenCount: 500,
+            summary: "Found the remaining provider-boundary work.",
+          },
+        },
+      },
+    });
+  });
+
   it("preserves previous display paths when later lifecycle snapshots omit metadata", () => {
     let appState: unknown = {
       tasks: {

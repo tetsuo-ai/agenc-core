@@ -800,6 +800,48 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
+  test("renders wait_agent mailbox updates with completed subagent findings", async () => {
+    const { formatSubagentNotification } = await import("../../agents/status.js");
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "wait-end",
+        msg: {
+          type: "collab_waiting_end",
+          payload: {
+            callId: "wait-1",
+            timedOut: false,
+            agentStatuses: [],
+            mailboxUpdates: [
+              {
+                role: "user",
+                content: `Message from reviewer:\n${formatSubagentNotification({
+                  agentPath: "019e1e2f-efc6-74c0-86a3-eefa1c5c98c2",
+                  status: {
+                    status: "completed",
+                    turnId: "turn",
+                    endedAtMs: 1,
+                    lastMessage: "finished provider-boundary audit",
+                  },
+                })}`,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.messages).toMatchObject([
+      {
+        subtype: "collab_agent",
+        title: "Finished waiting",
+        state: "success",
+      },
+    ]);
+    expect(JSON.stringify(transcript.messages)).toContain(
+      "finished provider-boundary audit",
+    );
+  });
+
   test("tool_progress events are no longer captured into a runningToolProgress map and streamingToolUses is the live-tool contract", () => {
     const transcript = adaptTranscriptEvents([
       {

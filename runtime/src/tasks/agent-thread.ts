@@ -25,6 +25,15 @@ import {
 } from "../services/AgentSummary/agentSummary.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 
+function finalMessageMetadata(
+  finalMessage: string | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  if (finalMessage === undefined || finalMessage.trim().length === 0) {
+    return undefined;
+  }
+  return { finalMessage };
+}
+
 export interface AgentThreadTaskHandle {
   readonly threadId?: string;
   readonly threadName?: string;
@@ -189,6 +198,7 @@ export function registerAgentThreadTask(
               metadata: {
                 durationMs: result.durationMs,
                 outcome: result.outcome,
+                ...finalMessageMetadata(result.finalMessage),
               },
             };
           case "errored":
@@ -274,7 +284,11 @@ function mapAgentStatus(
       case "interrupted":
         return lifecycle.appendOutput(taskId, `\n[agent interrupted: ${status.reason}]\n`);
       case "completed":
-        return lifecycle.complete(taskId, status.lastMessage);
+        return lifecycle.complete(
+          taskId,
+          status.lastMessage,
+          finalMessageMetadata(status.lastMessage),
+        );
       case "errored":
         return lifecycle.fail(taskId, status.error);
       case "shutdown":

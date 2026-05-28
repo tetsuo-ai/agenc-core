@@ -294,6 +294,9 @@ describe("registerAgentThreadTask", () => {
 
     expect(lifecycle.get("agent-2")?.status).toBe("completed");
     expect(lifecycle.readOutput("agent-2")).toBe("summary");
+    expect(lifecycle.get("agent-2")?.metadata).toMatchObject({
+      finalMessage: "summary",
+    });
   });
 
   it("starts AgentSummary for registered threads and writes progress summaries", async () => {
