@@ -26,6 +26,7 @@ export function createListAgentsTool(opts: MultiAgentV2Options): Tool {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = opts.ensureAgentControl(sessionOrError);
+    control.registerSessionRoot(sessionOrError.conversationId);
     const current = currentAgentContext(sessionOrError, args, opts);
     const pathPrefixRaw = stringValue(args.path_prefix);
     let resolvedPathPrefix: AgentPath | undefined;

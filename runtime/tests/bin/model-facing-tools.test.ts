@@ -13,6 +13,8 @@ import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
+import { AgentControl } from "../agents/control.js";
+import { AgentRegistry } from "../agents/registry.js";
 import {
   checkForLSPDiagnostics,
   registerPendingLSPDiagnostic,
@@ -3237,6 +3239,7 @@ describe("model-facing tools", () => {
   it("list_agents returns AgenC V2 snake_case entries only", async () => {
     const session = fakeSession();
     const control = {
+      registerSessionRoot: vi.fn(),
       listAgents: vi.fn(() => [
         {
           agentName: "/root",
@@ -3298,6 +3301,36 @@ describe("model-facing tools", () => {
           },
         ],
       });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
+  it("list_agents registers the current root before listing", async () => {
+    const session = fakeSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    expect(control.listAgents()).toEqual([]);
+    _setAgentControlForTesting(session, { control, registry });
+    try {
+      const listAgents = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "list_agents")!;
+
+      const result = await listAgents.execute({});
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({
+        agents: [
+          {
+            agent_name: "/root",
+            agent_status: "pending_init",
+            last_task_message: "Main thread",
+          },
+        ],
+      });
+      expect(control.listAgents().some((agent) => agent.agentName === "/root")).toBe(true);
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
