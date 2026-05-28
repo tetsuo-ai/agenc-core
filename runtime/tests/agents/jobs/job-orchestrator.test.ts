@@ -131,6 +131,49 @@ describe("runAgentsOnCsv", () => {
     );
   });
 
+  it("normalizes zero maxConcurrency to one worker", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");
+    let activeWorkers = 0;
+    let maxActiveWorkers = 0;
+    const reports: Promise<void>[] = [];
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        activeWorkers += 1;
+        maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
+        reports.push(
+          new Promise<void>((resolve) => {
+            setTimeout(() => {
+              recordAgentJobResult({
+                jobId: ctx.jobId,
+                itemId: ctx.itemId,
+                result: { echoed: ctx.row.value ?? "" },
+              });
+              activeWorkers -= 1;
+              resolve();
+            }, 5);
+          }),
+        );
+      },
+      async cancelOutstanding() {},
+    };
+
+    const result = await runAgentsOnCsv({
+      csvPath,
+      instruction: "process {value}",
+      idColumn: "id",
+      maxConcurrency: 0,
+      spawn,
+    });
+
+    await Promise.all(reports);
+    expect(result.items.map((item) => item.status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+    expect(maxActiveWorkers).toBe(1);
+  });
+
   it("rejects when csv contains zero data rows", async () => {
     const csvPath = join(workDir, "empty.csv");
     await writeFile(csvPath, "id\n", "utf8");
