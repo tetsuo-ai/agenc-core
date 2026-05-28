@@ -383,6 +383,14 @@ describe("model-facing tools", () => {
       )?.properties,
     ).toHaveProperty("service_tier");
     expect(
+      (
+        registry.tools.find((tool) => tool.name === "spawn_agent")
+          ?.inputSchema as {
+          properties?: Record<string, { description?: string }>;
+        } | undefined
+      )?.properties?.fork_turns?.description,
+    ).toContain("Defaults to `all`");
+    expect(
       registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
     ).toMatchObject({
       required: ["subject", "description"],
@@ -1965,9 +1973,19 @@ describe("model-facing tools", () => {
     expect(JSON.parse(fullHistoryWithOverride.content).error).toContain(
       "Full-history forked agents inherit",
     );
+
+    const defaultFullHistoryWithOverride = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      reasoning_effort: "xhigh",
+    });
+    expect(defaultFullHistoryWithOverride.isError).toBe(true);
+    expect(JSON.parse(defaultFullHistoryWithOverride.content).error).toContain(
+      "Full-history forked agents inherit",
+    );
   });
 
-  it("uses a clean fork by default for plain spawn_agent calls", async () => {
+  it("uses a full-history fork by default for plain spawn_agent calls", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -2011,9 +2029,9 @@ describe("model-facing tools", () => {
         taskPrompt: "review game.py",
         agentName: "reviewer",
         runInBackground: true,
+        forkMode: { kind: "full_history" },
       }),
     );
-    expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
   });
 
   it("normalizes common hyphenated spawn_agent task names", async () => {
@@ -2060,11 +2078,12 @@ describe("model-facing tools", () => {
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         agentName: "bug_review",
+        forkMode: { kind: "full_history" },
       }),
     );
   });
 
-  it("uses a full-history fork only when spawn_agent explicitly requests all turns", async () => {
+  it("also accepts explicit all turns for spawn_agent full-history forks", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -2175,6 +2194,7 @@ describe("model-facing tools", () => {
       task_name: "fast_task",
       model: "gpt-5.4",
       service_tier: "priority",
+      fork_turns: "none",
     });
 
     expect(accepted.isError).not.toBe(true);
@@ -2190,6 +2210,7 @@ describe("model-facing tools", () => {
       task_name: "slow_task",
       model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
       service_tier: "priority",
+      fork_turns: "none",
     });
 
     expect(rejected.isError).toBe(true);
@@ -2288,6 +2309,7 @@ describe("model-facing tools", () => {
       model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
       reasoning_effort: "low",
       service_tier: "standard",
+      fork_turns: "none",
     });
 
     expect(result.isError).not.toBe(true);
@@ -2344,6 +2366,7 @@ describe("model-facing tools", () => {
       task_name: "priority_review",
       agent_type: "priority-reviewer",
       service_tier: "turbo",
+      fork_turns: "none",
     });
 
     expect(result.isError).toBe(true);
@@ -2399,7 +2422,7 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("uses a clean fork by default when spawn_agent has role or effort overrides", async () => {
+  it("uses a clean fork when spawn_agent role or effort overrides explicitly set fork_turns none", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -2435,6 +2458,7 @@ describe("model-facing tools", () => {
       task_name: "reviewer",
       agent_type: "runner",
       reasoning_effort: "xhigh",
+      fork_turns: "none",
     });
 
     expect(result.isError).not.toBe(true);
