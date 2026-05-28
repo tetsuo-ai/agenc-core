@@ -2899,6 +2899,77 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("close_agent emits the close end event after shutdown failure", async () => {
+    const session = fakeSession();
+    const emit = vi.fn();
+    (session as unknown as { emit: typeof emit }).emit = emit;
+    const status = {
+      status: "running" as const,
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    const unsubscribe = vi.fn();
+    const control = {
+      resolveAgentReference: vi.fn(() => "550e8400-e29b-41d4-a716-446655440004"),
+      getLive: vi.fn((threadId: string) =>
+        threadId === "550e8400-e29b-41d4-a716-446655440004"
+          ? {
+              agentId: "550e8400-e29b-41d4-a716-446655440004",
+              agentPath: "/root/failing_close",
+              nickname: "ShutdownProbe",
+              role: { name: "worker" },
+              status: { value: status },
+            }
+          : undefined,
+      ),
+      getAgentMetadata: vi.fn((threadId: string) =>
+        threadId === "550e8400-e29b-41d4-a716-446655440004"
+          ? {
+              agentId: "550e8400-e29b-41d4-a716-446655440004",
+              agentPath: "/root/failing_close",
+              agentNickname: "ShutdownProbe",
+              agentRole: "worker",
+              depth: 1,
+            }
+          : undefined,
+      ),
+      subscribeStatus: vi.fn(async () => ({ value: status, unsubscribe })),
+      shutdown: vi.fn(async () => {
+        throw new Error("close failed");
+      }),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const close = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "close_agent")!;
+
+      const result = await close.execute({ target: "/root/failing_close" });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe("close failed");
+      expect(unsubscribe).toHaveBeenCalled();
+      expect(emit.mock.calls.map((call) => call[0].msg.type)).toEqual([
+        "collab_close_begin",
+        "collab_close_end",
+      ]);
+      expect(emit.mock.calls[1]?.[0].msg.payload).toEqual(
+        expect.objectContaining({
+          receiverThreadId: "550e8400-e29b-41d4-a716-446655440004",
+          receiverAgentNickname: "ShutdownProbe",
+          receiverAgentRole: "worker",
+          status,
+        }),
+      );
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   function notebookSource(cells: readonly Record<string, unknown>[]): string {
     return JSON.stringify({
       cells,

@@ -35,6 +35,30 @@
       "sha256": "dcd6a7abd9f6cec6821f9c03b3c7936cbc2845324196b3a368cc15fc08a1f5fd"
     },
     {
+      "path": "core/src/tools/handlers/multi_agents_v2/close_agent.rs",
+      "sha256": "105a877567d3d609b8ffc14f409402d8071fc7ad9442214c55104018246764f4"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+      "sha256": "56e5d3cedb93a77b38cb0d64a0579a323af45b99b1e239018ac4ce4d2fade576"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_v2/list_agents.rs",
+      "sha256": "e13e2b0426ed3e53f9cb024e292a5cef9e228ce9234faaadb39e8722f222cc2f"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+      "sha256": "eb9f3c30243ae6e83d5a69a66f805f0ba64abd5e0b2298a18bfe3886aa835151"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_v2/send_message.rs",
+      "sha256": "5ecb5d1fd7bf576b9520e966d852e9b133fb8459d478e7e6c9fdb107b60f7829"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_v2/spawn.rs",
+      "sha256": "9df1654c431c76f5adecb4ef07c1328993a84039f22ed59a373c203f1fbc2481"
+    },
+    {
       "path": "core/src/tools/handlers/multi_agents_v2/wait.rs",
       "sha256": "4ddd23c93ccae17d9a3b0006d4b2675acc450196ca207bbc1db4c5c841707a46"
     },
@@ -264,6 +288,12 @@
         "core/src/thread_manager.rs",
         "core/src/tools/handlers/multi_agents_common.rs",
         "core/src/tools/handlers/multi_agents_spec.rs",
+        "core/src/tools/handlers/multi_agents_v2/close_agent.rs",
+        "core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+        "core/src/tools/handlers/multi_agents_v2/list_agents.rs",
+        "core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+        "core/src/tools/handlers/multi_agents_v2/send_message.rs",
+        "core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "core/src/tools/handlers/multi_agents_v2/wait.rs"
       ],
       "target": [
@@ -287,7 +317,8 @@
         "reports partial progress, final output, and failure state in task-compatible output records",
         "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
         "applies role allowlists and tool policies before child tools execute",
-        "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out"
+        "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
+        "close_agent emits the close-end event with the previous status even when close request delivery fails"
       ],
       "edgeCases": [
         "wait_agent returns completed when any parent mailbox update arrives before the timeout",
@@ -295,6 +326,7 @@
         "wait_agent rejects timeout_ms below the configured minimum instead of silently clamping",
         "wait_agent rejects removed v1 targets input as an unknown field",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",
+        "a close_agent shutdown failure still emits collab_close_end and returns a structured tool error",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
         "an agent tool with a disallowed role fails before any child run is started",
         "task-board output excludes internal mailbox details while preserving user-visible progress and status"

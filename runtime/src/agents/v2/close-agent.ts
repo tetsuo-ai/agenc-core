@@ -65,7 +65,12 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
           ? await control.getStatus(agentId)
           : { status: "not_found" });
     }
-    await control.shutdown(agentId, "closed_by_tool");
+    let closeError: unknown;
+    try {
+      await control.shutdown(agentId, "closed_by_tool");
+    } catch (error) {
+      closeError = error;
+    }
     emit(sessionOrError, {
       type: "collab_close_end",
       payload: {
@@ -76,6 +81,15 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
         status: previous,
       },
     });
+    if (closeError !== undefined) {
+      return json(
+        {
+          error:
+            closeError instanceof Error ? closeError.message : String(closeError),
+        },
+        true,
+      );
+    }
     return json({ previous_status: toAgentStatusJson(previous) });
   };
 
