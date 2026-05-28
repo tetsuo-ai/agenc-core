@@ -1,15 +1,19 @@
 /**
  * Permission overlay "always allow" scenario.
  *
- * Default mode. Triggers Bash, hits the overlay, sends "2\\r" to accept
- * + record "always allow for this tool/path". The harness uses temp
- * HOME isolation so the policy entry doesn't leak.
+ * Default mode. Triggers Bash, hits the overlay, sends "2" to accept
+ * for the current session. The harness uses temp HOME isolation so the
+ * session-scoped policy entry doesn't leak.
  *
  * Uses a SLIM cwd (mkdtemp under /tmp with a single trivial file) so
  * the daemon's project-context auto-load doesn't bloat the token
  * budget. With agenc-core's runtime/ as cwd, AGENC.md and surrounding
  * files pushed >237k tokens and starved compaction; in /tmp/<empty>
  * the budget fits comfortably.
+ *
+ * The assertion reads the temp HOME rollout so it proves Bash actually
+ * completed without depending on the model echoing stdout in its final
+ * assistant message.
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,9 +46,6 @@ export default async function (session) {
   await session.submit();
   await session.waitForPermissionOverlay({ timeout: 60_000 });
   await session.alwaysAllowPermissionOverlay();
-  await session.waitFor(new RegExp(marker), {
-    timeout: 90_000,
-    label: "session-approved Bash output",
-  });
-  await session.waitForIdle({ idleWindow: 4_000, timeout: 30_000 });
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 90_000 });
+  await session.assertRolloutToolOutput(marker, { label: "session-approved Bash output" });
 }

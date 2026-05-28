@@ -6,19 +6,14 @@
  * appears in the captured buffer. This is the most-traveled tool path:
  * if Bash round-trip is broken, every multi-step task is broken.
  *
- * Note on flakiness: the model has to decide to call Bash. Qwen3 with the
- * explicit "use Bash" instruction reliably does so in our config; if a
- * future model change breaks that, this scenario gates the regression.
+ * Note on flakiness: the model has to decide to call Bash. The explicit
+ * "use Bash" instruction reliably does so in the current gate config; if
+ * a future model change breaks that, this scenario gates the regression.
  */
 export const meta = {
   description: "--yolo: model uses Bash, command output renders in transcript.",
   args: ["--yolo"],
   timeoutMs: 90_000,
-  // Same model-perf ceiling as 11/12/13. The bypass + Bash dispatch is
-  // verified end-to-end by check-llm-pipeline scenario 04-tool-call-shape,
-  // which exercises Bash via -p mode and inspects the rollout for
-  // tool_call_started / tool_call_completed evidence.
-  skip: "model perf ceiling on yolo + Bash; bypass+dispatch proven by LLM pipeline gate scenario 04",
 };
 
 export default async function (session) {
