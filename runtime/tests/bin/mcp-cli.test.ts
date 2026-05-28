@@ -370,6 +370,39 @@ describe("AgenC MCP CLI", () => {
     });
   });
 
+  test("exits stdio serve without materializing tools when stdin closes", async () => {
+    const stdout = createWritableCapture();
+    const stderr = createWritableCapture();
+    const registry: ToolRegistry = {
+      get tools(): readonly Tool[] {
+        throw new Error("tool registry should not be materialized before MCP requests");
+      },
+      toLLMTools(): LLMTool[] {
+        throw new Error("tool registry should not be materialized before MCP requests");
+      },
+      async dispatch(): Promise<ToolDispatchResult> {
+        throw new Error("tool registry should not be materialized before MCP requests");
+      },
+    };
+
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "serve",
+          transport: "stdio",
+          host: "127.0.0.1",
+          port: 3334,
+        },
+        {
+          io: createIo(Readable.from([]), stdout, stderr),
+          toolRegistry: registry,
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toBe("");
+  });
+
   test("serves MCP over stdio", async () => {
     const input = new PassThrough();
     const output = new PassThrough();

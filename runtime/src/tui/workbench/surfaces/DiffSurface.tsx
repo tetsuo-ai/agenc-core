@@ -91,10 +91,18 @@ export function DiffSurface({
     { context: "Surface", isActive: focused },
   );
 
-  if (loadError !== null) return <EmptySurface title="DIFF" message={`Unable to load diff: ${loadError}`} />;
-  if (snapshot === null) return <EmptySurface title="DIFF" message="Loading diff" />;
-  if (snapshot.state === "not-repo") return <EmptySurface title="DIFF" message="Not a git repository" />;
-  if (snapshot.state === "clean") return <EmptySurface title="DIFF" message="No working tree changes" />;
+  if (loadError !== null) {
+    return <EmptySurface title="DIFF" detail="git diff HEAD" message={`Unable to load diff: ${loadError}`} />;
+  }
+  if (snapshot === null) {
+    return <EmptySurface title="DIFF" detail="git diff HEAD" message="Loading diff" />;
+  }
+  if (snapshot.state === "not-repo") {
+    return <EmptySurface title="DIFF" detail="git diff HEAD" message="Not a git repository" />;
+  }
+  if (snapshot.state === "clean") {
+    return <EmptySurface title="DIFF" detail="git diff HEAD" message="No uncommitted changes" />;
+  }
 
   return (
     <DiffSurfaceView
