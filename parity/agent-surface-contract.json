@@ -83,6 +83,18 @@
       "sha256": "18ddefda817a89b299cfbec14ea8e95ff4248e9fe5aca616656f39f7d5cfb045"
     },
     {
+      "path": "protocol/src/openai_models.rs",
+      "sha256": "622e264c2b67b2e37d27c51b5486968a4d5245f6ff3a2893919eb71bb8c060ca"
+    },
+    {
+      "path": "protocol/src/config_types.rs",
+      "sha256": "84491d252377719e67acae0bda0d15f1c27a5aff81f4c4f4d5b58f5975267d3d"
+    },
+    {
+      "path": "models-manager/models.json",
+      "sha256": "b21200fd39c430f750cf10030c13bb19a91fdbc07792abdbda09e0ce6479161a"
+    },
+    {
       "path": "tui/src/multi_agents.rs",
       "sha256": "7de3107ec4c6d0085d34f3149e247be5edb847d40425ca703d9a7e890a4472a6"
     },
@@ -102,6 +114,10 @@
     "runtime/src/agents/mailbox.ts",
     "runtime/src/agents/run-agent.ts",
     "runtime/src/agents/delegate.ts",
+    "runtime/src/session/turn-context.ts",
+    "runtime/src/llm/model-registry.ts",
+    "runtime/src/llm/types.ts",
+    "runtime/src/phases/stream-model.ts",
     "runtime/src/agents/v2/spawn.ts",
     "runtime/src/agents/v2/send-message.ts",
     "runtime/src/agents/v2/wait.ts",
@@ -150,6 +166,9 @@
     "runtime/tests/tools/tasks/task-tools.test.ts",
     "runtime/tests/commands/agent-management.test.tsx",
     "runtime/tests/bin/model-facing-tools.test.ts",
+    "runtime/tests/llm/model-registry.test.ts",
+    "runtime/tests/llm/models-manager.test.ts",
+    "runtime/tests/phases/stream-model.test.ts",
     "runtime/tests/tui/workbench/agent-surface.test.tsx",
     "runtime/tests/tui/workbench/agents-rail.test.tsx",
     "runtime/tests/tui/workbench/agents.test.ts",
@@ -294,9 +313,14 @@
         "core/src/tools/handlers/multi_agents_v2/message_tool.rs",
         "core/src/tools/handlers/multi_agents_v2/send_message.rs",
         "core/src/tools/handlers/multi_agents_v2/spawn.rs",
-        "core/src/tools/handlers/multi_agents_v2/wait.rs"
+        "core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "protocol/src/openai_models.rs",
+        "protocol/src/config_types.rs",
+        "models-manager/models.json"
       ],
       "target": [
+        "runtime/src/agents/delegate.ts",
+        "runtime/src/agents/run-agent.ts",
         "runtime/src/tasks/agent-thread.ts",
         "runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx",
         "runtime/src/tasks/InProcessTeammateTask/InProcessTeammateTask.tsx",
@@ -309,7 +333,11 @@
         "runtime/src/agents/v2/send-message.ts",
         "runtime/src/agents/v2/wait.ts",
         "runtime/src/agents/v2/list-agents.ts",
-        "runtime/src/agents/v2/close-agent.ts"
+        "runtime/src/agents/v2/close-agent.ts",
+        "runtime/src/session/turn-context.ts",
+        "runtime/src/llm/model-registry.ts",
+        "runtime/src/llm/types.ts",
+        "runtime/src/phases/stream-model.ts"
       ],
       "requiredBehaviors": [
         "exposes agent spawn, send, wait, list, close, and task-board operations through the tool surface without bypassing AgentControl",
@@ -317,6 +345,7 @@
         "reports partial progress, final output, and failure state in task-compatible output records",
         "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
         "applies role allowlists and tool policies before child tools execute",
+        "spawn_agent v2 accepts service_tier, validates it against the effective child model, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
         "close_agent emits the close-end event with the previous status even when close request delivery fails"
       ],
@@ -325,6 +354,9 @@
         "wait_agent returns timed_out when no parent mailbox update arrives before the timeout",
         "wait_agent rejects timeout_ms below the configured minimum instead of silently clamping",
         "wait_agent rejects removed v1 targets input as an unknown field",
+        "spawn_agent rejects an explicit service_tier unsupported by the selected child model before delegation",
+        "spawn_agent allows an explicit service_tier when fork_turns is all while still rejecting full-history model and effort overrides",
+        "a child spawned with service_tier priority forwards priority into the provider request options",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",
         "a close_agent shutdown failure still emits collab_close_end and returns a structured tool error",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
@@ -337,10 +369,14 @@
         "runtime/tests/tools/AgentTool/loadAgentsDir.test.ts",
         "runtime/tests/tools/tasks/task-tools.test.ts",
         "runtime/tests/commands/agent-management.test.tsx",
-        "runtime/tests/bin/model-facing-tools.test.ts"
+        "runtime/tests/bin/model-facing-tools.test.ts",
+        "runtime/tests/agents/run-agent.test.ts",
+        "runtime/tests/llm/model-registry.test.ts",
+        "runtime/tests/llm/models-manager.test.ts",
+        "runtime/tests/phases/stream-model.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
       ],
       "status": "required"
     },

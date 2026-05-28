@@ -87,6 +87,8 @@ export interface RunAgentParams {
   readonly model?: string;
   /** Optional child reasoning-effort override. */
   readonly reasoningEffort?: ReasoningEffort;
+  /** Optional child service-tier override. */
+  readonly serviceTier?: string;
   /** Optional AbortSignal merged with the live agent's controller. */
   readonly externalSignal?: AbortSignal;
   /** Optional per-call child tool policy layered after allowlist filtering. */
@@ -1410,10 +1412,15 @@ function cloneSessionConfiguration(
   overrides: {
     readonly model?: string;
     readonly reasoningEffort?: ReasoningEffort;
+    readonly serviceTier?: string;
   } = {},
 ): Session["sessionConfiguration"] {
   const base = parent.sessionConfiguration;
   const cwd = worktree?.path ?? base.cwd;
+  const serviceTier =
+    overrides.serviceTier !== undefined
+      ? overrides.serviceTier
+      : base.serviceTier;
   const collaborationMode = {
     ...base.collaborationMode,
     ...(overrides.model !== undefined ? { model: overrides.model } : {}),
@@ -1424,6 +1431,7 @@ function cloneSessionConfiguration(
   return {
     ...base,
     cwd,
+    ...(serviceTier !== undefined ? { serviceTier } : {}),
     collaborationMode,
     sessionSource: {
       kind: "subagent",
@@ -1444,7 +1452,7 @@ function cloneSessionConfiguration(
             model: collaborationMode.model,
             modelReasoningEffort: collaborationMode.reasoningEffort,
             modelReasoningSummary: base.modelReasoningSummary,
-            serviceTier: base.serviceTier,
+            serviceTier,
             personality: base.personality,
             approvalsReviewer: base.approvalsReviewer,
           },
@@ -1545,6 +1553,9 @@ function buildChildSession(
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.reasoningEffort !== undefined
         ? { reasoningEffort: params.reasoningEffort }
+        : {}),
+      ...(params.serviceTier !== undefined
+        ? { serviceTier: params.serviceTier }
         : {}),
     },
   );

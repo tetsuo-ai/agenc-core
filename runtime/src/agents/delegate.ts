@@ -60,6 +60,7 @@ export interface DelegateOpts {
   readonly agentName?: string;
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
+  readonly serviceTier?: string;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
   readonly forkMode?: ForkMode;
@@ -223,6 +224,9 @@ export async function delegate(
       ...(opts.reasoningEffort !== undefined
         ? { reasoningEffort: opts.reasoningEffort }
         : {}),
+      ...(opts.serviceTier !== undefined
+        ? { serviceTier: opts.serviceTier }
+        : {}),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
@@ -336,6 +340,7 @@ async function runDelegateAgentLoop(opts: {
   readonly silent?: boolean;
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
+  readonly serviceTier?: string;
   readonly resumeManager?: ResumeManager;
   readonly keepAlive?: boolean;
   readonly onProgress?: (
@@ -366,6 +371,9 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
+          : {}),
+        ...(opts.serviceTier !== undefined
+          ? { serviceTier: opts.serviceTier }
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
         onCacheSafeParams: (params) => {

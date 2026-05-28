@@ -171,7 +171,9 @@ function buildProviderOptions(
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
     serviceTier:
-      ctx.serviceTier === "fast" || ctx.serviceTier === "flex"
+      ctx.serviceTier === "fast" ||
+      ctx.serviceTier === "priority" ||
+      ctx.serviceTier === "flex"
         ? ctx.serviceTier
         : undefined,
   };

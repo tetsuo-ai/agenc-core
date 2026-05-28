@@ -311,7 +311,8 @@ describe("streamModel — live assistant text sanitization", () => {
     (ctx as TurnContext & { reasoningSummary: "detailed" }).reasoningSummary =
       "detailed";
     (ctx as TurnContext & { modelVerbosity?: "high" }).modelVerbosity = "high";
-    (ctx as TurnContext & { serviceTier?: "flex" }).serviceTier = "flex";
+    (ctx as TurnContext & { serviceTier?: "priority" }).serviceTier =
+      "priority";
 
     const seenOptions: Array<Record<string, unknown> | undefined> = [];
     const provider = mkProvider(async (_messages, _onChunk, options) => {
@@ -338,7 +339,7 @@ describe("streamModel — live assistant text sanitization", () => {
       reasoningEffort: "high",
       reasoningSummary: "detailed",
       modelVerbosity: "high",
-      serviceTier: "flex",
+      serviceTier: "priority",
       parallelToolCalls: false,
     });
   });

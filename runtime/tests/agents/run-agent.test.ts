@@ -439,6 +439,44 @@ describe("runAgent", () => {
     expect(result.toolCallCount).toBe(1);
   });
 
+  it("applies a per-spawn service tier to the child session provider request", async () => {
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = {
+      ...makeProvider([]),
+      chatStream: vi.fn(
+        async (
+          _messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          options?: LLMChatOptions,
+        ): Promise<LLMResponse> => {
+          if (options !== undefined) seenOptions.push(options);
+          return {
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "fake-model",
+            finishReason: "stop",
+          };
+        },
+      ),
+    } satisfies LLMProvider;
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+
+    await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        serviceTier: "priority",
+      }),
+    );
+
+    expect(seenOptions[0]?.serviceTier).toBe("priority");
+    expect(live.configSnapshot).toMatchObject({ serviceTier: "priority" });
+  });
+
   it("captures AgentSummary cache-safe params from the real child run state", async () => {
     const provider = makeProvider([{ content: "summary seed" }]);
     const registry = {

@@ -22,7 +22,11 @@ import {
   resolveModelCostEntry,
   type ModelCostEntry,
 } from "../session/cost.js";
-import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
+import type {
+  ModelInfo,
+  ModelServiceTier,
+  ReasoningEffort,
+} from "../session/turn-context.js";
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
 
@@ -80,6 +84,38 @@ function inferDefaultReasoningLevel(
   return supportedReasoningLevels.length > 0 ? "medium" : undefined;
 }
 
+function inferServiceTiers(
+  entry: ModelRegistryEntry,
+): readonly ModelServiceTier[] {
+  const catalog = resolveRegisteredModelCatalogEntry({
+    provider: entry.provider,
+    model: entry.model,
+  });
+  const tiers = new Map<string, ModelServiceTier>();
+  for (const tier of catalog?.additionalSpeedTiers ?? []) {
+    if (tier === "fast" || tier === "priority") {
+      tiers.set("priority", {
+        id: "priority",
+        name: "Fast",
+        description: "1.5x speed, increased usage",
+      });
+    } else if (tier === "flex") {
+      tiers.set("flex", {
+        id: "flex",
+        name: "Flex",
+        description: "Lower-priority flexible capacity",
+      });
+    } else {
+      tiers.set(tier, {
+        id: tier,
+        name: tier,
+        description: tier,
+      });
+    }
+  }
+  return [...tiers.values()];
+}
+
 function resolveCostEntry(params: {
   readonly provider: string;
   readonly model: string;
@@ -118,6 +154,7 @@ export function modelRegistryEntryToModelInfo(
     entry,
     supportedReasoningLevels,
   );
+  const serviceTiers = inferServiceTiers(entry);
   const catalog = resolveRegisteredModelCatalogEntry({
     provider: entry.provider,
     model: entry.model,
@@ -149,6 +186,7 @@ export function modelRegistryEntryToModelInfo(
         : DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
     supportedReasoningLevels,
     ...(defaultReasoningLevel !== undefined ? { defaultReasoningLevel } : {}),
+    ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
     defaultReasoningSummary: catalog?.defaultReasoningSummary ?? "auto",
     truncationPolicy: "off",
     supportsToolUse: entry.capabilities.supportsToolUse,
