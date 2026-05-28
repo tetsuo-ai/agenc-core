@@ -662,14 +662,10 @@ export class TuiSession {
     return readRolloutItemsForHome(this.tempHome ?? homedir());
   }
 
-  /**
-   * Assert that a completed tool call recorded stdout/result containing a
-   * marker. This proves the tool actually ran without relying on the model
-   * to repeat stdout in the assistant's final message.
-   */
-  async assertRolloutToolOutput(marker, { label = "tool output", toolName } = {}) {
+  async completedRolloutToolCalls({ toolName } = {}) {
     const items = await this.readRolloutItems();
     const startedToolsByCallId = new Map();
+    const completed = [];
     for (const item of items) {
       const msg = item?.payload?.msg;
       if (msg?.type === "tool_call_started") {
@@ -688,6 +684,18 @@ export class TuiSession {
             ? startedToolsByCallId.get(payload.callId)
             : undefined;
       if (toolName !== undefined && completedToolName !== toolName) continue;
+      completed.push({ payload, toolName: completedToolName });
+    }
+    return completed;
+  }
+
+  /**
+   * Assert that a completed tool call recorded stdout/result containing a
+   * marker. This proves the tool actually ran without relying on the model
+   * to repeat stdout in the assistant's final message.
+   */
+  async assertRolloutToolOutput(marker, { label = "tool output", toolName } = {}) {
+    for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
       const stdout =
         typeof payload.metadata?.stdout === "string" ? payload.metadata.stdout : "";
       const result = typeof payload.result === "string" ? payload.result : "";
@@ -704,30 +712,38 @@ export class TuiSession {
    * success payload does not include the file contents being verified.
    */
   async assertRolloutToolCompleted({ label = "tool completion", toolName } = {}) {
-    const items = await this.readRolloutItems();
-    const startedToolsByCallId = new Map();
-    for (const item of items) {
-      const msg = item?.payload?.msg;
-      if (msg?.type === "tool_call_started") {
-        const payload = msg.payload ?? {};
-        if (typeof payload.callId === "string" && typeof payload.toolName === "string") {
-          startedToolsByCallId.set(payload.callId, payload.toolName);
-        }
-        continue;
-      }
-      if (msg?.type !== "tool_call_completed") continue;
-      const payload = msg.payload ?? {};
-      const completedToolName =
-        typeof payload.toolName === "string"
-          ? payload.toolName
-          : typeof payload.callId === "string"
-            ? startedToolsByCallId.get(payload.callId)
-            : undefined;
-      if (toolName !== undefined && completedToolName !== toolName) continue;
+    for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
       if (payload.isError === false) return;
     }
     const suffix = toolName === undefined ? "" : ` for ${toolName}`;
     throw new Error(`${label}: no successful rollout tool completion${suffix}`);
+  }
+
+  /**
+   * Assert that distinct completed tool calls produced the given markers in
+   * order. This proves a real multi-call pipeline instead of one combined
+   * command that happened to print multiple expected strings.
+   */
+  async assertRolloutToolOutputSequence(markers, { label = "tool output sequence", toolName } = {}) {
+    if (!Array.isArray(markers) || markers.length === 0) {
+      throw new Error(`${label}: expected at least one marker`);
+    }
+    let nextMarkerIndex = 0;
+    for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
+      if (payload.isError !== false) continue;
+      const stdout =
+        typeof payload.metadata?.stdout === "string" ? payload.metadata.stdout : "";
+      const result = typeof payload.result === "string" ? payload.result : "";
+      const marker = markers[nextMarkerIndex];
+      if (stdout.includes(marker) || result.includes(marker)) {
+        nextMarkerIndex += 1;
+        if (nextMarkerIndex === markers.length) return;
+      }
+    }
+    const suffix = toolName === undefined ? "" : ` for ${toolName}`;
+    throw new Error(
+      `${label}: matched ${nextMarkerIndex}/${markers.length} completed rollout tool outputs${suffix}`,
+    );
   }
 
   /**

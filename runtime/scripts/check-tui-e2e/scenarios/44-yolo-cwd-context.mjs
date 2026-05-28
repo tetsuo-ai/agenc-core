@@ -17,15 +17,11 @@ const expectedCwd = path.resolve(SCRIPT_DIR, "..", "..", "..");
 export const meta = {
   description: "--yolo: model uses Bash pwd, output matches launch cwd.",
   args: ["--yolo"],
-  timeoutMs: 240_000,
+  timeoutMs: 120_000,
   // Intentionally NOT using slimCwd — this scenario tests cwd
   // propagation to subagent, so it MUST run with the runtime cwd that
   // matches the SCRIPT_DIR-derived expectedCwd assertion below.
-  // The full-cwd context (no slim) plus a 200s wait pushes this past the
-  // model perf ceiling. The cwd propagation path is verified by
-  // check-llm-pipeline scenario 03-yolo-sets-approvalPolicy-never which
-  // inspects the assembled rollout for sessionConfiguration.cwd.
-  skip: "model perf ceiling on yolo + full-cwd Bash; cwd propagation proven via daemon protocol shape",
+  useTempHome: true,
 };
 
 export default async function (session) {
@@ -35,9 +31,9 @@ export default async function (session) {
     "Use the Bash tool to run: pwd",
   );
   await session.submit();
-  await session.waitFor(new RegExp(expectedCwd.replace(/\//g, "\\/")), {
-    timeout: 200_000,
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 120_000 });
+  await session.assertRolloutToolOutput(expectedCwd, {
     label: "pwd output matches launch cwd",
+    toolName: "exec_command",
   });
-  await session.waitForIdle({ timeout: 30_000 });
 }
