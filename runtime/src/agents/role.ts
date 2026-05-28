@@ -79,7 +79,11 @@ export interface AgentRoleConfig {
   /** Runtime hint derived from the loaded role layer when possible. */
   readonly timeoutMs?: number;
   /** Runtime hint derived from the loaded role layer when possible. */
+  readonly model?: string;
+  /** Runtime hint derived from the loaded role layer when possible. */
   readonly reasoningEffort?: AgentReasoningEffort;
+  /** Runtime hint derived from the loaded role layer when possible. */
+  readonly serviceTier?: string;
   /** Optional explicit tool allowlist. This is runtime metadata, not a
    *  upstream runtime role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
@@ -450,6 +454,7 @@ export interface RoleShapedConfig {
   approval_policy?: string;
   sandbox_mode?: string;
   reasoning_effort?: string;
+  service_tier?: string;
   personality?: string;
   web_search?: unknown;
   tools_config?: Record<string, unknown>;
@@ -587,6 +592,7 @@ function formatRole(role: AgentRole): string {
   const reasoningEffort = asString(
     roleLayerToml?.model_reasoning_effort ?? roleLayerToml?.reasoning_effort,
   );
+  const serviceTier = asString(roleLayerToml?.service_tier);
 
   let lockedSettingsNote = "";
   if (model && reasoningEffort) {
@@ -601,6 +607,11 @@ function formatRole(role: AgentRole): string {
     lockedSettingsNote =
       `\n- This role's reasoning effort is set to ` +
       `\`${reasoningEffort}\` and cannot be changed.`;
+  }
+  if (serviceTier) {
+    lockedSettingsNote +=
+      `\n- This role's service tier is set to \`${serviceTier}\`.` +
+      " If it is supported by the resolved model, it takes precedence over a valid spawn request service tier.";
   }
 
   return `${publicName}: {\n${description}${aliasNote}${lockedSettingsNote}\n}`;
@@ -635,12 +646,26 @@ function deriveRoleRuntimeHints(
     -readonly [K in keyof AgentRoleConfig]?: AgentRoleConfig[K];
   } = {};
 
+  if (config.model === undefined) {
+    const model = asString(normalizedLayer.model);
+    if (model !== undefined) {
+      derived.model = model;
+    }
+  }
+
   if (config.reasoningEffort === undefined) {
     const reasoningEffort = asAgentReasoningEffort(
       normalizedLayer.reasoning_effort,
     );
     if (reasoningEffort) {
       derived.reasoningEffort = reasoningEffort;
+    }
+  }
+
+  if (config.serviceTier === undefined) {
+    const serviceTier = asString(normalizedLayer.service_tier);
+    if (serviceTier !== undefined) {
+      derived.serviceTier = serviceTier;
     }
   }
 

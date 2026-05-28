@@ -29,7 +29,7 @@ import {
   clearSessionReadState,
   getSessionReadSnapshot,
 } from "../tools/system/filesystem.js";
-import { _resetAgentRolesForTesting } from "../agents/role.js";
+import { _resetAgentRolesForTesting, registerAgentRole } from "../agents/role.js";
 
 const { delegateMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
@@ -2130,6 +2130,160 @@ describe("model-facing tools", () => {
       "Service tier `priority` is not supported for model `gpt-5.3-codex`. Supported service tiers: none", // branding-scan: allow OpenAI model identifier
     );
     expect(delegateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies role model, reasoning, and service tier after valid spawn_agent overrides", async () => {
+    const roleModelInfo = {
+      ...fakeSession().modelInfo,
+      slug: "gpt-5.4",
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      serviceTiers: [
+        {
+          id: "priority",
+          name: "Fast",
+          description: "1.5x speed, increased usage",
+        },
+        {
+          id: "standard",
+          name: "Standard",
+          description: "standard queue",
+        },
+      ],
+    };
+    const requestedModelInfo = {
+      ...fakeSession().modelInfo,
+      slug: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      supportedReasoningLevels: ["low", "medium"],
+      serviceTiers: [
+        {
+          id: "standard",
+          name: "Standard",
+          description: "standard queue",
+        },
+      ],
+    };
+    const session = fakeSession();
+    (session.services as unknown as {
+      modelsManager: {
+        tryListModels: () => readonly unknown[];
+        listModels: () => Promise<readonly unknown[]>;
+        getModelInfo: (model: string) => Promise<unknown>;
+      };
+    }).modelsManager = {
+      tryListModels: () => [roleModelInfo, requestedModelInfo],
+      listModels: async () => [roleModelInfo, requestedModelInfo],
+      getModelInfo: async (model: string) =>
+        model === roleModelInfo.slug ? roleModelInfo : requestedModelInfo,
+    };
+    registerAgentRole({
+      name: "priority-reviewer",
+      config: {
+        description: "Review quickly.",
+        configToml: [
+          'model = "gpt-5.4"',
+          'model_reasoning_effort = "high"',
+          'service_tier = "priority"',
+        ].join("\n"),
+      },
+    });
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-priority",
+          agentPath: "/root/priority_review",
+          nickname: "Priority Review",
+          role: { name: "priority-reviewer" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-priority",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-priority",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+
+    const result = await createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "inspect",
+      task_name: "priority_review",
+      agent_type: "priority-reviewer",
+      model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      reasoning_effort: "low",
+      service_tier: "standard",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "priority-reviewer",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        serviceTier: "priority",
+      }),
+    );
+  });
+
+  it("does not let a role service tier hide an invalid spawn_agent service_tier request", async () => {
+    const roleModelInfo = {
+      ...fakeSession().modelInfo,
+      slug: "gpt-5.4",
+      serviceTiers: [
+        {
+          id: "priority",
+          name: "Fast",
+          description: "1.5x speed, increased usage",
+        },
+      ],
+    };
+    const session = fakeSession();
+    (session.services as unknown as {
+      modelsManager: {
+        tryListModels: () => readonly unknown[];
+        listModels: () => Promise<readonly unknown[]>;
+        getModelInfo: (model: string) => Promise<unknown>;
+      };
+    }).modelsManager = {
+      tryListModels: () => [roleModelInfo],
+      listModels: async () => [roleModelInfo],
+      getModelInfo: async () => roleModelInfo,
+    };
+    registerAgentRole({
+      name: "priority-reviewer",
+      config: {
+        description: "Review quickly.",
+        configToml: [
+          'model = "gpt-5.4"',
+          'service_tier = "priority"',
+        ].join("\n"),
+      },
+    });
+
+    const result = await createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "inspect",
+      task_name: "priority_review",
+      agent_type: "priority-reviewer",
+      service_tier: "turbo",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe(
+      "Service tier `turbo` is not supported for model `gpt-5.4`. Supported service tiers: priority",
+    );
+    expect(delegateMock).not.toHaveBeenCalled();
   });
 
   it("allows explicit service_tier on full-history spawn_agent forks", async () => {

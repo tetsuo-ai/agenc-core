@@ -199,7 +199,7 @@
         "reserves and finalizes agent registry entries atomically before a child run can receive messages",
         "allocates path-safe nicknames and rejects path collisions before the live agent handle is exposed",
         "enforces the default child depth cap while preserving configured per-session overrides",
-        "maps role configuration into child model, tools, permission, prompt, and runtime limits",
+        "maps role configuration into child model, tools, permission, prompt, service tier, and runtime limits",
         "normalizes final and nonfinal agent statuses consistently for list and TUI consumers"
       ],
       "edgeCases": [
@@ -207,6 +207,7 @@
         "a child spawn at depth two is rejected when the session cap is one",
         "a role with a configured nickname candidate list uses the first available path-safe candidate",
         "a missing role name resolves to the default role and still applies role-level tool policy",
+        "a role TOML layer with model, reasoning, and service_tier exposes those locked settings in the spawn tool description",
         "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status"
       ],
       "tests": [
@@ -345,7 +346,7 @@
         "reports partial progress, final output, and failure state in task-compatible output records",
         "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
         "applies role allowlists and tool policies before child tools execute",
-        "spawn_agent v2 accepts service_tier, validates it against the effective child model, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
+        "spawn_agent v2 accepts service_tier, validates it against the effective child model, applies role model/reasoning/service_tier after valid request overrides, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
         "close_agent emits the close-end event with the previous status even when close request delivery fails"
       ],
@@ -354,7 +355,8 @@
         "wait_agent returns timed_out when no parent mailbox update arrives before the timeout",
         "wait_agent rejects timeout_ms below the configured minimum instead of silently clamping",
         "wait_agent rejects removed v1 targets input as an unknown field",
-        "spawn_agent rejects an explicit service_tier unsupported by the selected child model before delegation",
+        "spawn_agent rejects an explicit service_tier unsupported by the role-resolved child model before delegation",
+        "spawn_agent gives role service_tier precedence over a valid requested service_tier when the resolved model supports both",
         "spawn_agent allows an explicit service_tier when fork_turns is all while still rejecting full-history model and effort overrides",
         "a child spawned with service_tier priority forwards priority into the provider request options",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",

@@ -29,7 +29,11 @@ import {
   type RunAgentProgressEvent,
   type RunAgentResult,
 } from "./run-agent.js";
-import { _resetNicknamePoolForTesting } from "./role.js";
+import {
+  _resetAgentRolesForTesting,
+  _resetNicknamePoolForTesting,
+  registerAgentRole,
+} from "./role.js";
 import type { InterAgentCommunication } from "./mailbox.js";
 import type {
   LLMChatOptions,
@@ -232,7 +236,7 @@ async function collectRun(
   }
 }
 
-async function spawnLive(session: Session) {
+async function spawnLive(session: Session, roleName?: string) {
   const registry = new AgentRegistry();
   const control = new AgentControl({
     session: session as unknown as ConstructorParameters<
@@ -240,7 +244,10 @@ async function spawnLive(session: Session) {
     >[0]["session"],
     registry,
   });
-  const live = await control.spawn({ parentPath: "/root" });
+  const live = await control.spawn({
+    parentPath: "/root",
+    ...(roleName !== undefined ? { roleName } : {}),
+  });
   return { control, registry, live };
 }
 
@@ -271,10 +278,12 @@ function mkNamedRegistry(names: readonly string[]): ToolRegistry {
 }
 
 beforeEach(() => {
+  _resetAgentRolesForTesting();
   _resetNicknamePoolForTesting();
 });
 
 afterEach(() => {
+  _resetAgentRolesForTesting();
   _resetNicknamePoolForTesting();
   vi.useRealTimers();
 });
@@ -475,6 +484,59 @@ describe("runAgent", () => {
 
     expect(seenOptions[0]?.serviceTier).toBe("priority");
     expect(live.configSnapshot).toMatchObject({ serviceTier: "priority" });
+  });
+
+  it("applies role model, reasoning, and service tier to the child session", async () => {
+    registerAgentRole({
+      name: "priority-reviewer",
+      config: {
+        description: "Review quickly.",
+        configToml: [
+          'model = "gpt-5.4"',
+          'model_reasoning_effort = "high"',
+          'service_tier = "priority"',
+        ].join("\n"),
+      },
+    });
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = {
+      ...makeProvider([]),
+      chatStream: vi.fn(
+        async (
+          _messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          options?: LLMChatOptions,
+        ): Promise<LLMResponse> => {
+          if (options !== undefined) seenOptions.push(options);
+          return {
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "gpt-5.4",
+            finishReason: "stop",
+          };
+        },
+      ),
+    } satisfies LLMProvider;
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session, "priority-reviewer");
+
+    await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    expect(seenOptions[0]?.reasoningEffort).toBe("high");
+    expect(seenOptions[0]?.serviceTier).toBe("priority");
+    expect(live.configSnapshot).toMatchObject({
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      serviceTier: "priority",
+    });
   });
 
   it("captures AgentSummary cache-safe params from the real child run state", async () => {

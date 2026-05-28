@@ -110,6 +110,22 @@ describe("role registry", () => {
     expect(getAgentRole("deep-review")?.config.reasoningEffort).toBe("xhigh");
   });
 
+  it("derives model and service tier hints from user role layers", () => {
+    registerAgentRole({
+      name: "priority-review",
+      config: {
+        description: "review",
+        configToml: [
+          'model = "gpt-5.4"',
+          'service_tier = "priority"',
+        ].join("\n"),
+      },
+    });
+
+    expect(getAgentRole("priority-review")?.config.model).toBe("gpt-5.4");
+    expect(getAgentRole("priority-review")?.config.serviceTier).toBe("priority");
+  });
+
   it("registerAgentRole overrides built-ins by name", () => {
     registerAgentRole({
       name: "explorer",
@@ -227,6 +243,7 @@ describe("config-layer stack", () => {
         configToml: [
           'model = "role-model"',
           'model_reasoning_effort = "high"',
+          'service_tier = "priority"',
           'name = "ignored-role-metadata"',
           'developer_instructions = "ignored"',
         ].join("\n"),
@@ -238,8 +255,23 @@ describe("config-layer stack", () => {
     expect(next.cwd).toBe("/tmp/project");
     expect(next.model).toBe("role-model");
     expect(next.reasoning_effort).toBe("high");
+    expect(next.service_tier).toBe("priority");
     expect("name" in next).toBe(false);
     expect("developer_instructions" in next).toBe(false);
+  });
+
+  it("applyRoleToConfig preserves the parent service tier when the role does not override it", () => {
+    registerAgentRole({
+      name: "custom-inline",
+      config: {
+        description: "inline role",
+        configToml: 'model = "role-model"',
+      },
+    });
+
+    const base = { cwd: "/tmp/project", service_tier: "priority" as const };
+    const next = applyRoleToConfig(getAgentRole("custom-inline")!, base);
+    expect(next.service_tier).toBe("priority");
   });
 
   it("buildConfigLayerStack applies base → role → user precedence", () => {
@@ -350,6 +382,7 @@ describe("config-layer stack", () => {
         configToml: [
           'model = "gpt-test"',
           'model_reasoning_effort = "high"',
+          'service_tier = "priority"',
         ].join("\n"),
       },
     });
@@ -365,6 +398,10 @@ describe("config-layer stack", () => {
     expect(text).toContain("model-locked-role:");
     expect(text).toContain("model is set to `gpt-test`");
     expect(text).toContain("reasoning effort is set to `high`");
+    expect(text).toContain("service tier is set to `priority`");
+    expect(text).toContain(
+      "takes precedence over a valid spawn request service tier",
+    );
   });
 
   it("formatRoleList skips duplicate names", () => {
