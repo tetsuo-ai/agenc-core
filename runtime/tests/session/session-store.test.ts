@@ -35,6 +35,17 @@ describe("session-store", () => {
   let home = "";
   let origHome = "";
 
+  function findDeadPid(): number {
+    for (const pid of [2_147_483_647, 99_999_999, 4_194_303]) {
+      try {
+        process.kill(pid, 0);
+      } catch (err) {
+        if ((err as { code?: string }).code === "ESRCH") return pid;
+      }
+    }
+    throw new Error("unable to find a dead pid for stale-lock test");
+  }
+
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "agenc-session-store-"));
     origHome = process.env.AGENC_HOME ?? "";
@@ -276,11 +287,7 @@ describe("session-store", () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-lock-stale-"));
     try {
       const lockPath = join(dir, "rollout.jsonl.lock");
-      // Find a PID that is guaranteed dead. `1` is init and is always
-      // alive on POSIX, so we can't use it. Use a very-high PID that
-      // is exceedingly unlikely to be live; kill(pid, 0) should
-      // return ESRCH.
-      const deadPid = 4_194_303; // above most Linux pid_max defaults
+      const deadPid = findDeadPid();
       const stamp = JSON.stringify({
         pid: deadPid,
         startNs: "stale",
