@@ -19,6 +19,9 @@ ter
 *.out
 build/
 bin/
+!runtime/bin/
+!runtime/bin/agenc
+!runtime/bin/agenc-linux-sandbox
 !runtime/src/bin/
 !runtime/src/bin/*.ts
 !packages/agenc/bin/

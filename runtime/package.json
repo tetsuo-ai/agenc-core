@@ -51,7 +51,7 @@
     "test:coverage:tui": "vitest run tests/tui --coverage --coverage.provider=v8 --coverage.reporter=json --coverage.reporter=json-summary --coverage.reporter=text-summary --coverage.include='src/tui/**/*.{ts,tsx}' --coverage.exclude='src/**/*.d.ts' --coverage.reportsDirectory=coverage/runtime-tui",
     "test:transaction-guard": "vitest run tests/transaction-guard",
     "test:transaction-guard:live": "vitest run tests/transaction-guard/devnet-live.e2e.test.ts",
-    "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup && npm run check:e2e-all",
+    "validate:required": "npm run typecheck && npm run test && npm run build && npm run check:tui-runtime-startup && npm run check:e2e-all",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
