@@ -23,13 +23,27 @@ export type ApiKeyVerificationResult = {
   error: Error | null
 }
 
+type ApiKeySourceResult = ReturnType<typeof getAnthropicApiKeyWithSource>
+
+function readApiKeyWithSource(
+  opts?: Parameters<typeof getAnthropicApiKeyWithSource>[0],
+): ApiKeySourceResult {
+  try {
+    return opts === undefined
+      ? getAnthropicApiKeyWithSource()
+      : getAnthropicApiKeyWithSource(opts)
+  } catch {
+    return { key: null, source: 'none' }
+  }
+}
+
 function getInitialVerificationStatus(): VerificationStatus {
   if (!isAnthropicAuthEnabled() || isAgenCAISubscriber()) {
     return 'valid'
   }
   // Use skipRetrievingKeyFromApiKeyHelper to avoid executing apiKeyHelper
   // before trust dialog is shown (security: prevents RCE via settings.json)
-  const { key, source } = getAnthropicApiKeyWithSource({
+  const { key, source } = readApiKeyWithSource({
     skipRetrievingKeyFromApiKeyHelper: true,
   })
   // If apiKeyHelper is configured, we have a key source even though we
@@ -87,7 +101,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
       return
     }
 
-    const { key: apiKey, source } = getAnthropicApiKeyWithSource()
+    const { key: apiKey, source } = readApiKeyWithSource()
     if (!apiKey) {
       if (source === 'apiKeyHelper') {
         setStatus('error')

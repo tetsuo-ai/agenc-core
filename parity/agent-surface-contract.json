@@ -1,0 +1,341 @@
+{
+  "contractName": "agent-surface-contract",
+  "scope": "AgenC agent runtime, daemon lifecycle, task bridge, and TUI workbench parity against the Rust agent surface in codex-rs",
+  "generatedAt": "2026-05-28T01:39:00.000Z",
+  "sourceRoot": "../../../codex/codex-rs",
+  "sourceCommit": "4d0c4cd058d9bc488ee2c331f085e25b7af3268d",
+  "targetRoot": "..",
+  "sourceFiles": [
+    {
+      "path": "core/src/agent/control.rs",
+      "sha256": "53828c3def4a8e356789e0b59bd101ae843b9bab45c73af6e48cd6ab12394c83"
+    },
+    {
+      "path": "core/src/agent/registry.rs",
+      "sha256": "2caa3524fe451546c516d28d3f7085dad6e731f8c2d7b2c4e54897c11c556843"
+    },
+    {
+      "path": "core/src/agent/role.rs",
+      "sha256": "549a4be9d6b8ed3ef45016a04446df9ba3e677bc8c7fb688bbefe434508998e9"
+    },
+    {
+      "path": "core/src/agent/status.rs",
+      "sha256": "3e72128ca9006ae3e100f130af3d5b4fe501ee32753f4175d6d91b3ebe883fa7"
+    },
+    {
+      "path": "core/src/thread_manager.rs",
+      "sha256": "5b8a9a570cafea31d6ab8e3a802b9cb38736122c90310dc1654aea9761cf30b7"
+    },
+    {
+      "path": "core/src/codex_thread.rs",
+      "sha256": "de69256771379d633216a30de68303c21c3fa307608b6aefb40802fc4c6dc81e"
+    },
+    {
+      "path": "app-server/src/thread_state.rs",
+      "sha256": "5a41b07777520dcb8c7adaf48f0ee34ba8b4ea3dede417b4b4d37007f4ffef64"
+    },
+    {
+      "path": "app-server/src/thread_status.rs",
+      "sha256": "e6b1cc9963bb6a009137e5abb10a21263ddfe390995e0f9fd1a52a2017ac2309"
+    },
+    {
+      "path": "state/src/runtime/agent_jobs.rs",
+      "sha256": "f594446174697678b7235dac245d575f10b68e1b6de65dd944fcd06f8e363e84"
+    },
+    {
+      "path": "protocol/src/agent_path.rs",
+      "sha256": "18ddefda817a89b299cfbec14ea8e95ff4248e9fe5aca616656f39f7d5cfb045"
+    },
+    {
+      "path": "tui/src/multi_agents.rs",
+      "sha256": "7de3107ec4c6d0085d34f3149e247be5edb847d40425ca703d9a7e890a4472a6"
+    }
+  ],
+  "targetFiles": [
+    "runtime/src/agents/control.ts",
+    "runtime/src/agents/registry.ts",
+    "runtime/src/agents/role.ts",
+    "runtime/src/agents/role-definitions.ts",
+    "runtime/src/agents/status.ts",
+    "runtime/src/agents/thread-manager.ts",
+    "runtime/src/agents/thread.ts",
+    "runtime/src/agents/mailbox.ts",
+    "runtime/src/agents/run-agent.ts",
+    "runtime/src/agents/delegate.ts",
+    "runtime/src/agents/v2/spawn.ts",
+    "runtime/src/agents/v2/send-message.ts",
+    "runtime/src/agents/v2/wait.ts",
+    "runtime/src/agents/v2/list-agents.ts",
+    "runtime/src/agents/v2/close-agent.ts",
+    "runtime/src/app-server/agent-lifecycle.ts",
+    "runtime/src/app-server/background-agent-runner.ts",
+    "runtime/src/app-server/agent-cli.ts",
+    "runtime/src/tasks/agent-thread.ts",
+    "runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx",
+    "runtime/src/tasks/InProcessTeammateTask/InProcessTeammateTask.tsx",
+    "runtime/src/tools/AgentTool/AgentTool.tsx",
+    "runtime/src/tools/AgentTool/runAgent.ts",
+    "runtime/src/tools/AgentTool/forkSubagent.ts",
+    "runtime/src/tools/tasks/background.ts",
+    "runtime/src/tools/tasks/task-board.ts",
+    "runtime/src/tui/workbench/surfaces/AgentSurface.tsx",
+    "runtime/src/tui/workbench/agents/AgentsRail.tsx",
+    "runtime/src/tui/hooks/useApiKeyVerification.ts",
+    "runtime/src/tui/hooks/useTasksV2.ts",
+    "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
+    "runtime/src/tui/state/collabAgentTaskSync.ts",
+    "runtime/scripts/check-tui-e2e/scenarios/03-subagent-completion.mjs",
+    "runtime/scripts/check-tui-e2e/scenarios/23-slash-agents.mjs",
+    "scripts/check-agent-surface-contract.mjs"
+  ],
+  "testFiles": [
+    "runtime/tests/agents/control.test.ts",
+    "runtime/tests/agents/registry.test.ts",
+    "runtime/tests/agents/role.test.ts",
+    "runtime/tests/agents/role-definitions.test.ts",
+    "runtime/tests/agents/status.test.ts",
+    "runtime/tests/agents/run-agent.test.ts",
+    "runtime/tests/agents/run-agent-mailbox.test.ts",
+    "runtime/tests/agents/mailbox.test.ts",
+    "runtime/tests/agents/thread-manager.test.ts",
+    "runtime/tests/agents/thread.test.ts",
+    "runtime/tests/agents/thread-rollout-truncation.test.ts",
+    "runtime/tests/app-server/agent-lifecycle.contract.test.ts",
+    "runtime/tests/app-server/background-agent-runner.contract.test.ts",
+    "runtime/tests/app-server/agent-cli.contract.test.ts",
+    "runtime/tests/app-server/daemon-dispatcher.contract.test.ts",
+    "runtime/tests/session/agent-task-lifecycle.test.ts",
+    "runtime/tests/tasks/lifecycle.test.ts",
+    "runtime/tests/tools/AgentTool/loadAgentsDir.test.ts",
+    "runtime/tests/tools/tasks/task-tools.test.ts",
+    "runtime/tests/commands/agent-management.test.tsx",
+    "runtime/tests/tui/workbench/agent-surface.test.tsx",
+    "runtime/tests/tui/workbench/agents-rail.test.tsx",
+    "runtime/tests/tui/workbench/agents.test.ts",
+    "runtime/tests/tui/components/App.local-agents.test.tsx",
+    "runtime/tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx",
+    "runtime/tests/tui/hooks/useTasksV2.test.tsx",
+    "runtime/tests/tui/startup/statusNoticeDefinitions.test.tsx",
+    "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "control-registry-roles",
+      "source": [
+        "core/src/agent/control.rs",
+        "core/src/agent/registry.rs",
+        "core/src/agent/role.rs",
+        "core/src/agent/status.rs",
+        "protocol/src/agent_path.rs"
+      ],
+      "target": [
+        "runtime/src/agents/control.ts",
+        "runtime/src/agents/registry.ts",
+        "runtime/src/agents/role.ts",
+        "runtime/src/agents/role-definitions.ts",
+        "runtime/src/agents/status.ts"
+      ],
+      "requiredBehaviors": [
+        "reserves and finalizes agent registry entries atomically before a child run can receive messages",
+        "allocates path-safe nicknames and rejects path collisions before the live agent handle is exposed",
+        "enforces the default child depth cap while preserving configured per-session overrides",
+        "maps role configuration into child model, tools, permission, prompt, and runtime limits",
+        "normalizes final and nonfinal agent statuses consistently for list and TUI consumers"
+      ],
+      "edgeCases": [
+        "two concurrent spawns requesting the same agent path leave exactly one finalized registry entry",
+        "a child spawn at depth two is rejected when the session cap is one",
+        "a role with a configured nickname candidate list uses the first available path-safe candidate",
+        "a missing role name resolves to the default role and still applies role-level tool policy",
+        "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status"
+      ],
+      "tests": [
+        "runtime/tests/agents/control.test.ts",
+        "runtime/tests/agents/registry.test.ts",
+        "runtime/tests/agents/role.test.ts",
+        "runtime/tests/agents/role-definitions.test.ts",
+        "runtime/tests/agents/status.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "run-loop-thread-mailbox",
+      "source": [
+        "core/src/agent/control.rs",
+        "core/src/thread_manager.rs",
+        "core/src/codex_thread.rs"
+      ],
+      "target": [
+        "runtime/src/agents/run-agent.ts",
+        "runtime/src/agents/mailbox.ts",
+        "runtime/src/agents/thread.ts",
+        "runtime/src/agents/thread-manager.ts"
+      ],
+      "requiredBehaviors": [
+        "constructs a child session from parent context, fork history, role config, and worktree context",
+        "runs the child provider turn loop through the same tool dispatch and rollout path as a normal session",
+        "forwards child messages, tool calls, tool results, usage, completion, and error events to the parent mailbox",
+        "drains parent-to-child trigger-turn messages between keep-alive turns without losing ordering",
+        "terminates cleanly on completion, provider error, max-turn exhaustion, mailbox close, or abort"
+      ],
+      "edgeCases": [
+        "a follow-up trigger arriving while the child is idle starts the next turn on the same live child",
+        "a provider rejection records run_error and final errored status without leaving the child mailbox open",
+        "an abort while the provider stream is pending interrupts the child run and resolves the caller promise",
+        "silent mode suppresses parent notifications and child rollout while preserving the final result",
+        "maxTurns equal to one reports a deterministic max-turn error after the first child assistant response"
+      ],
+      "tests": [
+        "runtime/tests/agents/run-agent.test.ts",
+        "runtime/tests/agents/run-agent-mailbox.test.ts",
+        "runtime/tests/agents/mailbox.test.ts",
+        "runtime/tests/agents/thread-manager.test.ts",
+        "runtime/tests/agents/thread.test.ts",
+        "runtime/tests/agents/thread-rollout-truncation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "daemon-agent-lifecycle",
+      "source": [
+        "app-server/src/thread_state.rs",
+        "app-server/src/thread_status.rs",
+        "state/src/runtime/agent_jobs.rs",
+        "core/src/agent/status.rs"
+      ],
+      "target": [
+        "runtime/src/app-server/agent-lifecycle.ts",
+        "runtime/src/app-server/background-agent-runner.ts",
+        "runtime/src/app-server/agent-cli.ts"
+      ],
+      "requiredBehaviors": [
+        "starts daemon-backed agents with a durable thread id, run id, initial prompt, cwd, sandbox, permission mode, and model context",
+        "streams lifecycle, transcript, tool, status, and usage events to daemon clients in stable JSON-RPC shapes",
+        "keeps active-turn state and completion snapshots coherent across start, message, cancel, close, and reconnect paths",
+        "maps runtime failures to daemon protocol errors without crashing the daemon process",
+        "persists enough status and transcript data for CLI and TUI reattachment"
+      ],
+      "edgeCases": [
+        "starting an agent with invalid request params returns a protocol validation error before any runner starts",
+        "a cancellation during an active provider turn emits a terminal status and prevents later chunks from reopening the run",
+        "a reconnect after completion can list the agent and fetch its final transcript without resurrecting a live runner",
+        "a daemon restart during an idle agent session preserves durable status and rejects stale active-turn messages",
+        "tool-call events with malformed JSON arguments are surfaced as structured errors instead of process crashes"
+      ],
+      "tests": [
+        "runtime/tests/app-server/agent-lifecycle.contract.test.ts",
+        "runtime/tests/app-server/background-agent-runner.contract.test.ts",
+        "runtime/tests/app-server/agent-cli.contract.test.ts",
+        "runtime/tests/app-server/daemon-dispatcher.contract.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "task-tool-bridge",
+      "source": [
+        "core/src/agent/control.rs",
+        "core/src/agent/role.rs",
+        "core/src/thread_manager.rs"
+      ],
+      "target": [
+        "runtime/src/tasks/agent-thread.ts",
+        "runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx",
+        "runtime/src/tasks/InProcessTeammateTask/InProcessTeammateTask.tsx",
+        "runtime/src/tools/AgentTool/AgentTool.tsx",
+        "runtime/src/tools/AgentTool/runAgent.ts",
+        "runtime/src/tools/AgentTool/forkSubagent.ts",
+        "runtime/src/tools/tasks/background.ts",
+        "runtime/src/tools/tasks/task-board.ts",
+        "runtime/src/agents/v2/spawn.ts",
+        "runtime/src/agents/v2/send-message.ts",
+        "runtime/src/agents/v2/wait.ts",
+        "runtime/src/agents/v2/list-agents.ts",
+        "runtime/src/agents/v2/close-agent.ts"
+      ],
+      "requiredBehaviors": [
+        "exposes agent spawn, send, wait, list, close, and task-board operations through the tool surface without bypassing AgentControl",
+        "forks parent context into child prompts with preserved tool-use placeholders and per-child instructions",
+        "reports partial progress, final output, and failure state in task-compatible output records",
+        "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
+        "applies role allowlists and tool policies before child tools execute"
+      ],
+      "edgeCases": [
+        "waiting for multiple agents returns completed agents and leaves active agents observable",
+        "closing a running agent interrupts it once and produces an idempotent terminal task status",
+        "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
+        "an agent tool with a disallowed role fails before any child run is started",
+        "task-board output excludes internal mailbox details while preserving user-visible progress and status"
+      ],
+      "tests": [
+        "runtime/tests/session/agent-task-lifecycle.test.ts",
+        "runtime/tests/tasks/lifecycle.test.ts",
+        "runtime/tests/tools/AgentTool/loadAgentsDir.test.ts",
+        "runtime/tests/tools/tasks/task-tools.test.ts",
+        "runtime/tests/commands/agent-management.test.tsx"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx --reporter=dot"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tui-agent-workbench-e2e",
+      "source": [
+        "tui/src/multi_agents.rs",
+        "app-server/src/thread_status.rs",
+        "core/src/agent/status.rs"
+      ],
+      "target": [
+        "runtime/src/tui/workbench/surfaces/AgentSurface.tsx",
+        "runtime/src/tui/workbench/agents/AgentsRail.tsx",
+        "runtime/src/tui/hooks/useApiKeyVerification.ts",
+        "runtime/src/tui/hooks/useTasksV2.ts",
+        "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
+        "runtime/src/tui/state/collabAgentTaskSync.ts",
+        "runtime/scripts/check-tui-e2e/scenarios/03-subagent-completion.mjs",
+        "runtime/scripts/check-tui-e2e/scenarios/23-slash-agents.mjs"
+      ],
+      "requiredBehaviors": [
+        "renders agent activity, transcript, progress, status, and terminal states without requiring a stale local registry entry",
+        "keeps slash-command agent menus and workbench agent surfaces mutually exclusive for input ownership",
+        "maps daemon agent lifecycle events into stable task rows and workbench rail entries",
+        "survives late daemon completion messages after the main prompt has returned",
+        "renders startup auth notices without throwing when provider credential helpers report no Anthropic or AgenC account key",
+        "keeps PTY startup, prompt visibility, idle detection, and crash detection covered by E2E scenarios"
+      ],
+      "edgeCases": [
+        "a daemon completion message arriving after the prompt is visible does not crash the TUI",
+        "the slash agents menu owns input while open and does not leave the main prompt marker visible",
+        "CI startup without Anthropic or AgenC account credentials maps auth lookup failures to a missing-key state instead of throwing",
+        "startup status-notice filtering ignores throwing auth key lookups and keeps other notices renderable",
+        "an agent with no transcript renders an empty state instead of throwing during surface selection",
+        "a completed agent remains selectable in the rail after active streaming stops",
+        "rapid task-state synchronization batches keep row identity stable across running and completed statuses"
+      ],
+      "tests": [
+        "runtime/tests/tui/workbench/agent-surface.test.tsx",
+        "runtime/tests/tui/workbench/agents-rail.test.tsx",
+        "runtime/tests/tui/workbench/agents.test.ts",
+        "runtime/tests/tui/components/App.local-agents.test.tsx",
+        "runtime/tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx",
+        "runtime/tests/tui/hooks/useTasksV2.test.tsx",
+        "runtime/tests/tui/startup/statusNoticeDefinitions.test.tsx",
+        "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts --reporter=dot",
+        "npm --workspace=@tetsuo-ai/runtime run build && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 03-subagent-completion && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 23-slash-agents"
+      ],
+      "status": "required"
+    }
+  ]
+}

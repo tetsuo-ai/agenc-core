@@ -27,6 +27,19 @@ export type StatusNoticeDefinition = {
   render: (context: StatusNoticeContext) => React.ReactNode;
 };
 type AuthTokenSource = ReturnType<typeof getAuthTokenSource>['source'];
+type ApiKeySourceResult = ReturnType<typeof getproviderApiKeyWithSource>;
+
+function readApiKeyWithSource(
+  opts?: Parameters<typeof getproviderApiKeyWithSource>[0],
+): ApiKeySourceResult {
+  try {
+    return opts === undefined
+      ? getproviderApiKeyWithSource()
+      : getproviderApiKeyWithSource(opts);
+  } catch {
+    return { key: null, source: 'none' };
+  }
+}
 
 function getAuthTokenDisplayName(source: AuthTokenSource): string {
   switch (source) {
@@ -88,7 +101,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
   isActive: () => {
     const {
       source: apiKeySource
-    } = getproviderApiKeyWithSource({
+    } = readApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     return !!getApiKeyFromConfigOrMacOSKeychain() && (apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper');
@@ -96,7 +109,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
   render: () => {
     const {
       source: apiKeySource
-    } = getproviderApiKeyWithSource({
+    } = readApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     return `Auth conflict: Using ${apiKeySource} instead of provider Console key. Either unset ${apiKeySource}, or run agenc /logout.`;
@@ -108,7 +121,7 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
   isActive: () => {
     const {
       source: apiKeySource
-    } = getproviderApiKeyWithSource({
+    } = readApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     const authTokenInfo = getAuthTokenSource();
@@ -117,7 +130,7 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
   render: () => {
     const {
       source: apiKeySource
-    } = getproviderApiKeyWithSource({
+    } = readApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     const authTokenInfo = getAuthTokenSource();

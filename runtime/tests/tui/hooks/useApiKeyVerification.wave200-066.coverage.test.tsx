@@ -169,4 +169,56 @@ describe('useApiKeyVerification api key helper coverage', () => {
       await sleep()
     }
   })
+
+  test('treats a throwing key source lookup as missing during hook initialization', async () => {
+    authHarness.getAnthropicApiKeyWithSource.mockImplementationOnce(() => {
+      throw new Error('ANTHROPIC_API_KEY or AGENC_OAUTH_TOKEN env var is required')
+    })
+    const snapshots: Snapshot[] = []
+    let latest: HookResult | null = null
+
+    function Harness(): null {
+      const result = useApiKeyVerification()
+      latest = result
+
+      React.useEffect(() => {
+        snapshots.push({
+          errorMessage: result.error?.message ?? null,
+          status: result.status,
+        })
+      }, [result.error, result.status])
+
+      return null
+    }
+
+    const { stdin, stdout } = createStreams()
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      root.render(React.createElement(Harness))
+
+      await waitForCondition(
+        () => latest?.status === 'missing',
+        'Timed out waiting for missing status after throwing key lookup',
+      )
+
+      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith({
+        skipRetrievingKeyFromApiKeyHelper: true,
+      })
+      expect(authHarness.verifyApiKey).not.toHaveBeenCalled()
+      expect(snapshots).toContainEqual({
+        errorMessage: null,
+        status: 'missing',
+      })
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep()
+    }
+  })
 })

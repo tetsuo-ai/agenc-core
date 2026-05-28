@@ -17,6 +17,7 @@
     "validate:runtime": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run build --workspace=@tetsuo-ai/runtime && npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime",
     "validate:openclaude-footer-live-parity": "npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 54-yolo-footer-glyph",
     "validate:tui-openclaude-core-parity": "npm --workspace=@tetsuo-ai/runtime run validate:tui-openclaude-core-parity",
+    "check:agent-surface-contract": "node scripts/check-agent-surface-contract.mjs",
     "check:tui-v2-design-audit": "npm run check:tui-v2-design-audit --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
