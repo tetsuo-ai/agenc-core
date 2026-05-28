@@ -1,43 +1,44 @@
 /**
  * Yolo + Edit tool round-trip.
  *
- * Pre-creates a /tmp file with a known string, asks the model to Edit it
- * by replacing one substring with another, then reads the file back.
+ * Pre-creates a workspace-local file with a known string, asks the model
+ * to Read and then Edit it, then reads the file back.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-
-const dir = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-edit-"));
-const targetFile = path.join(dir, "edit-target.txt");
-const oldStr = "agenc-edit-old-" + Math.random().toString(36).slice(2, 10);
-const newStr = "agenc-edit-new-" + Math.random().toString(36).slice(2, 10);
-writeFileSync(targetFile, `start ${oldStr} end\n`, "utf8");
 
 export const meta = {
   description: "--yolo: model uses Edit, file content updated on disk.",
   args: ["--yolo"],
-  timeoutMs: 240_000,
+  timeoutMs: 120_000,
   slimCwd: true,
-  skip: "model perf ceiling on yolo + Edit; bypass proven by LLM pipeline gate",
+  useTempHome: true,
 };
 
 export default async function (session) {
-  try {
-    await session.start();
-    await session.waitForPrompt({ timeout: 15_000 });
-    await session.type(
-      `Use the Edit tool to edit ${targetFile}, replacing "${oldStr}" with "${newStr}"`,
+  const oldStr = `agenc-edit-old-${Date.now()}`;
+  const newStr = `agenc-edit-new-${Date.now()}`;
+  const targetFile = path.join(session.cwd, "edit-target.txt");
+  await writeFile(targetFile, `start ${oldStr} end\n`, "utf8");
+  await session.start();
+  await session.waitForPrompt({ timeout: 15_000 });
+  await session.type(
+    `Use the Read tool to read ${targetFile}, then use the Edit tool to replace "${oldStr}" with "${newStr}".`,
+  );
+  await session.submit();
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 120_000 });
+  await session.assertRolloutToolCompleted({
+    label: "Edit preread completion",
+    toolName: "FileRead",
+  });
+  await session.assertRolloutToolCompleted({
+    label: "Edit completion",
+    toolName: "Edit",
+  });
+  const content = await readFile(targetFile, "utf8");
+  if (content.includes(oldStr) || !content.includes(newStr)) {
+    throw new Error(
+      `Edit did not apply: expected "${newStr}", got: "${content.slice(0, 200)}"`,
     );
-    await session.submit();
-    await session.waitForIdle({ timeout: 200_000 });
-    const content = readFileSync(targetFile, "utf8");
-    if (content.includes(oldStr) || !content.includes(newStr)) {
-      throw new Error(
-        `Edit did not apply: expected "${newStr}", got: "${content.slice(0, 200)}"`,
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
 }
