@@ -23,7 +23,7 @@
  *     accumulate in the daemon. Phase B will introduce per-scenario
  *     temp-HOME isolation.
  */
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile, realpath } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -175,6 +175,52 @@ async function teardownTempHome(home) {
   } catch {
     // best-effort
   }
+}
+
+async function walkFiles(dir) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await walkFiles(fullPath));
+    } else {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+async function latestRolloutFilesForHome(home) {
+  const projectsDir = path.join(home, ".agenc", "projects");
+  let files = [];
+  try {
+    files = await walkFiles(projectsDir);
+  } catch {
+    return [];
+  }
+  const rolloutFiles = files.filter((file) => {
+    const basename = path.basename(file);
+    return basename.startsWith("rollout-") && basename.endsWith(".jsonl");
+  });
+  const withStats = await Promise.all(
+    rolloutFiles.map(async (file) => ({ file, mtimeMs: (await stat(file)).mtimeMs })),
+  );
+  return withStats
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .map((entry) => entry.file);
+}
+
+async function readRolloutItemsForHome(home) {
+  const files = await latestRolloutFilesForHome(home);
+  const items = [];
+  for (const file of files) {
+    const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
+    for (const line of lines) {
+      items.push(JSON.parse(line));
+    }
+  }
+  return items;
 }
 
 // Same async-reply bytes the startup smoke injects. The TUI sends an
@@ -604,6 +650,36 @@ export class TuiSession {
    */
   async waitForPrompt(opts = {}) {
     return this.waitForIdle(opts);
+  }
+
+  /**
+   * Read rollout entries for this scenario's HOME. Temp-HOME scenarios use
+   * their isolated daemon state; default-HOME scenarios fall back to the
+   * operator's HOME, so callers should use unique markers.
+   */
+  async readRolloutItems() {
+    return readRolloutItemsForHome(this.tempHome ?? homedir());
+  }
+
+  /**
+   * Assert that a completed tool call recorded stdout/result containing a
+   * marker. This proves the tool actually ran without relying on the model
+   * to repeat stdout in the assistant's final message.
+   */
+  async assertRolloutToolOutput(marker, { label = "tool output" } = {}) {
+    const items = await this.readRolloutItems();
+    for (const item of items) {
+      const msg = item?.payload?.msg;
+      if (msg?.type !== "tool_call_completed") continue;
+      const payload = msg.payload ?? {};
+      const stdout =
+        typeof payload.metadata?.stdout === "string" ? payload.metadata.stdout : "";
+      const result = typeof payload.result === "string" ? payload.result : "";
+      if (payload.isError === false && (stdout.includes(marker) || result.includes(marker))) {
+        return;
+      }
+    }
+    throw new Error(`${label}: no completed rollout tool output contained "${marker}"`);
   }
 
   /**

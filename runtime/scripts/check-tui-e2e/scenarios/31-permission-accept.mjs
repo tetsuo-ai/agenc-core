@@ -2,9 +2,9 @@
  * Permission overlay accept scenario.
  *
  * Default mode (no --yolo). Submits a prompt that triggers Bash, accepts the
- * approval, then verifies the command actually ran by checking the Bash stdout
- * marker. This keeps the scenario scoped to tool approval rather than sandbox
- * file-write policy.
+ * approval, then verifies the command actually ran by checking the rollout's
+ * completed Bash stdout marker. This keeps the scenario scoped to tool
+ * approval rather than sandbox file-write policy or assistant echo behavior.
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,9 +37,6 @@ export default async function (session) {
   await session.submit();
   await session.waitForPermissionOverlay({ timeout: 60_000 });
   await session.acceptPermissionOverlay();
-  await session.waitFor(new RegExp(marker), {
-    timeout: 90_000,
-    label: "approved Bash output",
-  });
-  await session.waitForIdle({ timeout: 30_000 });
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 90_000 });
+  await session.assertRolloutToolOutput(marker, { label: "approved Bash output" });
 }
