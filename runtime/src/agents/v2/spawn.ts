@@ -61,7 +61,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 - The spawned agent inherits its working directory from the parent session and receives the same Environment section. Do NOT embed absolute filesystem paths from memory in the \`message\` body and do NOT invent project root paths. Refer to files relative to the cwd the spawned agent will already know.
-- Omit \`fork_turns\` for the default clean fork. Use \`fork_turns: "all"\` only when the new agent must inherit the full parent conversation; full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
+- Omit \`fork_turns\` to inherit the full parent conversation. Use \`fork_turns: "none"\` for a clean fork, \`fork_turns: "all"\` for an explicit full-history fork, or a positive integer string such as \`"3"\` for the most recent turns. Full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
 
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
@@ -111,10 +111,11 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
 }
 
 function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
-  if (value === undefined) return undefined;
+  if (value === undefined) return { kind: "full_history" };
   const raw = value;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
+    if (trimmed.length === 0) return { kind: "full_history" };
     if (trimmed.toLowerCase() === "none") return undefined;
     if (trimmed.toLowerCase() === "all") return { kind: "full_history" };
     const parsed = Number.parseInt(trimmed, 10);
@@ -301,7 +302,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       model: { type: "string" },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
-      fork_turns: { type: "string" },
+      fork_turns: {
+        type: "string",
+        description:
+          "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.",
+      },
     },
     required: ["message", "task_name"],
     additionalProperties: false,

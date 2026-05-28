@@ -59,3 +59,19 @@ guidance from upstream's v1 spawn_agent tool description:
   bypassing the schema-level cwd defense (`additionalProperties: false`
   on the spawn_agent JSON schema already prevents a `cwd` field; the
   bullet closes the prompt-side equivalent).
+
+## spawn.ts `fork_turns` default
+
+When `fork_turns` is omitted or blank, `parseForkTurns()` returns
+`{ kind: "full_history" }`, matching upstream's `SpawnAgentArgs::fork_mode`
+default of `"all"`:
+
+- Upstream donor: `core/src/tools/handlers/multi_agents_v2/spawn.rs`,
+  `SpawnAgentArgs::fork_mode`.
+- Upstream schema donor: `core/src/tools/handlers/multi_agents_spec.rs`,
+  `spawn_agent_common_properties_v2`, where `fork_turns` is documented as
+  defaulting to `all`.
+
+Use `fork_turns: "none"` for the explicit clean-fork path. Full-history forks
+continue to reject `agent_type`, `model`, and `reasoning_effort` overrides so a
+child that inherits parent history also inherits the parent role/model/effort.
