@@ -628,23 +628,21 @@ export class TuiSession {
   }
 
   /**
-   * Reject the permission overlay (No). Sends "3" then Enter, the
-   * documented one-shot reject path.
+   * Reject the permission overlay (No). Sends the documented numeric
+   * reject shortcut.
    */
   async denyPermissionOverlay() {
     this.term.write("3");
-    await sleep(80);
-    this.term.write("\r");
+    await sleep(120);
   }
 
   /**
-   * "Always allow" — accept and stop prompting for this tool/path. Sends
-   * "2" then Enter.
+   * "Always allow" for the current session. Sends the documented numeric
+   * session-approval shortcut.
    */
   async alwaysAllowPermissionOverlay() {
     this.term.write("2");
-    await sleep(80);
-    this.term.write("\r");
+    await sleep(120);
   }
 
   /**

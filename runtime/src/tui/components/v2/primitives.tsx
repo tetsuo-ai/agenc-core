@@ -1112,7 +1112,7 @@ export function ApprovalCard({
             </Box>
           </ThemedBox>
         ) : (
-          <ThemedText color="muted3">scope remember option · this session</ThemedText>
+          <ThemedText color="muted3">[1] approve once · [2] approve for session · [3] deny</ThemedText>
         )}
         <Box flexDirection="row" gap={2}>
           <ThemedBox borderStyle="single" borderColor={variantColor[variant]} paddingX={1}>

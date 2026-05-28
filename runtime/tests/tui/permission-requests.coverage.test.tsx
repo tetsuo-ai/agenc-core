@@ -5,7 +5,11 @@ import stripAnsi from "strip-ansi";
 import { describe, expect, test, vi } from "vitest";
 
 import type { ReviewDecision } from "../permissions/review-decision.js";
-import { APPROVED } from "../permissions/review-decision.js";
+import {
+  APPROVED,
+  APPROVED_FOR_SESSION,
+  DENIED,
+} from "../permissions/review-decision.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import { createRoot } from "./ink.js";
 import type { PendingRequest } from "./permission-requests.js";
@@ -254,6 +258,64 @@ describe("permission request overlay coverage", () => {
       expect(compactFrame).toContain("rm-rf/tmp/agenc-danger");
       expect(compactFrame).toContain("type'delete'toapprove");
       expect(resolved).toEqual([]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
+  test("handles numeric low-risk approval shortcuts", async () => {
+    const sessionResolved: ReviewDecision[] = [];
+    const denyResolved: ReviewDecision[] = [];
+    const sessionRequest = createPendingRequest(
+      decision => {
+        sessionResolved.push(decision);
+      },
+      {
+        id: "request-session-pwd",
+        input: { command: "pwd" },
+        description: "Print working directory",
+      },
+    );
+    const denyRequest = createPendingRequest(
+      decision => {
+        denyResolved.push(decision);
+      },
+      {
+        id: "request-deny-pwd",
+        input: { command: "pwd" },
+        description: "Print working directory",
+      },
+    );
+    const tools = [{ name: "Bash" }];
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(<AgenCPermissionOverlay request={sessionRequest} tools={tools} />);
+      await sleep();
+
+      expect(stripAnsi(extractLastFrame(output())).replace(/\s+/gu, "")).toContain(
+        "2session",
+      );
+      stdin.write("2");
+      await sleep();
+
+      expect(sessionResolved).toEqual([APPROVED_FOR_SESSION]);
+      expect(denyResolved).toEqual([]);
+
+      root.render(<AgenCPermissionOverlay request={denyRequest} tools={tools} />);
+      await sleep();
+      stdin.write("3");
+      await sleep();
+
+      expect(denyResolved).toEqual([DENIED]);
     } finally {
       root.unmount();
       stdin.end();
