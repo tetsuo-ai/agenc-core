@@ -422,11 +422,8 @@ function clampConcurrency(
   requested: number | undefined,
 ): number {
   const raw = requested ?? DEFAULT_MAX_CONCURRENCY;
-  return (
-    !Number.isFinite(raw) || raw <= 0
-      ? DEFAULT_MAX_CONCURRENCY
-      : Math.max(1, Math.min(64, Math.floor(raw)))
-  );
+  if (!Number.isFinite(raw)) return DEFAULT_MAX_CONCURRENCY;
+  return Math.max(1, Math.min(64, Math.floor(raw)));
 }
 
 /**

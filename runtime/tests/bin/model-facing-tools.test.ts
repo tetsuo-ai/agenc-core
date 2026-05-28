@@ -437,7 +437,7 @@ describe("model-facing tools", () => {
     });
   });
 
-  it("uses max_concurrency as the sole CSV agent worker-count parameter", async () => {
+  it("accepts max_concurrency and the upstream max_workers alias", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
@@ -448,7 +448,7 @@ describe("model-facing tools", () => {
     ).properties;
 
     expect(properties.max_concurrency).toMatchObject({ type: "number" });
-    expect(properties).not.toHaveProperty("max_workers");
+    expect(properties.max_workers).toMatchObject({ type: "number" });
 
     const accepted = await spawn.execute({
       csv_path: "input.csv",
@@ -459,15 +459,82 @@ describe("model-facing tools", () => {
       "tool invoked before session was initialized",
     );
 
-    const rejected = await spawn.execute({
+    const aliasAccepted = await spawn.execute({
       csv_path: "input.csv",
       instruction: "process {value}",
-      max_workers: "2",
+      max_workers: 2,
     });
-    expect(rejected.isError).toBe(true);
-    expect(JSON.parse(rejected.content).error).toBe(
-      "unknown field `max_workers`",
+    expect(JSON.parse(aliasAccepted.content).error).toBe(
+      "tool invoked before session was initialized",
     );
+  });
+
+  it("uses max_workers as the CSV agent concurrency alias", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-csv-alias-"));
+    try {
+      const csvPath = join(root, "input.csv");
+      await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");
+      const session = fakeSession();
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const report = byName.get("report_agent_job_result")!;
+      let activeWorkers = 0;
+      let maxActiveWorkers = 0;
+      const reports: Promise<void>[] = [];
+      delegateMock.mockImplementation(
+        async (ctx: { taskPrompt: string; agentName: string }) => {
+          activeWorkers += 1;
+          maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
+          const jobId = /Job ID: ([^\n]+)/.exec(ctx.taskPrompt)?.[1];
+          const itemId = /Item ID: ([^\n]+)/.exec(ctx.taskPrompt)?.[1];
+          expect(jobId).toBeDefined();
+          expect(itemId).toBeDefined();
+          reports.push(
+            new Promise<void>((resolve) => {
+              setTimeout(() => {
+                void report
+                  .execute({
+                    job_id: jobId,
+                    item_id: itemId,
+                    result: { worker: ctx.agentName },
+                  })
+                  .finally(() => {
+                    activeWorkers -= 1;
+                    resolve();
+                  });
+              }, 5);
+            }),
+          );
+          return {
+            kind: "async_launched",
+            thread: {
+              threadId: `thread-${ctx.agentName}`,
+              join: vi.fn(() => new Promise<void>(() => {})),
+            },
+          };
+        },
+      );
+
+      const result = await byName.get("spawn_agents_on_csv")!.execute({
+        csv_path: csvPath,
+        instruction: "process {value}",
+        id_column: "id",
+        max_workers: 1,
+      });
+
+      await Promise.all(reports);
+      expect(result.isError).not.toBe(true);
+      expect(JSON.parse(result.content).items).toMatchObject([
+        { item_id: "row1", status: "completed" },
+        { item_id: "row2", status: "completed" },
+      ]);
+      expect(maxActiveWorkers).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("returns LSP diagnostics for one file without draining other pending diagnostics", async () => {

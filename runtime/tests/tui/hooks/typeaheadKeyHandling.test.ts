@@ -19,9 +19,15 @@ function makeEvent(
 }
 
 describe('consumeAutocompleteEnterKey', () => {
-  it.each(['return', 'enter', 'Enter'])(
+  it.each([
+    ['return', 'return'],
+    ['enter', 'enter'],
+    ['Enter', 'Enter'],
+    ['carriage return', '\r'],
+    ['line feed', '\n'],
+  ])(
     'consumes bare %s while suggestions are visible',
-    keyName => {
+    (_name, keyName) => {
       const event = makeEvent({ key: keyName })
 
       expect(consumeAutocompleteEnterKey(event, 1)).toBe(true)

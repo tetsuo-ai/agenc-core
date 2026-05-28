@@ -175,6 +175,40 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function optionalUnsignedIntegerArg(
+  args: Record<string, unknown>,
+  name: string,
+): number | ToolResult | undefined {
+  const value = args[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return json({ error: `${name} must be a number` }, true);
+  }
+  if (!Number.isInteger(value) || value < 0) {
+    return json({ error: `${name} must be a non-negative integer` }, true);
+  }
+  return value;
+}
+
+function optionalPositiveIntegerArg(
+  args: Record<string, unknown>,
+  name: string,
+): number | ToolResult | undefined {
+  const value = optionalUnsignedIntegerArg(args, name);
+  if (typeof value === "number" && value < 1) {
+    return json({ error: `${name} must be >= 1` }, true);
+  }
+  return value;
+}
+
+function isToolResult(value: unknown): value is ToolResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ToolResult).content === "string"
+  );
+}
+
 function stringArray(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
@@ -972,6 +1006,7 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
         "id_column",
         "output_csv_path",
         "max_concurrency",
+        "max_workers",
         "max_runtime_seconds",
         "output_schema",
       ]),
@@ -990,8 +1025,16 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
     const csvPath = stringValue(args.csv_path)!;
     const idColumn = stringValue(args.id_column);
     const outputCsvPath = stringValue(args.output_csv_path);
-    const maxConcurrency = numberValue(args.max_concurrency);
-    const maxRuntimeSeconds = numberValue(args.max_runtime_seconds);
+    const maxConcurrencyArg = optionalUnsignedIntegerArg(args, "max_concurrency");
+    if (isToolResult(maxConcurrencyArg)) return maxConcurrencyArg;
+    const maxWorkersArg = optionalUnsignedIntegerArg(args, "max_workers");
+    if (isToolResult(maxWorkersArg)) return maxWorkersArg;
+    const maxRuntimeSeconds = optionalPositiveIntegerArg(
+      args,
+      "max_runtime_seconds",
+    );
+    if (isToolResult(maxRuntimeSeconds)) return maxRuntimeSeconds;
+    const maxConcurrency = maxConcurrencyArg ?? maxWorkersArg;
     const outputSchema =
       typeof args.output_schema === "object" &&
       args.output_schema !== null &&
@@ -1181,7 +1224,12 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
           max_concurrency: {
             type: "number",
             description:
-              "Maximum concurrent workers for this job. Defaults to 16.",
+              "Maximum concurrent workers for this job. Defaults to 16 and is capped by config.",
+          },
+          max_workers: {
+            type: "number",
+            description:
+              "Alias for max_concurrency. Set to 1 to run sequentially.",
           },
           max_runtime_seconds: {
             type: "number",

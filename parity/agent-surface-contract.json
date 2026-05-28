@@ -79,6 +79,22 @@
       "sha256": "f594446174697678b7235dac245d575f10b68e1b6de65dd944fcd06f8e363e84"
     },
     {
+      "path": "core/src/tools/handlers/agent_jobs.rs",
+      "sha256": "41b4197694a02e37218b9dc45e223aad165b47326efc5e285565927bd8c681ff"
+    },
+    {
+      "path": "core/src/tools/handlers/agent_jobs_spec.rs",
+      "sha256": "94c2f5e30317f092ee61708d725e9bc42fce9d760df67f5ca5543f3b9705c763"
+    },
+    {
+      "path": "core/src/tools/handlers/agent_jobs/spawn_agents_on_csv.rs",
+      "sha256": "f615b3f59167ec8fd39d80b93f4ecc4164dbc68e485a08e29bb55d3b6b2aeefa"
+    },
+    {
+      "path": "core/src/tools/handlers/agent_jobs/report_agent_job_result.rs",
+      "sha256": "08da0f44b799aadff183bfc12a224d46c339b664e4af48ee2a13df9936695751"
+    },
+    {
       "path": "protocol/src/agent_path.rs",
       "sha256": "18ddefda817a89b299cfbec14ea8e95ff4248e9fe5aca616656f39f7d5cfb045"
     },
@@ -134,6 +150,11 @@
     "runtime/src/tools/AgentTool/forkSubagent.ts",
     "runtime/src/tools/tasks/background.ts",
     "runtime/src/tools/tasks/task-board.ts",
+    "runtime/src/bin/model-facing-tools.ts",
+    "runtime/src/agents/jobs/job-orchestrator.ts",
+    "runtime/src/agents/jobs/csv-reader.ts",
+    "runtime/src/agents/jobs/instruction-template.ts",
+    "runtime/src/state/csv-agent-jobs.ts",
     "runtime/src/tui/workbench/surfaces/AgentSurface.tsx",
     "runtime/src/tui/workbench/agents/AgentsRail.tsx",
     "runtime/src/tui/hooks/useApiKeyVerification.ts",
@@ -166,6 +187,7 @@
     "runtime/tests/tools/tasks/task-tools.test.ts",
     "runtime/tests/commands/agent-management.test.tsx",
     "runtime/tests/bin/model-facing-tools.test.ts",
+    "runtime/tests/agents/jobs/job-orchestrator.test.ts",
     "runtime/tests/llm/model-registry.test.ts",
     "runtime/tests/llm/models-manager.test.ts",
     "runtime/tests/phases/stream-model.test.ts",
@@ -320,6 +342,11 @@
         "core/src/tools/handlers/multi_agents_v2/send_message.rs",
         "core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "core/src/tools/handlers/agent_jobs.rs",
+        "core/src/tools/handlers/agent_jobs_spec.rs",
+        "core/src/tools/handlers/agent_jobs/spawn_agents_on_csv.rs",
+        "core/src/tools/handlers/agent_jobs/report_agent_job_result.rs",
+        "state/src/runtime/agent_jobs.rs",
         "protocol/src/openai_models.rs",
         "protocol/src/config_types.rs",
         "models-manager/models.json"
@@ -340,6 +367,11 @@
         "runtime/src/agents/v2/wait.ts",
         "runtime/src/agents/v2/list-agents.ts",
         "runtime/src/agents/v2/close-agent.ts",
+        "runtime/src/bin/model-facing-tools.ts",
+        "runtime/src/agents/jobs/job-orchestrator.ts",
+        "runtime/src/agents/jobs/csv-reader.ts",
+        "runtime/src/agents/jobs/instruction-template.ts",
+        "runtime/src/state/csv-agent-jobs.ts",
         "runtime/src/session/turn-context.ts",
         "runtime/src/llm/model-registry.ts",
         "runtime/src/llm/types.ts",
@@ -356,7 +388,9 @@
         "followup_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
         "wait_agent v2 validates, defaults, and describes timeout_ms from configured min, default, and max wait timeout options",
-        "close_agent emits the close-end event with the previous status even when close request delivery fails"
+        "close_agent emits the close-end event with the previous status even when close request delivery fails",
+        "spawn_agents_on_csv exposes the Rust CSV agent job schema including max_workers as a max_concurrency alias and dispatches worker subagents through the same background delegate path",
+        "report_agent_job_result records worker result objects and stop requests into the active CSV agent job state"
       ],
       "edgeCases": [
         "wait_agent returns completed when any parent mailbox update arrives before the timeout",
@@ -377,7 +411,10 @@
         "a close_agent shutdown failure still emits collab_close_end and returns a structured tool error",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
         "an agent tool with a disallowed role fails before any child run is started",
-        "task-board output excludes internal mailbox details while preserving user-visible progress and status"
+        "task-board output excludes internal mailbox details while preserving user-visible progress and status",
+        "max_workers set to one runs a two-row CSV agent job sequentially instead of dispatching both workers concurrently",
+        "max_concurrency set to zero normalizes to one CSV worker instead of falling back to the default concurrency",
+        "a worker report with stop true cancels the remaining CSV rows while preserving the completed worker result"
       ],
       "tests": [
         "runtime/tests/session/agent-task-lifecycle.test.ts",
@@ -386,13 +423,14 @@
         "runtime/tests/tools/tasks/task-tools.test.ts",
         "runtime/tests/commands/agent-management.test.tsx",
         "runtime/tests/bin/model-facing-tools.test.ts",
+        "runtime/tests/agents/jobs/job-orchestrator.test.ts",
         "runtime/tests/agents/run-agent.test.ts",
         "runtime/tests/llm/model-registry.test.ts",
         "runtime/tests/llm/models-manager.test.ts",
         "runtime/tests/phases/stream-model.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
       ],
       "status": "required"
     },

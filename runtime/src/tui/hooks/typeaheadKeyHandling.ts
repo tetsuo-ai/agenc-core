@@ -14,7 +14,9 @@ export function consumeAutocompleteEnterKey(
   if (
     event.key !== 'return' &&
     event.key !== 'enter' &&
-    event.key !== 'Enter'
+    event.key !== 'Enter' &&
+    event.key !== '\r' &&
+    event.key !== '\n'
   ) {
     return false
   }
