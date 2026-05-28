@@ -38,6 +38,7 @@ import {
   resetKeybindingLoaderForTesting,
   subscribeToKeybindingChanges,
 } from './loadUserBindings.ts'
+import { resolveKey } from './resolver.ts'
 
 const originalConfigDir = process.env.AGENC_CONFIG_DIR
 const tempDirs: string[] = []
@@ -56,6 +57,31 @@ async function writeKeybindings(content: string): Promise<void> {
 
 function findAction(bindings: { action: string | null }[], action: string): boolean {
   return bindings.some(binding => binding.action === action)
+}
+
+function key(overrides: Record<string, boolean> = {}) {
+  return {
+    backspace: false,
+    ctrl: false,
+    delete: false,
+    downArrow: false,
+    end: false,
+    escape: false,
+    home: false,
+    leftArrow: false,
+    meta: false,
+    pageDown: false,
+    pageUp: false,
+    return: false,
+    rightArrow: false,
+    shift: false,
+    super: false,
+    tab: false,
+    upArrow: false,
+    wheelDown: false,
+    wheelUp: false,
+    ...overrides,
+  } as never
 }
 
 beforeEach(() => {
@@ -187,6 +213,76 @@ describe('loadUserBindings', () => {
         type: 'parse_error',
       }),
     ])
+  })
+
+  test('drops unknown user actions before they can shadow default handlers', async () => {
+    await createConfigDir()
+    await writeKeybindings(`{
+      "bindings": [
+        {
+          "context": "Autocomplete",
+          "bindings": {
+            "enter": "chat:acceptSuggestion"
+          }
+        },
+        {
+          "context": "Confirmation",
+          "bindings": {
+            "enter": "modal:confirm",
+            "escape": "modal:cancel"
+          }
+        },
+        {
+          "context": "Chat",
+          "bindings": {
+            "up": "history:prev",
+            "ctrl+y": "command:insert-template"
+          }
+        }
+      ]
+    }`)
+
+    const result = loadKeybindingsSyncWithWarnings()
+
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'chat:acceptSuggestion',
+          context: 'Autocomplete',
+          key: 'enter',
+          severity: 'error',
+          type: 'invalid_action',
+        }),
+        expect.objectContaining({
+          action: 'modal:confirm',
+          context: 'Confirmation',
+          key: 'enter',
+          severity: 'error',
+          type: 'invalid_action',
+        }),
+        expect.objectContaining({
+          action: 'history:prev',
+          context: 'Chat',
+          key: 'up',
+          severity: 'error',
+          type: 'invalid_action',
+        }),
+      ]),
+    )
+    expect(findAction(result.bindings, 'chat:acceptSuggestion')).toBe(false)
+    expect(findAction(result.bindings, 'modal:confirm')).toBe(false)
+    expect(findAction(result.bindings, 'history:prev')).toBe(false)
+    expect(findAction(result.bindings, 'command:insert-template')).toBe(true)
+
+    expect(
+      resolveKey('', key({ return: true }), ['Autocomplete', 'Chat', 'Global'], result.bindings),
+    ).toEqual({ type: 'match', action: 'autocomplete:confirm' })
+    expect(
+      resolveKey('', key({ return: true }), ['Confirmation', 'Chat', 'Global'], result.bindings),
+    ).toEqual({ type: 'match', action: 'confirm:yes' })
+    expect(
+      resolveKey('', key({ upArrow: true }), ['Chat', 'Global'], result.bindings),
+    ).toEqual({ type: 'match', action: 'history:previous' })
   })
 
   test('starts, emits, deletes, and disposes the keybinding watcher', async () => {
