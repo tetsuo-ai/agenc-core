@@ -1,30 +1,34 @@
 /**
  * Yolo + Grep tool round-trip.
  *
- * Asks the model to grep a unique pattern from /etc/os-release. The pattern
- * "PRETTY_NAME" appears in /etc/os-release on Ubuntu/Debian/Pop! variants;
- * we assert the matched line shows up in the transcript.
+ * Asks the model to grep a unique pattern from a file inside the scenario
+ * workspace and verifies the completed rollout contains the matched line.
+ * This avoids false positives from matching the typed prompt itself.
  */
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+
 export const meta = {
-  description: "--yolo: model uses Grep, matched line renders in transcript.",
+  description: "--yolo: model uses Grep, matched line is recorded.",
   args: ["--yolo"],
-  timeoutMs: 180_000,
+  timeoutMs: 90_000,
   slimCwd: true,
-  // Same model-perf ceiling as 11 (and the bypass is verified by the
-  // LLM pipeline gate). See GAP-TEST-MODEL-PERF.
-  skip: "model perf ceiling on yolo + Grep; bypass proven by LLM pipeline gate",
+  useTempHome: true,
 };
 
 export default async function (session) {
+  const marker = `AGENC_GREP_E2E_${Date.now()}`;
+  const filePath = path.join(session.cwd, "grep-target.txt");
+  await writeFile(filePath, `alpha\n${marker}=present\nomega\n`, "utf8");
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.type(
-    "Use the Grep tool to search /etc/os-release for the pattern 'PRETTY_NAME'.",
+    `Use the Grep tool with output_mode "content" to search ${filePath} for the pattern '${marker}'.`,
   );
   await session.submit();
-  await session.waitFor(/PRETTY_NAME/, {
-    timeout: 150_000,
-    label: "grep match",
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 90_000 });
+  await session.assertRolloutToolOutput(marker, {
+    label: "Grep output",
+    toolName: "Grep",
   });
-  await session.waitForIdle({ timeout: 30_000 });
 }

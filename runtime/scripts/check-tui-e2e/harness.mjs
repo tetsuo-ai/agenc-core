@@ -571,6 +571,7 @@ export class TuiSession {
   async submit(text = "") {
     if (text) await this.type(text);
     await sleep(80);
+    this.mark();
     this.term.write("\r");
   }
 
@@ -666,12 +667,27 @@ export class TuiSession {
    * marker. This proves the tool actually ran without relying on the model
    * to repeat stdout in the assistant's final message.
    */
-  async assertRolloutToolOutput(marker, { label = "tool output" } = {}) {
+  async assertRolloutToolOutput(marker, { label = "tool output", toolName } = {}) {
     const items = await this.readRolloutItems();
+    const startedToolsByCallId = new Map();
     for (const item of items) {
       const msg = item?.payload?.msg;
+      if (msg?.type === "tool_call_started") {
+        const payload = msg.payload ?? {};
+        if (typeof payload.callId === "string" && typeof payload.toolName === "string") {
+          startedToolsByCallId.set(payload.callId, payload.toolName);
+        }
+        continue;
+      }
       if (msg?.type !== "tool_call_completed") continue;
       const payload = msg.payload ?? {};
+      const completedToolName =
+        typeof payload.toolName === "string"
+          ? payload.toolName
+          : typeof payload.callId === "string"
+            ? startedToolsByCallId.get(payload.callId)
+            : undefined;
+      if (toolName !== undefined && completedToolName !== toolName) continue;
       const stdout =
         typeof payload.metadata?.stdout === "string" ? payload.metadata.stdout : "";
       const result = typeof payload.result === "string" ? payload.result : "";
@@ -679,7 +695,8 @@ export class TuiSession {
         return;
       }
     }
-    throw new Error(`${label}: no completed rollout tool output contained "${marker}"`);
+    const suffix = toolName === undefined ? "" : ` for ${toolName}`;
+    throw new Error(`${label}: no completed rollout tool output${suffix} contained "${marker}"`);
   }
 
   /**
