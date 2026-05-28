@@ -27,6 +27,18 @@
       "sha256": "5b8a9a570cafea31d6ab8e3a802b9cb38736122c90310dc1654aea9761cf30b7"
     },
     {
+      "path": "core/src/tools/handlers/multi_agents_common.rs",
+      "sha256": "13ce14269e9c2570b89533e824960b0863b02b7a49576a8b4fd7f3a6267e23e0"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_spec.rs",
+      "sha256": "dcd6a7abd9f6cec6821f9c03b3c7936cbc2845324196b3a368cc15fc08a1f5fd"
+    },
+    {
+      "path": "core/src/tools/handlers/multi_agents_v2/wait.rs",
+      "sha256": "4ddd23c93ccae17d9a3b0006d4b2675acc450196ca207bbc1db4c5c841707a46"
+    },
+    {
       "path": "core/src/codex_thread.rs",
       "sha256": "de69256771379d633216a30de68303c21c3fa307608b6aefb40802fc4c6dc81e"
     },
@@ -113,6 +125,7 @@
     "runtime/tests/tools/AgentTool/loadAgentsDir.test.ts",
     "runtime/tests/tools/tasks/task-tools.test.ts",
     "runtime/tests/commands/agent-management.test.tsx",
+    "runtime/tests/bin/model-facing-tools.test.ts",
     "runtime/tests/tui/workbench/agent-surface.test.tsx",
     "runtime/tests/tui/workbench/agents-rail.test.tsx",
     "runtime/tests/tui/workbench/agents.test.ts",
@@ -248,7 +261,10 @@
       "source": [
         "core/src/agent/control.rs",
         "core/src/agent/role.rs",
-        "core/src/thread_manager.rs"
+        "core/src/thread_manager.rs",
+        "core/src/tools/handlers/multi_agents_common.rs",
+        "core/src/tools/handlers/multi_agents_spec.rs",
+        "core/src/tools/handlers/multi_agents_v2/wait.rs"
       ],
       "target": [
         "runtime/src/tasks/agent-thread.ts",
@@ -270,10 +286,14 @@
         "forks parent context into child prompts with preserved tool-use placeholders and per-child instructions",
         "reports partial progress, final output, and failure state in task-compatible output records",
         "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
-        "applies role allowlists and tool policies before child tools execute"
+        "applies role allowlists and tool policies before child tools execute",
+        "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out"
       ],
       "edgeCases": [
-        "waiting for multiple agents returns completed agents and leaves active agents observable",
+        "wait_agent returns completed when any parent mailbox update arrives before the timeout",
+        "wait_agent returns timed_out when no parent mailbox update arrives before the timeout",
+        "wait_agent rejects timeout_ms below the configured minimum instead of silently clamping",
+        "wait_agent rejects removed v1 targets input as an unknown field",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
         "an agent tool with a disallowed role fails before any child run is started",
@@ -284,10 +304,11 @@
         "runtime/tests/tasks/lifecycle.test.ts",
         "runtime/tests/tools/AgentTool/loadAgentsDir.test.ts",
         "runtime/tests/tools/tasks/task-tools.test.ts",
-        "runtime/tests/commands/agent-management.test.tsx"
+        "runtime/tests/commands/agent-management.test.tsx",
+        "runtime/tests/bin/model-facing-tools.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts --reporter=dot"
       ],
       "status": "required"
     },
