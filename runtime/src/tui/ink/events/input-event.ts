@@ -25,6 +25,7 @@ export type Key = {
 }
 
 function parseKey(keypress: ParsedKey): [Key, string] {
+  const isEnterKey = keypress.name === 'return' || keypress.name === 'enter'
   const key: Key = {
     upArrow: keypress.name === 'up',
     downArrow: keypress.name === 'down',
@@ -36,7 +37,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     wheelDown: keypress.name === 'wheeldown',
     home: keypress.name === 'home',
     end: keypress.name === 'end',
-    return: keypress.name === 'return',
+    return: isEnterKey,
     escape: keypress.name === 'escape',
     fn: keypress.fn,
     ctrl: keypress.ctrl,

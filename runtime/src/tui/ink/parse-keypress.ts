@@ -448,6 +448,7 @@ export const nonAlphanumericKeys = [
   // via Kitty/modifyOtherKeys leaks the literal word "escape" as input text
   // (input-event.ts:58 assigns keypress.name when ctrl is set).
   'escape',
+  'enter',
   'backspace',
   'wheelup',
   'wheeldown',
