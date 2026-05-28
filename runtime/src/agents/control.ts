@@ -1232,19 +1232,20 @@ export class AgentControl {
     readonly childThreadId: ThreadId;
     readonly parentThreadId?: ThreadId;
   }): void {
-    const child = this.live.get(opts.childThreadId);
-    if (!child) return;
     const parentId =
       opts.parentThreadId ?? this.parentOf.get(opts.childThreadId);
     if (!parentId) return;
-    const parent = this.live.get(parentId);
+    const child = this.live.get(opts.childThreadId);
+    if (!child) {
+      void this.notifyMissingChildCompletion(parentId, opts.childThreadId);
+      return;
+    }
 
-    void this.awaitCompletion(child, parent, parentId);
+    void this.awaitCompletion(child, parentId);
   }
 
   private async awaitCompletion(
     child: LiveAgent,
-    parent: LiveAgent | undefined,
     parentId: ThreadId,
   ): Promise<void> {
     await new Promise<void>((resolve) => {
@@ -1266,25 +1267,94 @@ export class AgentControl {
       status: final,
     });
 
-    if (!parent) return;
+    const parentAgentPath = parentAgentPathFor(child.agentPath);
+    if (!parentAgentPath) return;
     try {
-      parent.downInbox.send({
+      await this.sendInterAgentCommunication(parentId, {
         author: child.agentPath,
-        recipient: parent.agentPath,
+        recipient: parentAgentPath,
         content: message,
         triggerTurn: false,
-        direction: "down",
-        metadata: { kind: "subagent_notification", finalStatus: final.status },
+      });
+    } catch (err) {
+      if (err instanceof ThreadNotFoundError || err instanceof MailboxClosedError) {
+        return;
+      }
+      this.emitCompletionWatcherSendFailed(parentId, err);
+    }
+  }
+
+  private async notifyMissingChildCompletion(
+    parentId: ThreadId,
+    childReference: ThreadId,
+  ): Promise<void> {
+    const final: AgentStatus = { status: "not_found" };
+    const message = formatSubagentNotification({
+      agentPath: childReference,
+      status: final,
+    });
+    try {
+      await this.sendSubagentNotificationWithoutTurn(parentId, {
+        author: childReference,
+        content: message,
+        finalStatus: final.status,
       });
     } catch (err) {
       if (err instanceof MailboxClosedError) return;
-      emitWarning(
-        this.session.eventLog,
-        this.session.nextInternalSubId(),
-        "completion_watcher_send_failed",
-        `parent=${parentId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.emitCompletionWatcherSendFailed(parentId, err);
     }
+  }
+
+  private async sendSubagentNotificationWithoutTurn(
+    parentId: ThreadId,
+    notification: {
+      readonly author: string;
+      readonly content: string;
+      readonly finalStatus: AgentStatus["status"];
+    },
+  ): Promise<void> {
+    if (this.threadManager?.hasThread(parentId)) {
+      await this.threadManager.appendMessage(parentId, notification.content);
+      return;
+    }
+
+    if (this.rootThreadId !== undefined && parentId === this.rootThreadId) {
+      this.session.mailbox.send({
+        author: notification.author,
+        recipient: "/root",
+        content: notification.content,
+        triggerTurn: false,
+        direction: "up",
+        metadata: {
+          kind: "subagent_notification",
+          finalStatus: notification.finalStatus,
+        },
+      });
+      return;
+    }
+
+    const parent = this.live.get(parentId);
+    if (!parent) return;
+    parent.downInbox.send({
+      author: notification.author,
+      recipient: parent.agentPath,
+      content: notification.content,
+      triggerTurn: false,
+      direction: "down",
+      metadata: {
+        kind: "subagent_notification",
+        finalStatus: notification.finalStatus,
+      },
+    });
+  }
+
+  private emitCompletionWatcherSendFailed(parentId: ThreadId, err: unknown): void {
+    emitWarning(
+      this.session.eventLog,
+      this.session.nextInternalSubId(),
+      "completion_watcher_send_failed",
+      `parent=${parentId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1569,6 +1639,13 @@ function edgeStatusForShutdownReason(
     return "closed";
   }
   return null;
+}
+
+function parentAgentPathFor(agentPath: AgentPath): AgentPath | undefined {
+  const index = agentPath.lastIndexOf("/");
+  if (index <= 0) return undefined;
+  const parentPath = agentPath.slice(0, index);
+  return parentPath.length > 0 ? (parentPath as AgentPath) : undefined;
 }
 
 /** Port of reference runtime `agent_matches_prefix` (`control.rs:1173`). */

@@ -561,11 +561,69 @@ describe("AgentControl", () => {
     await new Promise<void>((r) => setTimeout(r, 10));
     const drained = parent.downInbox.drain();
     expect(drained.length).toBeGreaterThanOrEqual(1);
-    const msg = drained[0]! as { content: string; metadata?: { kind?: string } };
+    const msg = drained[0]! as {
+      author: string;
+      recipient: string;
+      content: string;
+      triggerTurn: boolean;
+      metadata?: { kind?: string };
+    };
+    expect(msg.author).toBe(child.agentPath);
+    expect(msg.recipient).toBe(parent.agentPath);
+    expect(msg.triggerTurn).toBe(false);
     expect(msg.content).toBe(
       `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"done"}}\n</subagent_notification>`,
     );
-    expect(msg.metadata?.kind).toBe("subagent_notification");
+    expect(msg.metadata?.kind).toBe("inter_agent_communication");
+  });
+
+  it("maybeStartCompletionWatcher() queues root-child completion through the root session mailbox", async () => {
+    const session = stubSession({ conversationId: "root-thread" });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    control.registerSessionRoot("root-thread");
+    const child = await control.spawn({ parentPath: "/root" });
+
+    control.maybeStartCompletionWatcher({
+      childThreadId: child.agentId,
+      parentThreadId: "root-thread",
+    });
+    child.status.markCompleted("turn-1", "done");
+
+    await new Promise<void>((r) => setTimeout(r, 10));
+    const drained = session.mailbox.drain();
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toMatchObject({
+      author: child.agentPath,
+      recipient: "/root",
+      content: `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"done"}}\n</subagent_notification>`,
+      triggerTurn: false,
+      direction: "up",
+      metadata: { kind: "inter_agent_communication" },
+    });
+  });
+
+  it("maybeStartCompletionWatcher() notifies the parent when the child handle is missing", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const parent = await control.spawn({ parentPath: "/root" });
+
+    control.maybeStartCompletionWatcher({
+      childThreadId: "missing-child-thread",
+      parentThreadId: parent.agentId,
+    });
+
+    await new Promise<void>((r) => setTimeout(r, 10));
+    const drained = parent.downInbox.drain();
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toMatchObject({
+      content:
+        '<subagent_notification>\n{"agent_path":"missing-child-thread","status":"not_found"}\n</subagent_notification>',
+      triggerTurn: false,
+      direction: "down",
+      metadata: { kind: "subagent_notification", finalStatus: "not_found" },
+    });
   });
 
   it("resumeAgentFromRollout() reopens open descendants after shutdown", async () => {

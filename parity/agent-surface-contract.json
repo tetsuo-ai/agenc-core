@@ -200,7 +200,8 @@
         "allocates path-safe nicknames and rejects path collisions before the live agent handle is exposed",
         "enforces the default child depth cap while preserving configured per-session overrides",
         "maps role configuration into child model, tools, permission, prompt, service tier, and runtime limits",
-        "normalizes final and nonfinal agent statuses consistently for list and TUI consumers"
+        "normalizes final and nonfinal agent statuses consistently for list and TUI consumers",
+        "routes child terminal notifications through inter-agent communication for live and root parents, with a no-turn not_found fallback when the child handle is missing"
       ],
       "edgeCases": [
         "two concurrent spawns requesting the same agent path leave exactly one finalized registry entry",
@@ -208,7 +209,9 @@
         "a role with a configured nickname candidate list uses the first available path-safe candidate",
         "a missing role name resolves to the default role and still applies role-level tool policy",
         "a role TOML layer with model, reasoning, and service_tier exposes those locked settings in the spawn tool description",
-        "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status"
+        "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status",
+        "a child completion whose parent is the root thread is delivered to the root session mailbox without triggering a turn",
+        "a completion watcher for a missing child handle emits a not_found subagent notification to the parent without triggering a turn"
       ],
       "tests": [
         "runtime/tests/agents/control.test.ts",
