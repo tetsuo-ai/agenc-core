@@ -116,6 +116,7 @@ export type WorkbenchBufferStoreOptions = {
 };
 type BufferLoadOptions = {
   readonly preserveCurrentOnError?: boolean;
+  readonly basePath?: string;
 };
 type VimEditSession = {
   readonly context: TransitionContext;
@@ -137,6 +138,7 @@ export class WorkbenchBufferStore {
   #scrollLine = 0;
   #viewportRows = DEFAULT_VIEWPORT_ROWS;
   #openGeneration = 0;
+  #workspaceBasePath: string | null = null;
   #vimCommandLine: string | null = null;
   #vimState: VimState = { mode: "NORMAL", command: { type: "idle" } };
   #visualAnchor: number | null = null;
@@ -193,6 +195,7 @@ export class WorkbenchBufferStore {
     if (closedFile) safeNotifyBufferLsp(() => notifyBufferLspClosed(closedFile.absolutePath));
     this.#file = null;
     this.#document = null;
+    this.#workspaceBasePath = null;
     this.#status = "idle";
     this.#error = null;
     this.#conflictKind = null;
@@ -206,7 +209,9 @@ export class WorkbenchBufferStore {
   async revert(): Promise<void> {
     const file = this.#file;
     if (!file) return;
-    await this.#load(file.absolutePath, this.#position().line, true, file.filePath);
+    await this.#load(file.absolutePath, this.#position().line, true, file.filePath, {
+      basePath: this.#workspaceBasePath ?? getCwd(),
+    });
   }
 
   async save(options: { readonly hasInFlightAgent?: boolean; readonly force?: boolean } = {}): Promise<boolean> {
@@ -272,7 +277,9 @@ export class WorkbenchBufferStore {
       return false;
     }
 
-    return this.#load(file.absolutePath, line, true, file.filePath);
+    return this.#load(file.absolutePath, line, true, file.filePath, {
+      basePath: this.#workspaceBasePath ?? getCwd(),
+    });
   }
 
   insert(text: string): void {
@@ -407,6 +414,7 @@ export class WorkbenchBufferStore {
     });
     if (!target || this.#file !== file || this.#document !== document) return false;
     return this.#load(target.path, target.line, false, displayPathForAbsolute(target.path), {
+      basePath: this.#workspaceBasePath ?? getCwd(),
       preserveCurrentOnError: true,
     });
   }
@@ -423,7 +431,7 @@ export class WorkbenchBufferStore {
       this.#vimCommandLine = null;
       const command = parseVimCommand(rawCommand);
       if (!command) {
-        this.#setProblem("error", `Unsupported Vim command: :${rawCommand.trim()}`, null);
+        this.#setProblem("error", `Unknown Vim command: :${rawCommand.trim()}`, null);
         return true;
       }
       this.#emit();
@@ -782,8 +790,9 @@ export class WorkbenchBufferStore {
     options: BufferLoadOptions = {},
   ): Promise<boolean> {
     let absolutePath: string;
+    const basePath = options.basePath ?? getCwd();
     try {
-      absolutePath = resolveBufferFilePath(filePath);
+      absolutePath = resolveBufferFilePath(filePath, basePath);
     } catch (error) {
       this.#status = "error";
       this.#error = errorMessage(error);
@@ -813,6 +822,7 @@ export class WorkbenchBufferStore {
     const previousPath = this.#file?.absolutePath;
     const previousFile = this.#file;
     const previousDocument = this.#document;
+    const previousWorkspaceBasePath = this.#workspaceBasePath;
     const previousScrollLine = this.#scrollLine;
     const previousVimCommandLine = this.#vimCommandLine;
     const previousVimState = this.#vimState;
@@ -824,12 +834,14 @@ export class WorkbenchBufferStore {
     this.#hoverText = null;
     this.#file = null;
     this.#document = null;
+    this.#workspaceBasePath = null;
     this.#scrollLine = 0;
     this.#resetVimState();
     this.#emit();
 
     try {
       const snapshot = await readBufferFileSnapshot(absolutePath, {
+        basePath,
         displayPath,
       });
       if (generation !== this.#openGeneration) return false;
@@ -838,6 +850,7 @@ export class WorkbenchBufferStore {
       }
       this.#file = snapshot;
       this.#document = createBufferDocument(snapshot.content, line);
+      this.#workspaceBasePath = basePath;
       this.#resetVimState();
       this.#status = "ready";
       this.#error = null;
@@ -852,6 +865,7 @@ export class WorkbenchBufferStore {
       if (options.preserveCurrentOnError && previousFile && previousDocument) {
         this.#file = previousFile;
         this.#document = previousDocument;
+        this.#workspaceBasePath = previousWorkspaceBasePath;
         this.#scrollLine = previousScrollLine;
         this.#vimCommandLine = previousVimCommandLine;
         this.#vimState = previousVimState;

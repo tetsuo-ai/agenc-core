@@ -6,19 +6,27 @@ import {
   resetAllLSPDiagnosticState,
 } from "../../../src/services/lsp/LSPDiagnosticRegistry.js";
 import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import {
+  INLINE_BUFFER_CAPABILITIES,
+  type BufferProviderSnapshot,
+} from "../../../src/tui/workbench/buffer/providers/types.js";
 import { BufferSurface } from "../../../src/tui/workbench/surfaces/BufferSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
-type BufferSnapshot = ReturnType<typeof baseSnapshot>;
+type BufferSnapshot = BufferProviderSnapshot;
 type BufferStoreHarness = ReturnType<typeof createStoreHarness>;
-type CapturedInputHandler = (input: string, key: Record<string, unknown>) => void;
+type CapturedInputHandler = (input: string, key: Record<string, unknown>, event: InputCaptureEvent) => boolean;
+type InputCaptureEvent = {
+  readonly key: Record<string, unknown>;
+  readonly keypress: { readonly isPasted: boolean };
+};
 type VimCommand =
   | { readonly type: "save"; readonly force: boolean }
   | { readonly type: "quit"; readonly discard: boolean; readonly all: boolean }
   | { readonly type: "saveQuit"; readonly force: boolean; readonly all: boolean };
 
 const bufferHarness = vi.hoisted(() => ({
-  handlers: {} as Record<string, () => void>,
+  handlers: {} as Record<string, () => void | false | Promise<void>>,
   highlightBufferVisibleLines: vi.fn(),
   inputCapture: null as CapturedInputHandler | null,
   inputCaptureOptions: null as Record<string, unknown> | null,
@@ -44,7 +52,7 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
   useKeybinding: () => {},
   useKeybindings: (
-    handlers: Record<string, () => void>,
+    handlers: Record<string, () => void | false | Promise<void>>,
     options: Record<string, unknown>,
   ) => {
     bufferHarness.handlers = handlers;
@@ -52,8 +60,8 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
-vi.mock("../../../src/tui/workbench/buffer/BufferStore.js", () => ({
-  getWorkbenchBufferStore: () => bufferHarness.store,
+vi.mock("../../../src/tui/workbench/buffer/providers/BufferProviderController.js", () => ({
+  getWorkbenchBufferProviderController: () => bufferHarness.store,
 }));
 
 vi.mock("../../../src/tui/workbench/buffer/highlight.js", () => ({
@@ -77,7 +85,7 @@ describe("BufferSurface handlers", () => {
     expect(bufferHarness.keybindingOptions).toEqual({ context: "Buffer", isActive: true });
     expect(bufferHarness.inputCaptureOptions).toEqual({ context: "Buffer", isActive: true });
     expect(bufferHarness.store?.open).toHaveBeenCalledWith("target.ts", 1);
-    expect(bufferHarness.store?.setViewportRows).toHaveBeenCalledWith(3);
+    expect(bufferHarness.store?.resize).toHaveBeenCalledWith({ rows: 3, columns: 40 });
 
     bufferHarness.handlers["buffer:save"]?.();
     expect(bufferHarness.store?.save).toHaveBeenCalledWith({ hasInFlightAgent: true });
@@ -97,15 +105,15 @@ describe("BufferSurface handlers", () => {
     expect(bufferHarness.store?.goToDefinition).toHaveBeenCalledTimes(1);
 
     bufferHarness.store?.close.mockReturnValueOnce(false);
-    bufferHarness.handlers["buffer:close"]?.();
+    await bufferHarness.handlers["buffer:close"]?.();
     expect(changes).toHaveLength(0);
 
     bufferHarness.store?.close.mockReturnValueOnce(true);
-    bufferHarness.handlers["buffer:close"]?.();
+    await bufferHarness.handlers["buffer:close"]?.();
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
 
     bufferHarness.store?.close.mockReturnValueOnce(true);
-    bufferHarness.handlers["buffer:closeDiscard"]?.();
+    await bufferHarness.handlers["buffer:closeDiscard"]?.();
     expect(bufferHarness.store?.close).toHaveBeenLastCalledWith({ discard: true });
 
     bufferHarness.handlers["buffer:up"]?.();
@@ -150,12 +158,13 @@ describe("BufferSurface handlers", () => {
 
     await renderBufferSurface({ changes, columns: 24 });
 
-    bufferHarness.inputCapture?.(":", {});
-    expect(bufferHarness.store?.handleVimInput).toHaveBeenCalledWith(
+    bufferHarness.inputCapture?.(":", {}, inputEvent());
+    expect(bufferHarness.store?.handleInput).toHaveBeenCalledWith(
       ":",
       {},
-      20,
+      { columns: 20, rows: 3 },
       expect.any(Function),
+      false,
     );
 
     const execute = bufferHarness.vimCommandExecutor;
@@ -173,6 +182,7 @@ describe("BufferSurface handlers", () => {
 
     bufferHarness.store?.close.mockReturnValueOnce(true);
     execute?.({ type: "quit", discard: true, all: false });
+    await flushPromises();
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
     expect(bufferHarness.store?.close).toHaveBeenLastCalledWith({ discard: true });
 
@@ -206,7 +216,7 @@ describe("BufferSurface handlers", () => {
       status: "idle",
     });
 
-    const output = await renderBufferSurface({ activeFilePath: null });
+    const output = await renderBufferSurface({ activeFilePath: null, columns: 100 });
 
     expect(output).toContain("No file selected");
     expect(bufferHarness.store?.open).not.toHaveBeenCalled();
@@ -218,9 +228,9 @@ describe("BufferSurface handlers", () => {
       status: "loading",
     });
 
-    const output = await renderBufferSurface({ activeFilePath: null });
+    const output = await renderBufferSurface({ activeFilePath: null, columns: 100 });
 
-    expect(output).toContain("loading [normal, loading]");
+    expect(output).toContain("loading [basic inline BUFFER fallback, normal, loading]");
     expect(output).toContain("Loading...");
     expect(bufferHarness.store?.open).not.toHaveBeenCalled();
   });
@@ -278,7 +288,7 @@ describe("BufferSurface handlers", () => {
       },
     });
 
-    expect(output).toContain("target.ts [visual, ready, dirty, agent, utf8, LF] 2:4");
+    expect(output).toContain("target.ts [basic inline BUFFER fallback, visual, ready, dirty, agent, utf8, LF] 2:4");
     expect(output).toContain("2 diagnostics - current line");
     expect(output).toContain("agent edit in flight: target.ts");
     expect(output).toContain("hover details");
@@ -291,16 +301,16 @@ describe("BufferSurface handlers", () => {
       vimMode: "NORMAL",
     });
 
-    const commandOutput = await renderBufferSurface();
-    expect(commandOutput).toContain("target.ts [command, ready]");
+    const commandOutput = await renderBufferSurface({ columns: 100 });
+    expect(commandOutput).toContain("target.ts [basic inline BUFFER fallback, command, ready]");
     expect(commandOutput).toContain(":wq");
 
     bufferHarness.snapshot = baseSnapshot({
       vimMode: "INSERT",
     });
 
-    const insertOutput = await renderBufferSurface();
-    expect(insertOutput).toContain("target.ts [insert, ready]");
+    const insertOutput = await renderBufferSurface({ columns: 100 });
+    expect(insertOutput).toContain("target.ts [basic inline BUFFER fallback, insert, ready]");
     expect(insertOutput).toContain("INSERT  esc normal");
   });
 
@@ -388,20 +398,8 @@ function resetHarness(): void {
   bufferHarness.visibleLines = [{ number: 1, text: "const value = 1;", from: 0, to: 16 }];
 }
 
-function baseSnapshot(overrides: Partial<{
-  readonly absolutePath: string | null;
-  readonly dirty: boolean;
-  readonly encoding: "utf8" | "utf16le" | null;
-  readonly error: string | null;
-  readonly filePath: string | null;
-  readonly hoverText: string | null;
-  readonly lineEndings: "LF" | "CRLF" | null;
-  readonly position: { readonly line: number; readonly column: number; readonly offset: number };
-  readonly status: "idle" | "loading" | "ready" | "saving" | "error" | "conflict";
-  readonly viewportRows: number;
-  readonly vimCommandLine: string | null;
-  readonly vimMode: "NORMAL" | "INSERT" | "VISUAL";
-}> = {}) {
+function baseSnapshot(overrides: Partial<BufferProviderSnapshot> = {}): BufferProviderSnapshot {
+  const status = overrides.status ?? "ready";
   return {
     absolutePath: null,
     canRedo: false,
@@ -417,10 +415,19 @@ function baseSnapshot(overrides: Partial<{
     position: { line: 1, column: 0, offset: 0 },
     scrollLine: 0,
     selection: { anchor: 0, head: 0 },
-    status: "ready",
+    status,
     viewportRows: 1,
     vimCommandLine: null,
     vimMode: "NORMAL",
+    provider: {
+      kind: "inline",
+      label: "basic inline BUFFER fallback",
+      fallbackReason: null,
+      capabilities: INLINE_BUFFER_CAPABILITIES,
+    },
+    providerMessage: null,
+    providerStatus: status,
+    terminal: null,
     ...overrides,
   };
 }
@@ -428,15 +435,21 @@ function baseSnapshot(overrides: Partial<{
 function createStoreHarness() {
   return {
     close: vi.fn(() => true),
+    cleanup: vi.fn(async () => {}),
+    click: vi.fn(() => false),
+    focus: vi.fn(),
+    getSnapshot: vi.fn(() => bufferHarness.snapshot),
     getVisibleLines: vi.fn(() => bufferHarness.visibleLines),
     goToDefinition: vi.fn(),
-    handleVimInput: vi.fn((
+    handleInput: vi.fn((
       _input: string,
       _key: Record<string, unknown>,
-      _width: number,
+      _context: Record<string, unknown>,
       execute: (command: VimCommand) => void,
+      _isPasted: boolean,
     ) => {
       bufferHarness.vimCommandExecutor = execute;
+      return true;
     }),
     move: vi.fn(),
     open: vi.fn(async () => {}),
@@ -444,9 +457,16 @@ function createStoreHarness() {
     redo: vi.fn(),
     requestHover: vi.fn(),
     revert: vi.fn(),
+    resize: vi.fn(),
     save: vi.fn(async () => true),
-    setViewportRows: vi.fn(),
     undo: vi.fn(),
+  };
+}
+
+function inputEvent(): InputCaptureEvent {
+  return {
+    key: {},
+    keypress: { isPasted: false },
   };
 }
 
