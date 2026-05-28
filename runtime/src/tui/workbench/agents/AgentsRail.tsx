@@ -21,12 +21,12 @@ export function AgentsRail({
   const setAppState = useSetAppState();
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
-  const taskList = orderAgentTasks(Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash"));
+  const taskList = useStableAgentTasks(Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash"));
   const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
   const { selectedId, selectedIndex, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
   const selectByDelta = (delta: number) => {
     if (taskList.length === 0) return;
-    const next = Math.max(0, Math.min(taskList.length - 1, selectedIndex + delta));
+    const next = wrapIndex(selectedIndex + delta, taskList.length);
     dispatch({ type: "selectAgent", taskId: taskList[next].id });
   };
 
@@ -61,6 +61,19 @@ export function AgentsRail({
   );
 }
 
+function useStableAgentTasks(tasks: readonly any[]): readonly any[] {
+  const orderRef = React.useRef<readonly string[]>([]);
+  const ordered = React.useMemo(() => orderAgentTasks(tasks, orderRef.current), [tasks]);
+
+  React.useEffect(() => {
+    orderRef.current = ordered
+      .map((task: any) => taskIdOf(task))
+      .filter((id: string | null): id is string => id !== null);
+  }, [ordered]);
+
+  return ordered;
+}
+
 export function partitionAgentTasks(tasks: readonly any[]): {
   readonly activeTasks: readonly any[];
   readonly backgroundTasks: readonly any[];
@@ -71,8 +84,37 @@ export function partitionAgentTasks(tasks: readonly any[]): {
   };
 }
 
-export function orderAgentTasks(tasks: readonly any[]): readonly any[] {
-  return [...tasks].sort(compareAgentTasks);
+export function orderAgentTasks(
+  tasks: readonly any[],
+  previousOrder: readonly string[] = [],
+): readonly any[] {
+  const byId = new Map<string, any>();
+  const unkeyed: any[] = [];
+  for (const task of tasks) {
+    const id = taskIdOf(task);
+    if (id === null) {
+      unkeyed.push(task);
+    } else if (!byId.has(id)) {
+      byId.set(id, task);
+    }
+  }
+
+  const ordered: any[] = [];
+  const seen = new Set<string>();
+  for (const id of previousOrder) {
+    const task = byId.get(id);
+    if (!task) continue;
+    ordered.push(task);
+    seen.add(id);
+  }
+  for (const task of tasks) {
+    const id = taskIdOf(task);
+    if (id === null || seen.has(id)) continue;
+    ordered.push(task);
+    seen.add(id);
+  }
+
+  return [...ordered, ...unkeyed];
 }
 
 export function resolveAgentSelection(tasks: readonly any[], selectedId: string | null | undefined): {
@@ -94,11 +136,12 @@ export function resolveAgentSelection(tasks: readonly any[], selectedId: string 
   };
 }
 
-function compareAgentTasks(left: any, right: any): number {
-  const leftActive = isActiveTaskStatus(left?.status);
-  const rightActive = isActiveTaskStatus(right?.status);
-  if (leftActive !== rightActive) return leftActive ? -1 : 1;
-  return (right?.startTime ?? 0) - (left?.startTime ?? 0);
+function wrapIndex(index: number, length: number): number {
+  return ((index % length) + length) % length;
+}
+
+function taskIdOf(task: any): string | null {
+  return typeof task?.id === "string" ? task.id : null;
 }
 
 function isActiveTaskStatus(status: unknown): boolean {

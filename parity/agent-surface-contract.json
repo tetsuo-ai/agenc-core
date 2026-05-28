@@ -49,6 +49,10 @@
     {
       "path": "tui/src/multi_agents.rs",
       "sha256": "7de3107ec4c6d0085d34f3149e247be5edb847d40425ca703d9a7e890a4472a6"
+    },
+    {
+      "path": "tui/src/app/agent_navigation.rs",
+      "sha256": "a749009f8792c6a2363c4fa7d8b1ae8fc54cec81ddc0902df0ac655bf9647530"
     }
   ],
   "targetFiles": [
@@ -291,6 +295,7 @@
       "id": "tui-agent-workbench-e2e",
       "source": [
         "tui/src/multi_agents.rs",
+        "tui/src/app/agent_navigation.rs",
         "app-server/src/thread_status.rs",
         "core/src/agent/status.rs"
       ],
@@ -310,7 +315,8 @@
         "maps daemon agent lifecycle events into stable task rows and workbench rail entries",
         "survives late daemon completion messages after the main prompt has returned",
         "renders startup auth notices without throwing when provider credential helpers report no Anthropic or AgenC account key",
-        "keeps PTY startup, prompt visibility, idle detection, and crash detection covered by E2E scenarios"
+        "keeps PTY startup, prompt visibility, idle detection, and crash detection covered by E2E scenarios",
+        "preserves first-seen agent navigation order while keeping completed agents selectable"
       ],
       "edgeCases": [
         "a daemon completion message arriving after the prompt is visible does not crash the TUI",
@@ -319,7 +325,8 @@
         "startup status-notice filtering ignores throwing auth key lookups and keeps other notices renderable",
         "an agent with no transcript renders an empty state instead of throwing during surface selection",
         "a completed agent remains selectable in the rail after active streaming stops",
-        "rapid task-state synchronization batches keep row identity stable across running and completed statuses"
+        "rapid task-state synchronization batches keep row identity stable across running and completed statuses",
+        "agent rail next and previous navigation wraps through completed agents without resorting by status or start time"
       ],
       "tests": [
         "runtime/tests/tui/workbench/agent-surface.test.tsx",

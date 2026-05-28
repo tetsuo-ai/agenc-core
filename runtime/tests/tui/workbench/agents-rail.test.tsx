@@ -57,10 +57,10 @@ describe("AgentsRail", () => {
     expect(changes.at(-1)?.workbench.focusedPane).toBe("surface");
 
     keybindingHarness.handlers["agents:down"]?.();
-    expect(changes.at(-1)?.workbench.selectedAgentTaskId).toBe("agent-old");
+    expect(changes.at(-1)?.workbench.selectedAgentTaskId).toBe("agent-done");
 
     keybindingHarness.handlers["agents:up"]?.();
-    expect(changes.at(-1)?.workbench.selectedAgentTaskId).toBe("agent-new");
+    expect(changes.at(-1)?.workbench.selectedAgentTaskId).toBe("agent-old");
 
     keybindingHarness.handlers["agents:open"]?.();
     expect(changes.at(-1)?.workbench).toMatchObject({
@@ -73,6 +73,31 @@ describe("AgentsRail", () => {
     expect(changes.at(-1)?.tasks["agent-new"]).toMatchObject({
       status: "killed",
     });
+  });
+
+  it("wraps agent rail navigation across completed agents in first-seen order", async () => {
+    const runningOldest = agentTask("agent-old", "running", {
+      description: "old running agent",
+      startTime: 1_000,
+    });
+    const runningNewest = agentTask("agent-new", "running", {
+      description: "new running agent",
+      startTime: 2_000,
+    });
+    const completed = agentTask("agent-done", "completed", {
+      description: "done agent",
+      startTime: 3_000,
+    });
+    const { changes } = await renderAgentsRail({
+      tasks: [runningOldest, runningNewest, completed],
+      selectedAgentTaskId: "agent-old",
+    });
+
+    keybindingHarness.handlers["agents:up"]?.();
+    expect(changes.at(-1)?.workbench.selectedAgentTaskId).toBe("agent-done");
+
+    keybindingHarness.handlers["agents:down"]?.();
+    expect(changes.at(-1)?.workbench.selectedAgentTaskId).toBe("agent-new");
   });
 
   it("ignores navigation, open, and stop keybindings when there is no selected task", async () => {
@@ -217,7 +242,7 @@ describe("AgentsRail", () => {
     });
   });
 
-  it("opens the running newest agent before older completed agents after stale selection", async () => {
+  it("opens the first observed agent after stale selection", async () => {
     const changes: AppState[] = [];
     const oldAgent = {
       id: "agent-old",
@@ -265,7 +290,7 @@ describe("AgentsRail", () => {
     expect(changes.at(-1)?.workbench).toMatchObject({
       activeSurfaceMode: "agent",
       focusedPane: "surface",
-      selectedAgentTaskId: "agent-new",
+      selectedAgentTaskId: "agent-old",
     });
   });
 });
