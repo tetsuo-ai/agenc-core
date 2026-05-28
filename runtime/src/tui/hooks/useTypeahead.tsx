@@ -1483,6 +1483,11 @@ export function useTypeahead({
     void handleTab();
   }, [handleTab]);
 
+  // Handler for autocomplete:confirm - confirms the highlighted suggestion via Enter.
+  const handleAutocompleteConfirm = useCallback(() => {
+    handleEnter();
+  }, [handleEnter]);
+
   // Handler for autocomplete:dismiss - clears suggestions and prevents re-triggering
   const handleAutocompleteDismiss = useCallback(() => {
     debouncedFetchFileSuggestions.cancel();
@@ -1519,10 +1524,11 @@ export function useTypeahead({
   // Autocomplete context keybindings - only active when suggestions are visible
   const autocompleteHandlers = useMemo(() => ({
     'autocomplete:accept': handleAutocompleteAccept,
+    'autocomplete:confirm': handleAutocompleteConfirm,
     'autocomplete:dismiss': handleAutocompleteDismiss,
     'autocomplete:previous': handleAutocompletePrevious,
     'autocomplete:next': handleAutocompleteNext
-  }), [handleAutocompleteAccept, handleAutocompleteDismiss, handleAutocompletePrevious, handleAutocompleteNext]);
+  }), [handleAutocompleteAccept, handleAutocompleteConfirm, handleAutocompleteDismiss, handleAutocompletePrevious, handleAutocompleteNext]);
 
   // Register autocomplete as an overlay so CancelRequestHandler defers ESC handling
   // This ensures ESC dismisses autocomplete before canceling running tasks

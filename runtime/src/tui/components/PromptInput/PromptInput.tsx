@@ -2201,12 +2201,10 @@ function PromptInput({
     }
   }, [addNotification, onImagePaste]);
 
-  // Register chat:submit handler directly in the handler registry (not via
-  // useKeybindings) so that only the ChordInterceptor can invoke it for chord
-  // completions (e.g., "ctrl+e s"). The default Enter binding for submit is
-  // handled by TextInput directly (via onSubmit prop) and useTypeahead (for
-  // autocomplete acceptance). Using useKeybindings would cause
-  // stopImmediatePropagation on Enter, blocking autocomplete from seeing the key.
+  // Register chat:submit with the shared handler registry instead of a local
+  // useKeybindings hook. The top-level chord interceptor owns normal submit
+  // routing, while Autocomplete's higher-priority Enter binding owns suggestion
+  // confirmation whenever the picker is active.
   const keybindingContext = useOptionalKeybindingContext();
   useEffect(() => {
     if (!keybindingContext || !promptKeyboardActive) return;

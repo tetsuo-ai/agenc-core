@@ -57,6 +57,7 @@ export const KEYBINDING_ACTION_NAMES = [
   'chat:imagePaste',
   'chat:messageActions',
   'autocomplete:accept',
+  'autocomplete:confirm',
   'autocomplete:dismiss',
   'autocomplete:previous',
   'autocomplete:next',
