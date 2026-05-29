@@ -84,7 +84,6 @@
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "0.3.0",
-    "@ant/computer-use-mcp": "file:local-packages/computer-use-mcp",
     "@anthropic-ai/sandbox-runtime": "0.0.46",
     "@anthropic-ai/sdk": "^0.97.0",
     "@codemirror/state": "^6.6.0",

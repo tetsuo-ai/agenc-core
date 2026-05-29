@@ -6,7 +6,6 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
   COMMIT_ATTRIBUTION: false,
   UDS_INBOX: false,
   BG_SESSIONS: false,
-  CHICAGO_MCP: false,
   COWORKER_TYPE_TELEMETRY: false,
   MCP_SKILLS: true,
   REACTIVE_COMPACT: false,
