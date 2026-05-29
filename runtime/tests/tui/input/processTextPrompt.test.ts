@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => ({
     ...input,
   })),
   setPromptId: vi.fn(),
-  startInteractionSpan: vi.fn(),
 }))
 
 vi.mock('../../bootstrap/state.js', () => ({
@@ -36,10 +35,6 @@ vi.mock('../../bootstrap/state.js', () => ({
 
 vi.mock('../../utils/messages.js', () => ({
   createUserMessage: mocks.createUserMessage,
-}))
-
-vi.mock('../../utils/telemetry/sessionTracing.js', () => ({
-  startInteractionSpan: mocks.startInteractionSpan,
 }))
 
 vi.mock('../../utils/config.js', () => ({

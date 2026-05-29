@@ -9,15 +9,10 @@ const harness = vi.hoisted(() => ({
   getLanguageName: vi.fn(),
   logError: vi.fn(),
   sandboxEnabled: true,
-  sanitizeToolNameForAnalytics: vi.fn((toolName: string) => `safe:${toolName}`),
 }))
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../services/analytics/metadata.js', () => ({
-  sanitizeToolNameForAnalytics: harness.sanitizeToolNameForAnalytics,
 }))
 
 vi.mock('../../../bootstrap/state.js', () => ({
@@ -106,7 +101,6 @@ describe('permissionLogging coverage', () => {
     harness.getLanguageName.mockResolvedValue('TypeScript')
     harness.logError.mockClear()
     harness.sandboxEnabled = true
-    harness.sanitizeToolNameForAnalytics.mockClear()
     vi.spyOn(Date, 'now').mockReturnValue(2_000)
   })
 
