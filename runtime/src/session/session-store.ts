@@ -1158,21 +1158,33 @@ export class SessionStore {
     this.pending = [];
     this.batchOpenedAtMs = null;
 
-    const routeToDegraded = (err: unknown) => {
+    // `requeue` distinguishes the two failure shapes (#11):
+    //   - writeSync itself threw (ENOSPC/EROFS/…): the bytes never
+    //     reached the file, so the items must be re-queued into the
+    //     degraded ring buffer for a later re-append (requeue=true).
+    //   - writeSync succeeded but fsync (+ its I-38 retry) failed: the
+    //     bytes are ALREADY appended to the rollout on disk. Re-queueing
+    //     them would re-serialize + re-append the same rows on degraded
+    //     flush, bypassing the append()-level seq/UUID dedup and landing
+    //     duplicates in the JSONL (double on resume). So we enter
+    //     degraded mode WITHOUT re-queueing (requeue=false).
+    const routeToDegraded = (err: unknown, requeue: boolean) => {
       if (isDegradedErrno(err)) {
-        // I-12 / I-38 path: route the batch items into the degraded
-        // ring buffer. UUID dedup protects against re-play duplicating
-        // any rows the kernel did eventually persist despite the
-        // fsync failure.
+        // I-12 / I-38 path: enter degraded so subsequent appends buffer
+        // instead of touching the sick disk.
         this.degraded.enterDegraded(
           `${(err as { code?: string }).code} during append`,
         );
-        for (const item of toWrite) this.degraded.append(item);
+        if (requeue) {
+          for (const item of toWrite) this.degraded.append(item);
+        }
         this.emitDiagnostic({
           at: Date.now(),
           level: "error",
           cause: "rollout_degraded",
-          message: `${(err as { code?: string }).code ?? "unknown"} during append — ${toWrite.length} events queued in degraded ring buffer`,
+          message: requeue
+            ? `${(err as { code?: string }).code ?? "unknown"} during append — ${toWrite.length} events queued in degraded ring buffer`
+            : `${(err as { code?: string }).code ?? "unknown"} during fsync — ${toWrite.length} events already on disk, entering degraded mode without re-queue`,
         });
         return true;
       }
@@ -1182,16 +1194,19 @@ export class SessionStore {
     try {
       if (durable) {
         // I-38: async retry on fsync failure routes to degraded via
-        // the callback, so we don't block the event loop here.
+        // the callback. The bytes were already writeSync'd by this
+        // point, so we MUST NOT re-queue them (#11) — only enter
+        // degraded mode.
         this.writeBytesWithFsync(lines, (err) => {
-          routeToDegraded(err);
+          routeToDegraded(err, /*requeue*/ false);
         });
       } else {
         this.writeBytesAppendOnly(lines);
       }
       this.fileSize += Buffer.byteLength(lines, "utf8");
     } catch (err) {
-      if (!routeToDegraded(err)) {
+      // writeSync threw — bytes never landed; re-queue for re-append.
+      if (!routeToDegraded(err, /*requeue*/ true)) {
         throw err;
       }
     }
@@ -1381,12 +1396,15 @@ export class SessionStore {
       type: "session_meta",
       payload: this.lastSessionMeta,
     };
-    const routeToDegraded = (err: unknown) => {
+    // See #11: writeSync-succeeded-but-fsync-failed leaves the bytes
+    // already on disk, so the fsync-retry path enters degraded without
+    // re-queueing; only a writeSync throw (bytes never landed) re-queues.
+    const routeToDegraded = (err: unknown, requeue: boolean) => {
       if (isDegradedErrno(err)) {
         this.degraded.enterDegraded(
           `${(err as { code?: string }).code} during metadata re-append`,
         );
-        this.degraded.append(item);
+        if (requeue) this.degraded.append(item);
         return true;
       }
       return false;
@@ -1394,11 +1412,11 @@ export class SessionStore {
     try {
       const line = serializeRolloutItem(item);
       this.writeBytesWithFsync(line, (err) => {
-        routeToDegraded(err);
+        routeToDegraded(err, /*requeue*/ false);
       });
       this.fileSize += Buffer.byteLength(line, "utf8");
     } catch (err) {
-      if (!routeToDegraded(err)) throw err;
+      if (!routeToDegraded(err, /*requeue*/ true)) throw err;
     }
   }
 
@@ -1415,18 +1433,25 @@ export class SessionStore {
       this.writeBytesWithFsync(lines, (err) => {
         retryFailure = err;
       });
-      // writeSync succeeded; the bytes are at least in the page cache,
-      // so bump fileSize regardless of fsync retry outcome.
+      // writeSync succeeded → the bytes are now appended to the rollout
+      // file on disk (O_APPEND). Even if the subsequent fsync (+ I-38
+      // retry) fails, these items are physically written. Reporting
+      // drain success (true) removes them from the degraded buffer so a
+      // later retry does NOT re-serialize + re-append the same rows,
+      // which would duplicate them in the JSONL (#11). The fsync failure
+      // still re-trips degraded mode via the retry callback, but without
+      // re-queueing these already-persisted items.
       this.fileSize += Buffer.byteLength(lines, "utf8");
-      // If the sync fsync failed and scheduled an async retry, wait
-      // for it to settle so we accurately report drain success/failure
-      // back to the DegradedStore.
+      // Settle any deferred I-38 fsync retry before returning so the
+      // fsync_failed / fsync_retry_succeeded diagnostics are observable
+      // to callers (and tests) at the point the drain reports success.
       await this.awaitPendingFsyncRetries();
-      if (retryFailure !== undefined) {
-        return !isDegradedErrno(retryFailure);
-      }
+      void retryFailure;
       return true;
     } catch (err) {
+      // writeSync threw — the bytes never reached the file. Keep the
+      // items buffered (return false) so they are retried, unless the
+      // error is non-degraded (then drop, as before).
       return !isDegradedErrno(err);
     }
   }

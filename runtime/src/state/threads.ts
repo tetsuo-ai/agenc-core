@@ -158,20 +158,93 @@ export class StateThreadRepository {
       .map((row: ThreadRow) => rowToThread(row));
   }
 
+  /**
+   * Returns the recorded backfill receipt for a rollout source file, or
+   * `undefined` if the file has never been indexed. Used to decide whether a
+   * re-index can be skipped (unchanged file) or reduced to an incremental
+   * append (file grew) instead of a full DELETE-all + re-INSERT-all.
+   */
+  getBackfillFile(sourcePath: string): BackfillFileReceipt | undefined {
+    const row = this.driver
+      .prepareState<[string], BackfillFileRow>(
+        `SELECT mtime_ms, size, sha256, line_count, item_count
+         FROM backfill_files
+         WHERE source_path = ?`,
+      )
+      .get(sourcePath);
+    if (row === undefined) return undefined;
+    return {
+      mtimeMs: row.mtime_ms,
+      size: row.size,
+      sha256: row.sha256,
+      lineCount: row.line_count,
+      itemCount: row.item_count,
+    };
+  }
+
+  /**
+   * Incrementally indexes lines appended to an already-indexed rollout file.
+   * Only the supplied (new) items are INSERTed; prior rows are left intact.
+   * The `backfill_files` / `rollout_receipts` bookkeeping is advanced to the
+   * new file size/line count so the next append can also be incremental.
+   *
+   * Callers must guarantee `items` are strictly new lines (line numbers beyond
+   * the previously recorded `line_count`). Use `replaceRolloutItems` for the
+   * full reconcile path when the prefix may have changed.
+   */
+  appendRolloutItems(params: {
+    readonly threadId: ThreadId;
+    readonly sourcePath: string;
+    readonly items: ReadonlyArray<RolloutItemRow>;
+    readonly mtimeMs: number;
+    readonly size: number;
+    readonly sha256: string;
+    readonly lineCount: number;
+    readonly totalItemCount: number;
+  }): void {
+    this.driver.transaction(() => {
+      const insert = this.driver.prepareState(
+        `INSERT INTO thread_rollout_items (
+          thread_id, source_path, line_number, byte_offset, item_index,
+          item_type, event_version, event_id, event_seq, payload_json, line_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const item of params.items) {
+        insert.run(
+          params.threadId,
+          params.sourcePath,
+          item.lineNumber,
+          item.byteOffset,
+          item.itemIndex,
+          item.itemType,
+          item.eventVersion ?? null,
+          item.eventId ?? null,
+          item.eventSeq ?? null,
+          item.payloadJson,
+          item.lineHash,
+        );
+      }
+      this.writeBackfillReceipts({
+        threadId: params.threadId,
+        sourcePath: params.sourcePath,
+        mtimeMs: params.mtimeMs,
+        size: params.size,
+        // Change-detection digest only. On the append path this is the prior
+        // full-file hash carried forward, so it goes stale vs the on-disk file
+        // until the next full reconcile re-establishes it. Skip decisions rely
+        // on mtime+size (authoritative), not this hash, so it is intentionally
+        // not recomputed per append (doing so would defeat the perf fix).
+        sha256: params.sha256,
+        lineCount: params.lineCount,
+        itemCount: params.totalItemCount,
+      });
+    });
+  }
+
   replaceRolloutItems(params: {
     readonly threadId: ThreadId;
     readonly sourcePath: string;
-    readonly items: ReadonlyArray<{
-      readonly lineNumber: number;
-      readonly byteOffset: number;
-      readonly itemIndex: number;
-      readonly itemType: string;
-      readonly eventVersion?: number;
-      readonly eventId?: string;
-      readonly eventSeq?: number;
-      readonly payloadJson: string;
-      readonly lineHash: string;
-    }>;
+    readonly items: ReadonlyArray<RolloutItemRow>;
     readonly mtimeMs: number;
     readonly size: number;
     readonly sha256: string;
@@ -204,54 +277,104 @@ export class StateThreadRepository {
           item.lineHash,
         );
       }
-      this.driver
-        .prepareState(
-          `INSERT INTO backfill_files (
-            source_path, thread_id, mtime_ms, size, sha256, line_count, item_count
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(source_path) DO UPDATE SET
-            thread_id = excluded.thread_id,
-            mtime_ms = excluded.mtime_ms,
-            size = excluded.size,
-            sha256 = excluded.sha256,
-            line_count = excluded.line_count,
-            item_count = excluded.item_count,
-            imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
-        )
-        .run(
-          params.sourcePath,
-          params.threadId,
-          params.mtimeMs,
-          params.size,
-          params.sha256,
-          params.lineCount,
-          params.items.length,
-        );
-      this.driver
-        .prepareState(
-          `INSERT INTO rollout_receipts (
-            thread_id, source_path, source_mtime_ms, source_size,
-            source_sha256, imported_line_count, imported_item_count
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(thread_id, source_path) DO UPDATE SET
-            source_mtime_ms = excluded.source_mtime_ms,
-            source_size = excluded.source_size,
-            source_sha256 = excluded.source_sha256,
-            imported_line_count = excluded.imported_line_count,
-            imported_item_count = excluded.imported_item_count,
-            imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
-        )
-        .run(
-          params.threadId,
-          params.sourcePath,
-          params.mtimeMs,
-          params.size,
-          params.sha256,
-          params.lineCount,
-          params.items.length,
-        );
+      this.writeBackfillReceipts({
+        threadId: params.threadId,
+        sourcePath: params.sourcePath,
+        mtimeMs: params.mtimeMs,
+        size: params.size,
+        sha256: params.sha256,
+        lineCount: params.lineCount,
+        itemCount: params.items.length,
+      });
     });
   }
+
+  private writeBackfillReceipts(params: {
+    readonly threadId: ThreadId;
+    readonly sourcePath: string;
+    readonly mtimeMs: number;
+    readonly size: number;
+    readonly sha256: string;
+    readonly lineCount: number;
+    readonly itemCount: number;
+  }): void {
+    this.driver
+      .prepareState(
+        `INSERT INTO backfill_files (
+          source_path, thread_id, mtime_ms, size, sha256, line_count, item_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_path) DO UPDATE SET
+          thread_id = excluded.thread_id,
+          mtime_ms = excluded.mtime_ms,
+          size = excluded.size,
+          sha256 = excluded.sha256,
+          line_count = excluded.line_count,
+          item_count = excluded.item_count,
+          imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+      )
+      .run(
+        params.sourcePath,
+        params.threadId,
+        params.mtimeMs,
+        params.size,
+        params.sha256,
+        params.lineCount,
+        params.itemCount,
+      );
+    this.driver
+      .prepareState(
+        `INSERT INTO rollout_receipts (
+          thread_id, source_path, source_mtime_ms, source_size,
+          source_sha256, imported_line_count, imported_item_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id, source_path) DO UPDATE SET
+          source_mtime_ms = excluded.source_mtime_ms,
+          source_size = excluded.source_size,
+          source_sha256 = excluded.source_sha256,
+          imported_line_count = excluded.imported_line_count,
+          imported_item_count = excluded.imported_item_count,
+          imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+      )
+      .run(
+        params.threadId,
+        params.sourcePath,
+        params.mtimeMs,
+        params.size,
+        params.sha256,
+        params.lineCount,
+        params.itemCount,
+      );
+  }
+}
+
+/** Receipt of a previously indexed rollout source file. */
+export interface BackfillFileReceipt {
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly sha256: string;
+  readonly lineCount: number;
+  readonly itemCount: number;
+}
+
+interface BackfillFileRow {
+  readonly mtime_ms: number;
+  readonly size: number;
+  readonly sha256: string;
+  readonly line_count: number;
+  readonly item_count: number;
+}
+
+/** One indexed rollout line, ready to INSERT into `thread_rollout_items`. */
+export interface RolloutItemRow {
+  readonly lineNumber: number;
+  readonly byteOffset: number;
+  readonly itemIndex: number;
+  readonly itemType: string;
+  readonly eventVersion?: number;
+  readonly eventId?: string;
+  readonly eventSeq?: number;
+  readonly payloadJson: string;
+  readonly lineHash: string;
 }
 
 function rowToThread(row: ThreadRow): IndexedThreadRecord {

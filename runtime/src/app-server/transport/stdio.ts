@@ -11,9 +11,20 @@
  *     daemon-server concerns owned by later F-03 rows.
  */
 
+import { Buffer } from "node:buffer";
 import { createInterface, type Interface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
+
+/**
+ * Default upper bound on a single unterminated input line, matching the
+ * websocket transport's default max payload. A peer that streams bytes
+ * without ever emitting a newline would otherwise grow the readline
+ * internal buffer (and daemon memory) unbounded; the transport tracks the
+ * bytes seen since the last newline and tears the connection down once this
+ * cap is exceeded, treating it as a fatal framing violation.
+ */
+export const AGENC_STDIO_DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
 
 export interface AgenCStdioTransportOptions {
   readonly input: Readable;
@@ -21,11 +32,18 @@ export interface AgenCStdioTransportOptions {
   readonly onMessage: (message: JsonObject) => void | Promise<void>;
   readonly onError?: (error: Error, line: string) => void;
   readonly onClose?: () => void;
+  readonly maxLineBytes?: number;
 }
 
 export class AgenCStdioTransport {
   readonly #options: AgenCStdioTransportOptions;
   readonly #pendingMessages = new Set<Promise<void>>();
+  // Per-connection dispatch is serialized on this chain so that pipelined,
+  // order-dependent requests on a single connection are handed to
+  // onMessage in arrival order (rather than racing as fire-and-forget
+  // promises). Cross-connection concurrency is preserved because each
+  // transport instance owns its own chain.
+  #dispatchChain: Promise<void> = Promise.resolve();
   #reader: Interface | null = null;
 
   constructor(options: AgenCStdioTransportOptions) {
@@ -44,10 +62,39 @@ export class AgenCStdioTransport {
     });
     this.#reader = reader;
 
+    // Node's readline does not enforce a maximum line length, so a peer that
+    // streams bytes without ever emitting a newline would grow the internal
+    // line buffer (and daemon memory) unbounded. Track the number of bytes
+    // accumulated since the last newline and tear the connection down once it
+    // exceeds the cap, mirroring the websocket transport's maxPayload bound.
+    const maxLineBytes =
+      this.#options.maxLineBytes ?? AGENC_STDIO_DEFAULT_MAX_LINE_BYTES;
+    let unterminatedBytes = 0;
+    const onData = (chunk: Buffer | string): void => {
+      const data = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+      const lastNewline = data.lastIndexOf(0x0a);
+      if (lastNewline === -1) {
+        unterminatedBytes += data.length;
+      } else {
+        unterminatedBytes = data.length - lastNewline - 1;
+      }
+      if (unterminatedBytes > maxLineBytes) {
+        this.#options.onError?.(
+          new RangeError(
+            `AgenC stdio transport line exceeded ${maxLineBytes} bytes without a newline`,
+          ),
+          "",
+        );
+        this.#options.input.destroy();
+      }
+    };
+    this.#options.input.on("data", onData);
+
     reader.on("line", (line) => {
       this.#handleLine(line);
     });
     reader.once("close", () => {
+      this.#options.input.off("data", onData);
       this.#reader = null;
       this.#options.onClose?.();
     });
@@ -74,11 +121,15 @@ export class AgenCStdioTransport {
       return;
     }
 
-    const pending = Promise.resolve(this.#options.onMessage(message)).catch(
-      (error) => {
+    // Chain dispatch on a per-connection promise so pipelined,
+    // order-dependent requests are handed to onMessage in arrival order
+    // instead of racing. A handler rejection is caught here so it cannot
+    // break the chain for subsequent messages.
+    const pending = (this.#dispatchChain = this.#dispatchChain.then(() =>
+      Promise.resolve(this.#options.onMessage(message)).catch((error) => {
         this.#options.onError?.(asError(error), line);
-      },
-    );
+      }),
+    ));
     this.#pendingMessages.add(pending);
     pending.finally(() => {
       this.#pendingMessages.delete(pending);

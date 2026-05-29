@@ -783,6 +783,73 @@ describe("session-store", () => {
     }
   });
 
+  test("#11 durable fsync-failure does not duplicate the row after degraded flush", async () => {
+    const store = new SessionStore({
+      cwd: "/home/test-fsync-dup",
+      sessionId: "sess-fsync-dup",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-fsync-dup",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-fsync-dup",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    try {
+      // Fail every fsync so the durable append's writeSync lands the row
+      // on disk but both the initial fsync and the I-38 retry trip.
+      store.setFsyncImplForTest(() => {
+        const err = new Error("simulated persistent fsync failure") as NodeJS.ErrnoException;
+        err.code = "EIO";
+        throw err;
+      });
+
+      store.append(
+        {
+          id: "durable-once",
+          seq: 1,
+          msg: { type: "turn_complete", payload: { turnId: "t-once" } },
+        },
+        { durable: true },
+      );
+
+      await (store as unknown as {
+        awaitPendingFsyncRetries(): Promise<void>;
+      }).awaitPendingFsyncRetries();
+
+      // writeSync persisted the row even though fsync failed; we entered
+      // degraded mode.
+      expect(store.isDegraded).toBe(true);
+
+      const countOccurrences = () =>
+        readFileSync(store.rolloutPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { payload?: { id?: string } })
+          .filter((line) => line.payload?.id === "durable-once").length;
+
+      // Already exactly once on disk (the original writeSync).
+      expect(countOccurrences()).toBe(1);
+
+      // Restore fsync and drive the degraded flush. The pre-fix bug
+      // re-queued the already-written row into the degraded buffer, so
+      // this flush re-appended it — producing two copies on disk (and a
+      // double on resume/reduce). With the fix the degraded buffer is
+      // empty, so the flush is a no-op and the row stays exactly once.
+      store.setFsyncImplForTest(fsyncSync);
+      await (store as unknown as {
+        degraded: { tryFlush(): Promise<boolean> };
+      }).degraded.tryFlush();
+
+      expect(countOccurrences()).toBe(1);
+    } finally {
+      store.setFsyncImplForTest(fsyncSync);
+      store.close();
+    }
+  });
+
   test("I-24 truncateCorruptTail removes partial trailing line", () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-corrupt-"));
     try {

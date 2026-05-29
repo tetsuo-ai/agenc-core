@@ -21,13 +21,14 @@ import type {
 import type { Tool } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
-import { isValidPermissionDefaultMode } from "../config/schema.js";
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tools.js";
-import { ResilientMCPBridge } from "./resilient-client.js";
+import {
+  ResilientMCPBridge,
+  toToolCatalogPolicyConfig,
+} from "./resilient-client.js";
 import type {
   MCPCallObserver,
-  MCPToolCatalogPolicyConfig,
   MCPToolBridgePermissionOptions,
 } from "./tools.js";
 import {
@@ -69,41 +70,6 @@ interface StartupGate {
 export type MCPConnectionState =
   | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
   | { readonly type: "failed"; readonly error?: string };
-
-function toToolCatalogPolicyConfig(
-  config: MCPServerConfig,
-): MCPToolCatalogPolicyConfig | undefined {
-  const typed = config as MCPServerConfig & MCPToolCatalogPolicyConfig;
-  const allowedTools = typed.allowedTools ?? config.enabled_tools;
-  const deniedTools = typed.deniedTools ?? config.disabled_tools;
-  const defaultToolsApprovalMode = isValidPermissionDefaultMode(config.default_tools_approval_mode)
-    ? config.default_tools_approval_mode
-    : undefined;
-  if (
-    !typed.riskControls &&
-    !typed.supplyChain &&
-    !typed.pinnedCatalogSha256 &&
-    allowedTools === undefined &&
-    deniedTools === undefined &&
-    defaultToolsApprovalMode === undefined &&
-    config.tools === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(allowedTools !== undefined ? { allowedTools } : {}),
-    ...(deniedTools !== undefined ? { deniedTools } : {}),
-    ...(typed.pinnedCatalogSha256 !== undefined
-      ? { pinnedCatalogSha256: typed.pinnedCatalogSha256 }
-      : {}),
-    ...(defaultToolsApprovalMode !== undefined
-      ? { defaultToolsApprovalMode }
-      : {}),
-    ...(config.tools !== undefined ? { tools: config.tools } : {}),
-    riskControls: typed.riskControls,
-    supplyChain: typed.supplyChain,
-  };
-}
 
 function toScopedMcpServerConfig(
   config: MCPServerConfig,
@@ -782,6 +748,14 @@ export class MCPManager {
         {
           ...(this.permissionOptions !== undefined
             ? { permissions: this.permissionOptions }
+            : {}),
+          // Telemetry parity: forward the same call observer the initial
+          // `createToolBridge` above received so reconnected bridges keep
+          // emitting `mcp_tool_call_*` events. `serverOrigin` is not derived
+          // here yet; when it is, pass it both here and to `createToolBridge`
+          // so the two connect paths stay in lockstep.
+          ...(this.callObserver !== undefined
+            ? { callObserver: this.callObserver }
             : {}),
         },
       );

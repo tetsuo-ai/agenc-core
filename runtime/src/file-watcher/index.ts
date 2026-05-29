@@ -250,7 +250,8 @@ interface FileWatcherInner {
 
 interface WatchBackend {
   readonly recursiveFallback: boolean;
-  readonly watchers: readonly FSWatcher[];
+  /** Live fs.watch handles keyed by the directory/path each one observes. */
+  readonly watchers: Map<string, FSWatcher>;
 }
 
 const defaultWatchFactory: FileWatcherWatchFactory = (pathToWatch, options, listener) =>
@@ -374,7 +375,7 @@ export class FileWatcher {
 
     if (this.#inner !== null) {
       for (const backend of this.#inner.watchers.values()) {
-        for (const watcher of backend.watchers) {
+        for (const watcher of backend.watchers.values()) {
           watcher.close();
         }
       }
@@ -384,7 +385,7 @@ export class FileWatcher {
   }
 
   liveWatcherCountForTest(pathToWatch: string): number {
-    return this.#inner?.watchers.get(pathToWatch)?.watchers.length ?? 0;
+    return this.#inner?.watchers.get(pathToWatch)?.watchers.size ?? 0;
   }
 
   async sendPathsForTest(paths: readonly string[]): Promise<void> {
@@ -472,27 +473,40 @@ export class FileWatcher {
   private closeBackend(pathToWatch: string): void {
     const backend = this.#inner?.watchers.get(pathToWatch);
     if (backend === undefined) return;
-    for (const watcher of backend.watchers) {
+    for (const watcher of backend.watchers.values()) {
       watcher.close();
     }
     this.#inner?.watchers.delete(pathToWatch);
     this.#inner?.watchedPaths.delete(pathToWatch);
   }
 
-  private replaceBackend(pathToWatch: string, mode: WatchMode, backend: WatchBackend): void {
-    this.closeBackend(pathToWatch);
-    this.#inner?.watchers.set(pathToWatch, backend);
-    this.#inner?.watchedPaths.set(pathToWatch, mode);
-  }
-
-  private refreshRecursiveFallback(pathToWatch: string): void {
+  /**
+   * Incrementally reconcile the recursive-fallback backend with the on-disk
+   * subtree: add a watcher for any newly-created directory and close watchers
+   * for directories that disappeared. This avoids tearing down and re-walking
+   * the whole subtree (an fd/CPU storm) on every filesystem event.
+   */
+  private reconcileRecursiveFallback(pathToWatch: string): void {
     if (this.#inner === null) return;
     const existing = this.#inner.watchers.get(pathToWatch);
     if (existing === undefined || !existing.recursiveFallback) return;
 
-    const refreshed = this.createRecursiveFallbackBackend(pathToWatch);
-    if (refreshed !== null) {
-      this.replaceBackend(pathToWatch, "recursive", refreshed);
+    const desired = new Set(recursiveDirectories(pathToWatch));
+    if (desired.size === 0) return;
+
+    // Drop watchers whose directory no longer exists in the subtree.
+    for (const [dir, watcher] of existing.watchers) {
+      if (!desired.has(dir)) {
+        watcher.close();
+        existing.watchers.delete(dir);
+      }
+    }
+
+    // Add watchers for directories that appeared since the last reconcile.
+    for (const dir of desired) {
+      if (existing.watchers.has(dir)) continue;
+      const watcher = this.createSingleFsWatcher(dir, false, pathToWatch, true);
+      if (watcher !== null) existing.watchers.set(dir, watcher);
     }
   }
 
@@ -503,9 +517,11 @@ export class FileWatcher {
     recursiveFallback: boolean,
   ): FSWatcher | null {
     try {
-      const watcher = this.#watchFactory(pathToWatch, { recursive }, (_eventType, filename) => {
+      const watcher = this.#watchFactory(pathToWatch, { recursive }, (eventType, filename) => {
         const eventPath = filename === null ? pathToWatch : path.join(pathToWatch, filename.toString());
-        if (recursiveFallback) this.refreshRecursiveFallback(eventRoot);
+        // Only directory create/remove (surfaced as "rename") can change the
+        // set of directories we must watch; plain "change" events never do.
+        if (recursiveFallback && eventType === "rename") this.reconcileRecursiveFallback(eventRoot);
         void this.notifySubscribers([eventPath]);
       });
       watcher.on("error", () => {
@@ -523,29 +539,30 @@ export class FileWatcher {
     const directories = recursiveDirectories(pathToWatch);
     if (directories.length === 0) {
       const watcher = this.createSingleFsWatcher(pathToWatch, false, pathToWatch, false);
-      return watcher === null ? null : { recursiveFallback: false, watchers: [watcher] };
+      return watcher === null ? null : { recursiveFallback: false, watchers: singleWatcherMap(pathToWatch, watcher) };
     }
 
-    const watchers: FSWatcher[] = [];
+    const watchers = new Map<string, FSWatcher>();
     for (const dir of directories) {
+      if (watchers.has(dir)) continue;
       const watcher = this.createSingleFsWatcher(dir, false, pathToWatch, true);
-      if (watcher !== null) watchers.push(watcher);
+      if (watcher !== null) watchers.set(dir, watcher);
     }
 
-    return watchers.length === 0 ? null : { recursiveFallback: true, watchers };
+    return watchers.size === 0 ? null : { recursiveFallback: true, watchers };
   }
 
   private createFsWatcher(pathToWatch: string, mode: WatchMode): WatchBackend | null {
     if (mode === "recursive") {
       const nativeRecursive = this.createSingleFsWatcher(pathToWatch, true, pathToWatch, false);
       if (nativeRecursive !== null) {
-        return { recursiveFallback: false, watchers: [nativeRecursive] };
+        return { recursiveFallback: false, watchers: singleWatcherMap(pathToWatch, nativeRecursive) };
       }
       return this.createRecursiveFallbackBackend(pathToWatch);
     }
 
     const watcher = this.createSingleFsWatcher(pathToWatch, false, pathToWatch, false);
-    return watcher === null ? null : { recursiveFallback: false, watchers: [watcher] };
+    return watcher === null ? null : { recursiveFallback: false, watchers: singleWatcherMap(pathToWatch, watcher) };
   }
 
   private decrementPathRef(actual: WatchPath, amount: number): void {
@@ -778,6 +795,10 @@ function recursiveDirectories(root: string): string[] {
     }
   }
   return directories;
+}
+
+function singleWatcherMap(pathToWatch: string, watcher: FSWatcher): Map<string, FSWatcher> {
+  return new Map<string, FSWatcher>([[pathToWatch, watcher]]);
 }
 
 function sleep(ms: number): Promise<void> {

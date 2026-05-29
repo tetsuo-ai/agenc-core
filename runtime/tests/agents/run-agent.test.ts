@@ -53,7 +53,11 @@ import type {
 import type { ToolRegistry } from "../tool-registry.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ALLOWED_ROOTS_SIG_ARG,
   SESSION_ID_ARG,
+  signAllowedRoots,
+  verifyAllowedRoots,
+  withSignedAllowedRoots,
 } from "../tools/system/filesystem.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
@@ -772,6 +776,124 @@ describe("runAgent", () => {
     expect(parsed.value).toBe("hello");
   });
 
+  it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {
+    // SECURITY (audit #1/#2/#4): a child model that emits
+    // `__agencSessionAllowedRoots:["/"]` must NOT have it folded into the
+    // child's allowed roots. The runtime injects only the worktree root.
+    const execute = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({
+          content: JSON.stringify({ ok: true }),
+          isError: false,
+        }),
+      },
+      {
+        childConversationId: "child-123",
+        worktree: {
+          path: "/tmp/subagent-wt",
+          branch: "worktree-child",
+          gitRoot: "/repo",
+          created: false,
+        },
+      },
+    );
+
+    await registry.tools[0]!.execute({
+      value: "hello",
+      // Model-controlled injection attempt:
+      [SESSION_ALLOWED_ROOTS_ARG]: ["/"],
+      [SESSION_ID_ARG]: "attacker-session",
+      __agencHome: "/etc",
+    });
+
+    expect(execute).toHaveBeenCalledOnce();
+    const parsed = execute.mock.calls[0]![0] as Record<string, unknown>;
+    // The model's "/" root is stripped; only the runtime worktree remains.
+    expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual(["/tmp/subagent-wt"]);
+    // The runtime's own session id wins, not the model-supplied one.
+    expect(parsed[SESSION_ID_ARG]).toBe("child-123");
+    // Arbitrary model `__agenc*` keys never reach the tool.
+    expect(parsed.__agencHome).toBeUndefined();
+    expect(parsed.value).toBe("hello");
+  });
+
+  it("strips model-supplied __agenc* keys on fallback dispatch before injection", async () => {
+    const dispatch = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [],
+        toLLMTools: () => [
+          {
+            type: "function",
+            function: {
+              name: "VirtualTool",
+              description: "virtual",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        dispatch,
+      },
+      {
+        childConversationId: "child-123",
+        worktree: {
+          path: "/tmp/subagent-wt",
+          branch: "worktree-child",
+          gitRoot: "/repo",
+          created: false,
+        },
+      },
+    );
+
+    await registry.dispatch({
+      id: "call-virtual",
+      name: "VirtualTool",
+      arguments: JSON.stringify({
+        value: 1,
+        [SESSION_ALLOWED_ROOTS_ARG]: ["/"],
+      }),
+    });
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    const forwarded = dispatch.mock.calls[0]![0] as {
+      readonly arguments: string;
+    };
+    expect(JSON.parse(forwarded.arguments)).toEqual({
+      value: 1,
+      // Model's "/" stripped; runtime worktree injected and HMAC-signed.
+      __agencSessionAllowedRoots: ["/tmp/subagent-wt"],
+      __agencSessionAllowedRootsSig: signAllowedRoots(["/tmp/subagent-wt"]),
+      __agencSessionId: "child-123",
+    });
+    // The signed channel verifies and the model's "/" never enters it.
+    const forwardedArgs = JSON.parse(forwarded.arguments) as Record<
+      string,
+      unknown
+    >;
+    expect(
+      verifyAllowedRoots(
+        forwardedArgs[SESSION_ALLOWED_ROOTS_ARG],
+        forwardedArgs[SESSION_ALLOWED_ROOTS_SIG_ARG],
+      ),
+    ).toEqual(["/tmp/subagent-wt"]);
+  });
+
   it("layers child tool policy before wrapped child tool execution", async () => {
     const execute = vi.fn(async () => ({
       content: JSON.stringify({ ok: true }),
@@ -803,11 +925,13 @@ describe("runAgent", () => {
         },
         childToolPolicy: (_tool, input) => ({
           behavior: "allow",
-          updatedInput: {
-            ...input,
-            file_path: "/tmp/memory/feedback.md",
-            [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/memory"],
-          },
+          // Real policies sign their injected roots via
+          // withSignedAllowedRoots; the run-loop then unions + re-signs
+          // alongside the worktree root.
+          updatedInput: withSignedAllowedRoots(
+            { ...input, file_path: "/tmp/memory/feedback.md" },
+            ["/tmp/memory"],
+          ),
         }),
       },
     );
@@ -817,10 +941,17 @@ describe("runAgent", () => {
     expect(execute).toHaveBeenCalledOnce();
     const parsed = execute.mock.calls[0]![0] as Record<string, unknown>;
     expect(parsed.file_path).toBe("/tmp/memory/feedback.md");
+    // Canonical (sorted) union of the signed policy root and worktree root.
     expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual([
       "/tmp/memory",
       "/tmp/subagent-wt",
     ]);
+    expect(
+      verifyAllowedRoots(
+        parsed[SESSION_ALLOWED_ROOTS_ARG],
+        parsed[SESSION_ALLOWED_ROOTS_SIG_ARG],
+      ),
+    ).toEqual(["/tmp/memory", "/tmp/subagent-wt"]);
     expect(parsed[SESSION_ID_ARG]).toBe("child-123");
   });
 

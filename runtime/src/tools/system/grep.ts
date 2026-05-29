@@ -291,6 +291,13 @@ async function resolveSearchPath(params: {
   readonly config: GrepToolConfig;
   readonly explicitPath?: string;
 }): Promise<ResolvedTarget | { error: string }> {
+  // SECURITY: `params.config.allowedPaths` is the TRUSTED closure scope.
+  // `resolveToolAllowedPaths` only folds in runtime-injected
+  // `__agencSessionAllowedRoots` (e.g. the worktree path); model-supplied
+  // `__agenc*` keys are stripped at the dispatch boundary (router.ts)
+  // before reaching this tool. The candidate search path is re-validated
+  // against this set via `safePath` below, so a model cannot grep outside
+  // trusted roots.
   const allowedPaths = resolveToolAllowedPaths(
     params.config.allowedPaths,
     params.args,

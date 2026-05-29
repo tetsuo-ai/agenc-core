@@ -46,8 +46,8 @@ import {
   type ToolRecoveryCategory,
 } from "./_deps/tools-types.js";
 import {
-  SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
+  withSignedAllowedRoots,
 } from "./_deps/filesystem-args.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
@@ -1165,7 +1165,9 @@ export function buildFilteredRegistry(
           isError: true,
         };
       }
-      const parsedArgs = parseResult.args;
+      // SECURITY: strip model-supplied `__agenc*` keys at the child
+      // tool-call boundary, before any policy/injection runs.
+      const parsedArgs = stripModelSuppliedChildArgs(parseResult.args);
       const wrappedTool = wrappedByName.get(toolCall.name);
       if (wrappedTool) {
         const result = await wrappedTool.execute(parsedArgs);
@@ -1311,6 +1313,38 @@ function formatToolArgumentsParseError(
   ].join("\n");
 }
 
+/**
+ * Drop every `__agenc*` key from a model-supplied child tool-call args
+ * object.
+ *
+ * SECURITY: `__agenc*` keys (`__agencSessionAllowedRoots`,
+ * `__agencSessionId`, …) are a TRUSTED INTERNAL channel the runtime uses
+ * to scope a child agent's filesystem access. A child model that emits
+ * `__agencSessionAllowedRoots:["/"]` could otherwise widen its own
+ * allowed roots and escape its worktree (audit #1/#2/#4). We strip these
+ * from the raw model args BEFORE the child-tool policy runs, so the only
+ * `__agenc*` values that survive are runtime/policy-injected. Returns the
+ * input untouched when there is nothing to strip.
+ */
+function stripModelSuppliedChildArgs(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  let needsStrip = false;
+  for (const key of Object.keys(args)) {
+    if (key.startsWith("__agenc")) {
+      needsStrip = true;
+      break;
+    }
+  }
+  if (!needsStrip) return args;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (key.startsWith("__agenc")) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function injectChildToolArgs(
   parsedArgs: Record<string, unknown>,
   toolName: string,
@@ -1319,25 +1353,21 @@ function injectChildToolArgs(
     readonly worktree?: WorktreeHandle;
   },
 ): Record<string, unknown> {
-  const injectedArgs: Record<string, unknown> = {
+  // NOTE: model-supplied `__agenc*` keys are stripped UPSTREAM
+  // (`stripModelSuppliedChildArgs`, applied to the raw model tool-call
+  // args before `applyChildToolPolicy`). By the time we reach here, any
+  // `__agencSessionAllowedRoots` present came from a TRUSTED source — the
+  // child-tool policy's `updatedInput` (e.g. session-memory dir), which
+  // is itself HMAC-signed via `withSignedAllowedRoots`. We route the
+  // worktree-root injection through `withSignedAllowedRoots` so the
+  // union (existing signed roots ∪ worktree) is re-signed; any unsigned
+  // root that slipped past the strip is dropped rather than laundered.
+  let injectedArgs: Record<string, unknown> = {
     ...parsedArgs,
     [SESSION_ID_ARG]: opts.childConversationId,
   };
-  const existingAllowedRoots = Array.isArray(
-    injectedArgs[SESSION_ALLOWED_ROOTS_ARG],
-  )
-    ? (injectedArgs[SESSION_ALLOWED_ROOTS_ARG] as unknown[]).filter(
-        (entry): entry is string =>
-          typeof entry === "string" && entry.length > 0,
-      )
-    : [];
   if (opts.worktree?.path) {
-    existingAllowedRoots.push(opts.worktree.path);
-  }
-  if (existingAllowedRoots.length > 0) {
-    injectedArgs[SESSION_ALLOWED_ROOTS_ARG] = [
-      ...new Set(existingAllowedRoots),
-    ];
+    injectedArgs = withSignedAllowedRoots(injectedArgs, [opts.worktree.path]);
   }
   if (
     opts.worktree?.path &&
@@ -1391,7 +1421,10 @@ function wrapToolForChild(
   return {
     ...tool,
     async execute(args) {
-      const policyResult = await applyChildToolPolicy(tool, args, opts);
+      // SECURITY: strip model-supplied `__agenc*` keys before the child
+      // policy/injection runs (idempotent if the caller already stripped).
+      const sanitizedArgs = stripModelSuppliedChildArgs(args);
+      const policyResult = await applyChildToolPolicy(tool, sanitizedArgs, opts);
       if ("result" in policyResult) {
         return policyResult.result;
       }

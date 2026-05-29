@@ -140,6 +140,11 @@ const DEFAULT_DAEMON_STREAM_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
 const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
+// Cap the per-connection read buffer so a daemon (or anything impersonating
+// the socket) that streams bytes without ever emitting a newline cannot grow
+// client memory unbounded. Mirrors the daemon transport's max-line / max
+// payload bound (16 MiB).
+const MAX_DAEMON_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 const LONG_RUNNING_DAEMON_METHODS: ReadonlySet<AgenCDaemonMethod> = new Set([
   "message.stream",
 ]);
@@ -963,6 +968,20 @@ function connectPersistentDaemonClient(
     });
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
+      if (Buffer.byteLength(buffer, "utf8") > MAX_DAEMON_CLIENT_BUFFER_BYTES) {
+        const overflowError = new Error(
+          `Daemon connection exceeded ${MAX_DAEMON_CLIENT_BUFFER_BYTES} bytes without a complete message`,
+        );
+        setConnectionState({
+          status: "disconnected",
+          message: overflowError.message,
+        });
+        failPending(overflowError);
+        closed = true;
+        buffer = "";
+        socket.destroy(overflowError);
+        return;
+      }
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex >= 0) {
         const line = buffer.slice(0, newlineIndex).trim();

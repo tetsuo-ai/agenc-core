@@ -1,7 +1,9 @@
 import { PassThrough } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import {
+  AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
   AgenCStdioTransport,
   encodeJsonLine,
   parseJsonObjectLine,
@@ -109,6 +111,113 @@ describe("AgenC stdio transport", () => {
       method: "auth.whoami",
     });
     expect(errors).toHaveLength(1);
+  });
+
+  it("dispatches two pipelined same-connection requests in arrival order", async () => {
+    // Regression for audit #13: dispatch used to be fire-and-forget
+    // (`Promise.resolve(onMessage(...))` not awaited), so a slow first
+    // handler let the second request's handler complete first, corrupting
+    // order-dependent flows (e.g. session.clear then message.send).
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const completionOrder: number[] = [];
+    let resolveFirst: (() => void) | undefined;
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      onMessage: async (message) => {
+        const id = message.id as number;
+        if (id === 1) {
+          // First handler is slow; it must still complete before the
+          // second handler is even invoked, because dispatch is serialized.
+          await new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        completionOrder.push(id);
+      },
+    });
+    transport.start();
+
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session.clear"}\n');
+    input.write('{"jsonrpc":"2.0","id":2,"method":"message.send"}\n');
+
+    // Give the event loop time: without serialization the second handler
+    // would have already run and pushed `2` before `1`.
+    await delay(20);
+    expect(completionOrder).toEqual([]);
+
+    resolveFirst?.();
+    await delay(20);
+    expect(completionOrder).toEqual([1, 2]);
+
+    await transport.close();
+  });
+
+  it("tears down the connection when an unterminated line exceeds the cap", async () => {
+    // Regression for audit #14: readline imposes no max line length, so a
+    // peer streaming bytes without a newline grew daemon memory unbounded.
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errors: Error[] = [];
+    const destroyed = new Promise<void>((resolve) => {
+      input.once("close", () => resolve());
+    });
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      maxLineBytes: 64,
+      onMessage: () => {},
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    transport.start();
+
+    // 200 bytes with no newline must trip the 64-byte bound.
+    input.write("x".repeat(200));
+
+    await destroyed;
+    expect(input.destroyed).toBe(true);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(RangeError);
+    expect(errors[0]?.message).toMatch(/64 bytes without a newline/);
+  });
+
+  it("does not trip the cap when newlines keep lines bounded", async () => {
+    // Prior valid behavior: a long stream of newline-terminated frames whose
+    // individual lines stay under the cap must keep flowing.
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errors: Error[] = [];
+    const received: number[] = [];
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      maxLineBytes: 64,
+      onMessage: (message) => {
+        received.push(message.id as number);
+      },
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    transport.start();
+
+    for (let id = 1; id <= 10; id += 1) {
+      input.write(`{"jsonrpc":"2.0","id":${id},"method":"ping"}\n`);
+    }
+
+    await delay(20);
+    expect(errors).toHaveLength(0);
+    expect(input.destroyed).toBe(false);
+    expect(received).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+    await transport.close();
+  });
+
+  it("exposes a default max line bound matching the websocket payload cap", () => {
+    expect(AGENC_STDIO_DEFAULT_MAX_LINE_BYTES).toBe(16 * 1024 * 1024);
   });
 
   it("can send through the transport instance", async () => {

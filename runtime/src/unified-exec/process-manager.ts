@@ -76,11 +76,10 @@ interface SpawnCommand {
   readonly argv0?: string;
 }
 
-class ProcessOutputBuffer {
+export class ProcessOutputBuffer {
   private readonly chunks: OutputChunk[] = [];
   private consumedIndex = 0;
   private totalChars = 0;
-  private droppedChars = 0;
 
   constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS) {}
 
@@ -94,21 +93,101 @@ class ProcessOutputBuffer {
   drain(): OutputChunk[] {
     const drained = this.chunks.slice(this.consumedIndex);
     this.consumedIndex = this.chunks.length;
-    if (this.droppedChars > 0) {
-      const marker = `[... omitted ${this.droppedChars} chars before collection ...]\n`;
-      this.droppedChars = 0;
-      return [{ stream: "stdout", chunk: marker }, ...drained];
-    }
     return drained;
   }
 
   private enforceCap(): void {
-    while (this.totalChars > this.maxChars && this.chunks.length > 0) {
+    // First, evict already-consumed chunks. These have already been returned to
+    // the caller by a prior drain(), so discarding them costs nothing and never
+    // needs an omitted-count marker.
+    while (
+      this.totalChars > this.maxChars &&
+      this.consumedIndex > 0 &&
+      this.chunks.length > 0
+    ) {
       const removed = this.chunks.shift()!;
       this.totalChars -= removed.chunk.length;
-      this.droppedChars += removed.chunk.length;
-      this.consumedIndex = Math.max(0, this.consumedIndex - 1);
+      this.consumedIndex -= 1;
     }
+
+    if (this.totalChars <= this.maxChars) return;
+
+    // The cap is still exceeded by pending (undrained) output. Rather than
+    // dropping the most-recent unconsumed bytes wholesale (which previously
+    // discarded still-unconsumed HEAD output on a single oversized burst),
+    // collapse the pending region with head/tail truncation so both the head
+    // and the tail/exit-summary survive, and surface the omitted count.
+    const pending = this.chunks.slice(this.consumedIndex);
+    if (pending.length === 0) return;
+
+    // The pending region interleaves stdout AND stderr chunks. Collapsing them
+    // under a single hard-coded "stdout" label would relabel all stderr bytes
+    // as stdout (silently emptying the returned stderr field). Instead, truncate
+    // each stream's pending bytes SEPARATELY so each keeps its own head/tail and
+    // its own stream label.
+    const stdoutText = pending
+      .filter((chunk) => chunk.stream === "stdout")
+      .map((chunk) => chunk.chunk)
+      .join("");
+    const stderrText = pending
+      .filter((chunk) => chunk.stream === "stderr")
+      .map((chunk) => chunk.chunk)
+      .join("");
+
+    // Preserve original stream order (stdout before stderr) for deterministic
+    // output; only non-empty streams participate.
+    const segments: OutputChunk[] = [];
+    if (stdoutText.length > 0) {
+      segments.push({ stream: "stdout", chunk: stdoutText });
+    }
+    if (stderrText.length > 0) {
+      segments.push({ stream: "stderr", chunk: stderrText });
+    }
+    if (segments.length === 0) return;
+    const totalLen = stdoutText.length + stderrText.length;
+
+    // Allocate the cap across streams with max-min fairness: smallest stream
+    // first, each taking an equal share of the remaining budget, with any unused
+    // share rolling forward to the larger stream(s). A proportional split would
+    // starve a tiny stderr exit-summary when stdout floods past the cap; this
+    // keeps the small stream intact (its budget == its length) and gives the
+    // overflow budget to whichever stream actually needs truncating.
+    const budgetByStream = new Map<UnifiedExecStream, number>();
+    const ordered = [...segments].sort(
+      (a, b) => a.chunk.length - b.chunk.length,
+    );
+    let remainingCap = this.maxChars;
+    let remaining = ordered.length;
+    for (const segment of ordered) {
+      const share = Math.floor(remainingCap / remaining);
+      const budget = Math.min(segment.chunk.length, share);
+      budgetByStream.set(segment.stream, budget);
+      remainingCap -= budget;
+      remaining -= 1;
+    }
+
+    // truncateHeadTail embeds its own `[... omitted N chars ...]` marker inline
+    // between the preserved head and tail, so we replace the pending chunks with
+    // the per-stream truncated text directly. Clamp each budget to truncateHeadTail's
+    // own 64-char floor: passing a smaller budget would make it report a negative
+    // omitted count for a sub-64 stream (it never truncates below 64 chars anyway).
+    const replacement: OutputChunk[] = [];
+    for (const segment of segments) {
+      const budget = budgetByStream.get(segment.stream) ?? segment.chunk.length;
+      const truncated = truncateHeadTail(
+        segment.chunk,
+        Math.max(64, budget),
+      );
+      replacement.push({ stream: segment.stream, chunk: truncated.text });
+    }
+
+    this.chunks.length = this.consumedIndex;
+    this.chunks.push(...replacement);
+    const replacementChars = replacement.reduce(
+      (sum, chunk) => sum + chunk.chunk.length,
+      0,
+    );
+    this.totalChars = this.totalChars - totalLen + replacementChars;
   }
 }
 

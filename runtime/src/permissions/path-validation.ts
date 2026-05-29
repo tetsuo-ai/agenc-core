@@ -30,6 +30,9 @@ import {
 import {
   getRuleByContentsForTool,
 } from "./rules.js";
+import {
+  withSignedAllowedRoots,
+} from "../agents/_deps/filesystem-args.js";
 import type {
   PermissionDecisionReason,
   PermissionResult,
@@ -43,7 +46,6 @@ const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
 const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
 const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
 const MAX_PATH_LENGTH = 4096;
-const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
 
 export type FileOperationType = "read" | "write" | "create";
 
@@ -633,36 +635,12 @@ function withTransientAllowedRoot(
   input: Record<string, unknown>,
   resolvedPath: string,
 ): Record<string, unknown> {
-  const existingRoots = Array.isArray(input[SESSION_ALLOWED_ROOTS_ARG])
-    ? input[SESSION_ALLOWED_ROOTS_ARG].filter(
-        (entry): entry is string => typeof entry === "string" && entry.length > 0,
-      )
-    : [];
-  return {
-    ...input,
-    [SESSION_ALLOWED_ROOTS_ARG]: [
-      ...new Set([...existingRoots, dirname(resolvedPath)]),
-    ],
-  };
+  return withSignedAllowedRoots(input, [dirname(resolvedPath)]);
 }
 
 export function checkToolPathPermission(
   opts: ToolPathPermissionOptions,
 ): PermissionResult {
-  // Mirror the bash short-circuit at permissions/bash.ts: in --yolo /
-  // bypassPermissions mode the user has explicitly opted out of approval
-  // gating, so filesystem-touching tools (Read, Glob, FileRead, ...) must
-  // not surface the working-dir prompt. Without this, `agenc --yolo` was
-  // half-bypassing — Bash and Grep auto-approved while Read/Glob still
-  // prompted, breaking GAP-TEST-* scenarios 11/13/35 and the user's
-  // muscle-memory expectation that --yolo means yolo for everything.
-  if (opts.context.mode === "bypassPermissions") {
-    return {
-      behavior: "allow",
-      updatedInput: opts.input,
-      decisionReason: { type: "mode", mode: "bypassPermissions" },
-    };
-  }
   const result = validatePath(
     opts.path,
     opts.cwd,
@@ -688,6 +666,32 @@ export function checkToolPathPermission(
       behavior: "deny",
       message: `Permission to ${verb} ${opts.path} has been denied.`,
       decisionReason,
+    };
+  }
+
+  // Mirror the bash short-circuit at permissions/bash.ts:431 ("hadDeny"
+  // guard): in --yolo / bypassPermissions mode the user has explicitly
+  // opted out of approval gating, so filesystem-touching tools (Read, Glob,
+  // FileRead, ...) must not surface the working-dir prompt. Without this,
+  // `agenc --yolo` was half-bypassing — Bash and Grep auto-approved while
+  // Read/Glob still prompted, breaking GAP-TEST-* scenarios 11/13/35.
+  //
+  // SECURITY: this bypass runs AFTER validatePath, so a path-specific
+  // Deny(...) rule (handled above) and the safety gates surfaced as a
+  // "safetyCheck" decisionReason (the .git/.agenc/.agents protected-path and
+  // dangerous-removal checks in isPathAllowed/checkPathSafetyForAutoEdit) are
+  // still honored. These are exactly the two bypass-immune categories the
+  // evaluator enforces at permissions/evaluator.ts (step 1d deny, step 1g
+  // safetyCheck); everything else (workingDir/ask) is auto-allowed under
+  // bypass.
+  if (
+    opts.context.mode === "bypassPermissions" &&
+    decisionReason?.type !== "safetyCheck"
+  ) {
+    return {
+      behavior: "allow",
+      updatedInput: opts.input,
+      decisionReason: { type: "mode", mode: "bypassPermissions" },
     };
   }
 

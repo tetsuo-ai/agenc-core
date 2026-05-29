@@ -19,10 +19,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
-import {
-  SESSION_ID_ARG,
-  resolveToolAllowedPaths,
-} from "../system/filesystem.js";
+import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
 import type { ApplyPatchHunk } from "./types.js";
@@ -118,8 +115,24 @@ function permissionForPatch(
   let hunks: readonly ApplyPatchHunk[];
   try {
     hunks = parsePatch(patch).hunks;
-  } catch {
-    return { behavior: "allow", updatedInput: input };
+  } catch (error) {
+    // SECURITY: fail CLOSED on an unparseable patch. The previous
+    // fail-open `behavior: "allow"` let a malformed patch skip the
+    // per-target path-permission check entirely; an attacker could
+    // dodge confinement by sending input that the strict parser
+    // rejects but the apply path still partially honors. Deny instead.
+    const reason = `apply_patch payload could not be parsed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return {
+      behavior: "deny",
+      message: reason,
+      decisionReason: {
+        type: "safetyCheck",
+        reason,
+        classifierApprovable: false,
+      },
+    };
   }
 
   for (const hunk of hunks) {
@@ -178,11 +191,17 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
         };
       }
       const cwd = asNonEmptyString(args.cwd) ?? config.cwd;
+      // SECURITY: check permissions against the TRUSTED closure roots
+      // only (mirror FileWriteTool/FileEditTool, file-write.ts:231).
+      // Folding `resolveToolAllowedPaths(..., input)` here would honor a
+      // model-supplied `__agencSessionAllowedRoots`, defeating
+      // confinement. Runtime-injected roots are still applied at execute
+      // time via `safePathAllowingSessionPlanFile`.
       return permissionForPatch(
         input as Record<string, unknown>,
         patch,
         cwd,
-        resolveToolAllowedPaths(allowedPaths, input as Record<string, unknown>),
+        allowedPaths,
         context,
       );
     },
@@ -197,7 +216,12 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
       try {
         const result = await applyPatchText(patch, {
           cwd,
-          allowedPaths: resolveToolAllowedPaths(allowedPaths, rawArgs),
+          // Pass the TRUSTED closure roots; `applyPatchText` folds any
+          // runtime-injected `__agencSessionAllowedRoots` from `rawArgs`
+          // through `safePathAllowingSessionPlanFile`. Pre-folding with
+          // `resolveToolAllowedPaths(allowedPaths, rawArgs)` is redundant
+          // and was the same model-controlled widening vector.
+          allowedPaths,
           rawArgs,
           ...(sessionId !== undefined ? { sessionId } : {}),
         });

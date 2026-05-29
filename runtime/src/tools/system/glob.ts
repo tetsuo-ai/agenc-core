@@ -175,6 +175,14 @@ async function resolveGlobTarget(params: {
   readonly allowedPaths: readonly string[];
   readonly pattern: string;
 }): Promise<ResolvedGlobTarget | { error: string }> {
+  // SECURITY: `params.allowedPaths` is the TRUSTED closure scope. The
+  // only roots `resolveToolAllowedPaths` folds in from `params.args` are
+  // runtime-injected `__agencSessionAllowedRoots` (e.g. the worktree
+  // path) — model-supplied `__agenc*` keys are stripped at the dispatch
+  // boundary (router.ts) before they ever reach here. The requested
+  // search root (`path`/`cwd`, below) is always re-validated against
+  // this set via `safePath`, so a model cannot search outside trusted
+  // roots.
   const effectiveAllowed = resolveToolAllowedPaths(params.allowedPaths, params.args);
   if (effectiveAllowed.length === 0) {
     return { error: "No allowed paths configured for Glob" };

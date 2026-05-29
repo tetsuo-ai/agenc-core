@@ -146,6 +146,58 @@ describe("BackgroundTaskLifecycle", () => {
     } satisfies Partial<BackgroundTaskError>);
   });
 
+  it("reaches a terminal state and surfaces the error when onStop throws", async () => {
+    const lifecycle = new BackgroundTaskLifecycle();
+    lifecycle.register({
+      id: "task-zombie",
+      type: "local_bash",
+      description: "stubborn task",
+      onStop: () => {
+        throw new Error("teardown blew up");
+      },
+    });
+
+    await expect(lifecycle.stop("task-zombie", "user stop")).rejects.toMatchObject(
+      {
+        code: "stop_failed",
+      } satisfies Partial<BackgroundTaskError>,
+    );
+
+    // The task must not be left as a zombie stuck in `running`.
+    const snapshot = lifecycle.get("task-zombie");
+    expect(snapshot?.status).toBe("killed");
+    expect(snapshot?.error).toContain("teardown blew up");
+
+    // A second stop should now report the task is no longer running.
+    await expect(lifecycle.stop("task-zombie")).rejects.toMatchObject({
+      code: "not_running",
+    } satisfies Partial<BackgroundTaskError>);
+  });
+
+  it("bounds the notification buffer so it cannot grow unbounded", () => {
+    const lifecycle = new BackgroundTaskLifecycle();
+    const id = "noisy";
+    lifecycle.register({
+      id,
+      type: "generic",
+      description: "chatty task",
+    });
+
+    // Far exceed the retention cap (1_000) with progress notifications.
+    for (let index = 0; index < 5_000; index += 1) {
+      lifecycle.appendOutput(id, `chunk-${index}`);
+    }
+
+    const drained = lifecycle.drainNotifications();
+    expect(drained.length).toBeLessThanOrEqual(1_000);
+    // The oldest "started" notification must have been evicted.
+    expect(drained.some((item) => item.kind === "started")).toBe(false);
+    // Most recent notifications are retained.
+    expect(drained.at(-1)?.delta).toBe("chunk-4999");
+    // Draining empties the buffer for the next consumer.
+    expect(lifecycle.drainNotifications()).toHaveLength(0);
+  });
+
   it("does not let late promise completion overwrite a stopped task", async () => {
     const lifecycle = new BackgroundTaskLifecycle();
     const done = deferred<string>();

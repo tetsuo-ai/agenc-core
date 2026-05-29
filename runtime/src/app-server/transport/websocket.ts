@@ -71,6 +71,11 @@ export interface AgenCWebSocketServerOptions {
 interface ActiveWebSocketConnection {
   readonly socket: WebSocket;
   readonly pendingMessages: Set<Promise<void>>;
+  // Per-connection dispatch chain. Pipelined, order-dependent requests on a
+  // single connection are handed to onMessage in arrival order rather than
+  // racing as fire-and-forget promises. Each connection owns its own chain so
+  // cross-connection concurrency is preserved.
+  dispatchChain: Promise<void>;
 }
 
 export class AgenCWebSocketServer {
@@ -242,6 +247,7 @@ export class AgenCWebSocketServer {
     const active: ActiveWebSocketConnection = {
       socket,
       pendingMessages: new Set(),
+      dispatchChain: Promise.resolve(),
     };
     this.#connections.set(connectionId, active);
 
@@ -282,11 +288,13 @@ export class AgenCWebSocketServer {
       return;
     }
 
-    const pending = Promise.resolve(
-      this.#options.onMessage(message, context),
-    ).catch((error) => {
-      this.#options.onError?.(asError(error), context.connectionId);
-    });
+    const pending = (active.dispatchChain = active.dispatchChain.then(() =>
+      Promise.resolve(this.#options.onMessage(message, context)).catch(
+        (error) => {
+          this.#options.onError?.(asError(error), context.connectionId);
+        },
+      ),
+    ));
     active.pendingMessages.add(pending);
     pending.finally(() => {
       active.pendingMessages.delete(pending);

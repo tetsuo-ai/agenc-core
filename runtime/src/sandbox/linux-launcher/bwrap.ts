@@ -93,9 +93,9 @@ function createBwrapFlagsFullFilesystem(
     "--bind",
     "/",
     "/",
-    "--unshare-user",
-    "--unshare-pid",
   ];
+  appendProcMask(args, options);
+  args.push("--unshare-user", "--unshare-pid");
   appendNamespaceArgs(args, options);
   args.push("--");
   args.push(...command);
@@ -130,6 +130,17 @@ function createBwrapFlags(
   args.push("--");
   args.push(...command);
   return args;
+}
+
+function appendProcMask(args: string[], options: BwrapOptions): void {
+  // When a private procfs is not mounted, the host /proc bound via the root
+  // bind would otherwise stay visible, leaking other same-UID processes'
+  // environ/cmdline/maps. Mask it with an empty tmpfs so host procfs is never
+  // exposed. When mountProc is true, appendNamespaceArgs mounts a fresh procfs
+  // over this path afterwards.
+  if (!options.mountProc) {
+    args.push("--tmpfs", "/proc");
+  }
 }
 
 function appendNamespaceArgs(args: string[], options: BwrapOptions): void {
@@ -170,6 +181,8 @@ function createFilesystemArgs(
       appendReadOnlyIfExists(args, root);
     }
   }
+
+  appendProcMask(args, options);
 
   args.push("--dev", "/dev");
 
