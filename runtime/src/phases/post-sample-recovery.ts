@@ -26,12 +26,6 @@ import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { compactConversation } from "../services/compact/compact.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
-import {
-  AGENC_COMPACT_CALL_METRIC,
-  AGENC_COMPACT_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -85,30 +79,20 @@ type CollapseRuntimeMessage = Omit<
 export async function runContextCollapseOverflowRecovery(params: {
   readonly state: TurnState;
 }): Promise<ContextCollapseOverflowRecoveryResult> {
-  const finishTelemetry = startCompactTelemetry("overflow_recovery");
-  try {
-    const recovered = await recoverFromOverflow(
-      toCollapseRuntimeMessages(params.state.messagesForQuery),
-    );
-    if (recovered.committed <= 0) {
-      const result = { kind: "pass" } as const;
-      finishTelemetry(result.kind);
-      return result;
-    }
-    params.state.messagesForQuery = fromCollapseRuntimeMessages(
-      recovered.messages as CollapseRuntimeMessage[],
-    );
-    params.state.messages = [...params.state.messagesForQuery];
-    const result = {
-      kind: "applied",
-      reason: "context_collapse",
-    } as const;
-    finishTelemetry(result.kind, { reason: result.reason });
-    return result;
-  } catch (error) {
-    finishTelemetry("error");
-    throw error;
+  const recovered = await recoverFromOverflow(
+    toCollapseRuntimeMessages(params.state.messagesForQuery),
+  );
+  if (recovered.committed <= 0) {
+    return { kind: "pass" } as const;
   }
+  params.state.messagesForQuery = fromCollapseRuntimeMessages(
+    recovered.messages as CollapseRuntimeMessage[],
+  );
+  params.state.messages = [...params.state.messagesForQuery];
+  return {
+    kind: "applied",
+    reason: "context_collapse",
+  } as const;
 }
 
 async function recoverFromOverflow(
@@ -388,25 +372,6 @@ function fromRuntimeMessageContent(content: unknown): LLMMessage["content"] {
     return parts.map((part) => part.type === "text" ? part.text : "").join("\n");
   }
   return parts;
-}
-
-function startCompactTelemetry(
-  mode: string,
-  attributes: Readonly<Record<string, unknown>> = {},
-): (status: string, additionalAttributes?: Readonly<Record<string, unknown>>) => void {
-  const baseTags = toMetricTags({ mode, ...attributes });
-  const timer = agencTelemetry.timer(AGENC_COMPACT_DURATION_METRIC, baseTags);
-  let finished = false;
-  return (
-    status: string,
-    additionalAttributes: Readonly<Record<string, unknown>> = {},
-  ) => {
-    if (finished) return;
-    finished = true;
-    const tags = toMetricTags({ mode, ...attributes, status, ...additionalAttributes });
-    agencTelemetry.counter(AGENC_COMPACT_CALL_METRIC, 1, tags);
-    timer.end(tags);
-  };
 }
 
 /**

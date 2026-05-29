@@ -47,10 +47,6 @@ import {
   addDirHelpMessage,
   validateDirectoryForWorkspace,
 } from '../../commands/add-dir/validation.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
@@ -755,9 +751,6 @@ export function initialPermissionModeFromCLI({
         `settings defaultMode "${settingsMode}" is not supported in AGENC_REMOTE — only acceptEdits and plan are allowed`,
         { level: 'warn' },
       )
-      logEvent('tengu_ccr_unsupported_default_mode_ignored', {
-        mode: settingsMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
     }
     // auto from settings requires the same gate check as from CLI
     else if (feature('TRANSCRIPT_CLASSIFIER') && settingsMode === 'auto') {

@@ -6,11 +6,6 @@ import {
   exitTeammateView,
   stopOrDismissAgent,
 } from "src/tui/state/teammateViewHelpers.js";
-import { logEvent } from "src/services/analytics/index.js";
-
-vi.mock("src/services/analytics/index.js", () => ({
-  logEvent: vi.fn(),
-}));
 
 function makeState(overrides: Partial<AppState> = {}): AppState {
   return {
@@ -76,7 +71,6 @@ function applyUpdate(
 describe("teammateViewHelpers coverage edges", () => {
   beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(1_000);
-    vi.mocked(logEvent).mockClear();
   });
 
   afterEach(() => {
@@ -100,7 +94,6 @@ describe("teammateViewHelpers coverage edges", () => {
     });
 
     expect(next).toBe(state);
-    expect(logEvent).toHaveBeenCalledWith("tengu_transcript_view_enter", {});
   });
 
   test("enterTeammateView releases the previous retained agent and clears the selected agent eviction deadline", () => {
@@ -178,7 +171,6 @@ describe("teammateViewHelpers coverage edges", () => {
       viewSelectionMode: "none",
       viewingAgentTaskId: undefined,
     });
-    expect(logEvent).toHaveBeenCalledWith("tengu_transcript_view_exit", {});
   });
 
   test("exitTeammateView clears view without releasing non-local or non-retained tasks", () => {

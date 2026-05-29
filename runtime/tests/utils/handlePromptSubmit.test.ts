@@ -4,9 +4,6 @@ import { getCommandQueue, resetCommandQueue } from '../../src/utils/messageQueue
 describe('handlePromptSubmit', () => {
   beforeEach(() => {
     resetCommandQueue()
-    mock.module('src/services/analytics/index.js', () => ({
-      logEvent: () => {},
-    }))
   })
 
   afterEach(() => {

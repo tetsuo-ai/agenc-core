@@ -7,7 +7,6 @@ import pMap from 'p-map';
 import { MCPServerDesktopImportDialog } from '../../tui/components/MCPServerDesktopImportDialog.js';
 import { render } from '../../tui/ink.js';
 import { KeybindingSetup } from '../../tui/keybindings/KeybindingProviderSetup.js';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import {
   clearMcpClientConfig,
   clearServerTokensFromSecureStorage,
@@ -24,7 +23,6 @@ import { AppStateProvider } from '../../tui/state/AppState.js';
 import { getCurrentProjectConfig, saveCurrentProjectConfig } from '../../utils/config.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { safeParseJSON } from '../../utils/json.js';
-import { getPlatform } from '../../utils/platform.js';
 import { cliError, cliOk } from '../exit.js';
 
 function formatDoctorReport(report: McpDoctorReport): string {
@@ -152,10 +150,6 @@ export async function mcpRemoveHandler(name: string, options: {
   try {
     if (options.scope) {
       const scope = ensureConfigScope(options.scope);
-      logEvent('tengu_mcp_delete', {
-        name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-      });
       await removeMcpConfig(name, scope);
       cleanupSecureStorage();
       process.stdout.write(`Removed MCP server ${name} from ${scope} config\n`);
@@ -183,10 +177,6 @@ export async function mcpRemoveHandler(name: string, options: {
     } else if (scopes.length === 1) {
       // Server exists in only one scope, remove it
       const scope = scopes[0]!;
-      logEvent('tengu_mcp_delete', {
-        name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-      });
       await removeMcpConfig(name, scope);
       cleanupSecureStorage();
       process.stdout.write(`Removed MCP server "${name}" from ${scope} config\n`);
@@ -210,7 +200,6 @@ export async function mcpRemoveHandler(name: string, options: {
 
 // mcp list (lines 4641–4688)
 export async function mcpListHandler(): Promise<void> {
-  logEvent('tengu_mcp_list', {});
   const {
     servers: configs
   } = await getAllMcpConfigs();
@@ -259,9 +248,6 @@ export async function mcpListHandler(): Promise<void> {
 
 // mcp get (lines 4694–4786)
 export async function mcpGetHandler(name: string): Promise<void> {
-  logEvent('tengu_mcp_get', {
-    name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-  });
   const server = getMcpConfigByName(name);
   if (!server) {
     cliError(`No MCP server found with name: ${name}`);
@@ -366,11 +352,6 @@ export async function mcpAddJsonHandler(name: string, json: string, options: {
         url: parsedJson.url
       }, clientSecret);
     }
-    logEvent('tengu_mcp_add', {
-      scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      source: 'json' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      type: transportType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-    });
     cliOk(`Added ${transportType} MCP server ${name} to ${scope} config`);
   } catch (error) {
     cliError((error as Error).message);
@@ -383,12 +364,6 @@ export async function mcpAddFromDesktopHandler(options: {
 }): Promise<void> {
   try {
     const scope = ensureConfigScope(options.scope);
-    const platform = getPlatform();
-    logEvent('tengu_mcp_add', {
-      scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      source: 'desktop' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-    });
     const {
       readAgenCDesktopMcpServers
     } = await import('../../utils/agencDesktop.js');
@@ -414,7 +389,6 @@ export async function mcpAddFromDesktopHandler(options: {
 
 // mcp reset-project-choices (lines 4935–4952)
 export async function mcpResetChoicesHandler(): Promise<void> {
-  logEvent('tengu_mcp_reset_mcpjson_choices', {});
   saveCurrentProjectConfig(current => ({
     ...current,
     enabledMcpjsonServers: [],

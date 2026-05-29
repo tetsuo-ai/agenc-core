@@ -44,10 +44,6 @@ function installCommonMocks(options?: {
     preferThirdPartyAuthentication: () => false,
   }))
 
-  mock.module('../../src/services/analytics/index.js', () => ({
-    logEvent: () => {},
-  }))
-
   mock.module('../../src/utils/auth.js', () => ({
     getAnthropicApiKey: () => options?.apiKey ?? null,
     getAgenCAIOAuthTokens: () =>

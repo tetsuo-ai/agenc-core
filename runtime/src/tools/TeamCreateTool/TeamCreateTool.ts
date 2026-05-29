@@ -1,7 +1,5 @@
 import { z } from 'zod/v4'
 import { getSessionId } from '../../bootstrap/state.js'
-import { logEvent } from '../../services/analytics/index.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/metadata.js'
 import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { formatAgentId } from '../../utils/agentId.js'
@@ -13,7 +11,6 @@ import {
   parseUserSpecifiedModel,
 } from '../../utils/model/model.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import { getResolvedTeammateMode } from '../../utils/swarm/backends/registry.js'
 import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'
 import type { TeamFile } from '../../utils/swarm/teamHelpers.js'
 import {
@@ -210,16 +207,6 @@ export const TeamCreateTool: Tool<InputSchema, Output> = buildTool({
         },
       },
     }))
-
-    logEvent('tengu_team_created', {
-      team_name:
-        finalTeamName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      teammate_count: 1,
-      lead_agent_type:
-        leadAgentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      teammate_mode:
-        getResolvedTeammateMode() as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
 
     // Note: We intentionally don't set AGENC_AGENT_ID for the team lead because:
     // 1. The lead is not a "teammate" - isTeammate() should return false for them

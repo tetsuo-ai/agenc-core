@@ -10,7 +10,6 @@ import { useOptionalSetAppState } from '../state/AppState.js';
 import { openPreviewCommand } from '../workbench/commands.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { Text } from '../ink.js';
-import { logEvent } from '../../services/analytics/index';
 import { getCwd } from '../../utils/cwd';
 import { openFileInExternalEditor } from '../../utils/editor';
 import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
@@ -166,19 +165,10 @@ export function QuickOpenDialog(t0) {
     t7 = p_1 => {
       if (isWorkbenchEnabled() && setAppState) {
         setAppState(prev => applyWorkbenchCommand(prev, openPreviewCommand(p_1, undefined, true)));
-        logEvent("agenc_quick_open_select", {
-          result_count: results.length,
-          opened_editor: false,
-          workbench: true
-        });
         onDone();
         return;
       }
-      const opened = openFileInExternalEditor(path.resolve(getCwd(), p_1));
-      logEvent("agenc_quick_open_select", {
-        result_count: results.length,
-        opened_editor: opened
-      });
+      openFileInExternalEditor(path.resolve(getCwd(), p_1));
       onDone();
     };
     $[8] = onDone;
@@ -192,10 +182,6 @@ export function QuickOpenDialog(t0) {
   if ($[11] !== onDone || $[12] !== onInsert || $[13] !== results.length) {
     t8 = (p_2, mention) => {
       onInsert(mention ? `@${p_2} ` : `${p_2} `);
-      logEvent("agenc_quick_open_insert", {
-        result_count: results.length,
-        mention
-      });
       onDone();
     };
     $[11] = onDone;

@@ -27,7 +27,6 @@ const harness = vi.hoisted(() => ({
   getOriginalCwd: vi.fn(() => '/workspace/project'),
   getSessionId: vi.fn(() => 'session-133'),
   isRemoteMode: false,
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   mainLoopModel: 'gpt-5',
   rawUtilization: {} as Record<string, unknown>,
@@ -51,10 +50,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: harness.feature,
-}))
-
-vi.mock('../../../src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../src/tui/rate-limits/agenc-ai-limits.js', () => ({
@@ -248,7 +243,6 @@ function resetHarness(): void {
   harness.getSessionId.mockReset()
   harness.getSessionId.mockReturnValue('session-133')
   harness.isRemoteMode = false
-  harness.logEvent.mockClear()
   harness.logForDebugging.mockClear()
   harness.mainLoopModel = 'gpt-5'
   harness.rawUtilization = {}
@@ -414,10 +408,6 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(harness.doesMostRecentAssistantMessageExceed200k).toHaveBeenCalledOnce()
     expect(harness.executeStatusLineCommand.mock.calls[0]![3]).toBe(true)
     expect(harness.executeStatusLineCommand.mock.calls[1]![3]).toBe(true)
-    expect(harness.logEvent).toHaveBeenCalledWith('agenc_status_line_mount', {
-      command_length: 'statusline'.length,
-      padding: 0,
-    })
   })
 
   test('cancels the mount debounce when the initial status update starts', async () => {

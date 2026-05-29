@@ -34,7 +34,6 @@ const fixture = vi.hoisted(() => ({
   features: new Set<string>(),
   growthbookCalls: [] as Array<{ fallback: boolean; key: string }>,
   keybindings: new Map<string, CapturedKeybinding>(),
-  logEvent: vi.fn(),
   terminalAllowed: false,
   terminalToggle: vi.fn(),
 }))
@@ -62,10 +61,6 @@ vi.mock('src/tui/state/AppState.js', () => ({
     fixture.appState =
       typeof update === 'function' ? update(fixture.appState) : update
   },
-}))
-
-vi.mock('src/services/analytics/index.js', () => ({
-  logEvent: fixture.logEvent,
 }))
 
 vi.mock('src/services/analytics/growthbook.js', () => ({
@@ -187,11 +182,6 @@ describe('GlobalKeybindingHandlers coverage swarm 172', () => {
     expect(rendered.getShowAllInTranscript()).toBe(false)
     expect(rendered.onEnterTranscript).not.toHaveBeenCalled()
     expect(rendered.onExitTranscript).toHaveBeenCalledTimes(1)
-    expect(fixture.logEvent).toHaveBeenCalledWith('agenc_toggle_transcript', {
-      is_entering: false,
-      message_count: 7,
-      show_all: true,
-    })
 
     fixture.keybindings = new Map()
     await renderHandlers({ screen: 'prompt' })
@@ -228,14 +218,6 @@ describe('GlobalKeybindingHandlers coverage swarm 172', () => {
       keybinding('app:toggleBrief').handler()
 
       expect(fixture.appState.isBriefOnly).toBe(true)
-      expect(fixture.logEvent).toHaveBeenCalledWith(
-        'agenc_brief_mode_toggled',
-        {
-          enabled: true,
-          gated: false,
-          source: 'keybinding',
-        },
-      )
     } finally {
       restoreLazyRequireMocks()
     }

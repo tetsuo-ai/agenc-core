@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('bun:bundle', () => ({ feature: () => false }))
-vi.mock('../services/analytics/index.js', () => ({
-  logEvent: () => undefined,
-}))
 vi.mock('../services/analytics/growthbook.js', () => ({
   getFeatureValue_CACHED_MAY_BE_STALE: <T>(_key: string, fallback: T) =>
     fallback,

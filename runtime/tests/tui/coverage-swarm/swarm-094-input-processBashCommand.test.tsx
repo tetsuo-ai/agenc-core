@@ -35,7 +35,6 @@ const harness = vi.hoisted(() => {
     ShellError: MockShellError,
     consumeSuspectedPaste: vi.fn(() => false),
     isPowerShellToolEnabled: vi.fn(() => false),
-    logEvent: vi.fn(),
     processToolResultBlock: vi.fn(async () => ({ content: "mapped output" })),
     resolveDefaultShell: vi.fn(() => "bash"),
   };
@@ -69,10 +68,6 @@ vi.mock("../../../src/tools/canonicalToolSurface.js", () => ({
 
 vi.mock("../../../src/tools/PowerShellTool/PowerShellTool.js", () => ({
   PowerShellTool: harness.PowerShellTool,
-}));
-
-vi.mock("../../../src/services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../../src/utils/errors.js", () => ({
@@ -222,9 +217,6 @@ describe("processBashCommand coverage swarm 094", () => {
       setToolJSX,
     );
 
-    expect(harness.logEvent).toHaveBeenCalledWith("agenc_input_bash", {
-      powershell: false,
-    });
     expect(harness.CanonicalBashTool.call).toHaveBeenCalledWith(
       { command: "echo ok" },
       expect.objectContaining({ options: { verbose: true } }),
@@ -350,10 +342,6 @@ describe("processBashCommand coverage swarm 094", () => {
 
     const result = await pending;
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_input_bash_paste_gate",
-      { powershell: false },
-    );
     expect(harness.CanonicalBashTool.call).not.toHaveBeenCalled();
     expect(contentMessages(result).at(-1)).toBe(
       "<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>",
@@ -381,9 +369,6 @@ describe("processBashCommand coverage swarm 094", () => {
 
     const result = await pending;
 
-    expect(harness.logEvent).toHaveBeenCalledWith("agenc_input_bash", {
-      powershell: true,
-    });
     expect(harness.PowerShellTool.call).toHaveBeenCalledWith(
       {
         _dangerouslyDisableSandboxApproved: true,

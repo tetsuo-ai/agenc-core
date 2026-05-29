@@ -7,10 +7,6 @@ const mocks = vi.hoisted(() => ({
   })),
 }))
 
-vi.mock('src/services/analytics/index.js', () => ({
-  logEvent: vi.fn(),
-}))
-
 vi.mock('src/utils/debug.js', () => ({
   logForDebugging: () => {},
 }))

@@ -34,10 +34,6 @@ import {
 } from '../../utils/settings/types.js'
 import type { ValidationError } from '../../utils/settings/validation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../analytics/index.js'
 import { expandEnvVarsInString } from './envExpansion.js'
 import {
   type ConfigScope,
@@ -1492,9 +1488,6 @@ function toggleMembership(
  * @param enabled Whether the server should be enabled
  */
 export function setMcpServerEnabled(name: string, enabled: boolean): void {
-  const isBuiltinStateChange =
-    isDefaultDisabledBuiltin(name) && isMcpServerDisabled(name) === enabled
-
   saveCurrentProjectConfig(current => {
     if (isDefaultDisabledBuiltin(name)) {
       const prev = current.enabledMcpServers || []
@@ -1507,11 +1500,4 @@ export function setMcpServerEnabled(name: string, enabled: boolean): void {
     if (next === prev) return current
     return { ...current, disabledMcpServers: next }
   })
-  if (isBuiltinStateChange) {
-    logEvent('tengu_builtin_mcp_toggle', {
-      serverName:
-        name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      enabled,
-    })
-  }
 }

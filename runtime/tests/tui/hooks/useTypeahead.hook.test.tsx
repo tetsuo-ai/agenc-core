@@ -81,10 +81,6 @@ vi.mock('../context/notifications.js', () => ({
   useNotifications: () => ({ addNotification: harness.addNotification }),
 }))
 
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: vi.fn(),
-}))
-
 vi.mock('../../utils/log.js', () => ({
   logError: harness.logError,
 }))

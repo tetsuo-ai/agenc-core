@@ -29,23 +29,12 @@ import type { Span } from '@opentelemetry/api'
 import { createHash } from 'crypto'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js'
 import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
-import { logOTelEvent } from './events.js'
 
 // Message type for API calls (UserMessage or AssistantMessage)
 type APIMessage = UserMessage | AssistantMessage
-
-/**
- * Track hashes we've already logged this session (system prompts, tools, etc).
- *
- * WHY: System prompts and tool schemas are large and rarely change within a session.
- * Sending full content on every request would be wasteful. Instead, we hash and
- * only log the full content once per unique hash.
- */
-const seenHashes = new Set<string>()
 
 /**
  * Track the last reported message hash per querySource (agent) for incremental context.
@@ -63,7 +52,6 @@ const lastReportedMessageHash = new Map<string, string>()
  * Old hashes are irrelevant once messages have been replaced.
  */
 export function clearBetaTracingState(): void {
-  seenHashes.clear()
   lastReportedMessageHash.clear()
 }
 
@@ -262,23 +250,6 @@ export function addBetaLLMRequestAttributes(
     span.setAttribute('system_prompt_hash', promptHash)
     span.setAttribute('system_prompt_preview', preview)
     span.setAttribute('system_prompt_length', newContext.systemPrompt.length)
-
-    // Log the full system prompt only once per unique hash this session
-    if (!seenHashes.has(promptHash)) {
-      seenHashes.add(promptHash)
-
-      // Truncate for the log if needed
-      const { content: truncatedPrompt, truncated } = truncateContent(
-        newContext.systemPrompt,
-      )
-
-      void logOTelEvent('system_prompt', {
-        system_prompt_hash: promptHash,
-        system_prompt: truncatedPrompt,
-        system_prompt_length: String(newContext.systemPrompt.length),
-        ...(truncated && { system_prompt_truncated: 'true' }),
-      })
-    }
   }
 
   // Add tools info to the span
@@ -296,7 +267,6 @@ export function addBetaLLMRequestAttributes(
         return {
           name: typeof tool.name === 'string' ? tool.name : 'unknown',
           hash: toolHash,
-          json: toolJson,
         }
       })
 
@@ -308,22 +278,6 @@ export function addBetaLLMRequestAttributes(
         ),
       )
       span.setAttribute('tools_count', toolsWithHashes.length)
-
-      // Log each tool's full description once per unique hash
-      for (const { name, hash, json } of toolsWithHashes) {
-        if (!seenHashes.has(`tool_${hash}`)) {
-          seenHashes.add(`tool_${hash}`)
-
-          const { content: truncatedTool, truncated } = truncateContent(json)
-
-          void logOTelEvent('tool', {
-            tool_name: sanitizeToolNameForAnalytics(name),
-            tool_hash: hash,
-            tool: truncatedTool,
-            ...(truncated && { tool_truncated: 'true' }),
-          })
-        }
-      }
     } catch {
       // If parsing fails, log the raw tools string
       span.setAttribute('tools_parse_error', true)

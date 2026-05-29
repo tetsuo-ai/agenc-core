@@ -52,7 +52,6 @@ const harness = vi.hoisted(() => {
       handler: (input: string, key: Record<string, boolean>, event?: unknown) => unknown
       options?: Record<string, unknown>
     }>,
-    logEvent: vi.fn(),
     promptSuggestionLogEvent: vi.fn(),
     promptInputFooterProps: undefined as undefined | Record<string, unknown>,
     processBashCommand: vi.fn(async () => ({
@@ -153,7 +152,6 @@ const harness = vi.hoisted(() => {
     reset: () => {
       harness.addNotification.mockClear()
       harness.clearBuffer.mockClear()
-      harness.logEvent.mockClear()
       harness.promptSuggestionLogEvent.mockClear()
       harness.promptInputFooterProps = undefined
       harness.processBashCommand.mockReset()
@@ -269,10 +267,6 @@ const harness = vi.hoisted(() => {
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features[name] === true,
-}))
-
-vi.mock('../../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../services/analytics/growthbook.js', () => ({
@@ -1235,10 +1229,6 @@ describe('PromptInput render surface', () => {
       )
       expect(harness.appState.toolPermissionContext.mode).toBe('default')
       expect(harness.saveGlobalConfig).not.toHaveBeenCalled()
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_mode_cycle',
-        expect.objectContaining({ to: 'default' }),
-      )
     } finally {
       await rendered.dispose()
     }
@@ -3150,10 +3140,6 @@ describe('PromptInput render surface', () => {
       harness.keybindings['chat:cycleMode']?.()
       await sleep(0)
 
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_auto_mode_opt_in_dialog_decline',
-        {},
-      )
       expect(harness.appState.toolPermissionContext.mode).toBe('default')
     } finally {
       await rendered.dispose()

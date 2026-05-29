@@ -7,18 +7,12 @@ const harness = vi.hoisted(() => ({
   features: new Set<string>(),
   getCodeEditToolDecisionCounter: vi.fn(),
   getLanguageName: vi.fn(),
-  logEvent: vi.fn(),
-  logOTelEvent: vi.fn(),
   sandboxEnabled: false,
   sanitizeToolNameForAnalytics: vi.fn((toolName: string) => `safe:${toolName}`),
 }))
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../src/services/analytics/metadata.js', () => ({
@@ -37,10 +31,6 @@ vi.mock('../../../src/utils/sandbox/sandbox-runtime.js', () => ({
   SandboxManager: {
     isSandboxingEnabled: () => harness.sandboxEnabled,
   },
-}))
-
-vi.mock('../../../src/utils/telemetry/events.js', () => ({
-  logOTelEvent: harness.logOTelEvent,
 }))
 
 import {
@@ -121,8 +111,6 @@ describe('permissionLogging coverage swarm row 203', () => {
     harness.getCodeEditToolDecisionCounter.mockReturnValue(harness.counter)
     harness.getLanguageName.mockReset()
     harness.getLanguageName.mockResolvedValue('TypeScript')
-    harness.logEvent.mockClear()
-    harness.logOTelEvent.mockClear()
     harness.sandboxEnabled = false
     harness.sanitizeToolNameForAnalytics.mockClear()
     vi.spyOn(Date, 'now').mockReturnValue(4_000)
@@ -187,24 +175,10 @@ describe('permissionLogging coverage swarm row 203', () => {
       { decision: 'accept', source: { type: 'hook', permanent: true } },
     )
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_by_permission_hook',
-      {
-        messageID: 'message-1',
-        permanent: true,
-        sandboxEnabled: false,
-        toolName: 'safe:Read',
-      },
-    )
     expect(hookContext.toolUseContext.toolDecisions?.get('tool-use-1')).toEqual({
       decision: 'accept',
       source: 'hook',
       timestamp: 4_000,
-    })
-    expect(harness.logOTelEvent).toHaveBeenCalledWith('tool_decision', {
-      decision: 'accept',
-      source: 'hook',
-      tool_name: 'safe:Read',
     })
   })
 
@@ -220,18 +194,12 @@ describe('permissionLogging coverage swarm row 203', () => {
       3_900,
     )
 
-    expect(harness.logEvent).not.toHaveBeenCalled()
     expect(
       classifierContext.toolUseContext.toolDecisions?.get('classifier-off'),
     ).toEqual({
       decision: 'accept',
       source: 'unknown',
       timestamp: 4_000,
-    })
-    expect(harness.logOTelEvent).toHaveBeenCalledWith('tool_decision', {
-      decision: 'accept',
-      source: 'unknown',
-      tool_name: 'safe:Read',
     })
   })
 
@@ -252,15 +220,6 @@ describe('permissionLogging coverage swarm row 203', () => {
     )
     await flushMicrotasks()
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_by_classifier',
-      {
-        messageID: 'message-1',
-        sandboxEnabled: false,
-        toolName: 'safe:Edit',
-        waiting_for_user_permission_ms: 250,
-      },
-    )
     expect(harness.getLanguageName).toHaveBeenCalledWith('src/demo.ts')
     expect(harness.getCodeEditToolDecisionCounter).toHaveBeenCalled()
     expect(harness.counter.add).not.toHaveBeenCalled()

@@ -8,7 +8,6 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { wrapAnsi } from '../ink/wrapAnsi.js';
 import { Box, Text } from '../ink.js';
-import { logEvent } from '../../services/analytics/index.js';
 import type { HistoryEntry } from '../../utils/config.js';
 import { formatRelativeTimeAgo, truncateToWidth } from '../../utils/format.js';
 import { logError } from '../../utils/log.js';
@@ -112,10 +111,6 @@ export function HistorySearchDialog({
   return <FuzzyPicker title="Search prompts" placeholder="Filter history…" initialQuery={initialQuery} items={filtered} getKey={item_0 => String(item_0.entry.timestamp)} onQueryChange={setQuery} onSelect={item_1 => {
     if (isSelectionResolvingRef.current) return;
     isSelectionResolvingRef.current = true;
-    logEvent('agenc_history_picker_select', {
-      result_count: filtered.length,
-      query_length: query.length
-    });
     void item_1.entry.resolve().then(entry => {
       if (!isMountedRef.current) return;
       isSelectionResolvingRef.current = false;
@@ -124,9 +119,6 @@ export function HistorySearchDialog({
       if (!isMountedRef.current) return;
       isSelectionResolvingRef.current = false;
       logError(error);
-      logEvent('agenc_history_picker_select_error', {
-        query_length: query.length
-      });
     });
   }} onCancel={onCancel} emptyMessage={q_0 => items === null ? 'Loading…' : q_0 ? 'No matching prompts' : 'No history yet'} selectAction="use" direction="up" previewPosition={previewOnRight ? 'right' : 'bottom'} renderItem={(item_2, isFocused) => <Text>
           <Text dimColor>{item_2.age}</Text>

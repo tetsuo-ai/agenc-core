@@ -2,10 +2,6 @@ import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs
 import memoize from 'lodash-es/memoize.js'
 import { z } from 'zod/v4'
 import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
-import {
   buildTool,
   findToolByName,
   type Tool,
@@ -333,23 +329,6 @@ export const ToolSearchTool = buildTool({
       return pending.length > 0 ? pending.map(s => s.name) : undefined
     }
 
-    // Helper to log search outcome
-    function logSearchOutcome(
-      matches: string[],
-      queryType: 'select' | 'keyword',
-    ): void {
-      logEvent('tengu_tool_search_outcome', {
-        query:
-          query as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        queryType:
-          queryType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        matchCount: matches.length,
-        totalDeferredTools: deferredTools.length,
-        maxResults: max_results,
-        hasMatches: matches.length > 0,
-      })
-    }
-
     // Check for select: prefix — direct tool selection.
     // Supports comma-separated multi-select: `select:A,B,C`.
     // If a name isn't in the deferred set but IS in the full tool set,
@@ -379,7 +358,6 @@ export const ToolSearchTool = buildTool({
         logForDebugging(
           `ToolSearchTool: select failed — none found: ${missing.join(', ')}`,
         )
-        logSearchOutcome([], 'select')
         const pendingServers = getPendingServerNames()
         return buildSearchResult(
           [],
@@ -396,7 +374,6 @@ export const ToolSearchTool = buildTool({
       } else {
         logForDebugging(`ToolSearchTool: selected ${found.join(', ')}`)
       }
-      logSearchOutcome(found, 'select')
       return buildSearchResult(found, query, deferredTools.length)
     }
 
@@ -411,8 +388,6 @@ export const ToolSearchTool = buildTool({
     logForDebugging(
       `ToolSearchTool: keyword search for "${query}", found ${matches.length} matches`,
     )
-
-    logSearchOutcome(matches, 'keyword')
 
     // Include pending server info when search finds no matches
     if (matches.length === 0) {

@@ -1,6 +1,4 @@
 import type { UUID } from 'crypto'
-import { logEvent } from 'src/services/analytics/index.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/metadata.js'
 import { type Command, getCommandName, isCommandEnabled } from '../commands.js'
 import { selectableUserMessagesFilter } from './messageFilters.js'
 import type { SpinnerMode } from '../tui/components/spinner/types.js'
@@ -221,15 +219,6 @@ export async function handlePromptSubmit(
   // or immediate-command dispatch, so queued commands and immediate commands
   // both receive the expanded text from when it was submitted.
   const finalInput = expandPastedTextRefs(input, pastedContents)
-  const pastedTextRefs = parseReferences(input).filter(
-    r => pastedContents[r.id]?.type === 'text',
-  )
-  const pastedTextCount = pastedTextRefs.length
-  const pastedTextBytes = pastedTextRefs.reduce(
-    (sum, r) => sum + (pastedContents[r.id]?.content.length ?? 0),
-    0,
-  )
-  logEvent('tengu_paste_text', { pastedTextCount, pastedTextBytes })
 
   // Handle local-jsx immediate commands (e.g., /config, /doctor)
   // Skip for remote bridge messages — slash commands from CCR clients are plain text
@@ -257,11 +246,6 @@ export async function handlePromptSubmit(
       immediateCommand.type === 'local-jsx' &&
       (queryGuard.isActive || isExternalLoading)
     ) {
-      logEvent('tengu_immediate_command_executed', {
-        commandName:
-          immediateCommand.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
-
       // Clear input
       onInputChange('')
       setCursorOffset(0)
@@ -330,12 +314,6 @@ export async function handlePromptSubmit(
       logForDebugging(
         `[interrupt] Aborting current turn: streamMode=${params.streamMode}`,
       )
-      logEvent('tengu_cancel', {
-        source:
-          'interrupt_on_submit' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        streamMode:
-          params.streamMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
       params.abortController?.abort('interrupt')
     }
 

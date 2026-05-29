@@ -9,10 +9,6 @@ import {
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
 } from '../../constants/tools.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
 import { clearDumpState } from '../../services/api/dumpPrompts.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type {
@@ -40,7 +36,6 @@ import { asAgentId } from '../../types/ids.js'
 import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isInProtectedNamespace } from '../../utils/envUtils.js'
 import { AbortError, errorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -58,7 +53,7 @@ import { emitTaskProgress as emitTaskProgressEvent } from '../../utils/task/sdkP
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
-import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
+import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
@@ -318,32 +313,6 @@ export function finalizeAgentTool(
   const totalTokens = getTokenCountFromUsage(lastAssistantMessage.message.usage)
   const totalToolUseCount = countToolUses(agentMessages)
 
-  logEvent('tengu_agent_tool_completed', {
-    agent_type:
-      agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    model:
-      resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    prompt_char_count: prompt.length,
-    response_char_count: content.length,
-    assistant_message_count: agentMessages.length,
-    total_tool_uses: totalToolUseCount,
-    duration_ms: Date.now() - startTime,
-    total_tokens: totalTokens,
-    is_built_in_agent: isBuiltInAgent,
-    is_async: isAsync,
-  })
-
-  // Signal to inference that this subagent's cache chain can be evicted.
-  const lastRequestId = lastAssistantMessage.requestId
-  if (lastRequestId) {
-    logEvent('tengu_cache_eviction_hint', {
-      scope:
-        'subagent_end' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      last_request_id:
-        lastRequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-  }
-
   return {
     agentId,
     agentType,
@@ -421,41 +390,6 @@ export async function classifyHandoffIfNeeded({
       toolPermissionContext as ToolPermissionContext,
       abortSignal,
     )
-
-    const handoffDecision = classifierResult.unavailable
-      ? 'unavailable'
-      : classifierResult.shouldBlock
-        ? 'blocked'
-        : 'allowed'
-    logEvent('tengu_auto_mode_decision', {
-      decision:
-        handoffDecision as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      toolName:
-        // Use compatibility name for analytics continuity across the Task→Agent rename
-        LEGACY_AGENT_TOOL_NAME as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      inProtectedNamespace: isInProtectedNamespace(),
-      classifierModel:
-        classifierResult.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      agentType:
-        subagentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      toolUseCount: totalToolUseCount,
-      isHandoff: true,
-      // For handoff, the relevant agent completion is the subagent's final
-      // assistant message — the last thing the classifier transcript shows
-      // before the handoff review prompt.
-      agentMsgId: getLastAssistantMessage(agentMessages)?.message
-        .id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      classifierStage:
-        classifierResult.stage as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      classifierStage1RequestId:
-        classifierResult.stage1RequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      classifierStage1MsgId:
-        classifierResult.stage1MsgId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      classifierStage2RequestId:
-        classifierResult.stage2RequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      classifierStage2MsgId:
-        classifierResult.stage2MsgId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
 
     if (classifierResult.shouldBlock) {
       // When classifier is unavailable, still propagate the sub-agent's
@@ -640,17 +574,6 @@ export async function runAsyncAgentLifecycle({
       // must fire unconditionally. Transition status BEFORE worktree cleanup
       // so TaskOutput unblocks even if git hangs (gh-20236).
       killAsyncAgent(taskId, rootSetAppState)
-      logEvent('tengu_agent_tool_terminated', {
-        agent_type:
-          metadata.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        model:
-          metadata.resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        duration_ms: Date.now() - metadata.startTime,
-        is_async: true,
-        is_built_in_agent: metadata.isBuiltInAgent,
-        reason:
-          'user_kill_async' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
       const worktreeResult = await getWorktreeResult()
       const partialResult = extractPartialResult(agentMessages)
       enqueueAgentNotification({

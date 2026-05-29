@@ -15,7 +15,6 @@ const harness = vi.hoisted(() => ({
       updatedPermissions?: Array<{ destination: string }>
     }
   }>,
-  logEvent: vi.fn(),
   logPermissionDecision: vi.fn(),
   persistPermissionUpdates: vi.fn(),
   sanitizeToolNameForAnalytics: vi.fn((toolName: string) => `safe:${toolName}`),
@@ -24,10 +23,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../services/analytics/metadata.js', () => ({
@@ -158,7 +153,6 @@ beforeEach(() => {
   harness.debug.mockReset()
   harness.features = new Set()
   harness.hookResults = []
-  harness.logEvent.mockReset()
   harness.logPermissionDecision.mockReset()
   harness.persistPermissionUpdates.mockReset()
   harness.sanitizeToolNameForAnalytics.mockClear()
@@ -267,7 +261,7 @@ describe('PermissionContext primitives', () => {
     expect(subagentContext.abortController.signal.aborted).toBe(false)
   })
 
-  test('resolves aborted requests by logging cancellation and abort decision', () => {
+  test('resolves aborted requests with the abort decision and leaves active requests pending', () => {
     const abortController = new AbortController()
     abortController.abort()
     const ctx = context({ toolUseContext: toolUseContext({ abortController }) })
@@ -275,10 +269,6 @@ describe('PermissionContext primitives', () => {
 
     expect(ctx.resolveIfAborted(resolve)).toBe(true)
 
-    expect(harness.logEvent).toHaveBeenCalledWith('tengu_tool_use_cancelled', {
-      messageID: 'message-1',
-      toolName: 'safe:Read',
-    })
     expect(resolve).toHaveBeenCalledWith(
       expect.objectContaining({
         behavior: 'ask',

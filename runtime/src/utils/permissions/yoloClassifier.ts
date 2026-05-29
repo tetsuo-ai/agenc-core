@@ -14,8 +14,6 @@ import {
   setLastClassifierRequests,
 } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import { logEvent } from '../../services/analytics/index.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/metadata.js'
 import { getCacheControl } from '../../services/api/anthropic.js'
 import { parsePromptTooLongTokenCounts } from '../../services/api/errors.js'
 import { getDefaultMaxRetries } from '../../services/api/withRetry.js'
@@ -442,10 +440,6 @@ function toCompactBlock(
       logForDebugging(
         `toAutoClassifierInput failed for ${block.name}: ${errorMessage(e)}`,
       )
-      logEvent('tengu_auto_mode_malformed_tool_input', {
-        toolName:
-          block.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
       encoded = input
     }
     if (encoded === '') return ''
@@ -869,12 +863,6 @@ async function classifyYoloActionXml(
   },
   mode: TwoStageMode,
 ): Promise<YoloClassifierResult> {
-  const classifierType =
-    mode === 'both'
-      ? 'xml_2stage'
-      : mode === 'fast'
-        ? 'xml_fast'
-        : 'xml_thinking'
   const xmlSystemPrompt = replaceOutputFormatWithXml(systemPrompt)
   const systemBlocks: provider.TextBlockParam[] = [
     {
@@ -941,10 +929,6 @@ async function classifyYoloActionXml(
 
       // If stage 1 says allow, return immediately (fast path)
       if (stage1Block === false) {
-        logAutoModeOutcome('success', model, {
-          classifierType,
-          durationMs: stage1DurationMs,
-        })
         return {
           shouldBlock: false,
           reason: 'Allowed by fast classifier',
@@ -961,7 +945,6 @@ async function classifyYoloActionXml(
       // In fast-only mode, stage 1 is final — handle block + unparseable here.
       if (mode === 'fast') {
         if (stage1Block === null) {
-          logAutoModeOutcome('parse_failure', model, { classifierType })
           return {
             shouldBlock: true,
             reason: 'Classifier stage 1 unparseable - blocking for safety',
@@ -975,10 +958,6 @@ async function classifyYoloActionXml(
           }
         }
         // stage1Block === true
-        logAutoModeOutcome('success', model, {
-          classifierType,
-          durationMs: stage1DurationMs,
-        })
         return {
           shouldBlock: true,
           reason: parseXmlReason(stage1Text) ?? 'Blocked by fast classifier',
@@ -1031,7 +1010,6 @@ async function classifyYoloActionXml(
     )
 
     if (stage2Block === null) {
-      logAutoModeOutcome('parse_failure', model, { classifierType })
       return {
         shouldBlock: true,
         reason: 'Classifier stage 2 unparseable - blocking for safety',
@@ -1051,10 +1029,6 @@ async function classifyYoloActionXml(
       }
     }
 
-    logAutoModeOutcome('success', model, {
-      classifierType,
-      durationMs: totalDurationMs,
-    })
     return {
       thinking: parseXmlThinking(stage2Text) ?? undefined,
       shouldBlock: stage2Block,
@@ -1076,7 +1050,6 @@ async function classifyYoloActionXml(
   } catch (error) {
     if (signal.aborted) {
       logForDebugging('Auto mode classifier (XML): aborted by user')
-      logAutoModeOutcome('interrupted', model, { classifierType })
       return {
         shouldBlock: true,
         reason: 'Classifier request aborted',
@@ -1098,13 +1071,6 @@ async function classifyYoloActionXml(
         ...dumpContextInfo,
         model,
       })) ?? undefined
-    logAutoModeOutcome(tooLong ? 'transcript_too_long' : 'error', model, {
-      classifierType,
-      ...(tooLong && {
-        transcriptActualTokens: tooLong.actualTokens,
-        transcriptLimitTokens: tooLong.limitTokens,
-      }),
-    })
     return {
       shouldBlock: true,
       reason: tooLong
@@ -1324,7 +1290,6 @@ export async function classifyYoloAction(
       logForDebugging('Auto mode classifier: No tool use block found', {
         level: 'warn',
       })
-      logAutoModeOutcome('parse_failure', model, { failureKind: 'no_tool_use' })
       return {
         shouldBlock: true,
         reason: 'Classifier returned no tool use block - blocking for safety',
@@ -1345,9 +1310,6 @@ export async function classifyYoloAction(
     if (!parsed) {
       logForDebugging('Auto mode classifier: Invalid response schema', {
         level: 'warn',
-      })
-      logAutoModeOutcome('parse_failure', model, {
-        failureKind: 'invalid_schema',
       })
       return {
         shouldBlock: true,
@@ -1372,20 +1334,10 @@ export async function classifyYoloAction(
       stage1RequestId,
       stage1MsgId,
     }
-    // Context-delta telemetry: chart classifierInputTokens / mainLoopTokens
-    // in Datadog. Expect ~0.6-0.8 steady state; alert on p95 > 1.0 (means
-    // classifier is bigger than main loop — auto-compact won't save us).
-    logAutoModeOutcome('success', model, {
-      durationMs,
-      mainLoopTokens,
-      classifierInputTokens,
-      classifierTokensEst,
-    })
     return classifierResult
   } catch (error) {
     if (signal.aborted) {
       logForDebugging('Auto mode classifier: aborted by user')
-      logAutoModeOutcome('interrupted', model)
       return {
         shouldBlock: true,
         reason: 'Classifier request aborted',
@@ -1407,16 +1359,6 @@ export async function classifyYoloAction(
         action: actionCompact,
         model,
       })) ?? undefined
-    // No API usage on error — use classifierTokensEst / mainLoopTokens
-    // for the ratio. Overflow errors are the critical divergence signal.
-    logAutoModeOutcome(tooLong ? 'transcript_too_long' : 'error', model, {
-      mainLoopTokens,
-      classifierTokensEst,
-      ...(tooLong && {
-        transcriptActualTokens: tooLong.actualTokens,
-        transcriptLimitTokens: tooLong.limitTokens,
-      }),
-    })
     return {
       shouldBlock: true,
       reason: tooLong
@@ -1534,50 +1476,6 @@ const POWERSHELL_DENY_GUIDANCE: readonly string[] = feature(
       'PowerShell Elevation: `Start-Process -Verb RunAs`, `-ExecutionPolicy Bypass`, and disabling AMSI/Defender (`Set-MpPreference -DisableRealtimeMonitoring`) fall under "Security Weaken".',
     ]
   : []
-
-type AutoModeOutcome =
-  | 'success'
-  | 'parse_failure'
-  | 'interrupted'
-  | 'error'
-  | 'transcript_too_long'
-
-/**
- * Telemetry helper for tengu_auto_mode_outcome. All string fields are
- * enum-like values (outcome, model name, classifier type, failure kind) —
- * never code or file paths, so the AnalyticsMetadata casts are safe.
- */
-function logAutoModeOutcome(
-  outcome: AutoModeOutcome,
-  model: string,
-  extra?: {
-    classifierType?: string
-    failureKind?: string
-    durationMs?: number
-    mainLoopTokens?: number
-    classifierInputTokens?: number
-    classifierTokensEst?: number
-    transcriptActualTokens?: number
-    transcriptLimitTokens?: number
-  },
-): void {
-  const { classifierType, failureKind, ...rest } = extra ?? {}
-  logEvent('tengu_auto_mode_outcome', {
-    outcome:
-      outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    classifierModel:
-      model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    ...(classifierType !== undefined && {
-      classifierType:
-        classifierType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    }),
-    ...(failureKind !== undefined && {
-      failureKind:
-        failureKind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    }),
-    ...rest,
-  })
-}
 
 /**
  * Detect API 400 "prompt is too long: N tokens > M maximum" errors and

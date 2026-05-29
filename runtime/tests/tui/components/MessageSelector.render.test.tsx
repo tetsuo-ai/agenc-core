@@ -15,7 +15,6 @@ const harness = vi.hoisted(() => ({
   fileHistoryGetDiffStats: vi.fn(),
   keybindings: {} as Record<string, () => unknown>,
   logError: vi.fn(),
-  logEvent: vi.fn(),
   selectProps: null as null | {
     onCancel: () => void
     onChange: (value: string) => void
@@ -37,13 +36,8 @@ const harness = vi.hoisted(() => ({
     harness.fileHistoryGetDiffStats.mockResolvedValue(harness.diffStats)
     harness.keybindings = {}
     harness.logError.mockClear()
-    harness.logEvent.mockClear()
     harness.selectProps = null
   },
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -209,10 +203,6 @@ describe('MessageSelector render paths', () => {
     try {
       expect(rendered.output()).toContain('Nothing to rewind to yet.')
       harness.keybindings['confirm:no']?.()
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_message_selector_cancelled',
-        {},
-      )
       expect(onClose).toHaveBeenCalled()
     } finally {
       await rendered.dispose()

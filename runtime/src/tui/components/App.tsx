@@ -67,7 +67,6 @@ import { installCompactProgressControls, type AgenCTuiProps } from "../session-t
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
-import { logEvent } from "../../services/analytics/index.js";
 import { useNotifications } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
 import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
@@ -2060,7 +2059,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   useEffect(() => {
     if (haveShownCostDialog || showCostDialog) return;
     if (getTotalCost() < 5) return;
-    logEvent("agenc_cost_threshold_reached", {});
     setHaveShownCostDialog(true);
     if (hasConsoleBillingAccess()) {
       setShowCostDialog(true);
@@ -2247,7 +2245,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       ...current,
       hasAcknowledgedCostThreshold: true
     }));
-    logEvent("agenc_cost_threshold_acknowledged", {});
   }, []);
 
   // Spinner gating + mode derivation.

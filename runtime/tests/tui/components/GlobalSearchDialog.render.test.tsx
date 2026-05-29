@@ -35,7 +35,6 @@ type CapturedPickerProps = {
 
 const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
-  logEvent: vi.fn(),
   logError: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
@@ -54,10 +53,6 @@ vi.mock('../context/overlayContext', () => ({
 
 vi.mock('../hooks/useTerminalSize', () => ({
   useTerminalSize: () => harness.terminal,
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/cwd', () => ({
@@ -100,7 +95,6 @@ function resetHarness() {
   harness.terminal.rows = 30
   harness.pickerProps = undefined
   harness.registerOverlay.mockClear()
-  harness.logEvent.mockClear()
   harness.logError.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(true)
@@ -467,24 +461,12 @@ describe('GlobalSearchDialog render and interactions', () => {
         '/workspace/project/src/app.tsx',
         12,
       )
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_global_search_select', {
-        result_count: 1,
-        opened_editor: true,
-      })
 
       pickerProps().onTab?.handler(match)
       expect(rendered.onInsert).toHaveBeenCalledWith('@src/app.tsx#L12 ')
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_global_search_insert', {
-        result_count: 1,
-        mention: true,
-      })
 
       pickerProps().onShiftTab?.handler(match)
       expect(rendered.onInsert).toHaveBeenCalledWith('src/app.tsx:12 ')
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_global_search_insert', {
-        result_count: 1,
-        mention: false,
-      })
       expect(rendered.onDone).toHaveBeenCalledTimes(3)
     } finally {
       await rendered.dispose()

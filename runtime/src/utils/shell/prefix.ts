@@ -10,10 +10,6 @@
 import chalk from 'chalk'
 import type { QuerySource } from '../../constants/querySource.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/anthropic.js'
 import { startsWithApiErrorPrefix } from '../../services/api/errors.js'
 import { memoizeWithLRU } from '../memoize.js'
@@ -90,7 +86,7 @@ export type PrefixExtractorConfig = {
  * @returns A memoized async function that extracts command prefixes
  */
 export function createCommandPrefixExtractor(config: PrefixExtractorConfig) {
-  const { toolName, policySpec, eventName, querySource, preCheck } = config
+  const { toolName, policySpec, querySource, preCheck } = config
 
   const memoized = memoizeWithLRU(
     (
@@ -104,7 +100,6 @@ export function createCommandPrefixExtractor(config: PrefixExtractorConfig) {
         isNonInteractiveSession,
         toolName,
         policySpec,
-        eventName,
         querySource,
         preCheck,
       )
@@ -175,7 +170,6 @@ async function getCommandPrefixImpl(
   isNonInteractiveSession: boolean,
   toolName: string,
   policySpec: string,
-  eventName: string,
   querySource: QuerySource,
   preCheck?: (command: string) => CommandPrefixResult | null,
 ): Promise<CommandPrefixResult | null> {
@@ -192,7 +186,6 @@ async function getCommandPrefixImpl(
   }
 
   let preflightCheckTimeoutId: NodeJS.Timeout | undefined
-  const startTime = Date.now()
   let result: CommandPrefixResult | null = null
 
   try {
@@ -243,7 +236,6 @@ async function getCommandPrefixImpl(
 
     // Clear the timeout since the query completed
     clearTimeout(preflightCheckTimeoutId)
-    const durationMs = Date.now() - startTime
 
     const prefix =
       typeof response.message.content === 'string'
@@ -254,21 +246,9 @@ async function getCommandPrefixImpl(
           : 'none'
 
     if (startsWithApiErrorPrefix(prefix)) {
-      logEvent(eventName, {
-        success: false,
-        error:
-          'API error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        durationMs,
-      })
       result = null
     } else if (prefix === 'command_injection_detected') {
       // Haiku detected something suspicious - treat as no prefix available
-      logEvent(eventName, {
-        success: false,
-        error:
-          'command_injection_detected' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        durationMs,
-      })
       result = {
         commandPrefix: null,
       }
@@ -277,23 +257,11 @@ async function getCommandPrefixImpl(
       DANGEROUS_SHELL_PREFIXES.has(prefix.toLowerCase())
     ) {
       // Never accept bare `git` or shell executables as a prefix
-      logEvent(eventName, {
-        success: false,
-        error:
-          'dangerous_shell_prefix' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        durationMs,
-      })
       result = {
         commandPrefix: null,
       }
     } else if (prefix === 'none') {
       // No prefix detected
-      logEvent(eventName, {
-        success: false,
-        error:
-          'prefix "none"' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        durationMs,
-      })
       result = {
         commandPrefix: null,
       }
@@ -302,20 +270,10 @@ async function getCommandPrefixImpl(
 
       if (!command.startsWith(prefix)) {
         // Prefix isn't actually a prefix of the command
-        logEvent(eventName, {
-          success: false,
-          error:
-            'command did not start with prefix' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          durationMs,
-        })
         result = {
           commandPrefix: null,
         }
       } else {
-        logEvent(eventName, {
-          success: true,
-          durationMs,
-        })
         result = {
           commandPrefix: prefix,
         }

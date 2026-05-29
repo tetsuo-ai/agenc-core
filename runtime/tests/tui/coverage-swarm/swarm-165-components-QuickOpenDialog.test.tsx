@@ -34,7 +34,6 @@ type Suggestion = {
 const harness = vi.hoisted(() => ({
   cwd: "/workspace/project",
   generateFileSuggestions: vi.fn(),
-  logEvent: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readFileInRange: vi.fn(),
@@ -55,10 +54,6 @@ vi.mock("src/tui/hooks/fileSuggestions.js", () => ({
 
 vi.mock("src/tui/hooks/useTerminalSize.js", () => ({
   useTerminalSize: () => harness.terminal,
-}));
-
-vi.mock("src/services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("src/utils/cwd.js", () => ({
@@ -122,7 +117,6 @@ function resetHarness() {
   harness.registerOverlay.mockClear();
   harness.generateFileSuggestions.mockReset();
   harness.generateFileSuggestions.mockResolvedValue([]);
-  harness.logEvent.mockClear();
   harness.openFileInExternalEditor.mockReset();
   harness.openFileInExternalEditor.mockReturnValue(false);
   harness.readFileInRange.mockReset();
@@ -288,10 +282,6 @@ describe("QuickOpenDialog coverage swarm row 165", () => {
       expect(harness.openFileInExternalEditor).toHaveBeenCalledWith(
         "/workspace/project/src/new.ts",
       );
-      expect(harness.logEvent).toHaveBeenCalledWith("agenc_quick_open_select", {
-        opened_editor: false,
-        result_count: 1,
-      });
       expect(rendered.onDone).toHaveBeenCalledTimes(1);
     } finally {
       await rendered.dispose();
@@ -385,17 +375,9 @@ describe("QuickOpenDialog coverage swarm row 165", () => {
 
       pickerProps().onTab?.handler("src/broken.ts");
       expect(rendered.onInsert).toHaveBeenCalledWith("@src/broken.ts ");
-      expect(harness.logEvent).toHaveBeenCalledWith("agenc_quick_open_insert", {
-        mention: true,
-        result_count: 1,
-      });
 
       pickerProps().onShiftTab?.handler("src/broken.ts");
       expect(rendered.onInsert).toHaveBeenCalledWith("src/broken.ts ");
-      expect(harness.logEvent).toHaveBeenCalledWith("agenc_quick_open_insert", {
-        mention: false,
-        result_count: 1,
-      });
       expect(rendered.onDone).toHaveBeenCalledTimes(2);
     } finally {
       await rendered.dispose();

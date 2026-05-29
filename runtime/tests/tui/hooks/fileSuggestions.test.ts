@@ -27,7 +27,6 @@ const harness = vi.hoisted(() => ({
   fileIndexSearchResults: [] as { path: string; score?: number }[],
   gitRoot: null as string | null,
   logError: vi.fn(),
-  logEvent: vi.fn(),
   ripGrep: vi.fn(async () => [] as string[]),
   settings: {} as Record<string, unknown>,
   yieldToEventLoop: vi.fn(async () => {}),
@@ -42,7 +41,6 @@ const harness = vi.hoisted(() => ({
     this.gitRoot = null
     this.settings = {}
     this.logError.mockClear()
-    this.logEvent.mockClear()
     this.ripGrep.mockClear()
     this.yieldToEventLoop.mockClear()
   },
@@ -52,11 +50,6 @@ vi.mock('../../utils/cwd.js', () => ({
   getCwd: () => tempCwd,
   pwd: () => tempCwd,
   runWithCwdOverride: <T,>(_cwd: string, fn: () => T) => fn(),
-}))
-
-// Avoid hitting the real analytics path during tests.
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/settings/settings.js', () => ({

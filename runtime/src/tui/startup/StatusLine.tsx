@@ -3,7 +3,6 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
-import { logEvent } from '../../services/analytics/index.js';
 import { getRawUtilization } from '../rate-limits/agenc-ai-limits.js';
 import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../constants/outputStyles.js';
@@ -267,10 +266,6 @@ function StatusLineInner({
   useEffect(() => {
     const statusLine = settings?.statusLine;
     if (statusLine) {
-      logEvent('agenc_status_line_mount', {
-        command_length: statusLine.command.length,
-        padding: statusLine.padding
-      });
       // Log if status line is configured but disabled by disableAllHooks
       if (settings.disableAllHooks === true) {
         logForDebugging('Status line is configured but disableAllHooks is true', {
@@ -278,8 +273,7 @@ function StatusLineInner({
         });
       }
       // executeStatusLineCommand (hooks.ts) returns undefined when trust is
-      // blocked — statusLineText stays undefined forever, user sees nothing,
-      // and agenc_status_line_mount above fires anyway so telemetry looks fine.
+      // blocked — statusLineText stays undefined forever, user sees nothing.
       const trustCwd = getOriginalCwd() || getCwd();
       if (!checkHasProjectTrustAcceptedSync({ cwd: trustCwd })) {
         addNotification({

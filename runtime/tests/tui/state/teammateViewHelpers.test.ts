@@ -5,10 +5,6 @@ import {
   stopOrDismissAgent,
 } from "./teammateViewHelpers.js";
 
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: vi.fn(),
-}));
-
 function makeState(overrides: Partial<AppState> = {}): AppState {
   return {
     tasks: {},

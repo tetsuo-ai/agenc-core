@@ -26,16 +26,11 @@ const mocks = vi.hoisted(() => ({
   getCurrentUsage: vi.fn(() => 4096),
   getKairosActive: vi.fn(() => false),
   getRuntimeMainLoopModel: vi.fn(() => 'runtime-gpt-5'),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
 }))
 
 vi.mock('bun:bundle', () => ({
   feature: mocks.feature,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: mocks.logEvent,
 }))
 
 vi.mock('../../constants/outputStyles.js', () => ({
@@ -233,7 +228,6 @@ describe('StatusLine wave200-093 coverage', () => {
     mocks.getKairosActive.mockReset()
     mocks.getKairosActive.mockReturnValue(false)
     mocks.getRuntimeMainLoopModel.mockClear()
-    mocks.logEvent.mockClear()
     mocks.logForDebugging.mockClear()
   })
 
@@ -275,10 +269,6 @@ describe('StatusLine wave200-093 coverage', () => {
 
     expect(output()).toContain('-- NORMAL --')
     expect(output()).toContain('seed-status')
-    expect(mocks.logEvent).toHaveBeenCalledWith('agenc_status_line_mount', {
-      command_length: 'statusline --json'.length,
-      padding: 2,
-    })
     expect(mocks.logForDebugging).toHaveBeenCalledWith(
       'Status line is configured but disableAllHooks is true',
       { level: 'warn' },

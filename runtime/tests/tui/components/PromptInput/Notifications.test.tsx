@@ -28,7 +28,6 @@ const harness = vi.hoisted(() => ({
   helperConfigured: false,
   helperElapsedMs: 0,
   ideStatus: 'disconnected' as 'connected' | 'disconnected',
-  logEvent: vi.fn(),
   mcpClientsSeen: undefined as unknown,
   model: 'gpt-5.4',
   removeNotification: vi.fn(),
@@ -39,10 +38,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../services/compact/autoCompact.js', () => ({
@@ -233,7 +228,6 @@ function resetHarness() {
   harness.helperConfigured = false
   harness.helperElapsedMs = 0
   harness.ideStatus = 'disconnected'
-  harness.logEvent.mockClear()
   harness.mcpClientsSeen = undefined
   harness.model = 'gpt-5.4'
   harness.removeNotification.mockClear()
@@ -413,10 +407,6 @@ describe('Notifications', () => {
       expect(rendered.output()).toContain('JSX notice')
       expect(rendered.output()).not.toContain('AutoUpdater:')
       expect(harness.autoUpdaterProps).toHaveLength(0)
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_external_editor_hint_shown',
-        {},
-      )
       expect(harness.addNotification).toHaveBeenCalledWith(
         expect.objectContaining({
           key: 'external-editor-hint',
@@ -446,10 +436,6 @@ describe('Notifications', () => {
       expect(rendered.output()).toContain('AutoUpdater:true:false:false:success')
       expect(harness.removeNotification).toHaveBeenCalledWith(
         'external-editor-hint',
-      )
-      expect(harness.logEvent).not.toHaveBeenCalledWith(
-        'agenc_external_editor_hint_shown',
-        {},
       )
     } finally {
       await rendered.dispose()

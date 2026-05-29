@@ -15,7 +15,6 @@ const harness = vi.hoisted(() => ({
       updatedPermissions?: Array<{ destination: string }>
     }
   }>,
-  logEvent: vi.fn(),
   logPermissionDecision: vi.fn(),
   persistPermissionUpdates: vi.fn(),
   sanitizeToolNameForAnalytics: vi.fn((toolName: string) => `safe:${toolName}`),
@@ -24,10 +23,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../src/services/analytics/metadata.js', () => ({
@@ -151,7 +146,6 @@ beforeEach(() => {
   harness.debug.mockReset()
   harness.features = new Set()
   harness.hookResults = []
-  harness.logEvent.mockReset()
   harness.logPermissionDecision.mockReset()
   harness.persistPermissionUpdates.mockReset()
   harness.sanitizeToolNameForAnalytics.mockClear()

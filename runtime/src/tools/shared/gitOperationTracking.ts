@@ -2,17 +2,13 @@
  * Shell-agnostic git operation tracking for usage metrics.
  *
  * Detects `git commit`, `git push`, `gh pr create`, `glab mr create`, and
- * curl-based PR creation in command strings, then increments OTLP counters
- * and fires analytics events. The regexes operate on raw command text so they
+ * curl-based PR creation in command strings, then increments OTLP counters.
+ * The regexes operate on raw command text so they
  * work identically for Bash and PowerShell (both invoke git/gh/glab/curl as
  * external binaries with the same argv syntax).
  */
 
 import { getCommitCounter, getPrCounter } from '../../bootstrap/state.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
 
 /**
  * Build a regex that matches `git <subcmd>` while tolerating git's global
@@ -197,31 +193,9 @@ export function trackGitOperations(
   }
 
   if (GIT_COMMIT_RE.test(command)) {
-    logEvent('tengu_git_operation', {
-      operation:
-        'commit' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-    if (command.match(/--amend\b/)) {
-      logEvent('tengu_git_operation', {
-        operation:
-          'commit_amend' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
-    }
     getCommitCounter()?.add(1)
   }
-  if (GIT_PUSH_RE.test(command)) {
-    logEvent('tengu_git_operation', {
-      operation:
-        'push' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-  }
   const prHit = GH_PR_ACTIONS.find(a => a.re.test(command))
-  if (prHit) {
-    logEvent('tengu_git_operation', {
-      operation:
-        prHit.op as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-  }
   if (prHit?.action === 'created') {
     getPrCounter()?.add(1)
     // Auto-link session to PR if we can extract PR URL from stdout
@@ -248,10 +222,6 @@ export function trackGitOperations(
     }
   }
   if (command.match(/\bglab\s+mr\s+create\b/)) {
-    logEvent('tengu_git_operation', {
-      operation:
-        'pr_create' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     getPrCounter()?.add(1)
   }
   // Detect PR creation via curl to REST APIs (Bitbucket, GitHub API, GitLab API)
@@ -268,10 +238,6 @@ export function trackGitOperations(
     /https?:\/\/[^\s'"]*\/(pulls|pull-requests|merge[-_]requests)(?!\/\d)/i,
   )
   if (isCurlPost && isPrEndpoint) {
-    logEvent('tengu_git_operation', {
-      operation:
-        'pr_create' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     getPrCounter()?.add(1)
   }
 }

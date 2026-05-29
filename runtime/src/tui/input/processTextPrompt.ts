@@ -6,17 +6,11 @@ import type {
   SystemMessage,
   UserMessage,
 } from '../../types/message.js'
-import { logEvent } from '../../services/analytics/index.js'
 import type { PermissionMode } from '../../types/permissions.js'
 import type { VimMode } from '../../types/textInputTypes.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { TextCursor } from '../../utils/TextCursor.js'
-import { logOTelEvent, redactIfDisabled } from '../../utils/telemetry/events.js'
 import { startInteractionSpan } from '../../utils/telemetry/sessionTracing.js'
-import {
-  matchesKeepGoingKeyword,
-  matchesNegativeKeyword,
-} from '../../utils/userPromptKeywords.js'
 import { transition, type TransitionContext } from '../vim/transitions.js'
 import type { CommandState, FindType, RecordedChange } from '../vim/types.js'
 
@@ -128,32 +122,6 @@ export function processTextPrompt(
       ? routedInput
       : routedInput.find(block => block.type === 'text')?.text || ''
   startInteractionSpan(userPromptText)
-
-  // Emit user_prompt OTEL event for both string (CLI) and array (SDK/VS Code)
-  // input shapes. Previously gated on `typeof input === 'string'`, so VS Code
-  // sessions never emitted user_prompt (anthropics/agenc-code#33301).
-  // For array input, use the LAST text block: createUserContent pushes the
-  // user's message last (after any <ide_selection>/attachment context blocks),
-  // so .findLast gets the actual prompt. userPromptText (first block) is kept
-  // unchanged for startInteractionSpan to preserve existing span attributes.
-  const otelPromptText =
-    typeof routedInput === 'string'
-      ? routedInput
-      : routedInput.findLast(block => block.type === 'text')?.text || ''
-  if (otelPromptText) {
-    void logOTelEvent('user_prompt', {
-      prompt_length: String(otelPromptText.length),
-      prompt: redactIfDisabled(otelPromptText),
-      'prompt.id': promptId,
-    })
-  }
-
-  const isNegative = matchesNegativeKeyword(userPromptText)
-  const isKeepGoing = matchesKeepGoingKeyword(userPromptText)
-  logEvent('agenc_input_prompt', {
-    is_negative: isNegative,
-    is_keep_going: isKeepGoing,
-  })
 
   // If we have pasted images, create a message with image content
   if (imageContentBlocks.length > 0) {

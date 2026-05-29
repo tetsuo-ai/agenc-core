@@ -17,7 +17,6 @@ const harness = vi.hoisted(() => ({
   isAutoUpdaterDisabled: vi.fn(() => false),
   localInstallationExists: vi.fn(async () => true),
   logError: vi.fn(),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   removeInstalledSymlink: vi.fn(async () => {}),
   shouldSkipVersion: vi.fn(() => false),
@@ -27,10 +26,6 @@ vi.mock("usehooks-ts", () => ({
   useInterval: (_callback: () => void, delay: number | null) => {
     harness.intervalDelay = delay;
   },
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("src/utils/debug.js", () => ({
@@ -246,16 +241,6 @@ describe("AutoUpdater wave200 coverage", () => {
       expect(harness.logForDebugging).toHaveBeenCalledWith(
         "AutoUpdater: Unknown installation type, falling back to config",
       );
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_auto_updater_fail",
-        expect.objectContaining({
-          attemptedVersion: "2.0.0",
-          fromVersion: "1.0.0",
-          installationType: "unknown",
-          status: "install_failed",
-          wasMigrated: true,
-        }),
-      );
     } finally {
       root.unmount();
       stdin.end();
@@ -334,7 +319,6 @@ describe("AutoUpdater wave200 coverage", () => {
       expect(harness.logError).toHaveBeenCalledWith(error);
       expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
       expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
-      expect(harness.logEvent).not.toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();

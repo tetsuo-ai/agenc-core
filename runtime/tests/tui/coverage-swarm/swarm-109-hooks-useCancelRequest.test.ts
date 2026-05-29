@@ -31,7 +31,6 @@ const fixture = vi.hoisted(() => ({
   exitTeammateView: vi.fn(),
   killAllRunningAgentTasks: vi.fn(),
   markAgentsNotified: vi.fn(),
-  logEvent: vi.fn(),
   onAgentsKilled: vi.fn(),
   onCancel: vi.fn(),
   popCommandFromQueue: vi.fn(),
@@ -40,10 +39,6 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-
-vi.mock('src/services/analytics/index.js', () => ({
-  logEvent: fixture.logEvent,
 }))
 
 vi.mock('src/tui/state/AppState.js', () => ({
@@ -199,7 +194,6 @@ describe('CancelRequestHandler coverage swarm 109', () => {
     expect(fixture.popCommandFromQueue).toHaveBeenCalledTimes(1)
     expect(fixture.onCancel).not.toHaveBeenCalled()
     expect(fixture.setToolUseConfirmQueue).not.toHaveBeenCalled()
-    expect(fixture.logEvent).not.toHaveBeenCalled()
   })
 
   test('queued-command fallback cancels when no pop handler was supplied', async () => {
@@ -218,10 +212,6 @@ describe('CancelRequestHandler coverage swarm 109', () => {
       expect.any(Function),
     )
     expect(fixture.onCancel).toHaveBeenCalledTimes(1)
-    expect(fixture.logEvent).toHaveBeenCalledWith('agenc_cancel', {
-      source: 'escape',
-      streamMode: undefined,
-    })
   })
 
   test('context guards deactivate Escape while keeping Ctrl+C available for an active turn', async () => {

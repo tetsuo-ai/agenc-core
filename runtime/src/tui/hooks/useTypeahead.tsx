@@ -2,7 +2,6 @@ import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from '../context/notifications.js';
 import { Text } from '../ink.js';
-import { logEvent } from '../../services/analytics/index.js';
 import { useDebounceCallback } from 'usehooks-ts';
 import { type Command, getCommandName } from '../../commands.js';
 import { getModeFromInput, getValueFromInput } from '../components/PromptInput/inputModes.js';
@@ -210,7 +209,6 @@ async function generateBashSuggestions(input: string, cursorOffset: number): Pro
     return suggestions;
   } catch {
     // Silent failure - don't break UX
-    logEvent('agenc_shell_completion_failed', {});
     return [];
   }
 }

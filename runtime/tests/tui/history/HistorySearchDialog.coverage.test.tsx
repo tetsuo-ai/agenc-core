@@ -78,7 +78,6 @@ const harness = vi.hoisted(() => ({
   }),
   historyGate: undefined as Deferred | undefined,
   logError: vi.fn(),
-  logEvent: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readerNextError: undefined as unknown | undefined,
   readerReturnError: undefined as unknown | undefined,
@@ -103,10 +102,6 @@ vi.mock('./history.js', () => ({
 
 vi.mock('../hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => harness.terminal,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/log.js', () => ({
@@ -138,7 +133,6 @@ function resetHarness() {
   harness.getTimestampedHistory.mockClear()
   harness.historyGate = undefined
   harness.logError.mockClear()
-  harness.logEvent.mockClear()
   harness.pickerProps = undefined
   harness.readerNextError = undefined
   harness.readerReturnError = undefined
@@ -343,10 +337,6 @@ describe('HistorySearchDialog coverage', () => {
       )
       expect(exactResolve).toHaveBeenCalledTimes(1)
       expect(rendered.onSelect).toHaveBeenCalledWith(exactResolvedEntry)
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_history_picker_select', {
-        result_count: 2,
-        query_length: 2,
-      })
 
       props.onCancel()
       expect(rendered.onCancel).toHaveBeenCalledTimes(1)

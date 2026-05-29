@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
       },
     },
   })),
-  logEvent: vi.fn(),
   processToolResultBlock: vi.fn(async (_tool: unknown, data: { content?: string }) => ({
     content: data.content,
   })),
@@ -28,10 +27,6 @@ vi.mock("../components/BashModeProgress.js", () => ({
 
 vi.mock("../components/PasteConfirmDialog.js", () => ({
   PasteConfirmDialog: vi.fn(() => null),
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: mocks.logEvent,
 }));
 
 vi.mock("../../tools/canonicalToolSurface.js", () => ({
@@ -125,9 +120,6 @@ describe("processBashCommand", () => {
       "<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>",
     );
     expect(setToolJSX).toHaveBeenLastCalledWith(null);
-    expect(mocks.logEvent).toHaveBeenCalledWith("agenc_input_bash", {
-      powershell: false,
-    });
   });
 
   it("passes failed canonical Bash results through the tool-result mapper", async () => {

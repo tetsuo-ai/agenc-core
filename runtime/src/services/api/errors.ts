@@ -41,10 +41,6 @@ import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
 import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../analytics/index.js'
-import {
   type AgenCAILimits,
   getRateLimitErrorMessage,
   type OverageDisabledReason,
@@ -323,169 +319,6 @@ function getOauthOrgNotAllowedErrorMessage(): string {
  */
 function isCCRMode(): boolean {
   return isEnvTruthy(process.env.AGENC_REMOTE)
-}
-
-// Temp helper to log tool_use/tool_result mismatch errors
-function logToolUseToolResultMismatch(
-  toolUseId: string,
-  messages: Message[],
-  messagesForAPI: (UserMessage | AssistantMessage)[],
-): void {
-  try {
-    // Find tool_use in normalized messages
-    let normalizedIndex = -1
-    for (let i = 0; i < messagesForAPI.length; i++) {
-      const msg = messagesForAPI[i]
-      if (!msg) continue
-      const content = msg.message.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (
-            block.type === 'tool_use' &&
-            'id' in block &&
-            block.id === toolUseId
-          ) {
-            normalizedIndex = i
-            break
-          }
-        }
-      }
-      if (normalizedIndex !== -1) break
-    }
-
-    // Find tool_use in original messages
-    let originalIndex = -1
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i]
-      if (!msg) continue
-      if (msg.type === 'assistant' && 'message' in msg) {
-        const content = msg.message.content
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (
-              block.type === 'tool_use' &&
-              'id' in block &&
-              block.id === toolUseId
-            ) {
-              originalIndex = i
-              break
-            }
-          }
-        }
-      }
-      if (originalIndex !== -1) break
-    }
-
-    // Build normalized sequence
-    const normalizedSeq: string[] = []
-    for (let i = normalizedIndex + 1; i < messagesForAPI.length; i++) {
-      const msg = messagesForAPI[i]
-      if (!msg) continue
-      const content = msg.message.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          const role = msg.message.role
-          if (block.type === 'tool_use' && 'id' in block) {
-            normalizedSeq.push(`${role}:tool_use:${block.id}`)
-          } else if (block.type === 'tool_result' && 'tool_use_id' in block) {
-            normalizedSeq.push(`${role}:tool_result:${block.tool_use_id}`)
-          } else if (block.type === 'text') {
-            normalizedSeq.push(`${role}:text`)
-          } else if (block.type === 'thinking') {
-            normalizedSeq.push(`${role}:thinking`)
-          } else if (block.type === 'image') {
-            normalizedSeq.push(`${role}:image`)
-          } else {
-            normalizedSeq.push(`${role}:${block.type}`)
-          }
-        }
-      } else if (typeof content === 'string') {
-        normalizedSeq.push(`${msg.message.role}:string_content`)
-      }
-    }
-
-    // Build pre-normalized sequence
-    const preNormalizedSeq: string[] = []
-    for (let i = originalIndex + 1; i < messages.length; i++) {
-      const msg = messages[i]
-      if (!msg) continue
-
-      switch (msg.type) {
-        case 'user':
-        case 'assistant': {
-          if ('message' in msg) {
-            const content = msg.message.content
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                const role = msg.message.role
-                if (block.type === 'tool_use' && 'id' in block) {
-                  preNormalizedSeq.push(`${role}:tool_use:${block.id}`)
-                } else if (
-                  block.type === 'tool_result' &&
-                  'tool_use_id' in block
-                ) {
-                  preNormalizedSeq.push(
-                    `${role}:tool_result:${block.tool_use_id}`,
-                  )
-                } else if (block.type === 'text') {
-                  preNormalizedSeq.push(`${role}:text`)
-                } else if (block.type === 'thinking') {
-                  preNormalizedSeq.push(`${role}:thinking`)
-                } else if (block.type === 'image') {
-                  preNormalizedSeq.push(`${role}:image`)
-                } else {
-                  preNormalizedSeq.push(`${role}:${block.type}`)
-                }
-              }
-            } else if (typeof content === 'string') {
-              preNormalizedSeq.push(`${msg.message.role}:string_content`)
-            }
-          }
-          break
-        }
-        case 'attachment':
-          if ('attachment' in msg) {
-            preNormalizedSeq.push(`attachment:${msg.attachment.type}`)
-          }
-          break
-        case 'system':
-          if ('subtype' in msg) {
-            preNormalizedSeq.push(`system:${msg.subtype}`)
-          }
-          break
-        case 'progress':
-          if (
-            'progress' in msg &&
-            msg.progress &&
-            typeof msg.progress === 'object' &&
-            'type' in msg.progress
-          ) {
-            preNormalizedSeq.push(`progress:${msg.progress.type ?? 'unknown'}`)
-          } else {
-            preNormalizedSeq.push('progress:unknown')
-          }
-          break
-      }
-    }
-
-    // Log to Statsig
-    logEvent('tengu_tool_use_tool_result_mismatch_error', {
-      toolUseId:
-        toolUseId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      normalizedSequence: normalizedSeq.join(
-        ', ',
-      ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      preNormalizedSequence: preNormalizedSeq.join(
-        ', ',
-      ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      normalizedMessageCount: messagesForAPI.length,
-      originalMessageCount: messages.length,
-      normalizedToolUseIndex: normalizedIndex,
-      originalToolUseIndex: originalIndex,
-    })
-  } catch (_) {
-    // Ignore errors in debug logging
-  }
 }
 
 /**
@@ -795,19 +628,6 @@ export function getAssistantMessageFromError(
       '`tool_use` ids were found without `tool_result` blocks immediately after',
     )
   ) {
-    // Log to Statsig if we have the message context
-    if (options?.messages && options?.messagesForAPI) {
-      const toolUseIdMatch = error.message.match(/toolu_[a-zA-Z0-9]+/)
-      const toolUseId = toolUseIdMatch ? toolUseIdMatch[0] : null
-      if (toolUseId) {
-        logToolUseToolResultMismatch(
-          toolUseId,
-          options.messages,
-          options.messagesForAPI,
-        )
-      }
-    }
-
     if (process.env.USER_TYPE === 'ant') {
       const baseMessage = `API Error: 400 ${error.message}\n\nRun /share and post the JSON file to ${MACRO.FEEDBACK_CHANNEL}.`
       const rewindInstruction = getIsNonInteractiveSession()
@@ -829,23 +649,14 @@ export function getAssistantMessageFromError(
     }
   }
 
-  if (
-    error instanceof APIError &&
-    error.status === 400 &&
-    error.message.includes('unexpected `tool_use_id` found in `tool_result`')
-  ) {
-    logEvent('tengu_unexpected_tool_result', {})
-  }
-
   // Duplicate tool_use IDs (CC-1212). ensureToolResultPairing strips these
   // before send, so hitting this means a new corruption path slipped through.
-  // Log for root-causing, and give users a recovery path instead of deadlock.
+  // Give users a recovery path instead of deadlock.
   if (
     error instanceof APIError &&
     error.status === 400 &&
     error.message.includes('`tool_use` ids must be unique')
   ) {
-    logEvent('tengu_duplicate_tool_use_id', {})
     const rewindInstruction = getIsNonInteractiveSession()
       ? ''
       : ' Run /rewind to recover the conversation.'
@@ -1337,8 +1148,6 @@ export function getErrorMessageIfRefusal(
   if (stopReason !== 'refusal') {
     return
   }
-
-  logEvent('tengu_refusal_api_response', {})
 
   const usagePolicyUrl =
     getAPIProvider() === 'firstParty'

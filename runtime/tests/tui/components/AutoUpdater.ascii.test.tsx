@@ -18,10 +18,6 @@ vi.mock("../hooks/useUpdateNotification", () => ({
   useUpdateNotification: () => true,
 }));
 
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: vi.fn(),
-}));
-
 vi.mock("src/utils/debug.js", () => ({
   logForDebugging: () => {},
 }));

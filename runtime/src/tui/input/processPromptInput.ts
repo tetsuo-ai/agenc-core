@@ -7,7 +7,6 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
 import type { QuerySource } from '../../constants/querySource.js'
-import { logEvent } from '../../services/analytics/index.js'
 import { getContentText } from '../../utils/messages.js'
 import {
   findCommand,
@@ -35,7 +34,6 @@ import {
   type PromptInputMode,
 } from '../../types/textInputTypes.js'
 import {
-  type AgentMentionAttachment,
   createAttachmentMessage,
   getAttachmentMessages,
 } from '../../utils/attachments.js'
@@ -627,9 +625,6 @@ async function processPromptInputBase(
           data: pastedImage.content,
         },
       }
-      logEvent('agenc_pasted_image_resize_attempt', {
-        original_size_bytes: pastedImage.content.length,
-      })
       const resized = await maybeResizeAndDownsampleImageBlock(imageBlock)
       return {
         resized,
@@ -814,29 +809,6 @@ async function processPromptInputBase(
       ),
       imageMetadataTexts,
     )
-  }
-
-  // Log agent mention queries for analysis
-  if (inputString !== null && mode === 'prompt') {
-    const trimmedInput = inputString.trim()
-
-    const agentMention = attachmentMessages.find(
-      (m): m is AttachmentMessage<AgentMentionAttachment> =>
-        m.attachment.type === 'agent_mention',
-    )
-
-    if (agentMention) {
-      const agentMentionString = `@agent-${agentMention.attachment.agentType}`
-      const isSubagentOnly = trimmedInput === agentMentionString
-      const isPrefix =
-        trimmedInput.startsWith(agentMentionString) && !isSubagentOnly
-
-      // Log whenever users use @agent-<name> syntax
-      logEvent('agenc_subagent_at_mention', {
-        is_subagent_only: isSubagentOnly,
-        is_prefix: isPrefix,
-      })
-    }
   }
 
   // Regular user prompt. For string input, normalizedInput is already the

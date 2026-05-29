@@ -6,14 +6,7 @@ import {
 } from '@ant/agenc-for-chrome-mcp'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { format } from 'util'
-import { shutdownDatadog } from '../../services/analytics/datadog.js'
-import { shutdown1PEventLogging } from '../../services/analytics/firstPartyEventLogger.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
-import { initializeAnalyticsSink } from '../../services/analytics/sink.js'
 import { getAgenCAIOAuthTokens } from '../auth.js'
 import { enableConfigs, getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -24,14 +17,6 @@ import { getAllSocketPaths, getSecureSocketPath } from './common.js'
 const EXTENSION_DOWNLOAD_URL = 'https://agenc.tech/chrome'
 const BUG_REPORT_URL =
   'https://github.com/tetsuo-ai/agenc-core/issues/new?labels=bug,agenc-in-chrome'
-
-// String metadata keys safe to forward to analytics. Keys like error_message
-// are excluded because they could contain page content or user data.
-const SAFE_BRIDGE_STRING_KEYS = new Set([
-  'bridge_status',
-  'error_type',
-  'tool_name',
-])
 
 const PERMISSION_MODES: readonly PermissionMode[] = [
   'ask',
@@ -212,54 +197,24 @@ export function createChromeContext(
         }
       },
     }),
-    trackEvent: (eventName: any, metadata: any) => {
-      const safeMetadata: {
-        [key: string]:
-          | boolean
-          | number
-          | AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-          | undefined
-      } = {}
-      if (metadata) {
-        for (const [key, value] of Object.entries(metadata)) {
-          // Rename 'status' to 'bridge_status' to avoid Datadog's reserved field
-          const safeKey = key === 'status' ? 'bridge_status' : key
-          if (typeof value === 'boolean' || typeof value === 'number') {
-            safeMetadata[safeKey] = value
-          } else if (
-            typeof value === 'string' &&
-            SAFE_BRIDGE_STRING_KEYS.has(safeKey)
-          ) {
-            // Only forward allowlisted string keys — fields like error_message
-            // could contain page content or user data
-            safeMetadata[safeKey] =
-              value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-          }
-        }
-      }
-      logEvent(eventName, safeMetadata)
-    },
+    trackEvent: (_eventName: any, _metadata: any) => {},
   }
 }
 
 export async function runAgenCInChromeMcpServer(): Promise<void> {
   enableConfigs()
-  initializeAnalyticsSink()
   const context = createChromeContext()
 
   const server = createAgenCForChromeMcpServer(context)
   const transport = new StdioServerTransport()
 
   // Exit when parent process dies (stdin pipe closes).
-  // Flush analytics before exiting so final-batch events (e.g. disconnect) aren't lost.
   let exiting = false
   const shutdownAndExit = async (): Promise<void> => {
     if (exiting) {
       return
     }
     exiting = true
-    await shutdown1PEventLogging()
-    await shutdownDatadog()
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   }

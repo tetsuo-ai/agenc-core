@@ -23,12 +23,6 @@ import {
   type WindowsSandboxLevel,
 } from "../sandbox/engine/index.js";
 import {
-  AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC,
-  AGENC_TOOL_UNIFIED_EXEC_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
-import {
   JSON_RPC_VERSION,
   type CommandExecOutputDeltaParams,
   type CommandExecResizeParams,
@@ -279,18 +273,6 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     });
     this.#rememberSession(session);
 
-    const telemetryBaseTags = toMetricTags({
-      tty,
-      stream_stdin: streamStdin,
-      stream_stdout_stderr: streamStdoutStderr,
-    });
-    const telemetryTimer = agencTelemetry.timer(
-      AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC,
-      telemetryBaseTags,
-    );
-    agencTelemetry.counter(AGENC_TOOL_UNIFIED_EXEC_METRIC, 1, telemetryBaseTags);
-    let telemetryStatus = "error";
-    let telemetryExitCode: number | undefined;
     let removeAbortListener: (() => void) | undefined;
     try {
       this.#spawnSession(session, params, context);
@@ -311,23 +293,13 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       if (session.spawnError !== null) {
         throw new Error(`failed to spawn command: ${session.spawnError.message}`);
       }
-      telemetryExitCode = session.timedOut ? EXEC_TIMEOUT_EXIT_CODE : exitCode;
-      telemetryStatus = session.timedOut ? "timeout" : "completed";
       return {
-        exitCode: telemetryExitCode,
+        exitCode: session.timedOut ? EXEC_TIMEOUT_EXIT_CODE : exitCode,
         stdout: streamStdoutStderr ? "" : session.stdout.text(),
         stderr: streamStdoutStderr ? "" : session.stderr.text(),
       };
     } finally {
       removeAbortListener?.();
-      telemetryTimer.end(
-        toMetricTags({
-          status: telemetryStatus,
-          ...(telemetryExitCode !== undefined
-            ? { exit_code: telemetryExitCode }
-            : {}),
-        }),
-      );
       this.#forgetSession(session);
     }
   }

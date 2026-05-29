@@ -6,7 +6,6 @@ import type { ExitReason } from 'src/entrypoints/sdk/coreTypes.generated.js'
 import {
   getIsInteractive,
   getIsScrollDraining,
-  getLastMainRequestId,
   getSessionId,
   isSessionPersistenceDisabled,
 } from '../bootstrap/state.js'
@@ -29,19 +28,12 @@ import {
   supportsTabStatus,
   wrapForMultiplexer,
 } from '../tui/ink/termio/osc.js'
-import { shutdownDatadog } from '../services/analytics/datadog.js'
-import { shutdown1PEventLogging } from '../services/analytics/firstPartyEventLogger.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../services/analytics/index.js'
 import type { AppState } from '../tui/state/AppState.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'
-import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
 
 /**
@@ -308,20 +300,10 @@ export const setupGracefulShutdown = memoize(() => {
       error_name: error.name,
       error_message: error.message.slice(0, 2000),
     })
-    logEvent('tengu_uncaught_exception', {
-      error_name:
-        error.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
   })
 
   // Log unhandled promise rejections for container observability and analytics
   process.on('unhandledRejection', reason => {
-    const errorName =
-      reason instanceof Error
-        ? reason.name
-        : typeof reason === 'string'
-          ? 'string'
-          : 'unknown'
     const errorInfo =
       reason instanceof Error
         ? {
@@ -331,10 +313,6 @@ export const setupGracefulShutdown = memoize(() => {
           }
         : { error_message: String(reason).slice(0, 2000) }
     logForDiagnosticsNoPII('error', 'unhandled_rejection', errorInfo)
-    logEvent('tengu_unhandled_rejection', {
-      error_name:
-        errorName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
   })
 })
 
@@ -423,7 +401,7 @@ export async function gracefulShutdown(
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
-  // Budget = max(5s, hook budget + 3.5s headroom for cleanup + analytics flush).
+  // Budget = max(5s, hook budget + 3.5s headroom for cleanup).
   failsafeTimer = setTimeout(
     code => {
       cleanupTerminalModes(true)
@@ -489,35 +467,11 @@ export async function gracefulShutdown(
     // Ignore SessionEnd hook exceptions (including AbortError on timeout)
   }
 
-  // Log startup perf before analytics shutdown flushes/cancels timers
+  // Log startup perf during shutdown.
   try {
     profileReport()
   } catch {
     // Ignore profiling errors during shutdown
-  }
-
-  // Signal to inference that this session's cache can be evicted.
-  // Fires before analytics flush so the event makes it to the pipeline.
-  const lastRequestId = getLastMainRequestId()
-  if (lastRequestId) {
-    logEvent('tengu_cache_eviction_hint', {
-      scope:
-        'session_end' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      last_request_id:
-        lastRequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-  }
-
-  // Flush analytics — capped at 500ms. Previously unbounded: the 1P exporter
-  // awaits all pending axios POSTs (10s each), eating the full failsafe budget.
-  // Lost analytics on slow networks are acceptable; a hanging exit is not.
-  try {
-    await Promise.race([
-      Promise.all([shutdown1PEventLogging(), shutdownDatadog()]),
-      sleep(500),
-    ])
-  } catch {
-    // Ignore analytics shutdown errors
   }
 
   if (options?.finalMessage) {

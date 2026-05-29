@@ -47,7 +47,6 @@ import {
   sep,
 } from 'path'
 import picomatch from 'picomatch'
-import { logEvent } from '../services/analytics/index.js'
 import {
   getAdditionalDirectoriesForAgenCMd,
   getOriginalCwd,
@@ -70,7 +69,7 @@ import {
 } from '../utils/config.js'
 import { logForDebugging } from '../utils/debug.js'
 import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
+import { isEnvTruthy } from '../utils/envUtils.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { normalizePathForComparison } from '../utils/file.js'
 import { cacheKeys, type FileStateCache } from '../utils/fileStateCache.js'
@@ -99,8 +98,6 @@ import { getInitialSettings } from '../utils/settings/settings.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
 /* eslint-enable @typescript-eslint/no-require-imports */
-
-let hasLoggedInitialLoad = false
 
 function isRegularInstructionFile(filePath: string): boolean {
   try {
@@ -433,19 +430,11 @@ function parseMemoryFileContent(
   }
 }
 
-function handleMemoryFileReadError(error: unknown, filePath: string): void {
+function handleMemoryFileReadError(error: unknown, _filePath: string): void {
   const code = getErrnoCode(error)
   // ENOENT = file doesn't exist, EISDIR = is a directory — both expected
   if (code === 'ENOENT' || code === 'EISDIR') {
     return
-  }
-  // Log permission errors (EACCES) as they're actionable
-  if (code === 'EACCES') {
-    // Don't log the full file path to avoid PII/security issues
-    logEvent('tengu_agenc_md_permission_error', {
-      is_access_error: 1,
-      has_home_dir: filePath.includes(getAgenCConfigHomeDir()) ? 1 : 0,
-    })
   }
 }
 
@@ -809,13 +798,7 @@ export async function processMdRules({
     }
 
     return result
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('EACCES')) {
-      logEvent('tengu_agenc_rules_md_permission_error', {
-        is_access_error: 1,
-        has_home_dir: rulesDir.includes(getAgenCConfigHomeDir()) ? 1 : 0,
-      })
-    }
+  } catch {
     return []
   }
 }
@@ -1069,36 +1052,6 @@ export const getMemoryFiles = memoize(
       file_count: result.length,
       total_content_length: totalContentLength,
     })
-
-    const typeCounts: Record<string, number> = {}
-    for (const f of result) {
-      typeCounts[f.type] = (typeCounts[f.type] ?? 0) + 1
-    }
-
-    if (!hasLoggedInitialLoad) {
-      hasLoggedInitialLoad = true
-      const globalAutoMemCount = result.filter(
-        f => f.type === 'AutoMem' && isGlobalMemoryPath(f.path),
-      ).length
-      const projectAutoMemCount = result.filter(
-        f => f.type === 'AutoMem' && isProjectMemoryPath(f.path),
-      ).length
-      logEvent('tengu_agencmd__initial_load', {
-        file_count: result.length,
-        total_content_length: totalContentLength,
-        user_count: typeCounts['User'] ?? 0,
-        project_count: typeCounts['Project'] ?? 0,
-        local_count: typeCounts['Local'] ?? 0,
-        managed_count: typeCounts['Managed'] ?? 0,
-        automem_count: typeCounts['AutoMem'] ?? 0,
-        global_automem_count: globalAutoMemCount,
-        project_automem_count: projectAutoMemCount,
-        ...(feature('TEAMMEM')
-          ? { teammem_count: typeCounts['TeamMem'] ?? 0 }
-          : {}),
-        duration_ms: Date.now() - startTime,
-      })
-    }
 
     // Fire InstructionsLoaded hook for each instruction file loaded
     // (fire-and-forget, audit/observability only).

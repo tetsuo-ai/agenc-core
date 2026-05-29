@@ -25,13 +25,6 @@ import {
   UnifiedExecError,
 } from "./types.js";
 import {
-  AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC,
-  AGENC_WINDOWS_SANDBOX_SETUP_FAILURE_METRIC,
-  AGENC_WINDOWS_SANDBOX_SETUP_SUCCESS_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
-import {
   loadPty as loadRequiredPty,
   type IPty,
   type PtyModule,
@@ -214,34 +207,6 @@ function runtimeSandboxesCompatible(
       (requested.windowsSandboxLevel ?? "disabled") &&
     (active.windowsSandboxPrivateDesktop ?? false) ===
       (requested.windowsSandboxPrivateDesktop ?? false);
-}
-
-function recordWindowsSandboxSetupTelemetry(
-  windowsSandboxLevel: string,
-  sandbox: SandboxType,
-  status: "success" | "failure",
-  durationMs: number,
-): void {
-  if (sandbox !== "windows_restricted_token") {
-    return;
-  }
-  const tags = toMetricTags({
-    level: windowsSandboxLevel,
-    mode: sandbox,
-    result: status,
-  });
-  agencTelemetry.recordDuration(
-    AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC,
-    durationMs,
-    tags,
-  );
-  agencTelemetry.counter(
-    status === "success"
-      ? AGENC_WINDOWS_SANDBOX_SETUP_SUCCESS_METRIC
-      : AGENC_WINDOWS_SANDBOX_SETUP_FAILURE_METRIC,
-    1,
-    tags,
-  );
 }
 
 function canonicalPermissionProfile(
@@ -755,7 +720,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const permissions = params.runtimeSandbox.permissionProfile;
     const windowsSandboxLevel =
       params.runtimeSandbox.windowsSandboxLevel ?? "disabled";
-    const sandboxSetupStartedAtMs = Date.now();
     let sandbox: SandboxType = "none";
     try {
       sandbox = this.sandboxManager.selectInitial({
@@ -821,12 +785,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           "sandbox transform returned an empty command",
         );
       }
-      recordWindowsSandboxSetupTelemetry(
-        windowsSandboxLevel,
-        sandbox,
-        "success",
-        Date.now() - sandboxSetupStartedAtMs,
-      );
       return {
         program,
         args,
@@ -835,12 +793,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         argv0: transformed.arg0 ?? basename(program),
       };
     } catch (error) {
-      recordWindowsSandboxSetupTelemetry(
-        windowsSandboxLevel,
-        sandbox ?? "none",
-        "failure",
-        Date.now() - sandboxSetupStartedAtMs,
-      );
       if (error instanceof UnifiedExecError) throw error;
       throw new UnifiedExecError(
         "create_process",

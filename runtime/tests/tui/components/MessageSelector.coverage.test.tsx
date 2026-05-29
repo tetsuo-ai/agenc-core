@@ -23,7 +23,6 @@ const harness = vi.hoisted(() => ({
   },
   keybindings: {} as Record<string, () => unknown>,
   logError: vi.fn(),
-  logEvent: vi.fn(),
   selectProps: null as CapturedSelectProps | null,
   reset() {
     harness.diffStats = {
@@ -33,13 +32,8 @@ const harness = vi.hoisted(() => ({
     }
     harness.keybindings = {}
     harness.logError.mockClear()
-    harness.logEvent.mockClear()
     harness.selectProps = null
   },
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({

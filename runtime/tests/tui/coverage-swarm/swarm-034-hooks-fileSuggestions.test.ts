@@ -22,7 +22,6 @@ const harness = vi.hoisted(() => ({
   gitRoot: null as string | null,
   globalConfig: {} as Record<string, unknown>,
   logError: vi.fn(),
-  logEvent: vi.fn(),
   markdownFiles: [] as string[],
   projectSettings: {} as Record<string, unknown>,
   ripGrep: vi.fn(async () => [] as string[]),
@@ -36,7 +35,6 @@ const harness = vi.hoisted(() => ({
     this.markdownFiles = []
     this.projectSettings = {}
     this.logError.mockClear()
-    this.logEvent.mockClear()
     this.ripGrep.mockReset()
     this.ripGrep.mockResolvedValue([])
     this.yieldToEventLoop.mockClear()
@@ -47,10 +45,6 @@ vi.mock('../../utils/cwd.js', () => ({
   getCwd: () => tempCwd,
   pwd: () => tempCwd,
   runWithCwdOverride: <T,>(_cwd: string, fn: () => T) => fn(),
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/settings/settings.js', () => ({
@@ -242,10 +236,6 @@ describe('fileSuggestions project file loading', () => {
         join('src', 'index.ts'),
         join('src', 'utils', 'tool.ts'),
       ]),
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'tengu_file_suggestions_ripgrep',
-      expect.objectContaining({ file_count: 2 }),
     )
   })
 

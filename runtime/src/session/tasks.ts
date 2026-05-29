@@ -42,10 +42,6 @@ import type { AsyncLock } from "../utils/async-lock.js";
 import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
-import type {
-  TelemetrySpan,
-  TelemetryTimer,
-} from "../observability/telemetry.js";
 
 /**
  * Upstream agenc runtime `tasks/mod.rs::TaskKind`. String-union keeps JS
@@ -135,8 +131,6 @@ export interface RunningTask {
   readonly kind: TaskKind;
   readonly task?: AnySessionTask;
   readonly turnContext?: TurnContext;
-  readonly telemetrySpan?: TelemetrySpan;
-  readonly telemetryTimer?: TelemetryTimer;
   handle?: Promise<unknown>;
   readonly abortController: AbortController;
   readonly done: Promise<void>;

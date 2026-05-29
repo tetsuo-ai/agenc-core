@@ -3,7 +3,6 @@ import { execa } from 'execa'
 import { mkdir, stat } from 'fs/promises'
 import * as os from 'os'
 import { join } from 'path'
-import { logEvent } from 'src/services/analytics/index.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getCwd } from '../cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -504,18 +503,6 @@ export const createAndSaveSnapshot = async (
             logError(
               new Error(`Failed to create shell snapshot: ${error.message}`),
             )
-            // Convert signal name to number if present
-            const signalNumber = execError?.signal
-              ? os.constants.signals[
-                  execError.signal as keyof typeof os.constants.signals
-                ]
-              : undefined
-            logEvent('tengu_shell_snapshot_failed', {
-              stderr_length: stderr?.length || 0,
-              has_error_code: !!execError?.code,
-              error_signal_number: signalNumber,
-              error_killed: execError?.killed,
-            })
             resolve(undefined)
           } else {
             let snapshotSize: number | undefined
@@ -563,7 +550,6 @@ export const createAndSaveSnapshot = async (
                   `Parent directory does not exist or is not accessible: ${snapshotsDir}`,
                 )
               }
-              logEvent('tengu_shell_unknown_error', {})
               resolve(undefined)
             }
           }
@@ -575,7 +561,6 @@ export const createAndSaveSnapshot = async (
         logForDebugging(`Error stack trace: ${error.stack}`)
       }
       logError(error)
-      logEvent('tengu_shell_snapshot_error', {})
       resolve(undefined)
     }
   })

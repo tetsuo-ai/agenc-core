@@ -1,4 +1,3 @@
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { shouldUseProviderCodeTransport } from '../../services/api/providerConfig.js'
 import { isEnvTruthy } from '../envUtils.js'
 
@@ -74,8 +73,8 @@ function isAgenCShortcutAlias(model: string): boolean {
   return base === 'agencplan' || base === 'agencspark'
 }
 
-export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
-  return getAPIProvider() as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+export function getAPIProviderForStatsig(): string {
+  return getAPIProvider()
 }
 
 /**

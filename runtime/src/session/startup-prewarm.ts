@@ -1,11 +1,5 @@
 import type { LLMProviderStartupPrewarmHandle } from "../llm/types.js";
 import type { Session } from "./session.js";
-import {
-  AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC,
-  AGENC_STARTUP_PREWARM_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
 
 const DEFAULT_PROVIDER_STARTUP_PREWARM_BOUND_MS = 250;
 
@@ -41,7 +35,6 @@ type ProviderStartupPrewarmResolution =
 
 export class SessionStartupPrewarmStore implements StartupPrewarmStore {
   private providerHandle: LLMProviderStartupPrewarmHandle | undefined;
-  private providerHandleStartedAtMs: number | undefined;
   private providerPending: PendingProviderStartupPrewarm | undefined;
   private closed = false;
   private expired = false;
@@ -56,7 +49,6 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     const previous = this.providerHandle;
     const previousPending = this.providerPending;
     this.providerHandle = handle;
-    this.providerHandleStartedAtMs = Date.now();
     this.providerPending = undefined;
     if (previous !== undefined) {
       void disposeProviderStartupPrewarmHandle(previous).catch(() => {
@@ -77,14 +69,11 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
       promise: task.then(
         (handle) => {
           if (handle === undefined) {
-            recordStartupPrewarmDuration(startedAtMs, "unavailable");
             return { status: "unavailable" };
           }
-          recordStartupPrewarmDuration(startedAtMs, "ready");
           return { status: "ready", handle };
         },
         () => {
-          recordStartupPrewarmDuration(startedAtMs, "failed");
           return { status: "failed" };
         },
       ),
@@ -98,7 +87,6 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     const previous = this.providerHandle;
     const previousPending = this.providerPending;
     this.providerHandle = undefined;
-    this.providerHandleStartedAtMs = undefined;
     this.providerPending = pending;
     if (previous !== undefined) {
       void disposeProviderStartupPrewarmHandle(previous).catch(() => {
@@ -116,17 +104,13 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
   } = {}): Promise<LLMProviderStartupPrewarmHandle | undefined> {
     this.expired = true;
     const handle = this.providerHandle;
-    const handleStartedAtMs = this.providerHandleStartedAtMs;
     const pending = this.providerPending;
     this.providerHandle = undefined;
-    this.providerHandleStartedAtMs = undefined;
     this.providerPending = undefined;
     if (handle !== undefined) {
-      recordStartupPrewarmAge(handleStartedAtMs ?? Date.now(), "consumed");
       return handle;
     }
     if (pending === undefined) {
-      recordStartupPrewarmAge(Date.now(), "unavailable");
       return undefined;
     }
     const boundMs = opts.boundMs ?? pending.boundMs;
@@ -139,10 +123,6 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
       remainingMs,
       opts.signal,
     );
-    recordStartupPrewarmAge(
-      pending.startedAtMs,
-      resolved.handle === undefined ? resolved.status : "consumed",
-    );
     if (resolved.handle === undefined) {
       disposePendingProviderStartupPrewarm(pending);
     }
@@ -154,7 +134,6 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     const handle = this.providerHandle;
     const pending = this.providerPending;
     this.providerHandle = undefined;
-    this.providerHandleStartedAtMs = undefined;
     this.providerPending = undefined;
     if (handle !== undefined) {
       await disposeProviderStartupPrewarmHandle(handle);
@@ -219,25 +198,6 @@ async function resolvePendingProviderStartupPrewarm(
       signal.removeEventListener("abort", onAbort);
     }
   }
-}
-
-function recordStartupPrewarmDuration(
-  startedAtMs: number,
-  status: string,
-): void {
-  agencTelemetry.recordDuration(
-    AGENC_STARTUP_PREWARM_DURATION_METRIC,
-    Math.max(0, Date.now() - startedAtMs),
-    toMetricTags({ status }),
-  );
-}
-
-function recordStartupPrewarmAge(startedAtMs: number, status: string): void {
-  agencTelemetry.recordDuration(
-    AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC,
-    Math.max(0, Date.now() - startedAtMs),
-    toMetricTags({ status }),
-  );
 }
 
 function ensureStartupPrewarmStore(

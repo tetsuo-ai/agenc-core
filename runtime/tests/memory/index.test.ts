@@ -30,7 +30,6 @@ vi.mock("../utils/settings/settings.js", () => ({
 }));
 vi.mock("../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));
-vi.mock("../services/analytics/index.js", () => ({ logEvent: () => undefined }));
 vi.mock("../services/analytics/growthbook.js", () => ({
   getFeatureValue_CACHED_MAY_BE_STALE: <T>(key: string, fallback: T) =>
     featureFlags.has(key) ? (featureFlags.get(key) as T) : fallback,

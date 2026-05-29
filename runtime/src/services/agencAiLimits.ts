@@ -3,8 +3,6 @@ import isEqual from 'lodash-es/isEqual.js'
 import { isAgenCAISubscriber } from '../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { logError } from '../utils/log.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from './analytics/index.js'
-import { logEvent } from './analytics/index.js'
 import {
   processRateLimitHeaders,
   shouldProcessRateLimits,
@@ -165,16 +163,6 @@ function emitStatusChange(limits: AgenCAILimits) {
   currentLimits = limits
   updatePromptSuggestionLimits(limits)
   statusListeners.forEach(listener => listener(limits))
-  const hoursTillReset = Math.round(
-    (limits.resetsAt ? limits.resetsAt - Date.now() / 1000 : 0) / (60 * 60),
-  )
-
-  logEvent('tengu_agencai_limits_status_changed', {
-    status:
-      limits.status as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    unifiedRateLimitFallbackAvailable: limits.unifiedRateLimitFallbackAvailable,
-    hoursTillReset,
-  })
 }
 
 /**

@@ -11,10 +11,6 @@
 
 import { dirname, join } from 'path'
 import { getSessionId } from 'src/bootstrap/state.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -44,14 +40,6 @@ const SHOULD_PROFILE = DETAILED_PROFILING || STATSIG_LOGGING_SAMPLED
 // plugins reset the settings cache), and the second call would overwrite the
 // first's memory snapshot.
 const memorySnapshots: NodeJS.MemoryUsage[] = []
-
-// Phase definitions for Statsig logging: [startCheckpoint, endCheckpoint]
-const PHASE_DEFINITIONS = {
-  import_time: ['cli_entry', 'main_tsx_imports_loaded'],
-  init_time: ['init_function_start', 'init_function_end'],
-  settings_time: ['eagerLoadSettings_start', 'eagerLoadSettings_end'],
-  total_time: ['cli_entry', 'main_after_run'],
-} as const
 
 // Record initial checkpoint if profiling is enabled
 if (SHOULD_PROFILE) {
@@ -153,42 +141,6 @@ export function getStartupPerfLogPath(): string {
 }
 
 /**
- * Log startup performance phases to Statsig.
- * Only logs if this session was sampled at startup.
+ * Startup performance phase logging (no-op: analytics sink removed).
  */
-export function logStartupPerf(): void {
-  // Only log if we were sampled (decision made at module load)
-  if (!STATSIG_LOGGING_SAMPLED) return
-
-  const perf = getPerformance()
-  const marks = perf.getEntriesByType('mark')
-  if (marks.length === 0) return
-
-  // Build checkpoint lookup
-  const checkpointTimes = new Map<string, number>()
-  for (const mark of marks) {
-    checkpointTimes.set(mark.name, mark.startTime)
-  }
-
-  // Compute phase durations
-  const metadata: Record<string, number | undefined> = {}
-
-  for (const [phaseName, [startCheckpoint, endCheckpoint]] of Object.entries(
-    PHASE_DEFINITIONS,
-  )) {
-    const startTime = checkpointTimes.get(startCheckpoint)
-    const endTime = checkpointTimes.get(endCheckpoint)
-
-    if (startTime !== undefined && endTime !== undefined) {
-      metadata[`${phaseName}_ms`] = Math.round(endTime - startTime)
-    }
-  }
-
-  // Add checkpoint count for debugging
-  metadata.checkpoint_count = marks.length
-
-  logEvent(
-    'tengu_startup_perf',
-    metadata as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  )
-}
+export function logStartupPerf(): void {}

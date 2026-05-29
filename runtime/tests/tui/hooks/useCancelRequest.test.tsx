@@ -24,16 +24,8 @@ const fixture = vi.hoisted(() => ({
   onAgentsKilled: vi.fn(),
 }))
 
-const analyticsMock = vi.hoisted(() => ({
-  logEvent: vi.fn(),
-}))
-
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: analyticsMock.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -162,10 +154,9 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
     fixture.emitTaskTerminatedSdk.mockClear()
     fixture.onCancel.mockClear()
     fixture.onAgentsKilled.mockClear()
-    analyticsMock.logEvent.mockClear()
   })
 
-  test('logs the visible stream mode when cancelling an active turn', async () => {
+  test('cancels an active turn through the visible cancel path', async () => {
     const abortController = new AbortController()
 
     await renderHandler({
@@ -178,10 +169,6 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
 
     cancel?.handler()
 
-    expect(analyticsMock.logEvent).toHaveBeenCalledWith('agenc_cancel', {
-      source: 'escape',
-      streamMode: 'thinking',
-    })
     expect(fixture.onCancel).toHaveBeenCalled()
   })
 

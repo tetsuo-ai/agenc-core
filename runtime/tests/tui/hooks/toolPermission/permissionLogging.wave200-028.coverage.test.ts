@@ -8,18 +8,12 @@ const harness = vi.hoisted(() => ({
   getCodeEditToolDecisionCounter: vi.fn(),
   getLanguageName: vi.fn(),
   logError: vi.fn(),
-  logEvent: vi.fn(),
-  logOTelEvent: vi.fn(),
   sandboxEnabled: true,
   sanitizeToolNameForAnalytics: vi.fn((toolName: string) => `safe:${toolName}`),
 }))
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../services/analytics/metadata.js', () => ({
@@ -42,10 +36,6 @@ vi.mock('../../../utils/sandbox/sandbox-runtime.js', () => ({
   SandboxManager: {
     isSandboxingEnabled: () => harness.sandboxEnabled,
   },
-}))
-
-vi.mock('../../../utils/telemetry/events.js', () => ({
-  logOTelEvent: harness.logOTelEvent,
 }))
 
 import {
@@ -115,14 +105,12 @@ describe('permissionLogging coverage', () => {
     harness.getLanguageName.mockReset()
     harness.getLanguageName.mockResolvedValue('TypeScript')
     harness.logError.mockClear()
-    harness.logEvent.mockClear()
-    harness.logOTelEvent.mockClear()
     harness.sandboxEnabled = true
     harness.sanitizeToolNameForAnalytics.mockClear()
     vi.spyOn(Date, 'now').mockReturnValue(2_000)
   })
 
-  test('logs decision sources to analytics, OTel, code-edit counters, and context state', async () => {
+  test('logs decision sources to code-edit counters and context state', async () => {
     expect(isCodeEditingTool('Edit')).toBe(true)
     expect(isCodeEditingTool('Write')).toBe(true)
     expect(isCodeEditingTool('NotebookEdit')).toBe(true)
@@ -192,140 +180,10 @@ describe('permissionLogging coverage', () => {
       1_000,
     )
 
-    harness.features.add('BASH_CLASSIFIER')
-    logPermissionDecision(
-      context({ toolUseID: 'classifier-allow' }).ctx as never,
-      { decision: 'accept', source: { type: 'classifier' } },
-      1_500,
-    )
-    logPermissionDecision(
-      context({ toolUseID: 'temporary-allow' }).ctx as never,
-      { decision: 'accept', source: { type: 'user', permanent: false } },
-      1_500,
-    )
-    logPermissionDecision(
-      context({ toolUseID: 'hook-allow' }).ctx as never,
-      { decision: 'accept', source: { type: 'hook' } },
-      1_500,
-    )
-    logPermissionDecision(
-      context({ toolUseID: 'config-reject' }).ctx as never,
-      { decision: 'reject', source: 'config' },
-      1_000,
-    )
-    logPermissionDecision(
-      context({ toolUseID: 'hook-reject' }).ctx as never,
-      { decision: 'reject', source: { type: 'hook' } },
-      1_500,
-    )
-    logPermissionDecision(
-      context({ toolUseID: 'feedback-reject' }).ctx as never,
-      { decision: 'reject', source: { type: 'user_reject', hasFeedback: true } },
-      1_500,
-    )
-    logPermissionDecision(
-      context({ toolUseID: 'abort-reject' }).ctx as never,
-      { decision: 'reject', source: { type: 'user_abort' } },
-      1_500,
-    )
-
     expect(existingDecisions.get('config-allow')).toEqual({
       decision: 'accept',
       source: 'config',
       timestamp: 2_000,
-    })
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_in_prompt_permanent',
-      {
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Edit',
-        waiting_for_user_permission_ms: 750,
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_in_config',
-      {
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_by_classifier',
-      {
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-        waiting_for_user_permission_ms: 500,
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_in_prompt_temporary',
-      {
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-        waiting_for_user_permission_ms: 500,
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_granted_by_permission_hook',
-      {
-        messageID: 'message-1',
-        permanent: false,
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-        waiting_for_user_permission_ms: 500,
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_denied_in_config',
-      {
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_rejected_in_prompt',
-      {
-        isHook: true,
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-        waiting_for_user_permission_ms: 500,
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_rejected_in_prompt',
-      {
-        hasFeedback: true,
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-        waiting_for_user_permission_ms: 500,
-      },
-    )
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      'agenc_tool_use_rejected_in_prompt',
-      {
-        hasFeedback: false,
-        messageID: 'message-1',
-        sandboxEnabled: true,
-        toolName: 'safe:Read',
-        waiting_for_user_permission_ms: 500,
-      },
-    )
-    expect(harness.logOTelEvent).toHaveBeenCalledWith('tool_decision', {
-      decision: 'accept',
-      source: 'classifier',
-      tool_name: 'safe:Read',
-    })
-    expect(harness.logOTelEvent).toHaveBeenCalledWith('tool_decision', {
-      decision: 'reject',
-      source: 'user_abort',
-      tool_name: 'safe:Read',
     })
   })
 
@@ -351,11 +209,6 @@ describe('permissionLogging coverage', () => {
     })
     expect(harness.counter.add).not.toHaveBeenCalled()
     expect(harness.logError).toHaveBeenCalledWith(languageError)
-    expect(harness.logOTelEvent).toHaveBeenCalledWith('tool_decision', {
-      decision: 'accept',
-      source: 'user_temporary',
-      tool_name: 'safe:Write',
-    })
   })
 
   test('logs thrown code-edit counter updates without dropping the decision', async () => {

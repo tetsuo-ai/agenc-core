@@ -2,18 +2,10 @@ import { PassThrough } from 'node:stream'
 
 import React from 'react'
 import stripAnsi from 'strip-ansi'
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   appState: { fileHistory: { entries: [] } },
-  logEvent: vi.fn(),
-  reset() {
-    harness.logEvent.mockClear()
-  },
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -157,10 +149,6 @@ async function renderSelector(messages: Message[]): Promise<{
 }
 
 describe('MessageSelector coverage for non-restorable pick-list rows', () => {
-  beforeEach(() => {
-    harness.reset()
-  })
-
   test('shows terminal input text with a no-code-restore warning', async () => {
     const rendered = await renderSelector([
       userMessage(
@@ -177,10 +165,6 @@ describe('MessageSelector coverage for non-restorable pick-list rows', () => {
       expect(rendered.output()).not.toContain('&lt;target&gt;')
       expect(rendered.output()).toContain('No code restore')
       expect(rendered.output()).toContain('(current)')
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_message_selector_opened',
-        {},
-      )
     } finally {
       await rendered.dispose()
     }

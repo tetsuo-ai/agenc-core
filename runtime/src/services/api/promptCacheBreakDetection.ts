@@ -12,10 +12,6 @@ import { logError } from 'src/utils/log.js'
 import { getAgenCTempDir } from 'src/utils/permissions/filesystem.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import type { QuerySource } from '../../constants/querySource.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../analytics/index.js'
 function getCacheBreakDiffPath(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   let suffix = ''
@@ -176,12 +172,6 @@ function computeHash(data: unknown): number {
   }
   // Fallback for non-Bun runtimes (e.g. Node.js via npm global install)
   return djb2Hash(str)
-}
-
-/** MCP tool names are user-controlled (server config) and may leak filepaths.
- *  Collapse them to 'mcp'; built-in names are a fixed vocabulary. */
-function sanitizeToolName(name: string): string {
-  return name.startsWith('mcp__') ? 'mcp' : name
 }
 
 function computePerToolHashes(
@@ -586,62 +576,6 @@ export async function checkResponseForCacheBreak(
     } else {
       reason = 'unknown cause'
     }
-
-    logEvent('tengu_prompt_cache_break', {
-      systemPromptChanged: changes?.systemPromptChanged ?? false,
-      toolSchemasChanged: changes?.toolSchemasChanged ?? false,
-      modelChanged: changes?.modelChanged ?? false,
-      fastModeChanged: changes?.fastModeChanged ?? false,
-      cacheControlChanged: changes?.cacheControlChanged ?? false,
-      globalCacheStrategyChanged: changes?.globalCacheStrategyChanged ?? false,
-      betasChanged: changes?.betasChanged ?? false,
-      autoModeChanged: changes?.autoModeChanged ?? false,
-      overageChanged: changes?.overageChanged ?? false,
-      cachedMCChanged: changes?.cachedMCChanged ?? false,
-      effortChanged: changes?.effortChanged ?? false,
-      extraBodyChanged: changes?.extraBodyChanged ?? false,
-      addedToolCount: changes?.addedToolCount ?? 0,
-      removedToolCount: changes?.removedToolCount ?? 0,
-      systemCharDelta: changes?.systemCharDelta ?? 0,
-      // Tool names are sanitized: built-in names are a fixed vocabulary,
-      // MCP tools collapse to 'mcp' (user-configured, could leak paths).
-      addedTools: (changes?.addedTools ?? [])
-        .map(sanitizeToolName)
-        .join(
-          ',',
-        ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      removedTools: (changes?.removedTools ?? [])
-        .map(sanitizeToolName)
-        .join(
-          ',',
-        ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      changedToolSchemas: (changes?.changedToolSchemas ?? [])
-        .map(sanitizeToolName)
-        .join(
-          ',',
-        ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      // Beta header names and cache strategy are fixed enum-like values,
-      // not code or filepaths. requestId is an opaque server-generated ID.
-      addedBetas: (changes?.addedBetas ?? []).join(
-        ',',
-      ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      removedBetas: (changes?.removedBetas ?? []).join(
-        ',',
-      ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      prevGlobalCacheStrategy: (changes?.prevGlobalCacheStrategy ??
-        '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      newGlobalCacheStrategy: (changes?.newGlobalCacheStrategy ??
-        '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      callNumber: state.callCount,
-      prevCacheReadTokens: prevCacheRead,
-      cacheReadTokens,
-      cacheCreationTokens,
-      timeSinceLastAssistantMsg: timeSinceLastAssistantMsg ?? -1,
-      lastAssistantMsgOver5minAgo,
-      lastAssistantMsgOver1hAgo,
-      requestId: (requestId ??
-        '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
 
     // Write diff file for ant debugging via --debug. The path is included in
     // the summary log so ants can find it (DevBar UI removed — event data

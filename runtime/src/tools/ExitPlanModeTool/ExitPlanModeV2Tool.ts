@@ -4,13 +4,10 @@ import { writeFile } from 'fs/promises'
 import { z } from 'zod/v4'
 import {
   getAllowedChannels,
-  hasExitedPlanModeInSession,
   setHasExitedPlanMode,
   setNeedsAutoModeExitAttachment,
   setNeedsPlanModeExitAttachment,
 } from '../../bootstrap/state.js'
-import { logEvent } from '../../services/analytics/index.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/metadata.js'
 import {
   buildTool,
   type Tool,
@@ -193,7 +190,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // For non-teammates, require user confirmation to exit plan mode
     return true
   },
-  async validateInput(_input, { getAppState, options }) {
+  async validateInput(_input, { getAppState }) {
     // Teammate AppState may show leader's mode (runAgent.ts skips override in
     // acceptEdits/bypassPermissions/auto); isPlanModeRequired() is the real source
     if (isTeammate()) {
@@ -204,12 +201,6 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // Reject before checkPermissions to avoid showing the approval dialog.
     const mode = getAppState().toolPermissionContext.mode
     if (mode !== 'plan') {
-      logEvent('tengu_exit_plan_mode_called_outside_plan', {
-        model:
-          options.mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        mode: mode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        hasExitedPlanModeInSession: hasExitedPlanModeInSession(),
-      })
       return {
         result: false,
         message:

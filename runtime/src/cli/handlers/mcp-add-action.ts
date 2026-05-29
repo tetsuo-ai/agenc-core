@@ -1,10 +1,6 @@
 import type { Writable } from "node:stream";
 
 import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from "../../services/analytics/index.js";
-import {
   readClientSecret,
   saveMcpClientSecret,
 } from "../../services/mcp/auth.js";
@@ -69,15 +65,6 @@ export async function runMcpAddAction(
     commandOrUrl.startsWith("localhost") ||
     commandOrUrl.endsWith("/sse") ||
     commandOrUrl.endsWith("/mcp");
-
-  logEvent("tengu_mcp_add", {
-    type: transport as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    source: "command" as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    transport: transport as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    transportExplicit,
-    looksLikeUrl,
-  });
 
   if (transport === "sse" || transport === "http") {
     const headers = options.header ? parseHeaders(options.header) : undefined;

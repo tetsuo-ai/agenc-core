@@ -7,7 +7,6 @@ import { basename, dirname, join, resolve } from 'path'
 import { getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
 import { getAutoMemEntrypoint } from '../memory/index.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
-import { logEvent } from '../services/analytics/index.js'
 import {
   assertConfigReadsEnabled,
   enableConfigs as enableConfigReads,
@@ -48,11 +47,6 @@ const ccrAutoConnect: any = feature('CCR_AUTO_CONNECT')
 import type { ImageDimensions } from './imageResizer.js'
 import type { ModelOption } from './model/modelOptions.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
-
-// Re-entrancy guard: prevents getConfig → logEvent → getGlobalConfig → getConfig
-// infinite recursion when the config file is corrupted. logEvent's sampling check
-// reads GrowthBook features from the global config, which calls getConfig again.
-let insideGetConfig = false
 
 // Image dimension info for coordinate mapping (only set when image was resized)
 export type PastedContent = {
@@ -921,7 +915,6 @@ export function saveGlobalConfig(
         'saveGlobalConfig fallback: re-read config is missing auth that cache has; refusing to write. See GH #3117.',
         { level: 'error' },
       )
-      logEvent('tengu_config_auth_loss_prevented', {})
       return
     }
     const config = updater(currentConfig)
@@ -944,8 +937,6 @@ let globalConfigCache: { config: GlobalConfig | null; mtime: number } = {
   mtime: 0,
 }
 
-// Tracking for config file operations (telemetry)
-let lastReadFileStats: { mtime: number; size: number } | null = null
 let configCacheHits = 0
 let configCacheMisses = 0
 // Session-total count of actual disk writes to the global config file.
@@ -960,14 +951,6 @@ export function getGlobalConfigWriteCount(): number {
 export const CONFIG_WRITE_DISPLAY_THRESHOLD = 20
 
 function reportConfigCacheStats(): void {
-  const total = configCacheHits + configCacheMisses
-  if (total > 0) {
-    logEvent('tengu_config_cache_stats', {
-      cache_hits: configCacheHits,
-      cache_misses: configCacheMisses,
-      hit_rate: configCacheHits / total,
-    })
-  }
   configCacheHits = 0
   configCacheMisses = 0
 }
@@ -1095,7 +1078,6 @@ function startGlobalConfigFreshnessWatcher(): void {
             }),
             mtime: curr.mtimeMs,
           }
-          lastReadFileStats = { mtime: curr.mtimeMs, size: curr.size }
         })
         .catch(() => {})
     },
@@ -1111,7 +1093,6 @@ function startGlobalConfigFreshnessWatcher(): void {
 // freshness watcher skips re-reading our own write on its next tick.
 function writeThroughGlobalConfigCache(config: GlobalConfig): void {
   globalConfigCache = { config, mtime: Date.now() }
-  lastReadFileStats = null
 }
 
 export function getGlobalConfig(): GlobalConfig {
@@ -1145,9 +1126,6 @@ export function getGlobalConfig(): GlobalConfig {
       config,
       mtime: stats?.mtimeMs ?? Date.now(),
     }
-    lastReadFileStats = stats
-      ? { mtime: stats.mtimeMs, size: stats.size }
-      : null
     startGlobalConfigFreshnessWatcher()
     return config
   } catch {
@@ -1253,34 +1231,6 @@ function saveConfigWithLock<A extends object>(
       logForDebugging(
         'Lock acquisition took longer than expected - another AgenC instance may be running',
       )
-      logEvent('tengu_config_lock_contention', {
-        lock_time_ms: lockTime,
-      })
-    }
-
-    // Check for stale write - file changed since we last read it
-    // Only check for global config file since lastReadFileStats tracks that specific file
-    if (lastReadFileStats && file === getGlobalAgenCFile()) {
-      try {
-        const currentStats = fs.statSync(file)
-        if (
-          currentStats.mtimeMs !== lastReadFileStats.mtime ||
-          currentStats.size !== lastReadFileStats.size
-        ) {
-          logEvent('tengu_config_stale_write', {
-            read_mtime: lastReadFileStats.mtime,
-            write_mtime: currentStats.mtimeMs,
-            read_size: lastReadFileStats.size,
-            write_size: currentStats.size,
-          })
-        }
-      } catch (e) {
-        const code = getErrnoCode(e)
-        if (code !== 'ENOENT') {
-          throw e
-        }
-        // File doesn't exist yet, no stale check needed
-      }
     }
 
     // Re-read the current config to get latest state. If the file is
@@ -1292,7 +1242,6 @@ function saveConfigWithLock<A extends object>(
         'saveConfigWithLock: re-read config is missing auth that cache has; refusing to write to avoid wiping ~/.agenc.json. See GH #3117.',
         { level: 'error' },
       )
-      logEvent('tengu_config_auth_loss_prevented', {})
       return false
     }
 
@@ -1522,31 +1471,8 @@ function getConfig<A>(
         { level: 'error' },
       )
 
-      // Guard: logEvent → shouldSampleEvent → getGlobalConfig → getConfig
-      // causes infinite recursion when the config file is corrupted, because
-      // the sampling check reads a GrowthBook feature from global config.
-      // Only log analytics on the outermost call.
-      if (!insideGetConfig) {
-        insideGetConfig = true
-        try {
-          // Log the error for monitoring
-          logError(error)
-
-          // Log analytics event for config corruption
-          let hasBackup = false
-          try {
-            fs.statSync(`${file}.backup`)
-            hasBackup = true
-          } catch {
-            // No backup
-          }
-          logEvent('tengu_config_parse_error', {
-            has_backup: hasBackup,
-          })
-        } finally {
-          insideGetConfig = false
-        }
-      }
+      // Log the error for monitoring
+      logError(error)
 
       process.stderr.write(
         `\nAgenC configuration file at ${file} is corrupted: ${error.message}\n`,
@@ -1723,7 +1649,6 @@ export function saveCurrentProjectConfig(
         'saveCurrentProjectConfig fallback: re-read config is missing auth that cache has; refusing to write. See GH #3117.',
         { level: 'error' },
       )
-      logEvent('tengu_config_auth_loss_prevented', {})
       return
     }
     const currentProjectConfig =

@@ -27,7 +27,6 @@ const probes = vi.hoisted(() => {
     })),
     clearIdpIdToken: vi.fn(),
     logMCPDebug: vi.fn(),
-    logEvent: vi.fn(),
     sleep: vi.fn(async () => {}),
   }
 })
@@ -47,10 +46,6 @@ vi.mock('../../utils/lockfile.js', () => ({
 
 vi.mock('../../utils/log.js', () => ({
   logMCPDebug: probes.logMCPDebug,
-}))
-
-vi.mock('../analytics/index.js', () => ({
-  logEvent: probes.logEvent,
 }))
 
 vi.mock('../../utils/secureStorage/index.js', () => ({
