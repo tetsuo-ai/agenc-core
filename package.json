@@ -20,7 +20,11 @@
     "check:agent-surface-contract": "node scripts/check-agent-surface-contract.mjs",
     "check:agent-surface-contract:reviewed": "node scripts/check-agent-surface-contract.mjs --require-reviews",
     "check:tui-v2-design-audit": "npm run check:tui-v2-design-audit --workspace=@tetsuo-ai/runtime",
-    "test": "npm run validate:runtime",
+    "test": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run test --workspace=@tetsuo-ai/runtime",
+    "test:unit": "npm run test --workspace=@tetsuo-ai/runtime",
+    "test:bun": "npm run test:bun:isolated --workspace=@tetsuo-ai/runtime",
+    "test:coverage": "npm run test:coverage --workspace=@tetsuo-ai/runtime",
+    "check:unused": "npm run check:unused --workspace=@tetsuo-ai/runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
   },
   "overrides": {

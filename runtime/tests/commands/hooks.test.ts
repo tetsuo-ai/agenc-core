@@ -11,6 +11,9 @@ function runtime(): ConfiguredHooksRuntime {
     env: process.env,
     agencHome: "/tmp/agenc-test",
     shellPath: process.env.SHELL ?? "/bin/sh",
+    // These tests exercise hook diagnostics/dispatch; treat the workspace as
+    // trusted (production establishes trust before command hooks run).
+    isWorkspaceTrusted: () => true,
   });
   r.load({
     PreToolUse: [
