@@ -14,6 +14,28 @@
       "Rows with status fixed require the named validation commands to remain green before merge readiness can be claimed."
     ]
   },
+  "auditRuns": [
+    {
+      "id": "baseline-scan-2026-05-29",
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test:coverage",
+        "npm --workspace=@tetsuo-ai/runtime run check:unused:report",
+        "rg -n \"TODO|FIXME|HACK|XXX|not implemented|Not implemented|NOT IMPLEMENTED|stub|placeholder|fake success\" runtime/src runtime/tests --glob '!**/dist/**' --glob '!**/node_modules/**'",
+        "rg -n \"\\b(describe|it|test)\\.skip\\b|\\.todo\\b\" runtime/tests --glob '!**/node_modules/**'",
+        "rg -n \"catch \\{\\s*\\}|catch \\([^)]*\\) \\{\\s*\\}\" runtime/src --glob '!**/dist/**' --glob '!**/node_modules/**'"
+      ],
+      "results": {
+        "coverage": "failed with exit code -1 before writing coverage-summary.json; partial V8 temp files were written under runtime/coverage/.tmp",
+        "unusedCode": "runtime/logs/unused-code.json reports zero issues",
+        "incompleteMarkerMatches": 1019,
+        "skippedOrTodoTestMatches": 7,
+        "silentCatchCandidates": [
+          "runtime/src/services/api/openaiShim.ts:1063",
+          "runtime/src/services/api/openaiShim.ts:1405"
+        ]
+      }
+    }
+  ],
   "globalValidationCommands": [
     "npm run typecheck",
     "npm run build",
@@ -280,7 +302,12 @@
         "npm --workspace=@tetsuo-ai/runtime run check:unused:report"
       ],
       "status": "audit-required",
-      "fixesNeeded": []
+      "fixesNeeded": [
+        "Triage why the full coverage command exits with code -1 and leaves only partial V8 temp files.",
+        "Classify the 1019 incomplete-marker matches into test fixture text, historical comments, and real implementation debt.",
+        "Triage the 7 skipped-or-todo test matches and record which are platform guards versus real coverage gaps.",
+        "Inspect the two silent catch candidates in runtime/src/services/api/openaiShim.ts and either justify or fix them with tests."
+      ]
     }
   ]
 }
