@@ -3,6 +3,7 @@
 import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
+import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box, Text } from '../ink.js';
 import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -31,6 +32,8 @@ export function FileEditToolUpdatedMessage(t0) {
   const {
     columns
   } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
+  const diffWidth = Math.max(1, (inheritedContentWidth ?? columns) - 12);
   const numAdditions = structuredPatch.reduce(_temp2, 0);
   const numRemovals = structuredPatch.reduce(_temp4, 0);
   let t1;
@@ -87,7 +90,7 @@ export function FileEditToolUpdatedMessage(t0) {
   } else {
     t5 = $[12];
   }
-  const t6 = columns - 12;
+  const t6 = diffWidth;
   let t7;
   if ($[13] !== fileContent || $[14] !== filePath || $[15] !== firstLine || $[16] !== structuredPatch || $[17] !== t6) {
     t7 = <StructuredDiffList hunks={structuredPatch} dim={false} width={t6} filePath={filePath} firstLine={firstLine} fileContent={fileContent} />;

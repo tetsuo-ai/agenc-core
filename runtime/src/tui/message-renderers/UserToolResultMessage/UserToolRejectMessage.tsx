@@ -1,5 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
+import { useContentWidth } from '../../context/contentWidthContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { useTheme } from '../../ink.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../tools/Tool';
@@ -32,6 +33,8 @@ export function UserToolRejectMessage(t0) {
   const {
     columns
   } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
+  const effectiveColumns = inheritedContentWidth ?? columns;
   const [theme] = useTheme();
   if (!tool || !tool.renderToolUseRejectedMessage) {
     let t1;
@@ -46,7 +49,7 @@ export function UserToolRejectMessage(t0) {
   const t1 = tool.inputSchema;
   let t2;
   let t3;
-  if ($[1] !== columns || $[2] !== input || $[3] !== isTranscriptMode || $[4] !== progressMessagesForMessage || $[5] !== style || $[6] !== theme || $[7] !== tool || $[8] !== tools || $[9] !== verbose) {
+  if ($[1] !== effectiveColumns || $[2] !== input || $[3] !== isTranscriptMode || $[4] !== progressMessagesForMessage || $[5] !== style || $[6] !== theme || $[7] !== tool || $[8] !== tools || $[9] !== verbose) {
     t3 = Symbol.for("react.early_return_sentinel");
     bb0: {
       const parsedInput = t1.safeParse(input);
@@ -62,7 +65,7 @@ export function UserToolRejectMessage(t0) {
         break bb0;
       }
       t2 = tool.renderToolUseRejectedMessage(parsedInput.data, {
-        columns,
+        columns: effectiveColumns,
         messages: [],
         tools,
         verbose,
@@ -72,7 +75,7 @@ export function UserToolRejectMessage(t0) {
         isTranscriptMode
       }) ?? <FallbackToolUseRejectedMessage />;
     }
-    $[1] = columns;
+    $[1] = effectiveColumns;
     $[2] = input;
     $[3] = isTranscriptMode;
     $[4] = progressMessagesForMessage;

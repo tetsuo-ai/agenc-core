@@ -6,6 +6,7 @@ import stripAnsi from 'strip-ansi'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { renderToString } from '../../utils/staticRender.js'
+import { ContentWidthProvider } from '../context/contentWidthContext.js'
 import { createRoot } from '../ink/root.js'
 import { FileEditToolUpdatedMessage } from './FileEditToolUpdatedMessage.js'
 
@@ -97,6 +98,26 @@ describe('FileEditToolUpdatedMessage', () => {
       firstLine: 'const old = true',
       hunks: [mixedHunk],
       width: 60,
+    })
+  })
+
+  test('sizes structured diffs from inherited content width', async () => {
+    await renderToString(
+      <ContentWidthProvider width={48}>
+        <FileEditToolUpdatedMessage
+          filePath="/repo/src/file.ts"
+          structuredPatch={[mixedHunk]}
+          firstLine="const old = true"
+          fileContent={'const old = true\n'}
+          verbose={false}
+        />
+      </ContentWidthProvider>,
+      120,
+    )
+
+    expect(structuredDiffMock.calls).toHaveLength(1)
+    expect(structuredDiffMock.calls[0]).toMatchObject({
+      width: 36,
     })
   })
 
