@@ -1,10 +1,12 @@
 import type { Token, Tokens } from 'marked';
 import React from 'react';
 import stripAnsi from 'strip-ansi';
+import { useContentWidth } from '../../context/contentWidthContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import { RawAnsi } from '../../ink/components/RawAnsi.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { wrapAnsi } from '../../ink/wrapAnsi.js';
-import { Ansi, useTheme } from '../../ink.js';
+import { useTheme } from '../../ink.js';
 import { resolveAgenCTuiGlyphMode } from '../../glyphs.js';
 import { color } from '../design-system/color.js';
 import type { CliHighlight } from '../../../utils/cliHighlight.js';
@@ -108,7 +110,8 @@ export function MarkdownTable({
   const {
     columns: actualTerminalWidth
   } = useTerminalSize();
-  const terminalWidth = forceWidth ?? actualTerminalWidth;
+  const inheritedContentWidth = useContentWidth();
+  const terminalWidth = Math.max(1, Math.floor(forceWidth ?? inheritedContentWidth ?? actualTerminalWidth));
   const tableGlyphs = getMarkdownTableGlyphs();
 
   // Format cell content to ANSI string
@@ -269,7 +272,7 @@ export function MarkdownTable({
   function renderVerticalFormat(): string {
     const lines_2: string[] = [];
     const headers = token.header.map(h => getPlainText(h.tokens));
-    const separatorWidth = Math.min(terminalWidth - 1, 40);
+    const separatorWidth = Math.max(1, Math.min(terminalWidth - 1, 40));
     const separator = tableGlyphs.horizontal.repeat(separatorWidth);
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
@@ -315,9 +318,14 @@ export function MarkdownTable({
     return lines_2.join('\n');
   }
 
+  function renderPreformattedLines(lines: string[]): React.ReactNode {
+    const width = Math.max(1, ...lines.map(line_2 => stringWidth(stripAnsi(line_2))));
+    return <RawAnsi lines={lines} width={Math.min(terminalWidth, width)} />;
+  }
+
   // Choose format based on available width
   if (useVerticalFormat) {
-    return <Ansi>{renderVerticalFormat()}</Ansi>;
+    return renderPreformattedLines(renderVerticalFormat().split('\n'));
   }
 
   // Build the complete horizontal table as an array of strings
@@ -341,9 +349,9 @@ export function MarkdownTable({
   // If we're within SAFETY_MARGIN characters of the edge, use vertical format
   // to account for terminal resize race conditions.
   if (maxLineWidth > terminalWidth - SAFETY_MARGIN) {
-    return <Ansi>{renderVerticalFormat()}</Ansi>;
+    return renderPreformattedLines(renderVerticalFormat().split('\n'));
   }
 
-  // Render as a single Ansi block to prevent Ink from wrapping mid-row
-  return <Ansi>{tableLines.join('\n')}</Ansi>;
+  // Render as one pre-wrapped leaf so Ink cannot wrap mid-row and corrupt borders.
+  return renderPreformattedLines(tableLines);
 }
