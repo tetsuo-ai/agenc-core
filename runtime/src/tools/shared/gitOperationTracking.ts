@@ -71,8 +71,7 @@ function findPrInStdout(stdout: string): ReturnType<typeof parsePrUrl> {
   return m ? parsePrUrl(m[0]) : null
 }
 
-// Exported for testing purposes
-export function parseGitCommitId(stdout: string): string | undefined {
+function parseGitCommitId(stdout: string): string | undefined {
   // git commit output: [branch abc1234] message
   // or for root commit: [branch (root-commit) abc1234] message
   const match = stdout.match(/\[[\w./-]+(?: \(root-commit\))? ([0-9a-f]+)\]/)
