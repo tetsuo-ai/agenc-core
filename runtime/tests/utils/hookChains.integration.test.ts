@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-type HookChainsModule = typeof import('./hookChains.js')
+type HookChainsModule = typeof import('../../src/utils/hookChains.ts')
 
 type ImportHarnessOptions = {
   allowRemoteSessions?: boolean
@@ -51,27 +51,27 @@ async function importHookChainsHarness(
     },
   }))
 
-  mock.module('../services/analytics/index.js', () => ({
+  mock.module('../../src/services/analytics/index.js', () => ({
     logEvent: () => {},
   }))
 
-  mock.module('./telemetry/events.js', () => ({
+  mock.module('../../src/utils/telemetry/events.js', () => ({
     logOTelEvent: async () => {},
   }))
 
-  mock.module('../services/policyLimits/index.js', () => ({
+  mock.module('../../src/services/policyLimits/index.js', () => ({
     isPolicyAllowed: () => allowRemoteSessions,
   }))
 
-  mock.module('./swarm/teamHelpers.js', () => ({
+  mock.module('../../src/utils/swarm/teamHelpers.js', () => ({
     readTeamFileAsync: async () => options.teamFile ?? null,
   }))
 
-  mock.module('./teammateMailbox.js', () => ({
+  mock.module('../../src/utils/teammateMailbox.js', () => ({
     writeToMailbox: writeToMailboxSpy,
   }))
 
-  mock.module('./teammate.js', () => ({
+  mock.module('../../src/utils/teammate.js', () => ({
     getAgentName: () => senderName,
     getTeamName: () => teamName,
     getTeammateColor: () => 'blue',
@@ -84,19 +84,19 @@ async function importHookChainsHarness(
     getParentSessionId: () => undefined,
   }))
 
-  mock.module('../bridge/replBridgeHandle.js', () => ({
+  mock.module('../../src/bridge/replBridgeHandle.js', () => ({
     getReplBridgeHandle: () => replBridgeHandle,
   }))
 
   // Integration mock target requested in the task: fallback action can route
   // through this mocked tool launcher from runtime callback wiring.
-  mock.module('../tools/AgentTool/AgentTool.js', () => ({
+  mock.module('../../src/tools/AgentTool/AgentTool.js', () => ({
     AgentTool: {
       call: agentToolCallSpy,
     },
   }))
 
-  const mod = await import(`./hookChains.js?integration=${Date.now()}-${Math.random()}`)
+  const mod = await import(`../../src/utils/hookChains.ts?integration=${Date.now()}-${Math.random()}`)
   return { mod, writeToMailboxSpy, agentToolCallSpy }
 }
 
@@ -213,7 +213,7 @@ describe('hookChains integration dispatch', () => {
       },
       runtime: {
         onSpawnFallbackAgent: async request => {
-          const { AgentTool } = await import('../tools/AgentTool/AgentTool.js')
+          const { AgentTool } = await import('../../src/tools/AgentTool/AgentTool.tsx')
           await (AgentTool.call as unknown as (...args: unknown[]) => Promise<unknown>)({
             prompt: request.prompt,
             description: request.description,
@@ -352,6 +352,8 @@ describe('hookChains integration dispatch', () => {
 
     expect(result.actionResults).toHaveLength(1)
     expect(result.actionResults[0]?.status).toBe('skipped')
-    expect(result.actionResults[0]?.reason).toContain('Bridge is not active')
+    expect(result.actionResults[0]?.reason).toContain(
+      'requires an onWarmRemoteCapacity runtime callback',
+    )
   })
 })

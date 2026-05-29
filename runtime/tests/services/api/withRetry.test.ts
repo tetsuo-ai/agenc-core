@@ -57,8 +57,13 @@ async function importFreshWithRetryModule(
   mock.module('src/utils/model/providers.js', () => ({
     getAPIProvider: () => provider,
     getAPIProviderForStatsig: () => provider,
+    isFirstPartyAnthropicBaseUrl: () => provider === 'firstParty',
+    isFirstPartyproviderBaseUrl: () => provider === 'firstParty',
+    isGithubNativeAnthropicMode: () => provider === 'github',
+    isGithubNativeproviderMode: () => provider === 'github',
+    usesAnthropicAccountFlow: () => provider === 'firstParty',
   }))
-  return import(`./withRetry.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/services/api/withRetry.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 // --- parseOpenAiDuration ---

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 
-import { createUserMessage } from './messages.ts'
-import { applyToolResultReplacementsToMessages } from './toolResultStorage.ts'
+import { createUserMessage } from '../../src/utils/messages.ts'
+import { applyToolResultReplacementsToMessages } from '../../src/utils/toolResultStorage.ts'
 
 test('applyToolResultReplacementsToMessages replaces matching tool results and preserves unrelated messages', () => {
   const unrelated = createUserMessage({ content: 'keep me' })

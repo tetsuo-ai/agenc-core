@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { interpretCommandResult } from './commandSemantics.js'
+import { interpretCommandResult } from '../../../src/tools/BashTool/commandSemantics.ts'
 
 // =============================================================================
 // interpretCommandResult — exit code semantics per command

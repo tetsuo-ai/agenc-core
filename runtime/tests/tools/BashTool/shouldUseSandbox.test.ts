@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from 'bun:test'
 
-import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js'
-import { BashTool } from './BashTool.js'
-import { PowerShellTool } from '../PowerShellTool/PowerShellTool.js'
-import { shouldUseSandbox } from './shouldUseSandbox.js'
+import { SandboxManager } from '../../../src/utils/sandbox/sandbox-runtime.ts'
+import { BashTool } from '../../../src/tools/BashTool/BashTool.tsx'
+import { PowerShellTool } from '../../../src/tools/PowerShellTool/PowerShellTool.tsx'
+import { shouldUseSandbox } from '../../../src/tools/BashTool/shouldUseSandbox.ts'
 
 const originalSandboxMethods = {
   isSandboxingEnabled: SandboxManager.isSandboxingEnabled,

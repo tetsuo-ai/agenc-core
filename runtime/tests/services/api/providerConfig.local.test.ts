@@ -6,7 +6,7 @@ import {
   isLocalProviderUrl,
   resolveProviderRequest,
   shouldAttemptLocalToollessRetry,
-} from './providerConfig.js'
+} from '../../../src/services/api/providerConfig.ts'
 
 const originalEnv = {
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,

@@ -5,7 +5,7 @@ import {
   optimizeForCost,
   optimizeForAccuracy,
   getHybridStats,
-} from './hybridContextStrategy.js'
+} from '../../src/utils/hybridContextStrategy.ts'
 
 function createMessage(role: string, content: string, createdAt: number = Date.now()): any {
   return {

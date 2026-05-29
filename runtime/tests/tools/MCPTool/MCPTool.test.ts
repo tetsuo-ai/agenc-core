@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from 'bun:test'
-import { MCPTool } from './MCPTool.js'
+import { MCPTool } from '../../../src/tools/MCPTool/MCPTool.ts'
 
 // =============================================================================
 // MCPTool.validateInput — AJV schema validation

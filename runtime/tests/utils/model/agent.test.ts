@@ -1,192 +1,260 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import {
+  checkIsAgenCNativeProvider,
+  getAgentModel,
+} from '../../../src/utils/model/agent.ts'
+
+const providerEnvKeys = [
+  'AGENC_USE_GEMINI',
+  'AGENC_USE_MISTRAL',
+  'AGENC_USE_GITHUB',
+  'AGENC_USE_MINIMAX',
+  'AGENC_USE_OPENAI',
+  'ANTHROPIC_BASE_URL',
+  'MINIMAX_API_KEY',
+  'NVIDIA_NIM',
+  'OPENAI_API_BASE',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'XAI_API_KEY',
+] as const
+
+const originalProviderEnv = Object.fromEntries(
+  providerEnvKeys.map(key => [key, process.env[key]]),
+) as Record<(typeof providerEnvKeys)[number], string | undefined>
+
+function clearProviderEnv(): void {
+  for (const key of providerEnvKeys) {
+    delete process.env[key]
+  }
+}
+
+function restoreProviderEnv(): void {
+  clearProviderEnv()
+  for (const [key, value] of Object.entries(originalProviderEnv)) {
+    if (value !== undefined) {
+      process.env[key] = value
+    }
+  }
+}
+
+function useProvider(
+  provider:
+    | 'agenc'
+    | 'custom-first-party'
+    | 'first-party'
+    | 'gemini'
+    | 'github'
+    | 'minimax'
+    | 'mistral'
+    | 'nvidia-nim'
+    | 'openai',
+): void {
+  clearProviderEnv()
+
+  switch (provider) {
+    case 'agenc':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_MODEL = 'agencspark'
+      break
+    case 'custom-first-party':
+      process.env.ANTHROPIC_BASE_URL = 'https://proxy.example.com'
+      break
+    case 'first-party':
+      break
+    case 'gemini':
+      process.env.AGENC_USE_GEMINI = '1'
+      break
+    case 'github':
+      process.env.AGENC_USE_GITHUB = '1'
+      break
+    case 'minimax':
+      process.env.MINIMAX_API_KEY = 'minimax-test-key'
+      break
+    case 'mistral':
+      process.env.AGENC_USE_MISTRAL = '1'
+      break
+    case 'nvidia-nim':
+      process.env.NVIDIA_NIM = '1'
+      break
+    case 'openai':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_MODEL = 'gpt-4o-mini'
+      break
+  }
+}
 
 describe('getAgentModel provider-aware fallback', () => {
-  // Restore all mocks after each test
   afterEach(() => {
-    mock.restore()
+    restoreProviderEnv()
   })
 
   describe('AgenC-native providers', () => {
-    test('haiku alias resolves to haiku model for official provider API', async () => {
-      // Mock providers to return firstParty with official URL
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'firstParty',
-        isFirstPartyAnthropicBaseUrl: () => true,
-      }))
+    test('haiku alias resolves to haiku model for official provider API', () => {
+      useProvider('first-party')
 
-      // Import after mock is set up
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'claude-sonnet-4-6', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'claude-sonnet-4-6',
+        undefined,
+        'default',
+      )
 
-      // Should resolve haiku alias, not inherit parent
       expect(result).toContain('haiku')
       expect(result).not.toBe('claude-sonnet-4-6')
     })
-
   })
 
   describe('Non-AgenC-native providers', () => {
-    test('haiku alias inherits parent model for openai provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'openai',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for openai provider', () => {
+      useProvider('openai')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'gpt-4o-mini', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'gpt-4o-mini',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for openai (no haiku concept)
       expect(result).toBe('gpt-4o-mini')
     })
 
-    test('haiku alias inherits parent model for Gemini provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'gemini',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for Gemini provider', () => {
+      useProvider('gemini')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'gemini-2.5-pro', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'gemini-2.5-pro',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for Gemini
       expect(result).toBe('gemini-2.5-pro')
     })
 
-    test('haiku alias inherits parent model for custom provider-compatible URL', async () => {
-      // firstParty provider but with custom URL (not official provider)
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'firstParty',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for custom provider-compatible URL', () => {
+      useProvider('custom-first-party')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'claude-sonnet-4-6', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'claude-sonnet-4-6',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent for custom provider-compatible URL
       expect(result).toBe('claude-sonnet-4-6')
     })
 
-    test('sonnet alias inherits parent model for openai provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'openai',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('sonnet alias inherits parent model for openai provider', () => {
+      useProvider('openai')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('sonnet', 'gpt-4o-mini', undefined, 'default')
+      const result = getAgentModel(
+        'sonnet',
+        'gpt-4o-mini',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for openai
       expect(result).toBe('gpt-4o-mini')
     })
 
-    test('haiku alias inherits parent model for Mistral provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'mistral',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for Mistral provider', () => {
+      useProvider('mistral')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'mistral-small-latest', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'mistral-small-latest',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for Mistral (no haiku concept)
       expect(result).toBe('mistral-small-latest')
     })
 
-    test('haiku alias inherits parent model for GitHub Copilot provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'github',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for GitHub Copilot provider', () => {
+      useProvider('github')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'gpt-4o-mini', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'gpt-4o-mini',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for GitHub Copilot
       expect(result).toBe('gpt-4o-mini')
     })
 
-    test('haiku alias inherits parent model for NVIDIA NIM provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'nvidia-nim',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for NVIDIA NIM provider', () => {
+      useProvider('nvidia-nim')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'meta/llama-3.1-8b-instruct', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'meta/llama-3.1-8b-instruct',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for NVIDIA NIM (no haiku concept)
       expect(result).toBe('meta/llama-3.1-8b-instruct')
     })
 
-    test('haiku alias inherits parent model for MiniMax provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'minimax',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for MiniMax provider', () => {
+      useProvider('minimax')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'MiniMax-M2.5-highspeed', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'MiniMax-M2.5-highspeed',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for MiniMax (no haiku concept)
       expect(result).toBe('MiniMax-M2.5-highspeed')
     })
 
-    test('haiku alias inherits parent model for Agenc provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'agenc',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('haiku alias inherits parent model for Agenc provider', () => {
+      useProvider('agenc')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'gpt-5.5-mini', undefined, 'default')
+      const result = getAgentModel(
+        'haiku',
+        'gpt-5.5-mini',
+        undefined,
+        'default',
+      )
 
-      // Should inherit parent model for Agenc provider (no haiku concept)
       expect(result).toBe('gpt-5.5-mini')
     })
   })
 
   describe('inherit behavior unchanged', () => {
-    test('inherit always returns parent model regardless of provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'openai',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('inherit always returns parent model regardless of provider', () => {
+      useProvider('openai')
 
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('inherit', 'gpt-4o', undefined, 'default')
+      const result = getAgentModel(
+        'inherit',
+        'gpt-4o',
+        undefined,
+        'default',
+      )
 
       expect(result).toBe('gpt-4o')
     })
   })
 
   describe('checkIsAgenCNativeProvider helper', () => {
-    test('returns true for official provider API', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'firstParty',
-        isFirstPartyAnthropicBaseUrl: () => true,
-      }))
+    test('returns true for official provider API', () => {
+      useProvider('first-party')
 
-      const { checkIsAgenCNativeProvider } = await import('./agent.js')
       expect(checkIsAgenCNativeProvider()).toBe(true)
     })
 
-    test('returns false for openai provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'openai',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('returns false for openai provider', () => {
+      useProvider('openai')
 
-      const { checkIsAgenCNativeProvider } = await import('./agent.js')
       expect(checkIsAgenCNativeProvider()).toBe(false)
     })
 
-    test('returns false for custom provider URL', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'firstParty',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
+    test('returns false for custom provider URL', () => {
+      useProvider('custom-first-party')
 
-      const { checkIsAgenCNativeProvider } = await import('./agent.js')
       expect(checkIsAgenCNativeProvider()).toBe(false)
     })
   })

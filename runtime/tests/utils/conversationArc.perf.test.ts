@@ -4,7 +4,7 @@ import {
   updateArcPhase, 
   getArcSummary,
   resetArc 
-} from './conversationArc.js'
+} from '../../src/utils/conversationArc.ts'
 
 function createMessage(content: string): any {
   return {

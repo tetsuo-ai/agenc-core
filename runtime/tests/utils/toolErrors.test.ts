@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { ShellError, AbortError } from './errors.js'
-import { formatError, getErrorParts } from './toolErrors.js'
+import { ShellError, AbortError } from '../../src/utils/errors.ts'
+import { formatError, getErrorParts } from '../../src/utils/toolErrors.ts'
 
 // =============================================================================
 // getErrorParts — what the model sees when a tool fails

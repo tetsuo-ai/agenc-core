@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test'
-import { getEmptyToolPermissionContext } from '../tools/Tool.js'
-import { CanonicalBashTool } from '../tools/canonicalToolSurface.js'
-import { executeShellCommandsInPrompt } from './promptShellExecution.js'
+import { getEmptyToolPermissionContext } from '../../src/tools/Tool.ts'
+import { CanonicalBashTool } from '../../src/tools/canonicalToolSurface.ts'
+import { executeShellCommandsInPrompt } from '../../src/utils/promptShellExecution.ts'
 
 const originalCall = CanonicalBashTool.call
 const originalMapToolResultToToolResultBlockParam =

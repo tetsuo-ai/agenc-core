@@ -25,7 +25,7 @@ afterEach(() => {
 })
 
 async function importFreshProvidersModule() {
-  return import(`./providers.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/utils/model/providers.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 function clearProviderEnv(): void {

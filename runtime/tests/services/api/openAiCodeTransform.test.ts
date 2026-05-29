@@ -7,8 +7,8 @@ import {
   convertproviderMessagesToResponsesInput,
   convertProviderCodeResponseToproviderMessage,
   convertToolsToResponsesTools,
-} from './openAiCodeTransform.js'
-import { __test as webSearchToolTest } from '../../tools/WebSearchTool/WebSearchTool.js'
+} from '../../../src/services/api/openAiCodeTransform.ts'
+import { __test as webSearchToolTest } from '../../../src/tools/WebSearchTool/WebSearchTool.ts'
 
 const tempDirs: string[] = []
 const originalEnv = {
@@ -61,7 +61,7 @@ async function collectStreamEventTypes(responseText: string): Promise<string[]> 
 }
 
 async function importFreshProviderConfigModule() {
-  return import(`./providerConfig.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/services/api/providerConfig.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 describe('ProviderCode provider config', () => {

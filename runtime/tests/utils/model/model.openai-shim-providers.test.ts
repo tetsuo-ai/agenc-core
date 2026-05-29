@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
-import { saveGlobalConfig } from '../config.js'
+import { saveGlobalConfig } from '../../../src/utils/config.ts'
 
 async function importFreshModelModule() {
   mock.restore()
@@ -22,7 +22,7 @@ async function importFreshModelModule() {
     },
   }))
   const nonce = `${Date.now()}-${Math.random()}`
-  return import(`./model.js?ts=${nonce}`)
+  return import(`../../../src/utils/model/model.ts?ts=${nonce}`)
 }
 
 const SAVED_ENV = {
@@ -42,6 +42,7 @@ const SAVED_ENV = {
   GITHUB_MODEL: process.env.GITHUB_MODEL,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  XAI_API_KEY: process.env.XAI_API_KEY,
   AGENC_API_KEY: process.env.AGENC_API_KEY,
   CHATGPT_ACCOUNT_ID: process.env.CHATGPT_ACCOUNT_ID,
 }
@@ -76,6 +77,7 @@ beforeEach(() => {
   delete process.env.GITHUB_MODEL
   delete process.env.OPENAI_MODEL
   delete process.env.OPENAI_BASE_URL
+  delete process.env.XAI_API_KEY
   delete process.env.AGENC_API_KEY
   delete process.env.CHATGPT_ACCOUNT_ID
   saveGlobalConfig(current => ({
@@ -117,7 +119,6 @@ test('agenc provider reads OPENAI_MODEL, not stale settings.model', async () => 
 test('nvidia-nim provider reads NVIDIA_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
   saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
   process.env.NVIDIA_NIM = '1'
-  process.env.AGENC_USE_OPENAI = '1'
   process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
   process.env.OPENAI_MODEL = 'wrong-openai-model'
 
@@ -201,7 +202,6 @@ test('getSmallFastModel returns OPENAI_MODEL for Agenc (regression)', async () =
 
 test('getSmallFastModel returns NVIDIA_MODEL for NVIDIA NIM (regression)', async () => {
   process.env.NVIDIA_NIM = '1'
-  process.env.AGENC_USE_OPENAI = '1'
   process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
   process.env.OPENAI_MODEL = 'wrong-openai-model'
 
@@ -221,7 +221,6 @@ test('getDefaultOpusModel returns MINIMAX_MODEL for MiniMax', async () => {
 
 test('getDefaultSonnetModel returns NVIDIA_MODEL for NVIDIA NIM', async () => {
   process.env.NVIDIA_NIM = '1'
-  process.env.AGENC_USE_OPENAI = '1'
   process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
   process.env.OPENAI_MODEL = 'wrong-openai-model'
 

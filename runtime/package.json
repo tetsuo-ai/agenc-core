@@ -35,6 +35,7 @@
     "test:tui-openclaude-core-parity": "vitest run tests/tui/parity --reporter=dot",
     "validate:tui-openclaude-core-parity": "npm run test:tui-openclaude-core-parity",
     "test:tui-yolo-openclaude-parity": "vitest run tests/tui/components/PromptInput/permissionModeChrome.test.ts tests/tui/components/FullscreenLayout.test.tsx tests/tui/components/PromptInput/PromptInputFooterLeftSide.render.test.tsx tests/tui/components/PromptInput/PromptInputFooterLeftSide.render.runtime-coverage.test.tsx tests/permissions/permission-mode.test.ts tests/app-server-client/index.test.ts --reporter=dot",
+    "test:bun:isolated": "node scripts/run-bun-tests-isolated.mjs",
     "check:tui-command-visual-smoke": "node scripts/check-tui-command-visual-smoke.mjs",
     "check:tui-workbench-visual-smoke": "node scripts/check-tui-workbench-visual-smoke.mjs",
     "check:tui-workbench-transcript-scroll": "node scripts/check-tui-workbench-transcript-scroll.mjs",

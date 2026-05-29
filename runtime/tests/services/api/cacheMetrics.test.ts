@@ -6,7 +6,7 @@ import {
   formatCacheMetricsCompact,
   formatCacheMetricsFull,
   addCacheMetrics,
-} from './cacheMetrics.js'
+} from '../../../src/services/api/cacheMetrics.ts'
 
 describe('extractCacheMetrics — provider (firstParty)', () => {
   test('reports read/created separately and computes hit rate over total input', () => {

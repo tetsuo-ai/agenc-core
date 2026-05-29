@@ -4,7 +4,7 @@ import {
   getGeminiProjectIdHint,
   mayHaveGeminiAdcCredentials,
   resolveGeminiCredential,
-} from './geminiAuth.ts'
+} from '../../src/utils/geminiAuth.ts'
 
 const existingFilePath = import.meta.path
 

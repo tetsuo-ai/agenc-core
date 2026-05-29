@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   extractAtMentionedFiles,
   extractMcpResourceMentions,
-} from './attachments.js'
+} from '../../src/utils/attachments.ts'
 
 // Contract tests for the two @-mention extractors.
 //

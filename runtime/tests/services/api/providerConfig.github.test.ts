@@ -4,7 +4,7 @@ import {
   DEFAULT_GITHUB_MODELS_API_MODEL,
   normalizeGithubModelsApiModel,
   resolveProviderRequest,
-} from './providerConfig.js'
+} from '../../../src/services/api/providerConfig.ts'
 
 const originalUseGithub = process.env.AGENC_USE_GITHUB
 

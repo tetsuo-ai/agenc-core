@@ -8,8 +8,8 @@ const haikuMock = mock()
 
 beforeEach(async () => {
   haikuMock.mockReset()
-  const actual = await import('../../services/api/anthropic.js')
-  mock.module('../../services/api/agenc.js', () => ({
+  const actual = await import('../../../src/services/api/anthropic.ts')
+  mock.module('../../../src/services/api/anthropic.js', () => ({
     ...actual,
     queryHaiku: haikuMock,
   }))
@@ -22,7 +22,7 @@ afterEach(() => {
 async function runApply(markdown = 'Hello world.', signal?: AbortSignal): Promise<string> {
   const nonce = `${Date.now()}-${Math.random()}`
   const { applyPromptToMarkdown } =
-    await import(`./utils.js?ts=${nonce}`)
+    await import(`../../../src/tools/WebFetchTool/utils.ts?ts=${nonce}`)
   const ctrl = new AbortController()
   return applyPromptToMarkdown(
     'summarize',

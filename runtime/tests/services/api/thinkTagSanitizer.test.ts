@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   createThinkTagFilter,
   stripThinkTags,
-} from './thinkTagSanitizer.js'
+} from '../../../src/services/api/thinkTagSanitizer.ts'
 
 describe('stripThinkTags — whole-text cleanup', () => {
   test('strips closed think pair', () => {

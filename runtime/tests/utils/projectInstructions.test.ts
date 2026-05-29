@@ -13,7 +13,7 @@ import {
   hasProjectInstructionFile,
   isProjectInstructionFileName,
   PRIMARY_PROJECT_INSTRUCTION_FILE,
-} from './projectInstructions.js'
+} from '../../src/utils/projectInstructions.ts'
 
 describe('projectInstructions', () => {
   test('prefers AGENC.md over fallback project instructions', () => {

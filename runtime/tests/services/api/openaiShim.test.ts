@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { createOpenAiShimClient } from './openaiShim.js'
+import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
 
 type FetchType = typeof globalThis.fetch
 
@@ -482,7 +482,8 @@ test('strips provider-specific headers on GitHub ProviderCode transport requests
   let capturedHeaders: Headers | undefined
 
   process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_API_KEY = 'github-test-key'
+  process.env.GITHUB_TOKEN = 'github-test-key'
+  delete process.env.OPENAI_API_KEY
   delete process.env.OPENAI_BASE_URL
   delete process.env.OPENAI_MODEL
 

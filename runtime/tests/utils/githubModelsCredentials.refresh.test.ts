@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 async function importFreshModule() {
-  mock.restore()
-  return import(`./githubModelsCredentials.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/githubModelsCredentials.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 describe('refreshGithubModelsTokenIfNeeded', () => {
@@ -41,7 +40,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       },
     }
 
-    mock.module('./secureStorage/index.js', () => ({
+    mock.module('../../src/utils/secureStorage/index.js', () => ({
       getSecureStorage: () => ({
         read: () => store,
         update: (next: Record<string, unknown>) => {
@@ -51,7 +50,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       }),
     }))
 
-    mock.module('../services/github/deviceFlow.js', () => ({
+    mock.module('../../src/services/github/deviceFlow.js', () => ({
       DEFAULT_GITHUB_DEVICE_SCOPE: 'read:user',
       exchangeForCopilotToken: async () => ({
         token: `tid=fresh;exp=${futureExp};sku=free`,
@@ -89,7 +88,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       endpoints: { api: 'https://api.githubcopilot.com' },
     }))
 
-    mock.module('./secureStorage/index.js', () => ({
+    mock.module('../../src/utils/secureStorage/index.js', () => ({
       getSecureStorage: () => ({
         read: () => ({
           githubModels: {
@@ -101,7 +100,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       }),
     }))
 
-    mock.module('../services/github/deviceFlow.js', () => ({
+    mock.module('../../src/services/github/deviceFlow.js', () => ({
       DEFAULT_GITHUB_DEVICE_SCOPE: 'read:user',
       exchangeForCopilotToken: exchangeSpy,
     }))

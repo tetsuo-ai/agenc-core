@@ -1,31 +1,49 @@
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
-import { compressToolHistory, getTiers } from './compressToolHistory.js'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { compressToolHistory, getTiers } from '../../../src/services/api/compressToolHistory.ts'
 
-// Mock the two dependencies so tests are deterministic and don't read disk config.
-const mockState = {
-  enabled: true,
-  effectiveWindow: 100_000,
+const originalEnv = {
+  DISABLE_TOOL_HISTORY_COMPRESSION: process.env.DISABLE_TOOL_HISTORY_COMPRESSION,
+  AGENC_DISABLE_TOOL_HISTORY_COMPRESSION:
+    process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,
+  AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
+    process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW,
+  AGENC_MAX_OUTPUT_TOKENS: process.env.AGENC_MAX_OUTPUT_TOKENS,
 }
 
-mock.module('../../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({
-    toolHistoryCompressionEnabled: mockState.enabled,
-  }),
-}))
-
-mock.module('../compact/autoCompact.js', () => ({
-  getEffectiveContextWindowSize: () => mockState.effectiveWindow,
-}))
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key]
+  } else {
+    process.env[key] = value
+  }
+}
 
 beforeEach(() => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 100_000
+  delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION
+  delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
+  delete process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW
+  delete process.env.AGENC_MAX_OUTPUT_TOKENS
 })
 
 afterEach(() => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 100_000
+  restoreEnv(
+    'DISABLE_TOOL_HISTORY_COMPRESSION',
+    originalEnv.DISABLE_TOOL_HISTORY_COMPRESSION,
+  )
+  restoreEnv(
+    'AGENC_DISABLE_TOOL_HISTORY_COMPRESSION',
+    originalEnv.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,
+  )
+  restoreEnv(
+    'AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW',
+    originalEnv.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW,
+  )
+  restoreEnv('AGENC_MAX_OUTPUT_TOKENS', originalEnv.AGENC_MAX_OUTPUT_TOKENS)
 })
+
+function setEffectiveContextWindow(effectiveWindow: number): void {
+  process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW = String(effectiveWindow + 8_000)
+}
 
 type Block = Record<string, unknown>
 type Msg = { role: string; content: Block[] | string }
@@ -124,7 +142,7 @@ test('getTiers: ≥ 500k (gpt-4.1 1M) → recent=25, mid=50', () => {
 // ---------- master switch ----------
 
 test('pass-through when toolHistoryCompressionEnabled is false', () => {
-  mockState.enabled = false
+  process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION = '1'
   const messages = buildConversation(20)
   const result = compressToolHistory(messages, 'gpt-4o')
   expect(result).toBe(messages) // same reference (no transformation)
@@ -390,7 +408,7 @@ test('tier boundaries: 16 exchanges → 1 old + 10 mid + 5 recent', () => {
 
 test('large window (1M) with 30 exchanges: all untouched (recent=25 ≥ 30 - 5)', () => {
   // ≥500k → recent=25, mid=50. 30 exchanges → 5 mid + 25 recent. None old.
-  mockState.effectiveWindow = 1_000_000
+  setEffectiveContextWindow(1_000_000)
   const messages = buildConversation(30, 5_000)
   const result = compressToolHistory(messages, 'gpt-4.1')
   const resultMsgs = getResultMessages(result)

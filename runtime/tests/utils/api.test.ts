@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { z } from 'zod/v4'
-import { getEmptyToolPermissionContext, type Tool, type Tools } from '../tools/Tool.js'
-import { toolToAPISchema } from './api.js'
+import { getEmptyToolPermissionContext, type Tool, type Tools } from '../../src/tools/Tool.ts'
+import { toolToAPISchema } from '../../src/utils/api.ts'
 
 const SkillTool = {
   name: 'Skill',

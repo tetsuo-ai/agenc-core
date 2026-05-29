@@ -11,7 +11,7 @@ import {
   getMultiTurnStats,
   resetMultiTurnState,
   createMultiTurnTracker,
-} from './multiTurnContext.js'
+} from '../../src/utils/multiTurnContext.ts'
 
 function createMessage(role: string, content: string): any {
   return {

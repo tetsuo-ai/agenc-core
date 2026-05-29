@@ -30,7 +30,7 @@ test('logs classified transport diagnostics with category and code', async () =>
   }))
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { createOpenAiShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
+  const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
 
   process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
   process.env.OPENAI_API_KEY = 'ollama'
@@ -77,7 +77,7 @@ test('redacts credentials in transport diagnostic URL logs', async () => {
   }))
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { createOpenAiShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
+  const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
 
   process.env.OPENAI_BASE_URL = 'http://user:supersecret@localhost:11434/v1'
   process.env.OPENAI_API_KEY = 'supersecret'
@@ -124,7 +124,7 @@ test('logs self-heal localhost fallback with redacted from/to URLs', async () =>
   }))
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { createOpenAiShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
+  const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
 
   process.env.OPENAI_BASE_URL = 'http://user:supersecret@localhost:11434/v1'
   process.env.OPENAI_API_KEY = 'supersecret'
@@ -201,7 +201,7 @@ test('logs self-heal toolless retry for local tool-call incompatibility', async 
   }))
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { createOpenAiShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
+  const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
 
   process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
   process.env.OPENAI_API_KEY = 'ollama'

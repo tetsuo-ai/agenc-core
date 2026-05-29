@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { normalizeToolArguments } from './toolArgumentNormalization.js'
+import { normalizeToolArguments } from '../../../src/services/api/toolArgumentNormalization.ts'
 
 describe('normalizeToolArguments', () => {
   describe('Bash tool', () => {

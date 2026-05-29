@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
 type FetchType = typeof globalThis.fetch
-type GetProviderClient = typeof import('./client.js')['getproviderClient']
+type GetProviderClient = typeof import('../../../src/services/api/client.ts')['getproviderClient']
 
 type ShimClient = {
   beta: {
@@ -93,7 +93,7 @@ beforeEach(async () => {
   delete process.env.ANTHROPIC_CUSTOM_HEADERS
 
   const nonce = `${Date.now()}-${Math.random()}`
-  ;({ getproviderClient } = await import(`./client.js?client-test=${nonce}`))
+  ;({ getproviderClient } = await import(`../../../src/services/api/client.ts?client-test=${nonce}`))
 })
 
 afterEach(() => {

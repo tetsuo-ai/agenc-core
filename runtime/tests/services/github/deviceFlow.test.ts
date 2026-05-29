@@ -5,11 +5,11 @@ import {
   GitHubDeviceFlowError,
   pollAccessToken,
   requestDeviceCode,
-} from './deviceFlow.js'
+} from '../../../src/services/github/deviceFlow.ts'
 
 async function importFreshModule() {
   mock.restore()
-  return import(`./deviceFlow.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/services/github/deviceFlow.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 afterEach(() => {

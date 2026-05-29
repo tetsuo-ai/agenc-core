@@ -45,6 +45,9 @@ import {
   parseClassifierResponse,
 } from './classifierShared.js'
 import { getAgenCTempDir } from './filesystem.js'
+import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifierConstants.js'
+
+export { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifierConstants.js'
 
 // Dead code elimination: conditional imports for auto mode classifier prompts.
 // The built ESM artifact uses createRequire so this module can run without a
@@ -275,8 +278,6 @@ const yoloClassifierResponseSchema = lazySchema(() =>
     reason: z.string(),
   }),
 )
-
-export const YOLO_CLASSIFIER_TOOL_NAME = 'classify_result'
 
 const YOLO_CLASSIFIER_TOOL_SCHEMA: BetaToolUnion = {
   type: 'custom',

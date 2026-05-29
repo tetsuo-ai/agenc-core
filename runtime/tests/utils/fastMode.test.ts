@@ -3,7 +3,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 const originalEnv = { ...process.env }
 
 async function importFreshFastModeModule() {
-  return import(`./fastMode.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/fastMode.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 function installCommonMocks(options?: {
@@ -32,19 +32,23 @@ function installCommonMocks(options?: {
   mock.module('src/services/analytics/growthbook.js', () => ({
     getFeatureValue_CACHED_MAY_BE_STALE: (_name: string, defaultValue: unknown) =>
       defaultValue,
+    getFeatureValue_CACHED_WITH_REFRESH: async (
+      _name: string,
+      defaultValue: unknown,
+    ) => defaultValue,
   }))
 
-  mock.module('../bootstrap/state.js', () => ({
+  mock.module('../../src/bootstrap/state.js', () => ({
     getIsNonInteractiveSession: () => false,
     getKairosActive: () => false,
     preferThirdPartyAuthentication: () => false,
   }))
 
-  mock.module('../services/analytics/index.js', () => ({
+  mock.module('../../src/services/analytics/index.js', () => ({
     logEvent: () => {},
   }))
 
-  mock.module('./auth.js', () => ({
+  mock.module('../../src/utils/auth.js', () => ({
     getAnthropicApiKey: () => options?.apiKey ?? null,
     getAgenCAIOAuthTokens: () =>
       options?.oauthToken ? { accessToken: options.oauthToken } : null,
@@ -52,11 +56,11 @@ function installCommonMocks(options?: {
     hasProfileScope: () => options?.hasProfileScope ?? false,
   }))
 
-  mock.module('./bundledMode.js', () => ({
+  mock.module('../../src/utils/bundledMode.js', () => ({
     isInBundledMode: () => true,
   }))
 
-  mock.module('./config.js', () => ({
+  mock.module('../../src/utils/config.js', () => ({
     getGlobalConfig: () => ({
       penguinModeOrgEnabled: options?.cachedEnabled === true,
     }),
@@ -68,32 +72,32 @@ function installCommonMocks(options?: {
     logForDebugging: () => {},
   }))
 
-  mock.module('./envUtils.js', () => ({
+  mock.module('../../src/utils/envUtils.js', () => ({
     isEnvTruthy: (value: string | undefined) =>
       !!value && value !== '0' && value.toLowerCase() !== 'false',
   }))
 
-  mock.module('./model/model.js', () => ({
+  mock.module('../../src/utils/model/model.js', () => ({
     getDefaultMainLoopModelSetting: () => 'claude-sonnet-4-6',
     isOpus1mMergeEnabled: () => false,
     parseUserSpecifiedModel: (model: string) => model,
   }))
 
-  mock.module('./model/providers.js', () => ({
+  mock.module('../../src/utils/model/providers.js', () => ({
     getAPIProvider: () => 'firstParty',
   }))
 
-  mock.module('./privacyLevel.js', () => ({
+  mock.module('../../src/utils/privacyLevel.js', () => ({
     isEssentialTrafficOnly: () => false,
   }))
 
-  mock.module('./settings/settings.js', () => ({
+  mock.module('../../src/utils/settings/settings.js', () => ({
     getInitialSettings: () => ({ fastMode: true }),
     getSettingsForSource: () => ({}),
     updateSettingsForSource: () => {},
   }))
 
-  mock.module('./signal.js', () => ({
+  mock.module('../../src/utils/signal.js', () => ({
     createSignal: () => {
       const subscribe = () => () => {}
       const emit = () => {}

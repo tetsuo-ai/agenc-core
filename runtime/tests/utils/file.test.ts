@@ -3,11 +3,11 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 async function importFileModuleWithKillswitchEnabled(
   killswitchEnabled: boolean,
 ) {
-  mock.module('../services/analytics/growthbook.js', () => ({
+  mock.module('../../src/services/analytics/growthbook.js', () => ({
     getFeatureValue_CACHED_MAY_BE_STALE: () => killswitchEnabled,
   }))
 
-  return import(`./file.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/file.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 afterEach(() => {

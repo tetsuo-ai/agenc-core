@@ -11,14 +11,14 @@ import { afterEach, expect, test } from 'bun:test'
   NATIVE_PACKAGE_URL: undefined,
 }
 
-import { clearSystemPromptSections } from './systemPromptSections.js'
-import { getSystemPrompt, DEFAULT_AGENT_PROMPT } from './prompts.js'
-import { CLI_SYSPROMPT_PREFIXES, getCLISyspromptPrefix } from './system.js'
-import { AGENC_GUIDE_AGENT } from '../tools/AgentTool/built-in/agencGuideAgent.js'
-import { GENERAL_PURPOSE_AGENT } from '../tools/AgentTool/built-in/generalPurposeAgent.js'
-import { EXPLORE_AGENT } from '../tools/AgentTool/built-in/exploreAgent.js'
-import { PLAN_AGENT } from '../tools/AgentTool/built-in/planAgent.js'
-import { STATUSLINE_SETUP_AGENT } from '../tools/AgentTool/built-in/statuslineSetup.js'
+import { clearSystemPromptSections } from '../../src/constants/systemPromptSections.ts'
+import { getSystemPrompt, DEFAULT_AGENT_PROMPT } from '../../src/constants/prompts.ts'
+import { CLI_SYSPROMPT_PREFIXES, getCLISyspromptPrefix } from '../../src/constants/system.ts'
+import { AGENC_GUIDE_AGENT } from '../../src/tools/AgentTool/built-in/agencGuideAgent.ts'
+import { GENERAL_PURPOSE_AGENT } from '../../src/tools/AgentTool/built-in/generalPurposeAgent.ts'
+import { EXPLORE_AGENT } from '../../src/tools/AgentTool/built-in/exploreAgent.ts'
+import { PLAN_AGENT } from '../../src/tools/AgentTool/built-in/planAgent.ts'
+import { STATUSLINE_SETUP_AGENT } from '../../src/tools/AgentTool/built-in/statuslineSetup.ts'
 
 const originalSimpleEnv = process.env.AGENC_SIMPLE
 

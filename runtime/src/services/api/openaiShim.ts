@@ -1060,7 +1060,9 @@ function repairPossiblyTruncatedObjectJson(raw: string): string | null {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           return repaired
         }
-      } catch {}
+      } catch {
+        continue
+      }
     }
     return null
   }
@@ -1402,7 +1404,9 @@ async function* openaiStreamToprovider(
                     JSON.parse(str + combo)
                     suffixToAdd = combo
                     break
-                  } catch {}
+                  } catch {
+                    continue
+                  }
                 }
               }
             }

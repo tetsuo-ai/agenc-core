@@ -2,7 +2,7 @@ import { afterEach, expect, mock, test } from 'bun:test'
 
 async function loadProviderDiscoveryModule() {
   // @ts-expect-error cache-busting query string for Bun module mocks
-  return import(`./providerDiscovery.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/providerDiscovery.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 const originalFetch = globalThis.fetch
