@@ -2,7 +2,6 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { lstat, realpath } from 'fs/promises'
 import { dirname, join, resolve, sep } from 'path'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memory/paths.js'
 
@@ -76,7 +75,7 @@ export function isTeamMemoryEnabled(): boolean {
   if (!isAutoMemoryEnabled()) {
     return false
   }
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_herring_clock', true)
+  return true
 }
 
 /**

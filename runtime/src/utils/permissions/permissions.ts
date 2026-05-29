@@ -67,7 +67,6 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   : null
 
 import { addToTurnClassifierDuration } from '../../bootstrap/state.js'
-import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import {
   clearClassifierChecking,
   setClassifierChecking,
@@ -92,8 +91,6 @@ import {
   classifyYoloAction,
   formatActionForClassifier,
 } from './yoloClassifier.js'
-
-const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
 
 const PERMISSION_RULE_SOURCES = [
   ...SETTING_SOURCES,
@@ -710,11 +707,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         // the tengu_iron_gate_closed gate.
         if (classifierResult.unavailable) {
           if (
-            getFeatureValue_CACHED_WITH_REFRESH(
-              'tengu_iron_gate_closed',
-              true,
-              CLASSIFIER_FAIL_CLOSED_REFRESH_MS,
-            )
+            true
           ) {
             logForDebugging(
               'Auto mode classifier unavailable, denying with retry guidance (fail closed)',

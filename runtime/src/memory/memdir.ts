@@ -17,7 +17,6 @@ import {
 } from './paths.js'
 
 import { getKairosActive, getOriginalCwd } from '../bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
 import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
@@ -347,9 +346,6 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
 export function buildSearchingPastContextSection(
   durableMemoryDirs: string | readonly string[],
 ): string[] {
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_coral_fern', false)) {
-    return []
-  }
   const projectDir = getProjectDir(getOriginalCwd())
   const memoryDirs = Array.from(
     new Set(
@@ -412,10 +408,7 @@ function quoteShellPath(path: string): string {
 export async function loadMemoryPrompt(): Promise<string | null> {
   const autoEnabled = isAutoMemoryEnabled()
 
-  const skipIndex = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_moth_copse',
-    false,
-  )
+  const skipIndex = false
 
   // KAIROS daily-log mode takes precedence over TEAMMEM: the append-only
   // log paradigm does not compose with team sync (which expects a shared

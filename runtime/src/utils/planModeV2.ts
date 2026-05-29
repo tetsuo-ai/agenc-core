@@ -1,4 +1,3 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getRateLimitTier, getSubscriptionType } from './auth.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 
@@ -52,10 +51,7 @@ export function isPlanModeInterviewPhaseEnabled(): boolean {
   if (isEnvTruthy(env)) return true
   if (isEnvDefinedFalsy(env)) return false
 
-  return getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_plan_mode_interview_phase',
-    false,
-  )
+  return false
 }
 
 export type PewterLedgerVariant = 'trim' | 'cut' | 'cap' | null
@@ -83,10 +79,7 @@ export type PewterLedgerVariant = 'trim' | 'cut' | 'cap' | null
  *   more implementation iterations), tool error rate
  */
 export function getPewterLedgerVariant(): PewterLedgerVariant {
-  const raw = getFeatureValue_CACHED_MAY_BE_STALE<string | null>(
-    'tengu_pewter_ledger',
-    null,
-  )
+  const raw: string | null = null
   if (raw === 'trim' || raw === 'cut' || raw === 'cap') return raw
   return null
 }

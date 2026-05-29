@@ -94,7 +94,6 @@ import {
   type SystemPrompt,
 } from '../../utils/systemPromptType.js'
 import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js'
-import { getDynamicConfig_BLOCKS_ON_INIT } from '../analytics/growthbook.js'
 import {
   currentLimits,
   extractQuotaStatusFromError,
@@ -146,7 +145,6 @@ import type { QuerySource } from 'src/constants/querySource.js'
 import type { Notification } from 'src/context/notifications.js'
 import { addToTotalSessionCost } from 'src/cost/tracker.js'
 import { recordUsageCacheStats } from 'src/services/api/cacheStatsTracker.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { AgentId } from 'src/types/ids.js'
 import {
   ADVISOR_TOOL_INSTRUCTIONS,
@@ -299,10 +297,7 @@ function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
     feature('ANTI_DISTILLATION_CC')
       ? process.env.AGENC_ENTRYPOINT === 'cli' &&
         shouldIncludeFirstPartyOnlyBetas() &&
-        getFeatureValue_CACHED_MAY_BE_STALE(
-          'tengu_anti_distill_fake_tool_injection',
-          false,
-        )
+        false
       : false
   ) {
     result.anti_distillation = ['fake_tools']
@@ -416,9 +411,7 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
   // TTLs when GrowthBook's disk cache updates mid-request
   let allowlist = getPromptCache1hAllowlist()
   if (allowlist === null) {
-    const config = getFeatureValue_CACHED_MAY_BE_STALE<{
-      allowlist?: string[]
-    }>('tengu_prompt_cache_1h_config', {})
+    const config: { allowlist?: string[] } = {}
     allowlist = config.allowlist ?? []
     setPromptCache1hAllowlist(allowlist)
   }
@@ -1022,14 +1015,9 @@ async function* queryModel(
   if (
     !isAgenCAISubscriber() &&
     isNonCustomOpusModel(options.model) &&
-    (
-      await getDynamicConfig_BLOCKS_ON_INIT<{ activated: boolean }>(
-        'tengu-off-switch',
-        {
-          activated: false,
-        },
-      )
-    ).activated
+    // Open-build: the GrowthBook 'tengu-off-switch' config resolved to its
+    // default (inactive); inlined with the growthbook removal.
+    false
   ) {
     yield getAssistantMessageFromError(
       new Error(CUSTOM_OFF_SWITCH_MESSAGE),
@@ -2309,10 +2297,7 @@ async function* queryModel(
       // and runs it again. See inc-4258.
       const disableFallback =
         isEnvTruthy(process.env.AGENC_DISABLE_NONSTREAMING_FALLBACK) ||
-        getFeatureValue_CACHED_MAY_BE_STALE(
-          'tengu_disable_streaming_to_non_streaming_fallback',
-          false,
-        )
+        false
 
       if (disableFallback) {
         logForDebugging(
@@ -3161,7 +3146,7 @@ function adjustParamsForNonStreaming<
 
 function isMaxTokensCapEnabled(): boolean {
   // Provider-compatible default: false.
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_otk_slot_v1', false)
+  return false
 }
 
 export function getMaxOutputTokensForModel(model: string): number {

@@ -1,7 +1,6 @@
 // @ts-expect-error -- stub package lacks declaration file; replace when @ant/computer-use-mcp absorbs into runtime.
 import type { CoordinateMode, CuSubGates } from '@ant/computer-use-mcp/types'
 
-import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getSubscriptionType } from '../auth.js'
 import { isEnvTruthy } from '../envUtils.js'
 
@@ -27,10 +26,6 @@ const DEFAULTS: ChicagoConfig = {
 function readConfig(): ChicagoConfig {
   return {
     ...DEFAULTS,
-    ...getDynamicConfig_CACHED_MAY_BE_STALE<Partial<ChicagoConfig>>(
-      'tengu_malort_pedway',
-      DEFAULTS,
-    ),
   }
 }
 

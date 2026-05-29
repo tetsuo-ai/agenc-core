@@ -7,7 +7,6 @@ const state = vi.hoisted(() => ({
   effectiveWindow: 200_000,
   enabledFeatures: new Set<string>(),
   errorThreshold: false,
-  growthEnabled: false,
   percentLeft: 8,
   suppressWarning: false,
   upgradeMessage: null as string | null,
@@ -16,10 +15,6 @@ const state = vi.hoisted(() => ({
 
 vi.mock("bun:bundle", () => ({
   feature: (flag: string) => state.enabledFeatures.has(flag),
-}));
-
-vi.mock("../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => state.growthEnabled,
 }));
 
 vi.mock("../../services/compact/autoCompact.js", () => ({
@@ -63,7 +58,6 @@ describe("TokenWarning coverage swarm row 120", () => {
     state.effectiveWindow = 200_000;
     state.enabledFeatures = new Set();
     state.errorThreshold = false;
-    state.growthEnabled = false;
     state.percentLeft = 8;
     state.suppressWarning = false;
     state.upgradeMessage = null;
@@ -101,22 +95,18 @@ describe("TokenWarning coverage swarm row 120", () => {
     expect(output).not.toContain("Context low");
   });
 
-  test("uses effective context percentages for reactive and collapse modes", async () => {
+  test("uses effective context percentages in collapse mode", async () => {
+    // The reactive-only path is permanently disabled in open builds (its
+    // rollout gate is inlined to false), so only collapse mode rescales the
+    // displayed percentage against the effective context window.
     state.autoCompactEnabled = true;
     state.effectiveWindow = 100;
-    state.enabledFeatures = new Set(["REACTIVE_COMPACT"]);
-    state.growthEnabled = true;
-
-    const reactiveOutput = await renderWarning(125);
-
-    expect(reactiveOutput).toContain("100% context used");
-
     state.enabledFeatures = new Set(["CONTEXT_COLLAPSE"]);
-    state.growthEnabled = false;
     state.collapseEnabled = true;
 
     const collapseOutput = await renderWarning(75);
 
     expect(collapseOutput).toContain("25% until auto-compact");
+    expect(collapseOutput).not.toContain("context used");
   });
 });

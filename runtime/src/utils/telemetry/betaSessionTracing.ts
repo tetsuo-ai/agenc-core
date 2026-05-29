@@ -28,7 +28,6 @@
 import type { Span } from '@opentelemetry/api'
 import { createHash } from 'crypto'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
@@ -76,10 +75,9 @@ export function isBetaTracingEnabled(): boolean {
   // Gate reads from disk cache, so first run after allowlisting returns false;
   // works from second run onward (same behavior as enhanced_telemetry_beta).
   if (process.env.USER_TYPE !== 'ant') {
-    return (
-      getIsNonInteractiveSession() ||
-      getFeatureValue_CACHED_MAY_BE_STALE('tengu_trace_lantern', false)
-    )
+    // Open-build: 'tengu_trace_lantern' resolved to false (its default);
+    // inlined with the growthbook removal.
+    return getIsNonInteractiveSession()
   }
 
   return true

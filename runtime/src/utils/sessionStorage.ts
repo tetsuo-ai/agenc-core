@@ -29,8 +29,6 @@ import {
 } from '../bootstrap/state.js'
 import { builtInCommandNames } from '../commands.js'
 import { COMMAND_NAME_TAG, TICK_TAG } from '../constants/xml.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
-
 import { REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
 import {
   type AgentId,
@@ -3881,7 +3879,7 @@ export async function loadTranscriptFile(
 
   const leafUuids = new Set<UUID>()
 
-  if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_pebble_leaf_prune', false)) {
+  if (false) {
     // Build a set of UUIDs that have user/assistant children
     // (these are mid-conversation nodes, not dead ends)
     const hasUserAssistantChild = new Set<UUID>()

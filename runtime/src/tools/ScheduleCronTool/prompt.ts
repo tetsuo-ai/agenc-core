@@ -1,11 +1,8 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import { DEFAULT_CRON_JITTER_CONFIG } from '../../utils/cronTasks.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-
-const KAIROS_CRON_REFRESH_MS = 5 * 60 * 1000
 
 export const DEFAULT_MAX_AGE_DAYS =
   DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs / (24 * 60 * 60 * 1000)
@@ -35,11 +32,7 @@ export function isKairosCronEnabled(): boolean {
   // Expose cron support by default unless explicitly disabled.
   if (process.env.USER_TYPE !== 'ant') return true
 
-  return getFeatureValue_CACHED_WITH_REFRESH(
-    'tengu_kairos_cron',
-    true,
-    KAIROS_CRON_REFRESH_MS,
-  )
+  return true
 }
 
 /**
@@ -52,11 +45,7 @@ export function isKairosCronEnabled(): boolean {
  * scheduler via isKairosCronEnabled).
  */
 export function isDurableCronEnabled(): boolean {
-  return getFeatureValue_CACHED_WITH_REFRESH(
-    'tengu_kairos_cron_durable',
-    true,
-    KAIROS_CRON_REFRESH_MS,
-  )
+  return true
 }
 
 export const CRON_CREATE_TOOL_NAME = 'CronCreate'

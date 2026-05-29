@@ -1,4 +1,3 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { EffortLevel } from '../effort.js'
 
 export type AntModel = {
@@ -35,10 +34,7 @@ export function getAntModelOverrideConfig(): AntModelOverrideConfig | null {
   if (process.env.USER_TYPE !== 'ant') {
     return null
   }
-  return getFeatureValue_CACHED_MAY_BE_STALE<AntModelOverrideConfig | null>(
-    'tengu_ant_model_override',
-    null,
-  )
+  return null
 }
 
 export function getAntModels(): AntModel[] {

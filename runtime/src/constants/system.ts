@@ -3,8 +3,6 @@
 // Critical system constants extracted to break circular dependencies
 
 import { feature } from 'bun:bundle'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 import { getAPIProvider } from '../utils/model/providers.js'
@@ -59,7 +57,7 @@ function isAttributionHeaderEnabled(): boolean {
   if (isEnvDefinedFalsy(process.env.AGENC_ATTRIBUTION_HEADER)) {
     return false
   }
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_attribution_header', true)
+  return true
 }
 
 /**

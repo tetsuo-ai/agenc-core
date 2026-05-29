@@ -30,7 +30,6 @@ const spinnerMock = vi.hoisted(() => ({
   featureFlags: new Set<string>(),
   getKairosActive: false,
   getUserMsgOptIn: false,
-  growthbookBrief: false,
   localAgents: [] as Array<{ id: string; summary: string }>,
   outputTokens: 0,
   settings: {
@@ -51,10 +50,6 @@ vi.mock("../../../bootstrap/state.js", () => ({
   getKairosActive: () => spinnerMock.getKairosActive,
   getTurnOutputTokens: () => spinnerMock.outputTokens,
   getUserMsgOptIn: () => spinnerMock.getUserMsgOptIn,
-}));
-
-vi.mock("../../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => spinnerMock.growthbookBrief,
 }));
 
 vi.mock("../../../utils/activityManager.js", () => ({
@@ -301,7 +296,6 @@ beforeEach(() => {
   spinnerMock.featureFlags.clear();
   spinnerMock.getKairosActive = false;
   spinnerMock.getUserMsgOptIn = false;
-  spinnerMock.growthbookBrief = false;
   spinnerMock.localAgents = [];
   spinnerMock.outputTokens = 0;
   spinnerMock.settings = {
@@ -340,18 +334,30 @@ describe("Spinner rendering", () => {
   });
 
   test("shows brief connection warnings and hides overflowing right text", async () => {
+    // The brief gate enters via the user opt-in branch when AGENC_BRIEF is set
+    // (getKairosActive stays false). The growthbook flag that used to drive
+    // this is inlined out, so the env opt-in is the surviving entry point.
+    const previousBriefEnv = process.env.AGENC_BRIEF;
+    process.env.AGENC_BRIEF = "1";
     spinnerMock.featureFlags.add("KAIROS");
     spinnerMock.getUserMsgOptIn = true;
-    spinnerMock.growthbookBrief = true;
     spinnerMock.appState.isBriefOnly = true;
     spinnerMock.appState.remoteConnectionStatus = "disconnected";
     spinnerMock.appState.remoteBackgroundTaskCount = 12;
     spinnerMock.terminalColumns = 18;
 
-    const output = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
+    try {
+      const output = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
 
-    expect(output).toContain("Disconnected");
-    expect(output).not.toContain("12 in background");
+      expect(output).toContain("Disconnected");
+      expect(output).not.toContain("12 in background");
+    } finally {
+      if (previousBriefEnv === undefined) {
+        delete process.env.AGENC_BRIEF;
+      } else {
+        process.env.AGENC_BRIEF = previousBriefEnv;
+      }
+    }
   });
 
   test("renders the full spinner row with next task, tip, budget, and teammate tokens", async () => {

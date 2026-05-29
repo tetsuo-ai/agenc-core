@@ -1,23 +1,9 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
-import { sourceUrl } from '../../helpers/source-path.ts'
 
 import {
   getUserPromptTruncationNotice,
   truncateUserPromptDisplayText,
 } from './UserPromptMessage.js'
-
-const source = readFileSync(
-  sourceUrl('tui/message-renderers/UserPromptMessage.tsx'),
-  'utf8',
-)
-
-describe('UserPromptMessage feature flags', () => {
-  test('uses AgenC-owned brief layout flag names', () => {
-    expect(source).not.toContain('tengu_kairos_brief')
-    expect(source).toContain('agenc_kairos_brief')
-  })
-})
 
 describe('UserPromptMessage truncation glyphs', () => {
   test('uses shared ellipsis glyphs for truncation notices', () => {

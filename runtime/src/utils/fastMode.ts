@@ -1,6 +1,5 @@
 import axios from 'axios'
 import { getOauthConfig, OAUTH_BETA_HEADER } from 'src/constants/oauth.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import {
   getIsNonInteractiveSession,
   getKairosActive,
@@ -77,10 +76,7 @@ export function getFastModeUnavailableReason(): string | null {
     return 'Fast mode is not available'
   }
 
-  const statigReason = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_penguins_off',
-    null,
-  )
+  const statigReason: string | null = null
   // Statsig reason has priority over other reasons.
   if (statigReason !== null) {
     logForDebugging(`Fast mode unavailable: ${statigReason}`)
@@ -89,10 +85,7 @@ export function getFastModeUnavailableReason(): string | null {
 
   // Previously, fast mode required the native binary (bun build). This is no
   // longer necessary, but we keep this option behind a flag just in case.
-  if (
-    !isInBundledMode() &&
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_marble_sandcastle', false)
-  ) {
+  if (!isInBundledMode() && false) {
     return 'Fast mode requires the native binary · Install from: https://agenc.tech/product/agenc-code'
   }
 

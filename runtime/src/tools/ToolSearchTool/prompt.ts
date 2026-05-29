@@ -1,7 +1,6 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { Tool } from '../Tool.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 // Dead code elimination: Brief tool name only needed when KAIROS or KAIROS_BRIEF is on
@@ -31,7 +30,7 @@ const PROMPT_HEAD = `Fetches full schema definitions for deferred tools so they 
 function getToolLocationHint(): string {
   const deltaEnabled =
     process.env.USER_TYPE === 'ant' ||
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_glacier_2xr', false)
+    false
   return deltaEnabled
     ? 'Deferred tools appear by name in <system-reminder> messages.'
     : 'Deferred tools appear by name in <available-deferred-tools> messages.'

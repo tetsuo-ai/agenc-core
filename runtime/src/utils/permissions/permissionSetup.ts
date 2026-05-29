@@ -38,12 +38,6 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
 
 import { resolve } from 'path'
 import {
-  checkSecurityRestrictionGate,
-  checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
-  getDynamicConfig_BLOCKS_ON_INIT,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-} from 'src/services/analytics/growthbook.js'
-import {
   addDirHelpMessage,
   validateDirectoryForWorkspace,
 } from '../../commands/add-dir/validation.js'
@@ -694,10 +688,7 @@ export function initialPermissionModeFromCLI({
   const settings = getSettings_DEPRECATED() || {}
 
   // Check GrowthBook gate first - highest precedence
-  const growthBookDisableBypassPermissionsMode =
-    checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-      'tengu_disable_bypass_permissions_mode',
-    )
+  const growthBookDisableBypassPermissionsMode = false
 
   // Then check settings - lower precedence
   const settingsDisableBypassPermissionsMode =
@@ -867,10 +858,7 @@ export async function initializeToolPermissionContext({
 
   // Check if bypassPermissions mode is available (not disabled by Statsig gate or settings)
   // Use cached values to avoid blocking on startup
-  const growthBookDisableBypassPermissionsMode =
-    checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-      'tengu_disable_bypass_permissions_mode',
-    )
+  const growthBookDisableBypassPermissionsMode = false
   const settings = getSettings_DEPRECATED() || {}
   const settingsDisableBypassPermissionsMode =
     settings.permissions?.disableBypassPermissionsMode === 'disable'
@@ -1026,10 +1014,12 @@ export async function verifyAutoModeGateAccess(
   // after GrowthBook initialization and is the authoritative source for
   // isAutoModeAvailable. The sync startup path uses stale cache; this
   // corrects it. Circuit breaker (enabled==='disabled') takes effect here.
-  const autoModeConfig = await getDynamicConfig_BLOCKS_ON_INIT<{
+  // Open-build: the GrowthBook 'tengu_auto_mode_config' dynamic config resolved
+  // to its default ({}); inlined with the growthbook removal.
+  const autoModeConfig: {
     enabled?: AutoModeEnabledState
     disableFastMode?: boolean
-  }>('tengu_auto_mode_config', {})
+  } = {}
   const enabledState = parseAutoModeEnabledState(autoModeConfig?.enabled)
   const disabledBySettings = isAutoModeDisabledBySettings()
   // Treat settings-disable the same as GrowthBook 'disabled' for circuit-breaker
@@ -1201,7 +1191,10 @@ export async function verifyAutoModeGateAccess(
  * Core logic to check if bypassPermissions should be disabled based on Statsig gate
  */
 export function shouldDisableBypassPermissions(): Promise<boolean> {
-  return checkSecurityRestrictionGate('tengu_disable_bypass_permissions_mode')
+  // Open-build: the GrowthBook security gate resolved to false (the remote
+  // client was disabled), so this was already always false; inlined with the
+  // growthbook removal.
+  return Promise.resolve(false)
 }
 
 function isAutoModeDisabledBySettings(): boolean {
@@ -1264,13 +1257,10 @@ function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
  * auto mode in their mode pickers.
  */
 export function getAutoModeEnabledState(): AutoModeEnabledState {
-  const config = getFeatureValue_CACHED_MAY_BE_STALE<{
-    enabled?: AutoModeEnabledState
-  }>('tengu_auto_mode_config', {})
+  const config: { enabled?: AutoModeEnabledState } = {}
   return parseAutoModeEnabledState(config?.enabled)
 }
 
-const NO_CACHED_AUTO_MODE_CONFIG = Symbol('no-cached-auto-mode-config')
 
 /**
  * Like getAutoModeEnabledState but returns undefined when no cached value
@@ -1282,11 +1272,10 @@ const NO_CACHED_AUTO_MODE_CONFIG = Symbol('no-cached-auto-mode-config')
 export function getAutoModeEnabledStateIfCached():
   | AutoModeEnabledState
   | undefined {
-  const config = getFeatureValue_CACHED_MAY_BE_STALE<
-    { enabled?: AutoModeEnabledState } | typeof NO_CACHED_AUTO_MODE_CONFIG
-  >('tengu_auto_mode_config', NO_CACHED_AUTO_MODE_CONFIG)
-  if (config === NO_CACHED_AUTO_MODE_CONFIG) return undefined
-  return parseAutoModeEnabledState(config?.enabled)
+  // Open-build: the GrowthBook auto-mode config is never cached (no remote),
+  // so this sync check always reports "not yet fetched"; inlined with the
+  // growthbook removal.
+  return undefined
 }
 
 /**
@@ -1307,10 +1296,7 @@ export function hasAutoModeOptInAnySource(): boolean {
  * This is a synchronous version that uses cached Statsig values.
  */
 export function isBypassPermissionsModeDisabled(): boolean {
-  const growthBookDisableBypassPermissionsMode =
-    checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-      'tengu_disable_bypass_permissions_mode',
-    )
+  const growthBookDisableBypassPermissionsMode = false
   const settings = getSettings_DEPRECATED() || {}
   const settingsDisableBypassPermissionsMode =
     settings.permissions?.disableBypassPermissionsMode === 'disable'

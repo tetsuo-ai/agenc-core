@@ -10,11 +10,6 @@ const appState = vi.hoisted(() => ({
   mainLoopModelForSession: undefined as string | undefined,
 }))
 
-const growthbook = vi.hoisted(() => ({
-  subscriptions: 0,
-  refreshCallbacks: [] as Array<() => void>,
-}))
-
 const model = vi.hoisted(() => ({
   defaultSetting: 'default-main-model',
   parsedInputs: [] as string[],
@@ -27,15 +22,6 @@ vi.mock('../state/AppState.js', () => ({
       mainLoopModelForSession?: string
     }) => unknown,
   ) => selector(appState),
-}))
-
-vi.mock('../../services/analytics/growthbook', () => ({
-  onGrowthBookRefresh: (callback: () => void) => {
-    growthbook.subscriptions++
-    growthbook.refreshCallbacks.push(callback)
-    callback()
-    return () => {}
-  },
 }))
 
 vi.mock('../../utils/model/model.js', () => ({
@@ -60,8 +46,6 @@ describe('useMainLoopModel', () => {
   beforeEach(() => {
     appState.mainLoopModel = undefined
     appState.mainLoopModelForSession = undefined
-    growthbook.subscriptions = 0
-    growthbook.refreshCallbacks = []
     model.defaultSetting = 'default-main-model'
     model.parsedInputs = []
   })
@@ -75,7 +59,6 @@ describe('useMainLoopModel', () => {
     expect(output).toContain('parsed:session-model')
     expect(model.parsedInputs).toContain('session-model')
     expect(model.parsedInputs).not.toContain('stored-model')
-    expect(growthbook.subscriptions).toBe(1)
   })
 
   test('falls back to the stored main loop model', async () => {

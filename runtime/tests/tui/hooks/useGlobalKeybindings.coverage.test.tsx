@@ -17,10 +17,8 @@ const harness = vi.hoisted(() => ({
     isBriefOnly: false,
   },
   features: new Set<string>(),
-  growthbookCalls: [] as Array<{ fallback: boolean; key: string }>,
   keybindings: new Map<string, CapturedKeybinding>(),
   setAppState: vi.fn(),
-  terminalAllowed: false,
   terminalToggle: vi.fn(),
 }));
 
@@ -42,13 +40,6 @@ vi.mock("../state/AppState.js", () => ({
   useAppState: (selector: (state: typeof harness.appState) => unknown) =>
     selector(harness.appState),
   useSetAppState: () => harness.setAppState,
-}));
-
-vi.mock("../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: (key: string, fallback: boolean) => {
-    harness.growthbookCalls.push({ fallback, key });
-    return key === "agenc_terminal_panel" ? harness.terminalAllowed : fallback;
-  },
 }));
 
 vi.mock("../../utils/terminalPanel.js", () => ({
@@ -90,13 +81,11 @@ async function sleep(ms = 25): Promise<void> {
 describe("GlobalKeybindingHandlers", () => {
   beforeEach(() => {
     harness.features = new Set(["TERMINAL_PANEL"]);
-    harness.growthbookCalls = [];
     harness.keybindings = new Map();
-    harness.terminalAllowed = false;
     vi.clearAllMocks();
   });
 
-  test("gates transcript bindings and terminal panel toggle on their active states", async () => {
+  test("gates transcript bindings and never opens the terminal panel in open builds", async () => {
     const { stdin, stdout } = createStreams();
     const root = await createRoot({
       patchConsole: false,
@@ -139,19 +128,12 @@ describe("GlobalKeybindingHandlers", () => {
         ?.handler;
       expect(toggleTerminal).toBeDefined();
 
+      // The terminal panel is permanently disabled in open builds (the
+      // rollout gate is inlined to false), so the registered handler always
+      // returns early and never opens the panel, even when invoked.
       toggleTerminal?.();
-      expect(harness.growthbookCalls).toEqual([
-        { fallback: false, key: "agenc_terminal_panel" },
-      ]);
+      toggleTerminal?.();
       expect(harness.terminalToggle).not.toHaveBeenCalled();
-
-      harness.terminalAllowed = true;
-      toggleTerminal?.();
-      expect(harness.growthbookCalls).toEqual([
-        { fallback: false, key: "agenc_terminal_panel" },
-        { fallback: false, key: "agenc_terminal_panel" },
-      ]);
-      expect(harness.terminalToggle).toHaveBeenCalledTimes(1);
     } finally {
       root.unmount();
       stdin.end();

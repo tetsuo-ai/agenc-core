@@ -1,7 +1,6 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useReducer } from 'react'
-import { onGrowthBookRefresh } from '../../services/analytics/growthbook'
 import { useAppState } from '../state/AppState.js'
 import {
   getDefaultMainLoopModelSetting,
@@ -25,7 +24,7 @@ export function useMainLoopModel(): ModelName {
   // happens to re-render the component — the API would sample one model
   // while /model (which also re-resolves) displays another.
   const [, forceRerender] = useReducer(x => x + 1, 0)
-  useEffect(() => onGrowthBookRefresh(forceRerender), [])
+  useEffect(() => () => {}, [])
 
   const model = parseUserSpecifiedModel(
     mainLoopModelForSession ??

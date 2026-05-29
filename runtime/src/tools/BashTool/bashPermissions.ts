@@ -1,7 +1,6 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { z } from 'zod/v4'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { ToolPermissionContext, ToolUseContext } from '../Tool.js'
 import type { PendingClassifierCheck } from '../../types/permissions.js'
 import { count } from '../../utils/array.js'
@@ -1565,7 +1564,7 @@ export async function bashToolHasPermission(
   // GrowthBook killswitch for shadow mode — when off, skip the native parse
   // entirely. Computed once; feature() must stay inline in the ternary below.
   const shadowEnabled = feature('TREE_SITTER_BASH_SHADOW')
-    ? getFeatureValue_CACHED_MAY_BE_STALE('tengu_birch_trellis', true)
+    ? true
     : false
   // Parse once here; the resulting AST feeds both parseForSecurityFromAst
   // and bashToolCheckCommandOperatorPermissions.

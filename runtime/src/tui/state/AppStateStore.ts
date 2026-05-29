@@ -13,7 +13,6 @@ import {
   type ToolPermissionContext,
 } from '../../tools/Tool.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { TaskState } from '../../tasks/types.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
@@ -512,10 +511,7 @@ export function getDefaultAppState(): AppState {
     thinkingEnabled: shouldEnableThinkingByDefault(),
     promptSuggestionEnabled: shouldEnablePromptSuggestion({
       ...initialSettings,
-      promptSuggestionFeatureEnabled: getFeatureValue_CACHED_MAY_BE_STALE(
-        'tengu_chomp_inflection',
-        false,
-      ),
+      promptSuggestionFeatureEnabled: false,
       agentSwarmsEnabled: isAgentSwarmsEnabled(),
       isNonInteractiveSession: getIsNonInteractiveSession(),
       isTeammateSession: isTeammate(),

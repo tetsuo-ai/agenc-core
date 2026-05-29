@@ -6,7 +6,6 @@ import {
 } from '@ant/agenc-for-chrome-mcp'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { format } from 'util'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getAgenCAIOAuthTokens } from '../auth.js'
 import { enableConfigs, getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -34,9 +33,7 @@ function isPermissionMode(raw: string): raw is PermissionMode {
  * bridge. API key / 3P users fall back to native messaging.
  */
 function getChromeBridgeUrl(): string | undefined {
-  const bridgeEnabled =
-    process.env.USER_TYPE === 'ant' ||
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_copper_bridge', false)
+  const bridgeEnabled = process.env.USER_TYPE === 'ant'
 
   if (!bridgeEnabled) {
     return undefined
