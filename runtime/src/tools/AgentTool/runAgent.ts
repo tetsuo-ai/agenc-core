@@ -4,6 +4,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { canonicalAgentRoleName } from 'src/agents/role-presentation.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
 import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
@@ -406,15 +407,18 @@ export async function* runAgent({
     ? userContextNoAgenCMd
     : baseUserContext
 
-  // Explore/Plan are read-only search agents — the parent-session-start
-  // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
-  // need git info they run `git status` themselves and get fresh data.
-  // Saves ~1-3 Gtok/week fleet-wide.
+  // scanner (Explore) / Plan are read-only search agents — the
+  // parent-session-start gitStatus (up to 40KB, explicitly labeled stale) is
+  // dead weight. If they need git info they run `git status` themselves and get
+  // fresh data. Saves ~1-3 Gtok/week fleet-wide. Match on canonical role name
+  // so the public name (scanner) and aliases resolve like the v2 spawn path.
   const { gitStatus: _omittedGitStatus, ...systemContextNoGit } =
     baseSystemContext
+  const canonicalAgentType = canonicalAgentRoleName(
+    agentDefinition.agentType ?? '',
+  )
   const resolvedSystemContext =
-    agentDefinition.agentType === 'Explore' ||
-    agentDefinition.agentType === 'Plan'
+    canonicalAgentType === 'explorer' || canonicalAgentType === 'Plan'
       ? systemContextNoGit
       : baseSystemContext
 

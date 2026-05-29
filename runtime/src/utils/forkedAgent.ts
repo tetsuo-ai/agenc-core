@@ -11,6 +11,7 @@
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import type { PromptCommand } from '../commands.js'
+import { canonicalAgentRoleName } from '../agents/role-presentation.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -212,12 +213,17 @@ export async function prepareForkedCommandContext(
     allowedTools,
   )
 
-  // Use command.agent if specified, otherwise 'general-purpose'
-  const agentTypeName = command.agent ?? 'general-purpose'
+  // Use command.agent if specified, otherwise the default (general-purpose)
+  // role. Match by exact agentType or canonical role name so public names /
+  // aliases (scanner, runner, general-purpose, ...) resolve like the v2 spawn
+  // path; fall back to the default role, then the first available agent.
+  const agentTypeName = command.agent ?? 'default'
+  const requestedCanonical = canonicalAgentRoleName(agentTypeName)
   const agents = context.options.agentDefinitions.activeAgents
   const baseAgent =
     agents.find(a => a.agentType === agentTypeName) ??
-    agents.find(a => a.agentType === 'general-purpose') ??
+    agents.find(a => canonicalAgentRoleName(a.agentType) === requestedCanonical) ??
+    agents.find(a => canonicalAgentRoleName(a.agentType) === 'default') ??
     agents[0]
 
   if (!baseAgent) {
