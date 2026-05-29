@@ -255,10 +255,15 @@ describe("AnthropicProvider", () => {
           if (chunk.content) chunks.push(chunk.content);
         },
       );
-      const assertion = expect(pending).rejects.toThrow("busy");
-
       await vi.advanceTimersByTimeAsync(1500);
-      await assertion;
+      // After partial content has been streamed, a mid-stream overloaded
+      // error surfaces a PARTIAL response instead of retrying/falling back
+      // (#10): replaying the attempt would duplicate the already-emitted
+      // "partial" chunk. The earlier no-content attempts still retried.
+      const result = await pending;
+      expect(result.partial).toBe(true);
+      expect(result.finishReason).toBe("error");
+      expect(result.content).toBe("partial");
       expect(fetchImpl).toHaveBeenCalledTimes(3);
       expect(chunks).toEqual(["partial"]);
     } finally {
