@@ -60,8 +60,11 @@ describe("backfillProjectRollouts", () => {
     );
     expect(backfillProjectRollouts({ projectDir: driver.projectDir, driver }))
       .toMatchObject({ filesIndexed: 1, itemsIndexed: 2 });
+    // Re-indexing an unchanged file is now a no-op: it neither re-reads nor
+    // re-INSERTs the prior items (no O(N^2) DELETE-all + re-INSERT-all), so it
+    // reports zero items indexed while leaving the already-indexed rows intact.
     expect(backfillProjectRollouts({ projectDir: driver.projectDir, driver }))
-      .toMatchObject({ filesIndexed: 1, itemsIndexed: 2 });
+      .toMatchObject({ filesIndexed: 1, itemsIndexed: 0 });
     expect(
       driver
         .prepareState<[], { count: number }>(

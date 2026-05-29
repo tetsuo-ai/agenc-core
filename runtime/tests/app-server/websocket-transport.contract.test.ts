@@ -108,6 +108,43 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it("dispatches two pipelined same-connection requests in arrival order", async () => {
+    // Regression for audit #13: websocket dispatch used to be fire-and-forget,
+    // so a slow first handler let a later pipelined request complete first and
+    // corrupt order-dependent flows on the same connection.
+    const completionOrder: number[] = [];
+    let resolveFirst: (() => void) | undefined;
+    const server = new AgenCWebSocketServer({
+      onMessage: async (message, connection) => {
+        const id = message.id as number;
+        if (id === 1) {
+          await new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        completionOrder.push(id);
+        await connection.send({ jsonrpc: JSON_RPC_VERSION, id, result: {} });
+      },
+    });
+
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.send('{"jsonrpc":"2.0","id":1,"method":"session.clear"}');
+    client.send('{"jsonrpc":"2.0","id":2,"method":"message.send"}');
+
+    await delay(20);
+    expect(completionOrder).toEqual([]);
+
+    resolveFirst?.();
+    await delay(40);
+    expect(completionOrder).toEqual([1, 2]);
+
+    client.close();
+    await nextClose(client);
+    await server.close();
+  });
+
   it("serves health probes and rejects unsafe HTTP and upgrade requests", async () => {
     const server = new AgenCWebSocketServer({
       ready: () => false,

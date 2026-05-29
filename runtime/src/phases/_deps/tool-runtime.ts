@@ -79,7 +79,7 @@ import {
 } from "../../tools/orchestrator.js";
 import {
   SESSION_AGENC_HOME_ARG,
-  SESSION_ALLOWED_ROOTS_ARG,
+  withSignedAllowedRoots,
 } from "../../tools/system/filesystem.js";
 import {
   routerFromRegistry as realRouterFromRegistry,
@@ -140,18 +140,7 @@ function withApprovedFilesystemRoot(
     ? filePath
     : resolve(cwd, filePath);
   const approvedRoot = dirname(resolvedPath);
-  const existingRoots = Array.isArray(args[SESSION_ALLOWED_ROOTS_ARG])
-    ? args[SESSION_ALLOWED_ROOTS_ARG].filter(
-        (entry): entry is string =>
-          typeof entry === "string" && entry.length > 0,
-      )
-    : [];
-  if (existingRoots.includes(approvedRoot)) return args;
-
-  return {
-    ...args,
-    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...existingRoots, approvedRoot])],
-  };
+  return withSignedAllowedRoots(args, [approvedRoot]);
 }
 
 // ─────────────────────────────────────────────────────────────────────

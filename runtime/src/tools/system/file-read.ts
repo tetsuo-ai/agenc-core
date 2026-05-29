@@ -54,7 +54,7 @@ import {
   recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
-  SESSION_ALLOWED_ROOTS_ARG,
+  withSignedAllowedRoots,
 } from "./filesystem.js";
 import {
   agentNamespacePathHint,
@@ -1305,20 +1305,12 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         !Array.isArray(decision.updatedInput)
           ? (decision.updatedInput as Record<string, unknown>)
           : (input as Record<string, unknown>);
-      const existingRoots = Array.isArray(currentInput[SESSION_ALLOWED_ROOTS_ARG])
-        ? currentInput[SESSION_ALLOWED_ROOTS_ARG].filter(
-            (entry): entry is string => typeof entry === "string",
-          )
-        : [];
       const absolutePath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
       return {
         ...decision,
-        updatedInput: {
-          ...currentInput,
-          [SESSION_ALLOWED_ROOTS_ARG]: [
-            ...new Set([...existingRoots, dirname(absolutePath)]),
-          ],
-        },
+        updatedInput: withSignedAllowedRoots(currentInput, [
+          dirname(absolutePath),
+        ]),
       };
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {

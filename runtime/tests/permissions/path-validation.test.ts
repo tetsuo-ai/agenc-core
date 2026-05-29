@@ -250,4 +250,130 @@ describe("path-validation", () => {
       blockedPath: target,
     });
   });
+
+  // Regression: audit #3 — bypassPermissions / --yolo must not short-circuit
+  // to allow before path-specific Deny rules and write-safety gates run.
+  describe("checkToolPathPermission honors deny + safety gates under bypassPermissions", () => {
+    test("explicit Deny(Write) rule still denies under bypassPermissions", () => {
+      const target = join(root, "denied.txt");
+      const permissionContext = applyPermissionUpdate(
+        ctx({ mode: "bypassPermissions" }),
+        {
+          type: "addRules",
+          destination: "session",
+          behavior: "deny",
+          rules: [{ toolName: "Write", ruleContent: target }],
+        },
+      );
+
+      const result = checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: permissionContext,
+        operationType: "write",
+      });
+
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason.type).toBe("rule");
+      }
+    });
+
+    test("explicit Deny(Read) rule still denies under bypassPermissions", () => {
+      const target = join(root, "secret.txt");
+      const permissionContext = applyPermissionUpdate(
+        ctx({ mode: "bypassPermissions" }),
+        {
+          type: "addRules",
+          destination: "session",
+          behavior: "deny",
+          rules: [{ toolName: "FileRead", ruleContent: target }],
+        },
+      );
+
+      const result = checkToolPathPermission({
+        toolName: "FileRead",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: permissionContext,
+        operationType: "read",
+      });
+
+      expect(result.behavior).toBe("deny");
+    });
+
+    test(".git protected path is not auto-allowed under bypassPermissions", () => {
+      const target = join(root, ".git", "config");
+
+      const result = checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "write",
+      });
+
+      expect(result.behavior).not.toBe("allow");
+      expect(result.decisionReason?.type).toBe("safetyCheck");
+    });
+
+    test(".agenc protected path is not auto-allowed under bypassPermissions", () => {
+      const target = join(root, ".agenc", "settings.json");
+
+      const result = checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "write",
+      });
+
+      expect(result.behavior).not.toBe("allow");
+      expect(result.decisionReason?.type).toBe("safetyCheck");
+    });
+
+    test("with no deny rule or safety violation, bypassPermissions auto-allows", () => {
+      // Outside cwd with no rule would normally ask; bypass auto-allows.
+      const target = join(outside, "anywhere.txt");
+
+      const result = checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "write",
+      });
+
+      expect(result.behavior).toBe("allow");
+      expect(result.decisionReason).toEqual({
+        type: "mode",
+        mode: "bypassPermissions",
+      });
+    });
+
+    test("reads outside cwd are auto-allowed under bypassPermissions", () => {
+      const target = join(outside, "read-me.txt");
+
+      const result = checkToolPathPermission({
+        toolName: "FileRead",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "read",
+      });
+
+      expect(result.behavior).toBe("allow");
+      expect(result.decisionReason).toEqual({
+        type: "mode",
+        mode: "bypassPermissions",
+      });
+    });
+  });
 });

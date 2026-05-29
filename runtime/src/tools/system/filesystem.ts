@@ -48,12 +48,28 @@ import {
   isSessionPlanFile,
   type PlanFileContext,
 } from "../../planning/plan-files.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ALLOWED_ROOTS_SIG_ARG,
+  signAllowedRoots,
+  verifyAllowedRoots,
+  withSignedAllowedRoots,
+} from "../../agents/_deps/filesystem-args.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
+// Re-export the HMAC-signed trusted-roots channel constants/helpers so
+// existing importers of `filesystem.ts` keep a single source.
+export {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ALLOWED_ROOTS_SIG_ARG,
+  signAllowedRoots,
+  verifyAllowedRoots,
+  withSignedAllowedRoots,
+};
+
 const MAX_LIST_ENTRIES = 10_000;
 const MAX_PATH_LENGTH = 4096;
-export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
 export const SESSION_AGENC_HOME_ARG = "__agencHome";
 export type SessionReadViewKind =
   | "full"
@@ -710,15 +726,36 @@ export async function isPathAllowed(
   return (await safePath(targetPath, allowedPaths)).safe;
 }
 
+/**
+ * Fold runtime-injected extra workspace roots into the trusted base
+ * {@link allowedPaths}.
+ *
+ * SECURITY INVARIANT (sink-side HMAC enforcement): widening filesystem
+ * confinement via `args[SESSION_ALLOWED_ROOTS_ARG]` requires a VALID
+ * per-process HMAC signature in `args[SESSION_ALLOWED_ROOTS_SIG_ARG]`.
+ * The sink no longer trusts the bare key: it folds in roots ONLY via
+ * {@link verifyAllowedRoots}, which recomputes the signature with the
+ * module-private process secret the model never sees and drops anything
+ * that doesn't verify. Runtime writers produce the signature through
+ * {@link withSignedAllowedRoots}; the model cannot forge it. The
+ * model-arg boundary strips at the tool-dispatch boundary
+ * (`router.ts` / `run-agent.ts:injectChildToolArgs`) remain as
+ * defense-in-depth, but enforcement now lives HERE — a future ingress
+ * that forgets to strip cannot reintroduce the sandbox escape, because
+ * an unsigned/forged root is ignored at this sink.
+ */
 export function resolveToolAllowedPaths(
   allowedPaths: readonly string[],
   args: Record<string, unknown>,
 ): readonly string[] {
-  const rawExtraRoots = args[SESSION_ALLOWED_ROOTS_ARG];
-  if (!Array.isArray(rawExtraRoots) || rawExtraRoots.length === 0) {
+  const verifiedRoots = verifyAllowedRoots(
+    args[SESSION_ALLOWED_ROOTS_ARG],
+    args[SESSION_ALLOWED_ROOTS_SIG_ARG],
+  );
+  if (verifiedRoots.length === 0) {
     return allowedPaths;
   }
-  const normalizedExtraRoots = rawExtraRoots
+  const normalizedExtraRoots = verifiedRoots
     .filter(
       (entry): entry is string =>
         typeof entry === "string" && entry.trim().length > 0,

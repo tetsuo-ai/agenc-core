@@ -101,7 +101,7 @@ import {
   buildToolRuntimeCallContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "./system/filesystem.js";
+import { withSignedAllowedRoots } from "./system/filesystem.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -491,7 +491,12 @@ export class ToolRouter {
       };
     }
     try {
-      let executionArgs = args;
+      // SECURITY: strip any `__agenc*` keys reaching this dispatch
+      // boundary (e.g. code_mode js_repl helper calls). These are a
+      // TRUSTED INTERNAL channel for runtime-injected filesystem scoping
+      // and must never be supplied by the model; runtime values are
+      // merged in later (execution.ts / withApprovedFilesystemRoot).
+      let executionArgs = stripModelSuppliedAgenCInternalArgs(args);
       let forcedApprovalReason: string | undefined;
       let permissionAlreadyAllowed = false;
       if (opts.canUseTool !== undefined && opts.permissionContext !== undefined) {
@@ -713,7 +718,15 @@ export class ToolRouter {
         isError: true,
       };
     }
-    let executionArgs = parsedArgs;
+    // SECURITY: `__agenc*` keys are a TRUSTED INTERNAL channel
+    // (`__agencSessionAllowedRoots`, `__agencSessionId`, …) the runtime
+    // injects post-approval to scope filesystem confinement. They must
+    // NEVER originate from the model. Strip every model-supplied
+    // `__agenc*` key here, before any runtime-injected value is merged
+    // in, so a crafted `__agencSessionAllowedRoots:["/"]` cannot widen
+    // the allowed roots that reach tool.execute. (The validator-only
+    // strip in execution.ts left the tool body exposed.)
+    let executionArgs = stripModelSuppliedAgenCInternalArgs(parsedArgs);
     let forcedApprovalReason: string | undefined;
     let preHookPermissionDecision: MergedHookPermissionDecision | undefined;
     let hookPermissionResult: HookPermissionResult | undefined;
@@ -1191,6 +1204,38 @@ function stringifyToolArgsWithBigInt(args: Record<string, unknown>): string {
   );
 }
 
+const AGENC_INTERNAL_ARG_PREFIX = "__agenc";
+
+/**
+ * Drop every `__agenc*` key from model-supplied tool-call arguments.
+ *
+ * `__agenc*` keys (e.g. `__agencSessionAllowedRoots`, `__agencSessionId`)
+ * are a TRUSTED INTERNAL channel the runtime injects post-approval to
+ * scope filesystem confinement. A model that emits them directly could
+ * widen its own allowed roots (audit #1/#2/#4). We strip them at the
+ * dispatch boundary so the only `__agenc*` values that ever reach
+ * `tool.execute` are those the runtime itself adds afterwards. Returns
+ * the input untouched when there is nothing to strip.
+ */
+function stripModelSuppliedAgenCInternalArgs(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  let needsStrip = false;
+  for (const key of Object.keys(input)) {
+    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) {
+      needsStrip = true;
+      break;
+    }
+  }
+  if (!needsStrip) return input;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 const APPROVED_FILE_PATH_TOOLS = new Set([
   "FileRead",
   "Write",
@@ -1225,18 +1270,7 @@ function withApprovedFilesystemRoot(
     ? filePath
     : resolve(cwd, filePath);
   const approvedRoot = dirname(resolvedPath);
-  const existingRoots = Array.isArray(args[SESSION_ALLOWED_ROOTS_ARG])
-    ? args[SESSION_ALLOWED_ROOTS_ARG].filter(
-        (entry): entry is string =>
-          typeof entry === "string" && entry.length > 0,
-      )
-    : [];
-  if (existingRoots.includes(approvedRoot)) return args;
-
-  return {
-    ...args,
-    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...existingRoots, approvedRoot])],
-  };
+  return withSignedAllowedRoots(args, [approvedRoot]);
 }
 
 function planFileContextForApproval(

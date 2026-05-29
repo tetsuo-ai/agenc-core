@@ -10,7 +10,7 @@ import {
   type ToolPermissionContext,
 } from '../tools/Tool.js'
 import { CanonicalFileReadTool } from '../tools/canonicalToolSurface.js'
-import { SESSION_ALLOWED_ROOTS_ARG } from '../tools/system/filesystem.js'
+import { withSignedAllowedRoots } from '../tools/system/filesystem.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
@@ -2052,12 +2052,7 @@ async function callCanonicalFileReadTool(
     ? expandPath(input.file_path)
     : undefined
   const callInput = filePath
-    ? {
-        ...input,
-        [SESSION_ALLOWED_ROOTS_ARG]: [
-          dirname(filePath),
-        ],
-      }
+    ? withSignedAllowedRoots(input, [dirname(filePath)])
     : input
   const result = await (CanonicalFileReadTool.call as any)(
     callInput,

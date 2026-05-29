@@ -1,11 +1,23 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readSync,
+  readdirSync,
+  readFileSync,
+  type Stats,
+  statSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import {
   parseRolloutLine,
   type RolloutItem,
 } from "../session/rollout-item.js";
-import { StateThreadRepository } from "./threads.js";
+import {
+  StateThreadRepository,
+  type RolloutItemRow,
+} from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface BackfillProjectRolloutsOptions {
@@ -49,20 +61,63 @@ export function backfillRolloutFile(options: {
   readonly archived?: boolean;
   readonly threads: StateThreadRepository;
 }): { readonly itemsIndexed: number } {
-  const raw = readFileSync(options.rolloutPath, "utf8");
   const stat = statSync(options.rolloutPath);
-  const threadId = threadIdFromRolloutPath(options.rolloutPath);
-  const items: Array<{
-    lineNumber: number;
-    byteOffset: number;
-    itemIndex: number;
-    itemType: string;
-    eventVersion?: number;
-    eventId?: string;
-    eventSeq?: number;
-    payloadJson: string;
-    lineHash: string;
-  }> = [];
+  const existing = options.threads.getBackfillFile(options.rolloutPath);
+
+  // Fast path 1 — file unchanged since last index. The rollout file is an
+  // append-only log; identical size and mtime means nothing was appended, so
+  // there is no work to do. Avoids re-reading and re-hashing the whole file
+  // on every `appendItems` call.
+  if (
+    existing !== undefined &&
+    existing.size === stat.size &&
+    existing.mtimeMs === stat.mtimeMs
+  ) {
+    return { itemsIndexed: 0 };
+  }
+
+  // Fast path 2 — file grew (pure append). Read and parse only the appended
+  // tail and INSERT only the new lines, leaving prior rows untouched. This
+  // keeps each append O(bytes appended) instead of O(file size), avoiding the
+  // O(N^2) re-index that an unconditional DELETE-all + re-INSERT-all causes.
+  if (existing !== undefined && stat.size > existing.size) {
+    const appended = readAppendedTail(options.rolloutPath, existing.size);
+    if (appended !== undefined) {
+      return indexAppendedTail({
+        rolloutPath: options.rolloutPath,
+        archived: options.archived,
+        threads: options.threads,
+        stat,
+        priorSize: existing.size,
+        existing,
+        tail: appended,
+      });
+    }
+    // The tail read was unusable (e.g. a partial line straddling the prior
+    // size boundary); fall through to a full reconcile below.
+  }
+
+  // Full reconcile path — first index, truncation, rewrite, or any case the
+  // incremental fast paths could not safely handle. Preserves crash/resume
+  // correctness by rebuilding the file's rows from scratch.
+  return reindexWholeRolloutFile({
+    rolloutPath: options.rolloutPath,
+    archived: options.archived,
+    threads: options.threads,
+    stat,
+  });
+}
+
+function reindexWholeRolloutFile(args: {
+  readonly rolloutPath: string;
+  readonly archived?: boolean;
+  readonly threads: StateThreadRepository;
+  readonly stat: Stats;
+}): { readonly itemsIndexed: number } {
+  const { rolloutPath, threads, stat } = args;
+  const raw = readFileSync(rolloutPath, "utf8");
+  const threadId = threadIdFromRolloutPath(rolloutPath);
+  const items: RolloutItemRow[] = [];
   let byteOffset = 0;
   let itemIndex = 0;
   let firstMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
@@ -81,42 +136,25 @@ export function backfillRolloutFile(options: {
         firstMeta ??= parsed;
         latestMeta = parsed;
       }
-      items.push({
-        lineNumber: i + 1,
-        byteOffset,
-        itemIndex,
-        itemType: parsed.type,
-        eventVersion: parsed.eventVersion,
-        eventId:
-          parsed.type === "event_msg" ? parsed.payload.id : undefined,
-        eventSeq:
-          parsed.type === "event_msg" ? parsed.payload.seq : undefined,
-        payloadJson: JSON.stringify(parsed.payload),
-        lineHash: createHash("sha256").update(line).digest("hex"),
-      });
+      items.push(rolloutItemRow(parsed, i + 1, byteOffset, itemIndex, line));
       itemIndex += 1;
     }
     byteOffset += lineBytes;
   }
   const now = new Date(stat.mtimeMs).toISOString();
-  const archivedAt = options.archived === true ? now : undefined;
-  options.threads.mergeThread({
+  mergeThreadFromMeta({
+    threads,
     threadId,
-    createdAt: firstMeta?.payload.timestamp ?? now,
-    updatedAt: latestMeta?.payload.timestamp ?? now,
-    cwd: latestMeta?.payload.cwd ?? firstMeta?.payload.cwd,
-    source: latestMeta?.payload.source ?? firstMeta?.payload.source,
-    model: latestMeta?.payload.model ?? firstMeta?.payload.model,
-    modelProvider:
-      latestMeta?.payload.modelProvider ?? firstMeta?.payload.modelProvider,
-    memoryMode: normalizeMemoryMode(latestMeta?.payload.memoryMode),
-    ...(archivedAt !== undefined
-      ? { archivedAt, archivedRolloutPath: options.rolloutPath }
-      : { rolloutPath: options.rolloutPath }),
-  }, { replaceArchiveState: true });
-  options.threads.replaceRolloutItems({
+    rolloutPath,
+    archived: args.archived,
+    now,
+    createdAt: firstMeta?.payload.timestamp,
+    metaForUpdate: latestMeta?.payload,
+    metaForCreate: firstMeta?.payload,
+  });
+  threads.replaceRolloutItems({
     threadId,
-    sourcePath: options.rolloutPath,
+    sourcePath: rolloutPath,
     items,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
@@ -124,6 +162,188 @@ export function backfillRolloutFile(options: {
     lineCount: lines.length,
   });
   return { itemsIndexed: items.length };
+}
+
+function indexAppendedTail(args: {
+  readonly rolloutPath: string;
+  readonly archived?: boolean;
+  readonly threads: StateThreadRepository;
+  readonly stat: Stats;
+  readonly priorSize: number;
+  readonly existing: {
+    readonly lineCount: number;
+    readonly itemCount: number;
+    readonly sha256: string;
+  };
+  readonly tail: string;
+}): { readonly itemsIndexed: number } {
+  const { rolloutPath, threads, stat, existing, tail } = args;
+  const threadId = threadIdFromRolloutPath(rolloutPath);
+  const items: RolloutItemRow[] = [];
+  // Prior content occupied line numbers 1..(lineCount-1) plus a trailing empty
+  // split element, so existing.lineCount already counts that empty tail line.
+  // New lines therefore start at line number `existing.lineCount`, and the
+  // first new line's byte offset is the previous file size.
+  let byteOffset = args.priorSize;
+  let lineNumber = existing.lineCount;
+  let itemIndex = existing.itemCount;
+  let firstMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  let latestMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  const lines = tail.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    const lineBytes = Buffer.byteLength(line) + 1;
+    if (line.trim().length === 0) {
+      byteOffset += lineBytes;
+      lineNumber += 1;
+      continue;
+    }
+    const parsed = parseRolloutLine(line);
+    if (parsed !== null) {
+      if (parsed.type === "session_meta") {
+        firstMeta ??= parsed;
+        latestMeta = parsed;
+      }
+      items.push(rolloutItemRow(parsed, lineNumber, byteOffset, itemIndex, line));
+      itemIndex += 1;
+    }
+    byteOffset += lineBytes;
+    lineNumber += 1;
+  }
+  const now = new Date(stat.mtimeMs).toISOString();
+  // mergeThread overwrites createdAt/updatedAt unconditionally with whatever we
+  // pass, so carry the already-recorded values forward. The first session_meta
+  // (the source of createdAt) lives in the unchanged prefix we did not re-read,
+  // and the appended tail almost never contains a session_meta to advance
+  // updatedAt — falling back to `now` (file mtime) would make updatedAt jump on
+  // an append and then jump back on the next full reconcile. Carry the prior
+  // updatedAt forward so it only advances when a newer meta timestamp appears,
+  // matching the full-reconcile semantics.
+  const prior = threads.getThread(threadId);
+  mergeThreadFromMeta({
+    threads,
+    threadId,
+    rolloutPath,
+    archived: args.archived,
+    now,
+    createdAt: firstMeta?.payload.timestamp ?? prior?.createdAt,
+    updatedAt: prior?.updatedAt,
+    metaForUpdate: latestMeta?.payload,
+    metaForCreate: firstMeta?.payload,
+  });
+  threads.appendRolloutItems({
+    threadId,
+    sourcePath: rolloutPath,
+    items,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    // Carry the prior full-file digest forward rather than re-hashing the whole
+    // file on every append (which would reintroduce the O(N^2) behaviour). The
+    // canonical full-file hash is re-established whenever a full reconcile runs.
+    // Change detection here relies on mtime+size, not this digest.
+    sha256: existing.sha256,
+    lineCount: existing.lineCount + (lines.length - 1),
+    totalItemCount: itemIndex,
+  });
+  return { itemsIndexed: items.length };
+}
+
+function rolloutItemRow(
+  parsed: RolloutItem,
+  lineNumber: number,
+  byteOffset: number,
+  itemIndex: number,
+  line: string,
+): RolloutItemRow {
+  return {
+    lineNumber,
+    byteOffset,
+    itemIndex,
+    itemType: parsed.type,
+    eventVersion: parsed.eventVersion,
+    eventId: parsed.type === "event_msg" ? parsed.payload.id : undefined,
+    eventSeq: parsed.type === "event_msg" ? parsed.payload.seq : undefined,
+    payloadJson: JSON.stringify(parsed.payload),
+    lineHash: createHash("sha256").update(line).digest("hex"),
+  };
+}
+
+function mergeThreadFromMeta(args: {
+  readonly threads: StateThreadRepository;
+  readonly threadId: string;
+  readonly rolloutPath: string;
+  readonly archived?: boolean;
+  readonly now: string;
+  readonly createdAt: string | undefined;
+  // Optional override for the stored updatedAt. The incremental-append path
+  // passes the carried-forward value so updatedAt does not regress when the
+  // appended tail has no session_meta; the full-reconcile path omits it and
+  // falls back to the latest meta timestamp (or `now`).
+  readonly updatedAt?: string | undefined;
+  readonly metaForUpdate:
+    | Extract<RolloutItem, { type: "session_meta" }>["payload"]
+    | undefined;
+  readonly metaForCreate:
+    | Extract<RolloutItem, { type: "session_meta" }>["payload"]
+    | undefined;
+}): void {
+  const { metaForUpdate, metaForCreate } = args;
+  const archivedAt = args.archived === true ? args.now : undefined;
+  args.threads.mergeThread(
+    {
+      threadId: args.threadId,
+      createdAt: args.createdAt ?? args.now,
+      updatedAt: metaForUpdate?.timestamp ?? args.updatedAt ?? args.now,
+      cwd: metaForUpdate?.cwd ?? metaForCreate?.cwd,
+      source: metaForUpdate?.source ?? metaForCreate?.source,
+      model: metaForUpdate?.model ?? metaForCreate?.model,
+      modelProvider:
+        metaForUpdate?.modelProvider ?? metaForCreate?.modelProvider,
+      memoryMode: normalizeMemoryMode(metaForUpdate?.memoryMode),
+      ...(archivedAt !== undefined
+        ? { archivedAt, archivedRolloutPath: args.rolloutPath }
+        : { rolloutPath: args.rolloutPath }),
+    },
+    { replaceArchiveState: true },
+  );
+}
+
+/**
+ * Reads only the bytes appended to a rollout file beyond `priorSize`, decoded
+ * as UTF-8. Returns `undefined` when the file is shorter than `priorSize` (a
+ * truncation/rewrite that must go through a full reconcile).
+ */
+function readAppendedTail(
+  rolloutPath: string,
+  priorSize: number,
+): string | undefined {
+  const fd = openSync(rolloutPath, "r");
+  try {
+    const stat = statSync(rolloutPath);
+    if (stat.size < priorSize) return undefined;
+    const length = stat.size - priorSize;
+    if (length === 0) return "";
+    // The incremental append path numbers new lines starting at the prior line
+    // count, which is only valid when the previously indexed content ended on a
+    // line boundary. Verify the byte just before the new region is a newline;
+    // otherwise the tail straddles a prior line and must go through a full
+    // reconcile to renumber correctly.
+    if (priorSize > 0) {
+      const boundary = Buffer.allocUnsafe(1);
+      if (readSync(fd, boundary, 0, 1, priorSize - 1) !== 1) return undefined;
+      if (boundary[0] !== 0x0a) return undefined;
+    }
+    const buffer = Buffer.allocUnsafe(length);
+    let read = 0;
+    while (read < length) {
+      const n = readSync(fd, buffer, read, length - read, priorSize + read);
+      if (n === 0) break;
+      read += n;
+    }
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function listRolloutFiles(projectDir: string): RolloutFileEntry[] {

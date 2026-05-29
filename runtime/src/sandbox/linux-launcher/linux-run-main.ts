@@ -440,8 +440,15 @@ function resolveTrueCommand(): string {
   return "/bin/true";
 }
 
-function isProcMountFailure(stderr: string): boolean {
-  return /proc|permission denied|operation not permitted|not permitted/i.test(stderr);
+export function isProcMountFailure(stderr: string): boolean {
+  // Match only bubblewrap's procfs-mount-specific failure strings. The previous
+  // broad `proc|not permitted` substrings false-positived on unrelated stderr,
+  // which could let the launcher silently fall back to running without a
+  // private procfs while host /proc stayed exposed. Prefer failing closed: only
+  // treat a genuine proc-mount error as a recoverable proc-mount failure.
+  // bubblewrap reports a procfs mount failure as "Can't mount proc on <dest>"
+  // (older builds also emit "Can't mount new procfs").
+  return /can't mount (?:new )?proc(?:fs)?\b/i.test(stderr);
 }
 
 function startProtectedCreateMonitor(

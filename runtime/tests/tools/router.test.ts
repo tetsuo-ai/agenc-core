@@ -105,6 +105,61 @@ describe("ToolRouter", () => {
     );
   });
 
+  test("dispatchModelToolCall strips model-supplied __agenc* keys before tool.execute", async () => {
+    // SECURITY (audit #1/#2/#4): `__agenc*` keys are a TRUSTED INTERNAL
+    // channel. A model that emits `__agencSessionAllowedRoots:["/"]` must
+    // never have it reach tool.execute, where it would widen filesystem
+    // confinement.
+    const execute = vi.fn(async (args: Record<string, unknown>) => ({
+      content: `ok ${String(args.file_path)}`,
+    }));
+    const router = new ToolRouter([
+      {
+        tool: { ...writeTool, execute },
+        supportsParallelToolCalls: true,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-injection",
+        name: "Write",
+        arguments: JSON.stringify({
+          file_path: "main.c",
+          __agencSessionAllowedRoots: ["/"],
+          __agencSessionId: "attacker-session",
+          __agencHome: "/etc",
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: { subId: "turn-injection" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(execute).toHaveBeenCalledOnce();
+    const received = execute.mock.calls[0]![0] as Record<string, unknown>;
+    // Legitimate model-supplied args survive.
+    expect(received.file_path).toBe("main.c");
+    // Every model-supplied `__agenc*` key is stripped at the boundary.
+    expect(received.__agencSessionAllowedRoots).toBeUndefined();
+    expect(received.__agencHome).toBeUndefined();
+    // The runtime may re-attach its own __agencSessionId (non-enumerable);
+    // it must never be the attacker-controlled value.
+    expect(received.__agencSessionId).not.toBe("attacker-session");
+  });
+
   test("findSpec rejects MCP-serverId entry for plain (no-namespace) lookup (router behavior)", () => {
     // A spec registered with `serverId` (MCP umbrella) must not
     // resolve when the request has no namespace. This prevents a

@@ -53,6 +53,67 @@ describe("secrets sanitizer", () => {
     expect(redacted).toContain(`Bearer ${REDACTED_SECRET};`);
   });
 
+  it("redacts vendor key shapes lacking a key/context word", () => {
+    // Vendor tokens assembled from fragments so the test fixture is not
+    // flagged as a real secret by push-protection / secret scanning; the
+    // runtime values still match the sanitizer's vendor patterns.
+    const xaiToken = "xai-" + "abcdefghijklmnopqrstuvwxyz0123456789";
+    const slackToken = ["xoxb", "1234567890", "abcdefghijklmnopqrstuvwx"].join("-");
+    const googleToken = "AIza" + "0123456789abcdefghijklmnopqrstuvwxy";
+    const input = [
+      xaiToken,
+      `slack=${slackToken}`,
+      `google=${googleToken}`,
+      "aws_secret_access_key=abcd1234EFGH5678ijkl9012MNOP3456qrst7890",
+      "secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      '{"aws_secret_access_key": "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"}',
+      "The meeting lasted forty minutes and everyone seemed satisfied",
+      "value=abcd1234EFGH5678ijkl9012MNOP3456qrst7890",
+    ].join("\n");
+
+    const redacted = redactSecrets(input);
+
+    expect(redacted).not.toContain(xaiToken);
+    expect(redacted).not.toContain(slackToken);
+    expect(redacted).not.toContain(googleToken);
+    expect(redacted).toContain(`aws_secret_access_key=${REDACTED_SECRET}`);
+    expect(redacted).toContain(`secret_access_key = ${REDACTED_SECRET}`);
+    // JSON-quoted AWS key:value (closing quote before the colon) is redacted.
+    expect(redacted).not.toContain("je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY");
+    expect(redacted).toContain(`"aws_secret_access_key": "${REDACTED_SECRET}"`);
+    // False-positive guard: a bare 40-char-ish word in prose stays visible.
+    expect(redacted).toContain("forty minutes and everyone seemed satisfied");
+    // A 40-char base64 value with no aws/secret context is NOT AWS-redacted.
+    expect(redacted).toContain("value=abcd1234EFGH5678ijkl9012MNOP3456qrst7890");
+  });
+
+  it("redacts AWS secret/access-key fields on the structured-object path", () => {
+    const artifact = {
+      credentials: {
+        aws_secret_access_key: "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY",
+        secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        aws_access_key_id: "AKIAIOSFODNN7EXAMPLE",
+        secretKey: "opaque-value-12345",
+      },
+      // False-positive guard: non-secret `...key` names stay visible.
+      publicKey: "ssh-rsa AAAAB3NzaC1yc2EexamplePublicKeyMaterial",
+      keyCount: 42,
+    };
+
+    const redacted = redactSecretsInValue(artifact);
+
+    expect(redacted).toEqual({
+      credentials: {
+        aws_secret_access_key: REDACTED_SECRET,
+        secret_access_key: REDACTED_SECRET,
+        aws_access_key_id: REDACTED_SECRET,
+        secretKey: REDACTED_SECRET,
+      },
+      publicKey: "ssh-rsa AAAAB3NzaC1yc2EexamplePublicKeyMaterial",
+      keyCount: 42,
+    });
+  });
+
   it("redacts JWTs and secret-looking assignments", () => {
     const input = [
       "jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signatureValue123-",

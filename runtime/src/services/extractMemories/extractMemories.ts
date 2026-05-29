@@ -26,7 +26,7 @@ import type {
 } from "../../agents/run-agent.js";
 import type { delegate as delegateFn } from "../../agents/delegate.js";
 import type { ensureAgentControl as ensureAgentControlFn } from "../../bin/delegate-tool.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "../../agents/_deps/filesystem-args.js";
+import { withSignedAllowedRoots } from "../../agents/_deps/filesystem-args.js";
 import type { AgentPath } from "../../agents/registry.js";
 import {
   createMemoryExtractionTriggerState,
@@ -190,16 +190,7 @@ function withMemoryAllowedRoot(
   input: Record<string, unknown>,
   memoryDir: string,
 ): Record<string, unknown> {
-  const current = Array.isArray(input[SESSION_ALLOWED_ROOTS_ARG])
-    ? (input[SESSION_ALLOWED_ROOTS_ARG] as unknown[]).filter(
-        (entry): entry is string =>
-          typeof entry === "string" && entry.length > 0,
-      )
-    : [];
-  return {
-    ...input,
-    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...current, memoryDir])],
-  };
+  return withSignedAllowedRoots(input, [memoryDir]);
 }
 
 function deny(message: string, reason: string): ReturnType<ChildToolPolicy> {

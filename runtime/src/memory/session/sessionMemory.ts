@@ -28,10 +28,10 @@ import type { Session } from "../../session/session.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
 import { createFileReadTool } from "../../tools/system/file-read.js";
 import {
-  SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
   recordSessionRead,
   seedSessionReadState,
+  withSignedAllowedRoots,
   type SessionReadSeedEntry,
 } from "../../tools/system/filesystem.js";
 import type { Tool } from "../../tools/types.js";
@@ -271,16 +271,7 @@ function copyWithAllowedRoot(
   input: Record<string, unknown>,
   memoryDir: string,
 ): Record<string, unknown> {
-  const existing = Array.isArray(input[SESSION_ALLOWED_ROOTS_ARG])
-    ? (input[SESSION_ALLOWED_ROOTS_ARG] as unknown[]).filter(
-        (entry): entry is string =>
-          typeof entry === "string" && entry.length > 0,
-      )
-    : [];
-  return {
-    ...input,
-    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...existing, memoryDir])],
-  };
+  return withSignedAllowedRoots(input, [memoryDir]);
 }
 
 export function createSessionMemoryEditPolicy(
@@ -337,11 +328,15 @@ export async function setupSessionMemoryFile(
     maxTokens: 50_000,
     maxTextBytes: ONE_MEBIBYTE,
   });
-  const readResult = await readTool.execute({
-    file_path: memoryPath,
-    [SESSION_ID_ARG]: options.sessionId,
-    [SESSION_ALLOWED_ROOTS_ARG]: [memoryDir],
-  });
+  const readResult = await readTool.execute(
+    withSignedAllowedRoots(
+      {
+        file_path: memoryPath,
+        [SESSION_ID_ARG]: options.sessionId,
+      },
+      [memoryDir],
+    ),
+  );
   if (readResult.isError === true) {
     throw new Error(readResult.content);
   }

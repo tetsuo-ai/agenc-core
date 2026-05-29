@@ -18,6 +18,12 @@ const SECRET_PATTERNS: ReadonlyArray<{
   readonly replacement: string;
 }> = [
   {
+    // xAI — the runtime's OWN classifier key shape; redact first so a bare
+    // `xai-...` never leaks even when no surrounding key/context is present.
+    pattern: /(?<![A-Za-z0-9_-])xai-[A-Za-z0-9_-]{16,}(?=$|[^A-Za-z0-9_-])/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
     pattern: /(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?=$|[^A-Za-z0-9_-])/g,
     replacement: REDACTED_SECRET,
   },
@@ -40,6 +46,27 @@ const SECRET_PATTERNS: ReadonlyArray<{
   {
     pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
     replacement: REDACTED_SECRET,
+  },
+  {
+    // Slack tokens (bot/app/user/refresh/configuration).
+    pattern: /(?<![A-Za-z0-9_-])xox[baprs]-[A-Za-z0-9-]{10,}(?=$|[^A-Za-z0-9-])/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
+    // Google API keys: fixed `AIza` prefix + 35 chars is specific enough on its own.
+    pattern: /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?=$|[^A-Za-z0-9_-])/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
+    // AWS secret access keys are 40-char base64 with no distinctive prefix, so a
+    // bare 40-char token is too noisy to redact. Scope to an explicit
+    // aws/secret/access-key context word immediately preceding the value to keep
+    // false positives off ordinary prose. The separator tolerates a closing
+    // quote before the colon so JSON-quoted keys (`"aws_secret_access_key":`) are
+    // covered, and the value tolerates trailing `=` base64 padding.
+    pattern:
+      /\b(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret|secret[_-]?access[_-]?key)\b(["']?\s*[:=]\s*|\s+)(["']?)[A-Za-z0-9/+]{40}={0,2}(?![A-Za-z0-9/+=])/gi,
+    replacement: `$1$2$3${REDACTED_SECRET}`,
   },
   {
     pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}(?=$|[^A-Za-z0-9._~+/=-])/gi,
@@ -143,6 +170,12 @@ function isSensitiveKey(key: string): boolean {
     normalized === "secret" ||
     normalized.endsWith("secret") ||
     normalized.endsWith("secretvalue") ||
+    // AWS access keys normalize to `...accesskey`/`...secretkey`, matching neither
+    // `apikey` nor `secret`; recognize their specific shapes without making every
+    // `...key` sensitive.
+    normalized.endsWith("secretaccesskey") ||
+    normalized.endsWith("secretkey") ||
+    normalized.endsWith("accesskeyid") ||
     normalized === "password" ||
     normalized.endsWith("password") ||
     normalized.endsWith("passwordvalue") ||

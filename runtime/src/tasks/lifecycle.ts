@@ -132,6 +132,7 @@ interface OutputBuffer {
 
 const MAX_OUTPUT_CHARS = 1_000_000;
 const MAX_RETAINED_TERMINAL_TASKS = 100;
+const MAX_RETAINED_NOTIFICATIONS = 1_000;
 
 export class BackgroundTaskError extends Error {
   constructor(
@@ -335,22 +336,32 @@ export class BackgroundTaskLifecycle {
       );
     }
 
+    let stopError: unknown;
     try {
       if (!record.abortController?.signal.aborted) {
         record.abortController?.abort(reason);
       }
       await record.onStop?.(reason);
     } catch (error) {
+      stopError = error;
+    }
+
+    // Always transition the task to a terminal state, even when onStop throws.
+    // Otherwise the task would stay `running` forever and a blocking
+    // TaskOutput would hang (zombie task).
+    const snapshot = this.finish(taskId, "killed", {
+      error: stopError !== undefined ? toErrorMessage(stopError) : reason,
+      summaryStatus: "was stopped",
+    });
+
+    if (stopError !== undefined) {
       throw new BackgroundTaskError(
-        `task ${taskId} stop failed: ${toErrorMessage(error)}`,
+        `task ${taskId} stop failed: ${toErrorMessage(stopError)}`,
         "stop_failed",
       );
     }
 
-    return this.finish(taskId, "killed", {
-      error: reason,
-      summaryStatus: "was stopped",
-    });
+    return snapshot;
   }
 
   bindPromise<T>(
@@ -514,5 +525,9 @@ export class BackgroundTaskLifecycle {
       atMs: Date.now(),
       ...(delta !== undefined ? { delta } : {}),
     });
+    const excess = this.notifications.length - MAX_RETAINED_NOTIFICATIONS;
+    if (excess > 0) {
+      this.notifications.splice(0, excess);
+    }
   }
 }

@@ -168,23 +168,56 @@ export class DegradedStore<T> {
       return true;
     }
     this.flushing = true;
-    const toFlush = [...this.buffer];
+    // #12: drain by IDENTITY, not by index. We remove the snapshot from
+    // the buffer up front so a concurrent at-capacity append() during
+    // the async `flushFn` gap can only evict from the *newly appended*
+    // tail — never from the slice we are flushing. A post-flush
+    // `splice(0, toFlush.length)` (the old approach) would, after such
+    // an eviction, drop a never-flushed item because the front no longer
+    // points at the flushed prefix.
+    const toFlush = this.buffer;
+    this.buffer = [];
     try {
       const ok = await this.flushFn(toFlush);
       if (ok) {
-        // Only clear the portion we flushed — appends during the
-        // async gap stay in the buffer.
-        this.buffer.splice(0, toFlush.length);
+        // Flushed items already removed. Appends during the async gap
+        // landed in the fresh `this.buffer` and stay there.
         if (this.buffer.length === 0) {
           this.exitDegraded(toFlush.length);
         }
         return true;
       }
+      // Flush failed: re-prepend the drained items ahead of anything
+      // that arrived during the gap so ordering is preserved, then
+      // re-apply capacity/eviction (oldest-first) on the combined buffer.
+      this.requeueFront(toFlush);
       return false;
     } catch {
+      this.requeueFront(toFlush);
       return false;
     } finally {
       this.flushing = false;
+    }
+  }
+
+  /**
+   * Re-insert a previously-drained slice at the FRONT of the buffer
+   * (used when a flush attempt fails). Restores oldest-first ordering
+   * and re-applies capacity eviction on the combined buffer.
+   */
+  private requeueFront(items: T[]): void {
+    if (items.length === 0) return;
+    this.buffer = items.concat(this.buffer);
+    if (this.buffer.length > this.capacity) {
+      const overflow = this.buffer.length - this.capacity;
+      this.buffer.splice(0, overflow);
+      this.totalEvicted += overflow;
+      this.onStatusChange?.({
+        kind: "evicted",
+        evicted: overflow,
+        capacity: this.capacity,
+        at: monotonicMs(),
+      });
     }
   }
 

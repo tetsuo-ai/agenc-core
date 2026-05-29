@@ -268,6 +268,75 @@ describe("file-watcher subscription bus", () => {
     watcher.close();
   });
 
+  it("does not rebuild the recursive fallback backend on every event", () => {
+    const root = tempDir();
+    const nestedA = path.join(root, "a");
+    const nestedB = path.join(root, "b");
+    mkdirSync(nestedA);
+    mkdirSync(nestedB);
+
+    const factory = makeFallbackFactory();
+    const watcher = FileWatcher.create({ watch: factory.watch });
+    const { subscriber } = watcher.addSubscriber();
+    const registration = subscriber.registerPath(root, true);
+
+    // Fallback walked the subtree once: root + 2 nested dirs = 3 watchers.
+    const initialCreated = factory.created.length;
+    expect(initialCreated).toBe(3);
+    expect(watcher.liveWatcherCountForTest(root)).toBe(3);
+
+    // A burst of "change" events (no directory churn) must not recreate any
+    // watchers. The old code closed and re-walked the whole subtree per event.
+    const rootWatcher = factory.watcherFor(root);
+    expect(rootWatcher).toBeDefined();
+    for (let i = 0; i < 25; i += 1) {
+      rootWatcher?.emitEvent("change", `file-${i}.txt`);
+    }
+
+    expect(factory.created.length).toBe(initialCreated);
+    expect(watcher.liveWatcherCountForTest(root)).toBe(3);
+
+    registration.close();
+    subscriber.close();
+    watcher.close();
+  });
+
+  it("incrementally adds a watcher for a newly-created directory on a rename event", () => {
+    const root = tempDir();
+    const nested = path.join(root, "a");
+    mkdirSync(nested);
+
+    const factory = makeFallbackFactory();
+    const watcher = FileWatcher.create({ watch: factory.watch });
+    const { subscriber } = watcher.addSubscriber();
+    const registration = subscriber.registerPath(root, true);
+
+    // root + a = 2 watchers initially.
+    const initialCreated = factory.created.length;
+    expect(initialCreated).toBe(2);
+    expect(watcher.liveWatcherCountForTest(root)).toBe(2);
+
+    // A new directory appears, then a rename event fires for it.
+    const created = path.join(nested, "child");
+    mkdirSync(created);
+    factory.watcherFor(nested)?.emitEvent("rename", "child");
+
+    // Exactly one new watcher added (incremental), not a full rebuild.
+    expect(factory.created.length).toBe(initialCreated + 1);
+    expect(watcher.liveWatcherCountForTest(root)).toBe(3);
+    expect(factory.watcherFor(created)).toBeDefined();
+
+    // A removed directory drops its watcher on the next rename reconcile.
+    rmSync(created, { recursive: true, force: true });
+    factory.watcherFor(nested)?.emitEvent("rename", "child");
+    expect(watcher.liveWatcherCountForTest(root)).toBe(2);
+    expect(factory.watcherFor(created)).toBeUndefined();
+
+    registration.close();
+    subscriber.close();
+    watcher.close();
+  });
+
   it("contains asynchronous live watcher errors", () => {
     const root = tempDir();
     const createdWatchers: FakeFsWatcher[] = [];
@@ -449,4 +518,54 @@ class FakeFsWatcher extends EventEmitter {
   unref(): this {
     return this;
   }
+}
+
+/** A single controllable non-recursive fs.watch handle for the fallback path. */
+class ControllableFsWatcher extends FakeFsWatcher {
+  closed = false;
+
+  constructor(
+    readonly target: string,
+    private readonly listener: (eventType: string, filename: Buffer | string | null) => void,
+  ) {
+    super();
+  }
+
+  emitEvent(eventType: "rename" | "change", filename: string | null): void {
+    this.listener(eventType, filename);
+  }
+
+  close(): this {
+    this.closed = true;
+    return this;
+  }
+}
+
+/**
+ * Builds an fs.watch factory that forces the recursive fallback (native
+ * recursive watch throws) and records every non-recursive watcher created so a
+ * test can drive events and assert how often watchers are (re)built.
+ */
+function makeFallbackFactory(): {
+  readonly watch: FileWatcherWatchFactory;
+  readonly created: ControllableFsWatcher[];
+  readonly live: () => ControllableFsWatcher[];
+  watcherFor(target: string): ControllableFsWatcher | undefined;
+} {
+  const created: ControllableFsWatcher[] = [];
+  const watch: FileWatcherWatchFactory = (target, options, listener) => {
+    if (options.recursive === true) {
+      throw new Error("recursive watch unsupported");
+    }
+    const watcher = new ControllableFsWatcher(target, listener);
+    created.push(watcher);
+    return watcher as unknown as FSWatcher;
+  };
+  const live = () => created.filter((watcher) => !watcher.closed);
+  return {
+    watch,
+    created,
+    live,
+    watcherFor: (target) => live().find((watcher) => watcher.target === target),
+  };
 }

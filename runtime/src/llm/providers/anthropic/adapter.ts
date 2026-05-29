@@ -9,6 +9,7 @@ import type {
   LLMMessage,
   LLMProvider,
   LLMResponse,
+  LLMToolCall,
   StreamProgressCallback,
 } from "../../types.js";
 import {
@@ -345,19 +346,6 @@ export class AnthropicProvider implements LLMProvider {
 
     let consecutiveFallbackFailures = 0;
     streamAttempts: while (true) {
-    try {
-      const response = await session.requestStream({
-        api: "messages",
-        method: "POST",
-        headers: { accept: "text/event-stream" },
-        body: request,
-        timeoutMs,
-        signal: options?.signal,
-        providerFallback: this.providerFallbackForModel(requestModel),
-        // Provider SSE streams are not resumable; preserve single-attempt
-        // stream semantics while using the shared session transport contract.
-        retryBudget: { maxRetries: 0 },
-      });
       let content = "";
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
@@ -384,6 +372,19 @@ export class AnthropicProvider implements LLMProvider {
         signature?: string;
         redacted: boolean;
       }> = [];
+    try {
+      const response = await session.requestStream({
+        api: "messages",
+        method: "POST",
+        headers: { accept: "text/event-stream" },
+        body: request,
+        timeoutMs,
+        signal: options?.signal,
+        providerFallback: this.providerFallbackForModel(requestModel),
+        // Provider SSE streams are not resumable; preserve single-attempt
+        // stream semantics while using the shared session transport contract.
+        retryBudget: { maxRetries: 0 },
+      });
 
       for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
@@ -736,26 +737,71 @@ export class AnthropicProvider implements LLMProvider {
       if (isFallbackTriggeredError(error)) {
         throw error;
       }
-      const fallbackDecision = this.evaluateConfiguredFallback(
-        error,
-        consecutiveFallbackFailures,
-        requestModel,
-      );
-      if (
-        fallbackDecision?.kind === "wait" &&
-        await this.waitForConfiguredFallbackRetry(
-          fallbackDecision,
-          options?.signal,
-        )
-      ) {
-        consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
-        continue streamAttempts;
+      // Only retry the stream from scratch when nothing has been emitted to the
+      // consumer yet. Once partial text or tool calls have been forwarded via
+      // onChunk, re-running the attempt would replay (and thus duplicate) the
+      // already-rendered output and inflate mid-stream token estimates, so we
+      // surface a partial response instead (mirrors the in-stream `error`
+      // branch and the grok adapter).
+      const hasEmittedOutput =
+        content.length > 0 ||
+        completedToolCalls.length > 0 ||
+        toolBlocks.size > 0;
+      if (!hasEmittedOutput) {
+        const fallbackDecision = this.evaluateConfiguredFallback(
+          error,
+          consecutiveFallbackFailures,
+          requestModel,
+        );
+        if (
+          fallbackDecision?.kind === "wait" &&
+          await this.waitForConfiguredFallbackRetry(
+            fallbackDecision,
+            options?.signal,
+          )
+        ) {
+          consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+          continue streamAttempts;
+        }
       }
       consecutiveFallbackFailures = 0;
       if (error instanceof ProviderHttpError && error.status === 401) {
         throw new LLMAuthenticationError(this.name, error.status);
       }
-      throw mapLLMError(this.name, error, timeoutMs ?? 0);
+      const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
+      if (content.length > 0) {
+        const partialToolCalls: LLMToolCall[] = completedToolCalls.flatMap(
+          (toolCall) => {
+            if (!parseToolInputObject(toolCall.arguments)) return [];
+            return [{
+              id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+            }];
+          },
+        );
+        onChunk({
+          content: "",
+          done: true,
+          ...(partialToolCalls.length > 0
+            ? { toolCalls: partialToolCalls }
+            : {}),
+        });
+        return {
+          content,
+          toolCalls: partialToolCalls,
+          usage: {
+            promptTokens: usage.input_tokens,
+            completionTokens: usage.output_tokens,
+            totalTokens: usage.input_tokens + usage.output_tokens,
+          },
+          model,
+          finishReason: "error",
+          error: mappedError,
+          partial: true,
+        };
+      }
+      throw mappedError;
     }
     }
   }

@@ -1052,19 +1052,55 @@ export function checkReadPermissionForTool(
       message: `AgenC requested permissions to use ${tool.name}, but you haven't granted it yet.`,
     }
   }
+
+  const path = tool.getPath(input)
+  const decision = computeReadDecision(tool, input, path, toolPermissionContext)
+
   // --yolo / bypassPermissions short-circuit. Same rationale as
-  // checkToolPathPermission and permissions/bash.ts: the user opted out
-  // of all approval gating; filesystem reads must not surface the
-  // working-dir prompt. See GAP-PE-YOLO-LEAK.
+  // checkToolPathPermission and permissions/bash.ts:431 ("hadDeny" guard):
+  // the user opted out of all approval gating, so filesystem reads must not
+  // surface the working-dir prompt. See GAP-PE-YOLO-LEAK.
+  //
+  // SECURITY: this runs AFTER computeReadDecision so the read-specific
+  // Deny(Read(...)) rule loop still wins. Deny and safetyCheck are the two
+  // bypass-immune categories the evaluator enforces at
+  // permissions/evaluator.ts (step 1d deny, step 1g safetyCheck); everything
+  // else (UNC/Windows defense-in-depth asks, ask rules, workingDir) is
+  // auto-allowed under bypass, matching the pre-fix behavior for non-deny
+  // paths. The defect was that the OLD bypass short-circuit fired before this
+  // deny loop, so Deny(Read(...)) was silently skipped.
+  //
+  // NOTE (READ flow): computeReadDecision never returns a 'safetyCheck'
+  // decisionReason — that category is only produced by the write path
+  // (checkWritePermissionForTool step 1.7). For reads, the Deny(Read(...))
+  // rule loop is the only live bypass-immune protection here; the
+  // isSafetyViolation guard below is defensive (kept symmetric with the write
+  // flow and future-proof should a read-specific safetyCheck ever be added).
   if (toolPermissionContext.mode === 'bypassPermissions') {
-    return {
-      behavior: 'allow',
-      updatedInput: input,
-      decisionReason: { type: 'mode', mode: 'bypassPermissions' },
+    const isDenyRule =
+      decision.behavior === 'deny' ||
+      (decision.decisionReason?.type === 'rule' &&
+        decision.decisionReason.rule.ruleBehavior === 'deny')
+    const isSafetyViolation =
+      decision.decisionReason?.type === 'safetyCheck'
+    if (!isDenyRule && !isSafetyViolation) {
+      return {
+        behavior: 'allow',
+        updatedInput: input,
+        decisionReason: { type: 'mode', mode: 'bypassPermissions' },
+      }
     }
   }
-  const path = tool.getPath(input)
 
+  return decision
+}
+
+function computeReadDecision(
+  tool: Tool,
+  input: { [key: string]: unknown },
+  path: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionDecision {
   // Get paths to check (includes both original and resolved symlinks).
   // Computed once here and threaded through checkWritePermissionForTool →
   // checkPathSafetyForAutoEdit → pathInAllowedWorkingPath to avoid redundant

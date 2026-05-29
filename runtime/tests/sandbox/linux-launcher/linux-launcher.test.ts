@@ -30,6 +30,7 @@ import {
   rewriteProxyEnvValue,
 } from "./proxy-routing.js";
 import {
+  isProcMountFailure,
   runCommandWithSupervision,
   runLinuxSandboxMain,
 } from "./linux-run-main.js";
@@ -717,7 +718,106 @@ describe("Linux sandbox launcher", () => {
       ),
     ).rejects.toThrow(/must stay under socketDir/u);
   });
+
+  it("masks host /proc with a tmpfs when proc is not mounted (full filesystem)", () => {
+    const args = createBwrapCommandArgs(
+      ["/bin/true"],
+      unrestrictedFileSystemPolicy(),
+      "/",
+      "/",
+      {
+        mountProc: false,
+        networkMode: "isolated",
+        seccompFd: SECCOMP_STDIN_FD,
+      },
+    ).args;
+
+    expect(procMaskIndex(args)).toBeGreaterThanOrEqual(0);
+    // No fresh procfs mount and no unmasked host /proc bind survives.
+    expect(args).not.toContain("--proc");
+    expect(boundProcSources(args)).toEqual([]);
+    // The tmpfs mask must land after the host root bind so it overrides it.
+    expect(procMaskIndex(args)).toBeGreaterThan(rootBindIndex(args));
+  });
+
+  it("masks host /proc with a tmpfs when proc is not mounted (restricted policy)", () => {
+    const root = withTempDir("agenc-linux-launcher-proc-mask-");
+    const policy = restrictedFileSystemPolicy([
+      { path: { kind: "path", path: root }, access: "write" },
+    ]);
+
+    const args = createBwrapCommandArgs(["/bin/true"], policy, root, root, {
+      mountProc: false,
+      networkMode: "isolated",
+    }).args;
+
+    expect(procMaskIndex(args)).toBeGreaterThanOrEqual(0);
+    expect(args).not.toContain("--proc");
+    expect(boundProcSources(args)).toEqual([]);
+  });
+
+  it("still mounts a private procfs (and no tmpfs mask) when proc is mounted", () => {
+    const args = createBwrapCommandArgs(
+      ["/bin/true"],
+      unrestrictedFileSystemPolicy(),
+      "/",
+      "/",
+      { mountProc: true, networkMode: "isolated", seccompFd: SECCOMP_STDIN_FD },
+    ).args;
+
+    expect(procMaskIndex(args)).toBe(-1);
+    const procIndex = args.indexOf("--proc");
+    expect(procIndex).toBeGreaterThanOrEqual(0);
+    expect(args[procIndex + 1]).toBe("/proc");
+  });
+
+  it("treats genuine bubblewrap proc-mount errors as recoverable proc-mount failures", () => {
+    expect(isProcMountFailure("bwrap: Can't mount proc on /proc")).toBe(true);
+    expect(isProcMountFailure("bwrap: Can't mount new procfs: Operation not permitted")).toBe(
+      true,
+    );
+  });
+
+  it("does not false-positive on unrelated stderr mentioning proc or permissions", () => {
+    expect(isProcMountFailure("error: permission denied opening /workspace/file")).toBe(false);
+    expect(isProcMountFailure("bwrap: Operation not permitted")).toBe(false);
+    expect(isProcMountFailure("python: process exited reading /proc/self/status")).toBe(false);
+    expect(isProcMountFailure("bwrap: Can't open /proc")).toBe(false);
+    expect(isProcMountFailure("Limit exceeded (ENOSPC). Check /proc/sys/fs/mount-max")).toBe(
+      false,
+    );
+    expect(isProcMountFailure("")).toBe(false);
+  });
 });
+
+function procMaskIndex(args: readonly string[]): number {
+  return args.findIndex(
+    (value, index) => value === "--tmpfs" && args[index + 1] === "/proc",
+  );
+}
+
+function rootBindIndex(args: readonly string[]): number {
+  return args.findIndex(
+    (value, index) =>
+      (value === "--bind" || value === "--ro-bind") &&
+      args[index + 1] === "/" &&
+      args[index + 2] === "/",
+  );
+}
+
+function boundProcSources(args: readonly string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (flag === "--bind" || flag === "--ro-bind" || flag === "--dev-bind") {
+      const destination = args[index + 2];
+      if (destination === "/proc" || destination === "/proc/") {
+        result.push(args[index + 1] ?? "");
+      }
+    }
+  }
+  return result;
+}
 
 function workspaceWriteProfile(
   workspace: string,
