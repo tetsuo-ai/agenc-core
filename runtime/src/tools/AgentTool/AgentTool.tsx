@@ -45,7 +45,8 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
-import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
+import { getDefaultAgentRole } from 'src/agents/role.js';
+import { canonicalAgentRoleName } from 'src/agents/role-presentation.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from 'src/tools/AgentTool/constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
@@ -328,8 +329,8 @@ export const AgentTool = buildTool({
     // Fork subagent experiment routing:
     // - subagent_type set: use it (explicit wins)
     // - subagent_type omitted, gate on: fork path (undefined)
-    // - subagent_type omitted, gate off: default general-purpose
-    const effectiveType = subagent_type ?? (isForkSubagentEnabled() ? undefined : GENERAL_PURPOSE_AGENT.agentType);
+    // - subagent_type omitted, gate off: default role (general-purpose)
+    const effectiveType = subagent_type ?? (isForkSubagentEnabled() ? undefined : getDefaultAgentRole().name);
     const isForkPath = effectiveType === undefined;
     let selectedAgent: AgentDefinition;
     if (isForkPath) {
@@ -352,10 +353,18 @@ export const AgentTool = buildTool({
       const agents = filterDeniedAgents(
       // When allowedAgentTypes is set (from Agent(x,y) tool spec), restrict to those types
       allowedAgentTypes ? allAgents.filter(a => allowedAgentTypes.includes(a.agentType)) : allAgents, appState.toolPermissionContext, AGENT_TOOL_NAME);
-      const found = agents.find(agent => agent.agentType === effectiveType);
+      // Match by exact agentType or canonical role name, mirroring the live v2
+      // spawn resolver (canonicalAgentRoleName -> requireAgentRole), so public
+      // names / aliases (scanner, runner, netrunner, general-purpose, plan, ...)
+      // routed here via the hook-chain fallback resolve like everywhere else.
+      const canonicalEffectiveType = canonicalAgentRoleName(effectiveType);
+      const matchesEffectiveType = (agentType: string): boolean =>
+        agentType === effectiveType ||
+        canonicalAgentRoleName(agentType) === canonicalEffectiveType;
+      const found = agents.find(agent => matchesEffectiveType(agent.agentType));
       if (!found) {
         // Check if the agent exists but is denied by permission rules
-        const agentExistsButDenied = allAgents.find(agent => agent.agentType === effectiveType);
+        const agentExistsButDenied = allAgents.find(agent => matchesEffectiveType(agent.agentType));
         if (agentExistsButDenied) {
           const denyRule = getDenyRuleForAgent(appState.toolPermissionContext, AGENT_TOOL_NAME, effectiveType);
           throw new Error(`Agent type '${effectiveType}' has been denied by permission rule '${AGENT_TOOL_NAME}(${effectiveType})' from ${denyRule?.source ?? 'settings'}.`);
@@ -1328,7 +1337,7 @@ The agent is now running and will receive instructions via mailbox.`
       // 34M Explore runs/week ≈ 1-2 Gtok/week). Telemetry doesn't parse this
       // block (it uses logEvent in finalizeAgentTool), so dropping is safe.
       // agentType is optional for resume compat — missing means show trailer.
-      if (data.agentType && ONE_SHOT_BUILTIN_AGENT_TYPES.has(data.agentType) && !worktreeInfoText) {
+      if (data.agentType && ONE_SHOT_BUILTIN_AGENT_TYPES.has(canonicalAgentRoleName(data.agentType)) && !worktreeInfoText) {
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',

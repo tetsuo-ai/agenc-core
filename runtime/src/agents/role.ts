@@ -55,6 +55,14 @@ import {
   agentRolePresentation,
   canonicalAgentRoleName,
 } from "./role-presentation.js";
+import {
+  BUILTIN_READONLY_DISALLOWLIST,
+  EXPLORE_SYSTEM_PROMPT,
+  PLAN_SYSTEM_PROMPT,
+  PLAN_WHEN_TO_USE,
+  VERIFICATION_SYSTEM_PROMPT,
+  VERIFICATION_WHEN_TO_USE,
+} from "./built-in-prompts.js";
 
 export type AgentReasoningEffort =
   | "none"
@@ -87,6 +95,12 @@ export interface AgentRoleConfig {
   /** Optional explicit tool allowlist. This is runtime metadata, not a
    *  upstream runtime role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
+  /** Optional tool denylist. Tools named here are removed from the spawned
+   *  child's registry (both advertised + dispatch-rejected), on top of any
+   *  allowlist. Used by read-only built-in roles (scanner/Plan/verification)
+   *  to deny edit/write/spawn. Runtime metadata, not an upstream role-layer
+   *  config field. */
+  readonly disallowlist?: ReadonlyArray<string>;
   /** Optional system prompt prepended to child-agent history. */
   readonly systemPrompt?: string;
   /** Whether this role runs synchronously (parent blocks) or async
@@ -255,6 +269,11 @@ Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
 // Built-in roles
 // ─────────────────────────────────────────────────────────────────────
 
+// `default` is the unrestricted general-purpose role used for an omitted or
+// `general-purpose` spawn (the alias lives in role-presentation.ts). It carries
+// NO system prompt: `default` is also the role of internal silent spawns
+// (MagicDocs/session-memory) that supply their own instructions, and the former
+// GENERAL_PURPOSE_AGENT const prompt was dead on HEAD — see built-in-prompts.ts.
 const DEFAULT_ROLE: AgentRole = freezeRole({
   name: "default",
   config: {
@@ -262,11 +281,18 @@ const DEFAULT_ROLE: AgentRole = freezeRole({
   },
 });
 
+// `explorer` (public name `scanner`) is the read-only codebase-reconnaissance
+// role. It now carries the Explore agent's system prompt + read-only denylist
+// (formerly the stranded EXPLORE_AGENT const). `model` is left undefined
+// (inherit) — the const's `haiku` was a model alias the v2 spawn validator
+// rejects, and it never ran on the live path; see built-in-prompts.ts.
 const EXPLORER_ROLE: AgentRole = freezeRole({
   name: "explorer",
   config: {
     description: EXPLORER_DESCRIPTION,
     configFile: "explorer.toml",
+    systemPrompt: EXPLORE_SYSTEM_PROMPT,
+    disallowlist: BUILTIN_READONLY_DISALLOWLIST,
   },
 });
 
@@ -277,10 +303,38 @@ const WORKER_ROLE: AgentRole = freezeRole({
   },
 });
 
+// Read-only software-architect role (formerly the stranded PLAN_AGENT const).
+const PLAN_ROLE: AgentRole = freezeRole({
+  name: "Plan",
+  config: {
+    description: PLAN_WHEN_TO_USE,
+    systemPrompt: PLAN_SYSTEM_PROMPT,
+    disallowlist: BUILTIN_READONLY_DISALLOWLIST,
+  },
+});
+
+// Read-only adversarial verification role, runs in background (formerly the
+// stranded VERIFICATION_AGENT const). The const's `color:'red'` (cosmetic) and
+// `criticalSystemReminder_EXPERIMENTAL` are not carried over: the verdict +
+// no-edit content already lives verbatim in VERIFICATION_SYSTEM_PROMPT and the
+// read-only restriction is enforced via disallowlist; both fields were dead on
+// HEAD (the const never dispatched), so dropping them is not a live regression.
+const VERIFICATION_ROLE: AgentRole = freezeRole({
+  name: "verification",
+  config: {
+    description: VERIFICATION_WHEN_TO_USE,
+    systemPrompt: VERIFICATION_SYSTEM_PROMPT,
+    disallowlist: BUILTIN_READONLY_DISALLOWLIST,
+    background: true,
+  },
+});
+
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
   EXPLORER_ROLE,
   WORKER_ROLE,
+  PLAN_ROLE,
+  VERIFICATION_ROLE,
 ]);
 
 // ─────────────────────────────────────────────────────────────────────

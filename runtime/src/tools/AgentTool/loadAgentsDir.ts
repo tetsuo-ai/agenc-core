@@ -419,7 +419,7 @@ function isAutoMemoryEnabled(): boolean {
   return true
 }
 
-function roleToAgentDefinition(
+export function roleToAgentDefinition(
   role: ReturnType<typeof listAgentRoles>[number],
 ): BuiltInAgentDefinition {
   const description = role.config.description ?? role.name
@@ -434,6 +434,9 @@ function roleToAgentDefinition(
     baseDir: 'built-in',
     getSystemPrompt: () => systemPrompt,
     ...(tools !== undefined ? { tools } : {}),
+    ...(role.config.disallowlist
+      ? { disallowedTools: Array.from(role.config.disallowlist) }
+      : {}),
     ...(role.config.background ? { background: true } : {}),
     ...(role.config.reasoningEffort
       ? { effort: role.config.reasoningEffort }

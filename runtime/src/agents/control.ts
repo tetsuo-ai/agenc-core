@@ -54,12 +54,34 @@ import {
 import {
   allocateNickname,
   applyRoleToConfig,
+  getAgentRole,
   requireAgentRole,
   resolveAgentRole,
   type AgentRole,
   type RoleShapedConfig,
 } from "./role.js";
 import { canonicalAgentRoleName } from "./role-presentation.js";
+import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
+
+/**
+ * Resolve the role for a RESUMED agent fail-closed. A named-but-unknown
+ * persisted role (renamed/removed role, or a markdown role not registered in
+ * this cwd at resume time) must NOT silently resume as the unrestricted default
+ * role — that would drop a read-only role's tool denylist (fail-open in a
+ * tool-denial control). Resume such agents under a read-only deny config
+ * instead, so they cannot mutate files or sub-spawn. Built-in roles always
+ * round-trip (their names are registered at module load), so this only affects
+ * stale/external role names.
+ */
+function resolveResumedAgentRole(roleName: string | undefined): AgentRole {
+  if (!roleName) return resolveAgentRole(roleName);
+  const known = getAgentRole(roleName);
+  if (known) return known;
+  return {
+    name: roleName,
+    config: { disallowlist: BUILTIN_READONLY_DISALLOWLIST },
+  };
+}
 import {
   AgentStatusTracker,
   formatSubagentNotification,
@@ -857,7 +879,7 @@ export class AgentControl {
       }
     }
 
-    const role = resolveAgentRole(metadata.agentRole);
+    const role = resolveResumedAgentRole(metadata.agentRole);
     const nickname = metadata.agentNickname ?? `resumed-${threadId}`;
     const upInbox = new Mailbox({
       threadId,

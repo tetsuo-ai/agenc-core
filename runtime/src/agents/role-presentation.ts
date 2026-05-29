@@ -20,7 +20,7 @@ const ROLE_PRESENTATION: Readonly<Record<string, AgentRolePresentation>> = {
     canonicalName: "default",
     publicName: "netrunner",
     label: "Netrunner",
-    aliases: ["default", "netrunner"],
+    aliases: ["default", "netrunner", "general-purpose"],
   },
   explorer: {
     canonicalName: "explorer",
@@ -33,6 +33,20 @@ const ROLE_PRESENTATION: Readonly<Record<string, AgentRolePresentation>> = {
     publicName: "runner",
     label: "Runner",
     aliases: ["worker", "coding", "implement", "implementation", "runner"],
+  },
+  Plan: {
+    canonicalName: "Plan",
+    publicName: "Plan",
+    label: "Plan",
+    // `plan` is required: spawn lowercases the requested name before registry
+    // lookup, so the lowercased form must alias back to the capital `Plan` key.
+    aliases: ["plan"],
+  },
+  verification: {
+    canonicalName: "verification",
+    publicName: "verification",
+    label: "Verification",
+    aliases: ["verification"],
   },
   docs: {
     canonicalName: "docs",
