@@ -59,6 +59,7 @@ import {
   verifyAllowedRoots,
   withSignedAllowedRoots,
 } from "../tools/system/filesystem.js";
+import { signSessionId } from "../agents/_deps/filesystem-args.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
 
@@ -879,7 +880,9 @@ describe("runAgent", () => {
       // Model's "/" stripped; runtime worktree injected and HMAC-signed.
       __agencSessionAllowedRoots: ["/tmp/subagent-wt"],
       __agencSessionAllowedRootsSig: signAllowedRoots(["/tmp/subagent-wt"]),
+      // Session id injected via withSignedSessionId — id + HMAC signature.
       __agencSessionId: "child-123",
+      __agencSessionIdSig: signSessionId("child-123"),
     });
     // The signed channel verifies and the model's "/" never enters it.
     const forwardedArgs = JSON.parse(forwarded.arguments) as Record<
@@ -1104,6 +1107,7 @@ describe("runAgent", () => {
       value: 1,
       __agencSessionAllowedRoots: ["/tmp/memory"],
       __agencSessionId: "child-123",
+      __agencSessionIdSig: signSessionId("child-123"),
     });
   });
 

@@ -28,12 +28,12 @@ import type { Session } from "../../session/session.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
 import { createFileReadTool } from "../../tools/system/file-read.js";
 import {
-  SESSION_ID_ARG,
   recordSessionRead,
   seedSessionReadState,
   withSignedAllowedRoots,
   type SessionReadSeedEntry,
 } from "../../tools/system/filesystem.js";
+import { withSignedSessionId } from "../../agents/_deps/filesystem-args.js";
 import type { Tool } from "../../tools/types.js";
 import { buildSessionMemoryUpdatePrompt, loadSessionMemoryTemplate } from "./prompts.js";
 import {
@@ -330,10 +330,7 @@ export async function setupSessionMemoryFile(
   });
   const readResult = await readTool.execute(
     withSignedAllowedRoots(
-      {
-        file_path: memoryPath,
-        [SESSION_ID_ARG]: options.sessionId,
-      },
+      withSignedSessionId({ file_path: memoryPath }, options.sessionId),
       [memoryDir],
     ),
   );

@@ -331,6 +331,16 @@ interface ActiveBackgroundAgent {
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
   activeToolCallIds: Set<string>;
+  /**
+   * Per-agent emission serialization chain. `#emitOrBufferEvent` awaits
+   * an async-locked broadcast, so two fire-and-forget emits from a
+   * single callback (e.g. status + budget-usage) can otherwise complete
+   * out of order. Each emission is chained on this promise so events for
+   * ONE agent are delivered in arrival order; cross-agent concurrency is
+   * preserved because every ActiveBackgroundAgent owns its own chain.
+   * Mirrors AgenCStdioTransport's #dispatchChain (transport/stdio.ts).
+   */
+  dispatchChain: Promise<void>;
 }
 
 interface BackgroundAgentDaemonEvent {
@@ -367,6 +377,34 @@ interface AgentBudgetUsage {
 }
 
 const MAX_AGENT_BUDGET_TIMER_MS = 2_147_483_647;
+
+/**
+ * Upper bound on daemon events buffered for a single agent while no
+ * session binding is attached (and on the per-agent `#pendingEvents`
+ * detach buffer). A detached or pre-attach agent that never gets an
+ * `agent.attach` would otherwise accumulate events on the heap without
+ * limit. When the cap is exceeded the oldest events are dropped (FIFO
+ * eviction) so the newest events — the ones most useful when the TUI
+ * finally attaches — are retained. Mirrors
+ * MAX_RETAINED_NOTIFICATIONS (tasks/lifecycle.ts) and the
+ * per-session caps in agent-cli.ts / client-multiplexer.ts.
+ */
+const MAX_BUFFERED_AGENT_EVENTS = 1_000;
+
+/**
+ * Drops the oldest events in-place until `events` is within
+ * {@link MAX_BUFFERED_AGENT_EVENTS}. Returns the same array so callers
+ * can push then bound, matching `bufferSessionEvent` in
+ * client-multiplexer.ts.
+ */
+function boundBufferedAgentEvents(
+  events: BackgroundAgentDaemonEvent[],
+): BackgroundAgentDaemonEvent[] {
+  if (events.length > MAX_BUFFERED_AGENT_EVENTS) {
+    events.splice(0, events.length - MAX_BUFFERED_AGENT_EVENTS);
+  }
+  return events;
+}
 
 export interface AgenCAgentBudgetTimer {
   readonly unref?: () => void;
@@ -555,10 +593,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         status: "running",
         lastActiveAt: startedAt,
         uninstallApprovalBridge,
-        bufferedEvents: this.#pendingEvents.get(managedThread.threadId) ?? [],
+        bufferedEvents: boundBufferedAgentEvents(
+          this.#pendingEvents.get(managedThread.threadId) ?? [],
+        ),
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(managedThread.threadId) ??
           new Set(),
+        dispatchChain: Promise.resolve(),
       };
       this.#installAgentBudget(active, {
         startedAt,
@@ -783,9 +824,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         status: "running",
         lastActiveAt: restoredAt,
         uninstallApprovalBridge,
-        bufferedEvents: this.#pendingEvents.get(params.agentId) ?? [],
+        bufferedEvents: boundBufferedAgentEvents(
+          this.#pendingEvents.get(params.agentId) ?? [],
+        ),
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(params.agentId) ?? new Set(),
+        dispatchChain: Promise.resolve(),
       };
       this.#installAgentBudget(active, {
         startedAt,
@@ -1390,7 +1434,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         if (bufferedEvents.length > 0) {
           const pending = this.#pendingEvents.get(agentId) ?? [];
           pending.push(...bufferedEvents);
-          this.#pendingEvents.set(agentId, pending);
+          this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
         } else {
           this.#pendingEvents.delete(agentId);
         }
@@ -1414,7 +1458,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       if (event !== null) {
         const pending = this.#pendingEvents.get(agentId) ?? [];
         pending.push(event);
-        this.#pendingEvents.set(agentId, pending);
+        this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
       }
       return;
     }
@@ -1435,7 +1479,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined) {
       const pending = this.#pendingEvents.get(agentId) ?? [];
       pending.push(event);
-      this.#pendingEvents.set(agentId, pending);
+      this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
       return;
     }
     await this.#emitOrBufferEvent(
@@ -1623,11 +1667,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     event: BackgroundAgentDaemonEvent | null,
   ): Promise<void> {
     if (event === null) return;
-    if (active.sessionBinding === undefined) {
-      active.bufferedEvents.push(event);
-      return;
-    }
-    await this.#emitDaemonEvent(active, event);
+    // Serialize emission per agent on the agent's dispatch chain. Several
+    // call sites are fire-and-forget (`void this.#emitOrBufferEvent(...)`)
+    // and `#emitDaemonEvent` awaits an async-locked broadcast, so two
+    // emits from one callback could otherwise complete out of order.
+    // Chaining keeps per-agent delivery in arrival order while preserving
+    // cross-agent concurrency (each agent owns its own chain). A rejection
+    // is isolated to the awaiting caller and never poisons the chain for
+    // later events. Mirrors AgenCStdioTransport.#dispatchChain.
+    let emitError: unknown;
+    let raised = false;
+    const tail = active.dispatchChain.then(() =>
+      this.#emitDaemonEvent(active, event).catch((error: unknown) => {
+        emitError = error;
+        raised = true;
+      }),
+    );
+    active.dispatchChain = tail;
+    await tail;
+    if (raised) throw emitError;
   }
 
   async #emitDaemonEvent(
@@ -1637,6 +1695,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const binding = active.sessionBinding;
     if (binding === undefined) {
       active.bufferedEvents.push(event);
+      boundBufferedAgentEvents(active.bufferedEvents);
       return;
     }
     await binding.emit(

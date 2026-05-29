@@ -1,14 +1,34 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { resolve } from "node:path";
 
 import { resolveToolAllowedPaths } from "./filesystem.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ALLOWED_ROOTS_SIG_ARG,
+  SESSION_ID_ARG,
+  SESSION_ID_SIG_ARG,
   signAllowedRoots,
+  signSessionId,
   verifyAllowedRoots,
+  verifySessionId,
   withSignedAllowedRoots,
 } from "src/agents/_deps/filesystem-args.js";
+
+// Capture the args that reach the underlying runtime FileRead tool, so
+// we can observe exactly what the canonical surface injects. Mocked here
+// (not in the per-test body) because vi.mock is hoisted above imports.
+const capturedExecuteArgs = vi.hoisted(() => [] as Record<string, unknown>[]);
+vi.mock("src/tools/system/file-read.js", () => ({
+  createFileReadTool: () => ({
+    name: "FileRead",
+    description: "mock",
+    isReadOnly: true,
+    async execute(args: Record<string, unknown>) {
+      capturedExecuteArgs.push(args);
+      return { content: "ok" };
+    },
+  }),
+}));
 
 // Simulate the in-process JSON dispatch serialization
 // (router.ts JSON.stringify -> execution.ts JSON.parse, and the child
@@ -137,5 +157,62 @@ describe("HMAC-signed trusted filesystem roots", () => {
         again[SESSION_ALLOWED_ROOTS_SIG_ARG],
       )).toEqual(["/root/a"]);
     });
+  });
+});
+
+// (c) The canonical tool surface must ALWAYS inject the AUTHORITATIVE
+// session id (from runtime state) signed with withSignedSessionId, and
+// must NOT adopt a model-supplied __agencSessionId.
+describe("canonicalToolSurface — authoritative signed session id", () => {
+  let switchSession: typeof import("src/bootstrap/state.js").switchSession;
+  let getSessionId: typeof import("src/bootstrap/state.js").getSessionId;
+  let CanonicalFileReadTool: typeof import("src/tools/canonicalToolSurface.js").CanonicalFileReadTool;
+  let restoreSessionId: string;
+
+  beforeEach(async () => {
+    capturedExecuteArgs.length = 0;
+    const state = await import("src/bootstrap/state.js");
+    switchSession = state.switchSession;
+    getSessionId = state.getSessionId;
+    restoreSessionId = getSessionId();
+    ({ CanonicalFileReadTool } = await import("src/tools/canonicalToolSurface.js"));
+  });
+
+  afterEach(() => {
+    switchSession(restoreSessionId as never);
+  });
+
+  function context(): unknown {
+    return {
+      abortController: new AbortController(),
+      readFileState: new Map(),
+      getAppState: () => ({}),
+    };
+  }
+
+  it("injects the authoritative signed id and ignores the model-supplied id", async () => {
+    switchSession("authoritative-session" as never);
+    await CanonicalFileReadTool.call(
+      // The model tries to smuggle its own session id (and even a self-
+      // signed-looking value) — both must be discarded.
+      {
+        file_path: "/tmp/x",
+        [SESSION_ID_ARG]: "model-controlled-session",
+        [SESSION_ID_SIG_ARG]: signSessionId("model-controlled-session"),
+      } as never,
+      context() as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    expect(capturedExecuteArgs).toHaveLength(1);
+    const injected = capturedExecuteArgs[0]!;
+    // Authoritative id wins; model value is dropped.
+    expect(injected[SESSION_ID_ARG]).toBe("authoritative-session");
+    expect(injected[SESSION_ID_ARG]).not.toBe("model-controlled-session");
+    // ...and it carries a signature that verifies for the authoritative id.
+    expect(
+      verifySessionId(injected[SESSION_ID_ARG], injected[SESSION_ID_SIG_ARG]),
+    ).toBe("authoritative-session");
   });
 });

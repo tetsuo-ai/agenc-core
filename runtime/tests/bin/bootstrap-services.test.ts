@@ -17,6 +17,7 @@ import {
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
 import { defaultConfig } from "../config/schema.js";
+import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
@@ -157,6 +158,9 @@ describe("SessionStart bootstrap hooks", () => {
     mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-sessionstart-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-sessionstart-ws-"));
+    // SessionStart command hooks now require a trusted workspace (production
+    // establishes trust before bootstrap dispatches them); mark it trusted.
+    trustProjectSync({ cwd: workspace, agencHome: home });
     const config = {
       ...defaultConfig(),
       agentRoles: [],

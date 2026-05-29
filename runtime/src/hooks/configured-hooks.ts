@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import type { HookEventName, HooksMap } from "../config/schema.js";
@@ -19,6 +20,7 @@ import type {
   StopRequest,
 } from "../phases/stop-hooks.js";
 import { hookMatcherInputsForToolName } from "../permissions/hook-event-schedule.js";
+import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import type { UserPromptSubmitHook } from "./user-prompt-submit.js";
 import type {
   HookResult,
@@ -87,12 +89,35 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly agencHome: string;
   readonly shellPath: string;
+  /**
+   * SECURITY: trust gate for config/plugin-sourced command hooks. Returns true
+   * when the current workspace is trusted (persisted in trusted-projects.json).
+   * Defaults to the real project-trust lookup; injectable for tests. Hooks
+   * declared in config.toml or plugins execute arbitrary shell commands, so a
+   * freshly-cloned untrusted repo must NOT be able to run them (RCE).
+   */
+  readonly isWorkspaceTrusted?: () => boolean;
+}
+
+/**
+ * SECURITY opt-in: when set to a truthy value ("1"/"true"), config/plugin
+ * command hooks are allowed to run even in an UNTRUSTED workspace. This exists
+ * for headless/SDK automation that has already vetted the workspace out-of-band.
+ * Default (unset) = untrusted workspaces never run command hooks.
+ */
+const ALLOW_UNTRUSTED_HOOKS_ENV = "AGENC_ALLOW_UNTRUSTED_HOOKS";
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 export class ConfiguredHooksRuntime {
   private readonly engine: HookEngine;
   private validationIssues: HookValidationIssue[] = [];
   private target: HookInstallTarget | null = null;
+  private readonly isWorkspaceTrusted: () => boolean;
 
   constructor(private readonly opts: ConfiguredHooksRuntimeOptions) {
     this.engine = new HookEngine({
@@ -101,6 +126,14 @@ export class ConfiguredHooksRuntime {
       shellPath: opts.shellPath,
       sourcePath: this.sourcePath(),
     });
+    this.isWorkspaceTrusted =
+      opts.isWorkspaceTrusted ??
+      (() =>
+        isProjectTrustedSync({
+          cwd: opts.cwd,
+          agencHome: opts.agencHome,
+          env: opts.env,
+        }));
   }
 
   attachTarget(target: HookInstallTarget): void {
@@ -653,7 +686,29 @@ export class ConfiguredHooksRuntime {
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<HookCommandRunDiagnostic> {
+    // SECURITY: config/plugin-sourced command hooks run arbitrary shell commands
+    // (engine/command-runner.ts spawn(shell, ["-c", command])). A freshly-cloned
+    // untrusted repo's config.toml must NOT be able to execute host code. Gate
+    // every spawn behind workspace trust; allow untrusted only via explicit
+    // AGENC_ALLOW_UNTRUSTED_HOOKS opt-in (headless/SDK that vetted the workspace).
+    if (!this.shouldRunUntrustedSafe()) {
+      return skippedUntrustedDiagnostic(hook);
+    }
     return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
+  }
+
+  /**
+   * Returns true when configured command hooks are permitted to execute: either
+   * the workspace is trusted, or the AGENC_ALLOW_UNTRUSTED_HOOKS opt-in is set.
+   */
+  private shouldRunUntrustedSafe(): boolean {
+    if (this.isWorkspaceTrusted()) {
+      return true;
+    }
+    if (isTruthyEnvFlag(this.opts.env[ALLOW_UNTRUSTED_HOOKS_ENV])) {
+      return true;
+    }
+    return false;
   }
 
   private recordHookOutputIssue(
@@ -729,6 +784,31 @@ export function hookDisplayText(hook: IndividualHookConfig): string {
 
 function hookCommandLabel(hook: IndividualHookConfig): string {
   return redactSecrets(hook.command.statusMessage ?? hook.command.command);
+}
+
+/**
+ * Synthetic "skipped" diagnostic returned when a config/plugin command hook is
+ * NOT executed because the workspace is untrusted. Mirrors the shape the engine
+ * produces for disabled hooks so downstream parsers treat it as a no-op (the
+ * command is never spawned).
+ */
+function skippedUntrustedDiagnostic(
+  hook: IndividualHookConfig,
+): HookCommandRunDiagnostic {
+  return {
+    id: randomUUID(),
+    event: hook.event,
+    ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
+    command: redactSecrets(hook.command.command),
+    status: "skipped",
+    durationMs: 0,
+    stdout: "",
+    stderr: "",
+    error: "skipped: workspace not trusted (set AGENC_ALLOW_UNTRUSTED_HOOKS=1 to override)",
+    startedAtUnixMs: Date.now(),
+    rawStdout: "",
+    rawStderr: "",
+  };
 }
 
 function matchesToolMatcher(toolName: string, matcher?: string): boolean {

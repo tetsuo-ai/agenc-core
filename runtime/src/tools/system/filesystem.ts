@@ -51,21 +51,30 @@ import {
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ALLOWED_ROOTS_SIG_ARG,
+  SESSION_ID_SIG_ARG,
   signAllowedRoots,
+  signSessionId,
   verifyAllowedRoots,
+  verifySessionId,
   withSignedAllowedRoots,
+  withSignedSessionId,
 } from "../../agents/_deps/filesystem-args.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
-// Re-export the HMAC-signed trusted-roots channel constants/helpers so
-// existing importers of `filesystem.ts` keep a single source.
+// Re-export the HMAC-signed trusted-roots and session-id channel
+// constants/helpers so existing importers of `filesystem.ts` keep a
+// single source.
 export {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ALLOWED_ROOTS_SIG_ARG,
+  SESSION_ID_SIG_ARG,
   signAllowedRoots,
+  signSessionId,
   verifyAllowedRoots,
+  verifySessionId,
   withSignedAllowedRoots,
+  withSignedSessionId,
 };
 
 const MAX_LIST_ENTRIES = 10_000;
@@ -780,10 +789,18 @@ function planFileContextFromArgs(
   args: Record<string, unknown> | undefined,
 ): PlanFileContext | null {
   if (!args) return null;
+  // SECURITY: honor the session id (which unlocks the plan-file carve-out
+  // OUTSIDE the workspace allowlist) ONLY when it carries a valid
+  // per-process HMAC signature. An unsigned/forged id verifies as absent,
+  // so a model cannot forge a write target. Mirrors the sink in
+  // `coding-common.ts:planFileContextFromArgs`.
+  const verified = verifySessionId(
+    args[SESSION_ID_ARG],
+    args[SESSION_ID_SIG_ARG],
+  );
   const sessionId =
-    typeof args.__agencSessionId === "string" &&
-    args.__agencSessionId.trim().length > 0
-      ? args.__agencSessionId
+    typeof verified === "string" && verified.trim().length > 0
+      ? verified
       : null;
   if (sessionId === null) return null;
   const ctx: PlanFileContext = { sessionId };

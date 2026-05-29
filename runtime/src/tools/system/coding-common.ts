@@ -6,6 +6,11 @@ import {
 } from "node:path";
 
 import {
+  SESSION_ID_ARG,
+  SESSION_ID_SIG_ARG,
+  verifySessionId,
+} from "../../agents/_deps/filesystem-args.js";
+import {
   isSessionPlanFile,
   type PlanFileContext,
 } from "../../planning/plan-files.js";
@@ -26,15 +31,19 @@ import {
  * allowlist it regardless of the workspace allowlist — mirrors
  * AgenC's `checkEditableInternalPath` carve-out
  * (utils/permissions/filesystem.ts:1488-1506).
+ *
+ * SECURITY: this carve-out grants a WRITE target outside the workspace
+ * allowlist, so the session id must come from a TRUSTED source. We verify
+ * the HMAC signature ({@link verifySessionId}) the runtime attaches via
+ * `withSignedSessionId`; an unsigned/forged `__agencSessionId` (e.g. a
+ * model-supplied value) verifies as absent and yields no carve-out.
  */
 function planFileContextFromArgs(
   args: Record<string, unknown>,
 ): PlanFileContext | null {
+  const verified = verifySessionId(args[SESSION_ID_ARG], args[SESSION_ID_SIG_ARG]);
   const sessionId =
-    typeof args.__agencSessionId === "string" &&
-    args.__agencSessionId.trim().length > 0
-      ? args.__agencSessionId
-      : null;
+    typeof verified === "string" && verified.trim().length > 0 ? verified : null;
   if (sessionId === null) return null;
   const ctx: PlanFileContext = { sessionId };
   if (

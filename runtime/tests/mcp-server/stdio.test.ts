@@ -4,9 +4,19 @@ import { describe, expect, test } from "vitest";
 
 import { MCP_ERROR_PARSE } from "./types.js";
 import { McpServerFramework } from "./framework.js";
-import { McpStdioServerTransport, encodeMcpJsonLine } from "./stdio.js";
+import {
+  AGENC_MCP_STDIO_DEFAULT_MAX_LINE_BYTES,
+  McpStdioServerTransport,
+  encodeMcpJsonLine,
+} from "./stdio.js";
 import { McpToolRegistry } from "./tools.js";
 import type { McpCallToolResult } from "./types.js";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function request(id: number, method: string, params?: unknown) {
   return {
@@ -238,6 +248,74 @@ describe("MCP stdio server transport", () => {
 
     await transport.close();
     lines.close();
+  });
+
+  test("tears down the connection when an unterminated line exceeds the cap", async () => {
+    // A peer that streams bytes without a newline must not grow the readline
+    // buffer (and MCP server memory) unbounded; the reader destroys input and
+    // surfaces a RangeError once the cap is tripped.
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errors: Error[] = [];
+    const destroyed = new Promise<void>((resolve) => {
+      input.once("close", () => resolve());
+    });
+    const transport = new McpStdioServerTransport({
+      input,
+      output,
+      server: new McpServerFramework(),
+      maxLineBytes: 64,
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    transport.start();
+
+    // 200 bytes with no newline must trip the 64-byte bound.
+    input.write("x".repeat(200));
+
+    await destroyed;
+    expect(input.destroyed).toBe(true);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(RangeError);
+    expect(errors[0]?.message).toMatch(/64 bytes without a newline/);
+
+    await transport.close();
+  });
+
+  test("does not trip the cap when newlines keep lines bounded", async () => {
+    // Prior valid behavior: newline-terminated frames under the cap keep
+    // flowing without tripping the bound.
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const lines = createOutputLines(output);
+    const errors: Error[] = [];
+    const transport = new McpStdioServerTransport({
+      input,
+      output,
+      server: new McpServerFramework({ serverInfo: { version: "1.0.0" } }),
+      maxLineBytes: 256,
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    transport.start();
+
+    input.write(`${JSON.stringify(request(1, "initialize"))}\n`);
+    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual(
+      expect.objectContaining({ jsonrpc: "2.0", id: 1 }),
+    );
+
+    await delay(20);
+    expect(errors).toHaveLength(0);
+    expect(input.destroyed).toBe(false);
+
+    await transport.close();
+    lines.close();
+  });
+
+  test("exposes a default max line bound matching the app-server cap", () => {
+    expect(AGENC_MCP_STDIO_DEFAULT_MAX_LINE_BYTES).toBe(16 * 1024 * 1024);
   });
 
   test("notifies close after queued work drains", async () => {

@@ -27,6 +27,16 @@ import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 
+/**
+ * Upper bound on the unflushed stderr buffer. A trusted local child is the
+ * normal case, but a child that emits a very long stderr line with no newline
+ * would otherwise grow `stderrBuffer` without bound. Once the accumulated
+ * newline-less bytes exceed this cap, the oversized prefix is flushed (logged
+ * with a truncation notice) rather than retained, keeping memory bounded while
+ * preserving the existing newline-delimited line-splitting behavior.
+ */
+const STDERR_BUFFER_MAX_BYTES = 1024 * 1024;
+
 export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
   process.platform === "win32"
     ? [
@@ -274,6 +284,18 @@ export class AgenCStdioClientTransport implements Transport {
       const line = this.stderrBuffer.subarray(0, index).toString("utf8").replace(/\r$/, "");
       this.stderrBuffer = this.stderrBuffer.subarray(index + 1);
       this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
+    }
+    // Defense-in-depth: a child that streams stderr without a newline would
+    // otherwise grow stderrBuffer without bound. Once the unterminated residue
+    // exceeds the cap, flush the oversized prefix with a truncation notice so
+    // memory stays bounded; any trailing bytes keep accumulating toward the
+    // next newline as before.
+    if (this.stderrBuffer.length > STDERR_BUFFER_MAX_BYTES) {
+      const truncated = this.stderrBuffer.subarray(0, STDERR_BUFFER_MAX_BYTES).toString("utf8");
+      this.stderrBuffer = this.stderrBuffer.subarray(STDERR_BUFFER_MAX_BYTES);
+      this.logger.info(
+        `MCP server stderr (${this.server.command}) [truncated ${STDERR_BUFFER_MAX_BYTES} bytes, no newline]: ${truncated}`,
+      );
     }
   };
 

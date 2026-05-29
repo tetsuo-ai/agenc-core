@@ -2019,7 +2019,10 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
         file_path: filePath,
         offset: args.offset,
         limit: args.limit,
+        // Forward BOTH the id and its signature so the plan-file carve-out
+        // sink still verifies (forwarding the bare id would strand the sig).
         __agencSessionId: args.__agencSessionId,
+        __agencSessionIdSig: args.__agencSessionIdSig,
       });
     },
   };

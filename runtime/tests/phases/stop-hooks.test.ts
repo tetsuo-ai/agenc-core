@@ -337,6 +337,9 @@ describe("evaluateStopHooks", () => {
       env: process.env,
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
+      // This test exercises hook dispatch; treat the workspace as trusted
+      // (production establishes trust before command hooks run).
+      isWorkspaceTrusted: () => true,
     });
     const target: HookInstallTarget = {
       preToolUseHooks: [],

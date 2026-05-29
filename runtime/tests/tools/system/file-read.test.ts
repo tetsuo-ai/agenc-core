@@ -14,6 +14,7 @@ import {
   hasSessionRead,
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_AGENC_HOME_ARG,
+  signSessionId,
 } from "./filesystem.js";
 import {
   clearAllPlanSlugs,
@@ -501,6 +502,7 @@ describe("FileRead tool", () => {
       const result = await tool.execute({
         file_path: planPath,
         __agencSessionId: sessionId,
+        __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
       });
 

@@ -79,6 +79,8 @@ import {
 } from "../../tools/orchestrator.js";
 import {
   SESSION_AGENC_HOME_ARG,
+  SESSION_ID_SIG_ARG,
+  signSessionId,
   withSignedAllowedRoots,
 } from "../../tools/system/filesystem.js";
 import {
@@ -972,7 +974,10 @@ export class StreamingToolExecutor {
                   ? { [SESSION_AGENC_HOME_ARG]: this.liveOptions.agencHome }
                   : {}),
                 ...(sessionId !== null
-                  ? { __agencSessionId: sessionId }
+                  ? {
+                      __agencSessionId: sessionId,
+                      [SESSION_ID_SIG_ARG]: signSessionId(sessionId),
+                    }
                   : {}),
               });
             },
