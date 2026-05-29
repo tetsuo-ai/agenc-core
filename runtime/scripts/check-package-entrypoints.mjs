@@ -14,6 +14,11 @@ const requiredRootExports = [
   "AgenCInProcessDaemonTransport",
   "startAgenCInProcessDaemonTransport",
 ];
+const requiredRuntimeAssetPaths = [
+  "dist/yolo-classifier-prompts/auto_mode_system_prompt.txt",
+  "dist/yolo-classifier-prompts/permissions_anthropic.txt",
+  "dist/yolo-classifier-prompts/permissions_external.txt",
+];
 
 function collectPackageEntryPaths(packageManifest) {
   const paths = new Set();
@@ -78,6 +83,15 @@ async function main() {
       continue;
     }
 
+    const fullPath = path.join(packageDir, relPath);
+    try {
+      await access(fullPath);
+    } catch {
+      missingPaths.push(relPath);
+    }
+  }
+
+  for (const relPath of requiredRuntimeAssetPaths) {
     const fullPath = path.join(packageDir, relPath);
     try {
       await access(fullPath);
