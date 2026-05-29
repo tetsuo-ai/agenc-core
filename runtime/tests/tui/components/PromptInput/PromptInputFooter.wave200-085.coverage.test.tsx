@@ -244,7 +244,6 @@ describe('PromptInputFooter coverage branch render', () => {
 
     expect(fullscreenOutput).toContain('StatusLine:msg-1')
     expect(fullscreenOutput).toContain('Left:true:none:true:false')
-    expect(fullscreenOutput).toContain('CoordinatorTaskPanel')
     expect(fullscreenOutput).not.toContain('Notifications:')
     expect(fullscreenOutput).not.toContain('Suggestions:')
     expect(harness.overlays.at(-1)).toMatchObject({
@@ -282,7 +281,6 @@ describe('PromptInputFooter coverage branch render', () => {
 
     expect(footerOutput).toContain('Left:false:INSERT:true:true')
     expect(footerOutput).toContain('Notifications:true:true:0')
-    expect(footerOutput).toContain('CoordinatorTaskPanel')
     expect(footerOutput).not.toContain('Suggestions:')
     expect(harness.overlays.at(-1)).toBeNull()
   })

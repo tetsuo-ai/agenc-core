@@ -855,14 +855,11 @@ function PromptInput({
 
   // ─── Footer pill navigation ─────────────────────────────────────────────
   // Which pills render below the input box. Order here IS the nav order
-  // (down/right = forward, up/left = back).
-  const runningTaskCount = useMemo(() => count(Object.values(tasks), isBackgroundTask), [tasks]);
-  // Panel shows retained-completed agents too (getVisibleAgentTasks), so the
-  // pill must stay navigable whenever the panel has rows — not just when
-  // something is running.
-  const tasksFooterVisible = (runningTaskCount > 0 || coordinatorTaskCount > 0) && !shouldHideTasksFooter(tasks, showSpinnerTree);
+  // (down/right = forward, up/left = back). The inline AGENT FLEET panel (the
+  // `tasks` footer item + its ↓-to-manage entry) was removed, so it is no
+  // longer offered here — background agents still run; only the panel UI is gone.
   const teamsFooterVisible = cachedTeams.length > 0;
-  const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', teamsFooterVisible && 'teams'].filter(Boolean) as FooterItem[], [tasksFooterVisible, teamsFooterVisible]);
+  const footerItems = useMemo(() => [teamsFooterVisible && 'teams'].filter(Boolean) as FooterItem[], [teamsFooterVisible]);
 
   // Effective selection: null if the selected pill stopped rendering (bridge
   // disconnected, task finished). The derivation makes the UI correct
