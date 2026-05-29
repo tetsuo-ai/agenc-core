@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
     ...input,
   })),
   setPromptId: vi.fn(),
-  startInteractionSpan: vi.fn(),
 }))
 
 vi.mock('../../../src/bootstrap/state.js', () => ({
@@ -24,10 +23,6 @@ vi.mock('../../../src/bootstrap/state.js', () => ({
 
 vi.mock('../../../src/utils/messages.js', () => ({
   createUserMessage: mocks.createUserMessage,
-}))
-
-vi.mock('../../../src/utils/telemetry/sessionTracing.js', () => ({
-  startInteractionSpan: mocks.startInteractionSpan,
 }))
 
 function imageBlock(data = 'iVBORw0KGgo='): ContentBlockParam {
@@ -80,7 +75,6 @@ describe('processTextPrompt coverage swarm row 088', () => {
     )
 
     expect(result.shouldQuery).toBe(true)
-    expect(mocks.startInteractionSpan).toHaveBeenCalledWith('   ')
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: [pastedImage],
       uuid: 'prompt-uuid',
@@ -97,12 +91,11 @@ describe('processTextPrompt coverage swarm row 088', () => {
     ])
   })
 
-  test('starts an empty interaction span when array input has no text blocks', () => {
+  test('builds a user message from array input that has no text blocks', () => {
     const inlineImage = imageBlock('inline-image')
     const result = processTextPrompt([inlineImage], [], [], [])
 
     expect(result.shouldQuery).toBe(true)
-    expect(mocks.startInteractionSpan).toHaveBeenCalledWith('')
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: [inlineImage],
       uuid: undefined,

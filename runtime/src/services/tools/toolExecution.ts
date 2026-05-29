@@ -6,13 +6,6 @@ import type {
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
-  extractMcpToolDetails,
-  extractSkillName,
-  extractToolInputForTelemetry,
-  isToolDetailsLoggingEnabled,
-  sanitizeToolNameForAnalytics,
-} from 'src/services/analytics/metadata.js'
-import {
   getCodeEditToolDecisionCounter,
   getStatsStore,
 } from '../../bootstrap/state.js'
@@ -32,9 +25,6 @@ import {
 import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
-import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
-import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
-import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import { SKILL_TOOL_NAME } from '../../tools/SkillTool/constants.js'
 import {
   isDeferredTool,
@@ -77,18 +67,7 @@ import {
   startSessionActivity,
   stopSessionActivity,
 } from '../../utils/sessionActivity.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
 import { Stream } from '../../utils/stream.js'
-import {
-  addToolContentEvent,
-  endToolBlockedOnUserSpan,
-  endToolExecutionSpan,
-  endToolSpan,
-  isBetaTracingEnabled,
-  startToolBlockedOnUserSpan,
-  startToolExecutionSpan,
-  startToolSpan,
-} from '../../utils/telemetry/sessionTracing.js'
 import {
   formatError,
   formatZodValidationError,
@@ -811,29 +790,6 @@ async function checkPermissionsAndCallTool(
     }
   }
 
-  const toolAttributes: Record<string, string | number | boolean> = {}
-  if (processedInput && typeof processedInput === 'object') {
-    if (tool.name === FILE_READ_TOOL_NAME && 'file_path' in processedInput) {
-      toolAttributes.file_path = String(processedInput.file_path)
-    } else if (
-      (tool.name === FILE_EDIT_TOOL_NAME ||
-        tool.name === FILE_WRITE_TOOL_NAME) &&
-      'file_path' in processedInput
-    ) {
-      toolAttributes.file_path = String(processedInput.file_path)
-    } else if (tool.name === BASH_TOOL_NAME && 'command' in processedInput) {
-      const bashInput = processedInput as BashToolInput
-      toolAttributes.full_command = bashInput.command
-    }
-  }
-
-  startToolSpan(
-    tool.name,
-    toolAttributes,
-    isBetaTracingEnabled() ? jsonStringify(processedInput) : undefined,
-  )
-  startToolBlockedOnUserSpan()
-
   // Check whether we have permission to use the tool,
   // and ask the user for permission if we don't
   const permissionMode = toolUseContext.getAppState().toolPermissionContext.mode
@@ -909,9 +865,6 @@ async function checkPermissionsAndCallTool(
 
   if (permissionDecision.behavior !== 'allow') {
     logForDebugging(`${tool.name} tool permission denied`)
-    const decisionInfo = toolUseContext.toolDecisions?.get(toolUseID)
-    endToolBlockedOnUserSpan('reject', decisionInfo?.source || 'unknown')
-    endToolSpan()
 
     let errorMessage = permissionDecision.message
     // Only use generic "Execution stopped" message if we don't have a detailed hook message
@@ -1003,11 +956,6 @@ async function checkPermissionsAndCallTool(
   }
 
   const decisionInfo = toolUseContext.toolDecisions?.get(toolUseID)
-  endToolBlockedOnUserSpan(
-    decisionInfo?.decision || 'unknown',
-    decisionInfo?.source || 'unknown',
-  )
-  startToolExecutionSpan()
 
   const startTime = Date.now()
 
@@ -1058,51 +1006,6 @@ async function checkPermissionsAndCallTool(
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
 
-    // Log tool content/output as span event if enabled
-    if (result.data && typeof result.data === 'object') {
-      const contentAttributes: Record<string, string | number | boolean> = {}
-
-      // Read tool: capture file_path and content
-      if (tool.name === FILE_READ_TOOL_NAME && 'content' in result.data) {
-        if ('file_path' in processedInput) {
-          contentAttributes.file_path = String(processedInput.file_path)
-        }
-        contentAttributes.content = String(result.data.content)
-      }
-
-      // Edit/Write tools: capture file_path and diff
-      if (
-        (tool.name === FILE_EDIT_TOOL_NAME ||
-          tool.name === FILE_WRITE_TOOL_NAME) &&
-        'file_path' in processedInput
-      ) {
-        contentAttributes.file_path = String(processedInput.file_path)
-
-        // For Edit, capture the actual changes made
-        if (tool.name === FILE_EDIT_TOOL_NAME && 'diff' in result.data) {
-          contentAttributes.diff = String(result.data.diff)
-        }
-        // For Write, capture the written content
-        if (tool.name === FILE_WRITE_TOOL_NAME && 'content' in processedInput) {
-          contentAttributes.content = String(processedInput.content)
-        }
-      }
-
-      // Bash tool: capture command
-      if (tool.name === BASH_TOOL_NAME && 'command' in processedInput) {
-        const bashInput = processedInput as BashToolInput
-        contentAttributes.bash_command = bashInput.command
-        // Also capture output if available
-        if ('output' in result.data) {
-          contentAttributes.output = String(result.data.output)
-        }
-      }
-
-      if (Object.keys(contentAttributes).length > 0) {
-        addToolContentEvent('tool.output', contentAttributes)
-      }
-    }
-
     // Capture structured output from tool result if present
     if (typeof result === 'object' && 'structured_output' in result) {
       // Store the structured output in an attachment message
@@ -1113,14 +1016,6 @@ async function checkPermissionsAndCallTool(
         }),
       })
     }
-
-    endToolExecutionSpan({ success: true })
-    // Pass tool result for new_context logging
-    const toolResultStr =
-      result.data && typeof result.data === 'object'
-        ? jsonStringify(result.data)
-        : String(result.data ?? '')
-    endToolSpan(toolResultStr)
 
     // Map the tool result to API format once and cache it. This block is reused
     // by addToolResult (skipping the remap).
@@ -1324,12 +1219,6 @@ async function checkPermissionsAndCallTool(
   } catch (error) {
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
-
-    endToolExecutionSpan({
-      success: false,
-      error: errorMessage(error),
-    })
-    endToolSpan()
 
     // Handle MCP auth errors by updating the client status to 'needs-auth'
     // This updates the /mcp display to show the server needs re-authorization

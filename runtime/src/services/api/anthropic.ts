@@ -208,11 +208,6 @@ import {
   stopSessionActivity,
 } from '../../utils/sessionActivity.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import {
-  isBetaTracingEnabled,
-  type LLMRequestNewContext,
-  startLLMRequestSpan,
-} from '../../utils/telemetry/sessionTracing.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   consumePendingCacheEdits,
@@ -1355,9 +1350,6 @@ async function* queryModel(
   })
   const useBetas = betas.length > 0
 
-  // Build minimal context for detailed tracing (when beta tracing is enabled)
-  // Note: The actual new_context message extraction is done in sessionTracing.ts using
-  // hash-based tracking per querySource (agent) from the messagesForAPI array
   const extraToolSchemas = [...(options.extraToolSchemas ?? [])]
   if (advisorModel) {
     // Server tools must be in the tools array by API contract. Appended after
@@ -1464,23 +1456,6 @@ async function* queryModel(
       extraBodyParams: getExtraBodyParams(),
     })
   }
-
-  const newContext: LLMRequestNewContext | undefined = isBetaTracingEnabled()
-    ? {
-        systemPrompt: systemPrompt.join('\n\n'),
-        querySource: options.querySource,
-        tools: jsonStringify(allTools),
-      }
-    : undefined
-
-  // Capture the span so we can pass it to endLLMRequestSpan later
-  // This ensures responses are matched to the correct request when multiple requests run in parallel
-  const llmSpan = startLLMRequestSpan(
-    options.model,
-    newContext,
-    messagesForAPI,
-    isFastMode,
-  )
 
   const startIncludingRetries = Date.now()
   let start = Date.now()
@@ -2491,7 +2466,6 @@ async function* queryModel(
           didFallBackToNonStreaming,
           queryTracking: options.queryTracking,
           querySource: options.querySource,
-          llmSpan,
           fastMode: isFastModeRequest,
           previousRequestId,
         })
@@ -2547,7 +2521,6 @@ async function* queryModel(
         didFallBackToNonStreaming,
         queryTracking: options.queryTracking,
         querySource: options.querySource,
-        llmSpan,
         fastMode: isFastModeRequest,
         previousRequestId,
       })
@@ -2633,10 +2606,7 @@ async function* queryModel(
       costUSD,
       queryTracking: options.queryTracking,
       permissionMode: permissionContext.mode,
-      // Pass newMessages for beta tracing - extraction happens in logging.ts
-      // only when beta tracing is enabled
       newMessages,
-      llmSpan,
       globalCacheStrategy,
       requestSetupMs: start - startIncludingRetries,
       attemptStartTimes,

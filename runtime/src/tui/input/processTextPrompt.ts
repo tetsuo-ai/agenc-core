@@ -10,7 +10,6 @@ import type { PermissionMode } from '../../types/permissions.js'
 import type { VimMode } from '../../types/textInputTypes.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { TextCursor } from '../../utils/TextCursor.js'
-import { startInteractionSpan } from '../../utils/telemetry/sessionTracing.js'
 import { transition, type TransitionContext } from '../vim/transitions.js'
 import type { CommandState, FindType, RecordedChange } from '../vim/types.js'
 
@@ -116,12 +115,6 @@ export function processTextPrompt(
       : input
   const promptId = randomUUID()
   setPromptId(promptId)
-
-  const userPromptText =
-    typeof routedInput === 'string'
-      ? routedInput
-      : routedInput.find(block => block.type === 'text')?.text || ''
-  startInteractionSpan(userPromptText)
 
   // If we have pasted images, create a message with image content
   if (imageContentBlocks.length > 0) {

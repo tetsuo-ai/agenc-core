@@ -17,16 +17,11 @@ const harness = vi.hoisted(() => ({
   }>,
   logPermissionDecision: vi.fn(),
   persistPermissionUpdates: vi.fn(),
-  sanitizeToolNameForAnalytics: vi.fn((toolName: string) => `safe:${toolName}`),
   supportsPersistence: vi.fn((destination: string) => destination === 'project'),
 }))
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
-}))
-
-vi.mock('../../../src/services/analytics/metadata.js', () => ({
-  sanitizeToolNameForAnalytics: harness.sanitizeToolNameForAnalytics,
 }))
 
 vi.mock('../../../src/tools/BashTool/bashPermissions.js', () => ({
@@ -148,7 +143,6 @@ beforeEach(() => {
   harness.hookResults = []
   harness.logPermissionDecision.mockReset()
   harness.persistPermissionUpdates.mockReset()
-  harness.sanitizeToolNameForAnalytics.mockClear()
   harness.supportsPersistence.mockClear()
 })
 

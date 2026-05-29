@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => ({
     ...input,
   })),
   setPromptId: vi.fn(),
-  startInteractionSpan: vi.fn(),
 }))
 
 vi.mock('../../bootstrap/state.js', () => ({
@@ -23,16 +22,12 @@ vi.mock('../../utils/messages.js', () => ({
   createUserMessage: mocks.createUserMessage,
 }))
 
-vi.mock('../../utils/telemetry/sessionTracing.js', () => ({
-  startInteractionSpan: mocks.startInteractionSpan,
-}))
-
 describe('processTextPrompt array image prompt coverage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  test('uses first text for the interaction span and builds the user message from all text and image blocks', () => {
+  test('builds the user message from all text and image blocks', () => {
     const contextBlock = {
       type: 'text',
       text: '<selection>status panel</selection>',
@@ -68,7 +63,6 @@ describe('processTextPrompt array image prompt coverage', () => {
     )
 
     expect(result.shouldQuery).toBe(true)
-    expect(mocks.startInteractionSpan).toHaveBeenCalledWith(contextBlock.text)
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: [contextBlock, promptBlock, imageBlock],
       uuid: 'prompt-uuid',

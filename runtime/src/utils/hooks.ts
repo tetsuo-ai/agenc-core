@@ -54,11 +54,6 @@ import {
   getSettingsForSource,
 } from './settings/settings.js'
 import {
-  startHookSpan,
-  endHookSpan,
-  isBetaTracingEnabled,
-} from './telemetry/sessionTracing.js'
-import {
   hookJSONOutputSchema,
   promptRequestSchema,
   type HookCallback,
@@ -2174,18 +2169,6 @@ async function* executeHooks({
     return
   }
 
-  // Collect hook definitions for beta tracing telemetry
-  const hookDefinitionsJson = isBetaTracingEnabled()
-    ? jsonStringify(getHookDefinitionsForTelemetry(matchingHooks))
-    : '[]'
-
-  // Start hook span for beta tracing
-  const hookSpan = startHookSpan(
-    hookEvent,
-    hookName,
-    matchingHooks.length,
-    hookDefinitionsJson,
-  )
 
   // Yield progress messages for each hook before execution
   for (const { hook } of matchingHooks) {
@@ -3028,13 +3011,6 @@ async function* executeHooks({
   getStatsStore()?.observe('hook_duration_ms', totalDurationMs)
   addToTurnHookDuration(totalDurationMs)
 
-  // End hook span for beta tracing
-  endHookSpan(hookSpan, {
-    numSuccess: outcomes.success,
-    numBlocking: outcomes.blocking,
-    numNonBlockingError: outcomes.non_blocking_error,
-    numCancelled: outcomes.cancelled,
-  })
 }
 
 export type HookOutsideReplResult = {
@@ -5108,21 +5084,3 @@ export async function executeWorktreeRemoveHook(
   return true
 }
 
-function getHookDefinitionsForTelemetry(
-  matchedHooks: MatchedHook[],
-): Array<{ type: string; command?: string; prompt?: string; name?: string }> {
-  return matchedHooks.map(({ hook }) => {
-    if (hook.type === 'command') {
-      return { type: 'command', command: hook.command }
-    } else if (hook.type === 'prompt') {
-      return { type: 'prompt', prompt: hook.prompt }
-    } else if (hook.type === 'http') {
-      return { type: 'http', command: hook.url }
-    } else if (hook.type === 'function') {
-      return { type: 'function', name: 'function' }
-    } else if (hook.type === 'callback') {
-      return { type: 'callback', name: 'callback' }
-    }
-    return { type: 'unknown' }
-  })
-}
