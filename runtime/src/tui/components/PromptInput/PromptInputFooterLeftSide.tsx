@@ -393,11 +393,7 @@ function ModeIndicator({
         </Byline>
       </Text>);
   }
-  if (tasksPart && showHint && !hasTeams) {
-    parts.push(<Text dimColor key="manage-tasks">
-        {tasksSelected ? <KeyboardShortcutHint shortcut="Enter" action="view tasks" /> : <KeyboardShortcutHint shortcut="↓" action="manage" />}
-      </Text>);
-  }
+  // The inline AGENT FLEET panel was removed, so there is no ↓-to-manage entry.
 
   // In fullscreen the bottom section is flexShrink:0 — every row here
   // is a row stolen from the ScrollBox. This component must have a STABLE

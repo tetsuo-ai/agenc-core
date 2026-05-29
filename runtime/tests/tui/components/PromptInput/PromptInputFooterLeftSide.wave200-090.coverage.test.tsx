@@ -322,7 +322,7 @@ describe("PromptInputFooterLeftSide task hints", () => {
     try {
       expect(unselectedTasks.output()).toContain("task-pill:false:true");
       expect(unselectedTasks.output()).toContain("ctrl+x ctrl+k stop agents");
-      expect(unselectedTasks.output()).toContain("manage");
+      // The inline AGENT FLEET panel was removed, so there is no ↓-to-manage hint.
     } finally {
       await unselectedTasks.dispose();
     }
@@ -330,7 +330,6 @@ describe("PromptInputFooterLeftSide task hints", () => {
     const selectedTasks = await renderFooter({ tasksSelected: true });
     try {
       expect(selectedTasks.output()).toContain("task-pill:true:true");
-      expect(selectedTasks.output()).toContain("Enter view tasks");
     } finally {
       await selectedTasks.dispose();
     }

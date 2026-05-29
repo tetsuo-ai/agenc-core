@@ -402,11 +402,7 @@ describe("PromptInputFooterLeftSide rendering", () => {
       "stop agents",
     );
 
-    footerMock.appState.tasks = { bg: { status: "running", type: "background_task" } };
     footerMock.appState.notifications = { current: null };
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ tasksSelected: true })} />),
-    ).resolves.toContain("Enter to view tasks");
 
     footerMock.fullscreen = true;
     footerMock.hasSelection = true;
