@@ -73,6 +73,19 @@
         "toolHistoryVitestContract": "passed: 5 tests",
         "typecheck": "passed"
       }
+    },
+    {
+      "id": "all-bun-runtime-tests-2026-05-29",
+      "commands": [
+        "bun test $(rg -l \"from 'bun:test'|from \\\"bun:test\\\"\" tests --glob '*.test.ts' --glob '*.test.tsx')"
+      ],
+      "results": {
+        "allBunRuntimeTests": "failed: 256 passed, 288 failed, 64 module-load errors across 104 files",
+        "primaryFailureClasses": [
+          "non-API Bun tests still import moved source through stale local test-relative paths such as ./utils/*.js and ./tools/*.js",
+          "some tests that pass in isolation fail when run in the full Bun process, indicating mock or environment isolation problems across Bun files"
+        ]
+      }
     }
   ],
   "globalValidationCommands": [
@@ -346,7 +359,7 @@
         "Triage why the full coverage command exits with code -1 and leaves only partial V8 temp files.",
         "Classify the 1019 incomplete-marker matches into test fixture text, historical comments, and real implementation debt.",
         "Triage the 7 skipped-or-todo test matches and record which are platform guards versus real coverage gaps.",
-        "Bring the 104 Bun test files excluded from Vitest into an explicit runtime validation path or convert them to the primary test runner."
+        "Bring the remaining Bun test files excluded from Vitest into an explicit runtime validation path or convert them to the primary test runner; tests/services/api is fixed in isolation, but the full 104-file Bun run still fails with moved-source import errors and cross-file isolation problems."
       ]
     }
   ]
