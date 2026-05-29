@@ -1235,6 +1235,21 @@ export function resolveThreadSpawnDisabledTools(opts: {
     : THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES;
 }
 
+/**
+ * Fold a role's `disallowlist` (e.g. read-only scanner/Plan/verification roles
+ * denying edit/write/spawn) into the depth-based disabled-tools set. The merged
+ * set is enforced by `buildFilteredRegistry` both when advertising tools and at
+ * dispatch time, so denied tools are neither offered to nor callable by the
+ * child. Returns the original set unchanged when the role has no denylist.
+ */
+export function mergeRoleDisallowlist(
+  base: ReadonlySet<string>,
+  disallowlist: ReadonlyArray<string> | undefined,
+): ReadonlySet<string> {
+  if (!disallowlist || disallowlist.length === 0) return base;
+  return new Set<string>([...base, ...disallowlist]);
+}
+
 function resolveSessionMaxAgentDepth(parent: Session): number {
   const asDepth = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isInteger(value) && value >= 1
@@ -1615,10 +1630,13 @@ function buildChildSession(
         params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
       childConversationId: params.live.agentId,
       worktree: params.worktree,
-      disabledTools: resolveThreadSpawnDisabledTools({
-        depth: params.live.depth,
-        maxDepth: resolveSessionMaxAgentDepth(params.parent),
-      }),
+      disabledTools: mergeRoleDisallowlist(
+        resolveThreadSpawnDisabledTools({
+          depth: params.live.depth,
+          maxDepth: resolveSessionMaxAgentDepth(params.parent),
+        }),
+        params.live.role.config.disallowlist,
+      ),
       ...(params.childToolPolicy !== undefined
         ? { childToolPolicy: params.childToolPolicy }
         : {}),

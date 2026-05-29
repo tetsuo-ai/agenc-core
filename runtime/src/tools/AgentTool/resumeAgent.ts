@@ -29,10 +29,10 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { getParentSessionId } from '../../utils/teammate.js'
 import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
 import { runAsyncAgentLifecycle } from './agentToolUtils.js'
-import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { isBuiltInAgent, roleToAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { getDefaultAgentRole } from 'src/agents/role.js'
 import { runAgent } from './runAgent.js'
 export type ResumeAgentResult = {
   agentId: string
@@ -106,9 +106,9 @@ export async function resumeAgentBackground({
     const found = toolUseContext.options.agentDefinitions.activeAgents.find(
       a => a.agentType === meta.agentType,
     )
-    selectedAgent = found ?? GENERAL_PURPOSE_AGENT
+    selectedAgent = found ?? roleToAgentDefinition(getDefaultAgentRole())
   } else {
-    selectedAgent = GENERAL_PURPOSE_AGENT
+    selectedAgent = roleToAgentDefinition(getDefaultAgentRole())
   }
 
   const uiDescription = meta?.description ?? '(resumed)'

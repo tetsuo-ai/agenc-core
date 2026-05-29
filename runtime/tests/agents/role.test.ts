@@ -53,8 +53,50 @@ describe("role registry", () => {
     expect(names).toContain("default");
     expect(names).toContain("explorer");
     expect(names).toContain("worker");
-    expect(names).not.toContain("verification");
+    // Promoted built-in roles (formerly stranded const agents).
+    expect(names).toContain("Plan");
+    expect(names).toContain("verification");
     expect(names).not.toContain("awaiter");
+  });
+
+  it("resolves promoted built-in agents (scanner/Explore, Plan, verification)", () => {
+    // The Explore agent folds into the explorer/scanner role.
+    for (const name of ["explorer", "scanner", "Explore", "explore"]) {
+      expect(requireAgentRole(name).name).toBe("explorer");
+    }
+    // Plan's capital registry key is reachable only via the `plan` alias,
+    // because spawn lowercases the requested name before lookup.
+    expect(requireAgentRole("Plan").name).toBe("Plan");
+    expect(requireAgentRole("plan").name).toBe("Plan");
+    expect(requireAgentRole("verification").name).toBe("verification");
+    // general-purpose is an alias of the default role.
+    expect(requireAgentRole("general-purpose").name).toBe("default");
+    expect(getDefaultAgentRole().name).toBe("default");
+  });
+
+  it("carries promoted built-in behavior on role config", () => {
+    const explorer = requireAgentRole("scanner");
+    expect(explorer.config.systemPrompt).toContain("file search specialist");
+    expect(explorer.config.disallowlist).toContain("spawn_agent");
+    expect(explorer.config.disallowlist).toContain("Edit");
+    expect(explorer.config.disallowlist).toContain("Write");
+
+    const plan = requireAgentRole("Plan");
+    expect(plan.config.systemPrompt).toContain("software architect");
+    expect(plan.config.disallowlist).toContain("Write");
+
+    const verification = requireAgentRole("verification");
+    expect(verification.config.background).toBe(true);
+    expect(verification.config.disallowlist).toContain("Edit");
+    expect(verification.config.systemPrompt).toContain("VERDICT:");
+
+    // The default/general-purpose role is unrestricted (no denylist) and carries
+    // no system prompt — it is also used by internal silent default-role spawns,
+    // so a subagent prompt must not ride along.
+    const def = requireAgentRole("general-purpose");
+    expect(def.name).toBe("default");
+    expect(def.config.systemPrompt).toBeUndefined();
+    expect(def.config.disallowlist).toBeUndefined();
   });
 
   it("explorer resolves through upstream-compatible config-file metadata", () => {

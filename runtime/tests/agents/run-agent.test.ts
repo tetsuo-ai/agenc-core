@@ -24,6 +24,7 @@ import {
   buildFilteredRegistry,
   initMcpForAgent,
   MCP_INIT_TIMEOUT_MS,
+  mergeRoleDisallowlist,
   resolveThreadSpawnDisabledTools,
   runAgent,
   type RunAgentProgressEvent,
@@ -34,6 +35,7 @@ import {
   _resetNicknamePoolForTesting,
   registerAgentRole,
 } from "./role.js";
+import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
 import type { InterAgentCommunication } from "./mailbox.js";
 import type {
   LLMChatOptions,
@@ -775,6 +777,120 @@ describe("runAgent", () => {
     expect(parsed[SESSION_ID_ARG]).toBe("child-123");
     expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual(["/tmp/subagent-wt"]);
     expect(parsed.value).toBe("hello");
+  });
+
+  it("mergeRoleDisallowlist unions a role denylist into the disabled set", () => {
+    const base = new Set(["spawn_agent"]);
+    expect(mergeRoleDisallowlist(base, undefined)).toBe(base);
+    expect(mergeRoleDisallowlist(base, [])).toBe(base);
+    const merged = mergeRoleDisallowlist(base, ["Edit", "Write"]);
+    expect([...merged].sort()).toEqual(["Edit", "Write", "spawn_agent"]);
+  });
+
+  it("denies every read-only-disallowed tool (incl. MultiEdit/apply_patch) in advertised tools and at dispatch", async () => {
+    const mkTool = (name: string) => ({
+      name,
+      description: name,
+      inputSchema: { type: "object" } as const,
+      execute: vi.fn(async () => ({ content: "{}", isError: false })),
+    });
+    // The full set of first-class mutating file tools + the allowed Read.
+    const mutating = ["Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch", "spawn_agent"];
+    const tools = [...mutating.map(mkTool), mkTool("Read")];
+    const registry = buildFilteredRegistry(
+      {
+        tools,
+        toLLMTools: () =>
+          tools.map((t) => ({
+            type: "function" as const,
+            function: { name: t.name, description: t.name, parameters: { type: "object" } },
+          })),
+        dispatch: async () => ({ content: "{}", isError: false }),
+      },
+      {
+        childConversationId: "child-deny",
+        // Mirrors run-agent's call site: the read-only role denylist folded in.
+        disabledTools: mergeRoleDisallowlist(new Set<string>(), BUILTIN_READONLY_DISALLOWLIST),
+      },
+    );
+
+    const advertised = registry.tools.map((t) => t.name);
+    for (const name of mutating) {
+      expect(advertised).not.toContain(name);
+      const denied = await registry.dispatch({ name, arguments: "{}" });
+      expect(denied.isError).toBe(true);
+      expect(denied.content).toContain("tool not allowed for subagent");
+    }
+    // The non-denied read tool stays advertised and dispatchable.
+    expect(advertised).toContain("Read");
+    const allowed = await registry.dispatch({ name: "Read", arguments: "{}" });
+    expect(allowed.isError).toBe(false);
+  });
+
+  it("a live read-only role spawn (Plan) strips mutating tools end-to-end", async () => {
+    // Drives the real wiring: control.spawn -> role resolution (Plan carries the
+    // read-only disallowlist) -> buildChildSession reads role.config.disallowlist
+    // -> mergeRoleDisallowlist -> buildFilteredRegistry. A mutation on that chain
+    // (e.g. dropping the disallowlist fold) makes this fail.
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = {
+      ...makeProvider([]),
+      chatStream: vi.fn(
+        async (
+          _messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          options?: LLMChatOptions,
+        ): Promise<LLMResponse> => {
+          if (options !== undefined) seenOptions.push(options);
+          return {
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "fake-model",
+            finishReason: "stop",
+          };
+        },
+      ),
+    } satisfies LLMProvider;
+    const parentRegistry = mkNamedRegistry([
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "NotebookEdit",
+      "apply_patch",
+      "spawn_agent",
+      "Read",
+    ]);
+    const session = makeStubSession({ services: { provider, registry: parentRegistry } });
+    const { live } = await spawnLive(session, "Plan");
+    expect(live.role.name).toBe("Plan");
+    // The resolved role carries the read-only denylist (covers every mutating tool).
+    expect(live.role.config.disallowlist).toEqual(BUILTIN_READONLY_DISALLOWLIST);
+
+    await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    const advertised = (seenOptions[0]?.tools ?? []).map(
+      (t: { name?: string; function?: { name?: string } }) =>
+        t.name ?? t.function?.name ?? "",
+    );
+    for (const denied of [
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "NotebookEdit",
+      "apply_patch",
+      "spawn_agent",
+    ]) {
+      expect(advertised).not.toContain(denied);
+    }
+    expect(advertised).toContain("Read");
   });
 
   it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {

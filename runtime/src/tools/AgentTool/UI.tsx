@@ -30,7 +30,8 @@ import type { Theme, ThemeName } from '../../utils/theme.js';
 import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.js';
 import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
-import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
+import { getDefaultAgentRole } from 'src/agents/role.js';
+import { canonicalAgentRoleName } from 'src/agents/role-presentation.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 /**
  * Guard: checks if progress data has a `message` field (agent_progress or
@@ -764,7 +765,7 @@ export function userFacingName(input: Partial<{
   name: string;
   team_name: string;
 }> | undefined): string {
-  if (input?.subagent_type && input.subagent_type !== GENERAL_PURPOSE_AGENT.agentType) {
+  if (input?.subagent_type && canonicalAgentRoleName(input.subagent_type) !== getDefaultAgentRole().name) {
     // Display "worker" agents as "Agent" for cleaner UI
     if (input.subagent_type === 'worker') {
       return 'Agent';
@@ -865,5 +866,5 @@ function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tool
   return null;
 }
 function isCustomSubagentType(subagentType: string | undefined): subagentType is string {
-  return !!subagentType && subagentType !== GENERAL_PURPOSE_AGENT.agentType && subagentType !== 'worker';
+  return !!subagentType && canonicalAgentRoleName(subagentType) !== getDefaultAgentRole().name && subagentType !== 'worker';
 }
