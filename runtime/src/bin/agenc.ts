@@ -134,6 +134,11 @@ import {
   runAgenCMcpCli,
 } from "./mcp-cli.js";
 import {
+  formatAgenCDoctorCliHelpText,
+  parseAgenCDoctorCliArgs,
+  runAgenCDoctorCli,
+} from "./doctor-cli.js";
+import {
   formatAgenCInitCliHelpText,
   parseAgenCInitCliArgs,
   runAgenCInitCli,
@@ -321,6 +326,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCDaemonCliHelpText();
     case "mcp":
       return formatAgenCMcpCliHelpText();
+    case "doctor":
+      return formatAgenCDoctorCliHelpText();
     case "permissions":
       return formatAgenCPermissionsCliHelpText();
     case "plugin":
@@ -3276,6 +3283,10 @@ export async function main(): Promise<number> {
   const mcpCommand = parseAgenCMcpCliArgs(argv, mcpConfig);
   if (mcpCommand !== null) {
     return runAgenCMcpCli(mcpCommand);
+  }
+  const doctorCommand = parseAgenCDoctorCliArgs(argv);
+  if (doctorCommand !== null) {
+    return runAgenCDoctorCli(doctorCommand);
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
