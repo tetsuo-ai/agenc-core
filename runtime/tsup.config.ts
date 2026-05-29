@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +12,14 @@ const entry = [
 ];
 
 const runtimeRoot = dirname(fileURLToPath(import.meta.url));
+const yoloClassifierPromptSourceDir = resolve(
+  runtimeRoot,
+  'src/utils/permissions/yolo-classifier-prompts',
+);
+const yoloClassifierPromptDistDir = resolve(
+  runtimeRoot,
+  'dist/yolo-classifier-prompts',
+);
 const agencRoot = resolve(runtimeRoot, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(runtimeRoot, 'src');
@@ -76,6 +84,14 @@ const runtimePackage = JSON.parse(
   readFileSync(resolve(runtimeRoot, 'package.json'), 'utf8'),
 ) as { version?: string };
 const displayVersion = runtimePackage.version ?? '0.0.0';
+
+function copyYoloClassifierPrompts(): void {
+  if (!existsSync(yoloClassifierPromptSourceDir)) return;
+  mkdirSync(yoloClassifierPromptDistDir, { recursive: true });
+  cpSync(yoloClassifierPromptSourceDir, yoloClassifierPromptDistDir, {
+    recursive: true,
+  });
+}
 
 function aliasedSourceBases(base: string): string[] {
   const slash = base.lastIndexOf('/');
@@ -236,6 +252,17 @@ const agencFeatureFlagInline = {
       const inlined = inlineCopiedTreeFeatureCalls(source);
       if (inlined === source) return null;
       return { contents: inlined, loader };
+    });
+  },
+};
+
+const agencRuntimeAssets = {
+  name: 'agenc-runtime-assets',
+  setup(build: {
+    onEnd: (callback: () => void) => void;
+  }) {
+    build.onEnd(() => {
+      copyYoloClassifierPrompts();
     });
   },
 };
@@ -458,6 +485,7 @@ export default defineConfig({
     agencBareSrcAlias,
     agencOptionalExternal,
     agencKnownMissingOptionalExternal,
+    agencRuntimeAssets,
   ],
   esbuildOptions(options) {
     options.define = {
