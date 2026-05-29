@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
-import { BashTool } from './BashTool/BashTool.js'
-import { PowerShellTool } from './PowerShellTool/PowerShellTool.js'
+import { BashTool } from '../../src/tools/BashTool/BashTool.tsx'
+import { PowerShellTool } from '../../src/tools/PowerShellTool/PowerShellTool.tsx'
 
 test('BashTool result mapper tolerates null stderr', () => {
   const result = BashTool.mapToolResultToToolResultBlockParam(

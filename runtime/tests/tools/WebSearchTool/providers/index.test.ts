@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
-import { getProviderMode, getProviderChain, getAvailableProviders } from './index.js'
-import type { ProviderMode } from './index.js'
+import { getProviderMode, getProviderChain, getAvailableProviders } from '../../../../src/tools/WebSearchTool/providers/index.ts'
+import type { ProviderMode } from '../../../../src/tools/WebSearchTool/providers/index.ts'
 
 // ---------------------------------------------------------------------------
 // getProviderMode
@@ -99,7 +99,7 @@ describe('runSearch', () => {
 
     await expect(
       // Dynamic import to avoid circular issues
-      import('./index.js').then(m =>
+      import('../../../../src/tools/WebSearchTool/providers/index.ts').then(m =>
         m.runSearch({ query: 'test' }, controller.signal),
       ),
     ).rejects.toThrow()
@@ -113,7 +113,7 @@ describe('runSearch', () => {
     process.env.WEB_SEARCH_PROVIDER = 'tavily'
 
     try {
-      const { runSearch } = await import('./index.js')
+      const { runSearch } = await import('../../../../src/tools/WebSearchTool/providers/index.ts')
       await expect(runSearch({ query: 'test' })).rejects.toThrow(
         /not configured/i,
       )

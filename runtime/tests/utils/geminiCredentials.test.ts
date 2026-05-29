@@ -23,7 +23,7 @@ async function importFreshModule() {
     }),
   }))
 
-  return import(`./geminiCredentials.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/geminiCredentials.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 beforeEach(() => {

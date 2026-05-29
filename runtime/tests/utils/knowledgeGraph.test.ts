@@ -8,30 +8,42 @@ import {
   getProjectGraphPath,
   resetGlobalGraph,
   saveProjectGraph
-} from './knowledgeGraph.js'
-import { rmSync, existsSync } from 'fs'
-import { getFsImplementation } from './fsOperations.js'
+} from '../../src/utils/knowledgeGraph.ts'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { getFsImplementation } from '../../src/utils/fsOperations.ts'
 
 describe('KnowledgeGraph Global Persistence & RAG', () => {
   const cwd = getFsImplementation().cwd()
-  const graphPath = getProjectGraphPath(cwd)
+  const originalConfigDir = process.env.AGENC_CONFIG_DIR
+  let tempConfigDir: string
 
   beforeEach(() => {
+    tempConfigDir = mkdtempSync(join(tmpdir(), 'agenc-knowledge-graph-'))
+    process.env.AGENC_CONFIG_DIR = tempConfigDir
     resetGlobalGraph()
-    if (existsSync(graphPath)) rmSync(graphPath)
+    rmSync(getProjectGraphPath(cwd), { force: true })
   })
 
   afterEach(() => {
-    if (existsSync(graphPath)) rmSync(graphPath)
+    resetGlobalGraph()
+    rmSync(tempConfigDir, { recursive: true, force: true })
+    if (originalConfigDir === undefined) {
+      delete process.env.AGENC_CONFIG_DIR
+    } else {
+      process.env.AGENC_CONFIG_DIR = originalConfigDir
+    }
   })
 
-  it('persists entities across loads', () => {
+  it('persists entities across loads', async () => {
     addGlobalEntity('server', 'prod-1', { ip: '1.2.3.4' })
     saveProjectGraph(cwd)
     
-    // Reset singleton and reload
-    resetGlobalGraph()
-    const graph = loadProjectGraph(cwd)
+    const { loadProjectGraph: loadFreshProjectGraph } = await import(
+      `../../src/utils/knowledgeGraph.ts?fresh=${Date.now()}-${Math.random()}`
+    )
+    const graph = loadFreshProjectGraph(cwd)
     const entity = Object.values(graph.entities).find(e => e.name === 'prod-1')
     expect(entity).toBeDefined()
     expect(entity?.attributes.ip).toBe('1.2.3.4')

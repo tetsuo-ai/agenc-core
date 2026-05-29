@@ -7,15 +7,15 @@ const originalEnv = { ...process.env }
 const originalArgv = [...process.argv]
 
 async function importFreshEnvUtils() {
-  return import(`./envUtils.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/envUtils.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 async function importFreshSettings() {
-  return import(`./settings/settings.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/settings/settings.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 async function importFreshLocalInstaller() {
-  return import(`./localInstaller.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/localInstaller.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 afterEach(() => {
@@ -116,10 +116,7 @@ describe('AgenC paths', () => {
         configHomeDir: join(homedir(), '.agenc'),
         homeDir: homedir(),
       }),
-    ).toEqual([
-      join(homedir(), '.agenc', 'local'),
-      join(homedir(), '.agenc', 'local'),
-    ])
+    ).toEqual([join(homedir(), '.agenc', 'local')])
   })
 
   test('legacy local installs are detected when they still expose the agenc binary', async () => {

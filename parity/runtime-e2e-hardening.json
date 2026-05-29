@@ -1,7 +1,7 @@
 {
   "contractName": "runtime-e2e-hardening",
   "scope": "Complete end-to-end runtime audit, hardening, traceability, fixes, and coverage uplift for runtime-owned behavior.",
-  "generatedAt": "2026-05-29T05:56:31Z",
+  "generatedAt": "2026-05-29T06:46:02Z",
   "sourceRoot": ".",
   "targetRoot": ".",
   "sourceCommit": "0123c7073889e390d6623c3856181c7d383a3579",
@@ -86,12 +86,36 @@
           "some tests that pass in isolation fail when run in the full Bun process, indicating mock or environment isolation problems across Bun files"
         ]
       }
+    },
+    {
+      "id": "all-bun-runtime-tests-after-import-fixes-2026-05-29",
+      "commands": [
+        "bun test $(rg -l \"from 'bun:test'|from \\\"bun:test\\\"\" tests --glob '*.test.ts' --glob '*.test.tsx')"
+      ],
+      "results": {
+        "allBunRuntimeTests": "failed: 1087 passed, 59 failed across 104 files",
+        "primaryFailureClasses": [
+          "Bun mock.module() state leaks across files in a single process; examples include provider module mocks forcing firstParty detection, secure-storage platform mocks replacing concrete storage instances, and GitHub device-flow mocks replacing Copilot token exchange behavior",
+          "the same 104 files pass when each file runs in a fresh Bun process, so this is tracked as a Bun harness isolation issue rather than remaining per-file runtime test failure"
+        ]
+      }
+    },
+    {
+      "id": "isolated-bun-runtime-tests-2026-05-29",
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime run test:bun:isolated"
+      ],
+      "results": {
+        "isolatedBunRuntimeTests": "passed: 104 files, 0 failures",
+        "coverage": "runs every Bun test file in a fresh process to prevent process-global mock.module() and environment leakage from invalidating unrelated files"
+      }
     }
   ],
   "globalValidationCommands": [
     "npm run typecheck",
     "npm run build",
     "npm --workspace=@tetsuo-ai/runtime test",
+    "npm --workspace=@tetsuo-ai/runtime run test:bun:isolated",
     "npm --workspace=@tetsuo-ai/runtime run test:coverage",
     "npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup",
     "npm --workspace=@tetsuo-ai/runtime run check:package-entrypoints",

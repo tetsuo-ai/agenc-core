@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 async function importFreshExecFileNoThrowModule() {
-  return import(`./execFileNoThrow.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/execFileNoThrow.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 test('execFileNoThrowWithCwd rejects shell-like executable names', async () => {

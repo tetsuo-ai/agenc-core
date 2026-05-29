@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test'
 
 describe('SettingsSchema allowBypassPermissionsMode', () => {
   test('accepts allowBypassPermissionsMode: true', async () => {
-    const { SettingsSchema } = await import('./types.js')
+    const { SettingsSchema } = await import('../../../src/utils/settings/types.ts')
     const result = SettingsSchema().safeParse({
       permissions: { allowBypassPermissionsMode: true },
     })
@@ -10,7 +10,7 @@ describe('SettingsSchema allowBypassPermissionsMode', () => {
   })
 
   test('accepts allowBypassPermissionsMode: false', async () => {
-    const { SettingsSchema } = await import('./types.js')
+    const { SettingsSchema } = await import('../../../src/utils/settings/types.ts')
     const result = SettingsSchema().safeParse({
       permissions: { allowBypassPermissionsMode: false },
     })
@@ -18,7 +18,7 @@ describe('SettingsSchema allowBypassPermissionsMode', () => {
   })
 
   test('rejects non-boolean allowBypassPermissionsMode', async () => {
-    const { SettingsSchema } = await import('./types.js')
+    const { SettingsSchema } = await import('../../../src/utils/settings/types.ts')
     const result = SettingsSchema().safeParse({
       permissions: { allowBypassPermissionsMode: 'yes' },
     })

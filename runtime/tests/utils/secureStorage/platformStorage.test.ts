@@ -1,8 +1,8 @@
 
 import { expect, test, mock, describe, beforeEach, afterEach } from "bun:test";
-import { linuxSecretStorage } from "./linuxSecretStorage.js";
-import { windowsCredentialStorage } from "./windowsCredentialStorage.js";
-import { getSecureStorageServiceName, CREDENTIALS_SERVICE_SUFFIX } from "./macOsKeychainHelpers.js";
+import { linuxSecretStorage } from "../../../src/utils/secureStorage/linuxSecretStorage.ts";
+import { windowsCredentialStorage } from "../../../src/utils/secureStorage/windowsCredentialStorage.ts";
+import { getSecureStorageServiceName, CREDENTIALS_SERVICE_SUFFIX } from "../../../src/utils/secureStorage/macOsKeychainHelpers.ts";
 
 // Mock execaSync
 const mockExecaSync = mock(() => ({ exitCode: 0, stdout: "" }));
@@ -177,7 +177,7 @@ describe("Secure Storage Platform Implementations", () => {
     const originalPlatform = process.platform;
 
     async function importFreshSecureStorage() {
-      return import(`./index.js?ts=${Date.now()}-${Math.random()}`);
+      return import(`../../../src/utils/secureStorage/index.ts?ts=${Date.now()}-${Math.random()}`);
     }
 
     afterEach(() => {

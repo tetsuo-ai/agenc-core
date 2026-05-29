@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { sortKeysDeep, stableStringify } from './stableStringify'
+import { sortKeysDeep, stableStringify } from '../../src/utils/stableStringify.ts'
 
 /**
  * Contract: `stableStringify(input)` must equal `JSON.stringify(input)`

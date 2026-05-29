@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream'
 
 import { afterEach, expect, mock, test } from 'bun:test'
 import React from 'react'
-import { createRoot, Text } from '../../../tui/ink.js'
+import { createRoot, Text } from '../../../src/tui/ink.ts'
 
 type AuthState = {
   anthropicAuthEnabled: boolean
@@ -64,7 +64,7 @@ test('useApiKeyVerification resets stale missing status when the session switche
   }
   const seenStatuses: string[] = []
 
-  mock.module('../utils/auth.js', () => ({
+  mock.module('../../../src/utils/auth.js', () => ({
     getAnthropicApiKeyWithSource: () => ({
       key: authState.key,
       source: authState.source,
@@ -74,17 +74,17 @@ test('useApiKeyVerification resets stale missing status when the session switche
     isAgenCAISubscriber: () => authState.agencSubscriber,
   }))
 
-  mock.module('../bootstrap/state.js', () => ({
+  mock.module('../../../src/bootstrap/state.js', () => ({
     getIsNonInteractiveSession: () => false,
   }))
 
-  mock.module('../services/api/claude.js', () => ({ // branding-scan: allow upstream mirror mock path pending purge
+  mock.module('../../../src/services/api/anthropic.js', () => ({
     verifyApiKey: async () => true,
   }))
 
   // @ts-expect-error cache-busting query string for Bun module mocks
   const { useApiKeyVerification } = await import(
-    './useApiKeyVerification'
+    '../../../src/tui/hooks/useApiKeyVerification.ts'
   )
 
   function Harness(): React.ReactNode {

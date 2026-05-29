@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mock } from 'bun:test'
 
-import { resetModelStringsForTestingOnly } from '../../bootstrap/state.js'
-import { saveGlobalConfig } from '../config.js'
+import { resetModelStringsForTestingOnly } from '../../../src/bootstrap/state.ts'
+import { saveGlobalConfig } from '../../../src/utils/config.ts'
 
 async function importFreshModelOptionsModule() {
   mock.restore()
@@ -10,7 +10,7 @@ async function importFreshModelOptionsModule() {
     getAPIProvider: () => 'github',
   }))
   const nonce = `${Date.now()}-${Math.random()}`
-  return import(`./modelOptions.js?ts=${nonce}`)
+  return import(`../../../src/utils/model/modelOptions.ts?ts=${nonce}`)
 }
 
 const originalEnv = {

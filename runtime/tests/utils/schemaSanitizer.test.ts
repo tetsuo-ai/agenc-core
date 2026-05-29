@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { sanitizeSchemaForOpenAICompat } from './schemaSanitizer'
+import { sanitizeSchemaForOpenAICompat } from '../../src/utils/schemaSanitizer.ts'
 
 describe('sanitizeSchemaForOpenAICompat', () => {
   test('preserves Grep-like properties.pattern while keeping it required', () => {

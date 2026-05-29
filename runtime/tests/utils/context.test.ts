@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { getMaxOutputTokensForModel } from '../services/api/anthropic.js'
+import { getMaxOutputTokensForModel } from '../../src/services/api/anthropic.ts'
 import {
   getContextWindowForModel,
   getModelMaxOutputTokens,
-} from './context.ts'
+} from '../../src/utils/context.ts'
 
 const originalEnv = {
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,

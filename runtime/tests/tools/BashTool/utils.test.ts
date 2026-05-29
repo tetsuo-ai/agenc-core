@@ -5,7 +5,7 @@ import {
   parseDataUri,
   formatOutput,
   createContentSummary,
-} from './utils.js'
+} from '../../../src/tools/BashTool/utils.ts'
 
 // =============================================================================
 // stripEmptyLines — removes leading/trailing blank lines

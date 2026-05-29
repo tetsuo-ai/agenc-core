@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from 'bun:test'
 
-import { resetModelStringsForTestingOnly } from '../../bootstrap/state.js'
-import { parseUserSpecifiedModel } from './model.js'
-import { getModelStrings } from './modelStrings.js'
+import { resetModelStringsForTestingOnly } from '../../../src/bootstrap/state.ts'
+import { parseUserSpecifiedModel } from '../../../src/utils/model/model.ts'
+import { getModelStrings } from '../../../src/utils/model/modelStrings.ts'
 
 const originalEnv = {
   AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,

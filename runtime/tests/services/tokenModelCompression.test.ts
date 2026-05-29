@@ -5,13 +5,13 @@ import {
   detectContentType,
   getCompressionRatio,
   estimateWithBounds,
-} from './tokenEstimation.js'
+} from '../../src/services/tokenEstimation.ts'
 
 describe('Model Tokenizers', () => {
   describe('getTokenizerConfig', () => {
-    it('returns config for agenc models', () => {
+    it('returns config for Anthropic models', () => {
       const config = getTokenizerConfig('claude-sonnet-4-5-20250514')
-      expect(config.modelFamily).toBe('agenc')
+      expect(config.modelFamily).toBe('anthropic')
       expect(config.bytesPerToken).toBe(3.5)
     })
 

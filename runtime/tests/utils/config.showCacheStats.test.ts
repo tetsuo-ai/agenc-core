@@ -6,7 +6,7 @@ import {
   isGlobalConfigKey,
   SHOW_CACHE_STATS_MODES,
   type GlobalConfig,
-} from './config.js'
+} from '../../src/utils/config.ts'
 
 // Standalone Zod schema mirroring the runtime contract for showCacheStats.
 // The config file does not carry a Zod schema per field (GlobalConfig is a

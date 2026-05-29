@@ -14,8 +14,8 @@ import {
   resetArc,
   getArcStats,
   finalizeArcTurn,
-} from './conversationArc.js'
-import { getGlobalGraph, resetGlobalGraph } from './knowledgeGraph.js'
+} from '../../src/utils/conversationArc.ts'
+import { getGlobalGraph, resetGlobalGraph } from '../../src/utils/knowledgeGraph.ts'
 
 function createMessage(role: string, content: string): any {
   return {

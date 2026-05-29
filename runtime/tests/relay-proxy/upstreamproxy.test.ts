@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { isValidPemContent } from './upstreamproxy.js'
+import { isValidPemContent } from '../../src/upstreamproxy/upstreamproxy.ts'
 
 // Finding #42-6: The CA cert downloaded from the upstream proxy is written
 // to disk without validation. A compromised server could send arbitrary data.
@@ -27,6 +27,11 @@ test('isValidPemContent returns false for arbitrary text', () => {
   expect(isValidPemContent('Hello world')).toBe(false)
   expect(isValidPemContent('<html><body>error</body></html>')).toBe(false)
   expect(isValidPemContent('{"error":"unauthorized"}')).toBe(false)
+})
+
+test('isValidPemContent returns false for text wrapped around a PEM block', () => {
+  const block = '-----BEGIN CERTIFICATE-----\nABCD\n-----END CERTIFICATE-----'
+  expect(isValidPemContent(`prefix\n${block}\nsuffix`)).toBe(false)
 })
 
 test('isValidPemContent returns false for empty string', () => {

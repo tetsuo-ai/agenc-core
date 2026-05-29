@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { sortKeysDeep, stableStringify } from './stableStringify.js'
+import { sortKeysDeep, stableStringify } from '../../src/utils/stableStringify.ts'
 
 // These tests pin byte-level stability of serialization helpers. The
 // invariant that matters for implicit prefix caching in openai / Kimi /

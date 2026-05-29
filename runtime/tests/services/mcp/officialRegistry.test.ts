@@ -4,11 +4,11 @@ import axios from 'axios'
 const originalEnv = { ...process.env }
 
 async function importFreshModule() {
-  mock.restore()
-  return import(`./officialRegistry.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/services/mcp/officialRegistry.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 beforeEach(() => {
+  mock.restore()
   process.env = { ...originalEnv }
 })
 
@@ -20,7 +20,7 @@ afterEach(() => {
 describe('prefetchOfficialMcpUrls', () => {
   test('does not fetch registry when using OpenAi mode', async () => {
     process.env.AGENC_USE_OPENAI = '1'
-    mock.module('../../../../utils/model/providers.js', () => ({
+    mock.module('../../../src/utils/model/providers.js', () => ({
       getAPIProvider: () => 'openai',
     }))
     const getSpy = mock(() => Promise.resolve({ data: { servers: [] } }))
@@ -34,7 +34,7 @@ describe('prefetchOfficialMcpUrls', () => {
 
   test('does not fetch registry when using Gemini mode', async () => {
     process.env.AGENC_USE_GEMINI = '1'
-    mock.module('../../../../utils/model/providers.js', () => ({
+    mock.module('../../../src/utils/model/providers.js', () => ({
       getAPIProvider: () => 'gemini',
     }))
     const getSpy = mock(() => Promise.resolve({ data: { servers: [] } }))
@@ -51,7 +51,7 @@ describe('prefetchOfficialMcpUrls', () => {
     delete process.env.AGENC_USE_GEMINI
     delete process.env.AGENC_USE_GITHUB
 
-    mock.module('../../../../utils/model/providers.js', () => ({
+    mock.module('../../../src/utils/model/providers.js', () => ({
       getAPIProvider: () => 'firstParty',
     }))
     const getSpy = mock(() =>

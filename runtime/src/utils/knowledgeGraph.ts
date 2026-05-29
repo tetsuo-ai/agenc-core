@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { getProjectsDir } from './sessionStorage.js'
 import { sanitizePath } from './sessionStoragePortable.js'
@@ -353,7 +353,7 @@ export function resetGlobalGraph(): void {
   const path = getProjectGraphPath(cwd)
   if (existsSync(path)) {
     try {
-      import('fs').then(fs => fs.rmSync(path))
+      rmSync(path, { force: true })
     } catch { /* ignore */ }
   }
   projectGraph = null;

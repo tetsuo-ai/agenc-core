@@ -38,7 +38,7 @@ afterEach(() => {
 })
 
 async function importFreshEnvModule() {
-  return import(`./env.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/env.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 // getGlobalAgenCFile — three migration branches

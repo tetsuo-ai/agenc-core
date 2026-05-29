@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { saveGlobalConfig } from '../config.js'
-import { getDefaultMainLoopModelSetting, getUserSpecifiedModelSetting } from './model.js'
+import { saveGlobalConfig } from '../../../src/utils/config.ts'
+import { getDefaultMainLoopModelSetting, getUserSpecifiedModelSetting } from '../../../src/utils/model/model.ts'
 
 const env = {
   AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,

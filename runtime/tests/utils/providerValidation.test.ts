@@ -3,7 +3,7 @@ import { afterEach, expect, test } from 'bun:test'
 import {
   getProviderValidationError,
   shouldExitForStartupProviderValidationError,
-} from './providerValidation.ts'
+} from '../../src/utils/providerValidation.ts'
 
 const originalEnv = {
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,

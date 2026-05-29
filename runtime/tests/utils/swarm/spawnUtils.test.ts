@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { buildInheritedEnvVars } from './spawnUtils.js'
+import { buildInheritedEnvVars } from '../../../src/utils/swarm/spawnUtils.ts'
 
 const ORIGINAL_ENV = { ...process.env }
 

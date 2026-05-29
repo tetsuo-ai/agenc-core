@@ -3,7 +3,7 @@ import { afterEach, expect, test } from 'bun:test'
 import {
   _resetGitWorktreeMutationLocksForTesting,
   withGitWorktreeMutationLock,
-} from './worktree.js'
+} from '../../src/utils/worktree.ts'
 
 afterEach(() => {
   _resetGitWorktreeMutationLocksForTesting()

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { DiagnosticTrackingService } from './diagnosticTracking.js'
-import type { MCPServerConnection } from './mcp/types.js'
+import { DiagnosticTrackingService } from '../../src/services/diagnosticTracking.ts'
+import type { MCPServerConnection } from '../../src/services/mcp/types.ts'
 
 // Mock the IDE client utility
 const mockGetConnectedIdeClient = (clients: MCPServerConnection[]) => 

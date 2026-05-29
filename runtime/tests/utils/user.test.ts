@@ -3,7 +3,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 const originalEnv = { ...process.env }
 
 async function importFreshUserModule() {
-  return import(`./user.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/user.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 function installCommonMocks(options?: {
@@ -51,6 +51,10 @@ function installCommonMocks(options?: {
 
   mock.module('execa', () => ({
     execa: async () => ({
+      exitCode: options?.gitEmail ? 0 : 1,
+      stdout: options?.gitEmail ?? '',
+    }),
+    execaSync: () => ({
       exitCode: options?.gitEmail ? 0 : 1,
       stdout: options?.gitEmail ?? '',
     }),

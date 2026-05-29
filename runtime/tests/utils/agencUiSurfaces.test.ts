@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'path'
 
-import { isAgenCSettingsPath } from './permissions/filesystem.ts'
-import { getValidationTip } from './settings/validationTips.ts'
+import { isAgenCSettingsPath } from '../../src/utils/permissions/filesystem.ts'
+import { getValidationTip } from '../../src/utils/settings/validationTips.ts'
 
 describe('AgenC settings path surfaces', () => {
   test('isAgenCSettingsPath recognizes project .agenc settings files', () => {

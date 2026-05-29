@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildTranscriptForClassifier } from './yoloClassifier.js'
+import { buildTranscriptForClassifier } from '../../../src/utils/permissions/yoloClassifier.ts'
 
 const tools = [
   {

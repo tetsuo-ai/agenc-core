@@ -4,10 +4,10 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 
-import type { ProviderProfile } from './config.js'
+import type { ProviderProfile } from '../../src/utils/config.ts'
 
 async function importFreshProvidersModule() {
-  return import(`./model/providers.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/model/providers.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 const originalEnv = { ...process.env }
@@ -90,7 +90,7 @@ afterEach(() => {
 
 async function importFreshProviderProfileModules() {
   mock.restore()
-  mock.module('./config.js', () => ({
+  mock.module('../../src/utils/config.js', () => ({
     getGlobalConfig: () => mockConfigState,
     saveGlobalConfig: (
       updater: (current: MockConfigState) => MockConfigState,
@@ -99,8 +99,8 @@ async function importFreshProviderProfileModules() {
     },
   }))
   const nonce = `${Date.now()}-${Math.random()}`
-  const providers = await import(`./model/providers.js?ts=${nonce}`)
-  const providerProfiles = await import(`./providerProfiles.js?ts=${nonce}`)
+  const providers = await import(`../../src/utils/model/providers.ts?ts=${nonce}`)
+  const providerProfiles = await import(`../../src/utils/providerProfiles.ts?ts=${nonce}`)
 
   return {
     ...providers,

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-type HookChainsModule = typeof import('./hookChains.js')
+type HookChainsModule = typeof import('../../src/utils/hookChains.ts')
 
 const tempDirs: string[] = []
 const originalHookChainsEnabled = process.env.AGENC_ENABLE_HOOK_CHAINS
@@ -23,19 +23,19 @@ async function importHookChainsModule(options?: {
 
   const allowRemoteSessions = options?.allowRemoteSessions ?? true
 
-  mock.module('../services/analytics/index.js', () => ({
+  mock.module('../../src/services/analytics/index.js', () => ({
     logEvent: () => {},
   }))
 
-  mock.module('./telemetry/events.js', () => ({
+  mock.module('../../src/utils/telemetry/events.js', () => ({
     logOTelEvent: async () => {},
   }))
 
-  mock.module('../services/policyLimits/index.js', () => ({
+  mock.module('../../src/services/policyLimits/index.js', () => ({
     isPolicyAllowed: () => allowRemoteSessions,
   }))
 
-  return import(`./hookChains.js?test=${Date.now()}-${Math.random()}`)
+  return import(`../../src/utils/hookChains.ts?test=${Date.now()}-${Math.random()}`)
 }
 
 beforeEach(() => {

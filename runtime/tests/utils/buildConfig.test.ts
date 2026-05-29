@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { isAntEmployee } from './buildConfig.ts'
+import { isAntEmployee } from '../../src/utils/buildConfig.ts'
 
 // Finding #42-2: process.env.USER_TYPE === 'ant' is checked directly in multiple
 // places, allowing any external user to activate provider-internal code paths.

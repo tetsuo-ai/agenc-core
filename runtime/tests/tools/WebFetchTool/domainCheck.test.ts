@@ -4,11 +4,11 @@ import axios from 'axios'
 const originalEnv = { ...process.env }
 
 async function importFreshModule() {
-  mock.restore()
-  return import(`./utils.ts?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/tools/WebFetchTool/utils.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 beforeEach(() => {
+  mock.restore()
   process.env = { ...originalEnv }
 })
 
@@ -20,8 +20,8 @@ afterEach(() => {
 describe('checkDomainBlocklist', () => {
   test('returns allowed without API call in OpenAi mode', async () => {
     process.env.AGENC_USE_OPENAI = '1'
-    const actual = await import('../../../../utils/model/providers.js')
-    mock.module('../../../../utils/model/providers.js', () => ({
+    const actual = await import('../../../src/utils/model/providers.ts')
+    mock.module('../../../src/utils/model/providers.js', () => ({
       ...actual,
       getAPIProvider: () => 'openai',
       isFirstPartyproviderBaseUrl: () => false,
@@ -40,8 +40,8 @@ describe('checkDomainBlocklist', () => {
 
   test('returns allowed without API call in Gemini mode', async () => {
     process.env.AGENC_USE_GEMINI = '1'
-    const actual = await import('../../../../utils/model/providers.js')
-    mock.module('../../../../utils/model/providers.js', () => ({
+    const actual = await import('../../../src/utils/model/providers.ts')
+    mock.module('../../../src/utils/model/providers.js', () => ({
       ...actual,
       getAPIProvider: () => 'gemini',
       isFirstPartyproviderBaseUrl: () => false,
@@ -63,8 +63,8 @@ describe('checkDomainBlocklist', () => {
     delete process.env.AGENC_USE_GEMINI
     delete process.env.AGENC_USE_GITHUB
 
-    const actual = await import('../../../../utils/model/providers.js')
-    mock.module('../../../../utils/model/providers.js', () => ({
+    const actual = await import('../../../src/utils/model/providers.ts')
+    mock.module('../../../src/utils/model/providers.js', () => ({
       ...actual,
       getAPIProvider: () => 'firstParty',
       isFirstPartyproviderBaseUrl: () => true,
