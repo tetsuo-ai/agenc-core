@@ -191,7 +191,14 @@ function rolloutItemsToForkMessages(
 }
 
 function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
-  if (input.useProvidedParentMessages) return [...input.parentMessages];
+  if (input.useProvidedParentMessages) {
+    // Honor the bounded-fork contract on caller-provided messages too:
+    // last_n_turns must truncate the override, not inherit the whole
+    // provided history (the forkSubagent branch trusts this result).
+    return input.mode?.kind === "last_n_turns"
+      ? lastNUserTurns(input.parentMessages, input.mode.n)
+      : [...input.parentMessages];
+  }
   const rolloutStore = input.parent.rolloutStore;
   if (!rolloutStore) return [...input.parentMessages];
   try {

@@ -1094,20 +1094,6 @@ export class GrokProvider implements LLMProvider {
       stream: true,
     };
     const compactionDiagnostics = plan.compactionDiagnostics;
-    let content = "";
-    let model = this.config.model;
-    let finishReason: LLMResponse["finishReason"] = "stop";
-    let responseError: Error | undefined;
-    let usage: LLMUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    let providerEvidence: LLMResponse["providerEvidence"];
-    let encryptedReasoning: LLMResponse["encryptedReasoning"];
-    const toolCallAccum = new Map<string, LLMToolCall>();
-    // Per-summary-index buffers for streamed reasoning summaries. xAI may
-    // emit multiple summary blocks in one turn; each lands at its own index.
-    const reasoningSummaryBuffers = new Map<number, string>();
-    let streamIterator: AsyncIterator<any> | null = null;
-    let responseTracePayload: Record<string, unknown> | undefined;
-    let streamResponseMeta: ProviderResponseTraceMeta | undefined;
     const streamTimeout = resolveRequestTimeoutMs(
       this.configuredTimeoutMs,
       options?.timeoutMs,
@@ -1119,6 +1105,24 @@ export class GrokProvider implements LLMProvider {
 
     let consecutiveFallbackFailures = 0;
     while (true) {
+      // Per-attempt accumulators must be re-initialised on every retry so a
+      // configured-fallback retry (continue below) starts clean. Declaring
+      // these outside the loop would carry attempt-1 state (e.g. streamed
+      // reasoning summaries) into attempt 2 and duplicate it.
+      let content = "";
+      let model = this.config.model;
+      let finishReason: LLMResponse["finishReason"] = "stop";
+      let responseError: Error | undefined;
+      let usage: LLMUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let providerEvidence: LLMResponse["providerEvidence"];
+      let encryptedReasoning: LLMResponse["encryptedReasoning"];
+      const toolCallAccum = new Map<string, LLMToolCall>();
+      // Per-summary-index buffers for streamed reasoning summaries. xAI may
+      // emit multiple summary blocks in one turn; each lands at its own index.
+      const reasoningSummaryBuffers = new Map<number, string>();
+      let streamIterator: AsyncIterator<any> | null = null;
+      let responseTracePayload: Record<string, unknown> | undefined;
+      let streamResponseMeta: ProviderResponseTraceMeta | undefined;
       try {
       const requestAttemptTimeout =
         Number.isFinite(streamDeadlineAt)

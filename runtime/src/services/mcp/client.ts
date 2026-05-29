@@ -245,7 +245,8 @@ const MAX_MCP_DESCRIPTION_LENGTH = 2048
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
- * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to ~27.8 hours.
+ * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to
+ * DEFAULT_MCP_TOOL_TIMEOUT_MS (5 minutes).
  */
 function getMcpToolTimeoutMs(): number {
   return (

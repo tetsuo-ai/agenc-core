@@ -154,7 +154,7 @@ function getCustomOpusOption(): ModelOption | undefined {
 
 function getOpus41Option(): ModelOption {
   return {
-    value: 'opus',
+    value: getModelStrings().opus41,
     label: 'Opus 4.1',
     description: `Opus 4.1 · Legacy`,
     descriptionForModel: 'Opus 4.1 - legacy version',
@@ -602,7 +602,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     payg3pOptions.push(customOpus)
   } else {
     // Add Opus 4.1, Opus 4.7, Opus 4.6 and Opus 4.6 1M
-    payg3pOptions.push(getOpus41Option()) // This is the default opus
+    payg3pOptions.push(getOpus41Option()) // Legacy Opus 4.1
     payg3pOptions.push(getOpus47Option(fastMode))
     payg3pOptions.push(getOpus46Option(fastMode))
     if (checkOpus1mAccess()) {

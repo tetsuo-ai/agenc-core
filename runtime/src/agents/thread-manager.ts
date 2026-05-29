@@ -508,18 +508,6 @@ export class ThreadManager implements ThreadOperationManager {
     };
     push(rootThreadId);
 
-    const root = this.state.threads.get(rootThreadId);
-    const rolloutStore = root?.kind === "root"
-      ? undefined
-      : undefined;
-    void rolloutStore;
-
-    const anyThread = this.state.threads.get(rootThreadId);
-    const rootSession = anyThread instanceof AgenCThread
-      ? undefined
-      : undefined;
-    void rootSession;
-
     const session = Array.from(this.state.threads.values())
       .map((thread) =>
         thread instanceof AgenCThread ? thread.sourceSession() : undefined,

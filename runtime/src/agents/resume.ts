@@ -83,6 +83,19 @@ export class ResumeManager {
     return this.failuresByThread.get(threadId) ?? 0;
   }
 
+  /**
+   * Carry a thread's consecutive-failure count onto a new thread id.
+   * Used when a hard-failing subagent is restarted under a fresh
+   * thread id so the RESUME_MAX_ATTEMPTS cap still trips instead of
+   * resetting to zero on every restart.
+   */
+  transferFailureCount(fromThreadId: string, toThreadId: string): void {
+    const count = this.failuresByThread.get(fromThreadId);
+    if (count === undefined) return;
+    this.failuresByThread.set(toThreadId, count);
+    this.failuresByThread.delete(fromThreadId);
+  }
+
   /** Clear all tracked threads (session reset). */
   clear(): void {
     this.failuresByThread.clear();

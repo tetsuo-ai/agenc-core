@@ -422,6 +422,12 @@ export function getDefaultMainLoopModel(): ModelName {
  */
 export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
+  // Bedrock inference-profile IDs brand the model segment as
+  // "anthropic.agenc-<model>" (e.g. "us.anthropic.agenc-opus-4-6-v1"). Normalize
+  // that segment back to the canonical "claude-<model>" spelling so the version
+  // branches below match instead of falling through to the generic regex (which
+  // would only capture "agenc-opus").
+  name = name.replaceAll('anthropic.agenc-', 'anthropic.claude-')
   // Special cases for AgenC 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-7 before 4-6 before 4-5 before 4)
   if (name.includes('claude-opus-4-7')) {

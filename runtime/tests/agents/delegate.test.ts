@@ -415,6 +415,7 @@ describe("delegate lifecycle recovery", () => {
         reason: "hard_error",
       })),
       recordSuccess: vi.fn(),
+      transferFailureCount: vi.fn(),
     };
 
     mockRunAgent.mockImplementationOnce(() =>

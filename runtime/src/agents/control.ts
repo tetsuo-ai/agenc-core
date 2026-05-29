@@ -852,7 +852,7 @@ export class AgentControl {
 
     // I-1: depth cap. Use metadata.depth as authority, fall back to
     // parent-path-derived depth + 1 if metadata is missing depth.
-    // Matches reference runtime `>=` comparison (`multi_agents_common.rs:283`).
+    // Rejects when depth exceeds the cap (`depth > this.maxDepth`).
     const depth =
       metadata.depth ?? depthOfAgentPath(parentPath) + 1;
     if (depth > this.maxDepth) {
