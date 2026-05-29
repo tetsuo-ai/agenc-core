@@ -4,6 +4,17 @@ import { hasNodeOption } from './envUtils.js'
 import { getFsImplementation } from './fsOperations.js'
 
 /**
+ * Validate that a string contains only well-formed PEM certificate blocks.
+ */
+export function isValidPemContent(content: string): boolean {
+  const trimmed = content.trim()
+  if (!trimmed) return false
+  const pemBlockPattern =
+    '-----BEGIN CERTIFICATE-----\\s+[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE-----'
+  return new RegExp(`^(?:${pemBlockPattern}\\s*)+$`).test(trimmed)
+}
+
+/**
  * Load CA certificates for TLS connections.
  *
  * Since setting `ca` on an HTTPS agent replaces the default certificate store,
