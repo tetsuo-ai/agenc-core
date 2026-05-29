@@ -296,6 +296,8 @@ describe("runAgent", () => {
   it("drives a single provider turn and forwards the assistant text via upInbox", async () => {
     const provider = makeProvider([{ content: "hello world" }]);
     const session = makeStubSession({ services: { provider } });
+    const submit = vi.fn(async () => {});
+    session.installTurnDriverHooks({ submit });
     const { live } = await spawnLive(session);
 
     const sent: InterAgentCommunication[] = [];
@@ -339,7 +341,7 @@ describe("runAgent", () => {
       author: live.agentPath,
       recipient: "/root",
       direction: "up",
-      triggerTurn: false,
+      triggerTurn: true,
       metadata: { kind: "subagent_notification" },
     });
     expect(parentMessages[0]!.content).toBe(
@@ -348,6 +350,9 @@ describe("runAgent", () => {
 
     expect(events.some((e) => e.kind === "run_complete")).toBe(true);
     expect(events.some((e) => e.kind === "status")).toBe(true);
+    await vi.waitFor(() => {
+      expect(submit).toHaveBeenCalledWith("", { displayUserMessage: null });
+    });
     // Initial messages + assistant reply message.
     expect(events.filter((e) => e.kind === "message")).toHaveLength(3);
   });

@@ -21,6 +21,10 @@ let originalAgencHome = "";
 function stubSession(opts: {
   rolloutStore?: RolloutStore | null;
   conversationId?: string;
+  submit?: (
+    message: string,
+    opts?: { displayUserMessage?: string | null },
+  ) => Promise<void>;
 } = {}) {
   const emitted: unknown[] = [];
   const mailbox = new SimpleMailbox<InterAgentCommunication & { seq: number }>();
@@ -37,6 +41,7 @@ function stubSession(opts: {
     nextInternalSubId: () => `sub-${emitted.length}`,
     childInboxes: new Map(),
     mailbox,
+    ...(opts.submit !== undefined ? { submit: opts.submit } : {}),
     rolloutStore: opts.rolloutStore ?? null,
     conversationId: opts.conversationId ?? "session-test",
     _emitted: emitted,
@@ -427,7 +432,8 @@ describe("AgentControl", () => {
   });
 
   it("sendInterAgentCommunication() can queue a message to the root session", async () => {
-    const session = stubSession({ conversationId: "root-thread" });
+    const submit = vi.fn(async () => {});
+    const session = stubSession({ conversationId: "root-thread", submit });
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     control.registerSessionRoot("root-thread");
@@ -436,6 +442,9 @@ describe("AgentControl", () => {
       recipient: "/root",
       content: "final answer",
       triggerTurn: true,
+    });
+    await vi.waitFor(() => {
+      expect(submit).toHaveBeenCalledWith("", { displayUserMessage: null });
     });
     const drained = session.mailbox.drain();
     expect(drained).toHaveLength(1);
@@ -600,7 +609,7 @@ describe("AgentControl", () => {
     };
     expect(msg.author).toBe(child.agentPath);
     expect(msg.recipient).toBe(parent.agentPath);
-    expect(msg.triggerTurn).toBe(false);
+    expect(msg.triggerTurn).toBe(true);
     expect(msg.content).toBe(
       `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"done"}}\n</subagent_notification>`,
     );
@@ -660,7 +669,7 @@ describe("AgentControl", () => {
       author: child.agentPath,
       recipient: "/root",
       content: `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"done"}}\n</subagent_notification>`,
-      triggerTurn: false,
+      triggerTurn: true,
       direction: "up",
       metadata: { kind: "inter_agent_communication" },
     });

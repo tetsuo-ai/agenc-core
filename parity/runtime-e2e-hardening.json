@@ -1,0 +1,286 @@
+{
+  "contractName": "runtime-e2e-hardening",
+  "scope": "Complete end-to-end runtime audit, hardening, traceability, fixes, and coverage uplift for runtime-owned behavior.",
+  "generatedAt": "2026-05-29T05:56:31Z",
+  "sourceRoot": ".",
+  "targetRoot": ".",
+  "sourceCommit": "0123c7073889e390d6623c3856181c7d383a3579",
+  "inventory": {
+    "runtimeSourceFileCount": 565,
+    "runtimeFocusedTestFileCount": 358,
+    "notes": [
+      "This matrix is the controlling traceability artifact for the single-branch runtime hardening pass.",
+      "Rows with status audit-required are inventory rows that still need source tracing, coverage evidence, and issue triage.",
+      "Rows with status fixed require the named validation commands to remain green before merge readiness can be claimed."
+    ]
+  },
+  "globalValidationCommands": [
+    "npm run typecheck",
+    "npm run build",
+    "npm --workspace=@tetsuo-ai/runtime test",
+    "npm --workspace=@tetsuo-ai/runtime run test:coverage",
+    "npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup",
+    "npm --workspace=@tetsuo-ai/runtime run check:package-entrypoints",
+    "npm --workspace=@tetsuo-ai/runtime run check:unused:report",
+    "git diff --check",
+    "rg -n \"TODO|FIXME|HACK|XXX|not implemented|stub|placeholder\" runtime/src runtime/tests"
+  ],
+  "rows": [
+    {
+      "id": "runtime-cli-startup",
+      "behavior": "CLI, daemon, package binary, built-dist import, package entrypoint, and runtime asset startup paths work from source and from built artifacts.",
+      "implementationFiles": [
+        "runtime/src/bin",
+        "runtime/src/bootstrap",
+        "runtime/src/entrypoints",
+        "runtime/src/build",
+        "runtime/tsup.config.ts",
+        "runtime/scripts/check-package-entrypoints.mjs",
+        "runtime/scripts/check-tui-runtime-startup.mjs"
+      ],
+      "testFiles": [
+        "runtime/tests/bin",
+        "runtime/tests/app-server",
+        "runtime/tests/app-server-client"
+      ],
+      "edgeCases": [
+        "starts after a clean build with package assets present",
+        "reports missing packaged assets as a failing validation",
+        "daemon startup and foreground startup surface actionable errors"
+      ],
+      "validationCommands": [
+        "npm run build",
+        "npm --workspace=@tetsuo-ai/runtime run check:package-entrypoints",
+        "npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "session-turn-execution",
+      "behavior": "Session submit, turn execution, phase orchestration, tool loop, compaction decisions, cancellation, pending input, and turn completion produce correct state and events.",
+      "implementationFiles": [
+        "runtime/src/session",
+        "runtime/src/phases",
+        "runtime/src/services/compact",
+        "runtime/src/prompts",
+        "runtime/src/recovery"
+      ],
+      "testFiles": [
+        "runtime/tests/session",
+        "runtime/tests/phases",
+        "runtime/tests/services/compact",
+        "runtime/tests/recovery"
+      ],
+      "edgeCases": [
+        "empty input with no pending input is a no-op",
+        "pending mailbox input is drained into the next model turn",
+        "tool results force continuation when the model still needs follow-up",
+        "aborts and provider errors close the turn boundary"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/session tests/phases tests/services/compact tests/recovery"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "agent-completion-follow-up",
+      "behavior": "When a child agent completes, its final notification wakes a hidden parent follow-up turn so the user receives a response without sending another message.",
+      "implementationFiles": [
+        "runtime/src/agents/run-agent.ts",
+        "runtime/src/agents/control.ts",
+        "runtime/src/session/session.ts",
+        "runtime/src/session/run-turn.ts"
+      ],
+      "testFiles": [
+        "runtime/tests/agents/run-agent.test.ts",
+        "runtime/tests/agents/control.test.ts"
+      ],
+      "edgeCases": [
+        "direct child completion queues triggerTurn=true and calls parent submit with displayUserMessage null",
+        "root-thread inter-agent communication with triggerTurn=true starts a hidden root follow-up",
+        "missing submit hooks do not crash standalone unit fakes"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/agents/run-agent.test.ts tests/agents/control.test.ts",
+        "npm --workspace=@tetsuo-ai/runtime run typecheck"
+      ],
+      "status": "fixed",
+      "fixesNeeded": []
+    },
+    {
+      "id": "agent-lifecycle-and-tools",
+      "behavior": "Agent spawn, wait, send message, follow-up, close, interrupt, resume, mailbox routing, task bridge, and agent job orchestration work end to end.",
+      "implementationFiles": [
+        "runtime/src/agents",
+        "runtime/src/agents/v2",
+        "runtime/src/agents/jobs",
+        "runtime/src/tasks",
+        "runtime/src/tools/AgentTool",
+        "runtime/src/tools/TaskOutputTool",
+        "runtime/src/tools/TaskStopTool"
+      ],
+      "testFiles": [
+        "runtime/tests/agents",
+        "runtime/tests/agents/jobs",
+        "runtime/tests/tasks",
+        "runtime/tests/tools/AgentTool",
+        "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
+      ],
+      "edgeCases": [
+        "wait returns completed child findings and drains only the intended mailbox content",
+        "interruption and shutdown propagate to descendants without orphaned work",
+        "resume restores open descendants and rejects stale handles",
+        "agent job retries and final result reporting preserve ordering"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/agents tests/tasks tests/tools/AgentTool tests/tui/state/collabAgentTaskSync.test.ts"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "tools-approvals-permissions-yolo",
+      "behavior": "Tool dispatch, approval prompts, permission modes, guardian review, yolo classification, and policy enforcement are correct across allowed, denied, rewritten, aborted, and errored paths.",
+      "implementationFiles": [
+        "runtime/src/tools",
+        "runtime/src/tool-registry.ts",
+        "runtime/src/permissions",
+        "runtime/src/sandbox",
+        "runtime/src/hooks"
+      ],
+      "testFiles": [
+        "runtime/tests/tools",
+        "runtime/tests/permissions",
+        "runtime/tests/sandbox",
+        "runtime/tests/hooks"
+      ],
+      "edgeCases": [
+        "dangerous tool allow rules do not bypass approval semantics",
+        "denied tool use returns visible recovery output",
+        "yolo mode classifies package prompt assets after build",
+        "hook rewrites preserve the approval prompt shown to the user"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/tools tests/permissions tests/sandbox tests/hooks"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "provider-model-routing",
+      "behavior": "Provider selection, model registry, model switches, streaming adapters, retry behavior, credentials, service tier, and provider-specific errors are routed correctly.",
+      "implementationFiles": [
+        "runtime/src/llm",
+        "runtime/src/services/api",
+        "runtime/src/auth",
+        "runtime/src/config",
+        "runtime/src/commands/provider.ts"
+      ],
+      "testFiles": [
+        "runtime/tests/llm",
+        "runtime/tests/services/api",
+        "runtime/tests/auth",
+        "runtime/tests/config",
+        "runtime/tests/commands/provider.test.ts"
+      ],
+      "edgeCases": [
+        "provider switch resets continuation state",
+        "credential failures are visible and actionable",
+        "streaming adapters preserve final text, usage, and tool calls",
+        "service tier validation fails before spawning child work"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/llm tests/services/api tests/auth tests/config tests/commands/provider.test.ts"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "persistence-rollout-resume-background",
+      "behavior": "Rollout persistence, session store, thread store, state migrations, background agent runner, background tasks, resume, and compaction survive restart and partial failure paths.",
+      "implementationFiles": [
+        "runtime/src/session/rollout-store.ts",
+        "runtime/src/session/session-store.ts",
+        "runtime/src/thread-store",
+        "runtime/src/state",
+        "runtime/src/app-server",
+        "runtime/src/tasks",
+        "runtime/src/services/compact"
+      ],
+      "testFiles": [
+        "runtime/tests/session",
+        "runtime/tests/thread-store.test.ts",
+        "runtime/tests/state",
+        "runtime/tests/app-server",
+        "runtime/tests/tasks"
+      ],
+      "edgeCases": [
+        "rollout reconstruction handles interrupted turns",
+        "restored agents rebind lifecycle events",
+        "state migrations are idempotent",
+        "background tasks terminate cleanly on kill or process failure"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/session tests/state tests/app-server tests/tasks"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "runtime-events-tui-ux-contract",
+      "behavior": "Runtime events that feed the TUI transcript, tasks, permissions, agents, status notices, and workbench UX are structured, ordered, bounded, and rendered without hiding required user-facing outcomes.",
+      "implementationFiles": [
+        "runtime/src/tui/session-transcript.ts",
+        "runtime/src/tui/state",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/workbench",
+        "runtime/src/app-server/background-agent-runner.ts"
+      ],
+      "testFiles": [
+        "runtime/tests/tui/parity",
+        "runtime/tests/tui/state",
+        "runtime/tests/tui/workbench",
+        "runtime/tests/tui/components",
+        "runtime/tests/app-server"
+      ],
+      "edgeCases": [
+        "raw collab tool rows do not suppress required final user-facing content",
+        "wide terminal output remains bounded to content width",
+        "permission and tool-result events remain visible after resume",
+        "runtime event ordering survives daemon buffering"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/tui/parity tests/tui/state tests/tui/workbench tests/app-server"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    },
+    {
+      "id": "coverage-and-dead-code-gates",
+      "behavior": "Runtime-owned code has meaningful coverage evidence, dead-code reports are reviewed, skipped tests are accounted for, and incomplete-code scans are clean or tracked to fixed rows.",
+      "implementationFiles": [
+        "runtime/package.json",
+        "runtime/vitest.config.ts",
+        "runtime/knip.config.mjs",
+        "runtime/scripts/check-unused-report.mjs"
+      ],
+      "testFiles": [
+        "runtime/tests"
+      ],
+      "edgeCases": [
+        "coverage reports include runtime-owned source and tests",
+        "known generated or external-only exclusions are explicit",
+        "skipped tests are listed and triaged",
+        "dead-code findings are fixed or mapped to concrete rows"
+      ],
+      "validationCommands": [
+        "npm --workspace=@tetsuo-ai/runtime run test:coverage",
+        "npm --workspace=@tetsuo-ai/runtime run check:unused:report"
+      ],
+      "status": "audit-required",
+      "fixesNeeded": []
+    }
+  ]
+}

@@ -860,10 +860,11 @@ function sendSubagentNotificationToParent(params: {
       author: params.live.agentPath,
       recipient: parentAgentPathFor(params.live.agentPath),
       content,
-      triggerTurn: false,
+      triggerTurn: true,
       direction: "up",
       metadata: { kind: "subagent_notification" },
     });
+    requestParentFollowupTurn(params);
   } catch (err) {
     if (
       err instanceof MailboxClosedError &&
@@ -878,6 +879,24 @@ function sendSubagentNotificationToParent(params: {
       `subagent ${params.live.agentPath} notification delivery failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+function requestParentFollowupTurn(params: {
+  readonly live: LiveAgent;
+  readonly parent: Session;
+}): void {
+  void params.parent
+    .submit("", { displayUserMessage: null })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message === "Session submit hook is not installed") return;
+      emitWarning(
+        params.parent.eventLog,
+        params.parent.nextInternalSubId(),
+        "subagent_followup_turn_failed",
+        `subagent ${params.live.agentPath} could not start parent follow-up turn: ${message}`,
+      );
+    });
 }
 
 function parentAgentPathFor(agentPath: string): string {

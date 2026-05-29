@@ -657,6 +657,9 @@ export class AgentControl {
         direction: "up",
         metadata: { kind: "inter_agent_communication" },
       });
+      if (communication.triggerTurn) {
+        this.requestRootFollowupTurn(communication.author);
+      }
       return;
     }
     const agent = this.requireLive(threadId);
@@ -1283,7 +1286,7 @@ export class AgentControl {
         author: child.agentPath,
         recipient: parentAgentPath,
         content: message,
-        triggerTurn: false,
+        triggerTurn: true,
       });
     } catch (err) {
       if (err instanceof ThreadNotFoundError || err instanceof MailboxClosedError) {
@@ -1355,6 +1358,25 @@ export class AgentControl {
         finalStatus: notification.finalStatus,
       },
     });
+  }
+
+  private requestRootFollowupTurn(author: string): void {
+    const submit = (this.session as unknown as {
+      readonly submit?: Session["submit"];
+    }).submit;
+    if (typeof submit !== "function") return;
+    void submit
+      .call(this.session, "", { displayUserMessage: null })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message === "Session submit hook is not installed") return;
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "subagent_followup_turn_failed",
+          `subagent ${author} could not start root follow-up turn: ${message}`,
+        );
+      });
   }
 
   private emitCompletionWatcherSendFailed(parentId: ThreadId, err: unknown): void {
