@@ -93,7 +93,6 @@ import { findThinkingTriggerPositions, findUltrareviewTriggerPositions, getRainb
 import { escapeXml } from '../../../utils/xml.js';
 import { findTokenBudgetPositions } from '../../../conversation/token-budget.js';
 
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
@@ -250,10 +249,7 @@ function FastModePicker({
 }
 
 function isUltrareviewEnabled(): boolean {
-  const config = getFeatureValue_CACHED_MAY_BE_STALE<Record<string, unknown> | null>(
-    'agenc_review_bughunter_config',
-    null,
-  );
+  const config: Record<string, unknown> | null = null;
   return config?.enabled === true;
 }
 

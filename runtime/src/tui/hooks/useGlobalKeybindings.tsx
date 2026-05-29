@@ -9,7 +9,6 @@ import { useCallback } from 'react';
 import instances from '../ink/instances.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import type { Screen } from '../types/screen.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook';
 import { useAppState, useSetAppState } from '../state/AppState.js';
 import { count } from '../../utils/array.js';
 import { getTerminalPanel } from '../../utils/terminalPanel.js';
@@ -187,7 +186,7 @@ export function GlobalKeybindingHandlers({
   // toggle() blocks in spawnSync until the user detaches from tmux.
   const handleToggleTerminal = useCallback(() => {
     if (feature('TERMINAL_PANEL')) {
-      if (!getFeatureValue_CACHED_MAY_BE_STALE('agenc_terminal_panel', false)) {
+      if (!false) {
         return;
       }
       getTerminalPanel().toggle();

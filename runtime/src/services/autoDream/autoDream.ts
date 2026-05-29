@@ -22,7 +22,6 @@ import {
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/index.js'
 import { isAutoDreamEnabled } from './config.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
@@ -70,11 +69,7 @@ const DEFAULTS: AutoDreamConfig = {
  * per-field validation since GB cache can return stale wrong-type values.
  */
 function getConfig(): AutoDreamConfig {
-  const raw =
-    getFeatureValue_CACHED_MAY_BE_STALE<Partial<AutoDreamConfig> | null>(
-      'tengu_onyx_plover',
-      null,
-    )
+  const raw: Partial<AutoDreamConfig> | null = null
   return {
     minHours:
       typeof raw?.minHours === 'number' &&

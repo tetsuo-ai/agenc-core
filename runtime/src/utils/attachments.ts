@@ -194,7 +194,6 @@ import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
 } from '../services/compact/autoCompact.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   hasInstructionsLoadedHook,
   executeInstructionsLoadedHooks,
@@ -1771,10 +1770,7 @@ async function getNestedMemoryAttachmentsForFile(
       originalCwd,
     )
 
-    const skipProjectLevel = getFeatureValue_CACHED_MAY_BE_STALE(
-      'tengu_paper_halyard',
-      false,
-    )
+    const skipProjectLevel = false
 
     // Phase 3: Process nested directories (CWD → target)
     // Each directory gets: AGENC.md + unconditional rules + conditional rules
@@ -2363,10 +2359,7 @@ export function startRelevantMemoryPrefetch(
   messages: ReadonlyArray<Message>,
   toolUseContext: ToolUseContext,
 ): MemoryPrefetch | undefined {
-  if (
-    !isAutoMemoryEnabled() ||
-    !getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false)
-  ) {
+  if (!isAutoMemoryEnabled() || true) {
     return undefined
   }
 
@@ -2375,7 +2368,7 @@ export function startRelevantMemoryPrefetch(
     return undefined
   }
 
-  const input = getUserMessageText(lastUserMessage)
+  const input = getUserMessageText(lastUserMessage) ?? ''
   // Single-word prompts lack enough context for meaningful term extraction
   if (!input || !/\s/.test(input.trim())) {
     return undefined
@@ -3922,7 +3915,7 @@ export function getCompactionReminderAttachment(
   messages: Message[],
   model: string,
 ): Attachment[] {
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_marble_fox', false)) {
+  if (!false) {
     return []
   }
 

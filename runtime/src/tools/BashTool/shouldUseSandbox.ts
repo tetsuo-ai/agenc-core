@@ -1,5 +1,4 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
@@ -21,10 +20,7 @@ type SandboxInput = {
 // system (which prompts users) is the actual security control.
 function containsExcludedCommand(command: string): boolean {
   // Check dynamic config for disabled commands and substrings
-  const raw = getFeatureValue_CACHED_MAY_BE_STALE<{
-    commands: string[]
-    substrings: string[]
-  }>('tengu_sandbox_disabled_commands', { commands: [], substrings: [] })
+  const raw = { commands: [], substrings: [] }
 
   const disabledCommands =
     typeof raw === 'object' && raw !== null

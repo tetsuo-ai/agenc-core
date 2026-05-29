@@ -7,7 +7,6 @@
  */
 
 import memoize from 'lodash-es/memoize.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import type { Tool } from '../tools/Tool.js'
 import {
   type ToolPermissionContext,
@@ -203,18 +202,7 @@ const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = ['haiku']
  * Can be configured via GrowthBook for live updates without code changes.
  */
 function getUnsupportedToolReferencePatterns(): string[] {
-  try {
-    // Try to get from GrowthBook for live configuration
-    const patterns = getFeatureValue_CACHED_MAY_BE_STALE<string[] | null>(
-      'tengu_tool_search_unsupported_models',
-      null,
-    )
-    if (patterns && Array.isArray(patterns) && patterns.length > 0) {
-      return patterns
-    }
-  } catch {
-    // GrowthBook not ready, use defaults
-  }
+  // Open-build: no GrowthBook override for this list; always the defaults.
   return DEFAULT_UNSUPPORTED_MODEL_PATTERNS
 }
 
@@ -590,10 +578,7 @@ export type DeferredToolsDeltaScanContext = {
  * header prepend (the attachment does not fire).
  */
 export function isDeferredToolsDeltaEnabled(): boolean {
-  return (
-    process.env.USER_TYPE === 'ant' ||
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_glacier_2xr', false)
-  )
+  return process.env.USER_TYPE === 'ant' || false
 }
 
 /**

@@ -5,7 +5,6 @@ const state = vi.hoisted(() => ({
   featureFlags: new Set<string>(),
   getKairosActive: vi.fn(() => false),
   getUserMsgOptIn: vi.fn(() => false),
-  growthbookValue: false,
   isBriefOnly: false,
   logError: vi.fn(),
   viewingAgentTaskId: null as string | null,
@@ -19,10 +18,6 @@ vi.mock('../../../src/bootstrap/state', async importOriginal => ({
   ...(await importOriginal<typeof import('../../../src/bootstrap/state')>()),
   getKairosActive: () => state.getKairosActive(),
   getUserMsgOptIn: () => state.getUserMsgOptIn(),
-}))
-
-vi.mock('../../../src/services/analytics/growthbook', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => state.growthbookValue,
 }))
 
 vi.mock('../../../src/tui/state/AppState.js', () => ({
@@ -105,7 +100,6 @@ function resetState(): void {
   state.featureFlags.clear()
   state.getKairosActive.mockReturnValue(false)
   state.getUserMsgOptIn.mockReturnValue(false)
-  state.growthbookValue = false
   state.isBriefOnly = false
   state.logError.mockClear()
   state.viewingAgentTaskId = null
@@ -195,9 +189,12 @@ describe('UserPromptMessage swarm 114 coverage', () => {
   })
 
   test('uses brief layout only when feature, state, opt-in, and view gates allow it', async () => {
+    // The opt-in branch now reads getUserMsgOptIn() together with the
+    // AGENC_BRIEF env flag; the growthbook driver that used to gate this is
+    // inlined out of the open build.
     state.featureFlags.add('KAIROS_BRIEF')
     state.getUserMsgOptIn.mockReturnValue(true)
-    state.growthbookValue = true
+    process.env.AGENC_BRIEF = '1'
     state.isBriefOnly = true
 
     await expect(

@@ -1,9 +1,5 @@
 import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
-import {
-  checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-} from 'src/services/analytics/growthbook.js'
 import { getIsNonInteractiveSession, getSdkBetas } from '../bootstrap/state.js'
 import {
   BEDROCK_EXTRA_PARAMS_HEADERS,
@@ -170,9 +166,7 @@ export function modelSupportsAutoMode(model: string): boolean {
     // auto mode for listed models, bypassing the denylist/allowlist below.
     // Exact model IDs (e.g. "agenc-strudel-v6-p") match only that model;
     // canonical names (e.g. "agenc-strudel") match the whole family.
-    const config = getFeatureValue_CACHED_MAY_BE_STALE<{
-      allowModels?: string[]
-    }>('tengu_auto_mode_config', {})
+    const config: { allowModels?: string[] } = {}
     const rawLower = model.toLowerCase()
     if (
       config?.allowModels?.some(
@@ -291,8 +285,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
     process.env.USER_TYPE === 'ant' &&
     includeFirstPartyOnlyBetas &&
     !isEnvDefinedFalsy(process.env.USE_CONNECTOR_TEXT_SUMMARIZATION) &&
-    (isEnvTruthy(process.env.USE_CONNECTOR_TEXT_SUMMARIZATION) ||
-      getFeatureValue_CACHED_MAY_BE_STALE('tengu_slate_prism', false))
+    (isEnvTruthy(process.env.USE_CONNECTOR_TEXT_SUMMARIZATION) || false)
   ) {
     betaHeaders.push(SUMMARIZE_CONNECTOR_TEXT_BETA_HEADER)
   }
@@ -316,13 +309,10 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   // this header was escaping that kill switch. Proxy gateways that look like
   // firstParty but forward to Vertex reject this header with 400.
   // github.com/deshaw/anthropic-issues/issues/5
-  const strictToolsEnabled =
-    checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_tool_pear')
+  const strictToolsEnabled = false
   // 3P default: false. API rejects strict + token-efficient-tools together
   // (tool_use.py:139), so these are mutually exclusive — strict wins.
-  const tokenEfficientToolsEnabled =
-    !strictToolsEnabled &&
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_amber_json_tools', false)
+  const tokenEfficientToolsEnabled = !strictToolsEnabled && false
   if (
     includeFirstPartyOnlyBetas &&
     modelSupportsStructuredOutputs(model) &&

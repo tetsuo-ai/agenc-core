@@ -18,8 +18,6 @@ import {
   type MemoryFileInfo,
 } from "./index.js";
 
-const featureFlags = vi.hoisted(() => new Map<string, unknown>());
-
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 vi.mock("../utils/hooks.js", () => ({
   executeInstructionsLoadedHooks: async () => undefined,
@@ -30,10 +28,6 @@ vi.mock("../utils/settings/settings.js", () => ({
 }));
 vi.mock("../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));
-vi.mock("../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: <T>(key: string, fallback: T) =>
-    featureFlags.has(key) ? (featureFlags.get(key) as T) : fallback,
-}));
 vi.mock("../utils/model/model.js", () => ({
   getDefaultSonnetModel: () => "sonnet-test",
 }));
@@ -45,7 +39,6 @@ let tempDir = "";
 
 afterEach(async () => {
   vi.useRealTimers();
-  featureFlags.clear();
   vi.mocked(sideQuery).mockReset();
   if (tempDir) {
     await rm(tempDir, { recursive: true, force: true });
@@ -114,14 +107,12 @@ describe("memory public access surface", () => {
       { path: "/memory/team.md", type: "TeamMem", content: "team" },
     ];
 
-    expect(filterInjectedMemoryFiles(files)).toBe(files);
-
-    featureFlags.set("tengu_moth_copse", true);
+    // The MEMORY.md-index skip is inlined off in the open build, so the public
+    // surface always returns every memory file untouched, matching the
+    // canonical loader helper exactly.
     const canonical = await import("./agencmd.js");
 
-    expect(filterInjectedMemoryFiles(files)).toEqual([
-      { path: "/memory/project.md", type: "Project", content: "project" },
-    ]);
+    expect(filterInjectedMemoryFiles(files)).toBe(files);
     expect(filterInjectedMemoryFiles(files)).toEqual(
       canonical.filterInjectedMemoryFiles(files),
     );

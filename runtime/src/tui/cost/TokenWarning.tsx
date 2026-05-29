@@ -2,7 +2,6 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { Box, Text } from '../ink.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../services/compact/autoCompact.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
 import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js';
@@ -30,7 +29,7 @@ export function TokenWarning({
   let reactiveOnlyMode = false;
   let collapseMode = false;
   if (feature("REACTIVE_COMPACT")) {
-    if (getFeatureValue_CACHED_MAY_BE_STALE("agenc_cobalt_raccoon", false)) {
+    if (false) {
       reactiveOnlyMode = true;
     }
   }

@@ -14,7 +14,6 @@
  * tool-result while truncation yields ~25K tokens of content at the cap.
  */
 import memoize from 'lodash-es/memoize.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
 const DEFAULT_MAX_OUTPUT_TOKENS = 25000
 /**
@@ -51,11 +50,7 @@ export type FileReadingLimits = {
  * through to the hardcoded defaults (no route to cap=0).
  */
 export const getDefaultFileReadingLimits = memoize((): FileReadingLimits => {
-  const override =
-    getFeatureValue_CACHED_MAY_BE_STALE<Partial<FileReadingLimits> | null>(
-      'tengu_amber_wren',
-      {},
-    )
+  const override: Partial<FileReadingLimits> | null = {}
 
   const maxSizeBytes =
     typeof override?.maxSizeBytes === 'number' &&

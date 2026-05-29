@@ -11,7 +11,6 @@ import {
   MAX_TOOL_RESULT_BYTES,
   MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
 } from '../constants/toolLimits.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getErrnoCode, toError } from './errors.js'
@@ -29,15 +28,6 @@ export const PERSISTED_OUTPUT_CLOSING_TAG = '</persisted-output>'
 
 // Message used when tool result content was cleared without persisting to file
 export const TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]'
-
-/**
- * GrowthBook override map: tool name -> persistence threshold (chars).
- * When a tool name is present in this map, that value is used directly as the
- * effective threshold, bypassing the Math.min() clamp against the 50k default.
- * Tools absent from the map use the hardcoded fallback.
- * Flag default is {} (no overrides == behavior unchanged).
- */
-const PERSIST_THRESHOLD_OVERRIDE_FLAG = 'tengu_satin_quoll'
 
 /**
  * Resolve the effective persistence threshold for a tool.
@@ -59,10 +49,7 @@ export function getPersistenceThreshold(
   if (!Number.isFinite(declaredMaxResultSizeChars)) {
     return declaredMaxResultSizeChars
   }
-  const overrides = getFeatureValue_CACHED_MAY_BE_STALE<Record<
-    string,
-    number
-  > | null>(PERSIST_THRESHOLD_OVERRIDE_FLAG, {})
+  const overrides: Record<string, number> | null = {}
   const override = overrides?.[toolName]
   if (
     typeof override === 'number' &&
@@ -403,10 +390,7 @@ export function cloneContentReplacementState(
  * so a flag served as null/string/NaN leaks through.
  */
 export function getPerMessageBudgetLimit(): number {
-  const override = getFeatureValue_CACHED_MAY_BE_STALE<number | null>(
-    'tengu_hawthorn_window',
-    null,
-  )
+  const override: number | null = null
   if (
     typeof override === 'number' &&
     Number.isFinite(override) &&
@@ -432,10 +416,7 @@ export function provisionContentReplacementState(
   initialMessages?: Message[],
   initialContentReplacements?: ContentReplacementRecord[],
 ): ContentReplacementState | undefined {
-  const enabled = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_hawthorn_steeple',
-    false,
-  )
+  const enabled = false
   if (!enabled) return undefined
   if (initialMessages) {
     return reconstructContentReplacementState(

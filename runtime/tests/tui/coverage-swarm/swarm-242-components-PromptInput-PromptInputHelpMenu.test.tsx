@@ -6,7 +6,6 @@ import { renderToString } from "../../../src/utils/staticRender.js";
 
 const harness = vi.hoisted(() => ({
   featureEnabled: false,
-  getFeatureValue: vi.fn((_key: string, fallback: boolean) => fallback),
   platform: "linux",
   shortcuts: new Map<string, string>(),
 }));
@@ -24,10 +23,6 @@ vi.mock("../../../src/tui/keybindings/loadUserBindings.js", () => ({
   isKeybindingCustomizationEnabled: () => false,
 }));
 
-vi.mock("../../../src/services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: harness.getFeatureValue,
-}));
-
 vi.mock("../../../src/utils/fastMode.js", () => ({
   isFastModeAvailable: () => false,
   isFastModeEnabled: () => false,
@@ -41,10 +36,6 @@ beforeEach(() => {
   harness.featureEnabled = false;
   harness.platform = "linux";
   harness.shortcuts.clear();
-  harness.getFeatureValue.mockReset();
-  harness.getFeatureValue.mockImplementation(
-    (_key: string, fallback: boolean) => fallback,
-  );
 });
 
 async function renderHelpMenu(): Promise<string> {
@@ -55,33 +46,25 @@ async function renderHelpMenu(): Promise<string> {
 }
 
 describe("PromptInputHelpMenu coverage swarm row 242", () => {
-  test("renders the terminal panel shortcut when both rollout gates are enabled", async () => {
+  test("never renders the terminal panel shortcut in open builds", async () => {
+    // The terminal panel rollout is permanently disabled in open builds, so
+    // the terminal shortcut row is always null even when the build-time
+    // TERMINAL_PANEL feature is on and a binding is configured.
     harness.featureEnabled = true;
-    harness.platform = "windows";
     harness.shortcuts.set("app:toggleTerminal", "meta+shift+j");
-    harness.getFeatureValue.mockReturnValue(true);
-
-    const output = await renderHelpMenu();
-
-    expect(output).toContain("meta + shift + j for terminal");
-    expect(output).not.toContain("ctrl + z to suspend");
-    expect(harness.getFeatureValue).toHaveBeenCalledWith(
-      "agenc_terminal_panel",
-      false,
-    );
-  });
-
-  test("keeps the terminal shortcut hidden when the rollout value is false", async () => {
-    harness.featureEnabled = true;
-    harness.getFeatureValue.mockReturnValue(false);
 
     const output = await renderHelpMenu();
 
     expect(output).not.toContain("for terminal");
     expect(output).toContain("ctrl + z to suspend");
-    expect(harness.getFeatureValue).toHaveBeenCalledWith(
-      "agenc_terminal_panel",
-      false,
-    );
+  });
+
+  test("hides the suspend hint on windows", async () => {
+    harness.platform = "windows";
+
+    const output = await renderHelpMenu();
+
+    expect(output).not.toContain("for terminal");
+    expect(output).not.toContain("ctrl + z to suspend");
   });
 });

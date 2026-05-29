@@ -1,4 +1,3 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AgenCCodeHint,
   hasShownHintThisSession,
@@ -56,7 +55,7 @@ export type PluginHintRecommendation = {
  * later in resolvePluginHint (hook side).
  */
 export function maybeRecordPluginHint(hint: AgenCCodeHint): void {
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_lapis_finch', false)) return
+  if (!false) return
   if (hasShownHintThisSession()) return
 
   const state = readHintState(getGlobalConfig() as HintConfigShape)

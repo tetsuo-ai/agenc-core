@@ -13,7 +13,6 @@ import {
   getSessionId,
   setLastClassifierRequests,
 } from '../../bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getCacheControl } from '../../services/api/anthropic.js'
 import { parsePromptTooLongTokenCounts } from '../../services/api/errors.js'
 import { getDefaultMaxRetries } from '../../services/api/withRetry.js'
@@ -90,10 +89,7 @@ const MAX_CLASSIFIER_BLOCK_VALUE_CHARS = 32_000
 
 function isUsingExternalPermissions(): boolean {
   if (process.env.USER_TYPE !== 'ant') return true
-  const config = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_auto_mode_config',
-    {} as AutoModeConfig,
-  )
+  const config = {} as AutoModeConfig
   return config?.forceExternalPermissions === true
 }
 
@@ -1403,10 +1399,7 @@ function getClassifierModel(): string {
     const envModel = process.env.AGENC_AUTO_MODE_MODEL
     if (envModel) return envModel
   }
-  const config = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_auto_mode_config',
-    {} as AutoModeConfig,
-  )
+  const config = {} as AutoModeConfig
   if (config?.model) {
     return config.model
   }
@@ -1428,10 +1421,7 @@ function resolveTwoStageClassifier():
     if (isEnvTruthy(env)) return true
     if (isEnvDefinedFalsy(env)) return false
   }
-  const config = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_auto_mode_config',
-    {} as AutoModeConfig,
-  )
+  const config = {} as AutoModeConfig
   return config?.twoStageClassifier
 }
 
@@ -1449,10 +1439,7 @@ function isJsonlTranscriptEnabled(): boolean {
     if (isEnvTruthy(env)) return true
     if (isEnvDefinedFalsy(env)) return false
   }
-  const config = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_auto_mode_config',
-    {} as AutoModeConfig,
-  )
+  const config = {} as AutoModeConfig
   return config?.jsonlTranscript === true
 }
 

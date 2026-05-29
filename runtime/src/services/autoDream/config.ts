@@ -3,7 +3,6 @@
 // agent / task registry / message builder chain that autoDream.ts pulls in.
 
 import { getInitialSettings } from '../../utils/settings/settings.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 
 /**
  * Whether background memory consolidation should run. User setting
@@ -13,9 +12,6 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 export function isAutoDreamEnabled(): boolean {
   const setting = getInitialSettings().autoDreamEnabled
   if (setting !== undefined) return setting
-  const gb = getFeatureValue_CACHED_MAY_BE_STALE<{ enabled?: unknown } | null>(
-    'tengu_onyx_plover',
-    null,
-  )
-  return gb?.enabled === true
+  // Open-build: no GrowthBook auto-dream config; defaults to off.
+  return false
 }
