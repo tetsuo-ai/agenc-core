@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { disableKeepAlive, getProxyFetchOptions } from '../../utils/proxy.js'
 
 const RETRYABLE_FETCH_ERROR_PATTERN =
@@ -28,7 +26,7 @@ export async function fetchWithProxyRetry(
       return await fetch(input, {
         ...init,
         ...getProxyFetchOptions({
-          forproviderAPI: options?.forproviderAPI,
+          forAnthropicAPI: options?.forproviderAPI,
         }),
       })
     } catch (error) {

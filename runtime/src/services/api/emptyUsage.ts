@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { NonNullableUsage } from '../../entrypoints/sdk/sdkUtilityTypes.js'
 /**
  * Zero-initialized usage object. Extracted from logging.ts so that
