@@ -34,6 +34,21 @@
           "runtime/src/services/api/openaiShim.ts:1405"
         ]
       }
+    },
+    {
+      "id": "provider-shim-focused-scan-2026-05-29",
+      "commands": [
+        "rg -n \"catch \\\\{\\\\s*\\\\}|catch \\\\([^)]*\\\\) \\\\{\\\\s*\\\\}\" runtime/src --glob '!**/dist/**' --glob '!**/node_modules/**'",
+        "npm --workspace=@tetsuo-ai/runtime run typecheck",
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/services/api/openaiShim.test.ts tests/services/api/openaiShim.diagnostics.test.ts tests/services/api/openaiShim.compression.test.ts --exclude ''",
+        "bun test --preload ./tests/setup/bun-test-resolver.ts tests/services/api/openaiShim.test.ts tests/services/api/openaiShim.diagnostics.test.ts tests/services/api/openaiShim.compression.test.ts"
+      ],
+      "results": {
+        "silentCatchCandidates": 0,
+        "typecheck": "passed",
+        "vitestAttempt": "not a valid targeted OpenAI shim run because these Bun test files are excluded by vitest.config.ts; the command ran the broader Vitest suite and passed 1258 files with 2 skipped files, 10286 tests with 10 skipped tests",
+        "bunOpenAiShim": "failed: the Bun preload resolver produced ENOENT for file:/.../runtime/src/services/api/openaiShim.ts, query imports in openaiShim.diagnostics.test.ts did not resolve, and openaiShim.compression.test.ts had two failing compression assertions"
+      }
     }
   ],
   "globalValidationCommands": [
@@ -217,7 +232,10 @@
         "npm --workspace=@tetsuo-ai/runtime test -- tests/llm tests/services/api tests/auth tests/config tests/commands/provider.test.ts"
       ],
       "status": "audit-required",
-      "fixesNeeded": []
+      "fixesNeeded": [
+        "Fix the Bun test resolver or harness so tests/services/api/openaiShim*.test.ts run against runtime/src/services/api/openaiShim.ts, including cache-busting query imports.",
+        "Investigate and fix the two openaiShim.compression.test.ts assertion failures seen under the Bun harness."
+      ]
     },
     {
       "id": "persistence-rollout-resume-background",
@@ -305,8 +323,7 @@
       "fixesNeeded": [
         "Triage why the full coverage command exits with code -1 and leaves only partial V8 temp files.",
         "Classify the 1019 incomplete-marker matches into test fixture text, historical comments, and real implementation debt.",
-        "Triage the 7 skipped-or-todo test matches and record which are platform guards versus real coverage gaps.",
-        "Inspect the two silent catch candidates in runtime/src/services/api/openaiShim.ts and either justify or fix them with tests."
+        "Triage the 7 skipped-or-todo test matches and record which are platform guards versus real coverage gaps."
       ]
     }
   ]
