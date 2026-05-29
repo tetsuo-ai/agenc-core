@@ -58,7 +58,7 @@ async function importFreshWithRetryModule(
     getAPIProvider: () => provider,
     getAPIProviderForStatsig: () => provider,
   }))
-  return import(`./withRetry.js?ts=${Date.now()}-${Math.random()}`)
+  return import(`../../../src/services/api/withRetry.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 // --- parseOpenAiDuration ---

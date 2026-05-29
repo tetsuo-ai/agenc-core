@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { _resetKeepAliveForTesting } from '../../../../utils/proxy.js'
+import { _resetKeepAliveForTesting } from '../../../src/utils/proxy.ts'
 import {
   fetchWithProxyRetry,
   isRetryableFetchError,
-} from './fetchWithProxyRetry.js'
+} from '../../../src/services/api/fetchWithProxyRetry.ts'
 
 type FetchType = typeof globalThis.fetch
 

@@ -60,6 +60,19 @@
         "openAiShimAndCompressionSubset": "passed: 115 tests across 4 files",
         "allServicesApiBunSubset": "failed: 356 passed, 58 failed, 1 error across 21 files; remaining failures are concentrated in stale moved-source query imports for client/providerConfig/withRetry/openAiCodeTransform, ProviderCode provider config expectations, and secure-storage tests timing out"
       }
+    },
+    {
+      "id": "provider-api-bun-subset-fixed-2026-05-29",
+      "commands": [
+        "bun test $(rg -l \"from 'bun:test'|from \\\"bun:test\\\"\" tests/services/api --glob '*.test.ts')",
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/tool-history-compression.contract.test.ts",
+        "npm --workspace=@tetsuo-ai/runtime run typecheck"
+      ],
+      "results": {
+        "allServicesApiBunSubset": "passed: 416 tests across 21 files",
+        "toolHistoryVitestContract": "passed: 5 tests",
+        "typecheck": "passed"
+      }
     }
   ],
   "globalValidationCommands": [
@@ -240,13 +253,11 @@
         "service tier validation fails before spawning child work"
       ],
       "validationCommands": [
-        "npm --workspace=@tetsuo-ai/runtime test -- tests/llm tests/services/api tests/auth tests/config tests/commands/provider.test.ts"
+        "npm --workspace=@tetsuo-ai/runtime test -- tests/llm tests/services/api tests/auth tests/config tests/commands/provider.test.ts",
+        "cd runtime && bun test $(rg -l \"from 'bun:test'|from \\\"bun:test\\\"\" tests/services/api --glob '*.test.ts')"
       ],
       "status": "audit-required",
-      "fixesNeeded": [
-        "Fix or replace the moved-test Bun resolver for the remaining tests/services/api Bun tests that still dynamic-import stale local moved-source paths with cache-busting query strings.",
-        "Triage and fix the remaining ProviderCode provider-config failures and secure-storage timeouts in the tests/services/api Bun subset."
-      ]
+      "fixesNeeded": []
     },
     {
       "id": "persistence-rollout-resume-background",

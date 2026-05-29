@@ -41,7 +41,7 @@ test('logs a warning when OPENAI_BASE_URL is literal undefined', async () => {
   delete process.env.OPENAI_API_BASE
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { resolveProviderRequest } = await import(`./providerConfig.ts?ts=${nonce}`)
+  const { resolveProviderRequest } = await import(`../../../src/services/api/providerConfig.ts?ts=${nonce}`)
 
   const resolved = resolveProviderRequest()
 
@@ -70,7 +70,7 @@ test('does not warn for OPENAI_API_BASE when OPENAI_BASE_URL is active', async (
   process.env.OPENAI_API_BASE = 'undefined'
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { resolveProviderRequest } = await import(`./providerConfig.ts?ts=${nonce}`)
+  const { resolveProviderRequest } = await import(`../../../src/services/api/providerConfig.ts?ts=${nonce}`)
 
   const resolved = resolveProviderRequest()
 
@@ -98,7 +98,7 @@ test('uses OPENAI_API_BASE as fallback in mistral mode when MISTRAL_BASE_URL is 
   process.env.OPENAI_API_BASE = 'http://127.0.0.1:11434/v1'
 
   const nonce = `${Date.now()}-${Math.random()}`
-  const { resolveProviderRequest } = await import(`./providerConfig.ts?ts=${nonce}`)
+  const { resolveProviderRequest } = await import(`../../../src/services/api/providerConfig.ts?ts=${nonce}`)
 
   const resolved = resolveProviderRequest()
 

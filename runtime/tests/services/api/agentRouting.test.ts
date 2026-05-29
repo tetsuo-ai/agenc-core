@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { resolveAgentProvider } from './agentRouting.js'
+import { resolveAgentProvider } from '../../../src/services/api/agentRouting.ts'
 import type { SettingsJson } from '../../../../utils/settings/types.js'
 
 const baseSettings = {

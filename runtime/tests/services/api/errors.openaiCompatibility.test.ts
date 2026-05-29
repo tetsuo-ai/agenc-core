@@ -1,7 +1,7 @@
 import { APIError } from '@anthropic-ai/sdk'
 import { expect, test } from 'bun:test'
 
-import { getAssistantMessageFromError } from './errors.js'
+import { getAssistantMessageFromError } from '../../../src/services/api/errors.ts'
 
 function getFirstText(message: ReturnType<typeof getAssistantMessageFromError>): string {
   const first = message.message.content[0]

@@ -32,7 +32,7 @@ const PROVIDER_CODE_ALIAS_MODELS: Record<
     reasoningEffort?: ReasoningEffort
   }
 > = {
-  providerCodeplan: {
+  providercodeplan: {
     model: 'gpt-5.5',
     reasoningEffort: 'high',
   },
@@ -44,25 +44,25 @@ const PROVIDER_CODE_ALIAS_MODELS: Record<
     model: 'gpt-5.4',
     reasoningEffort: 'high',
   },
-  'gpt-5.3-providerCode': {
+  'gpt-5.3-providercode': {
     model: 'gpt-5.3-providerCode',
     reasoningEffort: 'high',
   },
-  'gpt-5.3-providerCode-spark': {
+  'gpt-5.3-providercode-spark': {
     model: 'gpt-5.3-providerCode-spark',
   },
-  providerCodespark: {
+  providercodespark: {
     model: 'gpt-5.3-providerCode-spark',
   },
-  'gpt-5.2-providerCode': {
+  'gpt-5.2-providercode': {
     model: 'gpt-5.2-providerCode',
     reasoningEffort: 'high',
   },
-  'gpt-5.1-providerCode-max': {
+  'gpt-5.1-providercode-max': {
     model: 'gpt-5.1-providerCode-max',
     reasoningEffort: 'high',
   },
-  'gpt-5.1-providerCode-mini': {
+  'gpt-5.1-providercode-mini': {
     model: 'gpt-5.1-providerCode-mini',
   },
   'gpt-5.5-mini': {
@@ -82,7 +82,7 @@ const PROVIDER_CODE_ALIAS_MODELS: Record<
 type ProviderCodeAlias = keyof typeof PROVIDER_CODE_ALIAS_MODELS
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
-const OPENAI_PROVIDER_CODE_SHORTCUT_ALIASES = new Set(['providerCodeplan', 'providerCodespark'])
+const OPENAI_PROVIDER_CODE_SHORTCUT_ALIASES = new Set(['providercodeplan', 'providercodespark'])
 
 export type ProviderTransport = 'chat_completions' | 'responses' | 'providerCode_responses'
 export type OpenAiCompatibleApiFormat = 'chat_completions' | 'responses'
@@ -290,7 +290,7 @@ function shouldUseGithubResponsesApi(model: string): boolean {
   const normalized = model.trim().toLowerCase()
 
   // ProviderCode-branded models require /responses.
-  if (normalized.includes('providerCode')) return true
+  if (normalized.includes('providercode')) return true
 
   // GPT-5+ models use /responses, except gpt-5-mini.
   const match = /^gpt-(\d+)/.exec(normalized)
@@ -932,7 +932,7 @@ export function supportsProviderCodeReasoningEffort(model: string): boolean {
   const normalized = model.trim().toLowerCase()
   const base = normalized.split('?', 1)[0] ?? normalized
 
-  if (base === 'gpt-5.3-providerCode-spark' || base === 'providerCodespark') {
+  if (base === 'gpt-5.3-providercode-spark' || base === 'providercodespark') {
     return false
   }
 

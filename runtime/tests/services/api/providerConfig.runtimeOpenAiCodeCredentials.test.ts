@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { resolveRuntimeOpenAiCodeCredentials } from './providerConfig.js'
+import { resolveRuntimeOpenAiCodeCredentials } from '../../../src/services/api/providerConfig.ts'
 
 afterEach(() => {
   mock.restore()
@@ -79,9 +79,9 @@ test('runtime credential resolution preserves an explicit auth.json path even wh
 test('runtime credential resolution avoids sync secure-storage reads when async credentials are provided', async () => {
   let syncReadCalled = false
 
-  mock.module('../../utils/providerCodeCredentials.js', () => ({
-    isProviderCodeRefreshFailureCoolingDown: () => false,
-    readProviderCodeCredentials: () => {
+  mock.module('../../../src/utils/agencCredentials.ts', () => ({
+    isAgencRefreshFailureCoolingDown: () => false,
+    readAgencCredentials: () => {
       syncReadCalled = true
       throw new Error('sync secure-storage read should not run in runtime resolution')
     },
@@ -89,7 +89,7 @@ test('runtime credential resolution avoids sync secure-storage reads when async 
 
   // @ts-expect-error cache-busting query string for Bun module mocks
   const { resolveRuntimeOpenAiCodeCredentials } = await import(
-    './providerConfig.js?runtime-no-sync-secure-storage'
+    '../../../src/services/api/providerConfig.ts?runtime-no-sync-secure-storage'
   )
 
   const credentials = resolveRuntimeOpenAiCodeCredentials({

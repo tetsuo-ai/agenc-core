@@ -17,9 +17,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
   })
 
   test('loads ProviderCode credentials from AgenC secure storage', async () => {
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => false,
-      readProviderCodeCredentials: () => ({
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => ({
         apiKey: 'providerCode-api-key-token',
         accessToken: 'header.payload.signature',
         accountId: 'acct_secure',
@@ -28,7 +28,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { resolveProviderCodeApiCredentials } = await import(
-      './providerConfig.js?providerCode-secure-storage'
+      '../../../src/services/api/providerConfig.ts?providerCode-secure-storage'
     )
 
     const credentials = resolveProviderCodeApiCredentials({} as NodeJS.ProcessEnv)
@@ -38,9 +38,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
   })
 
   test('prefers explicit env credentials over secure storage', async () => {
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => false,
-      readProviderCodeCredentials: () => ({
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => ({
         accessToken: 'stored-token',
         accountId: 'acct_stored',
       }),
@@ -48,7 +48,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { resolveProviderCodeApiCredentials } = await import(
-      './providerConfig.js?providerCode-env-precedence'
+      '../../../src/services/api/providerConfig.ts?providerCode-env-precedence'
     )
 
     const credentials = resolveProviderCodeApiCredentials({
@@ -62,14 +62,14 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
   })
 
   test('parses nested chatgpt_account_id from a PROVIDER_CODE_API_KEY JWT', async () => {
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => false,
-      readProviderCodeCredentials: () => undefined,
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => undefined,
     }))
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { resolveProviderCodeApiCredentials } = await import(
-      './providerConfig.js?providerCode-env-nested-account'
+      '../../../src/services/api/providerConfig.ts?providerCode-env-nested-account'
     )
 
     const credentials = resolveProviderCodeApiCredentials({
@@ -85,9 +85,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
   })
 
   test('parses nested chatgpt_account_id from auth.json tokens', async () => {
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => false,
-      readProviderCodeCredentials: () => undefined,
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => undefined,
     }))
 
     const tempDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-auth-'))
@@ -108,7 +108,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
     try {
       // @ts-expect-error cache-busting query string for Bun module mocks
       const { resolveProviderCodeApiCredentials } = await import(
-        './providerConfig.js?providerCode-auth-json-nested-account'
+        '../../../src/services/api/providerConfig.ts?providerCode-auth-json-nested-account'
       )
 
       const credentials = resolveProviderCodeApiCredentials({
@@ -123,9 +123,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
   })
 
   test('does not read default auth.json when secure storage already has ProviderCode credentials', async () => {
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => false,
-      readProviderCodeCredentials: () => ({
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => ({
         apiKey: 'providerCode-api-key-token',
         accessToken: 'header.payload.signature',
         accountId: 'acct_secure',
@@ -134,7 +134,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { resolveProviderCodeApiCredentials } = await import(
-      './providerConfig.js?providerCode-secure-storage-no-auth-io'
+      '../../../src/services/api/providerConfig.ts?providerCode-secure-storage-no-auth-io'
     )
 
     const credentials = resolveProviderCodeApiCredentials({} as NodeJS.ProcessEnv)
@@ -160,9 +160,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
       homedir: () => tempHomeDir,
     }))
 
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => true,
-      readProviderCodeCredentials: () => ({
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => true,
+      readAgencCredentials: () => ({
         accessToken: 'stored-token',
         refreshToken: 'refresh-stored',
         accountId: 'acct_stored',
@@ -172,7 +172,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { resolveProviderCodeApiCredentials } = await import(
-      './providerConfig.js?providerCode-refresh-cooldown-fallback'
+      '../../../src/services/api/providerConfig.ts?providerCode-refresh-cooldown-fallback'
     )
 
     try {
@@ -198,9 +198,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
       homedir: () => tempHomeDir,
     }))
 
-    mock.module('../../utils/providerCodeCredentials.js', () => ({
-      isProviderCodeRefreshFailureCoolingDown: () => true,
-      readProviderCodeCredentials: () => ({
+    mock.module('../../../src/utils/agencCredentials.ts', () => ({
+      isAgencRefreshFailureCoolingDown: () => true,
+      readAgencCredentials: () => ({
         accessToken: 'stored-token',
         refreshToken: 'refresh-stored',
         accountId: 'acct_stored',
@@ -210,7 +210,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { resolveProviderCodeApiCredentials } = await import(
-      './providerConfig.js?providerCode-refresh-cooldown-account-id-fallback'
+      '../../../src/services/api/providerConfig.ts?providerCode-refresh-cooldown-account-id-fallback'
     )
 
     try {
