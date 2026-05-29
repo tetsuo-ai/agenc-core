@@ -44,6 +44,26 @@ when graceful shutdown does not complete within the configured timeout.
 If the TUI is killed, the PTY gate verifies that descendant Neovim processes are
 gone before the scenario passes.
 
+## Trust boundary
+
+By default (`AGENC_BUFFER_NVIM_USE_INIT=1`, the default), embedded Neovim loads
+your full user configuration — `init.lua`/`init.vim` and any plugins it sources.
+That configuration executes as **your user**, with your privileges, the moment
+BUFFER opens. This is the same trust you already extend to running `nvim`
+yourself, but it is worth calling out explicitly because BUFFER can be opened
+from within an agent session:
+
+- **Interactive use on a workspace you trust:** the default user-init path is
+  expected and convenient.
+- **Unattended / background agents, or untrusted workspaces:** prefer clean
+  embedded mode, which starts `nvim --embed --clean -n` and loads **no** user
+  config or plugins, by setting `AGENC_BUFFER_NVIM_USE_INIT=0`. This removes the
+  arbitrary-code-execution surface of a hostile or unreviewed `init.lua`.
+
+AgenC owns process supervision and lifecycle cleanup (see Cleanup), but it does
+**not** sandbox the Neovim process or vet its configuration — config trust is
+the user's, exactly as with a normal `nvim` invocation.
+
 ## Validation
 
 Use these gates for this surface:

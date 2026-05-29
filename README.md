@@ -80,7 +80,18 @@ agenc agent attach <id>
 agenc agent stop <id>
 agenc agent logs <id>
 agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor|xaa>
+agenc doctor [--json]
 ```
+
+`agenc doctor` diagnoses the installation and environment (version, install
+type, ripgrep status, auto-update permissions, and PATH/glob warnings with
+suggested fixes); `--json` emits the raw diagnostic. For MCP-server-specific
+checks use `agenc mcp doctor`.
+
+The `agenc mcp` subcommands cover MCP server management plus two auth helpers:
+`doctor` (diagnose MCP configuration) and `xaa` (`setup|login|show|clear` for
+Cross-App Access / Enterprise Managed Authorization, SEP-990 — the IdP-brokered
+auth flow used by enterprise-managed MCP servers).
 
 Common flags:
 
@@ -136,6 +147,29 @@ node runtime/bin/agenc agent attach <agent-id>
 node runtime/bin/agenc agent logs <agent-id>
 node runtime/bin/agenc agent stop <agent-id>
 ```
+
+## Workbench & Editing
+
+The interactive TUI includes a **workbench** — a project explorer, a read-only
+code preview surface, and an editable `BUFFER` surface for editing files without
+leaving the terminal. The BUFFER surface supports three editor providers:
+
+- **Embedded Neovim** (preferred): AgenC launches `nvim --embed` and owns its
+  process lifecycle, rendering, and file safety, while Neovim owns Vim
+  semantics. This is the enterprise-grade editing path.
+- **Inline fallback**: a basic built-in editor used only when Neovim is
+  unavailable. It is fallback-only and does not claim exact Vim behavior.
+- **External editor**: explicit handoff to `$VISUAL`/`$EDITOR` (e.g. `nvim`,
+  `vim`, `vi`, `nano`) for users who prefer their own editor.
+
+> Security note: in `auto` mode the embedded-Neovim path loads your full Neovim
+> configuration (`init.lua`) and plugins, which execute as your user. See
+> [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md) for the
+> trust boundary and how to run Neovim isolated under unattended agents.
+
+The embedded-Neovim PTY lifecycle (including the "kill the TUI mid-edit and
+leave no orphaned `nvim` child" guarantee) is exercised by the
+`check:tui-workbench-buffer-neovim` scenario gate, run in CI.
 
 ## Runtime Layout
 
