@@ -3,6 +3,7 @@ import React, { useMemo, type RefObject } from "react";
 
 import { Box, Text } from "../ink.js";
 import { ModalContext } from "../context/modalContext.js";
+import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useKeybindings } from "../keybindings/useKeybinding.js";
@@ -44,8 +45,15 @@ export function WorkbenchLayout({
   const layoutSize = layoutSizeForColumns(columns);
   const focusedPane = visibleWorkbenchPane(workbench);
   const editorOwnsKeys = focusedPane === "surface" && workbench.activeSurfaceMode === "buffer";
+  const explorerWidth = layoutSize === "wide" ? 30 : 26;
+  const agentsWidth = 30;
   const showExplorer = workbench.explorerVisible && layoutSize !== "narrow";
   const showAgents = workbench.agentsVisible && layoutSize === "wide";
+  const surfaceWidth = Math.max(
+    1,
+    columns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0),
+  );
+  const surfaceContentWidth = Math.max(1, surfaceWidth - 2);
   const visiblePanes = useMemo(
     () => visiblePaneList(showExplorer, showAgents),
     [showExplorer, showAgents],
@@ -67,15 +75,14 @@ export function WorkbenchLayout({
     { context: "Workbench", isActive: !editorOwnsKeys },
   );
 
-  const explorerWidth = layoutSize === "wide" ? 30 : 26;
-  const agentsWidth = 30;
-
   return (
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
       {rows >= 8 ? <WorkbenchStatusBar columns={columns} /> : null}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         {showExplorer ? <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} /> : null}
-        <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} />
+        <ContentWidthProvider width={surfaceContentWidth}>
+          <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} />
+        </ContentWidthProvider>
         {showAgents ? <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} /> : null}
       </Box>
       {overlay ? (

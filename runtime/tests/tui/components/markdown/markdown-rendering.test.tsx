@@ -3,6 +3,9 @@ import { marked, type Tokens } from 'marked'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
+import { ContentWidthProvider } from '../../context/contentWidthContext.js'
+import { Box } from '../../ink.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import { HighlightedCode } from './HighlightedCode.js'
 import { HighlightedCodeFallback } from './HighlightedCodeFallback.js'
 import { Markdown } from './Markdown.js'
@@ -108,6 +111,31 @@ describe('markdown rendering components', () => {
     expect(output).toContain('42')
     expect(output).toContain('┌')
     expect(output).toContain('┘')
+  })
+
+  test('uses inherited content width for long markdown tables in constrained panes', async () => {
+    const output = await renderToString(
+      <ContentWidthProvider width={72}>
+        <Box width={72}>
+          <Markdown>
+            {[
+              '| Contract Row | Status | Evidence |',
+              '| --- | --- | --- |',
+              '| Row 1 - provider-boundary | Implemented | types.ts defines full BufferEditorProvider plus seven capability flags; InlineBufferProvider, ExternalEditorProvider, NeovimBufferProvider, selectBufferEditorProvider, and BufferProviderController all exist and are wired. |',
+              '| Row 2 - neovim-discovery | Scaffolding present | NeovimDiscovery.ts implements binary detection, version check, embed mode, clean fallback, explicit usable false reason codes, and all runtime modules exist. |',
+            ].join('\n')}
+          </Markdown>
+        </Box>
+      </ContentWidthProvider>,
+      160,
+    )
+
+    expect(output).toContain('Contract Row:')
+    expect(output).toContain('BufferEditorProvider')
+    expect(output).not.toContain('┌')
+    for (const line of output.split('\n')) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(72)
+    }
   })
 
   test('renders MarkdownTable with wrapping and right-aligned numeric column', async () => {

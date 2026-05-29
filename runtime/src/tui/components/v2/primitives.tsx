@@ -3,6 +3,7 @@ import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
 import { AURA_LIFECYCLE_GLYPHS, AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
+import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
 import ThemedBox from '../design-system/ThemedBox.js'
@@ -831,6 +832,8 @@ export function Msg({
     worker: 'briefLabelWorker',
     system: 'subtle',
   }
+  const inheritedWidth = useContentWidth()
+  const contentWidth = insetContentWidth(inheritedWidth, 3)
   return (
     <Box flexDirection="row" gap={2}>
       <ThemedText color={colors[role]}>{role === 'system' ? '∙' : '▮'}</ThemedText>
@@ -841,7 +844,9 @@ export function Msg({
           </ThemedText>
           {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
         </Box>
-        <Content color="text2">{children}</Content>
+        <ContentWidthProvider width={contentWidth}>
+          <Content color="text2">{children}</Content>
+        </ContentWidthProvider>
       </Box>
     </Box>
   )
