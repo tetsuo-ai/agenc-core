@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { Logger } from "../../_deps/logger.js";
 import {
   AgenCStdioClientTransport,
   DEFAULT_STDIO_ENV_VARS,
@@ -63,6 +64,51 @@ describe("AgenCStdioClientTransport", () => {
       method: "server/notice",
       params: { ok: true },
     });
+    await transport.close();
+  });
+
+  it("keeps stderrBuffer bounded under a newline-less flood", async () => {
+    // Defense-in-depth: a child emitting a long stderr run with no newline
+    // must not grow stderrBuffer without bound. The oversized prefix is
+    // flushed with a truncation notice; trailing residue keeps accumulating.
+    const infoMessages: string[] = [];
+    const logger: Logger = {
+      debug() {},
+      info(message: string) {
+        infoMessages.push(message);
+      },
+      warn() {},
+      error() {},
+    };
+    const transport = new AgenCStdioClientTransport(
+      { command: "flooder" },
+      logger,
+    );
+
+    // Reach into the private newline-less stderr handler/buffer. Treated as an
+    // internal here only to assert the cap holds without spawning a real child.
+    const internal = transport as unknown as {
+      onStderrData: (chunk: Buffer) => void;
+      stderrBuffer: Buffer;
+    };
+
+    const oneMiB = 1024 * 1024;
+    // Stream 5 MiB of newline-less bytes across many chunks.
+    for (let i = 0; i < 5; i += 1) {
+      internal.onStderrData(Buffer.alloc(oneMiB, 0x61));
+      // The retained, unflushed residue must never exceed the 1 MiB cap.
+      expect(internal.stderrBuffer.length).toBeLessThanOrEqual(oneMiB);
+    }
+
+    // At least one truncation notice must have been logged for the flood.
+    expect(infoMessages.some((m) => m.includes("truncated"))).toBe(true);
+
+    // A trailing newline-terminated line still splits and logs normally.
+    infoMessages.length = 0;
+    internal.onStderrData(Buffer.from("tail-line\n", "utf8"));
+    expect(internal.stderrBuffer.length).toBe(0);
+    expect(infoMessages.some((m) => m.endsWith("tail-line"))).toBe(true);
+
     await transport.close();
   });
 

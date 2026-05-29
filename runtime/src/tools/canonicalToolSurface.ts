@@ -9,7 +9,7 @@ import { createFileReadTool } from "./system/file-read.js";
 import { createFileWriteTool } from "./system/file-write.js";
 import { createGlobTool } from "./system/glob.js";
 import { createGrepTool } from "./system/grep.js";
-import { SESSION_ID_ARG } from "./system/filesystem.js";
+import { withSignedSessionId } from "../agents/_deps/filesystem-args.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "./system/notebook-edit.js";
 import type { Tool as RuntimeTool, ToolResult as RuntimeToolResult } from "./types.js";
 import { buildTool, type Tool, type ToolCallProgress, type ToolUseContext } from "./Tool.js";
@@ -451,14 +451,17 @@ function mapCanonicalInput(
   root: string,
 ): Record<string, unknown> {
   const mapped = options.mapInput?.(input, root) ?? defaultMapInput(input, root);
-  const suppliedSessionId = input[SESSION_ID_ARG];
-  return {
-    ...mapped,
-    [SESSION_ID_ARG]:
-      typeof suppliedSessionId === "string" && suppliedSessionId.trim().length > 0
-        ? suppliedSessionId
-        : getSessionId(),
-  };
+  // SECURITY: always inject the AUTHORITATIVE session id from the runtime
+  // state (`getSessionId()`), never the model-supplied `input[...]` value.
+  // The model arg could otherwise name an arbitrary session and unlock its
+  // plan-file write carve-out (coding-common.ts `planFileContextFromArgs`).
+  // The id is HMAC-signed so it verifies at that sink; if there is no
+  // authoritative id, we inject nothing (no model-value fallback).
+  const authoritativeSessionId = getSessionId();
+  return typeof authoritativeSessionId === "string" &&
+    authoritativeSessionId.trim().length > 0
+    ? withSignedSessionId(mapped, authoritativeSessionId)
+    : mapped;
 }
 
 const fileReadInputSchema = z.strictObject({

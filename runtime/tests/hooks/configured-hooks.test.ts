@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -24,6 +25,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target = {
@@ -63,6 +68,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     runtime.load({
@@ -82,6 +91,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     runtime.load({
@@ -136,6 +149,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -231,6 +248,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -276,6 +297,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -318,6 +343,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -359,6 +388,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -395,6 +428,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -431,6 +468,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -477,6 +518,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -518,6 +563,10 @@ describe("configured hooks runtime", () => {
       cwd: "/tmp",
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -563,6 +612,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -605,6 +658,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -647,6 +704,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -689,6 +750,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -736,6 +801,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -772,6 +841,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -815,6 +888,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -851,6 +928,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -888,6 +969,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -931,6 +1016,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -966,6 +1055,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1004,6 +1097,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1048,6 +1145,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1092,6 +1193,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1139,6 +1244,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1184,6 +1293,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1239,6 +1352,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1284,6 +1401,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1319,6 +1440,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1368,6 +1493,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1406,6 +1535,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1436,6 +1569,10 @@ describe("configured hooks runtime", () => {
       cwd: "/tmp",
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1488,6 +1625,10 @@ describe("configured hooks runtime", () => {
       cwd: tmpdir(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1531,6 +1672,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1574,6 +1719,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1608,6 +1757,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1643,6 +1796,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1669,6 +1826,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1710,6 +1871,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = makeTarget();
@@ -1752,6 +1917,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target = makeLifecycleTarget();
@@ -1792,6 +1961,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target = makeLifecycleTarget();
@@ -1823,6 +1996,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target = makeLifecycleTarget();
@@ -1870,6 +2047,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     runtime.load({
@@ -1920,6 +2101,10 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
       env: process.env,
       agencHome: "/tmp/agenc-test",
+      // Existing behavioral tests assume a TRUSTED workspace (production
+      // establishes trust through the normal flow before hooks run). The new
+      // trust gate is exercised separately in the "trust gate" describe block.
+      isWorkspaceTrusted: () => true,
       shellPath: process.env.SHELL ?? "/bin/sh",
     });
     const target: HookInstallTarget = {
@@ -1949,6 +2134,128 @@ describe("configured hooks runtime", () => {
     });
 
     expect(signal.listenerCount).toBe(0);
+  });
+});
+
+describe("configured hooks trust gate", () => {
+  async function tempSentinel(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-trust-gate-"));
+    return join(dir, "ran.txt");
+  }
+
+  function touchCommand(sentinel: string): string {
+    // Side effect that ONLY happens if the shell command actually spawns.
+    return `printf ran > ${JSON.stringify(sentinel)}`;
+  }
+
+  function makeRuntime(opts: {
+    readonly trusted: boolean;
+    readonly env?: NodeJS.ProcessEnv;
+    readonly sentinel: string;
+  }): ConfiguredHooksRuntime {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: opts.env ?? {},
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      isWorkspaceTrusted: () => opts.trusted,
+    });
+    runtime.attachTarget(makeTarget());
+    runtime.load({
+      PreToolUse: [
+        {
+          hooks: [{ type: "command", command: touchCommand(opts.sentinel) }],
+        },
+      ],
+    });
+    return runtime;
+  }
+
+  test("(a) untrusted workspace does NOT spawn a config command hook", async () => {
+    const sentinel = await tempSentinel();
+    const runtime = makeRuntime({ trusted: false, sentinel });
+    const diag = await runtime.testHook(runtime.listHooks()[0]!);
+
+    expect(diag.status).toBe("skipped");
+    expect(existsSync(sentinel)).toBe(false);
+  });
+
+  test("(b) trusted workspace still runs the config command hook", async () => {
+    const sentinel = await tempSentinel();
+    const runtime = makeRuntime({ trusted: true, sentinel });
+    const diag = await runtime.testHook(runtime.listHooks()[0]!);
+
+    expect(diag.status).toBe("success");
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  test("(c) untrusted + non-interactive is skipped unless AGENC_ALLOW_UNTRUSTED_HOOKS opt-in is set", async () => {
+    const blockedSentinel = await tempSentinel();
+    const blocked = makeRuntime({ trusted: false, sentinel: blockedSentinel });
+    const blockedDiag = await blocked.testHook(blocked.listHooks()[0]!);
+    expect(blockedDiag.status).toBe("skipped");
+    expect(existsSync(blockedSentinel)).toBe(false);
+
+    const allowedSentinel = await tempSentinel();
+    const allowed = makeRuntime({
+      trusted: false,
+      env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "1" },
+      sentinel: allowedSentinel,
+    });
+    const allowedDiag = await allowed.testHook(allowed.listHooks()[0]!);
+    expect(allowedDiag.status).toBe("success");
+    expect(existsSync(allowedSentinel)).toBe(true);
+  });
+
+  test("untrusted gate applies to every hook event type, not just PreToolUse", async () => {
+    const sentinel = await tempSentinel();
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: {},
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      isWorkspaceTrusted: () => false,
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      Stop: [{ hooks: [{ type: "command", command: touchCommand(sentinel) }] }],
+    });
+
+    const outcome = await target.stopHooks[0]!.run({
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      cwd: process.cwd(),
+      model: "test-model",
+      permissionMode: "default",
+      stopHookActive: false,
+      lastAssistantMessage: "",
+    });
+
+    // Skipped hooks are a no-op: the stop is allowed and nothing spawned.
+    expect(outcome.shouldStop).toBe(true);
+    expect(outcome.shouldBlock).toBe(false);
+    expect(existsSync(sentinel)).toBe(false);
+  });
+
+  test("opt-in flag accepts true/yes and rejects other values", async () => {
+    const yesSentinel = await tempSentinel();
+    const yes = makeRuntime({
+      trusted: false,
+      env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
+      sentinel: yesSentinel,
+    });
+    expect((await yes.testHook(yes.listHooks()[0]!)).status).toBe("success");
+    expect(existsSync(yesSentinel)).toBe(true);
+
+    const noSentinel = await tempSentinel();
+    const no = makeRuntime({
+      trusted: false,
+      env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "0" },
+      sentinel: noSentinel,
+    });
+    expect((await no.testHook(no.listHooks()[0]!)).status).toBe("skipped");
+    expect(existsSync(noSentinel)).toBe(false);
   });
 });
 

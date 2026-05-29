@@ -29,6 +29,7 @@
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 
 export const SESSION_ID_ARG = "__agencSessionId";
+export const SESSION_ID_SIG_ARG = "__agencSessionIdSig";
 export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
 export const SESSION_ALLOWED_ROOTS_SIG_ARG = "__agencSessionAllowedRootsSig";
 
@@ -108,5 +109,57 @@ export function withSignedAllowedRoots(
     ...args,
     [SESSION_ALLOWED_ROOTS_ARG]: unioned,
     [SESSION_ALLOWED_ROOTS_SIG_ARG]: signAllowedRoots(unioned),
+  };
+}
+
+/**
+ * SECURITY (HMAC-signed session id): the `__agencSessionId` arg names the
+ * active session whose plan-file the filesystem tools may write OUTSIDE
+ * the workspace allowlist (the plan-file carve-out in
+ * `tools/system/coding-common.ts`). A model that could forge this id
+ * would gain a write target outside its confinement, so — exactly like
+ * the trusted-roots channel above — the id is signed with the
+ * per-process secret the model never sees and verified at the SINK
+ * ({@link verifySessionId}, consumed by `planFileContextFromArgs`). An
+ * unsigned/forged id verifies as absent, denying the carve-out.
+ */
+
+/**
+ * Hex HMAC-SHA256 over the session `id`.
+ */
+export function signSessionId(id: string): string {
+  return createHmac("sha256", PROCESS_SECRET).update(id).digest("hex");
+}
+
+/**
+ * Return `id` only when it is a string and `sig` `timingSafeEqual`-matches
+ * {@link signSessionId}`(id)`. Otherwise returns `undefined` — non-string
+ * ids, missing or forged signatures are all treated as absent. The Buffer
+ * compare is length-guarded like {@link verifyAllowedRoots}.
+ */
+export function verifySessionId(id: unknown, sig: unknown): string | undefined {
+  if (typeof id !== "string" || typeof sig !== "string") return undefined;
+  const expected = signSessionId(id);
+  const sigBuf = Buffer.from(sig, "hex");
+  const expectedBuf = Buffer.from(expected, "hex");
+  if (sigBuf.length !== expectedBuf.length) return undefined;
+  if (!timingSafeEqual(sigBuf, expectedBuf)) return undefined;
+  return id;
+}
+
+/**
+ * Writer helper: write the signed session-id channel of `args`, returning
+ * a NEW object (does not mutate input). Both {@link SESSION_ID_ARG} and
+ * {@link SESSION_ID_SIG_ARG} are set so the id verifies at the sink after
+ * the in-process JSON dispatch round-trip.
+ */
+export function withSignedSessionId(
+  args: Record<string, unknown>,
+  id: string,
+): Record<string, unknown> {
+  return {
+    ...args,
+    [SESSION_ID_ARG]: id,
+    [SESSION_ID_SIG_ARG]: signSessionId(id),
   };
 }

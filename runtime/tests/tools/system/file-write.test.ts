@@ -22,6 +22,7 @@ import {
   recordSessionRead,
   seedSessionReadState,
   SESSION_AGENC_HOME_ARG,
+  signSessionId,
 } from "./filesystem.js";
 import {
   clearAllPlanSlugs,
@@ -88,6 +89,7 @@ describe("Write tool", () => {
         file_path: planPath,
         content: "# Plan\n\n- [ ] Fix plan file writes\n",
         __agencSessionId: sessionId,
+        __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
       });
 
@@ -100,6 +102,7 @@ describe("Write tool", () => {
         file_path: join(agencHome, "plans", "not-active.md"),
         content: "# Not active\n",
         __agencSessionId: sessionId,
+        __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
       });
       expect(rejected.isError).toBe(true);

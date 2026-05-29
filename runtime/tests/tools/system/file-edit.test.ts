@@ -38,6 +38,8 @@ import {
   recordSessionRead,
   SESSION_AGENC_HOME_ARG,
   SESSION_ID_ARG,
+  SESSION_ID_SIG_ARG,
+  signSessionId,
 } from "./filesystem.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 import {
@@ -175,6 +177,7 @@ describe("Edit tool", () => {
         old_string: "Verify allowlist",
         new_string: "Verify plan edits",
         [SESSION_ID_ARG]: SESSION_ID,
+        [SESSION_ID_SIG_ARG]: signSessionId(SESSION_ID),
         [SESSION_AGENC_HOME_ARG]: agencHome,
       });
 

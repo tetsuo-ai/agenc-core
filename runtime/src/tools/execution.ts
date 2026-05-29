@@ -80,6 +80,10 @@ import {
 } from "./context.js";
 import type { Tool } from "./types.js";
 import {
+  SESSION_ID_SIG_ARG,
+  signSessionId,
+} from "./system/filesystem.js";
+import {
   runPostToolUseFailureHooks,
   runPostToolUseHooks,
   runPreToolUseHooks,
@@ -1525,6 +1529,15 @@ export async function runToolUse(
     if (typeof sessionId === "string" && sessionId.length > 0) {
       Object.defineProperty(argsForTool, "__agencSessionId", {
         value: sessionId,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+      // Sign the id (same per-process secret as the trusted-roots channel)
+      // so the plan-file carve-out sinks honor this runtime-injected id; an
+      // unsigned/forged id is rejected at the sink.
+      Object.defineProperty(argsForTool, SESSION_ID_SIG_ARG, {
+        value: signSessionId(sessionId),
         enumerable: false,
         writable: false,
         configurable: true,

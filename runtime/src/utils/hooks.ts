@@ -38,6 +38,7 @@ import {
   getMainThreadAgentType,
 } from '../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from './config.js'
+import { checkHasProjectTrustAcceptedSync } from '../permissions/trust/project-trust.js'
 import {
   getHooksConfigFromSnapshot,
   shouldAllowManagedHooksOnly,
@@ -430,19 +431,40 @@ function executeInBackground({
  * Historical vulnerabilities that prompted this check:
  * - SessionEnd hooks executing when user declines trust dialog
  * - SubagentStop hooks executing when subagent completes before trust
+ * - Non-interactive/SDK sessions running hooks from an untrusted, freshly-cloned
+ *   repo's config with no trust gate at all (RCE).
  *
  * @returns true if hook should be skipped, false if it should execute
  */
 export function shouldSkipHookDueToTrust(): boolean {
-  // In non-interactive mode (SDK), trust is implicit - always execute
   const isInteractive = !getIsNonInteractiveSession()
   if (!isInteractive) {
-    return false
+    // SECURITY: non-interactive/SDK mode has no trust dialog. It must NOT
+    // implicitly trust the workspace — a freshly-cloned untrusted repo's config
+    // would otherwise execute host code. Default to running hooks ONLY when the
+    // workspace is persisted as trusted (trusted-projects.json). An UNTRUSTED
+    // workspace runs hooks only via the explicit AGENC_ALLOW_UNTRUSTED_HOOKS
+    // opt-in (headless automation that vetted the workspace out-of-band).
+    if (allowUntrustedHooksOptIn()) {
+      return false
+    }
+    return !checkHasProjectTrustAcceptedSync()
   }
 
   // In interactive mode, ALL hooks require trust
   const hasTrust = checkHasTrustDialogAccepted()
   return !hasTrust
+}
+
+/**
+ * SECURITY opt-in: AGENC_ALLOW_UNTRUSTED_HOOKS="1"|"true"|"yes" permits command
+ * hooks to run even in an untrusted workspace. Intended for headless/SDK
+ * automation that has already vetted the workspace. Unset (default) keeps
+ * untrusted workspaces from running command hooks.
+ */
+function allowUntrustedHooksOptIn(): boolean {
+  const value = process.env.AGENC_ALLOW_UNTRUSTED_HOOKS?.trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'yes'
 }
 
 /**

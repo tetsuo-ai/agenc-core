@@ -46,8 +46,8 @@ import {
   type ToolRecoveryCategory,
 } from "./_deps/tools-types.js";
 import {
-  SESSION_ID_ARG,
   withSignedAllowedRoots,
+  withSignedSessionId,
 } from "./_deps/filesystem-args.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
@@ -1362,10 +1362,13 @@ function injectChildToolArgs(
   // worktree-root injection through `withSignedAllowedRoots` so the
   // union (existing signed roots ∪ worktree) is re-signed; any unsigned
   // root that slipped past the strip is dropped rather than laundered.
-  let injectedArgs: Record<string, unknown> = {
-    ...parsedArgs,
-    [SESSION_ID_ARG]: opts.childConversationId,
-  };
+  // Sign the child conversation id so the plan-file carve-out sink
+  // (coding-common.ts `planFileContextFromArgs`) honors it. An unsigned
+  // id verifies as absent there, exactly like an unsigned trusted root.
+  let injectedArgs: Record<string, unknown> = withSignedSessionId(
+    parsedArgs,
+    opts.childConversationId,
+  );
   if (opts.worktree?.path) {
     injectedArgs = withSignedAllowedRoots(injectedArgs, [opts.worktree.path]);
   }
