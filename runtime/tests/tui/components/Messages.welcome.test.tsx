@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Command } from '../../commands.js'
 import type { Tools } from '../../tools/Tool.js'
 import { renderToString } from '../../utils/staticRender.js'
+import { ContentWidthProvider } from '../context/contentWidthContext.js'
+import { stringWidth } from '../ink/stringWidth.js'
 import { Messages } from './Messages.js'
 
 vi.mock('bun:bundle', () => ({
@@ -12,6 +14,12 @@ vi.mock('bun:bundle', () => ({
 
 vi.mock('../startup/StatusNotices.js', () => ({
   StatusNotices: () => null,
+}))
+
+vi.mock('../hooks/useSettings.js', () => ({
+  useSettings: () => ({
+    syntaxHighlightingDisabled: true,
+  }),
 }))
 
 const baseProps = {
@@ -45,5 +53,28 @@ describe('Messages welcome state', () => {
 
     expect(output).not.toContain('a netrunner with hands on every file')
     expect(output).not.toContain('/claim')
+  })
+
+  it('keeps streaming markdown inside the inherited message content width', async () => {
+    const output = await renderToString(
+      <ContentWidthProvider width={50}>
+        <Messages
+          {...baseProps}
+          hideLogo={true}
+          streamingText={[
+            '| Contract Row | Status | Evidence |',
+            '| --- | --- | --- |',
+            '| Row 1 - provider-boundary | Implemented | types.ts defines full BufferEditorProvider plus seven capability flags and provider selection wiring. |',
+            '| Row 2 - neovim-discovery | Scaffolding present | NeovimDiscovery implements binary detection, version checks, fallback reason codes, and runtime module discovery. |',
+          ].join('\n')}
+        />
+      </ContentWidthProvider>,
+      { columns: 120, rows: 24 },
+    )
+
+    expect(output).toContain('Contract Row:')
+    for (const line of output.split('\n')) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(50)
+    }
   })
 })

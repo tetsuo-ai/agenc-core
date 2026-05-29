@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import type { Command } from '../../commands.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
+import { ContentWidthProvider, useContentWidth } from '../context/contentWidthContext.js';
 import { Box } from '../ink.js';
 import type { Tools } from '../../tools/Tool.js';
 import { isConnectorTextBlock } from '../../types/connectorText.js';
@@ -121,51 +122,59 @@ function MessageImpl({
   lastThinkingBlockId,
   latestBashOutputUUID,
 }: Props): React.ReactNode {
+  const inheritedContentWidth = useContentWidth();
+  const messageContentWidth = typeof containerWidth === 'number' ? containerWidth : inheritedContentWidth;
   switch (message.type) {
     case "attachment":
       return (
-        <AttachmentMessage
-          addMargin={addMargin}
-          attachment={message.attachment}
-          verbose={verbose}
-          isTranscriptMode={isTranscriptMode}
-        />
+        <ContentWidthProvider width={messageContentWidth}>
+          <AttachmentMessage
+            addMargin={addMargin}
+            attachment={message.attachment}
+            verbose={verbose}
+            isTranscriptMode={isTranscriptMode}
+          />
+        </ContentWidthProvider>
       );
     case "assistant":
       return (
-        <Box flexDirection="column" width={containerWidth ?? "100%"}>
-          {message.message.content.map((param: AssistantContentBlock, index: number) => (
-            <AssistantMessageBlock
-              key={index}
-              param={param}
-              addMargin={addMargin}
-              tools={tools}
-              commands={commands}
-              verbose={verbose}
-              inProgressToolUseIDs={inProgressToolUseIDs}
-              progressMessagesForMessage={progressMessagesForMessage}
-              shouldAnimate={shouldAnimate}
-              shouldShowDot={shouldShowDot}
-              width={width}
-              inProgressToolCallCount={inProgressToolUseIDs.size}
-              isTranscriptMode={isTranscriptMode}
-              lookups={lookups}
-              onOpenRateLimitOptions={onOpenRateLimitOptions}
-              thinkingBlockId={`${message.uuid}:${index}`}
-              lastThinkingBlockId={lastThinkingBlockId}
-              advisorModel={message.advisorModel}
-            />
-          ))}
-        </Box>
+        <ContentWidthProvider width={messageContentWidth}>
+          <Box flexDirection="column" width={containerWidth ?? "100%"}>
+            {message.message.content.map((param: AssistantContentBlock, index: number) => (
+              <AssistantMessageBlock
+                key={index}
+                param={param}
+                addMargin={addMargin}
+                tools={tools}
+                commands={commands}
+                verbose={verbose}
+                inProgressToolUseIDs={inProgressToolUseIDs}
+                progressMessagesForMessage={progressMessagesForMessage}
+                shouldAnimate={shouldAnimate}
+                shouldShowDot={shouldShowDot}
+                width={width}
+                inProgressToolCallCount={inProgressToolUseIDs.size}
+                isTranscriptMode={isTranscriptMode}
+                lookups={lookups}
+                onOpenRateLimitOptions={onOpenRateLimitOptions}
+                thinkingBlockId={`${message.uuid}:${index}`}
+                lastThinkingBlockId={lastThinkingBlockId}
+                advisorModel={message.advisorModel}
+              />
+            ))}
+          </Box>
+        </ContentWidthProvider>
       );
     case "user":
       {
         if (message.isCompactSummary) {
           return (
-            <CompactSummary
-              message={message}
-              screen={isTranscriptMode ? "transcript" : "prompt"}
-            />
+            <ContentWidthProvider width={messageContentWidth}>
+              <CompactSummary
+                message={message}
+                screen={isTranscriptMode ? "transcript" : "prompt"}
+              />
+            </ContentWidthProvider>
           );
         }
 
@@ -183,24 +192,26 @@ function MessageImpl({
 
         const isLatestBashOutput = latestBashOutputUUID === message.uuid;
         const content = (
-          <Box flexDirection="column" width={containerWidth ?? "100%"}>
-            {message.message.content.map((param: UserContentBlock, index: number) => (
-              <UserMessage
-                key={index}
-                message={message}
-                addMargin={addMargin}
-                tools={tools}
-                progressMessagesForMessage={progressMessagesForMessage}
-                param={param}
-                style={style}
-                verbose={verbose}
-                imageIndex={imageIndices[index]}
-                isUserContinuation={isUserContinuation}
-                lookups={lookups}
-                isTranscriptMode={isTranscriptMode}
-              />
-            ))}
-          </Box>
+          <ContentWidthProvider width={messageContentWidth}>
+            <Box flexDirection="column" width={containerWidth ?? "100%"}>
+              {message.message.content.map((param: UserContentBlock, index: number) => (
+                <UserMessage
+                  key={index}
+                  message={message}
+                  addMargin={addMargin}
+                  tools={tools}
+                  progressMessagesForMessage={progressMessagesForMessage}
+                  param={param}
+                  style={style}
+                  verbose={verbose}
+                  imageIndex={imageIndices[index]}
+                  isUserContinuation={isUserContinuation}
+                  lookups={lookups}
+                  isTranscriptMode={isTranscriptMode}
+                />
+              ))}
+            </Box>
+          </ContentWidthProvider>
         );
 
         return isLatestBashOutput ? (
@@ -230,48 +241,56 @@ function MessageImpl({
         }
         if (message.subtype === "local_command") {
           return (
-            <UserTextMessage
-              addMargin={addMargin}
-              param={{ type: "text", text: message.content }}
-              verbose={verbose}
-              isTranscriptMode={isTranscriptMode}
-            />
+            <ContentWidthProvider width={messageContentWidth}>
+              <UserTextMessage
+                addMargin={addMargin}
+                param={{ type: "text", text: message.content }}
+                verbose={verbose}
+                isTranscriptMode={isTranscriptMode}
+              />
+            </ContentWidthProvider>
           );
         }
         return (
-          <SystemTextMessage
-            message={message}
-            addMargin={addMargin}
-            verbose={verbose}
-            isTranscriptMode={isTranscriptMode}
-          />
+          <ContentWidthProvider width={messageContentWidth}>
+            <SystemTextMessage
+              message={message}
+              addMargin={addMargin}
+              verbose={verbose}
+              isTranscriptMode={isTranscriptMode}
+            />
+          </ContentWidthProvider>
         );
       }
     case "grouped_tool_use":
       return (
-        <GroupedToolUseContent
-          message={message}
-          tools={tools}
-          lookups={lookups}
-          inProgressToolUseIDs={inProgressToolUseIDs}
-          shouldAnimate={shouldAnimate}
-        />
+        <ContentWidthProvider width={messageContentWidth}>
+          <GroupedToolUseContent
+            message={message}
+            tools={tools}
+            lookups={lookups}
+            inProgressToolUseIDs={inProgressToolUseIDs}
+            shouldAnimate={shouldAnimate}
+          />
+        </ContentWidthProvider>
       );
     case "collapsed_read_search":
       {
         const renderVerbose = verbose || isTranscriptMode;
         return (
-          <OffscreenFreeze>
-            <CollapsedReadSearchContent
-              message={message}
-              inProgressToolUseIDs={inProgressToolUseIDs}
-              shouldAnimate={shouldAnimate}
-              verbose={renderVerbose}
-              tools={tools}
-              lookups={lookups}
-              isActiveGroup={isActiveCollapsedGroup}
-            />
-          </OffscreenFreeze>
+          <ContentWidthProvider width={messageContentWidth}>
+            <OffscreenFreeze>
+              <CollapsedReadSearchContent
+                message={message}
+                inProgressToolUseIDs={inProgressToolUseIDs}
+                shouldAnimate={shouldAnimate}
+                verbose={renderVerbose}
+                tools={tools}
+                lookups={lookups}
+                isActiveGroup={isActiveCollapsedGroup}
+              />
+            </OffscreenFreeze>
+          </ContentWidthProvider>
         );
       }
   }
@@ -291,6 +310,8 @@ function UserMessage({
   isTranscriptMode,
 }: UserMessageProps): React.ReactNode {
   const { columns } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
+  const contentColumns = inheritedContentWidth ?? columns;
   switch (param.type) {
     case "text":
       return (
@@ -310,7 +331,7 @@ function UserMessage({
       }
     case "tool_result":
       {
-        const toolResultWidth = getToolResultMessageWidth(columns);
+        const toolResultWidth = getToolResultMessageWidth(contentColumns);
         return (
           <UserToolResultMessage
             param={param}

@@ -20,11 +20,27 @@ function fail(message, details = {}) {
   throw new Error(suffix ? `${message} (${suffix})` : message);
 }
 
-function assertFrame(session, dimension, label, anchors) {
-  const rows = renderPtyRows(session.raw, dimension);
-  const frame = rows.join("\n");
-  if (rows.every((row) => row.trim().length === 0)) {
-    fail("blank workbench frame", { label });
+function markerColumns(rows, markers) {
+  const matches = [];
+  for (const [rowIndex, row] of rows.entries()) {
+    for (const marker of markers) {
+      const column = row.indexOf(marker);
+      if (column !== -1) {
+        matches.push({ row: rowIndex + 1, column, marker });
+      }
+    }
+  }
+  return matches;
+}
+
+function assertFrameWidthContract(rows, dimension, label) {
+  const autoWraps = rows.autoWraps ?? [];
+  if (autoWraps.length > 0) {
+    fail("workbench frame caused terminal autowrap", {
+      label,
+      wraps: autoWraps.length,
+      first: JSON.stringify(autoWraps[0]),
+    });
   }
   for (const [index, row] of rows.entries()) {
     if (row.length > dimension.cols) {
@@ -36,6 +52,65 @@ function assertFrame(session, dimension, label, anchors) {
       });
     }
   }
+}
+
+function assertPaneLocality(rows, dimension, label) {
+  const explorerMarkers = markerColumns(rows, ["WORKSPACE"]);
+  const surfaceMarkers = markerColumns(rows, ["TRANSCRIPT", "DIFF"]);
+  const agentMarkers = markerColumns(rows, ["Agents"]);
+  const surfaceStart = Math.min(...surfaceMarkers.map((match) => match.column));
+  const agentStart = agentMarkers.length > 0
+    ? Math.min(...agentMarkers.map((match) => match.column))
+    : dimension.cols;
+
+  if (Number.isFinite(surfaceStart)) {
+    for (const match of explorerMarkers) {
+      if (match.column >= surfaceStart) {
+        fail("workbench explorer marker overlapped active surface", {
+          label,
+          marker: match.marker,
+          row: match.row,
+          column: match.column,
+          surfaceStart,
+        });
+      }
+    }
+    for (const match of surfaceMarkers) {
+      if (match.column >= agentStart) {
+        fail("workbench surface marker overlapped agents rail", {
+          label,
+          marker: match.marker,
+          row: match.row,
+          column: match.column,
+          agentStart,
+        });
+      }
+    }
+  }
+
+  if (agentMarkers.length > 0 && Number.isFinite(surfaceStart)) {
+    for (const match of agentMarkers) {
+      if (match.column <= surfaceStart) {
+        fail("workbench agents marker overlapped active surface", {
+          label,
+          marker: match.marker,
+          row: match.row,
+          column: match.column,
+          surfaceStart,
+        });
+      }
+    }
+  }
+}
+
+function assertFrame(session, dimension, label, anchors) {
+  const rows = renderPtyRows(session.raw, dimension);
+  const frame = rows.join("\n");
+  if (rows.every((row) => row.trim().length === 0)) {
+    fail("blank workbench frame", { label });
+  }
+  assertFrameWidthContract(rows, dimension, label);
+  assertPaneLocality(rows, dimension, label);
   const lower = frame.toLowerCase();
   if (!anchors.some((anchor) => lower.includes(anchor.toLowerCase()))) {
     fail("workbench anchor missing", {

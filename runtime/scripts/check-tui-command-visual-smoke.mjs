@@ -154,6 +154,27 @@ function assertNoMalformedHints(text, label) {
   }
 }
 
+function assertFrameWidthContract(rows, dimension, label) {
+  const autoWraps = rows.autoWraps ?? [];
+  if (autoWraps.length > 0) {
+    fail("command surface caused terminal autowrap", {
+      label,
+      wraps: autoWraps.length,
+      first: JSON.stringify(autoWraps[0]),
+    });
+  }
+  for (const [index, row] of rows.entries()) {
+    if (row.length > dimension.cols) {
+      fail("command surface row overflow", {
+        label,
+        row: index + 1,
+        width: row.length,
+        cols: dimension.cols,
+      });
+    }
+  }
+}
+
 function firstMarkerRow(rows, markers) {
   const normalized = markers.map((marker) => marker.toLowerCase());
   return rows.findIndex((row) => {
@@ -168,6 +189,7 @@ function assertSurfaceVisible(session, spec, dimension) {
   const label = `${spec.command} ${dimension.cols}x${dimension.rows}`;
   const lowerFrame = frame.toLowerCase();
   assertNoMalformedHints(frame, label);
+  assertFrameWidthContract(rows, dimension, label);
 
   if (!spec.anchors.some((marker) => lowerFrame.includes(marker.toLowerCase()))) {
     fail("command surface anchor missing from visible frame", {

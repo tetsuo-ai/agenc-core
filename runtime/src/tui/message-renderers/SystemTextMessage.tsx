@@ -13,6 +13,7 @@ import { openPath } from '../../utils/browser.js';
 import * as teamMemSavedModule from './teamMemSaved';
 const teamMemSaved = feature('TEAMMEM') ? teamMemSavedModule : null;
 import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
+import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemMemorySavedMessage } from '../../types/message';
 import { SystemAPIErrorMessage } from '../components/SystemAPIErrorMessage.js';
@@ -179,6 +180,7 @@ function StopHookSummaryMessage({
   const {
     columns
   } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
   const totalDurationMs = message.totalDurationMs ?? hookInfos.reduce(_temp, 0);
   if (!shouldRenderStopHookSummary(message, totalDurationMs)) {
     return null;
@@ -195,7 +197,7 @@ function StopHookSummaryMessage({
     );
   }
   const marginTop = addMargin ? 1 : 0;
-  const contentWidth = getSystemMessageContentWidth(columns);
+  const contentWidth = getSystemMessageContentWidth(inheritedContentWidth ?? columns);
   const hookLabel = message.hookLabel ?? "stop";
   const hookNoun = hookCount === 1 ? "hook" : "hooks";
   const compactExpandHint = !verbose && hookInfos.length > 0 && <>{" "}<CtrlOToExpand /></>;
@@ -254,9 +256,10 @@ function SystemTextMessageInner({
   const {
     columns
   } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
   const bg = useSelectedMessageBg();
   const marginTop = addMargin ? 1 : 0;
-  const contentWidth = getSystemMessageContentWidth(columns);
+  const contentWidth = getSystemMessageContentWidth(inheritedContentWidth ?? columns);
   const trimmedContent = content.trim();
 
   return (
@@ -319,6 +322,7 @@ function CollabAgentSystemMessage({
 }): React.ReactNode {
   const bg = useSelectedMessageBg();
   const { columns } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
   const marginTop = addMargin ? 1 : 0;
   const state = message.state;
   const color =
@@ -330,7 +334,7 @@ function CollabAgentSystemMessage({
           ? AGENT_MESSAGE_THEME_COLOR
           : undefined;
   const details = Array.isArray(message.details) ? message.details : [];
-  const width = getSystemMessageContentWidth(columns);
+  const width = getSystemMessageContentWidth(inheritedContentWidth ?? columns);
   return (
     <Box flexDirection="row" marginTop={marginTop} backgroundColor={bg} width="100%">
       <Box minWidth={2}>
@@ -462,8 +466,9 @@ function BridgeStatusMessage({
 }) {
   const bg = useSelectedMessageBg();
   const { columns } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
   const marginTop = addMargin ? 1 : 0;
-  const contentWidth = getSystemMessageContentWidth(columns);
+  const contentWidth = getSystemMessageContentWidth(inheritedContentWidth ?? columns);
 
   return (
     <Box flexDirection="row" marginTop={marginTop} backgroundColor={bg} width="100%">

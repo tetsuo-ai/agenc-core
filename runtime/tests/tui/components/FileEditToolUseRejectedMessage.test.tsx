@@ -1,9 +1,15 @@
 import React from 'react'
-import { describe, expect, test, vi } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { renderToString } from '../../utils/staticRender.js'
+import { ContentWidthProvider } from '../context/contentWidthContext.js'
 import { Text } from '../ink.js'
 import { FileEditToolUseRejectedMessage } from './FileEditToolUseRejectedMessage.js'
+
+const renderHarness = vi.hoisted(() => ({
+  highlightedCode: [] as Array<Record<string, unknown>>,
+  structuredDiffs: [] as Array<Record<string, unknown>>,
+}))
 
 vi.mock('../hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => ({ columns: 80, rows: 24 }),
@@ -14,26 +20,33 @@ vi.mock('../../utils/cwd.js', () => ({
 }))
 
 vi.mock('./markdown/HighlightedCode.js', () => ({
-  HighlightedCode: ({
-    code,
-    filePath,
-  }: {
+  HighlightedCode: (props: {
     code: string
     filePath: string
-  }) => <Text>{`${filePath}:${code}`}</Text>,
+    width: number
+  }) => {
+    renderHarness.highlightedCode.push(props)
+    return <Text>{`${props.filePath}:${props.code}:${props.width}`}</Text>
+  },
 }))
 
 vi.mock('./diff/StructuredDiffList.js', () => ({
-  StructuredDiffList: ({
-    filePath,
-    firstLine,
-  }: {
+  StructuredDiffList: (props: {
     filePath: string
     firstLine: string | null
-  }) => <Text>{`diff:${filePath}:${firstLine ?? ''}`}</Text>,
+    width: number
+  }) => {
+    renderHarness.structuredDiffs.push(props)
+    return <Text>{`diff:${props.filePath}:${props.firstLine ?? ''}:${props.width}`}</Text>
+  },
 }))
 
 describe('FileEditToolUseRejectedMessage', () => {
+  beforeEach(() => {
+    renderHarness.highlightedCode = []
+    renderHarness.structuredDiffs = []
+  })
+
   test('renders condensed rejection with a relative path', async () => {
     const output = await renderToString(
       <FileEditToolUseRejectedMessage
@@ -125,5 +138,40 @@ describe('FileEditToolUseRejectedMessage', () => {
         80,
       ),
     ).resolves.toContain('diff:/repo/changed.ts:old')
+  })
+
+  test('sizes rejected write previews from inherited content width', async () => {
+    await renderToString(
+      <ContentWidthProvider width={64}>
+        <FileEditToolUseRejectedMessage
+          content="const value = 1"
+          file_path="/repo/src/new.ts"
+          firstLine={null}
+          operation="write"
+          verbose={false}
+        />
+      </ContentWidthProvider>,
+      120,
+    )
+
+    expect(renderHarness.highlightedCode.at(-1)).toMatchObject({ width: 52 })
+  })
+
+  test('sizes rejected update diffs from inherited content width', async () => {
+    await renderToString(
+      <ContentWidthProvider width={64}>
+        <FileEditToolUseRejectedMessage
+          fileContent="old"
+          file_path="/repo/changed.ts"
+          firstLine="old"
+          operation="update"
+          patch={[{ lines: ['-old', '+new'] }] as never}
+          verbose={false}
+        />
+      </ContentWidthProvider>,
+      120,
+    )
+
+    expect(renderHarness.structuredDiffs.at(-1)).toMatchObject({ width: 52 })
   })
 })

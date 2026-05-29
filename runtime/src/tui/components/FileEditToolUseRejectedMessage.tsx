@@ -4,6 +4,7 @@ import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import { relative } from 'path';
 import * as React from 'react';
+import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
@@ -38,6 +39,8 @@ export function FileEditToolUseRejectedMessage(t0) {
   const {
     columns
   } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
+  const previewWidth = Math.max(1, (inheritedContentWidth ?? columns) - 12);
   let t1;
   if ($[0] !== operation) {
     t1 = <Text color="subtle">User rejected {operation} to </Text>;
@@ -102,7 +105,7 @@ export function FileEditToolUseRejectedMessage(t0) {
     }
     const truncatedContent = t5;
     const t6 = truncatedContent || "(No content)";
-    const t7 = columns - 12;
+    const t7 = previewWidth;
     let t8;
     if ($[16] !== file_path || $[17] !== t6 || $[18] !== t7) {
       t8 = <HighlightedCode code={t6} filePath={file_path} width={t7} dim={true} />;
@@ -145,7 +148,7 @@ export function FileEditToolUseRejectedMessage(t0) {
     }
     return t5;
   }
-  const t5 = columns - 12;
+  const t5 = previewWidth;
   let t6;
   if ($[29] !== fileContent || $[30] !== file_path || $[31] !== firstLine || $[32] !== patch || $[33] !== t5) {
     t6 = <StructuredDiffList hunks={patch} dim={true} width={t5} filePath={file_path} firstLine={firstLine} fileContent={fileContent} />;

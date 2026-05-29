@@ -290,6 +290,7 @@ function printableChar(ch) {
 
 export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
   const grid = emptyGrid(rows, cols);
+  const autoWraps = [];
   let row = 0;
   let col = 0;
   let wrapPending = false;
@@ -331,6 +332,7 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
 
   const put = (ch) => {
     if (wrapPending) {
+      autoWraps.push({ row: row + 1, col: col + 1 });
       col = 0;
       lineFeed();
       wrapPending = false;
@@ -446,7 +448,12 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
     }
   }
 
-  return grid.map((line) => line.join("").trimEnd());
+  const renderedRows = grid.map((line) => line.join("").trimEnd());
+  Object.defineProperty(renderedRows, "autoWraps", {
+    value: autoWraps,
+    enumerable: false,
+  });
+  return renderedRows;
 }
 
 export function renderPtyScreen(raw, opts = {}) {

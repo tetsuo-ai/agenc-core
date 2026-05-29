@@ -88,6 +88,7 @@ vi.mock('./Message.renderers.js', async () => {
 
 import { createRoot } from '../ink/root.js'
 import { Box } from '../ink.js'
+import { ContentWidthProvider } from '../context/contentWidthContext.js'
 import type { Props } from './Message.js'
 import { Message } from './Message.js'
 
@@ -251,6 +252,72 @@ describe('Message render dispatch', () => {
       ).toMatchObject({ width: 7 })
     } finally {
       await rendered.dispose()
+    }
+  })
+
+  test('sizes user tool results from the message content width', async () => {
+    const user = {
+      message: {
+        content: [
+          { content: 'done', tool_use_id: 'tool-1', type: 'tool_result' },
+        ],
+      },
+      type: 'user',
+      uuid: 'user-content-width',
+    } as Props['message']
+
+    const rendered = await renderMessages([user], {
+      containerWidth: 54,
+    })
+
+    try {
+      expect(
+        harness.calls.find(call => call.name === 'UserToolResultMessage')?.props,
+      ).toMatchObject({ width: 49 })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('falls back to inherited content width for user tool results', async () => {
+    const user = {
+      message: {
+        content: [
+          { content: 'done', tool_use_id: 'tool-1', type: 'tool_result' },
+        ],
+      },
+      type: 'user',
+      uuid: 'user-inherited-width',
+    } as Props['message']
+
+    let output = ''
+    const { stdin, stdout } = createStreams()
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      root.render(
+        <ContentWidthProvider width={63}>
+          <Message {...baseProps(user)} message={user} />
+        </ContentWidthProvider>,
+      )
+      await sleep()
+
+      expect(stripAnsi(output)).toBeDefined()
+      expect(
+        harness.calls.find(call => call.name === 'UserToolResultMessage')?.props,
+      ).toMatchObject({ width: 58 })
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep()
     }
   })
 

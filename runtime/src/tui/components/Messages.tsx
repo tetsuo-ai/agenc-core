@@ -10,6 +10,7 @@ import { every } from '../../utils/set.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
 import type { Command } from '../../commands.js';
 import { BLACK_CIRCLE } from '../../constants/figures.js';
+import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
@@ -278,6 +279,9 @@ const MessagesImpl = ({
   const {
     columns
   } = useTerminalSize();
+  const inheritedContentWidth = useContentWidth();
+  const contentColumns = inheritedContentWidth ?? columns;
+  const streamingContentWidth = insetContentWidth(contentColumns, 2) ?? contentColumns;
   const toggleShowAllShortcut = useShortcutDisplay('transcript:toggleShowAll', 'Transcript', 'Ctrl+E');
   const normalizedMessages = useMemo(() => normalizeMessages(messages).filter(isNotEmptyMessage), [messages]);
   const [streamingThinkingExpiryTick, setStreamingThinkingExpiryTick] = useState(0);
@@ -530,7 +534,7 @@ const MessagesImpl = ({
     // streaming instead of waiting for the block to finalize.
     const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!streamingText || hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs));
     const k_0 = messageKey(msg_8);
-    const row = <MessageRow key={k_0} message={msg_8} isUserContinuation={isUserContinuation} hasContentAfter={hasContentAfter} tools={tools} commands={commands} verbose={verbose || isItemExpanded(msg_8) || cursor?.expanded === true && index === selectedIdx} inProgressToolUseIDs={inProgressToolUseIDs} streamingToolUseIDs={streamingToolUseIDs} screen={screen} canAnimate={canAnimate} onOpenRateLimitOptions={onOpenRateLimitOptions} lastThinkingBlockId={lastThinkingBlockId} latestBashOutputUUID={latestBashOutputUUID} columns={columns} isLoading={isLoading} lookups={lookups_0} />;
+    const row = <MessageRow key={k_0} message={msg_8} isUserContinuation={isUserContinuation} hasContentAfter={hasContentAfter} tools={tools} commands={commands} verbose={verbose || isItemExpanded(msg_8) || cursor?.expanded === true && index === selectedIdx} inProgressToolUseIDs={inProgressToolUseIDs} streamingToolUseIDs={streamingToolUseIDs} screen={screen} canAnimate={canAnimate} onOpenRateLimitOptions={onOpenRateLimitOptions} lastThinkingBlockId={lastThinkingBlockId} latestBashOutputUUID={latestBashOutputUUID} columns={contentColumns} isLoading={isLoading} lookups={lookups_0} />;
 
     // Per-row Provider — only 2 rows re-render on selection change.
     // Wrapped BEFORE divider branch so both return paths get it.
@@ -539,7 +543,7 @@ const MessagesImpl = ({
       </MessageActionsSelectedContext.Provider>;
     if (unseenDivider && index === dividerBeforeIndex) {
       return [<Box key="unseen-divider" marginTop={1}>
-          <Divider title={`${unseenDivider.count} new ${plural(unseenDivider.count, 'message')}`} width={columns} color="inactive" />
+          <Divider title={`${unseenDivider.count} new ${plural(unseenDivider.count, 'message')}`} width={contentColumns} color="inactive" />
         </Box>, wrapped];
     }
     return wrapped;
@@ -588,14 +592,14 @@ const MessagesImpl = ({
       {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
 
       {/* Truncation indicator */}
-      {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={columns} />}
+      {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={contentColumns} />}
 
       {/* Show all indicator */}
       {isTranscriptMode && showAllInTranscript && hiddenMessageCount_0 > 0 &&
     // disableRenderCap (e.g. [ dump-to-scrollback) means we're uncapped
     // as a one-shot escape hatch, not a toggle — ctrl+e is dead and
     // nothing is actually "hidden" to restore.
-    !disableRenderCap && <Divider title={`${toggleShowAllShortcut} to hide ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={columns} />}
+    !disableRenderCap && <Divider title={`${toggleShowAllShortcut} to hide ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={contentColumns} />}
 
       {/* Messages - rendered as memoized MessageRow components.
           flatMap inserts the unseen-divider as a separate keyed sibling so
@@ -606,7 +610,7 @@ const MessagesImpl = ({
           passing the array would accumulate every historical version
           (~1-2MB over a 7-turn session). */}
       {virtualScrollRuntimeGate ? <InVirtualListContext.Provider value={true}>
-          <VirtualMessageList messages={renderableMessages} scrollRef={scrollRef} columns={columns} itemKey={messageKey} renderItem={renderMessageRow} onItemClick={onItemClick} isItemClickable={isItemClickable} isItemExpanded={isItemExpanded} trackStickyPrompt={trackStickyPrompt} selectedIndex={selectedIdx >= 0 ? selectedIdx : undefined} cursorNavRef={cursorNavRef} setCursor={setCursor} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} extractSearchText={extractSearchText} />
+          <VirtualMessageList messages={renderableMessages} scrollRef={scrollRef} columns={contentColumns} itemKey={messageKey} renderItem={renderMessageRow} onItemClick={onItemClick} isItemClickable={isItemClickable} isItemExpanded={isItemExpanded} trackStickyPrompt={trackStickyPrompt} selectedIndex={selectedIdx >= 0 ? selectedIdx : undefined} cursorNavRef={cursorNavRef} setCursor={setCursor} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} extractSearchText={extractSearchText} />
         </InVirtualListContext.Provider> : renderableMessages.flatMap(renderMessageRow)}
 
       {streamingText && !isBriefOnly && <Box alignItems="flex-start" flexDirection="row" marginTop={1} width="100%">
@@ -614,8 +618,10 @@ const MessagesImpl = ({
             <Box minWidth={2}>
               <Text color="text">{BLACK_CIRCLE}</Text>
             </Box>
-            <Box flexDirection="column">
-              <StreamingMarkdown>{streamingText}</StreamingMarkdown>
+            <Box flexDirection="column" width={streamingContentWidth}>
+              <ContentWidthProvider width={streamingContentWidth}>
+                <StreamingMarkdown>{streamingText}</StreamingMarkdown>
+              </ContentWidthProvider>
             </Box>
           </Box>
         </Box>}
