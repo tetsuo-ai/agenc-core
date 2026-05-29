@@ -205,7 +205,7 @@ function filterToolsByDenyRules<
   return tools.filter(tool => !getDenyRuleForTool(permissionContext, tool))
 }
 
-export const getTools = (permissionContext: ToolPermissionContext): Tools => {
+const getTools = (permissionContext: ToolPermissionContext): Tools => {
   // Simple mode: only Bash, Read, and Edit tools
   if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
     const simpleTools: Tool[] = [

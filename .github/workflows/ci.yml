@@ -1,10 +1,14 @@
 name: CI
 
+# Manual-only for now: at this stage CI is expensive and low-value — local
+# verification (tsc + tsup build + full vitest suite) is the gate. Re-enable the
+# push/pull_request triggers below when CI is worth running automatically again.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch: {}
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

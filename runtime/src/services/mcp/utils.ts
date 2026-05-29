@@ -9,7 +9,7 @@ import {
   getSettings_DEPRECATED,
   hasSkipDangerousModePermissionPrompt,
 } from '../../utils/settings/settings.js'
-import { getEnterpriseMcpFilePath, getMcpConfigByName } from './config.js'
+import { getEnterpriseMcpFilePath } from './config.js'
 import { mcpInfoFromString } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import {
@@ -189,36 +189,6 @@ export function getProjectMcpServerStatus(
   }
 
   return 'pending'
-}
-
-/**
- * Get the scope/settings source for an MCP server from a tool name
- * @param toolName MCP tool name (format: mcp__serverName__toolName)
- * @returns ConfigScope or null if not an MCP tool or server not found
- */
-export function getMcpServerScopeFromToolName(
-  toolName: string,
-): ConfigScope | null {
-  if (!isMcpTool({ name: toolName } as Tool)) {
-    return null
-  }
-
-  // Extract server name from tool name (format: mcp__serverName__toolName)
-  const mcpInfo = mcpInfoFromString(toolName)
-  if (!mcpInfo) {
-    return null
-  }
-
-  // Look up server config
-  const serverConfig = getMcpConfigByName(mcpInfo.serverName)
-
-  // Fallback: agenc.tech servers have normalized names starting with "agenc_ai_"
-  // but aren't in getMcpConfigByName (they're fetched async separately)
-  if (!serverConfig && mcpInfo.serverName.startsWith('agenc_ai_')) {
-    return 'agencai'
-  }
-
-  return serverConfig?.scope ?? null
 }
 
 /**

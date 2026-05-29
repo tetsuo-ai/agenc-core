@@ -127,13 +127,6 @@ export const getCoreUserData = memoize(
   },
 )
 
-/**
- * Get user data for GrowthBook (same as core data with analytics metadata).
- */
-export function getUserForGrowthBook(): CoreUserData {
-  return getCoreUserData(true)
-}
-
 function getEmail(): string | undefined {
   // Return cached email if available (from async initialization)
   if (cachedEmail !== null) {
