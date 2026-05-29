@@ -1,9 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import {
-  logEvent,
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-} from 'src/services/analytics/index.js'
-import {
   toolMatchesName,
   type Tools,
   type ToolUseContext,
@@ -986,36 +982,9 @@ export async function getAttachments(
 }
 
 async function maybe<A>(label: string, f: () => Promise<A[]>): Promise<A[]> {
-  const startTime = Date.now()
   try {
-    const result = await f()
-    const duration = Date.now() - startTime
-    // Log only 5% of events to reduce volume
-    if (Math.random() < 0.05) {
-      // jsonStringify(undefined) returns undefined, so .length would throw
-      const attachmentSizeBytes = result
-        .filter(a => a !== undefined && a !== null)
-        .reduce((total, attachment) => {
-          return total + jsonStringify(attachment).length
-        }, 0)
-      logEvent('tengu_attachment_compute_duration', {
-        label,
-        duration_ms: duration,
-        attachment_size_bytes: attachmentSizeBytes,
-        attachment_count: result.length,
-      } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-    }
-    return result
+    return await f()
   } catch (e) {
-    const duration = Date.now() - startTime
-    // Log only 5% of events to reduce volume
-    if (Math.random() < 0.05) {
-      logEvent('tengu_attachment_compute_duration', {
-        label,
-        duration_ms: duration,
-        error: true,
-      } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-    }
     logError(e)
     // For Ant users, log the full error to help with debugging
     logAntError(`Attachment error in ${label}`, e)
@@ -1430,7 +1399,6 @@ function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
   if (!isUltrathinkEnabled() || !input || !hasUltrathinkKeyword(input)) {
     return []
   }
-  logEvent('tengu_ultrathink', {})
   return [{ type: 'ultrathink_effort', level: 'high' }]
 }
 
@@ -1911,7 +1879,6 @@ async function processAtMentionedFiles(
                 )
               }
               const stdout = names.join('\n')
-              logEvent('tengu_at_mention_extracting_directory_success', {})
 
               return {
                 type: 'directory' as const,
@@ -1939,7 +1906,6 @@ async function processAtMentionedFiles(
           },
         )
       } catch {
-        logEvent('tengu_at_mention_extracting_filename_error', {})
         return null
       }
     }),
@@ -1959,11 +1925,8 @@ function processAgentMentions(
     const agentDef = agents.find(def => def.agentType === agentType)
 
     if (!agentDef) {
-      logEvent('tengu_at_mention_agent_not_found', {})
       return null
     }
-
-    logEvent('tengu_at_mention_agent_success', {})
 
     return {
       type: 'agent_mention' as const,
@@ -1992,14 +1955,12 @@ async function processMcpResourceAttachments(
         const uri = uriParts.join(':') // Rejoin in case URI contains colons
 
         if (!serverName || !uri) {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
           return null
         }
 
         // Find the MCP client
         const client = mcpClients.find(c => c.name === serverName)
         if (!client || client.type !== 'connected') {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
           return null
         }
 
@@ -2008,7 +1969,6 @@ async function processMcpResourceAttachments(
           toolUseContext.options.mcpResources?.[serverName] || []
         const resourceInfo = serverResources.find(r => r.uri === uri)
         if (!resourceInfo) {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
           return null
         }
 
@@ -2016,8 +1976,6 @@ async function processMcpResourceAttachments(
           const result = await client.client.readResource({
             uri,
           })
-
-          logEvent('tengu_at_mention_mcp_resource_success', {})
 
           return {
             type: 'mcp_resource' as const,
@@ -2028,12 +1986,10 @@ async function processMcpResourceAttachments(
             content: result,
           }
         } catch (error) {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
           logError(error)
           return null
         }
       } catch {
-        logEvent('tengu_at_mention_mcp_resource_error', {})
         return null
       }
     }),
@@ -2433,7 +2389,6 @@ export function startRelevantMemoryPrefetch(
   // Chained to the turn-level abort so user Escape cancels the sideQuery
   // immediately, not just on [Symbol.dispose] when queryLoop exits.
   const controller = createChildAbortController(toolUseContext.abortController)
-  const firedAt = Date.now()
   const promise = getRelevantMemoryAttachments(
     input,
     toolUseContext.options.agentDefinitions.activeAgents,
@@ -2454,12 +2409,6 @@ export function startRelevantMemoryPrefetch(
     consumedOnIteration: -1,
     [Symbol.dispose]() {
       controller.abort()
-      logEvent('tengu_memdir_prefetch_collected', {
-        hidden_by_first_iteration:
-          handle.settledAt !== null && handle.consumedOnIteration === 0,
-        consumed_on_iteration: handle.consumedOnIteration,
-        latency_ms: (handle.settledAt ?? Date.now()) - firedAt,
-      })
     },
   }
   void promise.finally(() => {
@@ -3026,12 +2975,6 @@ export async function* getAttachmentMessages(
     return
   }
 
-  logEvent('tengu_attachments', {
-    attachment_types: attachments.map(
-      _ => _.type,
-    ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
-
   for (const attachment of attachments) {
     yield createAttachmentMessage(attachment)
   }
@@ -3066,11 +3009,6 @@ export async function tryGetPDFReference(
     // Use page count if available, otherwise fall back to size heuristic (~100KB per page)
     const effectivePageCount = pageCount ?? Math.ceil(stats.size / (100 * 1024))
     if (effectivePageCount > PDF_AT_MENTION_INLINE_THRESHOLD) {
-      logEvent('tengu_pdf_reference_attachment', {
-        pageCount: effectivePageCount,
-        fileSize: stats.size,
-        hadPdfinfo: pageCount !== null,
-      } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
       return {
         type: 'pdf_reference',
         filename,
@@ -3088,8 +3026,8 @@ export async function tryGetPDFReference(
 export async function generateFileAttachment(
   filename: string,
   toolUseContext: ToolUseContext,
-  successEventName: string,
-  errorEventName: string,
+  _successEventName: string,
+  _errorEventName: string,
   mode: 'compact' | 'at-mention',
   options?: {
     offset?: number
@@ -3121,11 +3059,7 @@ export async function generateFileAttachment(
     const ext = parse(filename).ext.toLowerCase()
     if (!isPDFExtension(ext)) {
       try {
-        const stats = await getFsImplementation().stat(filename)
-        logEvent('tengu_attachment_file_too_large', {
-          size_bytes: stats.size,
-          mode,
-        } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
+        await getFsImplementation().stat(filename)
         return null
       } catch {
         // If we can't stat the file, proceed with normal reading (will fail later if file doesn't exist)
@@ -3163,7 +3097,6 @@ export async function generateFileAttachment(
       ) {
         // File hasn't been modified, return already_read_file attachment
         // This tells the system the file is already in context and doesn't need to be sent to API
-        logEvent(successEventName, {})
         return {
           type: 'already_read_file',
           filename,
@@ -3224,7 +3157,6 @@ export async function generateFileAttachment(
           truncatedInput,
           toolUseContext,
         )
-        logEvent(successEventName, {})
 
         return {
           type: 'file' as const,
@@ -3234,14 +3166,12 @@ export async function generateFileAttachment(
           displayPath: relative(getCwd(), filename),
         }
       } catch {
-        logEvent(errorEventName, {})
         return null
       }
     }
 
     try {
       const content = await callCanonicalFileReadTool(fileInput, toolUseContext)
-      logEvent(successEventName, {})
       return {
         type: 'file',
         filename,
@@ -3255,7 +3185,6 @@ export async function generateFileAttachment(
       throw error
     }
   } catch {
-    logEvent(errorEventName, {})
     return null
   }
 }

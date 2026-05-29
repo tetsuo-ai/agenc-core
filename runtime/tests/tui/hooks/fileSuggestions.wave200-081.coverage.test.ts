@@ -8,12 +8,10 @@ let tempCwd = ''
 const harness = vi.hoisted(() => ({
   fileIndexLoads: [] as string[][],
   logError: vi.fn(),
-  logEvent: vi.fn(),
   ripGrep: vi.fn(async () => [] as string[]),
   reset() {
     this.fileIndexLoads = []
     this.logError.mockClear()
-    this.logEvent.mockClear()
     this.ripGrep.mockClear()
   },
 }))
@@ -22,10 +20,6 @@ vi.mock('../../utils/cwd.js', () => ({
   getCwd: () => tempCwd,
   pwd: () => tempCwd,
   runWithCwdOverride: <T,>(_cwd: string, fn: () => T) => fn(),
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/settings/settings.js', () => ({

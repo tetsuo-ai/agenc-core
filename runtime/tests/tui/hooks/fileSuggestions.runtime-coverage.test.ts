@@ -20,11 +20,6 @@ vi.mock('../../utils/cwd.js', () => ({
   runWithCwdOverride: <T,>(_cwd: string, fn: () => T) => fn(),
 }))
 
-// Avoid hitting the real analytics path during tests.
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: () => {},
-}))
-
 // Stable settings: file suggestions use the in-process index path, not the
 // configurable hook command.
 vi.mock('../../utils/settings/settings.js', () => ({

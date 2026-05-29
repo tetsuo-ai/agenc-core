@@ -70,7 +70,6 @@ const providerProbe = {
     : async () => ({ messages: [], shouldQuery: false }),
   onChangeAppState: typeof vi.fn === "function" ? vi.fn() : () => {},
   inkExit: typeof vi.fn === "function" ? vi.fn() : () => {},
-  logEvent: typeof vi.fn === "function" ? vi.fn() : () => {},
   fileHistoryRewind: typeof vi.fn === "function" ? vi.fn() : () => {},
   historyEntries: [] as unknown[],
 };
@@ -112,10 +111,6 @@ vi.mock("../../cost/hook.js", () => ({
 
 vi.mock("../../cost/tracker.js", () => ({
   getTotalCost: () => mockTotalCost,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: providerProbe.logEvent,
 }));
 
 vi.mock("../../utils/billing.js", () => ({
@@ -665,7 +660,6 @@ function resetShellSurfaceProbe(): void {
   providerProbe.promptProps.length = 0;
   providerProbe.promptSubmits.length = 0;
   providerProbe.inkExit.mockClear?.();
-  providerProbe.logEvent.mockClear?.();
   providerProbe.fileHistoryRewind.mockReset?.();
   providerProbe.processBashCommand.mockClear?.();
   providerProbe.historyEntries.length = 0;
@@ -2246,19 +2240,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             onDone: expect.any(Function),
           }),
         );
-        expect(providerProbe.logEvent).toHaveBeenCalledWith(
-          "agenc_cost_threshold_reached",
-          {},
-        );
 
         (providerProbe.costThresholdDialogProps.at(-1)!.onDone as () => void)();
         await new Promise((resolve) => setTimeout(resolve, 25));
 
         expect(mockGlobalConfig.hasAcknowledgedCostThreshold).toBe(true);
-        expect(providerProbe.logEvent).toHaveBeenCalledWith(
-          "agenc_cost_threshold_acknowledged",
-          {},
-        );
       },
     );
   });
@@ -2280,10 +2266,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
         expect(output()).not.toContain("cost-threshold-dialog");
         expect(providerProbe.costThresholdDialogProps).toHaveLength(0);
-        expect(providerProbe.logEvent).toHaveBeenCalledWith(
-          "agenc_cost_threshold_reached",
-          {},
-        );
       },
     );
   });

@@ -13,10 +13,6 @@
  */
 
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getPerformance } from './profilerBase.js'
@@ -159,14 +155,6 @@ export function logHeadlessProfilerTurn(): void {
   // Add entrypoint for segmentation (sdk-ts, sdk-py, sdk-cli, or undefined)
   if (process.env.AGENC_ENTRYPOINT) {
     metadata.entrypoint = process.env.AGENC_ENTRYPOINT
-  }
-
-  // Log to Statsig if sampled
-  if (STATSIG_LOGGING_SAMPLED) {
-    logEvent(
-      'tengu_headless_latency',
-      metadata as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    )
   }
 
   // Log detailed output if AGENC_PROFILE_STARTUP=1

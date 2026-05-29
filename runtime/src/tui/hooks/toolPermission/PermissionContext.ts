@@ -1,10 +1,5 @@
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../../services/analytics/index.js'
-import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
 import type { ToolUseConfirm } from '../../permission-types.js'
 import type {
   ToolPermissionContext,
@@ -129,13 +124,6 @@ function createPermissionContext(
         opts?.permissionPromptStartTimeMs,
       )
     },
-    logCancelled() {
-      logEvent('tengu_tool_use_cancelled', {
-        messageID:
-          messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        toolName: sanitizeToolNameForAnalytics(tool.name),
-      })
-    },
     async persistPermissions(updates: PermissionUpdate[]) {
       if (updates.length === 0) return false
       persistPermissionUpdates(updates)
@@ -147,7 +135,6 @@ function createPermissionContext(
     },
     resolveIfAborted(resolve: (decision: PermissionDecision) => void) {
       if (!toolUseContext.abortController.signal.aborted) return false
-      this.logCancelled()
       resolve(this.cancelAndAbort(undefined, true))
       return true
     },

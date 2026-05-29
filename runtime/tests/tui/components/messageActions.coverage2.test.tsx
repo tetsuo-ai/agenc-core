@@ -3,14 +3,6 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-const analytics = vi.hoisted(() => ({
-  logEvent: vi.fn(),
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: analytics.logEvent,
-}))
-
 import { createRoot } from '../ink/root.js'
 import {
   type MessageActionCaps,
@@ -162,7 +154,6 @@ describe('useMessageActions coverage', () => {
 
     try {
       rendered.handlers().enter()
-      expect(analytics.logEvent).toHaveBeenCalledTimes(1)
       expect(rendered.nav.enterCursor).toHaveBeenCalledTimes(1)
 
       rendered.handlers().handlers['messageActions:prev']()

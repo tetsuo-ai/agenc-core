@@ -10,7 +10,6 @@ import { CanonicalBashTool } from '../../tools/canonicalToolSurface.js';
 import { PowerShellTool } from '../../tools/PowerShellTool/PowerShellTool.js';
 import type { AttachmentMessage, SystemMessage, UserMessage } from '../../types/message.js';
 import type { ShellProgress } from '../../types/tools.js';
-import { logEvent } from '../../services/analytics/index.js';
 import { errorMessage, ShellError } from '../../utils/errors.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../../utils/messages.js';
 import { resolveDefaultShell } from '../../utils/shell/resolveDefaultShell.js';
@@ -73,9 +72,6 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   // tool-list visibility. Computed up front so telemetry records the
   // actual shell, not the raw setting.
   const usePowerShell = isPowerShellToolEnabled() && resolveDefaultShell() === 'powershell';
-  logEvent('agenc_input_bash', {
-    powershell: usePowerShell
-  });
   const userMessage = createUserMessage({
     content: prepareUserContent({
       inputString: `<bash-input>${escapeXml(inputString)}</bash-input>`,
@@ -89,9 +85,6 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   // refuse to execute until the user confirms via the dialog. The flag is
   // consumed (one-shot) so the next legitimate submission is not gated.
   if (consumeSuspectedPaste()) {
-    logEvent('agenc_input_bash_paste_gate', {
-      powershell: usePowerShell
-    });
     const allowed = await awaitPasteConfirmation(inputString, setToolJSX);
     if (!allowed) {
       setToolJSX(null);

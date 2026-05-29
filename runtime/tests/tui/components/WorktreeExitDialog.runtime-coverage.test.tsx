@@ -29,10 +29,6 @@ const execMock = vi.hoisted(() => ({
   }),
 }));
 
-const analyticsMock = vi.hoisted(() => ({
-  logEvent: vi.fn(),
-}));
-
 const debugMock = vi.hoisted(() => ({
   logForDebugging: vi.fn(),
 }));
@@ -72,10 +68,6 @@ const selectMock = vi.hoisted(() => ({
 
 vi.mock("bun:bundle", () => ({
   feature: () => false,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: analyticsMock.logEvent,
 }));
 
 vi.mock("src/utils/debug.js", () => ({
@@ -221,7 +213,6 @@ describe("WorktreeExitDialog", () => {
     execMock.statusStdout = "";
     execMock.revListStdout = "0\n";
     execMock.execFileNoThrow.mockClear();
-    analyticsMock.logEvent.mockClear();
     debugMock.logForDebugging.mockClear();
     shellMock.setCwd.mockClear();
     plansMock.clear.mockClear();
@@ -290,10 +281,6 @@ describe("WorktreeExitDialog", () => {
       await waitFor(() => rendered.onDone.mock.calls.length > 0);
 
       expect(worktreeMock.keepWorktree).toHaveBeenCalledOnce();
-      expect(analyticsMock.logEvent).toHaveBeenCalledWith(
-        "agenc_worktree_kept",
-        { changed_files: 1, commits: 0 },
-      );
       expect(chdirSpy).toHaveBeenCalledWith("/repo");
       expect(shellMock.setCwd).toHaveBeenCalledWith("/repo");
       expect(sessionStorageMock.saveWorktreeState).toHaveBeenCalledWith(null);
@@ -387,10 +374,6 @@ describe("WorktreeExitDialog", () => {
       await waitFor(() => rendered.onDone.mock.calls.length > 0);
 
       expect(worktreeMock.cleanupWorktree).toHaveBeenCalledOnce();
-      expect(analyticsMock.logEvent).toHaveBeenCalledWith(
-        "agenc_worktree_removed",
-        { changed_files: 1, commits: 1 },
-      );
       expect(rendered.onDone).toHaveBeenCalledWith(
         "Worktree removed. 1 commit and uncommitted changes were discarded.",
       );

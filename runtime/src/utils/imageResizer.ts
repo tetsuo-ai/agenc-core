@@ -8,28 +8,16 @@ import {
   IMAGE_MAX_WIDTH,
   IMAGE_TARGET_RAW_SIZE,
 } from '../constants/apiLimits.js'
-import { logEvent } from '../services/analytics/index.js'
 import {
   getImageProcessor,
   type SharpFunction,
   type SharpInstance,
 } from '../tools/FileReadTool/imageProcessor.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
 
 type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
-
-// Error type constants for analytics (numeric to comply with logEvent restrictions)
-const ERROR_TYPE_MODULE_LOAD = 1
-const ERROR_TYPE_PROCESSING = 2
-const ERROR_TYPE_UNKNOWN = 3
-const ERROR_TYPE_PIXEL_LIMIT = 4
-const ERROR_TYPE_MEMORY = 5
-const ERROR_TYPE_TIMEOUT = 6
-const ERROR_TYPE_VIPS = 7
-const ERROR_TYPE_PERMISSION = 8
 
 /**
  * Error thrown when image resizing fails and the image exceeds the API limit.
@@ -39,100 +27,6 @@ export class ImageResizeError extends Error {
     super(message)
     this.name = 'ImageResizeError'
   }
-}
-
-/**
- * Classifies image processing errors for analytics.
- *
- * Uses error codes when available (Node.js module errors), falls back to
- * message matching for libraries like sharp that don't expose error codes.
- */
-function classifyImageError(error: unknown): number {
-  // Check for Node.js error codes first (more reliable than string matching)
-  if (error instanceof Error) {
-    const errorWithCode = error as Error & { code?: string }
-    if (
-      errorWithCode.code === 'MODULE_NOT_FOUND' ||
-      errorWithCode.code === 'ERR_MODULE_NOT_FOUND' ||
-      errorWithCode.code === 'ERR_DLOPEN_FAILED'
-    ) {
-      return ERROR_TYPE_MODULE_LOAD
-    }
-    if (errorWithCode.code === 'EACCES' || errorWithCode.code === 'EPERM') {
-      return ERROR_TYPE_PERMISSION
-    }
-    if (errorWithCode.code === 'ENOMEM') {
-      return ERROR_TYPE_MEMORY
-    }
-  }
-
-  // Fall back to message matching for errors without codes
-  // Note: sharp doesn't expose error codes, so we must match on messages
-  const message = errorMessage(error)
-
-  // Module loading errors from our native wrapper
-  if (message.includes('Native image processor module not available')) {
-    return ERROR_TYPE_MODULE_LOAD
-  }
-
-  // Sharp/vips processing errors (format detection, corrupt data, etc.)
-  if (
-    message.includes('unsupported image format') ||
-    message.includes('Input buffer') ||
-    message.includes('Input file is missing') ||
-    message.includes('Input file has corrupt header') ||
-    message.includes('corrupt header') ||
-    message.includes('corrupt image') ||
-    message.includes('premature end') ||
-    message.includes('zlib: data error') ||
-    message.includes('zero width') ||
-    message.includes('zero height')
-  ) {
-    return ERROR_TYPE_PROCESSING
-  }
-
-  // Pixel/dimension limit errors from sharp/vips
-  if (
-    message.includes('pixel limit') ||
-    message.includes('too many pixels') ||
-    message.includes('exceeds pixel') ||
-    message.includes('image dimensions')
-  ) {
-    return ERROR_TYPE_PIXEL_LIMIT
-  }
-
-  // Memory allocation failures
-  if (
-    message.includes('out of memory') ||
-    message.includes('Cannot allocate') ||
-    message.includes('memory allocation')
-  ) {
-    return ERROR_TYPE_MEMORY
-  }
-
-  // Timeout errors
-  if (message.includes('timeout') || message.includes('timed out')) {
-    return ERROR_TYPE_TIMEOUT
-  }
-
-  // Vips-specific errors (VipsJpeg, VipsPng, VipsWebp, etc.)
-  if (message.includes('Vips')) {
-    return ERROR_TYPE_VIPS
-  }
-
-  return ERROR_TYPE_UNKNOWN
-}
-
-/**
- * Computes a simple numeric hash of a string for analytics grouping.
- * Uses djb2 algorithm, returning a 32-bit unsigned integer.
- */
-function hashString(str: string): number {
-  let hash = 5381
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0
-  }
-  return hash >>> 0
 }
 
 export type ImageDimensions = {
@@ -381,15 +275,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
       },
     }
   } catch (error) {
-    // Log the error and emit analytics event
     logError(error as Error)
-    const errorType = classifyImageError(error)
-    const errorMsg = errorMessage(error)
-    logEvent('tengu_image_resize_failed', {
-      original_size_bytes: originalSize,
-      error_type: errorType,
-      error_message_hash: hashString(errorMsg),
-    })
 
     // Detect actual format from magic bytes instead of trusting extension
     const detected = detectImageFormatFromBuffer(imageBuffer)
@@ -412,11 +298,6 @@ export async function maybeResizeAndDownsampleImageBuffer(
 
     // If original image's base64 encoding is within API limit, allow it through uncompressed
     if (base64Size <= API_IMAGE_MAX_BASE64_SIZE && !overDim) {
-      logEvent('tengu_image_resize_fallback', {
-        original_size_bytes: originalSize,
-        base64_size_bytes: base64Size,
-        error_type: errorType,
-      })
       return { buffer: imageBuffer, mediaType: normalizedExt }
     }
 
@@ -546,16 +427,7 @@ export async function compressImageBuffer(
     // Last resort: ultra-compressed JPEG
     return await createUltraCompressedJPEG(context, sharp)
   } catch (error) {
-    // Log the error and emit analytics event
     logError(error as Error)
-    const errorType = classifyImageError(error)
-    const errorMsg = errorMessage(error)
-    logEvent('tengu_image_compress_failed', {
-      original_size_bytes: imageBuffer.length,
-      max_bytes: maxBytes,
-      error_type: errorType,
-      error_message_hash: hashString(errorMsg),
-    })
 
     // If original image is within the requested limit, allow it through
     if (imageBuffer.length <= maxBytes) {

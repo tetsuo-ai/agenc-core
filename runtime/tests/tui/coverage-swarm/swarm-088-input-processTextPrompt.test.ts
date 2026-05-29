@@ -12,9 +12,6 @@ const mocks = vi.hoisted(() => ({
     message: { role: 'user', content: input.content },
     ...input,
   })),
-  logEvent: vi.fn(),
-  logOTelEvent: vi.fn(),
-  redactIfDisabled: vi.fn((value: string) => `redacted:${value}`),
   setPromptId: vi.fn(),
   startInteractionSpan: vi.fn(),
 }))
@@ -25,17 +22,8 @@ vi.mock('../../../src/bootstrap/state.js', () => ({
   updateLastInteractionTime: vi.fn(),
 }))
 
-vi.mock('../../../src/services/analytics/index.js', () => ({
-  logEvent: mocks.logEvent,
-}))
-
 vi.mock('../../../src/utils/messages.js', () => ({
   createUserMessage: mocks.createUserMessage,
-}))
-
-vi.mock('../../../src/utils/telemetry/events.js', () => ({
-  logOTelEvent: mocks.logOTelEvent,
-  redactIfDisabled: mocks.redactIfDisabled,
 }))
 
 vi.mock('../../../src/utils/telemetry/sessionTracing.js', () => ({
@@ -90,16 +78,9 @@ describe('processTextPrompt coverage swarm row 088', () => {
       'acceptEdits',
       false,
     )
-    const promptId = mocks.setPromptId.mock.calls[0]?.[0]
 
     expect(result.shouldQuery).toBe(true)
     expect(mocks.startInteractionSpan).toHaveBeenCalledWith('   ')
-    expect(mocks.redactIfDisabled).toHaveBeenCalledWith('   ')
-    expect(mocks.logOTelEvent).toHaveBeenCalledWith('user_prompt', {
-      prompt_length: '3',
-      prompt: 'redacted:   ',
-      'prompt.id': promptId,
-    })
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: [pastedImage],
       uuid: 'prompt-uuid',
@@ -116,17 +97,12 @@ describe('processTextPrompt coverage swarm row 088', () => {
     ])
   })
 
-  test('skips prompt telemetry when array input has no text blocks', () => {
+  test('starts an empty interaction span when array input has no text blocks', () => {
     const inlineImage = imageBlock('inline-image')
     const result = processTextPrompt([inlineImage], [], [], [])
 
     expect(result.shouldQuery).toBe(true)
     expect(mocks.startInteractionSpan).toHaveBeenCalledWith('')
-    expect(mocks.logOTelEvent).not.toHaveBeenCalled()
-    expect(mocks.logEvent).toHaveBeenCalledWith('agenc_input_prompt', {
-      is_negative: false,
-      is_keep_going: false,
-    })
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: [inlineImage],
       uuid: undefined,
@@ -135,13 +111,9 @@ describe('processTextPrompt coverage swarm row 088', () => {
     })
   })
 
-  test('records negative and keep-going prompt classifications together', () => {
+  test('creates a user message from string prompt content', () => {
     processTextPrompt('This sucks, keep going', [], [], [])
 
-    expect(mocks.logEvent).toHaveBeenCalledWith('agenc_input_prompt', {
-      is_negative: true,
-      is_keep_going: true,
-    })
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: 'This sucks, keep going',
       uuid: undefined,

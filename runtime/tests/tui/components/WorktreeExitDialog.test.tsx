@@ -46,7 +46,6 @@ const harness = vi.hoisted(() => ({
   execFileNoThrow: vi.fn(),
   keepWorktree: vi.fn(),
   killTmuxSession: vi.fn(),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   saveWorktreeState: vi.fn(),
   selectProps: undefined as CapturedSelectProps | undefined,
@@ -56,10 +55,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('src/utils/debug.js', () => ({
@@ -360,7 +355,6 @@ describe('WorktreeExitDialog', () => {
     harness.keepWorktree.mockResolvedValue(undefined)
     harness.killTmuxSession.mockReset()
     harness.killTmuxSession.mockResolvedValue(true)
-    harness.logEvent.mockClear()
     harness.logForDebugging.mockClear()
     harness.saveWorktreeState.mockClear()
     harness.selectProps = undefined
@@ -731,10 +725,6 @@ describe('WorktreeExitDialog', () => {
       'keep action did not finish',
     )
 
-    expect(harness.logEvent).toHaveBeenCalledWith('agenc_worktree_kept', {
-      changed_files: 1,
-      commits: 3,
-    })
     expect(harness.killTmuxSession).not.toHaveBeenCalled()
     expect(harness.keepWorktree).toHaveBeenCalledOnce()
     expect(harness.chdir).toHaveBeenCalledWith('/workspace/main')
@@ -833,10 +823,6 @@ describe('WorktreeExitDialog', () => {
       'remove action did not finish',
     )
 
-    expect(harness.logEvent).toHaveBeenCalledWith('agenc_worktree_removed', {
-      changed_files: 1,
-      commits: 2,
-    })
     expect(harness.killTmuxSession).toHaveBeenCalledWith('agenc-worktree-tmux')
     expect(harness.cleanupWorktree).toHaveBeenCalledOnce()
     expect(harness.chdir).toHaveBeenCalledWith('/workspace/main')

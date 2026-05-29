@@ -25,7 +25,6 @@ const harness = vi.hoisted(() => ({
   helperConfigured: false,
   helperElapsedMs: 0,
   ideStatus: "disconnected" as "connected" | "disconnected",
-  logEvent: vi.fn(),
   mcpClientsSeen: undefined as unknown,
   model: "gpt-5.4",
   removeNotification: vi.fn(),
@@ -36,10 +35,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("bun:bundle", () => ({
   feature: () => false,
-}));
-
-vi.mock("../../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../../services/compact/autoCompact.js", () => ({
@@ -227,7 +222,6 @@ function resetHarness() {
   harness.helperConfigured = false;
   harness.helperElapsedMs = 0;
   harness.ideStatus = "disconnected";
-  harness.logEvent.mockClear();
   harness.mcpClientsSeen = undefined;
   harness.model = "gpt-5.4";
   harness.removeNotification.mockClear();
@@ -362,7 +356,6 @@ describe("Notifications wave200-144 coverage", () => {
           timeoutMs: 5000,
         }),
       );
-      expect(harness.logEvent).toHaveBeenCalledTimes(1);
       expect(harness.removeNotification).not.toHaveBeenCalled();
     } finally {
       await rendered.dispose();

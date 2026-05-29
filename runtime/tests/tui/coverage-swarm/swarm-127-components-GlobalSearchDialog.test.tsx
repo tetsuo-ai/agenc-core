@@ -32,7 +32,6 @@ type CapturedPickerProps = {
 
 const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
-  logEvent: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readFileInRange: vi.fn(),
@@ -50,10 +49,6 @@ vi.mock('src/tui/context/overlayContext.js', () => ({
 
 vi.mock('src/tui/hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => harness.terminal,
-}))
-
-vi.mock('src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('src/utils/cwd.js', () => ({
@@ -96,7 +91,6 @@ function resetHarness() {
   harness.terminal.rows = 5
   harness.pickerProps = undefined
   harness.registerOverlay.mockClear()
-  harness.logEvent.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(false)
   harness.readFileInRange.mockReset()
@@ -298,10 +292,6 @@ describe('GlobalSearchDialog coverage swarm row 127', () => {
         '/workspace/project/src/alpha.ts',
         2,
       )
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_global_search_select', {
-        opened_editor: false,
-        result_count: 1,
-      })
       expect(rendered.onDone).toHaveBeenCalledTimes(1)
     } finally {
       await rendered.dispose()

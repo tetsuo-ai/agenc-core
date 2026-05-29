@@ -32,7 +32,6 @@ type CapturedPickerProps = {
 
 const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
-  logEvent: vi.fn(),
   logError: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
@@ -51,10 +50,6 @@ vi.mock('../context/overlayContext', () => ({
 
 vi.mock('../hooks/useTerminalSize', () => ({
   useTerminalSize: () => harness.terminal,
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/cwd', () => ({
@@ -97,7 +92,6 @@ function resetHarness() {
   harness.terminal.rows = 30
   harness.pickerProps = undefined
   harness.registerOverlay.mockClear()
-  harness.logEvent.mockClear()
   harness.logError.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(true)

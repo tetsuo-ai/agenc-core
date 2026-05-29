@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useNotifications } from '../../context/notifications.js';
 import { useCommandQueue } from '../../hooks/useCommandQueue.js';
 import { type IDEAtMentioned, useIdeAtMentioned } from '../../hooks/useIdeAtMentioned.js';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { type AppState, useAppState, useAppStateStore, useSetAppState } from '../../state/AppState.js';
 import type { FooterItem } from '../../state/AppStateStore.js';
 import { getCwd } from '../../../utils/cwd.js';
@@ -1223,7 +1222,6 @@ function PromptInput({
     const currentCursorOffset = cursorOffsetRef.current;
     const currentPastedContents = pastedContentsRef.current;
     if (interpretShortcuts && value === '?') {
-      logEvent('agenc_help_toggled', {});
       setHelpOpen(v => !v);
       return;
     }
@@ -1477,7 +1475,6 @@ function PromptInput({
     // Route input to viewed agent (in-process teammate or named local_agent).
     const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
-      logEvent('agenc_transcript_input_to_teammate', {});
       await onAgentSubmit(submitInput, activeAgent.task, {
         setCursorOffset: setCurrentCursorOffset,
         clearBuffer,
@@ -1647,7 +1644,6 @@ function PromptInput({
     }));
   }, [shouldSuppressPromptSuggestion, promptSuggestionState.text, setAppState]);
   function onImagePaste(image: string, mediaType?: string, filename?: string, dimensions?: ImageDimensions, sourcePath?: string) {
-    logEvent('agenc_paste_image', {});
     onModeChange('prompt');
     const pasteId = allocatePasteId();
     const newContent: PastedContent = {
@@ -1814,7 +1810,6 @@ function PromptInput({
   // Insert the at-mentioned reference (the file and, optionally, a line range) when
   // we receive an at-mentioned notification the IDE.
   const onIdeAtMentioned = function (atMentioned: IDEAtMentioned) {
-    logEvent('agenc_ext_at_mentioned', {});
     let atMentionedText: string;
     const relativePath = path.relative(getCwd(), atMentioned.filePath);
     if (atMentioned.lineStart && atMentioned.lineEnd) {
@@ -1855,7 +1850,6 @@ function PromptInput({
 
   // Handler for chat:externalEditor - edit in $EDITOR
   const handleExternalEditor = useCallback(async () => {
-    logEvent('agenc_external_editor_used', {});
     setIsExternalEditorActive(true);
     const currentInput = lastInternalInputRef.current;
     const currentCursorOffset = cursorOffsetRef.current;
@@ -1960,9 +1954,6 @@ function PromptInput({
       };
       // Pass undefined for teamContext (unused but kept for API compatibility)
       const nextMode = getNextPermissionMode(teammateContext, undefined);
-      logEvent('agenc_mode_cycle', {
-        to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-      });
       const teammateTaskId = viewingAgentTaskId;
       setAppState(prev => {
         const task = prev.tasks[teammateTaskId];
@@ -2051,9 +2042,6 @@ function PromptInput({
     // The dialog's own decline button (handleAutoModeOptInDecline) handles revert.
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
-        if (showAutoModeOptIn) {
-          logEvent('agenc_auto_mode_opt_in_dialog_decline', {});
-        }
         setShowAutoModeOptIn(false);
         if (autoModeOptInTimeoutRef.current) {
           clearTimeout(autoModeOptInTimeoutRef.current);
@@ -2071,9 +2059,6 @@ function PromptInput({
       nextMode: preparedNextMode,
       context: preparedContext
     } = cyclePermissionMode(toolPermissionContext, teamContext);
-    logEvent('agenc_mode_cycle', {
-      to: preparedNextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-    });
 
     // Track when user enters plan mode
     if (preparedNextMode === 'plan') {
@@ -2604,9 +2589,6 @@ function PromptInput({
       priority: 'immediate',
       timeoutMs: 3000
     });
-    logEvent('agenc_model_picker_hotkey', {
-      model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-    });
   }, [setAppState, addNotification, isFastMode]);
   const handleModelCancel = useCallback(() => {
     setShowModelPicker(false);
@@ -2647,9 +2629,6 @@ function PromptInput({
       thinkingEnabled: enabled
     }));
     setShowThinkingToggle(false);
-    logEvent('agenc_thinking_toggled_hotkey', {
-      enabled
-    });
     addNotification({
       key: 'thinking-toggled-hotkey',
       jsx: <Text color={enabled ? 'suggestion' : undefined} dimColor={!enabled}>

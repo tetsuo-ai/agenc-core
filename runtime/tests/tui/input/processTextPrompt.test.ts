@@ -24,8 +24,6 @@ const mocks = vi.hoisted(() => ({
     message: { role: 'user', content: input.content },
     ...input,
   })),
-  logEvent: vi.fn(),
-  logOTelEvent: vi.fn(),
   setPromptId: vi.fn(),
   startInteractionSpan: vi.fn(),
 }))
@@ -36,17 +34,8 @@ vi.mock('../../bootstrap/state.js', () => ({
   updateLastInteractionTime: vi.fn(),
 }))
 
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: mocks.logEvent,
-}))
-
 vi.mock('../../utils/messages.js', () => ({
   createUserMessage: mocks.createUserMessage,
-}))
-
-vi.mock('../../utils/telemetry/events.js', () => ({
-  logOTelEvent: mocks.logOTelEvent,
-  redactIfDisabled: vi.fn((value: string) => value),
 }))
 
 vi.mock('../../utils/telemetry/sessionTracing.js', () => ({

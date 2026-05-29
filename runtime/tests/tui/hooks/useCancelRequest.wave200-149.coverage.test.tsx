@@ -29,7 +29,6 @@ const fixture = vi.hoisted(() => ({
   enqueuePendingNotification: vi.fn(),
   emitTaskTerminatedSdk: vi.fn(),
   exitTeammateView: vi.fn(),
-  logEvent: vi.fn(),
   onAgentsKilled: vi.fn(),
   onCancel: vi.fn(),
   setToolUseConfirmQueue: vi.fn(),
@@ -37,10 +36,6 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: fixture.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -216,9 +211,5 @@ describe('CancelRequestHandler teammate-view interrupt coverage', () => {
       expect.any(Function),
     )
     expect(fixture.onCancel).toHaveBeenCalledTimes(1)
-    expect(fixture.logEvent).toHaveBeenCalledWith('agenc_cancel', {
-      source: 'escape',
-      streamMode: undefined,
-    })
   })
 })

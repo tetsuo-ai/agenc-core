@@ -27,7 +27,6 @@ const actionProbe = vi.hoisted(() => ({
     handlers: Record<string, () => void>
     options: { context: string; isActive: boolean }
   }>,
-  logEvent: vi.fn(),
 }))
 
 vi.mock('../keybindings/useKeybinding.js', () => ({
@@ -37,10 +36,6 @@ vi.mock('../keybindings/useKeybinding.js', () => ({
   ) => {
     actionProbe.keybindingCalls.push({ handlers, options })
   },
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: actionProbe.logEvent,
 }))
 
 function userText(text: string, extra: Record<string, unknown> = {}) {
@@ -411,7 +406,6 @@ describe('message action UI and hooks', () => {
   })
 
   test('dispatches navigation, copy-primary, and enter actions from stable handlers', async () => {
-    actionProbe.logEvent.mockClear()
     const capture = { current: null as CapturedActions | null }
     const caps = {
       copy: vi.fn(),
@@ -454,10 +448,6 @@ describe('message action UI and hooks', () => {
       },
     )
 
-    expect(actionProbe.logEvent).toHaveBeenCalledWith(
-      'tengu_message_actions_enter',
-      {},
-    )
     expect(nav.enterCursor).toHaveBeenCalledTimes(1)
     expect(nav.navigatePrev).toHaveBeenCalledTimes(1)
     expect(nav.navigateNext).toHaveBeenCalledTimes(1)

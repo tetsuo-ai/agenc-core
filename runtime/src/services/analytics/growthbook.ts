@@ -23,10 +23,6 @@ import {
   type GitHubActionsMetadata,
   getUserForGrowthBook,
 } from '../../utils/user.js'
-import {
-  is1PEventLoggingEnabled,
-  logGrowthBookExperimentTo1P,
-} from './firstPartyEventLogger.js'
 
 /**
  * User attributes sent to GrowthBook for targeting.
@@ -271,14 +267,8 @@ function logExposureForFeature(feature: string): void {
   const expData = experimentDataByFeature.get(feature)
   if (expData) {
     loggedExposures.add(feature)
-    logGrowthBookExperimentTo1P({
-      experimentId: expData.experimentId,
-      variationId: expData.variationId,
-      userAttributes: getUserAttributes(),
-      experimentMetadata: {
-        feature_id: feature,
-      },
-    })
+    // First-party experiment logging removed with the dead analytics stack;
+    // GrowthBook flag resolution (the functional part) is unaffected.
   }
 }
 
@@ -389,8 +379,11 @@ function syncRemoteEvalToDisk(): void {
  * Check if GrowthBook operations should be enabled
  */
 function isGrowthBookEnabled(): boolean {
-  // GrowthBook depends on 1P event logging.
-  return is1PEventLoggingEnabled()
+  // The remote GrowthBook client was gated on first-party event logging,
+  // which was already disabled (isAnalyticsDisabled() === true), so this was
+  // always false. Functional flag resolution still runs via openBuild
+  // defaults + the local feature-flags file regardless of this gate.
+  return false
 }
 
 /**

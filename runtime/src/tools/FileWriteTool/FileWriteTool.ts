@@ -1,6 +1,5 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { dirname, sep } from 'path'
-import { logEvent } from 'src/services/analytics/index.js'
+import { dirname } from 'path'
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
@@ -336,27 +335,13 @@ export const FileWriteTool = buildTool({
       limit: undefined,
     })
 
-    // Log when writing to the root project instruction file
-    if (
-      fullFilePath.endsWith(`${sep}AGENTS.md`) ||
-      fullFilePath.endsWith(`${sep}AGENC.md`)
-    ) {
-      logEvent('tengu_write_agencmd', {})
-    }
-
     let gitDiff: ToolUseDiff | undefined
     if (
       isEnvTruthy(process.env.AGENC_REMOTE) &&
       getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
     ) {
-      const startTime = Date.now()
       const diff = await fetchSingleFileGitDiff(fullFilePath)
       if (diff) gitDiff = diff
-      logEvent('tengu_tool_use_diff_computed', {
-        isWriteTool: true,
-        durationMs: Date.now() - startTime,
-        hasDiff: !!diff,
-      })
     }
 
     if (oldContent) {

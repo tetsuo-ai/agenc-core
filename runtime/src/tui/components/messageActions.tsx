@@ -6,7 +6,6 @@ import type { RefObject } from 'react';
 import React, { useCallback, useMemo, useRef } from 'react';
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
-import { logEvent } from '../../services/analytics/index';
 import type { NormalizedUserMessage, RenderableMessage } from '../../types/message';
 import { isEmptyMessageText, SYNTHETIC_MESSAGES } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const NAVIGABLE_TYPES = ['user', 'assistant', 'grouped_tool_use', 'collapsed_read_search', 'system', 'attachment'] as const;
@@ -263,7 +262,6 @@ export function useMessageActions(cursor: MessageActionsState | null, setCursor:
     return h;
   }, [setCursor, navRef]);
   const enter = useCallback(() => {
-    logEvent('tengu_message_actions_enter', {});
     navRef.current?.enterCursor();
   }, [navRef]);
   return {

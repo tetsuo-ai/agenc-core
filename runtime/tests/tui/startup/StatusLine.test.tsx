@@ -15,15 +15,10 @@ const mocks = vi.hoisted(() => ({
     statusLineText: '',
   } as Record<string, unknown>,
   executeStatusLineCommand: vi.fn(async () => 'custom-status'),
-  logEvent: vi.fn(),
 }))
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: mocks.logEvent,
 }))
 
 vi.mock('../../constants/outputStyles.js', () => ({

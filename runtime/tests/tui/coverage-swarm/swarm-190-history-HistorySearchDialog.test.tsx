@@ -76,7 +76,6 @@ const harness = vi.hoisted(() => ({
     harness.readers.push(reader)
     return reader
   }),
-  logEvent: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readerFactory: undefined as (() => HistoryReader) | undefined,
   readers: [] as HistoryReader[],
@@ -97,10 +96,6 @@ vi.mock('../../../src/tui/history/history.js', () => ({
 
 vi.mock('../../../src/tui/hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => harness.terminal,
-}))
-
-vi.mock('../../../src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../../src/tui/components/design-system/FuzzyPicker.js', () => ({
@@ -126,7 +121,6 @@ function deferred<T>(): Deferred<T> {
 function resetHarness() {
   harness.entries = []
   harness.getTimestampedHistory.mockClear()
-  harness.logEvent.mockClear()
   harness.pickerProps = undefined
   harness.readerFactory = undefined
   harness.readers = []

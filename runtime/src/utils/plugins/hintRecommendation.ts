@@ -1,10 +1,5 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
-  logEvent,
-} from '../../services/analytics/index.js'
-import {
   type AgenCCodeHint,
   hasShownHintThisSession,
   setPendingHint,
@@ -102,19 +97,9 @@ export async function resolvePluginHint(
   hint: AgenCCodeHint,
 ): Promise<PluginHintRecommendation | null> {
   const pluginId = hint.value
-  const { name, marketplace } = parsePluginIdentifier(pluginId)
+  const { marketplace } = parsePluginIdentifier(pluginId)
 
   const pluginData = await getPluginById(pluginId)
-
-  logEvent('tengu_plugin_hint_detected', {
-    _PROTO_plugin_name: (name ??
-      '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
-    _PROTO_marketplace_name: (marketplace ??
-      '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
-    result: (pluginData
-      ? 'passed'
-      : 'not_in_cache') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
 
   if (!pluginData) {
     logForDebugging(

@@ -27,13 +27,8 @@ function normalizeWhitespace(value: string): string {
 
 const harness = vi.hoisted(() => ({
   dialogProps: undefined as DialogMockProps | undefined,
-  logEvent: vi.fn(),
   selectProps: undefined as SelectMockProps | undefined,
   updateSettingsForSource: vi.fn(),
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
@@ -75,7 +70,6 @@ describe("AutoModeOptInDialog coverage", () => {
   beforeEach(() => {
     harness.dialogProps = undefined;
     harness.selectProps = undefined;
-    harness.logEvent.mockReset();
     harness.updateSettingsForSource.mockReset();
   });
 
@@ -110,17 +104,9 @@ describe("AutoModeOptInDialog coverage", () => {
       { label: "Yes, enable auto mode", value: "accept" },
       { label: "No, exit", value: "decline" },
     ]);
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_shown",
-      {},
-    );
 
     harness.selectProps?.onChange("accept-default");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_accept_default",
-      {},
-    );
     expect(harness.updateSettingsForSource).toHaveBeenLastCalledWith(
       "userSettings",
       {
@@ -133,10 +119,6 @@ describe("AutoModeOptInDialog coverage", () => {
 
     harness.selectProps?.onChange("accept");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_accept",
-      {},
-    );
     expect(harness.updateSettingsForSource).toHaveBeenLastCalledWith(
       "userSettings",
       { skipAutoPermissionPrompt: true },
@@ -146,28 +128,14 @@ describe("AutoModeOptInDialog coverage", () => {
 
     harness.selectProps?.onChange("decline");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_decline",
-      {},
-    );
     expect(onDecline).toHaveBeenCalledTimes(1);
 
-    harness.logEvent.mockClear();
     harness.selectProps?.onCancel();
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_decline",
-      {},
-    );
     expect(onDecline).toHaveBeenCalledTimes(2);
 
-    harness.logEvent.mockClear();
     harness.dialogProps?.onCancel();
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_decline",
-      {},
-    );
     expect(onDecline).toHaveBeenCalledTimes(3);
 
     await renderToString(

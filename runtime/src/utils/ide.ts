@@ -6,7 +6,6 @@ import memoize from 'lodash-es/memoize.js'
 import { createConnection } from 'net'
 import * as os from 'os'
 import { basename, join, sep as pathSeparator, resolve } from 'path'
-import { logEvent } from 'src/services/analytics/index.js'
 import { getIsScrollDraining, getOriginalCwd } from '../bootstrap/state.js'
 import { callIdeRpc } from '../services/mcp/client.js'
 import type {
@@ -593,8 +592,6 @@ export async function maybeInstallIDEExtension(
   try {
     // Install/update the extension
     const installedVersion = await installIDEExtension(ideType)
-    // Only track successful installations
-    logEvent('tengu_ext_installed', {})
 
     // Set diff tool config to auto if it has not been set already
     const globalConfig = getGlobalConfig()
@@ -608,7 +605,6 @@ export async function maybeInstallIDEExtension(
       ideType: ideType,
     }
   } catch (error) {
-    logEvent('tengu_ext_install_error', {})
     // Handle installation errors
     const errorMessage = error instanceof Error ? error.message : String(error)
     logError(error as Error)

@@ -42,7 +42,6 @@ const harness = vi.hoisted(() => ({
     enabled: false,
   },
   keybindings: undefined as Record<string, () => void> | undefined,
-  logEvent: vi.fn(),
   maxModels: new Set<string>(),
   options: [] as ModelOption[],
   persistEfforts: true,
@@ -70,10 +69,6 @@ vi.mock("../state/AppState.js", () => ({
     harness.setAppState(updater);
     harness.appState = updater(harness.appState);
   },
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../utils/fastMode.js", () => ({
@@ -152,7 +147,6 @@ describe("ModelPicker coverage swarm 041", () => {
       enabled: false,
     };
     harness.keybindings = undefined;
-    harness.logEvent.mockReset();
     harness.maxModels = new Set<string>();
     harness.options = [
       {
@@ -194,10 +188,6 @@ describe("ModelPicker coverage swarm 041", () => {
 
     harness.selectProps?.onChange("__NO_PREFERENCE__");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "tengu_model_command_menu_effort",
-      { effort: undefined },
-    );
     expect(onSelect).toHaveBeenCalledWith(null, undefined);
     expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
     expect(harness.setAppState).toHaveBeenCalledTimes(1);

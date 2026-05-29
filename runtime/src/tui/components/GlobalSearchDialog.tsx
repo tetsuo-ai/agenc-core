@@ -11,7 +11,6 @@ import { normalizeWorkspacePathForReferences } from '../workbench/pathReferences
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Text } from '../ink.js';
-import { logEvent } from '../../services/analytics/index';
 import { getCwd } from '../../utils/cwd';
 import { openFileInExternalEditor } from '../../utils/editor';
 import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
@@ -204,19 +203,10 @@ export function GlobalSearchDialog(t0) {
     t7 = m_3 => {
       if (isWorkbenchEnabled() && setAppState) {
         setAppState(prev => applyWorkbenchCommand(prev, openPreviewCommand(m_3.file, m_3.line, true)));
-        logEvent("agenc_global_search_select", {
-          result_count: matches.length,
-          opened_editor: false,
-          workbench: true
-        });
         onDone();
         return;
       }
-      const opened = openFileInExternalEditor(resolvePath(getCwd(), m_3.file), m_3.line);
-      logEvent("agenc_global_search_select", {
-        result_count: matches.length,
-        opened_editor: opened
-      });
+      openFileInExternalEditor(resolvePath(getCwd(), m_3.file), m_3.line);
       onDone();
     };
     $[7] = matches.length;
@@ -230,10 +220,6 @@ export function GlobalSearchDialog(t0) {
   if ($[10] !== matches.length || $[11] !== onDone || $[12] !== onInsert) {
     t8 = (m_4, mention) => {
       onInsert(mention ? `@${m_4.file}#L${m_4.line} ` : `${m_4.file}:${m_4.line} `);
-      logEvent("agenc_global_search_insert", {
-        result_count: matches.length,
-        mention
-      });
       onDone();
     };
     $[10] = matches.length;

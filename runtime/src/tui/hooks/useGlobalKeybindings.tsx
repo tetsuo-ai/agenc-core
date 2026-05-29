@@ -10,7 +10,6 @@ import instances from '../ink/instances.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import type { Screen } from '../types/screen.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index';
 import { useAppState, useSetAppState } from '../state/AppState.js';
 import { count } from '../../utils/array.js';
 import { getTerminalPanel } from '../../utils/terminalPanel.js';
@@ -49,9 +48,6 @@ export function GlobalKeybindingHandlers({
 
   // Toggle Follow-up list (ctrl+t) - cycles through views
   const handleToggleTodos = useCallback(() => {
-    logEvent('agenc_toggle_todos', {
-      is_expanded: expandedView === 'tasks'
-    });
     setAppState(prev => {
       const {
         getAllInProcessTeammateTasks
@@ -116,11 +112,6 @@ export function GlobalKeybindingHandlers({
       }
     }
     const isEnteringTranscript = screen !== 'transcript';
-    logEvent('agenc_toggle_transcript', {
-      is_entering: isEnteringTranscript,
-      show_all: showAllInTranscript,
-      message_count: messageCount
-    });
     setScreen(s_1 => s_1 === 'transcript' ? 'prompt' : 'transcript');
     setShowAllInTranscript(false);
     if (isEnteringTranscript && onEnterTranscript) {
@@ -133,19 +124,11 @@ export function GlobalKeybindingHandlers({
 
   // Toggle showing all messages in transcript mode (ctrl+e)
   const handleToggleShowAll = useCallback(() => {
-    logEvent('agenc_transcript_toggle_show_all', {
-      is_expanding: !showAllInTranscript,
-      message_count: messageCount
-    });
     setShowAllInTranscript(prev_1 => !prev_1);
   }, [showAllInTranscript, setShowAllInTranscript, messageCount]);
 
   // Exit transcript mode (ctrl+c or escape)
   const handleExitTranscript = useCallback(() => {
-    logEvent('agenc_transcript_exit', {
-      show_all: showAllInTranscript,
-      message_count: messageCount
-    });
     setScreen('prompt');
     setShowAllInTranscript(false);
     if (onExitTranscript) {
@@ -166,11 +149,6 @@ export function GlobalKeybindingHandlers({
       /* eslint-enable @typescript-eslint/no-require-imports */
       if (!isBriefEnabled_0() && !isBriefOnly) return;
       const next = !isBriefOnly;
-      logEvent('agenc_brief_mode_toggled', {
-        enabled: next,
-        gated: false,
-        source: 'keybinding' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-      });
       setAppState(prev_2 => {
         if (prev_2.isBriefOnly === next) return prev_2;
         return {

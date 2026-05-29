@@ -19,7 +19,6 @@ const harness = vi.hoisted(() => ({
   features: new Set<string>(),
   growthbookCalls: [] as Array<{ fallback: boolean; key: string }>,
   keybindings: new Map<string, CapturedKeybinding>(),
-  logEvent: vi.fn(),
   setAppState: vi.fn(),
   terminalAllowed: false,
   terminalToggle: vi.fn(),
@@ -43,10 +42,6 @@ vi.mock("../state/AppState.js", () => ({
   useAppState: (selector: (state: typeof harness.appState) => unknown) =>
     selector(harness.appState),
   useSetAppState: () => harness.setAppState,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../services/analytics/growthbook.js", () => ({

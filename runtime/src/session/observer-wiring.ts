@@ -22,14 +22,6 @@ import type { Session } from "./session.js";
 import type { Event } from "./event-log.js";
 import type { MCPCallObserver } from "../mcp-client/tools.js";
 import type { BashExecObserver } from "../tools/system/types.js";
-import {
-  AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC,
-  AGENC_TOOL_UNIFIED_EXEC_METRIC,
-  agencTelemetry,
-  toMetricTags,
-  type TelemetrySpan,
-  type TelemetryTimer,
-} from "../observability/telemetry.js";
 
 /**
  * Structural subset of `Session` the wiring helpers actually depend
@@ -124,32 +116,8 @@ export function createBashExecObserverForSession(
 export function createBashExecObserverForSlot(
   slot: SessionSlot,
 ): BashExecObserver {
-  const active = new Map<
-    string,
-    { readonly span: TelemetrySpan; readonly timer: TelemetryTimer }
-  >();
   return {
     onBegin: ({ callId, command, cwd, processId, sessionId, tty }) => {
-      const tags = toMetricTags({
-        tty: tty === true,
-        source: "bash_tool",
-      });
-      const span = agencTelemetry.startSpan("tools.exec_command", {
-        "tool.call_id": callId,
-        "process.command": command,
-        "process.cwd": cwd,
-        ...(processId !== undefined ? { "process.pid": processId } : {}),
-        ...(sessionId !== undefined ? { "process.session_id": sessionId } : {}),
-        ...(tty !== undefined ? { "process.tty": tty } : {}),
-      });
-      active.set(callId, {
-        span,
-        timer: agencTelemetry.timer(
-          AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC,
-          tags,
-        ),
-      });
-      agencTelemetry.counter(AGENC_TOOL_UNIFIED_EXEC_METRIC, 1, tags);
       const session = slot.current;
       if (!session) return;
       session.emit({
@@ -177,20 +145,6 @@ export function createBashExecObserverForSlot(
       sessionId,
       tty,
     }) => {
-      const telemetry = active.get(callId);
-      active.delete(callId);
-      const tags = toMetricTags({
-        status: exitCode === 0 ? "completed" : "error",
-        ...(exitCode !== null ? { exit_code: exitCode } : {}),
-        tty: tty === true,
-        source: "bash_tool",
-      });
-      telemetry?.timer.end(tags);
-      telemetry?.span.setAttribute("exec.status", tags.status);
-      if (exitCode !== null) {
-        telemetry?.span.setAttribute("process.exit_code", exitCode);
-      }
-      telemetry?.span.end();
       const session = slot.current;
       if (!session) return;
       session.emit({

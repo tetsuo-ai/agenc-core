@@ -75,10 +75,6 @@ vi.mock("../state/AppState.js", () => ({
   },
 }));
 
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: () => {},
-}));
-
 vi.mock("../../utils/fastMode.js", () => ({
   FAST_MODE_MODEL_DISPLAY: "fast-model",
   isFastModeAvailable: () => fastModeMock.available,

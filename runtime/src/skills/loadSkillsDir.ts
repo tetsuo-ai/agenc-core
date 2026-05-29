@@ -13,10 +13,6 @@ import {
   getAdditionalDirectoriesForAgenCMd,
   getSessionId,
 } from '../bootstrap/state.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../services/analytics/index.js'
 import { roughTokenCountEstimation } from '../services/tokenEstimation.js'
 import type { Command, PromptCommand } from '../types/command.js'
 import {
@@ -1021,8 +1017,6 @@ export async function addSkillDirectories(dirs: string[]): Promise<void> {
     return
   }
 
-  const previousSkillNamesForLogging = new Set(dynamicSkills.keys())
-
   // Load skills from all directories
   const loadedSkills = await Promise.all(
     dirs.map(dir => loadSkillsFromSkillsDir(dir, 'projectSettings')),
@@ -1039,22 +1033,9 @@ export async function addSkillDirectories(dirs: string[]): Promise<void> {
 
   const newSkillCount = loadedSkills.flat().length
   if (newSkillCount > 0) {
-    const addedSkills = [...dynamicSkills.keys()].filter(
-      n => !previousSkillNamesForLogging.has(n),
-    )
     logForDebugging(
       `[skills] Dynamically discovered ${newSkillCount} skills from ${dirs.length} directories`,
     )
-    if (addedSkills.length > 0) {
-      logEvent('tengu_dynamic_skills_changed', {
-        source:
-          'file_operation' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        previousCount: previousSkillNamesForLogging.size,
-        newCount: dynamicSkills.size,
-        addedCount: addedSkills.length,
-        directoryCount: dirs.length,
-      })
-    }
   }
 
   // Notify listeners that skills were loaded (so they can clear caches)
@@ -1128,15 +1109,6 @@ export function activateConditionalSkillsForPaths(
   }
 
   if (activated.length > 0) {
-    logEvent('tengu_dynamic_skills_changed', {
-      source:
-        'conditional_paths' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      previousCount: dynamicSkills.size - activated.length,
-      newCount: dynamicSkills.size,
-      addedCount: activated.length,
-      directoryCount: 0,
-    })
-
     // Notify listeners that skills were loaded (so they can clear caches)
     skillsLoaded.emit()
   }

@@ -41,11 +41,6 @@ import type { LLMContentPart } from "../llm/types.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import {
-  AGENC_STARTUP_PREWARM_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
-import {
   reconstructFromRollout,
   type RolloutReconstruction,
 } from "../session/rollout-reconstruction.js";
@@ -454,7 +449,6 @@ export class ConversationThreadManager extends ThreadManager {
     const record = this.upsertRecord(thread);
     record.prewarm = "running";
     delete record.prewarmError;
-    const prewarmStartedAtMs = Date.now();
     try {
       await this.prewarm({ session, threadId: thread.threadId });
       record.prewarm = "ready";
@@ -462,15 +456,6 @@ export class ConversationThreadManager extends ThreadManager {
       record.prewarm = "failed";
       record.prewarmError =
         error instanceof Error ? error.message : String(error);
-    } finally {
-      agencTelemetry.recordDuration(
-        AGENC_STARTUP_PREWARM_DURATION_METRIC,
-        Date.now() - prewarmStartedAtMs,
-        toMetricTags({
-          status: record.prewarm,
-          source: "conversation_thread_manager",
-        }),
-      );
     }
     return record.prewarm;
   }

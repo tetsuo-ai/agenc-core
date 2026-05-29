@@ -6,7 +6,6 @@ const mcpState = vi.hoisted(() => ({
   server: undefined as unknown,
 }));
 
-vi.mock("../../services/analytics/index.js", () => ({ logEvent: vi.fn() }));
 vi.mock("../../services/mcp/auth.js", () => ({
   clearMcpClientConfig: vi.fn(),
   clearServerTokensFromSecureStorage: vi.fn(),

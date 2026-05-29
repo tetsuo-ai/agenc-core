@@ -36,7 +36,6 @@ const harness = vi.hoisted(() => ({
   cwd: '/workspace/project',
   generateFileSuggestions: vi.fn(),
   logError: vi.fn(),
-  logEvent: vi.fn(),
   openFileInExternalEditor: vi.fn(),
   pickerProps: undefined as CapturedPickerProps | undefined,
   readFileInRange: vi.fn(),
@@ -57,10 +56,6 @@ vi.mock('../hooks/fileSuggestions', () => ({
 
 vi.mock('../hooks/useTerminalSize', () => ({
   useTerminalSize: () => harness.terminal,
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/log', () => ({
@@ -102,7 +97,6 @@ function resetHarness() {
   harness.generateFileSuggestions.mockReset()
   harness.generateFileSuggestions.mockResolvedValue([])
   harness.logError.mockClear()
-  harness.logEvent.mockClear()
   harness.openFileInExternalEditor.mockReset()
   harness.openFileInExternalEditor.mockReturnValue(true)
   harness.readFileInRange.mockReset()
@@ -483,7 +477,7 @@ describe('QuickOpenDialog render and interactions', () => {
     }
   })
 
-  it('opens files, inserts file references, and emits analytics through picker actions', async () => {
+  it('opens files and inserts file references through picker actions', async () => {
     const rendered = await renderDialog()
 
     try {
@@ -497,24 +491,12 @@ describe('QuickOpenDialog render and interactions', () => {
       expect(harness.openFileInExternalEditor).toHaveBeenCalledWith(
         '/workspace/project/src/app.tsx',
       )
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_quick_open_select', {
-        result_count: 1,
-        opened_editor: true,
-      })
 
       pickerProps().onTab?.handler('src/app.tsx')
       expect(rendered.onInsert).toHaveBeenCalledWith('@src/app.tsx ')
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_quick_open_insert', {
-        result_count: 1,
-        mention: true,
-      })
 
       pickerProps().onShiftTab?.handler('src/app.tsx')
       expect(rendered.onInsert).toHaveBeenCalledWith('src/app.tsx ')
-      expect(harness.logEvent).toHaveBeenCalledWith('agenc_quick_open_insert', {
-        result_count: 1,
-        mention: false,
-      })
       expect(rendered.onDone).toHaveBeenCalledTimes(3)
     } finally {
       await rendered.dispose()

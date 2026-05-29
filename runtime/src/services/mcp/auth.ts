@@ -24,7 +24,7 @@ import {
   OAuthTokensSchema,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { createHash, randomBytes, randomUUID } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import { mkdir } from 'fs/promises'
 import { createServer, type Server } from 'http'
 import { join } from 'path'
@@ -42,11 +42,8 @@ import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpe
 import type { SecureStorageData } from '../../utils/secureStorage/index.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
-import { logEvent } from '../analytics/index.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../analytics/metadata.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 import type { McpHTTPServerConfig, McpSSEServerConfig } from './types.js'
-import { getLoggingSafeMcpBaseUrl } from './utils.js'
 import { performCrossAppAccess, XaaTokenExchangeError } from './xaa.js'
 import {
   acquireIdpIdToken,
@@ -61,33 +58,6 @@ import {
  * Timeout for individual OAuth requests (metadata discovery, token refresh, etc.)
  */
 const AUTH_REQUEST_TIMEOUT_MS = 30000
-
-/**
- * Failure reasons for the `tengu_mcp_oauth_refresh_failure` event. Values
- * are emitted to analytics — keep them stable (do not rename; add new ones).
- */
-type MCPRefreshFailureReason =
-  | 'metadata_discovery_failed'
-  | 'no_client_info'
-  | 'no_tokens_returned'
-  | 'invalid_grant'
-  | 'transient_retries_exhausted'
-  | 'request_failed'
-
-/**
- * Failure reasons for the `tengu_mcp_oauth_flow_error` event. Values are
- * emitted to analytics for attribution in BigQuery. Keep stable (do not
- * rename; add new ones).
- */
-type MCPOAuthFlowErrorReason =
-  | 'cancelled'
-  | 'timeout'
-  | 'provider_denied'
-  | 'state_mismatch'
-  | 'port_unavailable'
-  | 'sdk_auth_failed'
-  | 'token_exchange_failed'
-  | 'unknown'
 
 const MAX_LOCK_RETRIES = 30
 
@@ -496,12 +466,6 @@ type WWWAuthenticateParams = {
   resourceMetadataUrl?: URL
 }
 
-type XaaFailureStage =
-  | 'idp_login'
-  | 'discovery'
-  | 'token_exchange'
-  | 'jwt_bearer'
-
 /**
  * XAA (Cross-App Access) auth.
  *
@@ -575,131 +539,91 @@ async function performMCPXaaAuth(
   const idpClientSecret = getIdpClientSecret(idp.issuer)
 
   // Acquire id_token (cached or via one OIDC browser pop at the IdP).
-  // Peek the cache first so we can report idTokenCacheHit in analytics before
-  // acquireIdpIdToken potentially writes a fresh one.
-  const idTokenCacheHit = getCachedIdpIdToken(idp.issuer) !== undefined
-
-  let failureStage: XaaFailureStage = 'idp_login'
+  let idToken
   try {
-    let idToken
-    try {
-      idToken = await acquireIdpIdToken({
-        idpIssuer: idp.issuer,
-        idpClientId: idp.clientId,
-        idpClientSecret,
-        callbackPort: idp.callbackPort,
-        onAuthorizationUrl,
-        skipBrowserOpen,
-        abortSignal,
-      })
-    } catch (e) {
-      if (abortSignal?.aborted) throw new AuthenticationCancelledError()
-      throw e
-    }
-
-    // Discover the IdP's token endpoint for the RFC 8693 exchange.
-    failureStage = 'discovery'
-    const oidc = await discoverOidc(idp.issuer)
-
-    // Run the exchange. performCrossAppAccess throws XaaTokenExchangeError
-    // for the IdP leg and "jwt-bearer grant failed" for the AS leg.
-    failureStage = 'token_exchange'
-    let tokens
-    try {
-      tokens = await performCrossAppAccess(
-        serverConfig.url,
-        {
-          clientId,
-          clientSecret,
-          idpClientId: idp.clientId,
-          idpClientSecret,
-          idpIdToken: idToken,
-          idpTokenEndpoint: oidc.token_endpoint,
-        },
-        serverName,
-        abortSignal,
-      )
-    } catch (e) {
-      if (abortSignal?.aborted) throw new AuthenticationCancelledError()
-      const msg = errorMessage(e)
-      // If the IdP says the id_token is bad, drop it from the cache so the
-      // next attempt does a fresh IdP login. XaaTokenExchangeError carries
-      // shouldClearIdToken so we key off OAuth semantics (4xx / invalid body
-      // → clear; 5xx IdP outage → preserve) rather than substring matching.
-      if (e instanceof XaaTokenExchangeError) {
-        if (e.shouldClearIdToken) {
-          clearIdpIdToken(idp.issuer)
-          logMCPDebug(
-            serverName,
-            'XAA: cleared cached id_token after token-exchange failure',
-          )
-        }
-      } else if (
-        msg.includes('PRM discovery failed') ||
-        msg.includes('AS metadata discovery failed') ||
-        msg.includes('no authorization server supports jwt-bearer')
-      ) {
-        // performCrossAppAccess runs PRM + AS discovery before the actual
-        // exchange — don't attribute their failures to 'token_exchange'.
-        failureStage = 'discovery'
-      } else if (msg.includes('jwt-bearer')) {
-        failureStage = 'jwt_bearer'
-      }
-      throw e
-    }
-
-    // Save tokens via the same storage path as normal OAuth. We write directly
-    // (instead of AgenCAuthProvider.saveTokens) to avoid instantiating the
-    // whole provider just to write the same keys.
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
-    const serverKey = getServerKey(serverName, serverConfig)
-    const prev = existingData.mcpOAuth?.[serverKey]
-    storage.update({
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...prev,
-          serverName,
-          serverUrl: serverConfig.url,
-          accessToken: tokens.access_token,
-          // AS may omit refresh_token on jwt-bearer — preserve any existing one
-          refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-          expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-          scope: tokens.scope,
-          clientId,
-          clientSecret,
-          // Persist the AS URL so _doRefresh and revokeServerTokens can locate
-          // the token/revocation endpoints when MCP URL ≠ AS URL (the common
-          // XAA topology).
-          discoveryState: {
-            authorizationServerUrl: tokens.authorizationServerUrl,
-          },
-        },
-      },
-    })
-
-    logMCPDebug(serverName, 'XAA: tokens saved')
-    logEvent('tengu_mcp_oauth_flow_success', {
-      authMethod:
-        'xaa' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      idTokenCacheHit,
+    idToken = await acquireIdpIdToken({
+      idpIssuer: idp.issuer,
+      idpClientId: idp.clientId,
+      idpClientSecret,
+      callbackPort: idp.callbackPort,
+      onAuthorizationUrl,
+      skipBrowserOpen,
+      abortSignal,
     })
   } catch (e) {
-    // User-initiated cancel (Esc during IdP browser pop) isn't a failure.
-    if (e instanceof AuthenticationCancelledError) {
-      throw e
-    }
-    logEvent('tengu_mcp_oauth_flow_failure', {
-      authMethod:
-        'xaa' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      xaaFailureStage:
-        failureStage as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      idTokenCacheHit,
-    })
+    if (abortSignal?.aborted) throw new AuthenticationCancelledError()
     throw e
   }
+
+  // Discover the IdP's token endpoint for the RFC 8693 exchange.
+  const oidc = await discoverOidc(idp.issuer)
+
+  // Run the exchange. performCrossAppAccess throws XaaTokenExchangeError
+  // for the IdP leg and "jwt-bearer grant failed" for the AS leg.
+  let tokens
+  try {
+    tokens = await performCrossAppAccess(
+      serverConfig.url,
+      {
+        clientId,
+        clientSecret,
+        idpClientId: idp.clientId,
+        idpClientSecret,
+        idpIdToken: idToken,
+        idpTokenEndpoint: oidc.token_endpoint,
+      },
+      serverName,
+      abortSignal,
+    )
+  } catch (e) {
+    if (abortSignal?.aborted) throw new AuthenticationCancelledError()
+    // If the IdP says the id_token is bad, drop it from the cache so the
+    // next attempt does a fresh IdP login. XaaTokenExchangeError carries
+    // shouldClearIdToken so we key off OAuth semantics (4xx / invalid body
+    // → clear; 5xx IdP outage → preserve) rather than substring matching.
+    if (e instanceof XaaTokenExchangeError && e.shouldClearIdToken) {
+      clearIdpIdToken(idp.issuer)
+      logMCPDebug(
+        serverName,
+        'XAA: cleared cached id_token after token-exchange failure',
+      )
+    }
+    throw e
+  }
+
+  // Save tokens via the same storage path as normal OAuth. We write directly
+  // (instead of AgenCAuthProvider.saveTokens) to avoid instantiating the
+  // whole provider just to write the same keys.
+  const storage = getSecureStorage()
+  const existingData = storage.read() || {}
+  const serverKey = getServerKey(serverName, serverConfig)
+  const prev = existingData.mcpOAuth?.[serverKey]
+  storage.update({
+    ...existingData,
+    mcpOAuth: {
+      ...existingData.mcpOAuth,
+      [serverKey]: {
+        ...prev,
+        serverName,
+        serverUrl: serverConfig.url,
+        accessToken: tokens.access_token,
+        // AS may omit refresh_token on jwt-bearer — preserve any existing one
+        refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+        expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+        scope: tokens.scope,
+        clientId,
+        clientSecret,
+        // Persist the AS URL so _doRefresh and revokeServerTokens can locate
+        // the token/revocation endpoints when MCP URL ≠ AS URL (the common
+        // XAA topology).
+        discoveryState: {
+          authorizationServerUrl: tokens.authorizationServerUrl,
+        },
+      },
+    },
+  })
+
+  logMCPDebug(serverName, 'XAA: tokens saved')
 }
 
 export async function performMCPOAuthFlow(
@@ -732,22 +656,6 @@ export async function performMCPOAuthFlow(
         `XAA is not enabled (set AGENC_ENABLE_XAA=1). Remove 'oauth.xaa' from server '${serverName}' to use the standard consent flow.`,
       )
     }
-    logEvent('tengu_mcp_oauth_flow_start', {
-      isOAuthFlow: true,
-      authMethod:
-        'xaa' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      transportType:
-        serverConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      ...(getLoggingSafeMcpBaseUrl(serverConfig)
-        ? {
-            mcpServerBaseUrl: getLoggingSafeMcpBaseUrl(
-              serverConfig,
-            ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          }
-        : {}),
-    })
-    // performMCPXaaAuth logs its own success/failure events (with
-    // idTokenCacheHit + xaaFailureStage).
     await performMCPXaaAuth(
       serverName,
       serverConfig,
@@ -791,27 +699,6 @@ export async function performMCPOAuthFlow(
     scope: cachedStepUpScope,
     resourceMetadataUrl,
   }
-
-  const flowAttemptId = randomUUID()
-
-  logEvent('tengu_mcp_oauth_flow_start', {
-    flowAttemptId:
-      flowAttemptId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    isOAuthFlow: true,
-    transportType:
-      serverConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    ...(getLoggingSafeMcpBaseUrl(serverConfig)
-      ? {
-          mcpServerBaseUrl: getLoggingSafeMcpBaseUrl(
-            serverConfig,
-          ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        }
-      : {}),
-  })
-
-  // Track whether we reached the token-exchange phase so the catch block can
-  // attribute the failure reason correctly.
-  let authorizationCodeObtained = false
 
   try {
     // Use configured callback port for pre-configured OAuth, otherwise find an available port
@@ -1068,8 +955,6 @@ export async function performMCPOAuthFlow(
       timeoutId.unref()
     })
 
-    authorizationCodeObtained = true
-
     // Now complete the auth flow with the received code
     logMCPDebug(serverName, `Completing auth flow with authorization code`)
     const result = await sdkAuth(provider, {
@@ -1094,69 +979,15 @@ export async function performMCPOAuthFlow(
         )
         logMCPDebug(serverName, `Token expires_in: ${savedTokens.expires_in}`)
       }
-
-      logEvent('tengu_mcp_oauth_flow_success', {
-        flowAttemptId:
-          flowAttemptId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        transportType:
-          serverConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        ...(getLoggingSafeMcpBaseUrl(serverConfig)
-          ? {
-              mcpServerBaseUrl: getLoggingSafeMcpBaseUrl(
-                serverConfig,
-              ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-            }
-          : {}),
-      })
     } else {
       throw new Error('Unexpected auth result: ' + result)
     }
   } catch (error) {
     logMCPDebug(serverName, `Error during auth completion: ${error}`)
 
-    // Determine failure reason for attribution telemetry. The try block covers
-    // port acquisition, the callback server, the redirect flow, and token
-    // exchange. Map known failure paths to stable reason codes.
-    let reason: MCPOAuthFlowErrorReason = 'unknown'
-    let oauthErrorCode: string | undefined
-    let httpStatus: number | undefined
-
-    if (error instanceof AuthenticationCancelledError) {
-      reason = 'cancelled'
-    } else if (authorizationCodeObtained) {
-      reason = 'token_exchange_failed'
-    } else {
-      const msg = errorMessage(error)
-      if (msg.includes('Authentication timeout')) {
-        reason = 'timeout'
-      } else if (msg.includes('OAuth state mismatch')) {
-        reason = 'state_mismatch'
-      } else if (msg.includes('OAuth error:')) {
-        reason = 'provider_denied'
-      } else if (
-        msg.includes('already in use') ||
-        msg.includes('EADDRINUSE') ||
-        msg.includes('callback server failed') ||
-        msg.includes('No available port')
-      ) {
-        reason = 'port_unavailable'
-      } else if (msg.includes('SDK auth failed')) {
-        reason = 'sdk_auth_failed'
-      }
-    }
-
     // sdkAuth uses native fetch and throws OAuthError subclasses (InvalidGrantError,
-    // ServerError, InvalidClientError, etc.) via parseErrorResponse. Extract the
-    // OAuth error code directly from the SDK error instance.
+    // ServerError, InvalidClientError, etc.) via parseErrorResponse.
     if (error instanceof OAuthError) {
-      oauthErrorCode = error.errorCode
-      // SDK does not attach HTTP status as a property, but the fallback ServerError
-      // embeds it in the message as "HTTP {status}:" when the response body was
-      // unparseable. Best-effort extraction.
-      const statusMatch = error.message.match(/^HTTP (\d{3}):/)
-      if (statusMatch) {
-        httpStatus = Number(statusMatch[1])
-      }
       // If client not found, clear the stored client ID and suggest retry
       if (
         error.errorCode === 'invalid_client' &&
@@ -1173,25 +1004,6 @@ export async function performMCPOAuthFlow(
       }
     }
 
-    logEvent('tengu_mcp_oauth_flow_error', {
-      flowAttemptId:
-        flowAttemptId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      reason:
-        reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      error_code:
-        oauthErrorCode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      http_status:
-        httpStatus?.toString() as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      transportType:
-        serverConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      ...(getLoggingSafeMcpBaseUrl(serverConfig)
-        ? {
-            mcpServerBaseUrl: getLoggingSafeMcpBaseUrl(
-              serverConfig,
-            ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          }
-        : {}),
-    })
     throw error
   }
 }
@@ -2015,34 +1827,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   ): Promise<OAuthTokens | undefined> {
     const MAX_ATTEMPTS = 3
 
-    const mcpServerBaseUrl = getLoggingSafeMcpBaseUrl(this.serverConfig)
-    const emitRefreshEvent = (
-      outcome: 'success' | 'failure',
-      reason?: MCPRefreshFailureReason,
-    ): void => {
-      logEvent(
-        outcome === 'success'
-          ? 'tengu_mcp_oauth_refresh_success'
-          : 'tengu_mcp_oauth_refresh_failure',
-        {
-          transportType: this.serverConfig
-            .type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          ...(mcpServerBaseUrl
-            ? {
-                mcpServerBaseUrl:
-                  mcpServerBaseUrl as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              }
-            : {}),
-          ...(reason
-            ? {
-                reason:
-                  reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              }
-            : {}),
-        },
-      )
-    }
-
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         logMCPDebug(this.serverName, `Starting token refresh`)
@@ -2085,7 +1869,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         }
         if (!metadata) {
           logMCPDebug(this.serverName, `Failed to discover OAuth metadata`)
-          emitRefreshEvent('failure', 'metadata_discovery_failed')
           return undefined
         }
         // Cache for future refreshes
@@ -2094,7 +1877,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         const clientInfo = await this.clientInformation()
         if (!clientInfo) {
           logMCPDebug(this.serverName, `No client information available`)
-          emitRefreshEvent('failure', 'no_client_info')
           return undefined
         }
 
@@ -2112,12 +1894,10 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         if (newTokens) {
           logMCPDebug(this.serverName, `Token refresh successful`)
           await this.saveTokens(newTokens)
-          emitRefreshEvent('success')
           return newTokens
         }
 
         logMCPDebug(this.serverName, `Token refresh returned no tokens`)
-        emitRefreshEvent('failure', 'no_tokens_returned')
         return undefined
       } catch (error) {
         // Invalid grant means the refresh token itself is invalid/revoked/expired.
@@ -2139,9 +1919,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
                 this.serverName,
                 `Another process refreshed tokens, using those`,
               )
-              // Not emitted as success: this process did not perform a
-              // refresh, and the winning process already emitted its own
-              // success event. Emitting here would double-count.
               return {
                 access_token: tokenData.accessToken,
                 refresh_token: tokenData.refreshToken,
@@ -2156,7 +1933,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
             `No valid tokens in storage, clearing stored tokens`,
           )
           await this.invalidateCredentials('tokens')
-          emitRefreshEvent('failure', 'invalid_grant')
           return undefined
         }
 
@@ -2174,10 +1950,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
           logMCPDebug(
             this.serverName,
             `Token refresh failed: ${errorMessage(error)}`,
-          )
-          emitRefreshEvent(
-            'failure',
-            isRetryable ? 'transient_retries_exhausted' : 'request_failed',
           )
           return undefined
         }

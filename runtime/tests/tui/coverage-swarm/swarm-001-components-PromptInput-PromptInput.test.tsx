@@ -100,7 +100,6 @@ const harness = vi.hoisted(() => {
     isSSH: false,
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
     keybindings: {} as Record<string, () => unknown>,
-    logEvent: vi.fn(),
     modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: 'plan',
     cyclePermissionModeNextMode: null as null | string,
@@ -200,7 +199,6 @@ const harness = vi.hoisted(() => {
       harness.isSSH = false
       harness.keybindingRegistrations = []
       harness.keybindings = {}
-      harness.logEvent.mockClear()
       harness.modelPickerProps = undefined
       harness.nextPermissionMode = 'plan'
       harness.cyclePermissionModeNextMode = null
@@ -292,10 +290,6 @@ const harness = vi.hoisted(() => {
 
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features[name] === true,
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../services/analytics/growthbook.js', () => ({

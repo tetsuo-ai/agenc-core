@@ -24,13 +24,8 @@ type DialogProps = {
 
 const harness = vi.hoisted(() => ({
   dialogProps: [] as DialogProps[],
-  logEvent: vi.fn(),
   selectProps: [] as SelectProps[],
   updateSettingsForSource: vi.fn(),
-}));
-
-vi.mock("../../../src/services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../../src/utils/settings/settings.js", () => ({
@@ -97,7 +92,6 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
   beforeEach(() => {
     harness.dialogProps = [];
     harness.selectProps = [];
-    harness.logEvent.mockReset();
     harness.updateSettingsForSource.mockReset();
   });
 
@@ -128,10 +122,6 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
       title: "Enable auto mode?",
     });
     expect(harness.dialogProps.at(-1)?.onCancel).toEqual(expect.any(Function));
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_shown",
-      {},
-    );
   });
 
   test("uses the exit decline label for startup gating", async () => {
@@ -148,13 +138,8 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     const onDecline = vi.fn();
     await renderDialog({ onAccept, onDecline });
 
-    harness.logEvent.mockClear();
     latestSelectProps().onChange("accept");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_accept",
-      {},
-    );
     expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
       "userSettings",
       {
@@ -169,13 +154,8 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     const onAccept = vi.fn();
     await renderDialog({ onAccept });
 
-    harness.logEvent.mockClear();
     latestSelectProps().onChange("accept-default");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_accept_default",
-      {},
-    );
     expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
       "userSettings",
       {
@@ -188,18 +168,13 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     expect(onAccept).toHaveBeenCalledOnce();
   });
 
-  test("decline logs the choice without changing settings", async () => {
+  test("decline routes through the decline handler without changing settings", async () => {
     const onAccept = vi.fn();
     const onDecline = vi.fn();
     await renderDialog({ onAccept, onDecline });
 
-    harness.logEvent.mockClear();
     latestSelectProps().onChange("decline");
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_decline",
-      {},
-    );
     expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
     expect(onAccept).not.toHaveBeenCalled();
     expect(onDecline).toHaveBeenCalledOnce();
@@ -209,22 +184,12 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     const onDecline = vi.fn();
     await renderDialog({ onDecline });
 
-    harness.logEvent.mockClear();
     latestSelectProps().onCancel();
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_decline",
-      {},
-    );
     expect(onDecline).toHaveBeenCalledOnce();
 
-    harness.logEvent.mockClear();
     harness.dialogProps.at(-1)?.onCancel();
 
-    expect(harness.logEvent).toHaveBeenCalledWith(
-      "agenc_auto_mode_opt_in_dialog_decline",
-      {},
-    );
     expect(onDecline).toHaveBeenCalledTimes(2);
   });
 });

@@ -14,10 +14,6 @@ import type { PromptCommand } from '../commands.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
 import { query } from '../query.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../services/analytics/index.js'
 import { accumulateUsage, updateUsage } from '../services/api/anthropic.js'
 import { EMPTY_USAGE, type NonNullableUsage } from '../services/api/logging.js'
 import type { ToolUseContext } from '../tools/Tool.js'
@@ -507,7 +503,6 @@ export async function runForkedAgent({
   skipTranscript,
   skipCacheWrite,
 }: ForkedAgentParams): Promise<ForkedAgentResult> {
-  const startTime = Date.now()
   const outputMessages: Message[] = []
   let totalUsage: NonNullableUsage = { ...EMPTY_USAGE }
 
@@ -615,83 +610,8 @@ export async function runForkedAgent({
     `Forked agent [${forkLabel}] finished: ${outputMessages.length} messages, types=[${outputMessages.map(m => m.type).join(', ')}], totalUsage: input=${totalUsage.input_tokens} output=${totalUsage.output_tokens} cacheRead=${totalUsage.cache_read_input_tokens} cacheCreate=${totalUsage.cache_creation_input_tokens}`,
   )
 
-  const durationMs = Date.now() - startTime
-
-  // Log the fork query metrics with full NonNullableUsage
-  logForkAgentQueryEvent({
-    forkLabel,
-    querySource,
-    durationMs,
-    messageCount: outputMessages.length,
-    totalUsage,
-    queryTracking: toolUseContext.queryTracking,
-  })
-
   return {
     messages: outputMessages,
     totalUsage,
   }
-}
-
-/**
- * Logs the tengu_fork_agent_query event with full NonNullableUsage fields.
- */
-function logForkAgentQueryEvent({
-  forkLabel,
-  querySource,
-  durationMs,
-  messageCount,
-  totalUsage,
-  queryTracking,
-}: {
-  forkLabel: string
-  querySource: QuerySource
-  durationMs: number
-  messageCount: number
-  totalUsage: NonNullableUsage
-  queryTracking?: { chainId: string; depth: number }
-}): void {
-  // Calculate cache hit rate
-  const totalInputTokens =
-    totalUsage.input_tokens +
-    totalUsage.cache_creation_input_tokens +
-    totalUsage.cache_read_input_tokens
-  const cacheHitRate =
-    totalInputTokens > 0
-      ? totalUsage.cache_read_input_tokens / totalInputTokens
-      : 0
-
-  logEvent('tengu_fork_agent_query', {
-    // Metadata
-    forkLabel:
-      forkLabel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    querySource:
-      querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    durationMs,
-    messageCount,
-
-    // NonNullableUsage fields
-    inputTokens: totalUsage.input_tokens,
-    outputTokens: totalUsage.output_tokens,
-    cacheReadInputTokens: totalUsage.cache_read_input_tokens,
-    cacheCreationInputTokens: totalUsage.cache_creation_input_tokens,
-    serviceTier:
-      totalUsage.service_tier as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    cacheCreationEphemeral1hTokens:
-      totalUsage.cache_creation.ephemeral_1h_input_tokens,
-    cacheCreationEphemeral5mTokens:
-      totalUsage.cache_creation.ephemeral_5m_input_tokens,
-
-    // Derived metrics
-    cacheHitRate,
-
-    // Query tracking
-    ...(queryTracking
-      ? {
-          queryChainId:
-            queryTracking.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          queryDepth: queryTracking.depth,
-        }
-      : {}),
-  })
 }

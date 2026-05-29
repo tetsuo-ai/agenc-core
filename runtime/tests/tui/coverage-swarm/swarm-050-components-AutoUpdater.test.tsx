@@ -18,7 +18,6 @@ const harness = vi.hoisted(() => ({
   isAutoUpdaterDisabled: vi.fn(),
   localInstallationExists: vi.fn(),
   logError: vi.fn(),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   removeInstalledSymlink: vi.fn(),
   shouldSkipVersion: vi.fn(),
@@ -29,10 +28,6 @@ vi.mock("usehooks-ts", () => ({
   useInterval: (_callback: () => void, delay: number | null) => {
     harness.intervalDelay = delay;
   },
-}));
-
-vi.mock("../../../src/services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../../src/tui/hooks/useUpdateNotification.js", () => ({
@@ -136,7 +131,6 @@ function resetHarness(): void {
   harness.isAutoUpdaterDisabled.mockReset().mockReturnValue(false);
   harness.localInstallationExists.mockReset().mockResolvedValue(false);
   harness.logError.mockReset();
-  harness.logEvent.mockReset();
   harness.logForDebugging.mockReset();
   harness.removeInstalledSymlink.mockReset().mockResolvedValue(undefined);
   harness.shouldSkipVersion.mockReset().mockReturnValue(false);
@@ -571,14 +565,6 @@ describe("AutoUpdater coverage swarm row 050", () => {
         "AutoUpdater: maxVersion 2.0.0 is set, capping update from 9.0.0 to 2.0.0",
       );
       expect(harness.installGlobalPackage).toHaveBeenCalledOnce();
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_auto_updater_success",
-        expect.objectContaining({
-          fromVersion: "1.0.0",
-          toVersion: "2.0.0",
-          wasMigrated: false,
-        }),
-      );
     } finally {
       await rendered.cleanup();
     }
@@ -608,15 +594,6 @@ describe("AutoUpdater coverage swarm row 050", () => {
       );
       expect(harness.logForDebugging).toHaveBeenCalledWith(
         "AutoUpdater: Using global update method",
-      );
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_auto_updater_success",
-        expect.objectContaining({
-          fromVersion: "1.0.0",
-          installationType: "npm-global",
-          toVersion: "2.0.0",
-          wasMigrated: false,
-        }),
       );
     } finally {
       await rendered.cleanup();
@@ -652,7 +629,6 @@ describe("AutoUpdater coverage swarm row 050", () => {
 
     expect(onChangeIsUpdating).toHaveBeenNthCalledWith(1, true);
     expect(onChangeIsUpdating).toHaveBeenLastCalledWith(false);
-    expect(harness.logEvent).not.toHaveBeenCalled();
   });
 
   test("installs with the npm-local path and records migrated success", async () => {
@@ -667,14 +643,6 @@ describe("AutoUpdater coverage swarm row 050", () => {
       expect(harness.installGlobalPackage).not.toHaveBeenCalled();
       expect(harness.logForDebugging).toHaveBeenCalledWith(
         "AutoUpdater: Using local update method",
-      );
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_auto_updater_success",
-        expect.objectContaining({
-          installationType: "npm-local",
-          toVersion: "2.0.0",
-          wasMigrated: true,
-        }),
       );
     } finally {
       await rendered.cleanup();
@@ -890,15 +858,6 @@ describe("AutoUpdater coverage swarm row 050", () => {
       expect(harness.logForDebugging).toHaveBeenCalledWith(
         "AutoUpdater: Unknown installation type, falling back to config",
       );
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_auto_updater_fail",
-        expect.objectContaining({
-          attemptedVersion: "2.0.0",
-          installationType: "unknown",
-          status: "no_permissions",
-          wasMigrated: false,
-        }),
-      );
     } finally {
       await rendered.cleanup();
     }
@@ -922,15 +881,6 @@ describe("AutoUpdater coverage swarm row 050", () => {
       expect(harness.localInstallationExists).toHaveBeenCalledOnce();
       expect(harness.installOrUpdateAgenCPackage).toHaveBeenCalledWith("stable");
       expect(harness.installGlobalPackage).not.toHaveBeenCalled();
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_auto_updater_fail",
-        expect.objectContaining({
-          attemptedVersion: "2.0.0",
-          installationType: "unknown",
-          status: "no_permissions",
-          wasMigrated: true,
-        }),
-      );
     } finally {
       await rendered.cleanup();
     }

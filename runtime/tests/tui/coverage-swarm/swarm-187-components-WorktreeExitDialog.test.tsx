@@ -38,7 +38,6 @@ const harness = vi.hoisted(() => ({
   execFileNoThrow: vi.fn(),
   keepWorktree: vi.fn(),
   killTmuxSession: vi.fn(),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   saveWorktreeState: vi.fn(),
   session: {
@@ -71,10 +70,6 @@ vi.mock('react', async () => {
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-
-vi.mock('src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('src/utils/debug.js', () => ({
@@ -160,7 +155,6 @@ describe('WorktreeExitDialog coverage swarm row 187', () => {
     harness.execFileNoThrow.mockReset()
     harness.keepWorktree.mockReset().mockResolvedValue(undefined)
     harness.killTmuxSession.mockReset().mockResolvedValue(undefined)
-    harness.logEvent.mockClear()
     harness.logForDebugging.mockClear()
     harness.saveWorktreeState.mockClear()
     harness.setChanges.mockClear()
@@ -214,10 +208,6 @@ describe('WorktreeExitDialog coverage swarm row 187', () => {
 
     await dialog.props.children.props.onChange('remove')
 
-    expect(harness.logEvent).toHaveBeenCalledWith('agenc_worktree_removed', {
-      changed_files: 0,
-      commits: 0,
-    })
     expect(harness.killTmuxSession).not.toHaveBeenCalled()
     expect(harness.cleanupWorktree).toHaveBeenCalledOnce()
     expect(chdirSpy).toHaveBeenCalledWith('/workspace/main')

@@ -1,9 +1,5 @@
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  _resetForTesting as resetAnalyticsForTesting,
-  attachAnalyticsSink,
-} from "../analytics/index.js";
+import { describe, expect, it, vi } from "vitest";
 
 const runAgenCForkedAgent = vi.hoisted(() => vi.fn());
 
@@ -15,7 +11,6 @@ import {
   checkBashReadOnlyConstraints,
   createUserMessage,
   extractReadFilesFromMessages,
-  logEvent,
   runForkedAgent,
 } from "./runtime.js";
 
@@ -46,16 +41,8 @@ function appState() {
 }
 
 describe("PromptSuggestion runtime", () => {
-  beforeEach(() => {
-    runAgenCForkedAgent.mockReset();
-    resetAnalyticsForTesting();
-  });
-
-  afterEach(() => {
-    resetAnalyticsForTesting();
-  });
-
   it("delegates forked work to AgenC's real forked-agent path", async () => {
+    runAgenCForkedAgent.mockReset();
     const message = {
       type: "assistant",
       uuid: "assistant-1",
@@ -190,27 +177,6 @@ describe("PromptSuggestion runtime", () => {
     expect([...((extracted as Map<string, unknown>).entries())]).toEqual([
       [resolve(cwd, "two.txt"), "second"],
     ]);
-  });
-
-  it("emits prompt-suggestion analytics through the real analytics sink", async () => {
-    const events: Array<{ eventName: string; metadata: Record<string, unknown> }> = [];
-    attachAnalyticsSink({
-      logEvent: (eventName, metadata) => {
-        events.push({ eventName, metadata });
-      },
-      logEventAsync: async () => {},
-    });
-
-    logEvent("tengu_prompt_suggestion", { accepted: true });
-
-    await vi.waitFor(() => {
-      expect(events).toEqual([
-        {
-          eventName: "tengu_prompt_suggestion",
-          metadata: { accepted: true },
-        },
-      ]);
-    });
   });
 
   it.each([

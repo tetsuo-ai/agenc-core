@@ -10,12 +10,10 @@ const harness = vi.hoisted(() => ({
   execCalls: [] as { args: string[]; cwd?: string }[],
   fileIndexLoads: [] as string[][],
   logError: vi.fn(),
-  logEvent: vi.fn(),
   reset() {
     this.execCalls = []
     this.fileIndexLoads = []
     this.logError.mockClear()
-    this.logEvent.mockClear()
   },
 }))
 
@@ -23,10 +21,6 @@ vi.mock('../../utils/cwd.js', () => ({
   getCwd: () => tempCwd,
   pwd: () => tempCwd,
   runWithCwdOverride: <T,>(_cwd: string, fn: () => T) => fn(),
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../../utils/settings/settings.js', () => ({

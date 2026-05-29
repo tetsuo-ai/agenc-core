@@ -19,10 +19,6 @@ import {
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join } from 'path'
 import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from 'src/services/analytics/index.js'
-import {
   getOriginalCwd,
   getPlanSlugCache,
   getPromptId,
@@ -1317,7 +1313,6 @@ class Project {
           },
         )
       } catch {
-        logEvent('tengu_session_persistence_failed', {})
         logForDebugging('Failed to write transcript as internal event')
       }
       return
@@ -1338,7 +1333,6 @@ class Project {
     )
 
     if (!success) {
-      logEvent('tengu_session_persistence_failed', {})
       gracefulShutdownSync(1, 'other')
     }
   }
@@ -1891,7 +1885,6 @@ function applyPreservedSegmentRelinks(
       | 'cycle_before_head'
       | 'missing_anchor' = 'missing_tail'
     let lastSeenUuid: UUID | undefined
-    let lastSeenType: TranscriptMessage['type'] | undefined
     let breakParentUuid: UUID | null | undefined
 
     while (cur) {
@@ -1902,7 +1895,6 @@ function applyPreservedSegmentRelinks(
       walkSeen.add(cur.uuid)
       preservedUuids.add(cur.uuid)
       lastSeenUuid = cur.uuid
-      lastSeenType = cur.type
       if (cur.uuid === lastSeg.headUuid) {
         reachedHead = true
         break
@@ -1929,23 +1921,6 @@ function applyPreservedSegmentRelinks(
       // loading the full pre-compact history on resume.
       relinkFailed = true
       preservedUuids.clear()
-      logEvent('tengu_relink_walk_broken', {
-        failureKind:
-          failureKind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        tailInTranscript,
-        headInTranscript,
-        anchorInTranscript,
-        walkSteps: walkSeen.size,
-        transcriptSize: messages.size,
-        tailIndex: entryIndex.get(lastSeg.tailUuid),
-        headIndex: entryIndex.get(lastSeg.headUuid),
-        anchorIndex: entryIndex.get(lastSeg.anchorUuid),
-        lastSeenType,
-        breakParentInTranscript: Boolean(
-          breakParentUuid && messages.has(breakParentUuid),
-        ),
-        breakParentIsNull: breakParentUuid === null,
-      })
       logForDiagnosticsNoPII('warn', 'relink_walk_broken', {
         failureKind,
         tailInTranscript,
@@ -2250,13 +2225,11 @@ function applySnipRemovals(messages: Map<UUID, TranscriptMessage>): void {
   // link; the relink walk will stop at the gap and pick up null (chain-root
   // behavior — same as if compact truncated there, which it did).
   const deletedParent = new Map<UUID, UUID | null>()
-  let removedCount = 0
   for (const uuid of toDelete) {
     const entry = messages.get(uuid)
     if (!entry) continue
     deletedParent.set(uuid, entry.parentUuid)
     messages.delete(uuid)
-    removedCount++
   }
 
   // Relink survivors with dangling parentUuid. Walk backward through
@@ -2277,17 +2250,10 @@ function applySnipRemovals(messages: Map<UUID, TranscriptMessage>): void {
     for (const p of path) deletedParent.set(p, cur)
     return cur
   }
-  let relinkedCount = 0
   for (const [uuid, msg] of messages) {
     if (!msg.parentUuid || !toDelete.has(msg.parentUuid)) continue
     messages.set(uuid, { ...msg, parentUuid: resolve(msg.parentUuid) })
-    relinkedCount++
   }
-
-  logEvent('tengu_snip_resume_filtered', {
-    removed_count: removedCount,
-    relinked_count: relinkedCount,
-  })
 }
 
 /**
@@ -2332,7 +2298,6 @@ export function buildConversationChain(
           `Cycle detected in parentUuid chain at message ${currentMsg.uuid}. Returning partial transcript.`,
         ),
       )
-      logEvent('tengu_chain_parent_cycle', {})
       break
     }
     seen.add(currentMsg.uuid)
@@ -2444,9 +2409,6 @@ function recoverOrphanedParallelToolResults(
   }
 
   if (recoveredCount === 0) return chain
-  logEvent('tengu_chain_parallel_tr_recovered', {
-    recovered_count: recoveredCount,
-  })
 
   const result: TranscriptMessage[] = []
   for (const m of chain) {
@@ -2473,26 +2435,7 @@ function recoverOrphanedParallelToolResults(
  * Called from resume loading paths — fires once per resume, not on
  * /share or log-listing chain rebuilds.
  */
-export function checkResumeConsistency(chain: Message[]): void {
-  for (let i = chain.length - 1; i >= 0; i--) {
-    const m = chain[i]!
-    if (m.type !== 'system' || m.subtype !== 'turn_duration') continue
-    const expected = m.messageCount
-    if (expected === undefined) return
-    // `i` is the 0-based index of the checkpoint in the reconstructed chain.
-    // The checkpoint was appended AFTER messageCount messages, so its own
-    // position should be messageCount (i.e., i === expected).
-    const actual = i
-    logEvent('tengu_resume_consistency_delta', {
-      expected,
-      actual,
-      delta: actual - expected,
-      chain_length: chain.length,
-      checkpoint_age_entries: chain.length - 1 - i,
-    })
-    return
-  }
-}
+export function checkResumeConsistency(_chain: Message[]): void {}
 
 /**
  * Builds a filie history snapshot chain from the conversation
@@ -2775,44 +2718,9 @@ function convertToLogOption(
   }
 }
 
-async function trackSessionBranchingAnalytics(
-  logs: LogOption[],
-): Promise<void> {
-  const sessionIdCounts = new Map<string, number>()
-  let maxCount = 0
-  for (const log of logs) {
-    const sessionId = getSessionIdFromLog(log)
-    if (sessionId) {
-      const newCount = (sessionIdCounts.get(sessionId) || 0) + 1
-      sessionIdCounts.set(sessionId, newCount)
-      maxCount = Math.max(newCount, maxCount)
-    }
-  }
-
-  // Early exit if no duplicates detected
-  if (maxCount <= 1) {
-    return
-  }
-
-  // Count sessions with branches and calculate stats using functional approach
-  const branchCounts = Array.from(sessionIdCounts.values()).filter(c => c > 1)
-  const sessionsWithBranches = branchCounts.length
-  const totalBranches = branchCounts.reduce((sum, count) => sum + count, 0)
-
-  logEvent('tengu_session_forked_branches_fetched', {
-    total_sessions: sessionIdCounts.size,
-    sessions_with_branches: sessionsWithBranches,
-    max_branches_per_session: Math.max(...branchCounts),
-    avg_branches_per_session: Math.round(totalBranches / sessionsWithBranches),
-    total_transcript_count: logs.length,
-  })
-}
-
 export async function fetchLogs(limit?: number): Promise<LogOption[]> {
   const projectDir = getProjectDir(getOriginalCwd())
   const logs = await getSessionFilesLite(projectDir, limit, getOriginalCwd())
-
-  await trackSessionBranchingAnalytics(logs)
 
   return logs
 }
@@ -2870,7 +2778,7 @@ export async function saveCustomTitle(
   sessionId: UUID,
   customTitle: string,
   fullPath?: string,
-  source: 'user' | 'auto' = 'user',
+  _source: 'user' | 'auto' = 'user',
 ) {
   // Fall back to computed path if fullPath is not provided
   const resolvedPath = fullPath ?? getTranscriptPathForSession(sessionId)
@@ -2883,10 +2791,6 @@ export async function saveCustomTitle(
   if (sessionId === getSessionId()) {
     getProject().currentSessionTitle = customTitle
   }
-  logEvent('tengu_session_renamed', {
-    source:
-      source as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
 }
 
 /**
@@ -2947,7 +2851,6 @@ export async function saveTag(sessionId: UUID, tag: string, fullPath?: string) {
   if (sessionId === getSessionId()) {
     getProject().currentSessionTag = tag
   }
-  logEvent('tengu_session_tagged', {})
 }
 
 /**
@@ -2977,7 +2880,6 @@ export async function linkSessionToPR(
     project.currentSessionPrUrl = prUrl
     project.currentSessionPrRepository = prRepository
   }
-  logEvent('tengu_session_linked_to_pr', { prNumber })
 }
 
 export function getCurrentSessionTag(sessionId: UUID): string | undefined {
@@ -3072,7 +2974,7 @@ export async function saveAgentName(
   sessionId: UUID,
   agentName: string,
   fullPath?: string,
-  source: 'user' | 'auto' = 'user',
+  _source: 'user' | 'auto' = 'user',
 ) {
   const resolvedPath = fullPath ?? getTranscriptPathForSession(sessionId)
   appendEntryToFile(resolvedPath, { type: 'agent-name', agentName, sessionId })
@@ -3081,10 +2983,6 @@ export async function saveAgentName(
     getProject().currentSessionAgentName = agentName
     void updateSessionName(agentName)
   }
-  logEvent('tengu_agent_name_set', {
-    source:
-      source as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
 }
 
 export async function saveAgentColor(
@@ -3102,7 +3000,6 @@ export async function saveAgentColor(
   if (sessionId === getSessionId()) {
     getProject().currentSessionAgentColor = agentColor
   }
-  logEvent('tengu_agent_color_set', {})
 }
 
 /**
@@ -3983,7 +3880,6 @@ export async function loadTranscriptFile(
   const terminalMessages = allMessages.filter(msg => !parentUuids.has(msg.uuid))
 
   const leafUuids = new Set<UUID>()
-  let hasCycle = false
 
   if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_pebble_leaf_prune', false)) {
     // Build a set of UUIDs that have user/assistant children
@@ -4004,7 +3900,6 @@ export async function loadTranscriptFile(
       let current: TranscriptMessage | undefined = terminal
       while (current) {
         if (seen.has(current.uuid)) {
-          hasCycle = true
           break
         }
         seen.add(current.uuid)
@@ -4027,7 +3922,6 @@ export async function loadTranscriptFile(
       let current: TranscriptMessage | undefined = terminal
       while (current) {
         if (seen.has(current.uuid)) {
-          hasCycle = true
           break
         }
         seen.add(current.uuid)
@@ -4040,10 +3934,6 @@ export async function loadTranscriptFile(
           : undefined
       }
     }
-  }
-
-  if (hasCycle) {
-    logEvent('tengu_transcript_parent_cycle', {})
   }
 
   return {

@@ -19,12 +19,6 @@ import {
 } from "../permissions/types.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
-  AGENC_COMPACT_CALL_METRIC,
-  AGENC_COMPACT_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
-import {
   getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
@@ -641,81 +635,74 @@ async function runManualCompact(params: {
   readonly ctx: TurnContext;
   readonly customInstructions?: string;
 }): Promise<AgenCManualCompactResult> {
-  const finishTelemetry = startCompactTelemetry("manual");
-  try {
-    const sourceMessages = params.session.snapshotHistoryMessages();
-    const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
-    if (messages.length === 0) {
-      throw new Error("No messages to compact");
-    }
-    const toolUseContext = buildAgenCToolUseContext(
-      params.session,
-      params.ctx,
-      { querySource: "compact" },
-    );
-    const commandContext = {
-      ...toolUseContext,
-      messages,
-      setMessages: () => {},
-      setAppState: () => {},
-      setInProgressToolUseIDs: () => {},
-      updateFileHistoryState: () => {},
-      updateAttributionState: () => {},
-      onChangeAPIKey: () => {},
-      options: {
-        ...toolUseContext.options,
-        commands: [],
-        debug: false,
-        thinkingConfig: {},
-        mcpResources: {},
-        dynamicMcpConfig: {},
-        ideInstallationStatus: null,
-        theme: "dark",
-      },
-    };
-    const result = await withCompactContextGuards(async () => {
-      const { manualCompactCall } =
-        await import("../services/compact/compact.js");
-      const call = manualCompactCall;
-      return await call(params.customInstructions ?? "", commandContext as never);
-    }, envForToolUseContext(toolUseContext));
-    if (result.type !== "compact") {
-      throw new Error("Compact command did not return a compaction result");
-    }
-    const compactionResultWithSlashMessages =
-      await addManualCompactSlashMessages(
-        result.compactionResult as AgenCCompactionResult,
-        params.customInstructions ?? "",
-        typeof result.displayText === "string" ? result.displayText : undefined,
-      );
-    await resetAgenCMicrocompactState(toolUseContext);
-    const compactionResult = await toAgenCCompactionResult(
-      compactionResultWithSlashMessages,
-      toolUseContext,
-    );
-    const compacted = compactionResult.replacementHistory.map(cloneLLMMessage);
-    await params.session.state.with((sessionState) => {
-      sessionState.history = compacted.map(cloneLLMMessage);
-    });
-    params.session.clearProviderResponseId();
-    params.session.rolloutStore?.appendRollout(
-      {
-        type: "compacted",
-        payload: buildAgenCCompactedRolloutItem(compactionResult),
-      },
-      { durable: true },
-    );
-    finishTelemetry("compacted");
-    return {
-      displayText: typeof result.displayText === "string"
-        ? result.displayText
-        : compactionResult.message,
-      compactionResult,
-    };
-  } catch (error) {
-    finishTelemetry("error");
-    throw error;
+  const sourceMessages = params.session.snapshotHistoryMessages();
+  const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
+  if (messages.length === 0) {
+    throw new Error("No messages to compact");
   }
+  const toolUseContext = buildAgenCToolUseContext(
+    params.session,
+    params.ctx,
+    { querySource: "compact" },
+  );
+  const commandContext = {
+    ...toolUseContext,
+    messages,
+    setMessages: () => {},
+    setAppState: () => {},
+    setInProgressToolUseIDs: () => {},
+    updateFileHistoryState: () => {},
+    updateAttributionState: () => {},
+    onChangeAPIKey: () => {},
+    options: {
+      ...toolUseContext.options,
+      commands: [],
+      debug: false,
+      thinkingConfig: {},
+      mcpResources: {},
+      dynamicMcpConfig: {},
+      ideInstallationStatus: null,
+      theme: "dark",
+    },
+  };
+  const result = await withCompactContextGuards(async () => {
+    const { manualCompactCall } =
+      await import("../services/compact/compact.js");
+    const call = manualCompactCall;
+    return await call(params.customInstructions ?? "", commandContext as never);
+  }, envForToolUseContext(toolUseContext));
+  if (result.type !== "compact") {
+    throw new Error("Compact command did not return a compaction result");
+  }
+  const compactionResultWithSlashMessages =
+    await addManualCompactSlashMessages(
+      result.compactionResult as AgenCCompactionResult,
+      params.customInstructions ?? "",
+      typeof result.displayText === "string" ? result.displayText : undefined,
+    );
+  await resetAgenCMicrocompactState(toolUseContext);
+  const compactionResult = await toAgenCCompactionResult(
+    compactionResultWithSlashMessages,
+    toolUseContext,
+  );
+  const compacted = compactionResult.replacementHistory.map(cloneLLMMessage);
+  await params.session.state.with((sessionState) => {
+    sessionState.history = compacted.map(cloneLLMMessage);
+  });
+  params.session.clearProviderResponseId();
+  params.session.rolloutStore?.appendRollout(
+    {
+      type: "compacted",
+      payload: buildAgenCCompactedRolloutItem(compactionResult),
+    },
+    { durable: true },
+  );
+  return {
+    displayText: typeof result.displayText === "string"
+      ? result.displayText
+      : compactionResult.message,
+    compactionResult,
+  };
 }
 
 async function runContextUsage(params: {
@@ -723,98 +710,85 @@ async function runContextUsage(params: {
   readonly ctx: TurnContext;
   readonly args?: string;
 }): Promise<AgenCContextUsageResult> {
-  const finishTelemetry = startCompactTelemetry("context_usage");
-  try {
-    // The session's history (snapshotHistoryMessages) starts AFTER
-    // the synthetic system message; durableHistoryStartIndex in
-    // run-turn.ts strips it before the snapshot is recorded. So to
-    // count what the model actually receives on the next turn we
-    // have to RECONSTRUCT the per-turn system prompt and prepend it
-    // ourselves. Reuses the same buildAssembleSystemPromptOpts +
-    // assembleSystemPrompt + tiered loader (mtime-cached after Phase
-    // 3 sg-4) that runSingleTurn calls — no parallel assembly path.
-    //
-    // Every field below mirrors what `runSingleTurn` resolves at
-    // agenc.ts:760-770 so the displayed token count reflects the
-    // actual wire payload (including the # MCP Server Instructions
-    // block and the # Autonomous work section, which the previous
-    // version of this code silently dropped).
-    const tools = params.session.services.registry.toLLMTools();
-    // Carry-forward #64: production resolves enabledToolNames from
-    // `registry.allSpecs()` (via `prepareTurnRuntimeInputs.params.registry.tools`
-    // at agenc.ts:852); /context here used `toLLMTools()` which only
-    // returns visibleSpecs. The two diverge on deferred MCP tools that
-    // are registered but not yet listed. Match production by walking
-    // allSpecs when the registry exposes them; fall back to the visible
-    // set when allSpecs isn't available (test fixtures).
-    const allSpecsFn = (params.session.services.registry as unknown as {
-      readonly allSpecs?: () => readonly { readonly name: string }[];
-    }).allSpecs;
-    const enabledToolNames = new Set(
-      typeof allSpecsFn === "function"
-        ? allSpecsFn.call(params.session.services.registry).map((spec) => spec.name)
-        : tools.map((tool) => tool.function.name),
-    );
-    const projectInstructions = await loadProjectInstructionsForContext(
-      params.session,
-      params.ctx.cwd,
-    );
-    const mcpServers = await loadMcpServerInstructionsForContext(params.session);
-    const systemMessage = await buildSyntheticSystemMessage({
-      session: params.session,
-      ctx: params.ctx,
-      projectInstructions,
-      mcpServers,
-      enabledToolNames,
-    });
-    const sourceMessages = params.session.snapshotHistoryMessages();
-    const conversationMessages = toAgenCRuntimeMessages(sourceMessages);
-    const messages = systemMessage !== null
-      ? [systemMessage, ...conversationMessages]
-      : conversationMessages;
-    const toolUseContext = buildAgenCToolUseContext(
-      params.session,
-      params.ctx,
-      { querySource: "context" },
-    );
-    const sessionState = params.session.state.unsafePeek() as
-      | { readonly totalTokenUsage?: {
-          readonly promptTokens: number;
-          readonly cachedInputTokens: number;
-        } }
-      | null;
-    const sessionTokenUsage = sessionState?.totalTokenUsage !== undefined
-      ? {
-          promptTokens: sessionState.totalTokenUsage.promptTokens,
-          cachedInputTokens: sessionState.totalTokenUsage.cachedInputTokens,
-        }
-      : undefined;
-    const commandContext = {
-      ...toolUseContext,
-      messages,
-      tools,
-      options: {
-        ...toolUseContext.options,
-        customSystemPrompt: undefined,
-        appendSystemPrompt: undefined,
-      },
-      ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
-    };
-    const result = await withCompactContextGuards(async () => {
-      return contextUsageCall(params.args ?? "", commandContext as never);
-    }, envForToolUseContext(toolUseContext));
-    // Surface a tag when the synthetic system message was lost so a
-    // regression in the assembler shows up in telemetry instead of as
-    // a silent under-count in /context. The status itself stays
-    // "reported" because /context still produced a usable answer.
-    finishTelemetry("reported", {
-      ...(systemMessage === null ? { systemAssemblyFailed: true } : {}),
-    });
-    return { text: result.value };
-  } catch (error) {
-    finishTelemetry("error");
-    throw error;
-  }
+  // The session's history (snapshotHistoryMessages) starts AFTER
+  // the synthetic system message; durableHistoryStartIndex in
+  // run-turn.ts strips it before the snapshot is recorded. So to
+  // count what the model actually receives on the next turn we
+  // have to RECONSTRUCT the per-turn system prompt and prepend it
+  // ourselves. Reuses the same buildAssembleSystemPromptOpts +
+  // assembleSystemPrompt + tiered loader (mtime-cached after Phase
+  // 3 sg-4) that runSingleTurn calls — no parallel assembly path.
+  //
+  // Every field below mirrors what `runSingleTurn` resolves at
+  // agenc.ts:760-770 so the displayed token count reflects the
+  // actual wire payload (including the # MCP Server Instructions
+  // block and the # Autonomous work section, which the previous
+  // version of this code silently dropped).
+  const tools = params.session.services.registry.toLLMTools();
+  // Carry-forward #64: production resolves enabledToolNames from
+  // `registry.allSpecs()` (via `prepareTurnRuntimeInputs.params.registry.tools`
+  // at agenc.ts:852); /context here used `toLLMTools()` which only
+  // returns visibleSpecs. The two diverge on deferred MCP tools that
+  // are registered but not yet listed. Match production by walking
+  // allSpecs when the registry exposes them; fall back to the visible
+  // set when allSpecs isn't available (test fixtures).
+  const allSpecsFn = (params.session.services.registry as unknown as {
+    readonly allSpecs?: () => readonly { readonly name: string }[];
+  }).allSpecs;
+  const enabledToolNames = new Set(
+    typeof allSpecsFn === "function"
+      ? allSpecsFn.call(params.session.services.registry).map((spec) => spec.name)
+      : tools.map((tool) => tool.function.name),
+  );
+  const projectInstructions = await loadProjectInstructionsForContext(
+    params.session,
+    params.ctx.cwd,
+  );
+  const mcpServers = await loadMcpServerInstructionsForContext(params.session);
+  const systemMessage = await buildSyntheticSystemMessage({
+    session: params.session,
+    ctx: params.ctx,
+    projectInstructions,
+    mcpServers,
+    enabledToolNames,
+  });
+  const sourceMessages = params.session.snapshotHistoryMessages();
+  const conversationMessages = toAgenCRuntimeMessages(sourceMessages);
+  const messages = systemMessage !== null
+    ? [systemMessage, ...conversationMessages]
+    : conversationMessages;
+  const toolUseContext = buildAgenCToolUseContext(
+    params.session,
+    params.ctx,
+    { querySource: "context" },
+  );
+  const sessionState = params.session.state.unsafePeek() as
+    | { readonly totalTokenUsage?: {
+        readonly promptTokens: number;
+        readonly cachedInputTokens: number;
+      } }
+    | null;
+  const sessionTokenUsage = sessionState?.totalTokenUsage !== undefined
+    ? {
+        promptTokens: sessionState.totalTokenUsage.promptTokens,
+        cachedInputTokens: sessionState.totalTokenUsage.cachedInputTokens,
+      }
+    : undefined;
+  const commandContext = {
+    ...toolUseContext,
+    messages,
+    tools,
+    options: {
+      ...toolUseContext.options,
+      customSystemPrompt: undefined,
+      appendSystemPrompt: undefined,
+    },
+    ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
+  };
+  const result = await withCompactContextGuards(async () => {
+    return contextUsageCall(params.args ?? "", commandContext as never);
+  }, envForToolUseContext(toolUseContext));
+  return { text: result.value };
 }
 
 /**
@@ -1252,25 +1226,6 @@ async function contextUsageCall(
       : {}),
   });
   return { value: formatContextUsageReport(breakdown) };
-}
-
-function startCompactTelemetry(
-  mode: string,
-  attributes: Readonly<Record<string, unknown>> = {}
-): (status: string, additionalAttributes?: Readonly<Record<string, unknown>>) => void {
-  const baseTags = toMetricTags({ mode, ...attributes });
-  const timer = agencTelemetry.timer(AGENC_COMPACT_DURATION_METRIC, baseTags);
-  let finished = false;
-  return (
-    status: string,
-    additionalAttributes: Readonly<Record<string, unknown>> = {},
-  ) => {
-    if (finished) return;
-    finished = true;
-    const tags = toMetricTags({ mode, ...attributes, status, ...additionalAttributes });
-    agencTelemetry.counter(AGENC_COMPACT_CALL_METRIC, 1, tags);
-    timer.end(tags);
-  };
 }
 
 async function toAgenCCompactionResult(

@@ -9,9 +9,6 @@ const mocks = vi.hoisted(() => ({
     message: { role: 'user', content: input.content },
     ...input,
   })),
-  logEvent: vi.fn(),
-  logOTelEvent: vi.fn(),
-  redactIfDisabled: vi.fn((value: string) => `redacted:${value}`),
   setPromptId: vi.fn(),
   startInteractionSpan: vi.fn(),
 }))
@@ -22,17 +19,8 @@ vi.mock('../../bootstrap/state.js', () => ({
   updateLastInteractionTime: vi.fn(),
 }))
 
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: mocks.logEvent,
-}))
-
 vi.mock('../../utils/messages.js', () => ({
   createUserMessage: mocks.createUserMessage,
-}))
-
-vi.mock('../../utils/telemetry/events.js', () => ({
-  logOTelEvent: mocks.logOTelEvent,
-  redactIfDisabled: mocks.redactIfDisabled,
 }))
 
 vi.mock('../../utils/telemetry/sessionTracing.js', () => ({
@@ -44,7 +32,7 @@ describe('processTextPrompt array image prompt coverage', () => {
     vi.clearAllMocks()
   })
 
-  test('uses first text for interaction span and last text for prompt telemetry', () => {
+  test('uses first text for the interaction span and builds the user message from all text and image blocks', () => {
     const contextBlock = {
       type: 'text',
       text: '<selection>status panel</selection>',
@@ -78,20 +66,9 @@ describe('processTextPrompt array image prompt coverage', () => {
       'plan',
       true,
     )
-    const promptId = mocks.setPromptId.mock.calls[0]?.[0]
 
     expect(result.shouldQuery).toBe(true)
     expect(mocks.startInteractionSpan).toHaveBeenCalledWith(contextBlock.text)
-    expect(mocks.redactIfDisabled).toHaveBeenCalledWith(promptBlock.text)
-    expect(mocks.logOTelEvent).toHaveBeenCalledWith('user_prompt', {
-      prompt_length: String(promptBlock.text.length),
-      prompt: `redacted:${promptBlock.text}`,
-      'prompt.id': promptId,
-    })
-    expect(mocks.logEvent).toHaveBeenCalledWith('agenc_input_prompt', {
-      is_negative: false,
-      is_keep_going: false,
-    })
     expect(mocks.createUserMessage).toHaveBeenCalledWith({
       content: [contextBlock, promptBlock, imageBlock],
       uuid: 'prompt-uuid',

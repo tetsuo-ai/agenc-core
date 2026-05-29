@@ -24,7 +24,6 @@ const harness = vi.hoisted(() => ({
   },
   directorySuggestions: [] as unknown[],
   keybindings: {} as Record<string, () => unknown>,
-  logEvent: vi.fn(),
   pendingChord: null as null | string,
   sessionTitleMatches: [] as unknown[],
   shellCompletions: [] as unknown[],
@@ -51,7 +50,6 @@ const harness = vi.hoisted(() => ({
     harness.appState.viewingAgentTaskId = null
     harness.directorySuggestions = []
     harness.keybindings = {}
-    harness.logEvent.mockClear()
     harness.pendingChord = null
     harness.sessionTitleMatches = []
     harness.shellCompletions = []
@@ -79,10 +77,6 @@ vi.mock('usehooks-ts', async () => {
 
 vi.mock('src/tui/context/notifications.js', () => ({
   useNotifications: () => ({ addNotification: harness.addNotification }),
-}))
-
-vi.mock('src/services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('src/tui/context/overlayContext', () => ({
@@ -692,7 +686,7 @@ describe('useTypeahead coverage swarm row 009', () => {
     }
   })
 
-  test('logs and suppresses bash completion failures', async () => {
+  test('suppresses bash completion failures', async () => {
     harness.shellCompletionRejects = true
     const rendered = await renderHookHarness({
       input: 'g',
@@ -701,14 +695,7 @@ describe('useTypeahead coverage swarm row 009', () => {
 
     try {
       harness.keybindings['autocomplete:accept']?.()
-      await waitFor(
-        () => harness.logEvent.mock.calls.length === 1,
-        'shell completion failure log',
-      )
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_shell_completion_failed',
-        {},
-      )
+      await sleep(50)
       expect(rendered.getSnapshot().suggestions).toEqual([])
     } finally {
       await rendered.dispose()

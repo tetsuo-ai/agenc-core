@@ -30,7 +30,6 @@ const harness = vi.hoisted(() => ({
   fileHistoryEnabled: true,
   keybindings: {} as Record<string, () => unknown>,
   logError: vi.fn(),
-  logEvent: vi.fn(),
   selectProps: null as CapturedSelectProps | null,
   reset() {
     harness.canRestore = true
@@ -44,13 +43,8 @@ const harness = vi.hoisted(() => ({
     harness.fileHistoryEnabled = true
     harness.keybindings = {}
     harness.logError.mockClear()
-    harness.logEvent.mockClear()
     harness.selectProps = null
   },
-}))
-
-vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: harness.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -330,10 +324,6 @@ describe('MessageSelector coverage-swarm row 012', () => {
       await sleep()
 
       expect(onClose).toHaveBeenCalledTimes(1)
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_message_selector_selected',
-        expect.objectContaining({ index_from_end: 1 }),
-      )
       expect(rendered.output()).toContain('(current)')
     } finally {
       await rendered.dispose()
@@ -401,10 +391,6 @@ describe('MessageSelector coverage-swarm row 012', () => {
       await sleep()
 
       expect(onClose).not.toHaveBeenCalled()
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        'agenc_message_selector_restore_option_selected',
-        { option: 'nevermind' },
-      )
     } finally {
       await rendered.dispose()
     }

@@ -9,7 +9,6 @@ const harness = vi.hoisted(() => ({
   intervalDelay: undefined as number | null | undefined,
   isAutoUpdaterDisabled: vi.fn(() => false),
   logError: vi.fn(),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   updateResults: [] as Array<{ status: string; version: string | null }>,
   updatingStates: [] as boolean[],
@@ -24,10 +23,6 @@ vi.mock("usehooks-ts", () => ({
 vi.mock("../hooks/useUpdateNotification.js", () => ({
   useUpdateNotification: (version: string | null | undefined) =>
     version ? "9.9.9" : null,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("src/utils/debug.js", () => ({
@@ -188,22 +183,6 @@ describe("NativeAutoUpdater installer failure coverage", () => {
       expect(harness.isAutoUpdaterDisabled).toHaveBeenCalledOnce();
       expect(harness.installLatest).toHaveBeenCalledWith("nightly");
       expect(harness.logError).toHaveBeenCalledWith(installError);
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_native_auto_updater_start",
-        {},
-      );
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_native_auto_updater_fail",
-        expect.objectContaining({
-          error_checksum: false,
-          error_disk_full: false,
-          error_network: true,
-          error_not_found: false,
-          error_npm: false,
-          error_permission: false,
-          error_timeout: false,
-        }),
-      );
       expect(harness.updateResults).toEqual([
         { status: "install_failed", version: null },
       ]);

@@ -4,10 +4,6 @@ import { readdir, readFile, realpath, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from 'src/services/analytics/index.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
@@ -299,7 +295,6 @@ export const loadMarkdownFilesForSubdir = memoize(
     subdir: AgenCConfigDirectory,
     cwd: string,
   ): Promise<MarkdownFile[]> {
-    const searchStartTime = Date.now()
     const userDir = join(getAgenCConfigHomeDir(), subdir)
     const managedDir = join(getManagedFilePath(), '.agenc', subdir)
     const projectDirs = getProjectDirsUpToHome(subdir, cwd)
@@ -412,16 +407,6 @@ export const loadMarkdownFilesForSubdir = memoize(
         `Deduplicated ${duplicatesRemoved} files in ${subdir} (same inode via symlinks or hard links)`,
       )
     }
-
-    logEvent(`tengu_dir_search`, {
-      durationMs: Date.now() - searchStartTime,
-      managedFilesFound: managedFiles.length,
-      userFilesFound: userFiles.length,
-      projectFilesFound: projectFiles.length,
-      projectDirsSearched: projectDirs.length,
-      subdir:
-        subdir as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
 
     return deduplicatedFiles
   },

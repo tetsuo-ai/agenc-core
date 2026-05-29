@@ -32,7 +32,6 @@ const harness = vi.hoisted(() => ({
   briefEnabled: false,
   features: new Set<string>(),
   keybindings: new Map<string, CapturedKeybinding>(),
-  logEvent: vi.fn(),
   setAppState: vi.fn(),
   terminalToggle: vi.fn(),
 }));
@@ -55,10 +54,6 @@ vi.mock("../state/AppState.js", () => ({
   useAppState: (selector: (state: AppState) => unknown) =>
     selector(harness.appState),
   useSetAppState: () => harness.setAppState,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("../../services/analytics/growthbook.js", () => ({
@@ -281,14 +276,6 @@ describe("GlobalKeybindingHandlers wave200 coverage", () => {
       await renderHandlers();
       keybinding("app:toggleBrief").handler();
       expect(harness.appState.isBriefOnly).toBe(true);
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "agenc_brief_mode_toggled",
-        {
-          enabled: true,
-          gated: false,
-          source: "keybinding",
-        },
-      );
 
       keybinding("app:toggleTeammatePreview").handler();
       expect(harness.appState.showTeammateMessagePreview).toBe(true);

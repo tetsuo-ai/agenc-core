@@ -23,14 +23,6 @@ async function importHookChainsModule(options?: {
 
   const allowRemoteSessions = options?.allowRemoteSessions ?? true
 
-  mock.module('../../src/services/analytics/index.js', () => ({
-    logEvent: () => {},
-  }))
-
-  mock.module('../../src/utils/telemetry/events.js', () => ({
-    logOTelEvent: async () => {},
-  }))
-
   mock.module('../../src/services/policyLimits/index.js', () => ({
     isPolicyAllowed: () => allowRemoteSessions,
   }))

@@ -9,7 +9,6 @@ const probes = vi.hoisted(() => ({
     handlers: Record<string, () => void>
     options: { context: string; isActive: boolean }
   }>,
-  logEvent: vi.fn(),
 }))
 
 vi.mock('../keybindings/useKeybinding.js', () => ({
@@ -19,10 +18,6 @@ vi.mock('../keybindings/useKeybinding.js', () => ({
   ) => {
     probes.keybindingCalls.push({ handlers, options })
   },
-}))
-
-vi.mock('../../services/analytics/index', () => ({
-  logEvent: probes.logEvent,
 }))
 
 import { Text } from '../ink.js'
@@ -414,10 +409,6 @@ describe('swarm 040 useMessageActions', () => {
       expect(handlers).toBeDefined()
 
       capture.current?.enter()
-      expect(probes.logEvent).toHaveBeenCalledWith(
-        'tengu_message_actions_enter',
-        {},
-      )
 
       expect(() => {
         handlers?.['messageActions:prev']()

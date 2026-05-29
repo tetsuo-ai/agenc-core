@@ -21,12 +21,6 @@ import type {
   HookRunDiagnostic,
   IndividualHookConfig,
 } from "./types.js";
-import {
-  AGENC_HOOK_RUN_DURATION_METRIC,
-  AGENC_HOOK_RUN_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../../observability/telemetry.js";
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_DIAGNOSTICS = 50;
@@ -176,22 +170,6 @@ export class HookEngine {
       0,
       this.opts.maxDiagnostics ?? DEFAULT_MAX_DIAGNOSTICS,
     );
-    const tags = toMetricTags({
-      hook_name: hook.event,
-      status: hookMetricStatus(sanitizedResult.status),
-      source: hookMetricSource(hook),
-    });
-    agencTelemetry.counter(AGENC_HOOK_RUN_METRIC, 1, tags);
-    agencTelemetry.recordDuration(
-      AGENC_HOOK_RUN_DURATION_METRIC,
-      sanitizedResult.durationMs,
-      tags,
-    );
-    agencTelemetry.event("hooks.run.completed", {
-      "hook.event": hook.event,
-      "hook.status": sanitizedResult.status,
-      "hook.duration_ms": sanitizedResult.durationMs,
-    });
     return {
       ...diagnostic,
       rawStdout: result.stdout,
@@ -199,38 +177,6 @@ export class HookEngine {
       ...(result.error !== undefined ? { rawError: result.error } : {}),
     };
   }
-}
-
-function hookMetricStatus(status: CommandRunResult["status"]): string {
-  switch (status) {
-    case "success":
-      return "completed";
-    case "blocking":
-      return "blocked";
-    case "timeout":
-    case "skipped":
-      return "stopped";
-    case "non_blocking_error":
-      return "failed";
-  }
-}
-
-function hookMetricSource(hook: IndividualHookConfig): string {
-  const record = hook as unknown as {
-    readonly metricSource?: unknown;
-    readonly configSource?: unknown;
-  };
-  return (
-    nonEmptyString(record.metricSource) ??
-    nonEmptyString(record.configSource) ??
-    hook.source
-  );
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : undefined;
 }
 
 function inputCwd(input: Record<string, unknown>): string | undefined {

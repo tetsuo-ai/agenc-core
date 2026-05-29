@@ -100,7 +100,6 @@ import type { Session } from "./session.js";
 import { llmMessageToResponseItem } from "./message-history-conversion.js";
 import {
   modelContextWindow,
-  TurnTimingState,
   toTurnContextItem,
   type TurnContext,
   type TurnContextItem,
@@ -120,14 +119,6 @@ import {
   type Terminal,
   type TurnState,
 } from "./turn-state.js";
-import {
-  AGENC_COMPACT_CALL_METRIC,
-  AGENC_COMPACT_DURATION_METRIC,
-  AGENC_TURN_TTFM_DURATION_METRIC,
-  AGENC_TURN_TTFT_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
 
 export interface RunTurnOptions {
   readonly systemPrompt?: string;
@@ -169,41 +160,6 @@ class RegularTurnTask implements SessionTask {
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
-
-function recordTurnTimingForPhaseEvent(
-  ctx: TurnContext,
-  event: PhaseEvent,
-): void {
-  ensureTurnTimingState(ctx);
-  const tags = toMetricTags({ turn_id: ctx.subId, event: event.type });
-  const ttftMs = ctx.turnTimingState.recordTtftForPhaseEvent(event);
-  if (ttftMs !== undefined) {
-    agencTelemetry.recordDuration(
-      AGENC_TURN_TTFT_DURATION_METRIC,
-      ttftMs,
-      tags,
-    );
-  }
-  if (event.type === "assistant_text") {
-    const ttfmMs = ctx.turnTimingState.recordTtfmForAssistantText(
-      event.content,
-    );
-    if (ttfmMs !== undefined) {
-      agencTelemetry.recordDuration(
-        AGENC_TURN_TTFM_DURATION_METRIC,
-        ttfmMs,
-        tags,
-      );
-    }
-  }
-}
-
-function ensureTurnTimingState(ctx: TurnContext): TurnTimingState {
-  if (ctx.turnTimingState !== undefined) return ctx.turnTimingState;
-  const timingState = new TurnTimingState();
-  (ctx as { turnTimingState: TurnTimingState }).turnTimingState = timingState;
-  return timingState;
-}
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
@@ -583,13 +539,7 @@ async function runAgenCAutoCompact(params: {
   readonly initialContextInjection?: string;
   readonly force?: boolean;
 }): Promise<AgenCAutoCompactResult> {
-  const finishTelemetry = startCompactTelemetry("auto", {
-    query_source: params.querySource,
-    reason: params.reason,
-    phase: params.phase,
-  });
   if (!params.session || !params.ctx || !params.state) {
-    finishTelemetry("not_configured");
     return compactionNotRun();
   }
   try {
@@ -625,18 +575,12 @@ async function runAgenCAutoCompact(params: {
       );
     }, envForToolUseContext(toolUseContext));
     if (!result.wasCompacted || !result.compactionResult) {
-      finishTelemetry("skipped", {
-        consecutive_failures: result.consecutiveFailures,
-      });
       return compactionNotRun(result.consecutiveFailures);
     }
     params.session.clearProviderResponseId();
     const compactionResult = await toAgenCCompactionResult(
       result.compactionResult as AgenCCompactionResult,
     );
-    finishTelemetry("compacted", {
-      consecutive_failures: result.consecutiveFailures,
-    });
     return {
       wasCompacted: true,
       compactionResult,
@@ -645,7 +589,6 @@ async function runAgenCAutoCompact(params: {
         : {}),
     };
   } catch (error) {
-    finishTelemetry("error");
     throw error;
   }
 }
@@ -723,10 +666,6 @@ async function prepareAgenCQueryMessages(params: {
   readonly snipTokensFreed: number;
   readonly committed: boolean;
 }> {
-  const finishTelemetry = startCompactTelemetry("prepare_query", {
-    query_source: params.querySource,
-    context_collapse: params.applyContextCollapse,
-  });
   try {
     const result = await withCompactContextGuards(async () => {
       let messages = toAgenCRuntimeMessages(params.messages);
@@ -756,14 +695,12 @@ async function prepareAgenCQueryMessages(params: {
         committed,
       };
     }, envForToolUseContext(params.toolUseContext));
-    finishTelemetry(result.committed ? "committed" : "unchanged");
     return {
       messages: result.messages,
       snipTokensFreed: result.snipTokensFreed,
       committed: result.committed,
     };
   } catch (error) {
-    finishTelemetry("error");
     throw error;
   }
 }
@@ -781,25 +718,6 @@ async function applyCollapsesIfNeeded(
   messages: RuntimeMessage[],
 ): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
   return { messages, committed: 0 };
-}
-
-function startCompactTelemetry(
-  mode: string,
-  attributes: Readonly<Record<string, unknown>> = {},
-): (status: string, additionalAttributes?: Readonly<Record<string, unknown>>) => void {
-  const baseTags = toMetricTags({ mode, ...attributes });
-  const timer = agencTelemetry.timer(AGENC_COMPACT_DURATION_METRIC, baseTags);
-  let finished = false;
-  return (
-    status: string,
-    additionalAttributes: Readonly<Record<string, unknown>> = {},
-  ) => {
-    if (finished) return;
-    finished = true;
-    const tags = toMetricTags({ mode, ...attributes, status, ...additionalAttributes });
-    agencTelemetry.counter(AGENC_COMPACT_CALL_METRIC, 1, tags);
-    timer.end(tags);
-  };
 }
 
 async function toAgenCCompactionResult(
@@ -2783,7 +2701,6 @@ export async function* runTurnKernel(
   // recovery in rollout-reconstruction would treat every clean turn
   // as a `process_killed` abort.
   const turnStartedAt = Date.now();
-  ensureTurnTimingState(ctx).markTurnStarted(turnStartedAt);
   const emitTurnStarted = (): void => {
     session.emit({
       id: session.nextInternalSubId(),
@@ -3234,7 +3151,6 @@ async function* runTurnKernelInner(
     try {
       const result = await runSamplingRequest(state, ctx, session, signal, pending);
       for (const ev of pending) {
-        recordTurnTimingForPhaseEvent(ctx, ev);
         yield ev;
       }
       // D1 fix: accumulate real provider usage returned from the
@@ -3259,7 +3175,6 @@ async function* runTurnKernelInner(
     } catch (error) {
       await drainInFlight(state, ctx, session);
       for (const ev of pending) {
-        recordTurnTimingForPhaseEvent(ctx, ev);
         yield ev;
       }
       const sme = error instanceof StreamModelError ? error : undefined;
@@ -3518,7 +3433,6 @@ async function* runTurnKernelInner(
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
       for (const toolCall of lastAssistant.toolCalls) {
         const event: PhaseEvent = { type: "tool_call", toolCall };
-        recordTurnTimingForPhaseEvent(ctx, event);
         yield event;
       }
     }

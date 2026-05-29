@@ -186,11 +186,6 @@ import {
   type TurnAbortReason,
 } from "./tasks.js";
 import {
-  AGENC_TURN_E2E_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
-import {
   RealtimeConversationManager as RuntimeRealtimeConversationManager,
   type RealtimeConversation,
 } from "../conversation/realtime/conversation.js";
@@ -3002,27 +2997,11 @@ export class Session {
     const taskObject = opts.task;
     const turnContext = opts.turnContext;
     const taskKind = taskObject?.kind() ?? opts.kind;
-    const taskTags = toMetricTags({
-      task_kind: taskKind,
-      span_name: taskObject?.spanName() ?? opts.kind,
-    });
-    const telemetrySpan = agencTelemetry.startSpan("session.task", {
-      "task.kind": taskKind,
-      "task.span_name": taskObject?.spanName() ?? opts.kind,
-      "turn.id": opts.subId,
-    });
-    telemetrySpan.addEvent("session.task.started");
-    const telemetryTimer = agencTelemetry.timer(
-      AGENC_TURN_E2E_DURATION_METRIC,
-      taskTags,
-    );
     const task: RunningTask = {
       subId: opts.subId,
       kind: taskKind,
       ...(taskObject !== undefined ? { task: taskObject } : {}),
       ...(turnContext !== undefined ? { turnContext } : {}),
-      telemetrySpan,
-      telemetryTimer,
       abortController,
       done,
       resolveDone,
@@ -3081,17 +3060,6 @@ export class Session {
       const task = current.tasks.get(subId);
       if (task !== undefined) {
         current.tasks.delete(subId);
-        const status = task.abortController.signal.aborted
-          ? "aborted"
-          : "completed";
-        task.telemetrySpan?.setAttribute("task.status", status);
-        task.telemetrySpan?.end();
-        task.telemetryTimer?.end(
-          toMetricTags({
-            status,
-            task_kind: task.kind,
-          }),
-        );
         task.resolveDone();
         this.clearTurnAbortMarker(subId);
       }
@@ -3182,17 +3150,7 @@ export class Session {
     task: RunningTask,
     reason: TurnAbortReason,
   ): Promise<void> {
-    task.telemetrySpan?.addEvent("session.task.abort", { reason });
     if (task.abortController.signal.aborted) {
-      task.telemetrySpan?.setAttribute("task.status", "aborted");
-      task.telemetrySpan?.end();
-      task.telemetryTimer?.end(
-        toMetricTags({
-          status: "aborted",
-          reason,
-          task_kind: task.kind,
-        }),
-      );
       task.resolveDone();
       return;
     }
@@ -3209,15 +3167,6 @@ export class Session {
     }
     // Ensure `done` settles even if the task never flipped it on its
     // own — callers awaiting `task.done` must progress after abort.
-    task.telemetrySpan?.setAttribute("task.status", "aborted");
-    task.telemetrySpan?.end();
-    task.telemetryTimer?.end(
-      toMetricTags({
-        status: "aborted",
-        reason,
-        task_kind: task.kind,
-      }),
-    );
     task.resolveDone();
   }
 

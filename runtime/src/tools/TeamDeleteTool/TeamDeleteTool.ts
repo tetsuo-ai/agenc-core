@@ -1,6 +1,4 @@
 import { z } from 'zod/v4'
-import { logEvent } from '../../services/analytics/index.js'
-import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/metadata.js'
 import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -105,11 +103,6 @@ export const TeamDeleteTool: Tool<InputSchema, Output> = buildTool({
 
       // Clear leader team name so getTaskListId() falls back to session ID
       clearLeaderTeamName()
-
-      logEvent('tengu_team_deleted', {
-        team_name:
-          teamName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
     }
 
     // Clear team context and inbox from app state

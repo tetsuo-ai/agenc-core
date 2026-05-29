@@ -1,5 +1,4 @@
 import React from 'react';
-import { logEvent } from '../../services/analytics/index.js';
 import { Box, Link, Text } from '../ink.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { Select } from './CustomSelect/select';
@@ -26,19 +25,12 @@ const ACCEPT_OPTION = {
   value: 'accept',
 } as const;
 
-function logShown(): void {
-  logEvent('agenc_auto_mode_opt_in_dialog_shown', {});
-}
-
 export function AutoModeOptInDialog({
   onAccept,
   onDecline,
   declineExits,
 }: Props) {
-  React.useEffect(logShown, []);
-
   const handleDecline = React.useCallback(() => {
-    logEvent('agenc_auto_mode_opt_in_dialog_decline', {});
     onDecline();
   }, [onDecline]);
 
@@ -46,14 +38,12 @@ export function AutoModeOptInDialog({
     (value: AutoModeDecision) => {
       switch (value) {
         case 'accept':
-          logEvent('agenc_auto_mode_opt_in_dialog_accept', {});
           updateSettingsForSource('userSettings', {
             skipAutoPermissionPrompt: true,
           });
           onAccept();
           return;
         case 'accept-default':
-          logEvent('agenc_auto_mode_opt_in_dialog_accept_default', {});
           updateSettingsForSource('userSettings', {
             skipAutoPermissionPrompt: true,
             permissions: {

@@ -76,11 +76,6 @@ import {
 } from "./agent-task-lifecycle.js";
 import { scheduleProviderStartupPrewarm } from "./startup-prewarm.js";
 import {
-  AGENC_STARTUP_PREWARM_DURATION_METRIC,
-  agencTelemetry,
-  toMetricTags,
-} from "../observability/telemetry.js";
-import {
   Session,
   type SessionOpts,
   type SessionServices,
@@ -345,8 +340,6 @@ export async function runStartupPrewarm(
   opts: { readonly signal?: AbortSignal } = {},
 ): Promise<void> {
   if (opts.signal?.aborted) return;
-  const startedAtMs = Date.now();
-  let status = "ready";
   try {
     // Upstream pre-builds the startup turn context via
     // `new_default_turn_with_sub_id(INITIAL_SUBMIT_ID.to_owned())`.
@@ -354,13 +347,11 @@ export async function runStartupPrewarm(
     session.newDefaultTurn();
   } catch {
     // Non-fatal — the first submit will reconstruct the turn.
-    status = "turn_context_failed";
   }
   try {
     await scheduleProviderStartupPrewarm(session, session.conversationId);
   } catch {
     // Non-fatal — provider/session prewarm is an optimization.
-    status = "provider_failed";
   }
   // Prewarm agent-task registration. Upstream does this in the
   // same broad startup prep block; the gut helper already
@@ -369,13 +360,6 @@ export async function runStartupPrewarm(
     await maybePrewarmAgentTaskRegistration(session);
   } catch {
     /* already best-effort inside the helper */
-    status = "agent_task_failed";
-  } finally {
-    agencTelemetry.recordDuration(
-      AGENC_STARTUP_PREWARM_DURATION_METRIC,
-      Date.now() - startedAtMs,
-      toMetricTags({ status, source: "session_bootstrap" }),
-    );
   }
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -7,17 +7,6 @@ import {
 } from "./dispatcher.js";
 import { readHookSpecificOutput } from "./output-parser.js";
 import type { HooksMap } from "../../config/schema.js";
-import {
-  resetAgencTelemetryClient,
-  setAgencTelemetryClient,
-  type TelemetryClient,
-  type TelemetrySpan,
-  type TelemetryTimer,
-} from "../../observability/telemetry.js";
-
-afterEach(() => {
-  resetAgencTelemetryClient();
-});
 
 function makeEngine(config: HooksMap): HookEngine {
   const engine = new HookEngine({
@@ -183,66 +172,6 @@ describe("HookEngine dispatcher", () => {
     const skipped = await engine.runCommandHook(blocking!, {});
     expect(skipped.status).toBe("skipped");
     expect(engine.latestDiagnostics()[0]?.status).toBe("skipped");
-  });
-
-  test("records hook metrics through the observability surface", async () => {
-    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
-    const durations: Array<{ name: string; tags?: Record<string, string> }> = [];
-    const client: TelemetryClient = {
-      startSpan(name): TelemetrySpan {
-        return {
-          name,
-          setAttribute() {},
-          setAttributes() {},
-          addEvent() {},
-          enter(fn) {
-            return fn();
-          },
-          end() {},
-        };
-      },
-      withSpan(_name, _attributes, fn) {
-        return fn();
-      },
-      getCurrentSpan() {
-        return undefined;
-      },
-      counter(name, _increment, tags) {
-        counters.push({ name, tags });
-      },
-      histogram() {},
-      recordDuration(name, _durationMs, tags) {
-        durations.push({ name, tags });
-      },
-      timer(): TelemetryTimer {
-        return { record() {}, end() {} };
-      },
-      event() {},
-    };
-    setAgencTelemetryClient(client);
-    const engine = makeEngine({
-      Stop: [{ hooks: [{ type: "command", command: "printf ok" }] }],
-    });
-
-    const result = await engine.runCommandHook(engine.listHooks()[0]!, {});
-
-    expect(result.status).toBe("success");
-    expect(counters).toContainEqual({
-      name: "agenc.hooks.run",
-      tags: {
-        hook_name: "Stop",
-        source: "config",
-        status: "completed",
-      },
-    });
-    expect(durations).toContainEqual({
-      name: "agenc.hooks.run.duration_ms",
-      tags: {
-        hook_name: "Stop",
-        source: "config",
-        status: "completed",
-      },
-    });
   });
 
   test("does not spawn hooks when the signal is already aborted", async () => {

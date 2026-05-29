@@ -14,7 +14,6 @@ const harness = vi.hoisted(() => ({
   intervalDelay: undefined as number | null | undefined,
   isAutoUpdaterDisabled: vi.fn(() => false),
   logError: vi.fn(),
-  logEvent: vi.fn(),
   logForDebugging: vi.fn(),
   settings: { autoUpdatesChannel: "beta" } as
     | { autoUpdatesChannel?: string }
@@ -32,10 +31,6 @@ vi.mock("usehooks-ts", () => ({
 vi.mock("../hooks/useUpdateNotification.js", () => ({
   useUpdateNotification: (version: string | null | undefined) =>
     version ? "available" : null,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: harness.logEvent,
 }));
 
 vi.mock("src/utils/debug.js", () => ({
@@ -170,7 +165,6 @@ function resetHarness(): void {
   harness.isAutoUpdaterDisabled.mockReset();
   harness.isAutoUpdaterDisabled.mockReturnValue(false);
   harness.logError.mockClear();
-  harness.logEvent.mockClear();
   harness.logForDebugging.mockClear();
   harness.intervalDelay = undefined;
   harness.settings = { autoUpdatesChannel: "beta" };
@@ -279,7 +273,6 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
       expect(harness.intervalDelay).toBe(1_800_000);
       expect(harness.isAutoUpdaterDisabled).toHaveBeenCalledOnce();
       expect(harness.installLatest).not.toHaveBeenCalled();
-      expect(harness.logEvent).not.toHaveBeenCalled();
       expect(harness.updateResults).toEqual([]);
       expect(harness.updatingStates).toEqual([]);
       expect(rendered.readOutput()).not.toContain("Checking for updates");
@@ -308,14 +301,6 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
         "OK Update installed - Restart to update",
       );
       expect(harness.installLatest).toHaveBeenCalledWith("latest");
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_native_auto_updater_start",
-        {},
-      );
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_native_auto_updater_success",
-        expect.objectContaining({ latency_ms: expect.any(Number) }),
-      );
       expect(harness.updateResults).toEqual([
         { status: "success", version: "2.0.0" },
       ]);
@@ -340,10 +325,6 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
       );
 
       expect(harness.installLatest).toHaveBeenCalledWith("beta");
-      expect(harness.logEvent).toHaveBeenCalledWith(
-        "tengu_native_auto_updater_lock_contention",
-        expect.objectContaining({ latency_ms: expect.any(Number) }),
-      );
       expect(harness.logError).not.toHaveBeenCalled();
       expect(harness.updateResults).toEqual([]);
       expect(harness.updatingStates).toEqual([true, false]);
@@ -354,7 +335,7 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
     }
   });
 
-  test("logs the up-to-date installer result without showing a status row", async () => {
+  test("reports the up-to-date installer result without showing a status row", async () => {
     harness.installLatest.mockResolvedValueOnce({
       latestVersion: "1.0.0",
       lockFailed: false,
@@ -364,11 +345,8 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
     const rendered = await renderStatefulUpdater();
     try {
       await waitFor(
-        () =>
-          harness.logEvent.mock.calls.some(
-            ([eventName]) => eventName === "tengu_native_auto_updater_up_to_date",
-          ),
-        "up-to-date analytics event",
+        () => harness.updatingStates.includes(false),
+        "up-to-date completion",
       );
 
       expect(harness.installLatest).toHaveBeenCalledWith("beta");
@@ -382,55 +360,14 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
   });
 
   test.each([
-    [
-      "timeout waiting for package",
-      {
-        error_timeout: true,
-      },
-    ],
-    [
-      "Checksum mismatch for downloaded archive",
-      {
-        error_checksum: true,
-      },
-    ],
-    [
-      "ENOENT executable not found",
-      {
-        error_not_found: true,
-      },
-    ],
-    [
-      "EACCES permission denied",
-      {
-        error_permission: true,
-      },
-    ],
-    [
-      "ENOSPC writing package",
-      {
-        error_disk_full: true,
-      },
-    ],
-    [
-      "npm failed with exit 1",
-      {
-        error_npm: true,
-      },
-    ],
-    [
-      "unexpected archive format",
-      {
-        error_timeout: false,
-        error_checksum: false,
-        error_not_found: false,
-        error_permission: false,
-        error_disk_full: false,
-        error_npm: false,
-        error_network: false,
-      },
-    ],
-  ])("classifies installer failures for %s", async (message, expectedFlags) => {
+    "timeout waiting for package",
+    "Checksum mismatch for downloaded archive",
+    "ENOENT executable not found",
+    "EACCES permission denied",
+    "ENOSPC writing package",
+    "npm failed with exit 1",
+    "unexpected archive format",
+  ])("surfaces installer failures for %s", async (message) => {
     const installError = new Error(message);
     harness.installLatest.mockRejectedValueOnce(installError);
 
@@ -445,23 +382,7 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
         "failed update output",
       );
 
-      const failCall = harness.logEvent.mock.calls.find(
-        ([eventName]) => eventName === "tengu_native_auto_updater_fail",
-      );
-
       expect(harness.logError).toHaveBeenCalledWith(installError);
-      expect(failCall?.[1]).toEqual(
-        expect.objectContaining({
-          error_checksum: false,
-          error_disk_full: false,
-          error_network: false,
-          error_not_found: false,
-          error_npm: false,
-          error_permission: false,
-          error_timeout: false,
-          ...expectedFlags,
-        }),
-      );
       expect(harness.updateResults).toEqual([
         { status: "install_failed", version: null },
       ]);
