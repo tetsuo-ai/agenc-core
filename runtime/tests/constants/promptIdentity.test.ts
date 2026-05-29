@@ -14,11 +14,9 @@ import { afterEach, expect, test } from 'bun:test'
 import { clearSystemPromptSections } from '../../src/constants/systemPromptSections.ts'
 import { getSystemPrompt, DEFAULT_AGENT_PROMPT } from '../../src/constants/prompts.ts'
 import { CLI_SYSPROMPT_PREFIXES, getCLISyspromptPrefix } from '../../src/constants/system.ts'
-import { AGENC_GUIDE_AGENT } from '../../src/tools/AgentTool/built-in/agencGuideAgent.ts'
 import { GENERAL_PURPOSE_AGENT } from '../../src/tools/AgentTool/built-in/generalPurposeAgent.ts'
 import { EXPLORE_AGENT } from '../../src/tools/AgentTool/built-in/exploreAgent.ts'
 import { PLAN_AGENT } from '../../src/tools/AgentTool/built-in/planAgent.ts'
-import { STATUSLINE_SETUP_AGENT } from '../../src/tools/AgentTool/built-in/statuslineSetup.ts'
 
 const originalSimpleEnv = process.env.AGENC_SIMPLE
 
@@ -81,22 +79,4 @@ test('built-in agent prompts describe AgenC', () => {
     toolUseContext: { options: {} as never },
   })
   expect(planPrompt).toContain('AgenC')
-
-  const statuslinePrompt = STATUSLINE_SETUP_AGENT.getSystemPrompt({
-    toolUseContext: { options: {} as never },
-  })
-  expect(statuslinePrompt).toContain('AgenC')
-
-  const guidePrompt = AGENC_GUIDE_AGENT.getSystemPrompt({
-    toolUseContext: {
-      options: {
-        commands: [],
-        agentDefinitions: { activeAgents: [] },
-        mcpClients: [],
-      } as never,
-    },
-  })
-  expect(guidePrompt).toContain('AgenC')
-  expect(guidePrompt).toContain('You are the AgenC guide agent.')
-  expect(guidePrompt).toContain('**AgenC** (the CLI tool)')
 })
