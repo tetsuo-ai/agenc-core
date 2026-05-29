@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { stringWidth } from '../../tui/ink/stringWidth.js';
@@ -27,9 +25,6 @@ export function renderToolResultMessage(output: Output, _progressMessagesForMess
 }: {
   verbose: boolean;
 }): React.ReactNode {
-  if ("external" === 'ant') {
-    return null;
-  }
   const rawCommand = output.command ?? '';
   const command = verbose ? rawCommand : truncateCommand(rawCommand);
   const suffix = command !== rawCommand ? '… · stopped' : ' · stopped';

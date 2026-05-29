@@ -1,15 +1,13 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react'; import { BLACK_CIRCLE } from 'src/constants/figures.js';
 import { getModeColor } from 'src/utils/permissions/PermissionMode.js';
 import { Box, Text } from '../../tui/ink.js';
-import type { ToolProgressData } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { Output } from './EnterPlanModeTool.js';
 export function renderToolUseMessage(): React.ReactNode {
   return null;
 }
-export function renderToolResultMessage(_output: Output, _progressMessagesForMessage: ProgressMessage<ToolProgressData>[], _options: {
+export function renderToolResultMessage(_output: Output, _progressMessagesForMessage: ProgressMessage[], _options: {
   theme: ThemeName;
 }): React.ReactNode {
   return <Box flexDirection="column" marginTop={1}>

@@ -1,11 +1,8 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // Critical system constants extracted to break circular dependencies
 
 import { feature } from 'bun:bundle'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
-import { getAPIProvider } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
 
 const DEFAULT_PREFIX =
@@ -35,11 +32,6 @@ export function getCLISyspromptPrefix(options?: {
   isNonInteractive: boolean
   hasAppendSystemPrompt: boolean
 }): CLISyspromptPrefix {
-  const apiProvider = getAPIProvider()
-  if (apiProvider === 'vertex') {
-    return DEFAULT_PREFIX
-  }
-
   if (options?.isNonInteractive) {
     if (options.hasAppendSystemPrompt) {
       return AGENT_SDK_AGENC_PRESET_PREFIX
@@ -79,7 +71,6 @@ export function getAttributionHeader(fingerprint: string): string {
     return ''
   }
 
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const version = `${MACRO.VERSION}.${fingerprint}`
   const entrypoint = process.env.AGENC_ENTRYPOINT ?? 'unknown'
 

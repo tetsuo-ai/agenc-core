@@ -1,10 +1,8 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import type { z } from 'zod/v4';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { OutputLine } from '../../tui/components/shell/OutputLine.js';
 import { Box, Text } from '../../tui/ink.js';
-import type { ToolProgressData } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import { jsonStringify } from '../../utils/slowOperations.js';
 import type { inputSchema, Output } from './ReadMcpResourceTool.js';
@@ -17,7 +15,7 @@ export function renderToolUseMessage(input: Partial<z.infer<ReturnType<typeof in
 export function userFacingName(): string {
   return 'readMcpResource';
 }
-export function renderToolResultMessage(output: Output, _progressMessagesForMessage: ProgressMessage<ToolProgressData>[], {
+export function renderToolResultMessage(output: Output, _progressMessagesForMessage: ProgressMessage[], {
   verbose
 }: {
   verbose: boolean;

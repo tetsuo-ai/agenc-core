@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 export const PRODUCT_URL = 'https://agenc.tech/agenc-code'
 
 // AgenC Remote session URLs

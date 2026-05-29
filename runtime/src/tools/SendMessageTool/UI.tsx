@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { Text } from '../../tui/ink.js';
@@ -14,9 +12,7 @@ export function renderToolUseMessage(input: Partial<Input>): React.ReactNode {
   }
   return null;
 }
-export function renderToolResultMessage(content: SendMessageToolOutput | string, _progressMessages: unknown, {
-  verbose
-}: {
+export function renderToolResultMessage(content: SendMessageToolOutput | string, _progressMessages: unknown, _options: {
   verbose: boolean;
 }): React.ReactNode {
   const result: SendMessageToolOutput = typeof content === 'string' ? jsonParse(content) : content;
