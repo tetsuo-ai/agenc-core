@@ -206,24 +206,24 @@ ${AGENT_TOOL_NAME}({
   const currentExamples = `Example usage:
 
 <example_agent_descriptions>
-"agenc-code-guide": use this agent when the user asks how AgenC works or how to use its features
-"statusline-setup": use this agent to configure the user's AgenC status line setting
+"code-reviewer": use this agent to review recent code changes for correctness and safety
+"test-runner": use this agent to run the test suite and fix failing tests
 </example_agent_descriptions>
 
 <example>
-user: "How do I configure AgenC hooks?"
+user: "Can you review the changes I just made?"
 <commentary>
-This is an AgenC usage question, so use the agenc-code-guide agent
+This is a code-review request, so use the code-reviewer agent
 </commentary>
-assistant: Uses the ${AGENT_TOOL_NAME} tool to launch the agenc-code-guide agent
+assistant: Uses the ${AGENT_TOOL_NAME} tool to launch the code-reviewer agent
 </example>
 
 <example>
-user: "Set up my AgenC status line"
+user: "My tests are failing — can you get them green?"
 <commentary>
-This matches the statusline-setup agent, so use it to configure the setting
+This matches the test-runner agent, so use it to run and fix the tests
 </commentary>
-assistant: "I'm going to use the ${AGENT_TOOL_NAME} tool to launch the statusline-setup agent"
+assistant: "I'm going to use the ${AGENT_TOOL_NAME} tool to launch the test-runner agent"
 </example>
 `
 
