@@ -316,7 +316,14 @@ function findLongestPrefix(
 ): RegisteredModelCatalogEntry | undefined {
   const normalized = normalizeId(model);
   return candidates
-    .filter((entry) => normalized.startsWith(normalizeId(entry.model)))
+    .filter((entry) => {
+      const entryId = normalizeId(entry.model);
+      return (
+        normalized === entryId ||
+        (normalized.startsWith(entryId) &&
+          /[-.:/]/.test(normalized.charAt(entryId.length)))
+      );
+    })
     .sort((left, right) => right.model.length - left.model.length)[0];
 }
 

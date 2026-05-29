@@ -302,17 +302,21 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
       } else {
         const cell = cells[index];
         if (!isRecord(cell)) return json({ error: "Invalid notebook cell." }, true);
-        const wasCode = cell.cell_type === "code";
         cell.source = args.new_source;
-        if (wasCode) {
-          cell.execution_count = null;
-          cell.outputs = [];
-        }
+        const finalCellType =
+          cellType ??
+          (typeof cell.cell_type === "string" ? cell.cell_type : undefined);
         if (cellType !== undefined && cellType !== cell.cell_type) {
           cell.cell_type = cellType;
         }
-        resultCellType =
-          typeof cell.cell_type === "string" ? cell.cell_type : undefined;
+        if (finalCellType === "code") {
+          cell.execution_count = null;
+          cell.outputs = [];
+        } else {
+          delete cell.execution_count;
+          delete cell.outputs;
+        }
+        resultCellType = finalCellType;
       }
 
       const updated = JSON.stringify(parsed, null, 1);

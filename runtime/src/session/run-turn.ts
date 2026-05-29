@@ -1469,16 +1469,33 @@ function mergePendingInputIntoUserContent(
 function mergeSignals(
   a: AbortSignal | undefined,
   b: AbortSignal,
-): AbortSignal {
-  if (!a) return b;
-  if (a.aborted) return a;
-  if (b.aborted) return b;
+): { signal: AbortSignal; dispose: () => void } {
+  if (!a) return { signal: b, dispose: () => {} };
+  if (a.aborted) return { signal: a, dispose: () => {} };
+  if (b.aborted) return { signal: b, dispose: () => {} };
   const merged = new AbortController();
-  const onA = () => merged.abort((a as AbortSignal & { reason?: unknown }).reason);
-  const onB = () => merged.abort((b as AbortSignal & { reason?: unknown }).reason);
-  a.addEventListener("abort", onA, { once: true });
-  b.addEventListener("abort", onB, { once: true });
-  return merged.signal;
+  // Cross-remove both listeners when either fires so the listener left on
+  // a long-lived signal (e.g. the session-level abort, which is a single
+  // readonly AbortController for the whole session) is dropped on abort.
+  const dispose = (): void => {
+    a.removeEventListener("abort", onA);
+    b.removeEventListener("abort", onB);
+  };
+  const onA = (): void => {
+    dispose();
+    merged.abort((a as AbortSignal & { reason?: unknown }).reason);
+  };
+  const onB = (): void => {
+    dispose();
+    merged.abort((b as AbortSignal & { reason?: unknown }).reason);
+  };
+  a.addEventListener("abort", onA);
+  b.addEventListener("abort", onB);
+  // The returned `dispose` is invoked by the turn kernel's finally block so
+  // the happy path (turn completes without abort) also removes the listener
+  // left on the long-lived session signal, preventing an unbounded
+  // per-turn listener/memory leak.
+  return { signal: merged.signal, dispose };
 }
 
 function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
@@ -2793,6 +2810,7 @@ export async function* runTurnKernel(
     startedAtMs: turnStartedAt,
   });
   const codeModeTurnWorker = startCodeModeTurnWorker(session);
+  const signalCleanups: Array<() => void> = [];
 
   try {
     return yield* runTurnKernelInner(
@@ -2808,9 +2826,11 @@ export async function* runTurnKernel(
         emitTurnAborted,
         referenceContextItem,
         sessionOwner,
+        signalCleanups,
       },
     );
   } finally {
+    for (const cleanup of signalCleanups) cleanup();
     codeModeTurnWorker.dispose();
     // Upstream agenc runtime emits `on_task_finished` uniformly from the spawn
     // site so every task-kind shares the same lifecycle. In gut the
@@ -2835,6 +2855,10 @@ interface RunTurnKernelCommons {
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
   };
+  // Disposers for the merged abort signals built inside the kernel. The
+  // outer `runTurnKernel` finally invokes these so listeners on long-lived
+  // signals (the session-level abort) are removed on every turn exit.
+  readonly signalCleanups: Array<() => void>;
 }
 
 async function* runTurnKernelInner(
@@ -3043,10 +3067,20 @@ async function* runTurnKernelInner(
   // (see `tasks/mod.rs` line 269) whose cancellation is triggered
   // by `abort_all_tasks`. The merged signal here is the gut
   // equivalent of `task_cancellation_token.child_token()`.
-  const signal = mergeSignals(
-    mergeSignals(opts.signal, session.abortController.signal),
+  const mergedSession = mergeSignals(
+    opts.signal,
+    session.abortController.signal,
+  );
+  const mergedTask = mergeSignals(
+    mergedSession.signal,
     runningTask.abortController.signal,
   );
+  const signal = mergedTask.signal;
+  // Both merges register `abort` listeners on their input signals; the
+  // first merge can leave a listener on the long-lived session signal.
+  // Hand the disposers to the outer kernel's finally so they run on every
+  // exit path (completed, aborted, error, abandoned generator).
+  commons.signalCleanups.push(mergedSession.dispose, mergedTask.dispose);
 
   let usage: LLMUsage = {
     promptTokens: 0,
@@ -3441,18 +3475,33 @@ async function* runTurnKernelInner(
       const completedByCallId = new Map(
         state.completedToolResults.map((record) => [record.callId, record]),
       );
+      // Index user records by their tool-call id rather than by position:
+      // results return in completion order (not toolCalls order), attachment
+      // records (no toolCallId) are appended onto `toolResults` after the tool
+      // results, and synthetic-recovery skips can make `toolResults` shorter
+      // than `toolCalls`. Positional lookup therefore mis-pairs calls and
+      // drops the tail, even though the content lives in `completedByCallId`.
+      const userRecByCallId = new Map(
+        state.toolResults
+          .filter(
+            (record): record is typeof record & { toolCallId: string } =>
+              "toolCallId" in record && typeof record.toolCallId === "string",
+          )
+          .map((record) => [record.toolCallId, record] as const),
+      );
       for (let i = 0; i < lastAssistant.toolCalls.length; i += 1) {
         const call = lastAssistant.toolCalls[i];
-        const userRec = state.toolResults[i];
-        if (!call || !userRec) continue;
+        if (!call) continue;
         const completed = completedByCallId.get(call.id);
+        const userRec = userRecByCallId.get(call.id);
+        if (!completed && !userRec) continue;
         yield {
           type: "tool_result",
           toolCall: call,
           result: {
             content:
               completed?.content ??
-              (typeof userRec.content === "string" ? userRec.content : ""),
+              (typeof userRec?.content === "string" ? userRec.content : ""),
             isError: completed?.isError ?? false,
             ...(completed?.metadata !== undefined
               ? { metadata: completed.metadata }

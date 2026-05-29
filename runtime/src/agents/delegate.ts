@@ -418,6 +418,16 @@ async function runDelegateAgentLoop(opts: {
       if (!restarted) {
         return result;
       }
+      // The restarted agent gets a fresh thread id; carry the failure
+      // count forward so RESUME_MAX_ATTEMPTS still trips on a subagent
+      // that hard-fails repeatedly (otherwise the per-thread counter
+      // resets to 0 on every restart and the loop is unbounded).
+      if (restarted.agentId !== live.agentId) {
+        opts.resumeManager.transferFailureCount(
+          live.agentId,
+          restarted.agentId,
+        );
+      }
       opts.thread.rebindLive(restarted);
       continue;
     }

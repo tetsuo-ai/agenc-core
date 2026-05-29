@@ -43,11 +43,14 @@ function parseAudioDataUrl(
 function parseImageDataUrl(
   url: string,
 ): { readonly data: string; readonly mediaType: string } | null {
-  const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([\s\S]+)$/iu.exec(
+  const match = /^data:(image\/(?:png|jpe?g|gif|webp));base64,([\s\S]+)$/iu.exec(
     url.trim(),
   );
   if (!match) return null;
-  const mediaType = (match[1] ?? "").trim().toLowerCase();
+  const rawMediaType = (match[1] ?? "").trim().toLowerCase();
+  // The non-standard `image/jpg` form is common; Anthropic expects
+  // `image/jpeg`, so normalize it here.
+  const mediaType = rawMediaType === "image/jpg" ? "image/jpeg" : rawMediaType;
   const data = (match[2] ?? "").replace(/\s+/gu, "");
   if (!mediaType || !data) return null;
   return { data, mediaType };

@@ -241,8 +241,9 @@ export class BackgroundTaskLifecycle {
     const output = this.outputs.get(record.id) ?? { content: "", totalBytes: 0 };
     output.content += chunk;
     if (output.content.length > MAX_OUTPUT_CHARS) {
+      const removed = output.content.length - MAX_OUTPUT_CHARS;
       output.content = output.content.slice(-MAX_OUTPUT_CHARS);
-      record.outputOffset = Math.min(record.outputOffset, output.content.length);
+      record.outputOffset = Math.max(0, record.outputOffset - removed);
     }
     output.totalBytes += Buffer.byteLength(chunk, "utf8");
     this.outputs.set(record.id, output);
@@ -369,34 +370,40 @@ export class BackgroundTaskLifecycle {
     promise: Promise<T>,
     options: BindTaskPromiseOptions<T> = {},
   ): void {
-    void promise.then(
-      (value) => {
-        const mapped = options.onFulfilled?.(value);
-        const status = mapped?.status ?? "completed";
-        if (status === "failed") {
+    void promise
+      .then(
+        (value) => {
+          const mapped = options.onFulfilled?.(value);
+          const status = mapped?.status ?? "completed";
+          if (status === "failed") {
+            const snapshot = this.fail(
+              taskId,
+              mapped?.error ?? "task failed",
+              mapped?.output,
+              mapped?.metadata,
+            );
+            options.onSnapshot?.(snapshot);
+            return;
+          }
+          const snapshot = this.complete(taskId, mapped?.output, mapped?.metadata);
+          options.onSnapshot?.(snapshot);
+        },
+        (error) => {
+          const mapped = options.onRejected?.(error);
           const snapshot = this.fail(
             taskId,
-            mapped?.error ?? "task failed",
+            mapped?.error ?? error,
             mapped?.output,
             mapped?.metadata,
           );
           options.onSnapshot?.(snapshot);
-          return;
-        }
-        const snapshot = this.complete(taskId, mapped?.output, mapped?.metadata);
-        options.onSnapshot?.(snapshot);
-      },
-      (error) => {
-        const mapped = options.onRejected?.(error);
-        const snapshot = this.fail(
-          taskId,
-          mapped?.error ?? error,
-          mapped?.output,
-          mapped?.metadata,
-        );
-        options.onSnapshot?.(snapshot);
-      },
-    );
+        },
+      )
+      // A task can be evicted before its join promise settles; in that case the
+      // lifecycle transition throws BackgroundTaskError("not_found"). Swallow it
+      // so a late settle against an evicted task cannot escape as an unhandled
+      // rejection.
+      .catch(() => {});
   }
 
   drainNotifications(): BackgroundTaskNotification[] {

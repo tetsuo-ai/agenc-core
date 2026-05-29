@@ -57,7 +57,7 @@ export function typedConfirmationWordForRisk(input: {
   if (/\bsettle\b/u.test(haystack)) return "settle";
   if (/\bstake\b/u.test(haystack)) return "stake";
   if (/\btransfer\b/u.test(haystack)) return "transfer";
-  if (/\bdelete|destroy|wipe\b/u.test(haystack)) return "delete";
+  if (/\b(delete|destroy|wipe)\b/u.test(haystack)) return "delete";
   if (input.command && commandLooksLikeRemoval(input.command)) return "delete";
   return "approve";
 }

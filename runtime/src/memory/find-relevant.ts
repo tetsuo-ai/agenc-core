@@ -118,8 +118,13 @@ async function selectRelevantMemories(
       return []
     }
 
-    const parsed: { selected_memories: string[] } = jsonParse(textBlock.text)
-    return parsed.selected_memories.filter(f => validFilenames.has(f))
+    const parsed: { selected_memories?: unknown } = jsonParse(textBlock.text)
+    const list = Array.isArray(parsed?.selected_memories)
+      ? parsed.selected_memories
+      : []
+    return list.filter(
+      (f): f is string => typeof f === 'string' && validFilenames.has(f),
+    )
   } catch (e) {
     if (signal.aborted) {
       return []

@@ -102,12 +102,15 @@ export interface ManualExtractionResult {
 interface SessionMemoryLane {
   readonly state: SessionMemoryState;
   queue: Promise<void>;
+  lastAccessedAt: number;
+  pending: number;
 }
 
 let agentRunnerForTests: SessionMemoryAgentRunner | null = null;
 let defaultSessionMemoryConfig: Partial<SessionMemoryConfig> = {};
 const defaultExtractionDecisionState = createSessionMemoryState();
 const lanes = new Map<string, SessionMemoryLane>();
+const MAX_SESSION_MEMORY_LANES = 256;
 
 function errnoCode(error: unknown): string | undefined {
   return typeof error === "object" &&
@@ -240,13 +243,30 @@ function laneKeyForContext(context: SessionMemoryPostSamplingContext): string {
 function laneForContext(context: SessionMemoryPostSamplingContext): SessionMemoryLane {
   const key = laneKeyForContext(context);
   const existing = lanes.get(key);
-  if (existing) return existing;
+  if (existing) {
+    existing.lastAccessedAt = Date.now();
+    return existing;
+  }
   const lane: SessionMemoryLane = {
     state: createSessionMemoryState(defaultSessionMemoryConfig),
     queue: Promise.resolve(),
+    lastAccessedAt: Date.now(),
+    pending: 0,
   };
   lanes.set(key, lane);
+  pruneIdleLanes();
   return lane;
+}
+
+function pruneIdleLanes(): void {
+  if (lanes.size <= MAX_SESSION_MEMORY_LANES) return;
+  const idleEntries = [...lanes.entries()]
+    .filter(([, lane]) => lane.pending === 0)
+    .sort(([, left], [, right]) => left.lastAccessedAt - right.lastAccessedAt);
+  for (const [key] of idleEntries) {
+    if (lanes.size <= MAX_SESSION_MEMORY_LANES) return;
+    lanes.delete(key);
+  }
 }
 
 function cwdForSession(session: Session | undefined): string {
@@ -528,12 +548,23 @@ export function runSessionMemoryPostSamplingHook(
   context: SessionMemoryPostSamplingContext,
 ): Promise<void> {
   const lane = laneForContext(context);
+  lane.pending += 1;
   lane.queue = lane.queue.then(
     async () => {
-      await extractSessionMemory(context, lane, false);
+      try {
+        await extractSessionMemory(context, lane, false);
+      } finally {
+        lane.pending -= 1;
+        lane.lastAccessedAt = Date.now();
+      }
     },
     async () => {
-      await extractSessionMemory(context, lane, false);
+      try {
+        await extractSessionMemory(context, lane, false);
+      } finally {
+        lane.pending -= 1;
+        lane.lastAccessedAt = Date.now();
+      }
     },
   );
   return lane.queue;
@@ -560,12 +591,18 @@ export async function manuallyExtractSessionMemory(
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   };
   const lane = laneForContext(context);
-  return (
-    (await extractSessionMemory(context, lane, true)) ?? {
-      success: false,
-      error: "Session memory extraction skipped",
-    }
-  );
+  lane.pending += 1;
+  try {
+    return (
+      (await extractSessionMemory(context, lane, true)) ?? {
+        success: false,
+        error: "Session memory extraction skipped",
+      }
+    );
+  } finally {
+    lane.pending -= 1;
+    lane.lastAccessedAt = Date.now();
+  }
 }
 
 export function initSessionMemory(

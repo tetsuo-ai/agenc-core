@@ -172,16 +172,28 @@ export function buildAnthropicMessagesRequest(
                 }]
                 : []
               : anthropicContent;
-          const toolUseBlocks = message.toolCalls.map((toolCall) => ({
-            type: "tool_use",
-            id: toolCall.id,
-            // The messages API enforces the strict
-            // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
-            // dotted MCP form before sending. The response parser
-            // decodes back to the internal-registry form.
-            name: encodeMcpToolNameForWire(toolCall.name),
-            input: JSON.parse(toolCall.arguments || "{}"),
-          }));
+          const toolUseBlocks = message.toolCalls.map((toolCall) => {
+            // History tool-call arguments are not re-validated, so a
+            // malformed JSON string must not throw here — that would
+            // also break parseAnthropicMessagesResponse, which rebuilds
+            // this request purely for metrics after a successful call.
+            let parsedInput: unknown = {};
+            try {
+              parsedInput = JSON.parse(toolCall.arguments || "{}");
+            } catch {
+              parsedInput = {};
+            }
+            return {
+              type: "tool_use",
+              id: toolCall.id,
+              // The messages API enforces the strict
+              // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
+              // dotted MCP form before sending. The response parser
+              // decodes back to the internal-registry form.
+              name: encodeMcpToolNameForWire(toolCall.name),
+              input: parsedInput,
+            };
+          });
           const content =
             hasEphemeralCacheControl(message)
               ? withEphemeralCacheControl([
