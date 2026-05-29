@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
-import { createOpenAiShimClient } from './openaiShim.js'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
 
 type FetchType = typeof globalThis.fetch
 const originalFetch = globalThis.fetch
@@ -8,24 +8,12 @@ const originalEnv = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
+  DISABLE_TOOL_HISTORY_COMPRESSION: process.env.DISABLE_TOOL_HISTORY_COMPRESSION,
+  AGENC_DISABLE_TOOL_HISTORY_COMPRESSION:
+    process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,
+  AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
+    process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW,
 }
-
-// Mock config + autoCompact so the shim sees deterministic state.
-const mockState = {
-  enabled: true,
-  effectiveWindow: 100_000, // Copilot gpt-4o tier
-}
-
-mock.module('../../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({
-    toolHistoryCompressionEnabled: mockState.enabled,
-    autoCompactEnabled: false,
-  }),
-}))
-
-mock.module('../compact/autoCompact.js', () => ({
-  getEffectiveContextWindowSize: () => mockState.effectiveWindow,
-}))
 
 type OpenAiShimClient = {
   beta: {
@@ -99,8 +87,9 @@ beforeEach(() => {
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   process.env.OPENAI_API_KEY = 'test-key'
   delete process.env.OPENAI_MODEL
-  mockState.enabled = true
-  mockState.effectiveWindow = 100_000
+  delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION
+  delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
+  delete process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW
 })
 
 afterEach(() => {
@@ -110,6 +99,24 @@ afterEach(() => {
   else process.env.OPENAI_API_KEY = originalEnv.OPENAI_API_KEY
   if (originalEnv.OPENAI_MODEL === undefined) delete process.env.OPENAI_MODEL
   else process.env.OPENAI_MODEL = originalEnv.OPENAI_MODEL
+  if (originalEnv.DISABLE_TOOL_HISTORY_COMPRESSION === undefined) {
+    delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION
+  } else {
+    process.env.DISABLE_TOOL_HISTORY_COMPRESSION =
+      originalEnv.DISABLE_TOOL_HISTORY_COMPRESSION
+  }
+  if (originalEnv.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION === undefined) {
+    delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
+  } else {
+    process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION =
+      originalEnv.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
+  }
+  if (originalEnv.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW === undefined) {
+    delete process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW
+  } else {
+    process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW =
+      originalEnv.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW
+  }
   globalThis.fetch = originalFetch
 })
 
@@ -155,7 +162,7 @@ function getAssistantToolCalls(body: Record<string, unknown>): unknown[] {
 // ============================================================================
 
 test('BUG REPRO: without compression, all 30 tool results are sent at full size', async () => {
-  mockState.enabled = false
+  process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION = '1'
   const messages = buildLongConversation(30, 5_000)
 
   const body = await captureRequestBody(messages, 'gpt-4o')
@@ -179,8 +186,6 @@ test('BUG REPRO: without compression, all 30 tool results are sent at full size'
 // ============================================================================
 
 test('FIX: with compression on Copilot gpt-4o (tier 5/10/rest), 30 turns shrinks dramatically', async () => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 100_000 // 64–128k → recent=5, mid=10
   const messages = buildLongConversation(30, 5_000)
 
   const body = await captureRequestBody(messages, 'gpt-4o')
@@ -216,8 +221,6 @@ test('FIX: with compression on Copilot gpt-4o (tier 5/10/rest), 30 turns shrinks
 // ============================================================================
 
 test('FIX: gpt-4.1 (1M context) with 25 exchanges keeps all full (recent tier=25)', async () => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 1_000_000 // ≥500k → recent=25, mid=50
   const messages = buildLongConversation(25, 5_000)
 
   const body = await captureRequestBody(messages, 'gpt-4.1')
@@ -232,8 +235,6 @@ test('FIX: gpt-4.1 (1M context) with 25 exchanges keeps all full (recent tier=25
 })
 
 test('FIX: gpt-4.1 (1M context) with 30 exchanges → only first 5 mid-truncated', async () => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 1_000_000 // recent=25, mid=50
   const messages = buildLongConversation(30, 5_000)
 
   const body = await captureRequestBody(messages, 'gpt-4.1')
@@ -253,8 +254,6 @@ test('FIX: gpt-4.1 (1M context) with 30 exchanges → only first 5 mid-truncated
 // ============================================================================
 
 test('FIX: stub format includes original tool name and arguments', async () => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 100_000
   const messages = buildLongConversation(30, 5_000)
 
   const body = await captureRequestBody(messages, 'gpt-4o')
@@ -272,8 +271,6 @@ test('FIX: stub format includes original tool name and arguments', async () => {
 // ============================================================================
 
 test('FIX: every tool_call retains its full id, name, and arguments', async () => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 100_000
   const messages = buildLongConversation(30, 5_000)
 
   const body = await captureRequestBody(messages, 'gpt-4o')
@@ -297,8 +294,7 @@ test('FIX: every tool_call retains its full id, name, and arguments', async () =
 // ============================================================================
 
 test('FIX: 32k window (Mistral tier) → recent=3 keeps last 3 only', async () => {
-  mockState.enabled = true
-  mockState.effectiveWindow = 24_000 // 16–32k → recent=3, mid=5
+  process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW = '32000'
   const messages = buildLongConversation(15, 3_000)
 
   const body = await captureRequestBody(messages, 'mistral-large-latest')

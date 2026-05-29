@@ -49,6 +49,17 @@
         "vitestAttempt": "not a valid targeted OpenAI shim run because these Bun test files are excluded by vitest.config.ts; the command ran the broader Vitest suite and passed 1258 files with 2 skipped files, 10286 tests with 10 skipped tests",
         "bunOpenAiShim": "failed: the Bun preload resolver produced ENOENT for file:/.../runtime/src/services/api/openaiShim.ts, query imports in openaiShim.diagnostics.test.ts did not resolve, and openaiShim.compression.test.ts had two failing compression assertions"
       }
+    },
+    {
+      "id": "provider-api-bun-subset-2026-05-29",
+      "commands": [
+        "bun test tests/services/api/openaiShim.test.ts tests/services/api/openaiShim.diagnostics.test.ts tests/services/api/openaiShim.compression.test.ts tests/services/api/compressToolHistory.test.ts",
+        "bun test --preload ./tests/setup/bun-test-resolver.ts $(rg -l \"from 'bun:test'|from \\\"bun:test\\\"\" tests/services/api --glob '*.test.ts')"
+      ],
+      "results": {
+        "openAiShimAndCompressionSubset": "passed: 115 tests across 4 files",
+        "allServicesApiBunSubset": "failed: 356 passed, 58 failed, 1 error across 21 files; remaining failures are concentrated in stale moved-source query imports for client/providerConfig/withRetry/openAiCodeTransform, ProviderCode provider config expectations, and secure-storage tests timing out"
+      }
     }
   ],
   "globalValidationCommands": [
@@ -233,8 +244,8 @@
       ],
       "status": "audit-required",
       "fixesNeeded": [
-        "Fix the Bun test resolver or harness so tests/services/api/openaiShim*.test.ts run against runtime/src/services/api/openaiShim.ts, including cache-busting query imports.",
-        "Investigate and fix the two openaiShim.compression.test.ts assertion failures seen under the Bun harness."
+        "Fix or replace the moved-test Bun resolver for the remaining tests/services/api Bun tests that still dynamic-import stale local moved-source paths with cache-busting query strings.",
+        "Triage and fix the remaining ProviderCode provider-config failures and secure-storage timeouts in the tests/services/api Bun subset."
       ]
     },
     {
@@ -323,7 +334,8 @@
       "fixesNeeded": [
         "Triage why the full coverage command exits with code -1 and leaves only partial V8 temp files.",
         "Classify the 1019 incomplete-marker matches into test fixture text, historical comments, and real implementation debt.",
-        "Triage the 7 skipped-or-todo test matches and record which are platform guards versus real coverage gaps."
+        "Triage the 7 skipped-or-todo test matches and record which are platform guards versus real coverage gaps.",
+        "Bring the 104 Bun test files excluded from Vitest into an explicit runtime validation path or convert them to the primary test runner."
       ]
     }
   ]
