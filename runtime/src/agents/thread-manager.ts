@@ -648,6 +648,18 @@ async function submitToLiveAgent(
       live.status.complete();
       return live.agentId;
     case "refresh_mcp_servers":
+      // Route the refresh to the child's run loop, which applies it to the
+      // child session's MCP manager between turns (drainChildMailbox /
+      // run-agent). Previously this was a silent no-op, leaving live
+      // subagents on stale MCP config.
+      live.downInbox.send({
+        author: live.agentPath,
+        recipient: live.agentPath,
+        content: "",
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "mcp_refresh", mcpConfig: op.config },
+      });
       return live.agentId;
   }
 }
