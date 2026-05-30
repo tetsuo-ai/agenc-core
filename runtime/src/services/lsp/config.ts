@@ -81,7 +81,9 @@ function normalizeExtensionMap(
     if (language.trim().length === 0) {
       throw new Error(`extensionToLanguage.${ext} must not be empty`);
     }
-    normalized[key] = language;
+    // Store trimmed (mirroring the key) — this value is sent verbatim as the
+    // LSP textDocument.languageId, which never carries surrounding whitespace.
+    normalized[key] = language.trim();
   }
   return Object.freeze(normalized);
 }
