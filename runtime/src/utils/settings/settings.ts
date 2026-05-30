@@ -521,9 +521,11 @@ export function updateSettingsForSource(
       )
     }
   } catch (e) {
-    const error = new Error(
-      `Failed to read raw settings from ${filePath}: ${e}`,
-    )
+    // This try wraps mkdir + read + merge + write, so a failure can originate
+    // from any of them. Use a neutral message rather than the read-specific
+    // one, which misdirected debugging of write/flush failures (ENOSPC, EACCES,
+    // read-only fs) by reporting them as "read" errors.
+    const error = new Error(`Failed to update settings at ${filePath}: ${e}`)
     logError(error)
     return { error }
   }

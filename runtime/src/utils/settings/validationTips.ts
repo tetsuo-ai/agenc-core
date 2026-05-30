@@ -107,7 +107,11 @@ const TIP_MATCHERS: TipMatcher[] = [
     matches: (ctx): boolean =>
       ctx.code === 'invalid_type' &&
       ctx.expected === 'object' &&
-      ctx.received === null &&
+      // formatZodError passes `received` as the type-name STRING (e.g. 'null'),
+      // never the JS null literal — so the old `=== null` never matched and
+      // this malformed-JSON suggestion was dead code. Compare the string form
+      // (mirrors the sibling check in validation.ts that rewrites the message).
+      ctx.received === 'null' &&
       ctx.path === '',
     tip: {
       suggestion:
