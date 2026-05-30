@@ -136,6 +136,21 @@ describe("runAutoFixCheck", () => {
     ).toBeLessThanOrEqual(10_000);
   });
 
+  test("does not corrupt a multibyte char split across stdout chunks", async () => {
+    // Regression: decoding each Buffer chunk independently emitted U+FFFD when a
+    // multibyte UTF-8 sequence straddled two 'data' events. '✓' is E2 9C 93;
+    // emit [E2 9C] then [93] as separate writes to force the split.
+    const result = await runAutoFixCheck({
+      lint:
+        'node -e "process.stdout.write(Buffer.from([0xe2,0x9c])); setTimeout(() => process.stdout.write(Buffer.from([0x93])), 30)"',
+      timeout: 5_000,
+      cwd: TEST_CWD,
+    });
+    expect(result.hasErrors).toBe(false);
+    expect(result.lintOutput).toContain("✓");
+    expect(result.lintOutput).not.toContain("�");
+  });
+
   test("aborts a running command promptly", async () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort("test"), 50);
