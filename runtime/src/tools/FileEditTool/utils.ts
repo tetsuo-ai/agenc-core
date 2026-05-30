@@ -409,7 +409,13 @@ export function getSnippetForTwoFileDiff(
   const cutoff = full.lastIndexOf('\n', DIFF_SNIPPET_MAX_BYTES)
   const kept =
     cutoff > 0 ? full.slice(0, cutoff) : full.slice(0, DIFF_SNIPPET_MAX_BYTES)
-  const remaining = countCharInString(full, '\n', kept.length) + 1
+  // When we cut on a line boundary, kept.length points AT the boundary '\n', so
+  // counting newlines from there already equals the number of dropped lines.
+  // Only the mid-line fallback (cutoff <= 0) needs +1 for the partial line.
+  const remaining =
+    cutoff > 0
+      ? countCharInString(full, '\n', kept.length)
+      : countCharInString(full, '\n', kept.length) + 1
   return `${kept}\n\n... [${remaining} lines truncated] ...`
 }
 

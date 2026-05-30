@@ -54,30 +54,39 @@ export function seekSequence(
   if (pattern.length === 0) return start;
   if (pattern.length > lines.length) return null;
 
-  const searchStart = eof && lines.length >= pattern.length
-    ? lines.length - pattern.length
-    : start;
-
-  return (
-    findWithComparator(lines, pattern, searchStart, (line, pat) => line === pat) ??
+  const runChain = (from: number): number | null =>
+    findWithComparator(lines, pattern, from, (line, pat) => line === pat) ??
     findWithComparator(
       lines,
       pattern,
-      searchStart,
+      from,
       (line, pat) => line.trimEnd() === pat.trimEnd(),
     ) ??
     findWithComparator(
       lines,
       pattern,
-      searchStart,
+      from,
       (line, pat) => line.trim() === pat.trim(),
     ) ??
     findWithComparator(
       lines,
       pattern,
-      searchStart,
+      from,
       (line, pat) =>
         normalizeCommonPunctuation(line) === normalizeCommonPunctuation(pat),
-    )
-  );
+    );
+
+  // For an end-of-file-anchored hunk, try the flush-against-EOF position first
+  // (matching the donor), then fall back to a normal scan from `start`. The
+  // previous port pinned the search to the EOF position only, so any EOF hunk
+  // whose context/removed lines were not literally the final lines of the file
+  // failed to apply — a silent loss of patch-application capability. The
+  // fallback is strictly additive: a flush match still wins first.
+  if (eof && lines.length >= pattern.length) {
+    const anchored = runChain(lines.length - pattern.length);
+    if (anchored !== null) return anchored;
+    return runChain(start);
+  }
+
+  return runChain(start);
 }

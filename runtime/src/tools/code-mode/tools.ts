@@ -117,7 +117,10 @@ export function codeModeRuntimeResponseToToolResult(
 
   return {
     content,
-    isError: response.type === "result" && response.errorText !== undefined,
+    // Key on truthiness to match status (line 72) and the "Script error"
+    // section gating — an empty errorText ("" from `throw new Error('')`) must
+    // not report status=completed yet isError=true.
+    isError: response.type === "result" && Boolean(response.errorText),
     contentItems: richItems,
     metadata: {
       codeMode: true,
