@@ -83,7 +83,10 @@ async function loadAgentFromFile(
     )
 
     const baseAgentName =
-      (frontmatter.name as string) || basename(filePath).replace(/\.md$/, '')
+      (frontmatter.name as string) ||
+      // Case-insensitive to match walkPluginMarkdown's case-insensitive .md
+      // discovery — otherwise a Foo.MD file loads but keeps ".MD" in its name.
+      basename(filePath).replace(/\.md$/i, '')
 
     // Apply namespace prefixing like we do for commands
     const nameParts = [pluginName, ...namespace, baseAgentName]
@@ -300,7 +303,10 @@ export const loadPluginAgents = memoize(
                       )
                     }
                     return agents
-                  } else if (stats.isFile() && agentPath.endsWith('.md')) {
+                  } else if (
+                    stats.isFile() &&
+                    agentPath.toLowerCase().endsWith('.md')
+                  ) {
                     // Load single agent file
                     const agent = await loadAgentFromFile(
                       agentPath,

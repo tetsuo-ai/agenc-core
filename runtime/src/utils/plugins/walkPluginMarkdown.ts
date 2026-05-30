@@ -16,7 +16,9 @@ const SKILL_MD_RE = /^skill\.md$/i
  * scanned — skill directories are leaf containers.
  *
  * Readdir errors are swallowed with a debug log so one bad directory doesn't
- * abort a plugin load.
+ * abort a plugin load. A failing onFile is likewise isolated per-file (logged
+ * with the offending file path) so one unreadable/invalid file doesn't abort
+ * the rest of its directory or get mislogged as a directory-scan failure.
  */
 export async function walkPluginMarkdown(
   rootDir: string,
@@ -25,6 +27,16 @@ export async function walkPluginMarkdown(
 ): Promise<void> {
   const fs = getFsImplementation()
   const label = opts.logLabel ?? 'plugin'
+
+  // Isolate a single file's onFile rejection so it doesn't reject the whole
+  // directory's Promise.all (dropping sibling files) and surface via the
+  // directory catch as a misleading "Failed to scan directory" error.
+  const safeOnFile = (p: string, ns: string[]): Promise<void> =>
+    onFile(p, ns).catch(err =>
+      logForDebugging(`Failed to process ${label} file ${p}: ${err}`, {
+        level: 'error',
+      }),
+    )
 
   async function scan(dirPath: string, namespace: string[]): Promise<void> {
     try {
@@ -38,7 +50,7 @@ export async function walkPluginMarkdown(
         await Promise.all(
           entries.map(entry =>
             entry.isFile() && entry.name.toLowerCase().endsWith('.md')
-              ? onFile(join(dirPath, entry.name), namespace)
+              ? safeOnFile(join(dirPath, entry.name), namespace)
               : undefined,
           ),
         )
@@ -52,7 +64,7 @@ export async function walkPluginMarkdown(
             return scan(fullPath, [...namespace, entry.name])
           }
           if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
-            return onFile(fullPath, namespace)
+            return safeOnFile(fullPath, namespace)
           }
           return undefined
         }),
