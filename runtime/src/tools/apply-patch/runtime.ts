@@ -113,6 +113,7 @@ function computeReplacements(
   let lineIndex = 0;
 
   for (const chunk of chunks) {
+    let anchorIndex: number | null = null;
     if (chunk.changeContext !== null) {
       const idx = seekSequence(
         originalLines,
@@ -126,17 +127,26 @@ function computeReplacements(
         );
       }
       lineIndex = idx + 1;
+      anchorIndex = idx + 1; // insert immediately after the matched context line
     }
 
     if (chunk.oldLines.length === 0) {
-      const insertionIdx = originalLines.at(-1) === ""
-        ? originalLines.length - 1
-        : originalLines.length;
+      // A pure insertion (`@@ <context>` with only `+` lines) must land right
+      // after its located anchor, not at EOF. Only fall back to end-of-file
+      // when the chunk had no context anchor at all.
+      const insertionIdx =
+        anchorIndex !== null
+          ? anchorIndex
+          : originalLines.at(-1) === ""
+            ? originalLines.length - 1
+            : originalLines.length;
       replacements.push({
         startIndex: insertionIdx,
         oldLength: 0,
         newLines: chunk.newLines,
       });
+      // Keep subsequent chunks ordered past this insertion point.
+      lineIndex = insertionIdx;
       continue;
     }
 
