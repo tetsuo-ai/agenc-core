@@ -137,17 +137,21 @@ export class TaskOutput {
             if (lineCount === 100) n100 = pos <= 0 ? 0 : pos + 1
           }
           // lineCount is exact when the whole file fits in PROGRESS_TAIL_BYTES.
-          // Otherwise extrapolate from the tail sample; monotone max keeps the
-          // counter from going backwards when the tail has longer lines on one tick.
+          // Otherwise extrapolate from the tail sample. Monotone max keeps the
+          // counter from going backwards — both when the tail has longer lines
+          // on one tick, and when ticks (which run without awaiting the prior
+          // read's I/O) resolve out of order. The output file is append-only, so
+          // size and line counts only ever grow; clamping both branches and the
+          // byte total preserves that invariant against stale late-resolving reads.
           const totalLines =
             bytesRead >= bytesTotal
-              ? lineCount
+              ? Math.max(entry.#totalLines, lineCount)
               : Math.max(
                   entry.#totalLines,
                   Math.round((bytesTotal / bytesRead) * lineCount),
                 )
           entry.#totalLines = totalLines
-          entry.#totalBytes = bytesTotal
+          entry.#totalBytes = Math.max(entry.#totalBytes, bytesTotal)
           entry.#onProgress(
             content.slice(n5),
             content.slice(n100),
@@ -233,6 +237,24 @@ export class TaskOutput {
         }
       }
       pos = prev
+    }
+
+    // The loop above only extracts segments *between* newlines, so the text
+    // before the first newline of the chunk is never captured by it. After the
+    // loop `pos` holds the index of the first newline (or the whole chunk length
+    // when there is no newline at all), so data.slice(0, pos) is that leading
+    // segment. Without this, a chunk that is exactly one line (the common
+    // pipe-mode/hooks case, e.g. "done\n") yields zero extracted lines and the
+    // onProgress callback below never fires. Mirror the in-loop guards exactly.
+    if (lines.length < MAX_PROGRESS_LINES && extractedBytes < MAX_PROGRESS_BYTES) {
+      const lineLen = pos
+      if (lineLen > 0 && lineLen <= MAX_PROGRESS_BYTES - extractedBytes) {
+        const line = data.slice(0, pos)
+        if (line.trim()) {
+          lines.push(Buffer.from(line).toString())
+          extractedBytes += lineLen
+        }
+      }
     }
 
     this.#totalLines += lineCount
