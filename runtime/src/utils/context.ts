@@ -57,7 +57,14 @@ export function modelSupports1M(model: string): boolean {
     return false
   }
   const canonical = getCanonicalName(model)
-  return canonical.includes('claude-sonnet-4') || canonical.includes('opus-4-6')
+  // 1M context: Sonnet 4 family + Opus 4.6 and up. Opus 4.7 (the current
+  // default opus) was missing here, which silently dropped 1M for opus skills
+  // and the CONTEXT_1M_BETA_HEADER path.
+  return (
+    canonical.includes('claude-sonnet-4') ||
+    canonical.includes('opus-4-6') ||
+    canonical.includes('opus-4-7')
+  )
 }
 
 export function getContextWindowForModel(
