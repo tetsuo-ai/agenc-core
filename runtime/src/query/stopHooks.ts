@@ -127,7 +127,15 @@ export async function* handleStopHooks(
       void executePromptSuggestion(stopHookContext, { cwd: getCwd(), speculationEnabled: getGlobalConfig().speculationEnabled })
     }
     if (!toolUseContext.agentId) {
-      void executeAutoDream(stopHookContext, toolUseContext.appendSystemMessage)
+      // Fire-and-forget: isolate any rejection so an unguarded throw in the
+      // auto-dream runner becomes a logged debug line rather than an
+      // unhandledRejection escaping the turn loop.
+      void executeAutoDream(
+        stopHookContext,
+        toolUseContext.appendSystemMessage,
+      ).catch(err => {
+        logForDebugging(`[auto-dream] execution error: ${errorMessage(err)}`)
+      })
     }
   }
 

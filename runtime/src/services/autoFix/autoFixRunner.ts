@@ -13,6 +13,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 export interface AutoFixCheckOptions {
   readonly lint?: string;
@@ -85,6 +86,12 @@ async function runCommand(
     let timedOut = false;
     let stdout = "";
     let stderr = "";
+    // Per-stream decoders buffer partial multibyte UTF-8 sequences across chunk
+    // boundaries — decoding each raw Buffer chunk independently would emit
+    // U+FFFD for a character split across two chunks, garbling lint/test output
+    // that is later shown to the model.
+    const outDecoder = new StringDecoder("utf8");
+    const errDecoder = new StringDecoder("utf8");
     let timer: NodeJS.Timeout | undefined;
     let forceTimer: NodeJS.Timeout | undefined;
     const isWindows = process.platform === "win32";
@@ -163,10 +170,10 @@ async function runCommand(
     signal?.addEventListener("abort", onAbort, { once: true });
 
     proc.stdout?.on("data", (data: Buffer) => {
-      stdout = appendCapped(stdout, data.toString());
+      stdout = appendCapped(stdout, outDecoder.write(data));
     });
     proc.stderr?.on("data", (data: Buffer) => {
-      stderr = appendCapped(stderr, data.toString());
+      stderr = appendCapped(stderr, errDecoder.write(data));
     });
 
     timer = setTimeout(() => {
@@ -183,6 +190,11 @@ async function runCommand(
 
     proc.on("close", (code) => {
       clearForceTimer();
+      // Flush any final complete character buffered in the decoder.
+      const tailOut = outDecoder.end();
+      if (tailOut) stdout = appendCapped(stdout, tailOut);
+      const tailErr = errDecoder.end();
+      if (tailErr) stderr = appendCapped(stderr, tailErr);
       settle({
         stdout,
         stderr,
