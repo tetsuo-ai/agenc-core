@@ -12,6 +12,8 @@ import {
 } from '../../utils/mcpOutputStorage.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import type { LookupFunction } from 'node:net'
+import type * as undici from 'undici'
 import { ssrfGuardedLookup } from '../../utils/hooks/ssrfGuard.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
@@ -103,6 +105,66 @@ const MAX_URL_LENGTH = 2000
 // memory, and network usage for the Web Fetch tool can prevent a single
 // request or user from overwhelming the system."
 const MAX_HTTP_CONTENT_LENGTH = 10 * 1024 * 1024
+
+// The native-fetch fallback (used when axios+custom-lookup hangs) must keep the
+// same SSRF protection as the axios path. Node's global fetch ignores axios's
+// `lookup`, so we give it an undici dispatcher whose connector resolves through
+// ssrfGuardedLookup — the validated IP is the one pinned to the socket, closing
+// the DNS-rebinding window (a naive pre-resolve-then-fetch would re-resolve and
+// reopen it). Lazy-required + memoized so undici only loads when the fallback
+// actually fires. mTLS/proxy global dispatchers are intentionally not merged
+// here; this edge path already did not honor per-request mTLS.
+let ssrfGuardedFetchDispatcher: undici.Dispatcher | undefined
+function getSsrfGuardedFetchDispatcher(): undici.Dispatcher {
+  if (!ssrfGuardedFetchDispatcher) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const undiciMod = require('undici') as typeof undici
+    ssrfGuardedFetchDispatcher = new undiciMod.Agent({
+      connect: {
+        // ssrfGuardedLookup carries axios's lookup shape, which is call-
+        // compatible with undici's Node-style connect lookup.
+        lookup: ssrfGuardedLookup as unknown as LookupFunction,
+      },
+    })
+  }
+  return ssrfGuardedFetchDispatcher
+}
+
+/**
+ * Read a fetch Response body into a Uint8Array, enforcing a hard byte cap by
+ * streaming (a hostile server can omit/understate Content-Length, so the cap
+ * must be enforced while reading, not from the header). Mirrors the axios
+ * maxContentLength behavior on the fallback path.
+ */
+export async function readBodyCapped(response: Response): Promise<Uint8Array> {
+  const reader = response.body?.getReader()
+  if (!reader) {
+    return new Uint8Array(0)
+  }
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) {
+      total += value.byteLength
+      if (total > MAX_HTTP_CONTENT_LENGTH) {
+        await reader.cancel()
+        throw new Error(
+          `maxContentLength size of ${MAX_HTTP_CONTENT_LENGTH} exceeded`,
+        )
+      }
+      chunks.push(value)
+    }
+  }
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
+}
 
 // Timeout for the main HTTP fetch request (60 seconds).
 // Prevents hanging indefinitely on slow/unresponsive servers.
@@ -297,7 +359,9 @@ export async function getWithPermittedRedirects(
           signal,
           redirect: 'manual',
           headers: axiosConfig.headers,
-        })
+          // Pin connections to SSRF-validated IPs (see dispatcher comment).
+          dispatcher: getSsrfGuardedFetchDispatcher(),
+        } as RequestInit & { dispatcher: undici.Dispatcher })
         // Handle redirects manually
         if ([301, 302, 307, 308].includes(fetchResponse.status)) {
           const redirectLocation = fetchResponse.headers.get('location')
@@ -321,18 +385,30 @@ export async function getWithPermittedRedirects(
             }
           }
         }
-        const arrayBuffer = await fetchResponse.arrayBuffer()
+        // Enforce the same 10MB cap as the axios path, streaming so a server
+        // that omits/understates Content-Length cannot exhaust memory.
+        const data = await readBodyCapped(fetchResponse)
         // Build an AxiosResponse-like shape so downstream code stays happy
         return {
-          data: new Uint8Array(arrayBuffer),
+          data,
           status: fetchResponse.status,
           statusText: fetchResponse.statusText,
           headers: Object.fromEntries(fetchResponse.headers.entries()),
           config: axiosConfig,
           request: undefined,
         } as unknown as AxiosResponse<ArrayBuffer>
-      } catch {
-        // Fall through to original error handling
+      } catch (fallbackError) {
+        // A user abort during the fallback fetch must propagate as an abort
+        // (so it's classified as an interrupt), not be swallowed and reported
+        // as the original stale axios timeout.
+        if (
+          signal.aborted ||
+          (fallbackError as { name?: string })?.name === 'AbortError' ||
+          (fallbackError as { code?: string })?.code === 'ABORT_ERR'
+        ) {
+          throw fallbackError
+        }
+        // Otherwise fall through to original error handling.
       }
     }
 
