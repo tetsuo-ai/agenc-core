@@ -76,6 +76,25 @@ describe("apply-patch runtime", () => {
     );
   });
 
+  test("inserts a context-anchored pure addition after the anchor, not at EOF", async () => {
+    // Regression: a `@@ <context>` chunk with only `+` lines (oldLines empty)
+    // used to ignore the located context and append at end-of-file.
+    const root = await tempRoot();
+    const path = join(root, "anchored.txt");
+    await writeFile(path, "alpha\nbeta\ngamma\ndelta\n", "utf8");
+
+    await applyPatchText(
+      wrapPatch(`*** Update File: anchored.txt
+@@ beta
++INSERTED`),
+      { cwd: root, allowedPaths: [root] },
+    );
+
+    await expect(readFile(path, "utf8")).resolves.toBe(
+      "alpha\nbeta\nINSERTED\ngamma\ndelta\n",
+    );
+  });
+
   test("moves updated files and creates destination parents", async () => {
     const root = await tempRoot();
     const source = join(root, "source.txt");
