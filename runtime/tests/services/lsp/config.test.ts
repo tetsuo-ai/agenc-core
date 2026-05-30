@@ -28,6 +28,19 @@ describe("lsp config", () => {
     expect(config.maxRestarts).toBe(2);
   });
 
+  test("trims whitespace from extensionToLanguage language ids", () => {
+    // Regression: the language value was stored untrimmed despite trim-based
+    // validation, so " go" / "typescript " reached the wire as a bad languageId.
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".go": " go ", "ts": "typescript " },
+    });
+    expect(config.extensionToLanguage).toEqual({
+      ".go": "go",
+      ".ts": "typescript",
+    });
+  });
+
   test("rejects invalid server config with an actionable reason", () => {
     const result = parseLspServersConfig({
       broken: { command: "", extensionToLanguage: {} },

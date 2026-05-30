@@ -109,6 +109,36 @@ describe("createLSPServerManager", () => {
     expect(manager.getAllServers().size).toBe(0);
   });
 
+  test("closeFile clears the openedFiles entry even when the server is not running", async () => {
+    // Regression: closeFile bailed out before deleting the registry entry when
+    // the server wasn't running, leaking the entry (isFileOpen stays true and a
+    // later openFile skips didOpen for a document the server never received).
+    const created: ReturnType<typeof fakeServer>[] = [];
+    const manager = createLSPServerManager({
+      configSource: () => ({
+        ts: normalizeLspServerConfig("ts", {
+          command: "typescript-language-server",
+          extensionToLanguage: { ".ts": "typescript" },
+        }),
+      }),
+      instanceFactory: (name, config) => {
+        const server = fakeServer(name, config);
+        created.push(server);
+        return server;
+      },
+    });
+
+    await manager.initialize();
+    await manager.changeFile("src/a.ts", "let x = 1;");
+    expect(manager.isFileOpen("src/a.ts")).toBe(true);
+
+    // Server crashes/stops before the file is closed.
+    created[0]!.setState("stopped");
+    await manager.closeFile("src/a.ts");
+
+    expect(manager.isFileOpen("src/a.ts")).toBe(false);
+  });
+
   test("does not leave failed servers in extension routing", async () => {
     const validConfig = normalizeLspServerConfig("valid", {
       command: "typescript-language-server",

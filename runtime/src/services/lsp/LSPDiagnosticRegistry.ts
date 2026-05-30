@@ -221,7 +221,11 @@ export function peekLSPDiagnosticsForFile(file: string): DiagnosticEntry[] {
     if (pending.attachmentSent) continue;
     for (const diagnosticFile of pending.files) {
       if (!fileMatches(diagnosticFile.uri, file)) continue;
-      const delivered = deliveredDiagnostics.get(diagnosticFile.uri) ?? new Set();
+      // peek(), not get(): this is a read-only query, so it must not bump the
+      // entry's LRU recency and risk evicting another file's delivered-dedup set
+      // (which would re-deliver already-seen diagnostics as "new").
+      const delivered =
+        deliveredDiagnostics.peek(diagnosticFile.uri) ?? new Set();
       for (const diagnostic of diagnosticFile.diagnostics) {
         const key = diagnosticKey(diagnostic);
         if (seen.has(key) || delivered.has(key)) continue;

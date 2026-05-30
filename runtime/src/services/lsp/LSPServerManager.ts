@@ -206,13 +206,17 @@ export function createLSPServerManager(
   }
 
   async function closeFile(filePath: string): Promise<void> {
+    const uri = fileUri(filePath);
+    // Clear the local bookkeeping unconditionally — otherwise closing a file
+    // while the server is crashed/stopped/starting leaks the openedFiles entry,
+    // leaving isFileOpen() true and making a later openFile() skip didOpen for a
+    // document the server never received.
+    openedFiles.delete(uri);
     const server = getServerForFile(filePath);
     if (!server || server.state !== "running") return;
-    const uri = fileUri(filePath);
     await server.sendNotification("textDocument/didClose", {
       textDocument: { uri },
     });
-    openedFiles.delete(uri);
   }
 
   return {
