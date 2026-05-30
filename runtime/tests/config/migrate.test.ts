@@ -252,6 +252,32 @@ provider = "xai"
     expect(warnings.join("\n")).toContain("cannot be represented in TOML");
   });
 
+  test("future configVersion in config.json skips migration (no downgrade)", async () => {
+    const home = makeTempDir("agenc-config-migrate");
+    writeFileSync(
+      join(home, "config.json"),
+      JSON.stringify({
+        [CONFIG_FILE_VERSION_KEY]: CURRENT_CONFIG_FILE_VERSION + 1,
+        provider: "xai",
+      }),
+      "utf8",
+    );
+    const warnings: string[] = [];
+
+    const result = await runConfigFileMigrations({
+      home,
+      parseToml,
+      onWarn: (message) => warnings.push(message),
+    });
+
+    // Must NOT rewrite a newer-than-this-runtime config.json into a v1
+    // config.toml — that would silently downgrade the version stamp.
+    expect(result.wrote).toBe(false);
+    expect(result.skipped).toContain("json:future-version");
+    expect(existsSync(join(home, "config.toml"))).toBe(false);
+    expect(warnings.join("\n")).toContain("newer than this runtime");
+  });
+
   test("serializer round-trips quoted keys, arrays, and nested records", () => {
     const raw = {
       "dotted.key": {
