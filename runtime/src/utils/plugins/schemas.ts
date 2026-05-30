@@ -137,13 +137,41 @@ export function validateOfficialNameSource(
 
   // Check for git URL source type
   if (source.source === 'git' && source.url) {
-    const url = source.url.toLowerCase()
-    // Check for HTTPS URL format: https://github.com/tetsuo-ai/...
-    // or SSH format: git@github.com:tetsuo-ai/...
-    const isHttpsOfficial = url.includes(`github.com/${OFFICIAL_GITHUB_ORG}/`)
-    const isSshOfficial = url.includes(`git@github.com:${OFFICIAL_GITHUB_ORG}/`)
+    // Decide officialness by parsing the host + org path — NOT by substring
+    // matching the raw URL. A substring check (url.includes('github.com/org/'))
+    // is trivially bypassed by embedding the magic string in the query/fragment/
+    // path of an attacker host, e.g. https://evil.com/?u=github.com/tetsuo-ai/x,
+    // letting a third-party repo claim a reserved official name.
+    const raw = source.url.trim()
+    const orgPrefix = `${OFFICIAL_GITHUB_ORG.toLowerCase()}/`
+    let isOfficial = false
 
-    if (isHttpsOfficial || isSshOfficial) {
+    if (raw.includes('://')) {
+      // URL form (https://, ssh://, git://, …): require host === github.com.
+      // Parsed (not substring) so the org path can't be faked in the
+      // query/fragment of an attacker host. Handled before the scp branch so a
+      // "git@host:path" sequence buried in a URL fragment can't be mistaken for
+      // an scp-like address.
+      try {
+        const u = new URL(raw)
+        const host = u.hostname.toLowerCase()
+        const path = u.pathname.toLowerCase().replace(/^\/+/, '')
+        isOfficial = host === 'github.com' && path.startsWith(orgPrefix)
+      } catch {
+        isOfficial = false
+      }
+    } else {
+      // SSH scp-like form: git@github.com:tetsuo-ai/repo(.git). Anchored so the
+      // host segment must be exactly github.com.
+      const sshMatch = raw.match(/^[^@\s]+@([^:\s]+):(.+)$/)
+      if (sshMatch) {
+        const host = sshMatch[1]!.toLowerCase()
+        const path = sshMatch[2]!.toLowerCase().replace(/^\/+/, '')
+        isOfficial = host === 'github.com' && path.startsWith(orgPrefix)
+      }
+    }
+
+    if (isOfficial) {
       return null // Valid: reserved name from official git URL
     }
 
