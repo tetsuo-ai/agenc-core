@@ -284,9 +284,14 @@ export function formatCompactSummary(summary: string): string {
 
   if (summaryMatch) {
     const content = summaryMatch[1] ?? "";
+    // Use a function replacer: a string replacement would treat $-sequences in
+    // the model-authored summary ($&, $1, $$, shell snippets like $@) as
+    // special substitutions and silently corrupt the output. Function return
+    // values are inserted literally.
+    const replacement = `Summary:\n${content.trim()}`;
     formattedSummary = formattedSummary.replace(
       SUMMARY_BLOCK_PATTERN,
-      `Summary:\n${content.trim()}`,
+      () => replacement,
     );
   }
 
