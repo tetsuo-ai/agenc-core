@@ -133,18 +133,27 @@ export function startHookProgressInterval(params: {
 
   let lastEmittedOutput = ''
   const interval = setInterval(() => {
-    void params.getOutput().then(({ stdout, stderr, output }) => {
-      if (output === lastEmittedOutput) return
-      lastEmittedOutput = output
-      emitHookProgress({
-        hookId: params.hookId,
-        hookName: params.hookName,
-        hookEvent: params.hookEvent,
-        stdout,
-        stderr,
-        output,
+    void params
+      .getOutput()
+      .then(({ stdout, stderr, output }) => {
+        if (output === lastEmittedOutput) return
+        lastEmittedOutput = output
+        emitHookProgress({
+          hookId: params.hookId,
+          hookName: params.hookName,
+          hookEvent: params.hookEvent,
+          stdout,
+          stderr,
+          output,
+        })
       })
-    })
+      .catch(err => {
+        // getOutput is caller-supplied; isolate a rejection so it doesn't
+        // surface as a per-tick unhandledRejection on this repeating interval.
+        logForDebugging(
+          `Hook progress getOutput failed for ${params.hookName}: ${err}`,
+        )
+      })
   }, params.intervalMs ?? 1000)
   interval.unref()
 

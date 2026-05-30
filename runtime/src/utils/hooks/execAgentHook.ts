@@ -82,6 +82,11 @@ export async function execAgentHook(
     // Combined signal is just our controller's signal now
     const combinedSignal = hookAbortController.signal
 
+    // Set once the per-agent Stop hook is registered, so the finally below can
+    // always remove it — the success path alone used to clear it, leaking the
+    // hook-agent-<uuid> entry on every throw/abort.
+    let hookAgentIdForCleanup: ReturnType<typeof asAgentId> | undefined
+
     try {
       // Create StructuredOutput tool with our schema
       const structuredOutputTool = createStructuredOutputTool()
@@ -156,6 +161,7 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
         toolUseContext.setAppState,
         hookAgentId,
       )
+      hookAgentIdForCleanup = hookAgentId
 
       let structuredOutputResult: { ok: boolean; reason?: string } | null = null
       let turnCount = 0
@@ -227,9 +233,6 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       parentTimeoutSignal.removeEventListener('abort', onParentTimeout)
       cleanupCombinedSignal()
 
-      // Clean up the session hook we registered for this agent
-      clearSessionHooks(toolUseContext.setAppState, hookAgentId)
-
       // Check if we got a result
       if (!structuredOutputResult) {
         // If we hit max turns, just log and return cancelled (no UI message)
@@ -291,6 +294,13 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
         }
       }
       throw error
+    } finally {
+      // Always remove the per-agent Stop hook, regardless of
+      // success/abort/throw. Idempotent Map.delete, and only runs once the
+      // hook was actually registered.
+      if (hookAgentIdForCleanup) {
+        clearSessionHooks(toolUseContext.setAppState, hookAgentIdForCleanup)
+      }
     }
   } catch (error) {
     const errorMsg = errorMessage(error)
