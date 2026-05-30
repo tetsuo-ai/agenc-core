@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * This testing-only tool will always pop up a permission dialog when called by
  * the model.
@@ -26,7 +25,10 @@ export const TestingPermissionTool: Tool<InputSchema, string> = buildTool({
     return 'TestingPermission';
   },
   isEnabled() {
-    return "production" === 'test';
+    // Always disabled (the prior `"production" === 'test'` literal was a
+    // constant-false no-op). If this testing-only tool should be gated on an
+    // env, wire a real check — left behavior-identical here.
+    return false;
   },
   isConcurrencySafe() {
     return true;
