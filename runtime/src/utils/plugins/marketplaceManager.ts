@@ -2126,61 +2126,77 @@ export async function getMarketplaceCacheOnly(
  */
 export const getMarketplace = memoize(
   async (name: string): Promise<PluginMarketplace> => {
-    const config = await loadKnownMarketplacesConfig()
-    const entry = config[name]
-
-    if (!entry) {
-      throw new Error(
-        `Marketplace '${name}' not found in configuration. Available marketplaces: ${Object.keys(config).join(', ')}`,
-      )
-    }
-
-    // Compatibility entries (pre-#19708) may have relative paths in global config.
-    // These are meaningless outside the project that wrote them — resolving
-    // against process.cwd() produces the wrong path. Give actionable guidance
-    // instead of a misleading ENOENT.
-    if (
-      isLocalMarketplaceSource(entry.source) &&
-      !isAbsolute(entry.source.path)
-    ) {
-      throw new Error(
-        `Marketplace "${name}" has a relative source path (${entry.source.path}) ` +
-          `in known_marketplaces.json — this is stale state from an older ` +
-          `AgenC version. Run 'agenc marketplace remove ${name}' and ` +
-          `re-add it from the original project directory.`,
-      )
-    }
-
-    // Try to read from disk cache
     try {
-      return await readCachedMarketplace(entry.installLocation)
+      return await getMarketplaceUncached(name)
     } catch (error) {
-      // Log cache corruption before re-fetching
-      logForDebugging(
-        `Cache corrupted or missing for marketplace ${name}, re-fetching from source: ${errorMessage(error)}`,
-        {
-          level: 'warn',
-        },
-      )
+      // memoize() stores the (rejected) promise synchronously, so without this
+      // a single transient failure (network blip, git timeout, corrupt cache +
+      // failed re-fetch) would poison the in-memory cache for the whole session,
+      // making the marketplace permanently unloadable. Evict the key so the next
+      // call retries once the underlying condition clears.
+      getMarketplace.cache?.delete?.(name)
+      throw error
     }
-
-    // Cache doesn't exist or is invalid, fetch from source
-    let marketplace: PluginMarketplace
-    try {
-      ;({ marketplace } = await loadAndCacheMarketplace(entry.source))
-    } catch (error) {
-      throw new Error(
-        `Failed to load marketplace "${name}" from source (${entry.source.source}): ${errorMessage(error)}`,
-      )
-    }
-
-    // Update lastUpdated only when we actually fetch
-    config[name]!.lastUpdated = new Date().toISOString()
-    await saveKnownMarketplacesConfig(config)
-
-    return marketplace
   },
 )
+
+async function getMarketplaceUncached(
+  name: string,
+): Promise<PluginMarketplace> {
+  const config = await loadKnownMarketplacesConfig()
+  const entry = config[name]
+
+  if (!entry) {
+    throw new Error(
+      `Marketplace '${name}' not found in configuration. Available marketplaces: ${Object.keys(config).join(', ')}`,
+    )
+  }
+
+  // Compatibility entries (pre-#19708) may have relative paths in global config.
+  // These are meaningless outside the project that wrote them — resolving
+  // against process.cwd() produces the wrong path. Give actionable guidance
+  // instead of a misleading ENOENT.
+  if (
+    isLocalMarketplaceSource(entry.source) &&
+    !isAbsolute(entry.source.path)
+  ) {
+    throw new Error(
+      `Marketplace "${name}" has a relative source path (${entry.source.path}) ` +
+        `in known_marketplaces.json — this is stale state from an older ` +
+        `AgenC version. Run 'agenc marketplace remove ${name}' and ` +
+        `re-add it from the original project directory.`,
+    )
+  }
+
+  // Try to read from disk cache
+  try {
+    return await readCachedMarketplace(entry.installLocation)
+  } catch (error) {
+    // Log cache corruption before re-fetching
+    logForDebugging(
+      `Cache corrupted or missing for marketplace ${name}, re-fetching from source: ${errorMessage(error)}`,
+      {
+        level: 'warn',
+      },
+    )
+  }
+
+  // Cache doesn't exist or is invalid, fetch from source
+  let marketplace: PluginMarketplace
+  try {
+    ;({ marketplace } = await loadAndCacheMarketplace(entry.source))
+  } catch (error) {
+    throw new Error(
+      `Failed to load marketplace "${name}" from source (${entry.source.source}): ${errorMessage(error)}`,
+    )
+  }
+
+  // Update lastUpdated only when we actually fetch
+  config[name]!.lastUpdated = new Date().toISOString()
+  await saveKnownMarketplacesConfig(config)
+
+  return marketplace
+}
 
 /**
  * Get plugin by ID from cache only (no network calls).
@@ -2348,6 +2364,11 @@ export async function refreshAllMarketplaces(): Promise<void> {
   }
 
   await saveKnownMarketplacesConfig(config)
+
+  // Bulk refresh updated the on-disk caches; invalidate the in-process memo so
+  // already-loaded marketplaces don't keep returning pre-refresh contents for
+  // the rest of the session (refreshMarketplace() does the per-name equivalent).
+  clearMarketplacesCache()
 }
 
 /**

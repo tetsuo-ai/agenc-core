@@ -82,7 +82,8 @@ function getCommandNameFromFile(
   } else {
     // For regular files, use filename without .md
     const fileDirectory = dirname(filePath)
-    const commandBaseName = basename(filePath).replace(/\.md$/, '')
+    // Case-insensitive to match the case-insensitive .md discovery walk.
+    const commandBaseName = basename(filePath).replace(/\.md$/i, '')
 
     // Build namespace from file directory
     const relativePath = fileDirectory.startsWith(baseDir)
@@ -539,7 +540,7 @@ export const getPluginCommands = memoize(async (): Promise<Command[]> => {
 
                 // Fall back to filename-based naming if no metadata
                 if (!commandName) {
-                  commandName = `${plugin.name}:${basename(commandPath).replace(/\.md$/, '')}`
+                  commandName = `${plugin.name}:${basename(commandPath).replace(/\.md$/i, '')}`
                 }
 
                 // Apply metadata overrides to frontmatter

@@ -1013,16 +1013,25 @@ function getPluginVersionFromManifest(
   pluginId: string,
 ): string {
   const fs = getFsImplementation()
-  const manifestPath = join(pluginCachePath, '.agenc-plugin', 'plugin.json')
-
-  try {
-    const manifestContent = fs.readFileSync(manifestPath, { encoding: 'utf-8' })
-    const manifest = jsonParse(manifestContent)
-    return manifest.version || 'unknown'
-  } catch {
-    logForDebugging(`Could not read version from manifest for ${pluginId}`)
-    return 'unknown'
+  // Mirror the loader's dual-layout support (pluginLoader.ts): the new layout
+  // is .agenc-plugin/plugin.json, but legacy plugins keep a root plugin.json.
+  // Checking only the new layout returned 'unknown' for legacy plugins even
+  // when a valid version existed, recording a degraded version + cache path.
+  for (const relParts of [['.agenc-plugin', 'plugin.json'], ['plugin.json']]) {
+    try {
+      const manifestContent = fs.readFileSync(join(pluginCachePath, ...relParts), {
+        encoding: 'utf-8',
+      })
+      const version = jsonParse(manifestContent).version
+      if (version) {
+        return version
+      }
+    } catch {
+      // Try the next layout.
+    }
   }
+  logForDebugging(`Could not read version from manifest for ${pluginId}`)
+  return 'unknown'
 }
 
 /**
