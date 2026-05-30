@@ -198,6 +198,19 @@ export async function getLeaderName(teamName?: string): Promise<string | null> {
     return null
   }
 
+  // readTeamFileAsync casts the parsed JSON to TeamFile without validating its
+  // shape, so a present-but-malformed/version-skewed file (e.g. missing
+  // `members`) would make the .find() below throw. Callers `await` this before
+  // their try blocks, so a throw becomes an unhandled rejection and the worker
+  // silently never sends its request. Follow the same graceful return-null
+  // contract as the not-found path above.
+  if (!Array.isArray(teamFile.members)) {
+    logForDebugging(
+      `[PermissionSync] Team file for ${team} is malformed (missing members)`,
+    )
+    return null
+  }
+
   const leadMember = teamFile.members.find(
     m => m.agentId === teamFile.leadAgentId,
   )

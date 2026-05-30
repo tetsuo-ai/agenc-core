@@ -111,6 +111,11 @@ export async function spawnInProcessTeammate(
     `[spawnInProcessTeammate] Spawning ${agentId} (taskId: ${taskId})`,
   )
 
+  // Hoisted so the error path can unregister it. Without this, if registerTask
+  // throws after registerCleanup() has run, the closure leaks in the global
+  // cleanup Set forever (and would abort a never-started teammate on shutdown).
+  let unregisterCleanup: (() => void) | undefined
+
   try {
     // Create independent AbortController for this teammate
     // Teammates should not be aborted when the leader's query is interrupted
@@ -170,7 +175,7 @@ export async function spawnInProcessTeammate(
     }
 
     // Register cleanup handler for graceful shutdown
-    const unregisterCleanup = registerCleanup(async () => {
+    unregisterCleanup = registerCleanup(async () => {
       logForDebugging(`[spawnInProcessTeammate] Cleanup called for ${agentId}`)
       abortController.abort()
       // Task state will be updated by the execution loop when it detects abort
@@ -192,6 +197,11 @@ export async function spawnInProcessTeammate(
       teammateContext,
     }
   } catch (error) {
+    // The task was never inserted into AppState (registerTask failed), so
+    // nothing else will ever call the unregister fn — drop it here so the
+    // closure doesn't leak in the global cleanup Set. Idempotent: a no-op
+    // Set.delete if it was already removed.
+    unregisterCleanup?.()
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error during spawn'
     logForDebugging(
