@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { KeyboardShortcutHint } from '../../tui/components/design-system/KeyboardShortcutHint.js';
@@ -10,7 +9,6 @@ import { ShellTimeDisplay } from '../../tui/components/shell/ShellTimeDisplay.js
 import { Box, Text } from '../../tui/ink.js';
 import type { Tool } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
-import type { PowerShellProgress } from '../../types/tools.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { Out, PowerShellToolInput } from './PowerShellTool.js';
 // Constants for command display
@@ -47,7 +45,7 @@ export function renderToolUseMessage(input: Partial<PowerShellToolInput>, {
   }
   return displayCommand;
 }
-export function renderToolUseProgressMessage(progressMessagesForMessage: ProgressMessage<PowerShellProgress>[], {
+export function renderToolUseProgressMessage(progressMessagesForMessage: ProgressMessage[], {
   verbose,
   tools: _tools,
   terminalSize: _terminalSize,
@@ -75,7 +73,7 @@ export function renderToolUseQueuedMessage(): React.ReactNode {
       <Text dimColor>Waiting…</Text>
     </MessageResponse>;
 }
-export function renderToolResultMessage(content: Out, progressMessagesForMessage: ProgressMessage<PowerShellProgress>[], {
+export function renderToolResultMessage(content: Out, progressMessagesForMessage: ProgressMessage[], {
   verbose,
   theme: _theme,
   tools: _tools,
@@ -123,7 +121,7 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   tools: _tools
 }: {
   verbose: boolean;
-  progressMessagesForMessage: ProgressMessage<PowerShellProgress>[];
+  progressMessagesForMessage: ProgressMessage[];
   tools: Tool[];
 }): React.ReactNode {
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
