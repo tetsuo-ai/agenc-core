@@ -166,9 +166,12 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const shortName = getCanonicalNameForCost(model)
 
-  // Check if this is an Opus 4.6 model with fast mode active.
+  // Opus 4.6 / 4.7 share base pricing ($5/$25); both carry the fast-mode
+  // premium ($30/$150). Route both through the fast-aware tier so 4.7 fast
+  // usage (now enabled in fastMode.ts) is billed correctly instead of at base.
   if (
-    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_6_CONFIG.firstParty)
+    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_6_CONFIG.firstParty) ||
+    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_7_CONFIG.firstParty)
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)
