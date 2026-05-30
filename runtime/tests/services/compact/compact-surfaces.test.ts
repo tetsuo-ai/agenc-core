@@ -99,6 +99,17 @@ describe("compact supporting surfaces", () => {
     ].join("\n"))).toBe("Summary:\nuse this\n\nnext");
   });
 
+  test("preserves $-sequences in the summary body verbatim", () => {
+    // Regression: the summary was injected into String.replace's replacement
+    // string, so $&, $1, $$ and shell snippets were reinterpreted as
+    // substitution patterns and corrupted the output.
+    expect(
+      formatCompactSummary(
+        "<summary>cost was $5 and $$ and $& and $1 and $`echo`</summary>",
+      ),
+    ).toBe("Summary:\ncost was $5 and $$ and $& and $1 and $`echo`");
+  });
+
   test("builds compact prompts with no-tool framing and custom instructions", () => {
     const prompt = getCompactPrompt("Focus on runtime files.");
 
