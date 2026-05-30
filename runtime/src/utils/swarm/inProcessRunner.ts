@@ -61,7 +61,7 @@ import {
 import { evictTaskOutput } from '../task/diskOutput.js'
 import { evictTerminalTask } from '../task/framework.js'
 import { tokenCountWithEstimation } from '../tokens.js'
-import { createAbortController } from '../abortController.js'
+import { createChildAbortController } from '../abortController.js'
 import { type AgentContext, runWithAgentContext } from '../agentContext.js'
 import { count } from '../array.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -1029,10 +1029,15 @@ export async function runInProcessTeammate(
         `[inProcessRunner] ${identity.agentId} processing prompt: ${currentPrompt.substring(0, 50)}...`,
       )
 
-      // Create a per-turn abort controller for this iteration.
-      // This allows Escape to stop current work without killing the whole teammate.
-      // The lifecycle abortController still kills the whole teammate if needed.
-      const currentWorkAbortController = createAbortController()
+      // Create a per-turn abort controller for this iteration, linked to the
+      // lifecycle abortController. Escape aborts only this child (stops current
+      // work, teammate survives); a lifecycle/kill abort of the parent cascades
+      // to the child, which unblocks any pending permission-prompt Promise so
+      // runAgent/query yields and the loop can break. Previously this was an
+      // unlinked controller, so killing a teammate that was blocked awaiting a
+      // leader permission decision left it hung forever as a zombie.
+      const currentWorkAbortController =
+        createChildAbortController(abortController)
 
       // Store the work controller in task state so UI can abort it
       updateTaskState(

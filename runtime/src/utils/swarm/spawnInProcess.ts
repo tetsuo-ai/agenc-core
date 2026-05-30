@@ -252,8 +252,12 @@ export function killInProcessTeammate(
     toolUseId = teammateTask.toolUseId
     description = teammateTask.description
 
-    // Abort the controller to stop execution
+    // Abort the controller to stop execution. The per-turn work controller is
+    // now a child of this lifecycle controller so it already cascades, but abort
+    // it explicitly too (belt-and-suspenders) so a pending permission prompt is
+    // unblocked even if the child link is ever removed.
     teammateTask.abortController?.abort()
+    teammateTask.currentWorkAbortController?.abort()
 
     // Call cleanup handler
     teammateTask.unregisterCleanup?.()
