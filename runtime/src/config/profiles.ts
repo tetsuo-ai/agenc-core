@@ -113,8 +113,12 @@ export function resolveProfile(
     override.tools_config = tools;
   }
   if (hasProfileOverride(profile, "tools")) {
+    // Compose on top of any tools_config already built above (e.g. from a
+    // web_search override) rather than re-reading the base config — otherwise a
+    // profile that sets both web_search and tools silently drops web_search.
+    // An explicit profile.tools.web_search still wins (spread last).
     override.tools_config = {
-      ...(config.tools_config ?? {}),
+      ...(override.tools_config ?? config.tools_config ?? {}),
       ...profile.tools,
     };
   }

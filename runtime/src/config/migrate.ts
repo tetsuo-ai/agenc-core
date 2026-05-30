@@ -435,6 +435,18 @@ async function migrateJsonConfig(params: {
     return;
   }
 
+  // Mirror the TOML path's version-skew guard: a config.json written by a newer
+  // runtime must NOT be migrated by an older one, because prepareRawConfigForDisk
+  // unconditionally stamps CURRENT_CONFIG_FILE_VERSION — silently downgrading the
+  // version and rewriting under an old schema/migration regime.
+  if (shouldSkipFutureVersion(parsed)) {
+    params.onWarn(
+      `[agenc:config-migration] skipped config.json migration: ${CONFIG_FILE_VERSION_KEY} is newer than this runtime`,
+    );
+    params.result.skipped.push("json:future-version");
+    return;
+  }
+
   let migrated: JsonRecord;
   let serialized: string;
   try {
