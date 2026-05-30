@@ -955,6 +955,7 @@ function drainChildMailbox(live: LiveAgent): {
   readonly clearHistory?: boolean;
   readonly interruptReason?: string;
   readonly nextUserMessage?: string | readonly LLMContentPart[];
+  readonly refreshMcpConfig?: unknown;
 } {
   const drained = live.downInbox.drain();
   if (drained.length === 0) {
@@ -964,6 +965,7 @@ function drainChildMailbox(live: LiveAgent): {
   const passthrough: InterAgentCommunication[] = [];
   const nextTurnParts: Array<string | readonly LLMContentPart[]> = [];
   let clearHistory = false;
+  let refreshMcpConfig: unknown;
   let shouldTriggerTurn = false;
 
   for (const item of drained) {
@@ -988,6 +990,12 @@ function drainChildMailbox(live: LiveAgent): {
       shouldTriggerTurn = false;
       continue;
     }
+    if (kind === "mcp_refresh") {
+      // Control message: refresh the live child's MCP servers between turns.
+      // Latest config wins; does not itself trigger a turn.
+      refreshMcpConfig = item.metadata?.mcpConfig;
+      continue;
+    }
     passthrough.push(item);
     shouldTriggerTurn ||= item.triggerTurn;
     const inputContent = item.metadata?.inputContent;
@@ -1010,11 +1018,15 @@ function drainChildMailbox(live: LiveAgent): {
         break;
       }
     }
-    return clearHistory ? { clearHistory } : {};
+    return {
+      ...(clearHistory ? { clearHistory } : {}),
+      ...(refreshMcpConfig !== undefined ? { refreshMcpConfig } : {}),
+    };
   }
 
   return {
     ...(clearHistory ? { clearHistory } : {}),
+    ...(refreshMcpConfig !== undefined ? { refreshMcpConfig } : {}),
     nextUserMessage: mergeChildInputParts(nextTurnParts),
   };
 }
@@ -2075,6 +2087,14 @@ export async function* runAgent(
       if (pendingChildInput.clearHistory) {
         await clearChildConversationHistory(childSession, live, history);
         assistantText = "";
+      }
+      if (pendingChildInput.refreshMcpConfig !== undefined) {
+        // Apply a parent-initiated MCP-config refresh to the live child so a
+        // running subagent picks up added/removed MCP servers between turns
+        // (previously a silent no-op in submitToLiveAgent).
+        await childSession.services.mcpManager?.refreshFromConfig?.(
+          pendingChildInput.refreshMcpConfig,
+        );
       }
       if (pendingChildInput.nextUserMessage !== undefined) {
         nextUserMessage = pendingChildInput.nextUserMessage;

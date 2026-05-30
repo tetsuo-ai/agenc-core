@@ -22,6 +22,7 @@ import { AgentControl } from "./control.js";
 import { AgentRegistry } from "./registry.js";
 import {
   buildFilteredRegistry,
+  drainChildMailboxForTesting,
   initMcpForAgent,
   MCP_INIT_TIMEOUT_MS,
   mergeRoleDisallowlist,
@@ -736,6 +737,27 @@ describe("runAgent", () => {
     });
     expect(result.outcome).toBe("completed");
     expect(result.finalMessage).toBe("second turn");
+  });
+
+  it("surfaces a refresh_mcp_servers control message from the child downInbox", async () => {
+    const provider = makeProvider([]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+
+    live.downInbox.send({
+      author: live.agentPath,
+      recipient: live.agentPath,
+      content: "",
+      triggerTurn: false,
+      direction: "down",
+      metadata: { kind: "mcp_refresh", mcpConfig: { servers: ["x"] } },
+    });
+
+    const drained = drainChildMailboxForTesting(live);
+    // Routed to the child as a control message (applied between turns); it
+    // surfaces the config and does NOT trigger a follow-up turn.
+    expect(drained.refreshMcpConfig).toEqual({ servers: ["x"] });
+    expect(drained.nextUserMessage).toBeUndefined();
   });
 
   it("injects child session metadata and worktree roots into wrapped child tools", async () => {
