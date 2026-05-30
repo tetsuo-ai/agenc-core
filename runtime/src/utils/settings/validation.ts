@@ -156,7 +156,14 @@ export function formatZodError(
       const keys = issue.keys.join(', ')
       message = `Unrecognized ${plural(issue.keys.length, 'field')}: ${keys}`
     } else if (isTooSmallIssue(issue)) {
-      message = `Number must be greater than or equal to ${issue.minimum}`
+      // Only numeric origins should use the "Number must be ..." phrasing.
+      // For array/string/set/date origins, preserve issue.message — which is
+      // either the schema author's custom message (e.g. "Server command must
+      // have at least one element") or Zod's accurate default — instead of
+      // mislabelling them as "Number".
+      if (issue.origin === 'number' || issue.origin === 'bigint') {
+        message = `Number must be greater than or equal to ${issue.minimum}`
+      }
       expected = String(issue.minimum)
     }
 
