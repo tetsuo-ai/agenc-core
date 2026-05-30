@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { SearchInput, SearchProvider } from './types.js'
 import { applyDomainFilters, type ProviderOutput } from './types.js'
 export const firecrawlProvider: SearchProvider = {
@@ -22,8 +21,16 @@ export const firecrawlProvider: SearchProvider = {
     }
 
     const data = await app.search(query, { limit: 15 })
+    // The SDK over-types `.web` as `(SearchResultWeb | Document)[]`; firecrawl's
+    // web search returns web results carrying url/title/description, so narrow
+    // to the shape we read.
+    const webResults = (data.web ?? []) as ReadonlyArray<{
+      url: string
+      title?: string
+      description?: string
+    }>
     const hits = applyDomainFilters(
-      (data.web ?? []).map((r: { url: string; title?: string; description?: string }) => ({
+      webResults.map((r) => ({
         title: r.title ?? r.url,
         url: r.url,
         description: r.description,

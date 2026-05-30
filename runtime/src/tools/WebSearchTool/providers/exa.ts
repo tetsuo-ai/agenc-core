@@ -1,11 +1,10 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Exa Search API adapter.
  * POST https://api.exa.ai/search
  * Auth: x-api-key: <key>
  */
 import type { SearchInput, SearchProvider } from './types.js'
-import { applyDomainFilters, safeHostname, type ProviderOutput } from './types.js'
+import { safeHostname, type ProviderOutput } from './types.js'
 
 export const exaProvider: SearchProvider = {
   name: 'exa',

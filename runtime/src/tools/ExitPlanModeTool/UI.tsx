@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { Markdown } from '../../tui/components/markdown/Markdown.js';
 import { MessageResponse } from 'src/tui/components/MessageResponse.js';
@@ -6,7 +5,6 @@ import { RejectedPlanMessage } from 'src/tui/components/v2/messagePrimitives.js'
 import { BLACK_CIRCLE } from 'src/constants/figures.js';
 import { getModeColor } from 'src/utils/permissions/PermissionMode.js';
 import { Box, Text } from '../../tui/ink.js';
-import type { ToolProgressData } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { getPlan } from '../../utils/plans.js';
@@ -15,7 +13,7 @@ import type { Output } from './ExitPlanModeV2Tool.js';
 export function renderToolUseMessage(): React.ReactNode {
   return null;
 }
-export function renderToolResultMessage(output: Output, _progressMessagesForMessage: ProgressMessage<ToolProgressData>[], {
+export function renderToolResultMessage(output: Output, _progressMessagesForMessage: ProgressMessage[], {
   theme: _theme
 }: {
   theme: ThemeName;
