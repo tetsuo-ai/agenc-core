@@ -434,7 +434,11 @@ export function makeToolResultMessage(
         },
       ],
     },
-    isMeta: true,
+    // Tool-result messages must NOT be isMeta: shouldShowUserMessage drops
+    // isMeta user messages in live (non-transcript) mode, which would filter
+    // out every tool result before it can render under its call row. The
+    // in-process path (session/turn-compat.ts) builds the equivalent message
+    // without isMeta, so results render there; match that here.
     uuid: randomUUID(),
     timestamp: timestamp(),
     toolUseResult: typeof resultContent === "string"

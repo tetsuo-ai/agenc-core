@@ -594,6 +594,43 @@ function countToolUses(msg: RenderableMessage): number {
 }
 
 /**
+ * True when a group represents exactly ONE plain (non-memory) Read or Grep/search
+ * call and nothing else worth summarizing. Such groups are NOT collapsed into a
+ * one-line count summary; their original messages are emitted verbatim so the
+ * standard tool-call/result renderer shows the per-call result preview
+ * ("Read N lines" / "Found N matches"). Multi-call read/search runs, and any
+ * group touching memory/team-memory/mcp/bash/list/git operations or absorbing
+ * hooks/relevant-memories, still collapse to keep the default view tidy.
+ */
+function isLoneReadOrSearchGroup(group: GroupAccumulator): boolean {
+  // Exactly one plain read/search operation across the whole group.
+  const readOps =
+    group.readFilePaths.size > 0
+      ? group.readFilePaths.size
+      : group.readOperationCount
+  const plainOps = group.searchCount + readOps
+  if (plainOps !== 1) return false
+  // No other op category may be present — those are the reason to collapse.
+  if (group.listCount > 0) return false
+  if (group.memorySearchCount > 0) return false
+  if (group.memoryReadFilePaths.size > 0) return false
+  if (group.memoryWriteCount > 0) return false
+  if ((group.teamMemorySearchCount ?? 0) > 0) return false
+  if ((group.teamMemoryReadFilePaths?.size ?? 0) > 0) return false
+  if ((group.teamMemoryWriteCount ?? 0) > 0) return false
+  if ((group.mcpCallCount ?? 0) > 0) return false
+  if ((group.bashCount ?? 0) > 0) return false
+  if ((group.relevantMemories?.length ?? 0) > 0) return false
+  if (group.hookCount > 0) return false
+  // No absorbed git operations (those ride on bash but guard defensively).
+  if ((group.commits?.length ?? 0) > 0) return false
+  if ((group.pushes?.length ?? 0) > 0) return false
+  if ((group.branches?.length ?? 0) > 0) return false
+  if ((group.prs?.length ?? 0) > 0) return false
+  return true
+}
+
+/**
  * Extract file paths from read tool inputs in a message.
  * Returns an array of file paths (may have duplicates if same file is read multiple times in one grouped message).
  */
@@ -859,7 +896,20 @@ export function collapseReadSearchGroups(
     if (currentGroup.messages.length === 0) {
       return
     }
-    result.push(createCollapsedGroup(currentGroup))
+    if (isLoneReadOrSearchGroup(currentGroup)) {
+      // A solitary plain Read/Grep call: don't collapse it into a one-line
+      // count summary. Emit its original tool-use (+ result) messages verbatim
+      // so they flow through the normal pair renderer, which shows the per-call
+      // result preview ("Read N lines" / "Found N matches") under the call.
+      // This mirrors groupToolUses, which only groups runs of 2+ calls. Only a
+      // lone read/search is un-collapsed; mixed/memory/mcp/bash/git groups and
+      // multi-call read/search runs still collapse to keep the default view tidy.
+      for (const m of currentGroup.messages) {
+        result.push(m)
+      }
+    } else {
+      result.push(createCollapsedGroup(currentGroup))
+    }
     for (const deferred of deferredSkippable) {
       result.push(deferred)
     }
