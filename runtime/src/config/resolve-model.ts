@@ -18,14 +18,26 @@ export function configuredModelForProvider(
   provider: ProviderSlug,
 ): string | undefined {
   const providerDefault = readProviderConfig(config, provider)?.default_model?.trim();
+  const configuredModel = config.model?.trim();
+  const configuredProvider = normalizeProviderSlug(config.model_provider);
+
+  // An explicit top-level `model` that is unambiguously selected for THIS
+  // provider (i.e. `model_provider` is set and resolves to it) is the user's
+  // direct choice — written by `agenc config set model` and surfaced by
+  // `agenc config get model`. It must win over the provider's `default_model`,
+  // which is only a fallback for when no model has been selected. Without this,
+  // a `[providers.<p>] default_model` silently shadows `config set model`, and
+  // the configured model never actually runs.
+  if (configuredModel && configuredProvider === provider) {
+    return configuredModel;
+  }
+
   if (providerDefault) {
     return providerDefault;
   }
 
-  const configuredModel = config.model?.trim();
   if (!configuredModel) return undefined;
 
-  const configuredProvider = normalizeProviderSlug(config.model_provider);
   if (configuredProvider && configuredProvider !== provider) {
     return undefined;
   }

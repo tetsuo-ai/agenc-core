@@ -68,6 +68,12 @@ type State = {
   modelUsage: { [modelName: string]: ModelUsage }
   mainLoopModelOverride: ModelSetting | undefined
   initialMainLoopModel: ModelSetting
+  // The active AgenC TOML config model selection (config.model) and the
+  // provider it was resolved for, seeded once at startup. The env-driven
+  // model.ts helpers (welcome display, WebSearchTool, useMainLoopModel
+  // fallback, …) read this so they reflect `agenc config set model` instead
+  // of the hardcoded provider default. Undefined when no config model is set.
+  activeConfigModel: { provider: string; model: string } | undefined
   modelStrings: ModelStrings | null
   isInteractive: boolean
   kairosActive: boolean
@@ -295,6 +301,7 @@ function getInitialState(): State {
     modelUsage: {},
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
+    activeConfigModel: undefined,
     modelStrings: null,
     isInteractive: false,
     kairosActive: false,
@@ -849,6 +856,24 @@ export function setMainLoopModelOverride(
 
 export function setInitialMainLoopModel(model: ModelSetting): void {
   STATE.initialMainLoopModel = model
+}
+
+/**
+ * Records the AgenC config-resolved model + provider for the active session
+ * so the env-driven model.ts helpers can reflect `config.model` instead of a
+ * hardcoded provider default. Seeded from the same resolved startup selection
+ * that drives the daemon session model (bin/bootstrap.ts).
+ */
+export function setActiveConfigModel(
+  selection: { provider: string; model: string } | undefined,
+): void {
+  STATE.activeConfigModel = selection
+}
+
+export function getActiveConfigModel():
+  | { provider: string; model: string }
+  | undefined {
+  return STATE.activeConfigModel
 }
 
 export function getSdkBetas(): string[] | undefined {

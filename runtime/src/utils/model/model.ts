@@ -5,7 +5,10 @@
  * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
  * during dead code elimination
  */
-import { getMainLoopModelOverride } from '../../bootstrap/state.js'
+import {
+  getActiveConfigModel,
+  getMainLoopModelOverride,
+} from '../../bootstrap/state.js'
 import {
   getSubscriptionType,
   isAgenCAISubscriber,
@@ -43,6 +46,40 @@ function normalizeModelSetting(value: unknown): ModelName | ModelAlias | undefin
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+// Maps the env-driven model.ts API provider identity onto the AgenC config
+// provider slug so we can match the active `config.model` selection. Only the
+// providers whose session model is driven by `config.model` (rather than a
+// dedicated provider env var) participate.
+function configProviderSlugForApiProvider(
+  provider: string,
+): string | undefined {
+  switch (provider) {
+    case 'xai':
+      return 'grok'
+    case 'openai':
+      return 'openai'
+    case 'agenc':
+      return 'agenc'
+    default:
+      return undefined
+  }
+}
+
+// Returns the AgenC config-resolved model (`config.model`) when it was
+// resolved for the active provider. This is the same value that seeds the
+// daemon session's collaborationMode.model, so the env-driven helpers stay in
+// sync with `agenc config set model` instead of falling back to a hardcoded
+// provider default.
+function getConfigModelForApiProvider(
+  provider = getAPIProvider(),
+): ModelName | undefined {
+  const slug = configProviderSlugForApiProvider(provider)
+  if (slug === undefined) return undefined
+  const active = getActiveConfigModel()
+  if (active === undefined || active.provider !== slug) return undefined
+  return normalizeModelSetting(active.model)
+}
+
 function getActiveProviderModelEnv(provider = getAPIProvider()): ModelName | undefined {
   switch (provider) {
     case 'gemini':
@@ -58,7 +95,9 @@ function getActiveProviderModelEnv(provider = getAPIProvider()): ModelName | und
     case 'openai':
     case 'agenc':
     case 'xai':
-      return process.env.OPENAI_MODEL
+      // Env var (set by provider profiles) wins when present; otherwise fall
+      // back to the AgenC config model so `config set model` is honored.
+      return process.env.OPENAI_MODEL || getConfigModelForApiProvider(provider)
     case 'firstParty':
       return process.env.ANTHROPIC_MODEL
     default:
@@ -363,17 +402,29 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   if (getAPIProvider() === 'mistral') {
     return process.env.MISTRAL_MODEL || 'devstral-latest'
   }
-  // openai provider: always use the configured openai model
+  // openai provider: env model, then AgenC config.model, then default
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o'
+    return (
+      process.env.OPENAI_MODEL ||
+      getConfigModelForApiProvider('openai') ||
+      'gpt-4o'
+    )
   }
-  // Agenc provider: always use the configured Agenc model (default gpt-5.5)
+  // Agenc provider: env model, then AgenC config.model, then default (gpt-5.5)
   if (getAPIProvider() === 'agenc') {
-    return process.env.OPENAI_MODEL || 'gpt-5.5'
+    return (
+      process.env.OPENAI_MODEL ||
+      getConfigModelForApiProvider('agenc') ||
+      'gpt-5.5'
+    )
   }
-  // xAI provider: always use the configured Grok model (default grok-4.3)
+  // xAI provider: env model, then AgenC config.model, then default (grok-4.3)
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4.3'
+    return (
+      process.env.OPENAI_MODEL ||
+      getConfigModelForApiProvider('xai') ||
+      'grok-4.3'
+    )
   }
   if (getAPIProvider() === 'nvidia-nim') {
     return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'

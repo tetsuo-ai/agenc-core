@@ -646,6 +646,36 @@ describe("provider resolution (T13)", () => {
     );
   });
 
+  test("configuredModelForProvider: explicit config.model for the active provider wins over providers.<p>.default_model", () => {
+    // Regression: `agenc config set model grok-build-0.1` writes the top-level
+    // model, but a `[providers.grok] default_model = "grok-4.3"` used to shadow
+    // it, so the configured model never actually ran (the daemon session was
+    // seeded with grok-4.3 every turn).
+    const config = mergeConfigs(defaultConfig(), {
+      model: "grok-build-0.1",
+      model_provider: "grok",
+      providers: { grok: { default_model: "grok-4.3" } },
+    });
+
+    expect(configuredModelForProvider(config, "grok")).toBe("grok-build-0.1");
+    expect(resolveModelSelection({ config, provider: "grok" })).toBe(
+      "grok-build-0.1",
+    );
+  });
+
+  test("configuredModelForProvider: provider default_model still wins when no top-level model is selected for it", () => {
+    // The provider default remains the fallback when config.model belongs to a
+    // DIFFERENT provider (here openai), so grok still resolves to its default.
+    const config = mergeConfigs(defaultConfig(), {
+      model: "gpt-5",
+      model_provider: "openai",
+      providers: { grok: { default_model: "grok-4.3" } },
+    });
+
+    expect(configuredModelForProvider(config, "grok")).toBe("grok-4.3");
+    expect(configuredModelForProvider(config, "openai")).toBe("gpt-5");
+  });
+
   test('model = "agenc" selects the hosted AgenC provider', () => {
     const config = mergeConfigs(defaultConfig(), { model: "agenc" });
 

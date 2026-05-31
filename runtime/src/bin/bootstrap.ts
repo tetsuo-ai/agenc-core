@@ -10,6 +10,7 @@ import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
 import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
+import { setActiveConfigModel } from "../bootstrap/state.js";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
@@ -958,6 +959,11 @@ export async function bootstrapLocalRuntimeSession(
   const providerModel = modelSelection.model;
   const profileProvider = modelSelection.profileProvider;
   const model = modelSelection.profileModel;
+  // Publish the config-resolved model so the env-driven model.ts helpers
+  // (welcome display, WebSearchTool, useMainLoopModel fallback, …) reflect
+  // `agenc config set model` instead of a hardcoded provider default. This is
+  // the same selection that seeds the session's collaborationMode.model below.
+  setActiveConfigModel({ provider: resolvedProvider, model: providerModel });
   const runtimeProviderSettings = resolveProviderSettings(
     resolvedProvider,
     startup.config,
