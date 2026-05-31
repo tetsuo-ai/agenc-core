@@ -556,8 +556,13 @@ export function parseAnthropicToolChoice(
 
 export function prepareMessagesForWire(
   messages: readonly LLMMessage[],
+  options?: LLMChatOptions,
 ): readonly LLMMessage[] {
-  return normalizeMessagesForAPI(messages);
+  return normalizeMessagesForAPI(messages, {
+    ...(options?.skipCacheWrite !== undefined
+      ? { skipCacheWrite: options.skipCacheWrite }
+      : {}),
+  });
 }
 
 export function normalizeToolCalls(

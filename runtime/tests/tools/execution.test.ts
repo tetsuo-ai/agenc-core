@@ -261,10 +261,12 @@ describe("I-21 + I-44 requestToolUserApproval", () => {
   test("I-44: active turn change after modal open rejects a matching stale decision", async () => {
     const ctl = new AbortController();
     let activeTurnId = "t1";
-    let resolveDecision: ((value: {
-      behavior: "allow" | "deny" | "abort";
-      decisionAtTurnId: string;
-    }) => void) | null = null;
+    let resolveDecision:
+      | ((value: {
+          behavior: "allow" | "deny" | "abort";
+          decisionAtTurnId: string;
+        }) => void)
+      | null = null;
     const resultPromise = requestToolUserApproval({
       request: async () =>
         await new Promise((resolve) => {
@@ -329,8 +331,9 @@ describe("I-21 + I-44 requestToolUserApproval", () => {
     };
 
     const invocation = makeInvocation("cache-call", "system.bash");
-    (invocation.session as { services: { toolApprovals?: unknown } }).services
-      .toolApprovals = cache;
+    (
+      invocation.session as { services: { toolApprovals?: unknown } }
+    ).services.toolApprovals = cache;
     const tool = { name: "system.bash" } as Tool;
 
     const first = await requestToolUserApproval({
@@ -461,9 +464,8 @@ describe("runToolUse end-to-end", () => {
       timeoutMs: 20,
       execute: async (args) =>
         await new Promise((resolve) => {
-          const signal = (
-            args as { __abortSignal?: AbortSignal }
-          ).__abortSignal;
+          const signal = (args as { __abortSignal?: AbortSignal })
+            .__abortSignal;
           sawAbortSignal = signal instanceof AbortSignal;
           signal?.addEventListener(
             "abort",
@@ -498,9 +500,8 @@ describe("runToolUse end-to-end", () => {
       description: "",
       inputSchema: {},
       execute: async (args) => {
-        seenSessionId = (
-          args as { __agencSessionId?: unknown }
-        ).__agencSessionId;
+        seenSessionId = (args as { __agencSessionId?: unknown })
+          .__agencSessionId;
         seenCallId = (args as { __callId?: unknown }).__callId;
         return { content: "ok" };
       },
@@ -582,10 +583,12 @@ describe("runToolUse end-to-end", () => {
   test("I-44: stale active turn after approval blocks execute() and emits a warning", async () => {
     let executed = 0;
     let activeTurnId = "t1";
-    let resolveDecision: ((value: {
-      behavior: "allow" | "deny" | "abort";
-      decisionAtTurnId: string;
-    }) => void) | null = null;
+    let resolveDecision:
+      | ((value: {
+          behavior: "allow" | "deny" | "abort";
+          decisionAtTurnId: string;
+        }) => void)
+      | null = null;
     const tool: Tool = {
       name: "guarded",
       description: "",
@@ -761,7 +764,9 @@ describe("validateToolArgs", () => {
     };
     const result = validateToolArgs(schema, { name: "x", extra: 1 });
     expect(result.valid).toBe(false);
-    const unexpected = result.errors.find((e) => e.category === "unexpected_key");
+    const unexpected = result.errors.find(
+      (e) => e.category === "unexpected_key",
+    );
     expect(unexpected?.path).toBe("extra");
   });
 
@@ -808,7 +813,12 @@ describe("runToolUse — schema validation integration", () => {
     };
     const log = new EventLog();
     const events: Array<{ type: string; payload: { cause?: string } }> = [];
-    log.subscribe((e) => events.push({ type: e.msg.type, payload: e.msg.payload as { cause?: string } }));
+    log.subscribe((e) =>
+      events.push({
+        type: e.msg.type,
+        payload: e.msg.payload as { cause?: string },
+      }),
+    );
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
@@ -824,8 +834,35 @@ describe("runToolUse — schema validation integration", () => {
       hiddenFromTranscript: true,
       kind: "input_validation",
     });
-    const err = events.find((e) => e.type === "error" && e.payload.cause === "schema_validation_failed");
+    const err = events.find(
+      (e) =>
+        e.type === "error" && e.payload.cause === "schema_validation_failed",
+    );
     expect(err).toBeDefined();
+  });
+
+  test("missing Skill parameter uses the actionable validation override", async () => {
+    const tool: Tool = {
+      name: "Skill",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { skill: { type: "string" } },
+        required: ["skill"],
+      },
+      execute: async () => ({ content: "ok" }),
+    };
+
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c-skill", "Skill"),
+    });
+
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain(
+      'InputValidationError: Missing skill name. Pass the skill name as the skill parameter (e.g., skill: "commit" or skill: "review-pr").',
+    );
   });
 
   test("type mismatch produces AgenC-style humanized prose", async () => {
@@ -1032,10 +1069,16 @@ describe("runToolUse — hook invocation", () => {
 describe("runToolUse — progress events", () => {
   test("tool that calls __onProgress emits tool_progress event on eventLog", async () => {
     const log = new EventLog();
-    const progressEvents: Array<{ type: string; payload: { callId: string; chunk: string } }> = [];
+    const progressEvents: Array<{
+      type: string;
+      payload: { callId: string; chunk: string };
+    }> = [];
     log.subscribe((e) => {
       if (e.msg.type === "tool_progress") {
-        progressEvents.push({ type: e.msg.type, payload: e.msg.payload as { callId: string; chunk: string } });
+        progressEvents.push({
+          type: e.msg.type,
+          payload: e.msg.payload as { callId: string; chunk: string },
+        });
       }
     });
     const tool: Tool = {
@@ -1043,8 +1086,9 @@ describe("runToolUse — progress events", () => {
       description: "",
       inputSchema: {},
       execute: async (args) => {
-        const onProgress = (args as { __onProgress?: (e: { chunk: string }) => void })
-          .__onProgress;
+        const onProgress = (
+          args as { __onProgress?: (e: { chunk: string }) => void }
+        ).__onProgress;
         onProgress?.({ chunk: "chunk-a" });
         onProgress?.({ chunk: "chunk-b" });
         return { content: "done" };
@@ -1252,17 +1296,14 @@ describe("T11 W3-B — permission evaluator integration", () => {
       }));
       const tool = createFileReadTool({ allowedPaths: [workspace] });
 
-      const out = await runToolUse(
-        JSON.stringify({ file_path: file }),
-        {
-          currentTurnId: "t1",
-          tool,
-          invocation: makeInvocation("c1", "FileRead"),
-          canUseTool: hasPermissionsToUseTool,
-          permissionContext: context,
-          requestApproval,
-        },
-      );
+      const out = await runToolUse(JSON.stringify({ file_path: file }), {
+        currentTurnId: "t1",
+        tool,
+        invocation: makeInvocation("c1", "FileRead"),
+        canUseTool: hasPermissionsToUseTool,
+        permissionContext: context,
+        requestApproval,
+      });
 
       expect(out.isError).toBe(false);
       expect(out.content).toContain("1→approved via modal");
@@ -1543,9 +1584,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
       inputSchema: {},
       execute: async () => ({ content: "ok" }),
     };
-    const beforeSize = (registry as unknown as {
-      subscribers: Set<unknown>;
-    }).subscribers.size;
+    const beforeSize = (
+      registry as unknown as {
+        subscribers: Set<unknown>;
+      }
+    ).subscribers.size;
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
@@ -1556,9 +1599,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
       abortController: abortCtl,
     });
     expect(out.isError).toBe(false);
-    const afterSize = (registry as unknown as {
-      subscribers: Set<unknown>;
-    }).subscribers.size;
+    const afterSize = (
+      registry as unknown as {
+        subscribers: Set<unknown>;
+      }
+    ).subscribers.size;
     expect(afterSize).toBe(beforeSize);
   });
 
@@ -1575,9 +1620,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
         throw new Error("boom");
       },
     };
-    const beforeSize = (registry as unknown as {
-      subscribers: Set<unknown>;
-    }).subscribers.size;
+    const beforeSize = (
+      registry as unknown as {
+        subscribers: Set<unknown>;
+      }
+    ).subscribers.size;
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
@@ -1588,9 +1635,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
       abortController: abortCtl,
     });
     expect(out.isError).toBe(true);
-    const afterSize = (registry as unknown as {
-      subscribers: Set<unknown>;
-    }).subscribers.size;
+    const afterSize = (
+      registry as unknown as {
+        subscribers: Set<unknown>;
+      }
+    ).subscribers.size;
     expect(afterSize).toBe(beforeSize);
   });
 
@@ -1621,9 +1670,9 @@ describe("T11 W3-B — permission evaluator integration", () => {
     expect(defaultCheckModeStillAllowed(writeTool, {}, "acceptEdits")).toBe(
       true,
     );
-    expect(defaultCheckModeStillAllowed(writeTool, {}, "bypassPermissions")).toBe(
-      true,
-    );
+    expect(
+      defaultCheckModeStillAllowed(writeTool, {}, "bypassPermissions"),
+    ).toBe(true);
   });
 
   test("no permission context supplied → evaluator path is skipped entirely", async () => {
@@ -1706,7 +1755,9 @@ describe("T6 parity — PreToolUse ordering + inc-4788", () => {
       kind: "continue",
       hookPermissionResult: { behavior: "allow", hookName: "PreToolUse:ok" },
     });
-    const canUseTool = async (...args: Parameters<typeof hasPermissionsToUseTool>) => {
+    const canUseTool = async (
+      ...args: Parameters<typeof hasPermissionsToUseTool>
+    ) => {
       evalRan += 1;
       return hasPermissionsToUseTool(...args);
     };
@@ -1848,6 +1899,18 @@ describe("T6 parity — PreToolUse ordering + inc-4788", () => {
     expect(out.content).toContain("STOP what you are doing");
     expect(executed).toBe(0);
     expect(warnings).toContain("hook_stopped_continuation");
+
+    const dispatch = await executeToolDispatch({
+      rawArgs: "{}",
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c2", "halted"),
+      preHooks: [preHook],
+      eventLog: log,
+    });
+    expect(dispatch.isError).toBe(true);
+    expect(dispatch.preventContinuation).toBe(true);
+    expect(executed).toBe(0);
   });
 });
 
@@ -1865,12 +1928,14 @@ describe("T6 parity — formatError + terminal labels", () => {
   test("formatError on ShellError emits exit code + stderr + interrupt marker", () => {
     const shell = new Error("Shell command failed");
     shell.name = "ShellError";
-    (shell as Error & {
-      code?: number;
-      interrupted?: boolean;
-      stderr?: string;
-      stdout?: string;
-    }).code = 127;
+    (
+      shell as Error & {
+        code?: number;
+        interrupted?: boolean;
+        stderr?: string;
+        stdout?: string;
+      }
+    ).code = 127;
     (shell as Error & { interrupted?: boolean }).interrupted = true;
     (shell as Error & { stderr?: string }).stderr = "bad command";
     const out = formatError(shell);
@@ -2087,6 +2152,35 @@ describe("T6 parity — hook attachment emission", () => {
     expect(hit?.message).toContain("lint: unused var");
   });
 
+  test("PreToolUse additionalContext emits and notifies continuation", async () => {
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      additionalContext: ["lint: check before run"],
+    });
+    const tool: Tool = {
+      name: "pre.ac",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "ran" }),
+    };
+    const { log, attachments } = mkLog();
+    const contexts: readonly string[][] = [];
+    await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "pre.ac"),
+      preHooks: [preHook],
+      eventLog: log,
+      onHookAdditionalContext: (items) => {
+        contexts.push([...items]);
+      },
+    });
+    const hit = attachments.find((a) => a.cause === "hook_additional_context");
+    expect(hit).toBeDefined();
+    expect(hit?.message).toContain("lint: check before run");
+    expect(contexts).toEqual([["lint: check before run"]]);
+  });
+
   test("PostToolUse stop emits hook_stopped_continuation", async () => {
     const postHook: PostToolUseHook = () => ({
       kind: "stop",
@@ -2106,7 +2200,9 @@ describe("T6 parity — hook attachment emission", () => {
       postHooks: [postHook],
       eventLog: log,
     });
-    const hit = attachments.find((a) => a.cause === "hook_stopped_continuation");
+    const hit = attachments.find(
+      (a) => a.cause === "hook_stopped_continuation",
+    );
     expect(hit).toBeDefined();
     expect(hit?.message).toContain("review required");
   });
@@ -2153,7 +2249,9 @@ describe("T6 parity — hook attachment emission", () => {
       postHooks: [postHook],
       eventLog: log,
     });
-    const hit = attachments.find((a) => a.cause === "hook_error_during_execution");
+    const hit = attachments.find(
+      (a) => a.cause === "hook_error_during_execution",
+    );
     expect(hit).toBeDefined();
     expect(hit?.message).toContain("post kaboom");
   });
@@ -2186,7 +2284,8 @@ describe("T6 parity — hook attachment emission", () => {
     });
     expect(out.isError).toBe(true);
     const hit = attachments.find(
-      (a) => a.cause === "hook_permission_decision" && a.message.includes("deny"),
+      (a) =>
+        a.cause === "hook_permission_decision" && a.message.includes("deny"),
     );
     expect(hit).toBeDefined();
   });
@@ -2217,7 +2316,8 @@ describe("T6 parity — hook attachment emission", () => {
       eventLog: log,
     });
     const hit = attachments.find(
-      (a) => a.cause === "hook_permission_decision" && a.message.includes("allow"),
+      (a) =>
+        a.cause === "hook_permission_decision" && a.message.includes("allow"),
     );
     expect(hit).toBeDefined();
   });

@@ -95,10 +95,44 @@ describe("terminal-tool-result", () => {
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(0);
     expect(state.toolResults).toHaveLength(1);
-    expect(state.messages).toHaveLength(1);
+    expect(state.messages).toHaveLength(2);
     expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      toolCalls: [{ id: "tc-1" }],
+    });
+    expect(state.messages[1]).toMatchObject({
       role: "tool",
       toolCallId: "tc-1",
     });
+  });
+
+  test("appendTerminalToolResults pairs toolUseBlocks with assistant tool calls", () => {
+    const state = {
+      assistantMessages: [],
+      toolUseBlocks: [
+        {
+          type: "tool_use" as const,
+          id: "tc-1",
+          name: "system.bash",
+          input: { command: "ls" },
+        },
+      ],
+      toolResults: [],
+      messages: [],
+    };
+
+    appendTerminalToolResults(state, "aborted", "cleanup");
+
+    const assistantIndex = state.messages.findIndex(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === "tc-1") === true,
+    );
+    const toolIndex = state.messages.findIndex(
+      (message) => message.role === "tool" && message.toolCallId === "tc-1",
+    );
+
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(toolIndex).toBeGreaterThan(assistantIndex);
   });
 });

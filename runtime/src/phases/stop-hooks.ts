@@ -32,10 +32,12 @@
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type {
   AssistantMessage,
   TurnState,
 } from "../session/turn-state.js";
+import type { Message } from "../types/message.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -66,6 +68,7 @@ export interface StopRequest {
   /** Whether the last assistant message was itself an API error —
    *  agenc `isApiErrorMessage` flag (query.ts:1297-1299). */
   readonly lastIsApiErrorMessage: boolean;
+  readonly hookMessages?: readonly Message[];
 }
 
 export interface StopHookOutcome {
@@ -120,6 +123,7 @@ export async function evaluateStopHooks(
 ): Promise<StopResult> {
   // Build a consistent request for every registered hook.
   const lastAssistant = state.assistantMessages.at(-1);
+  const hookMessages = buildHookMessages(state);
   const request: StopRequest = {
     sessionId: session.conversationId,
     turnId: ctx.subId,
@@ -134,6 +138,7 @@ export async function evaluateStopHooks(
       ? { lastAssistantMessage: lastAssistant.text }
       : {}),
     lastIsApiErrorMessage: isApiErrorAssistantMessage(lastAssistant),
+    ...(hookMessages.length > 0 ? { hookMessages } : {}),
   };
 
   // I-17: cap check runs BEFORE invoking hooks so a misbehaving
@@ -264,6 +269,172 @@ export async function evaluateStopHooks(
     injectedMessage,
     reason: "stop_hook_blocked",
   };
+}
+
+function buildHookMessages(state: TurnState): Message[] {
+  const toolResultErrors = buildToolResultErrorLookup(state);
+  const messages = state.messages.map((message, index) =>
+    hookMessageFromLlm(message, index, toolResultErrors),
+  );
+  const lastAssistant = state.assistantMessages.at(-1);
+  if (!lastAssistant) return messages;
+  if (lastLlmAssistantMatches(state.messages.at(-1), lastAssistant)) {
+    return messages;
+  }
+  return [
+    ...messages,
+    hookMessageFromAssistant(lastAssistant, messages.length),
+  ];
+}
+
+function buildToolResultErrorLookup(state: TurnState): ReadonlyMap<string, boolean> {
+  return new Map(
+    (state.completedToolResults ?? []).map((result) => [
+      result.callId,
+      result.isError,
+    ]),
+  );
+}
+
+function lastLlmAssistantMatches(
+  message: LLMMessage | undefined,
+  assistant: AssistantMessage,
+): boolean {
+  if (message?.role !== "assistant") return false;
+  const text = contentText(message.content);
+  const toolCalls = message.toolCalls ?? [];
+  return (
+    text === (assistant.text ?? "") &&
+    toolCalls.length === assistant.toolCalls.length &&
+    toolCalls.every(
+      (call, index) => call.id === assistant.toolCalls[index]?.id,
+    )
+  );
+}
+
+function hookMessageFromLlm(
+  message: LLMMessage,
+  index: number,
+  toolResultErrors: ReadonlyMap<string, boolean>,
+): Message {
+  const uuid = createHookMessageUuid("history", index);
+  const timestamp = new Date().toISOString();
+
+  if (message.role === "assistant") {
+    const content: Array<Record<string, unknown>> = [];
+    const text = contentText(message.content);
+    if (text.length > 0) content.push({ type: "text", text });
+    for (const call of message.toolCalls ?? []) {
+      content.push({
+        type: "tool_use",
+        id: call.id,
+        name: call.name,
+        input: parseToolInput(call.arguments),
+      });
+    }
+    return {
+      type: "assistant",
+      uuid,
+      timestamp,
+      message: {
+        role: "assistant",
+        content,
+      },
+    };
+  }
+
+  if (message.role === "tool") {
+    return {
+      type: "user",
+      uuid,
+      timestamp,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: message.toolCallId ?? "",
+            content: hookContent(message.content),
+            is_error:
+              message.toolCallId !== undefined
+                ? toolResultErrors.get(message.toolCallId) === true
+                : false,
+          },
+        ],
+      },
+    };
+  }
+
+  return {
+    type: message.role === "user" ? "user" : "system",
+    uuid,
+    timestamp,
+    message: {
+      role: message.role,
+      content: hookContent(message.content),
+    },
+  };
+}
+
+function hookMessageFromAssistant(
+  assistant: AssistantMessage,
+  index: number,
+): Message {
+  return {
+    type: "assistant",
+    uuid: assistant.uuid || createHookMessageUuid("assistant", index),
+    timestamp: new Date().toISOString(),
+    ...(assistant.apiError ? { isApiErrorMessage: true } : {}),
+    message: {
+      role: "assistant",
+      content: assistantContentBlocks(assistant),
+    },
+  };
+}
+
+function assistantContentBlocks(
+  assistant: AssistantMessage,
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [];
+  if (assistant.text && assistant.text.length > 0) {
+    blocks.push({ type: "text", text: assistant.text });
+  }
+  for (const call of assistant.toolCalls) {
+    blocks.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.name,
+      input: parseToolInput(call.arguments),
+    });
+  }
+  return blocks;
+}
+
+function contentText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+function hookContent(
+  content: LLMMessage["content"],
+): string | LLMContentPart[] {
+  if (typeof content === "string") return content;
+  return content.map((part) => ({ ...part }));
+}
+
+function createHookMessageUuid(prefix: string, index: number): string {
+  return `${prefix}-${index}`;
+}
+
+function parseToolInput(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

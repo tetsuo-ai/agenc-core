@@ -66,6 +66,7 @@ import {
   type LiveToolDispatchOptions,
   type ToolRouter,
 } from "./router.js";
+import { canonicalModelToolName } from "./model-tool-aliases.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -250,6 +251,7 @@ export class StreamingToolExecutor {
   /** Wake-up signal for getRemainingResults. */
   private wakeResolve: (() => void) | null = null;
   private lastDispatchedIndex = -1;
+  private readonly abortSignalCleanups = new Map<AbortSignal, () => void>();
 
   constructor(opts: StreamingToolExecutorOptions) {
     this.registry = opts.registry;
@@ -262,17 +264,40 @@ export class StreamingToolExecutor {
     this.liveToolDispatch = opts.liveToolDispatch;
     this.parentAbortController = opts.parentAbortController ?? null;
     this.siblingAbortController = new AbortController();
-    if (opts.abortSignal) {
-      if (opts.abortSignal.aborted) {
-        this.siblingAbortController.abort(opts.abortSignal.reason);
-      } else {
-        opts.abortSignal.addEventListener(
-          "abort",
-          () => this.siblingAbortController.abort(opts.abortSignal?.reason),
-          { once: true },
-        );
-      }
+    this.attachAbortSignal(opts.abortSignal);
+  }
+
+  attachAbortSignal(signal?: AbortSignal): void {
+    if (
+      !signal ||
+      this.siblingAbortController.signal.aborted ||
+      this.abortSignalCleanups.has(signal)
+    ) {
+      return;
     }
+    if (signal.aborted) {
+      this.siblingAbortController.abort(signal.reason);
+      this.signalProgress();
+      return;
+    }
+    const onAbort = () => {
+      this.abortSignalCleanups.delete(signal);
+      if (!this.siblingAbortController.signal.aborted) {
+        this.siblingAbortController.abort(signal.reason);
+        this.signalProgress();
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    this.abortSignalCleanups.set(signal, () => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  }
+
+  private detachAbortSignals(): void {
+    for (const cleanup of this.abortSignalCleanups.values()) {
+      cleanup();
+    }
+    this.abortSignalCleanups.clear();
   }
 
   /**
@@ -371,7 +396,8 @@ export class StreamingToolExecutor {
     // classification model but also cache the boolean so the
     // head-of-line-break logic in `getCompletedResults` matches
     // reference `:436-438` semantics exactly.
-    const tool = this.registry.tools.find((t) => t.name === toolCall.name);
+    const resolvedName = this.resolveModelToolName(toolCall.name);
+    const tool = this.registry.tools.find((t) => t.name === resolvedName);
     let concurrencySafe = false;
     if (tool?.isConcurrencySafe) {
       try {
@@ -413,11 +439,16 @@ export class StreamingToolExecutor {
    * fallback fires and the whole batch should be abandoned.
    *
    * AgenC behavior (`StreamingToolExecutor.ts:69-71`): `discard()`
-   * ONLY flips `this.discarded = true`. It does NOT synthesize
-   * results — the caller (query.ts-equivalent) is responsible for
-   * abandoning the output stream. All yield paths (`getCompletedResults`,
+   * flips `this.discarded = true` and does NOT synthesize results —
+   * the caller (query.ts-equivalent) is responsible for abandoning
+   * the output stream. All yield paths (`getCompletedResults`,
    * `getRemainingResults`, updates variants) early-return when
    * `discarded` is true.
+   *
+   * Recovery cleanup still needs to interrupt running handlers. Mark
+   * the executor discarded before aborting the sibling controller so
+   * child abort listeners do not bubble this recovery cleanup into the
+   * parent turn controller.
    *
    * I-41 re-entrance guard: a second `discard()` while already
    * discarding is a no-op.
@@ -428,6 +459,9 @@ export class StreamingToolExecutor {
     this.discarded = true;
     this.discardReason = reason;
     this.closed = true;
+    if (!this.siblingAbortController.signal.aborted) {
+      this.siblingAbortController.abort(reason);
+    }
     this.signalProgress();
   }
 
@@ -514,42 +548,48 @@ export class StreamingToolExecutor {
    * without waiting for the tool to complete.
    */
   async *getRemainingResults(): AsyncGenerator<StreamingToolResult, void> {
-    while (!this.discarded && this.hasUnfinishedTools()) {
-      // Re-run processQueue in case close() unblocked anything.
-      await this.processQueue();
-      if (this.discarded) return;
-
-      for (const result of this.getCompletedResults()) {
+    try {
+      while (!this.discarded && this.hasUnfinishedTools()) {
+        // Re-run processQueue in case close() unblocked anything.
+        await this.processQueue();
         if (this.discarded) return;
-        yield result;
-      }
-      if (this.discarded) return;
 
-      if (
-        this.hasExecutingTools() &&
-        !this.hasCompletedResults() &&
-        !this.hasPendingProgress()
-      ) {
-        const executingPromises = this.tools
-          .filter((t) => t.status === "executing" && t.promise)
-          .map((t) => t.promise!);
-        const progressPromise = new Promise<void>((resolve) => {
-          this.wakeResolve = resolve;
-        });
-        if (executingPromises.length > 0) {
-          await Promise.race([...executingPromises, progressPromise]);
-        } else {
-          // No executing tools but unfinished queued tools: wait for
-          // progress/close signal. signalProgress wakes us when
-          // status transitions, including on discard().
-          await progressPromise;
+        for (const result of this.getCompletedResults()) {
+          if (this.discarded) return;
+          yield result;
+        }
+        if (this.discarded) return;
+
+        if (
+          this.hasExecutingTools() &&
+          !this.hasCompletedResults() &&
+          !this.hasPendingProgress()
+        ) {
+          const executingPromises = this.tools
+            .filter((t) => t.status === "executing" && t.promise)
+            .map((t) => t.promise!);
+          const progressPromise = new Promise<void>((resolve) => {
+            this.wakeResolve = resolve;
+          });
+          if (executingPromises.length > 0) {
+            await Promise.race([...executingPromises, progressPromise]);
+          } else {
+            // No executing tools but unfinished queued tools: wait for
+            // progress/close signal. signalProgress wakes us when
+            // status transitions, including on discard().
+            await progressPromise;
+          }
         }
       }
-    }
-    // Final drain: flush any last-completed tools post-loop.
-    if (this.discarded) return;
-    for (const result of this.getCompletedResults()) {
-      yield result;
+      // Final drain: flush any last-completed tools post-loop.
+      if (this.discarded) return;
+      for (const result of this.getCompletedResults()) {
+        yield result;
+      }
+    } finally {
+      if (this.discarded || !this.hasUnfinishedTools()) {
+        this.detachAbortSignals();
+      }
     }
   }
 
@@ -561,37 +601,43 @@ export class StreamingToolExecutor {
    * only terminal results continue to use `getRemainingResults`.
    */
   async *getRemainingUpdates(): AsyncGenerator<StreamingToolUpdate, void> {
-    while (!this.discarded && this.hasUnfinishedTools()) {
-      await this.processQueue();
-      if (this.discarded) return;
-
-      for (const update of this.getCompletedUpdates()) {
+    try {
+      while (!this.discarded && this.hasUnfinishedTools()) {
+        await this.processQueue();
         if (this.discarded) return;
-        yield update;
-      }
-      if (this.discarded) return;
 
-      if (
-        this.hasExecutingTools() &&
-        !this.hasCompletedResults() &&
-        !this.hasPendingProgress()
-      ) {
-        const executingPromises = this.tools
-          .filter((t) => t.status === "executing" && t.promise)
-          .map((t) => t.promise!);
-        const progressPromise = new Promise<void>((resolve) => {
-          this.wakeResolve = resolve;
-        });
-        if (executingPromises.length > 0) {
-          await Promise.race([...executingPromises, progressPromise]);
-        } else {
-          await progressPromise;
+        for (const update of this.getCompletedUpdates()) {
+          if (this.discarded) return;
+          yield update;
+        }
+        if (this.discarded) return;
+
+        if (
+          this.hasExecutingTools() &&
+          !this.hasCompletedResults() &&
+          !this.hasPendingProgress()
+        ) {
+          const executingPromises = this.tools
+            .filter((t) => t.status === "executing" && t.promise)
+            .map((t) => t.promise!);
+          const progressPromise = new Promise<void>((resolve) => {
+            this.wakeResolve = resolve;
+          });
+          if (executingPromises.length > 0) {
+            await Promise.race([...executingPromises, progressPromise]);
+          } else {
+            await progressPromise;
+          }
         }
       }
-    }
-    if (this.discarded) return;
-    for (const update of this.getCompletedUpdates()) {
-      yield update;
+      if (this.discarded) return;
+      for (const update of this.getCompletedUpdates()) {
+        yield update;
+      }
+    } finally {
+      if (this.discarded || !this.hasUnfinishedTools()) {
+        this.detachAbortSignals();
+      }
     }
   }
 
@@ -600,11 +646,15 @@ export class StreamingToolExecutor {
     readonly id: string;
     readonly status: ToolStatus;
     readonly toolName: string;
+    readonly hasDispatched: boolean;
+    readonly toolCall: LLMToolCall;
   }> {
     return this.tools.map((t) => ({
       id: t.id,
       status: t.status,
       toolName: t.toolCall.name,
+      hasDispatched: t.hasDispatched,
+      toolCall: { ...t.toolCall },
     }));
   }
 
@@ -646,17 +696,39 @@ export class StreamingToolExecutor {
 
   private readonly concurrencyClassOverrides = new Map<string, ConcurrencyClass>();
 
+  private resolveModelToolName(toolName: string): string {
+    if (
+      this.concurrencyClassOverrides.has(toolName) ||
+      this.registry.tools.some((t) => t.name === toolName) ||
+      this.liveToolDispatch?.router.findSpec(toolName) !== undefined
+    ) {
+      return toolName;
+    }
+    return canonicalModelToolName(toolName);
+  }
+
   private isKnownToolCall(toolCall: LLMToolCall): boolean {
-    if (this.concurrencyClassOverrides.has(toolCall.name)) return true;
-    if (this.registry.tools.some((t) => t.name === toolCall.name)) return true;
-    return this.liveToolDispatch?.router.findSpec(toolCall.name) !== undefined;
+    const resolvedName = this.resolveModelToolName(toolCall.name);
+    if (
+      this.concurrencyClassOverrides.has(toolCall.name) ||
+      this.concurrencyClassOverrides.has(resolvedName)
+    ) {
+      return true;
+    }
+    if (this.registry.tools.some((t) => t.name === resolvedName)) return true;
+    return this.liveToolDispatch?.router.findSpec(resolvedName) !== undefined;
   }
 
   private resolveClassifiable(toolCall: LLMToolCall): ConcurrencyClassifiable {
-    const override = this.concurrencyClassOverrides.get(toolCall.name);
-    const tool = this.registry.tools.find((candidate) => candidate.name === toolCall.name);
+    const resolvedName = this.resolveModelToolName(toolCall.name);
+    const override =
+      this.concurrencyClassOverrides.get(toolCall.name) ??
+      this.concurrencyClassOverrides.get(resolvedName);
+    const tool = this.registry.tools.find((candidate) => candidate.name === resolvedName);
+    const routedToolCall =
+      resolvedName === toolCall.name ? toolCall : { ...toolCall, name: resolvedName };
     const routed = this.liveToolDispatch
-      ? toolCallFromLLMToolCall(toolCall, {
+      ? toolCallFromLLMToolCall(routedToolCall, {
           session: this.liveToolDispatch.options.session,
         })
       : null;
@@ -668,9 +740,9 @@ export class StreamingToolExecutor {
       tool?.concurrencyClass ??
       (resolvedServerId !== undefined
         ? sharedServer(resolvedServerId)
-        : defaultConcurrencyClassFor(toolCall.name));
+        : defaultConcurrencyClassFor(resolvedName));
     return {
-      name: toolCall.name,
+      name: resolvedName,
       concurrencyClass: resolvedClass,
       isConcurrencySafe: (tool as Tool | undefined)?.isConcurrencySafe,
       ...(resolvedServerId !== undefined ? { serverId: resolvedServerId } : {}),
@@ -714,7 +786,8 @@ export class StreamingToolExecutor {
    * finish their work even while a user message is queued.
    */
   private getToolInterruptBehavior(tool: TrackedTool): "cancel" | "block" {
-    const def = this.registry.tools.find((t) => t.name === tool.toolCall.name);
+    const resolvedName = this.resolveModelToolName(tool.toolCall.name);
+    const def = this.registry.tools.find((t) => t.name === resolvedName);
     if (!def?.interruptBehavior) return "block";
     try {
       return def.interruptBehavior();
@@ -862,6 +935,7 @@ export class StreamingToolExecutor {
             {
               ...this.liveToolDispatch.options,
               signal: childAbort.signal,
+              abortController: childAbort,
               onProgress: (event) =>
                 this.emitProgress(tool.toolCall.id, event.chunk),
               onHookAdditionalContext: (contexts) => {
@@ -898,10 +972,11 @@ export class StreamingToolExecutor {
       tool.result = result;
       tool.status = "completed";
 
-      // Sibling-abort cascade — Bash-only.
+      // Sibling-abort cascade for shell-style tools.
       if (
         result.isError === true &&
-        tool.toolCall.name === this.bashToolName &&
+        this.isSiblingAbortShellTool(tool.toolCall.name) &&
+        !this.discarded &&
         !this.hasBashErrored
       ) {
         this.hasBashErrored = true;
@@ -913,10 +988,10 @@ export class StreamingToolExecutor {
       const syntheticReason = this.resolveSyntheticErrorReason(tool.error);
       tool.result = this.createSyntheticError(tool.toolCall, syntheticReason);
       tool.status = "completed";
-      // Bash-thrown errors also trigger sibling abort (parity with the
-      // reference runtime behavior when a Bash run throws).
+      // Thrown shell-tool errors also trigger sibling abort.
       if (
-        tool.toolCall.name === this.bashToolName &&
+        this.isSiblingAbortShellTool(tool.toolCall.name) &&
+        !this.discarded &&
         !this.hasBashErrored
       ) {
         this.hasBashErrored = true;
@@ -933,6 +1008,10 @@ export class StreamingToolExecutor {
 
     const durationMs = performance.now() - startedAtMs;
     void durationMs;
+  }
+
+  private isSiblingAbortShellTool(toolName: string): boolean {
+    return toolName === this.bashToolName || toolName === "exec_command";
   }
 
   private buildRuntimeCallContext(
@@ -1011,6 +1090,7 @@ export class StreamingToolExecutor {
       reason === "timeout" ||
       reason === "connection_lost" ||
       reason === "aborted" ||
+      reason === "sibling_error" ||
       reason === "mode_changed" ||
       reason === "user_interrupted" ||
       reason === "auth_failed" ||

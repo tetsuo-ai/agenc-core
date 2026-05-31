@@ -41,7 +41,9 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   extractTextContent,
+  getAssistantAPIErrorMessageText,
   getLastAssistantMessage,
+  isAssistantAPIErrorMessage,
 } from '../../utils/messages.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
@@ -291,6 +293,9 @@ export function finalizeAgentTool(
   const lastAssistantMessage = getLastAssistantMessage(agentMessages)
   if (lastAssistantMessage === undefined) {
     throw new Error('No assistant messages found')
+  }
+  if (isAssistantAPIErrorMessage(lastAssistantMessage)) {
+    throw new Error(getAssistantAPIErrorMessageText(lastAssistantMessage))
   }
   // Extract text content from the agent's response. If the final assistant
   // message is a pure tool_use block (loop exited mid-turn), fall back to

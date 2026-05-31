@@ -591,6 +591,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     expect(sc.cwd).toBe("/tmp/ws");
     expect(sc.collaborationMode.model).toBe("grok-4.3");
     expect(sc.sessionSource).toBe("cli_main");
+    expect(sc.networkSandboxPolicy.enabled).toBe(false);
   });
 
   it("defaults to on_request + workspace_write when policy fields absent", () => {
@@ -603,6 +604,20 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     expect(sc.approvalPolicy.value).toBe("on_request");
     expect(sc.sandboxPolicy.value).toBe("workspace_write");
     expect(sc.fileSystemSandboxPolicy.allowWrite).toEqual(["/tmp/ws"]);
+    expect(sc.networkSandboxPolicy.enabled).toBe(false);
+  });
+
+  it("enables network by default only for danger-full-access sessions", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: {
+        ...defaultConfig(),
+        sandbox_mode: "danger-full-access" as const,
+      },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4.3",
+    });
+    expect(sc.sandboxPolicy.value).toBe("danger_full_access");
+    expect(sc.networkSandboxPolicy.enabled).toBe(true);
   });
 
   it("on-failure → on_failure mapping", () => {

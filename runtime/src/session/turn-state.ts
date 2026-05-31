@@ -329,6 +329,9 @@ export interface TurnState {
    *  recovery escalation). AgenC query.ts:1246. */
   maxOutputTokensOverride: number | undefined;
 
+  /** Carry fire-and-forget fork cache-write suppression into provider options. */
+  skipCacheWrite: boolean | undefined;
+
   /** Consecutive max-output-tokens recovery attempts. Cap at
    *  MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3 (query.ts:162) before giving
    *  up. AgenC query.ts:1273. */
@@ -355,6 +358,9 @@ export interface TurnState {
   /** Pending tool-use summary promise — resolved before next iteration
    *  can proceed. AgenC query.ts:1577. */
   pendingToolUseSummary: Promise<ToolUseSummaryMessage | null> | undefined;
+
+  /** Tool hook requested keeping the completed result while ending the turn. */
+  preventContinuation: boolean;
 
   /** Cached token-budget decision captured mid-stream (I-22). Acted on
    *  in commit phase to decide continuation vs terminate. */
@@ -422,6 +428,7 @@ export function buildInitialTurnState(
   opts?: {
     readonly priorMessages?: readonly LLMMessage[];
     readonly initialMaxOutputTokensOverride?: number;
+    readonly initialSkipCacheWrite?: boolean;
   },
 ): TurnState {
   return {
@@ -445,6 +452,7 @@ export function buildInitialTurnState(
     // Phase 3
     hasAttemptedReactiveCompact: false,
     maxOutputTokensOverride: opts?.initialMaxOutputTokensOverride,
+    skipCacheWrite: opts?.initialSkipCacheWrite,
     maxOutputTokensRecoveryCount: 0,
     recoveryReentryCount: 0,
     // Phase 4
@@ -452,6 +460,7 @@ export function buildInitialTurnState(
     // Phase 5
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
+    preventContinuation: false,
     pendingBudgetDecision: undefined,
     lastResponseUsage: undefined,
     // Phase 6
@@ -480,6 +489,7 @@ export function resetIterationFields(state: TurnState): void {
   state.toolUseBlocks = [];
   state.toolResults = [];
   state.needsFollowUp = false;
+  state.preventContinuation = false;
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;

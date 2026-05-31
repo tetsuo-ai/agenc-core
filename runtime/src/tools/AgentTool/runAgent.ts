@@ -14,7 +14,8 @@ import {
 import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
-import { query } from '../../query.js'
+import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import { runTurnCompat } from '../../session/turn-compat.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
 import {
@@ -345,6 +346,7 @@ export async function* runAgent({
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
+  const parentSession = requireCurrentRuntimeSession('subagent')
 
   const resolvedAgentModel = getAgentModel(
     agentDefinition.model,
@@ -751,9 +753,8 @@ export async function* runAgent({
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
-
   try {
-    for await (const message of query({
+    for await (const event of runTurnCompat(parentSession, {
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
@@ -762,37 +763,29 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
+    }, {
+      conversationId: agentId,
+      signal: agentAbortController.signal,
     })) {
       onQueryProgress?.()
-      // Forward subagent API request starts to parent's metrics display
-      // so TTFT/OTPS update during subagent execution.
       if (
-        message.type === 'stream_event' &&
-        message.event.type === 'message_start' &&
-        message.ttftMs != null
+        event.type === 'phase' ||
+        event.type === 'progress' ||
+        event.type === 'usage'
       ) {
-        toolUseContext.pushApiMetricsEntry?.(message.ttftMs)
         continue
       }
 
-      // Yield attachment messages (e.g., structured_output) without recording them
+      if (event.type === 'max_turns') {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Reached max turns limit (${event.message.attachment.maxTurns})`,
+        )
+        break
+      }
+
+      const message = event.message
+      // Yield attachment messages without recording them.
       if (message.type === 'attachment') {
-        // Handle max turns reached signal from query.ts
-        if (message.attachment.type === 'max_turns_reached') {
-          logForDebugging(
-            `[Agent
-: $
-{
-  agentDefinition.agentType
-}
-] Reached max turns limit ($
-{
-  message.attachment.maxTurns
-}
-)`,
-          )
-          break
-        }
         yield message
         continue
       }

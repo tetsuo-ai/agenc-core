@@ -19,11 +19,8 @@ import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import type { Tool } from "../tools/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
-import type { LLMTool, LLMToolCall } from "../llm/types.js";
-import type {
-  PostToolUseHook,
-  PreToolUseHook,
-} from "../tools/hooks.js";
+import type { LLMProvider, LLMTool, LLMToolCall } from "../llm/types.js";
+import type { PostToolUseHook, PreToolUseHook } from "../tools/hooks.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   createEmptyToolPermissionContext,
@@ -42,16 +39,10 @@ import {
   executeTools,
   queueStreamingToolCall,
 } from "./execute-tools.js";
-import {
-  StreamingToolExecutor,
-} from "../tools/streaming-executor.js";
-import {
-  SHARED_READ,
-  ToolCallRuntime,
-} from "../tools/concurrency.js";
-import {
-  routerFromRegistry,
-} from "../tools/router.js";
+import { commit } from "./commit.js";
+import { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import { SHARED_READ, ToolCallRuntime } from "../tools/concurrency.js";
+import { routerFromRegistry } from "../tools/router.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
 import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
 
@@ -105,6 +96,7 @@ interface MkSessionOpts {
       readonly callId: string;
       readonly toolName: string;
       readonly turnId: string;
+      readonly signal?: AbortSignal;
     }): Promise<
       | { readonly kind: "approved" }
       | { readonly kind: "approved_for_session" }
@@ -133,6 +125,9 @@ interface MkSessionOpts {
   readonly permissionAuditLogger?: (event: unknown) => Promise<void> | void;
   readonly onPermissionAuditError?: (error: unknown, event: unknown) => void;
   readonly permissionModeRegistry?: PermissionModeRegistry;
+  readonly provider?: Partial<LLMProvider> & { readonly name: string };
+  readonly querySource?: string;
+  readonly abortController?: AbortController;
   readonly mcpManager?: {
     resolveMcpToolInfo?: (
       toolName: string,
@@ -147,15 +142,21 @@ interface MkSessionOpts {
 
 function mkSession(opts: MkSessionOpts): Session {
   let i = 0;
-  const emitted: Array<{ id: string; msg: { type: string; payload?: unknown } }> = [];
+  const emitted: Array<{
+    id: string;
+    msg: { type: string; payload?: unknown };
+  }> = [];
   const servicesRecord: Record<string, unknown> = {
     registry: opts.registry,
-    provider: { name: "stub-provider" },
+    provider: opts.provider ?? { name: "stub-provider" },
     hooks: {
       preToolUseHooks: opts.preToolUseHooks ?? [],
       postToolUseHooks: opts.postToolUseHooks ?? [],
     },
   };
+  if (opts.querySource) {
+    servicesRecord["querySource"] = opts.querySource;
+  }
   if (opts.permissionModeRegistry) {
     servicesRecord["permissionModeRegistry"] = opts.permissionModeRegistry;
   }
@@ -176,6 +177,7 @@ function mkSession(opts: MkSessionOpts): Session {
   }
   const baseSession: Record<string, unknown> = {
     conversationId: "conv-1",
+    abortController: opts.abortController ?? new AbortController(),
     eventLog: opts.log,
     services: servicesRecord,
     nextInternalSubId: () => `s-${++i}`,
@@ -229,6 +231,7 @@ function mkState(opts: {
     continuationNudgeCount: 0,
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
+    preventContinuation: false,
     pendingBudgetDecision: undefined,
     turnCount: 1,
     transition: undefined,
@@ -238,26 +241,52 @@ function mkState(opts: {
 }
 
 const ENV_VAR = "AGENC_MAX_TOOL_USE_CONCURRENCY";
+const SUMMARY_ENV_VAR = "AGENC_EMIT_TOOL_USE_SUMMARIES";
 const savedEnv: {
   value: string | undefined;
   agencHome: string | undefined;
-} = { value: undefined, agencHome: undefined };
+  summary: string | undefined;
+} = { value: undefined, agencHome: undefined, summary: undefined };
 const tempDirs: string[] = [];
 
 beforeEach(() => {
   savedEnv.value = process.env[ENV_VAR];
   savedEnv.agencHome = process.env.AGENC_HOME;
+  savedEnv.summary = process.env[SUMMARY_ENV_VAR];
+  delete process.env[SUMMARY_ENV_VAR];
 });
 afterEach(() => {
   if (savedEnv.value === undefined) delete process.env[ENV_VAR];
   else process.env[ENV_VAR] = savedEnv.value;
   if (savedEnv.agencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = savedEnv.agencHome;
+  if (savedEnv.summary === undefined) delete process.env[SUMMARY_ENV_VAR];
+  else process.env[SUMMARY_ENV_VAR] = savedEnv.summary;
   clearAllPlanSlugs();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function mkSummaryProvider(content: string): {
+  readonly provider: Partial<LLMProvider> & { readonly name: string };
+  readonly chat: ReturnType<typeof vi.fn<LLMProvider["chat"]>>;
+} {
+  const chat = vi.fn<LLMProvider["chat"]>(async (messages, options) => ({
+    content,
+    toolCalls: [],
+    usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    model: String(options?.model ?? "summary-model"),
+    finishReason: "stop",
+  }));
+  return {
+    provider: {
+      name: "summary-provider",
+      chat,
+    },
+    chat,
+  };
+}
 
 describe("executeTools — T7 gap #109 pipeline", () => {
   test("executeTools dispatches batched calls through per-call runtime context", async () => {
@@ -277,7 +306,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         maxInFlight = Math.max(maxInFlight, inFlight);
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         inFlight -= 1;
-        return { content: readToolRuntimeContext(args)?.runtimeKind ?? "missing" };
+        return {
+          content: readToolRuntimeContext(args)?.runtimeKind ?? "missing",
+        };
       },
     };
     const registry = mkRegistry([tool]);
@@ -415,7 +446,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     });
 
     const log = new EventLog();
-    const events: Array<{ msg: { type: string; payload?: { cause?: string } } }> = [];
+    const events: Array<{
+      msg: { type: string; payload?: { cause?: string } };
+    }> = [];
     log.subscribe((event) => events.push(event as never));
     const registry = mkRegistry([tool]);
     const session = mkSession({
@@ -447,6 +480,196 @@ describe("executeTools — T7 gap #109 pipeline", () => {
           event.msg.payload?.cause === "hook_additional_context",
       ),
     ).toBe(true);
+  });
+
+  test("pre-hook additional context is appended after tool results", async () => {
+    const tool: Tool = {
+      name: "stub.echo",
+      description: "echoes",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "original" }),
+    };
+
+    const preHook: PreToolUseHook = async () => ({
+      kind: "continue",
+      additionalContext: ["pre-tool context"],
+    });
+
+    const log = new EventLog();
+    const events: Array<{
+      msg: { type: string; payload?: { cause?: string } };
+    }> = [];
+    log.subscribe((event) => events.push(event as never));
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+    });
+
+    const call: LLMToolCall = {
+      id: "c-pre-context",
+      name: "stub.echo",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages.map((m) => m.role)).toEqual(["tool", "user"]);
+    expect(state.messages[1]!.content).toBe("pre-tool context");
+    expect(state.toolResults[1]).toMatchObject({
+      role: "user",
+      kind: "attachment",
+      content: "pre-tool context",
+    });
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload?.cause === "hook_additional_context",
+      ),
+    ).toBe(true);
+  });
+
+  test("post-hook preventContinuation keeps result and stops follow-up", async () => {
+    const tool: Tool = {
+      name: "stub.echo",
+      description: "echoes",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "original" }),
+    };
+
+    const postHook: PostToolUseHook = async () => ({
+      kind: "preventContinuation",
+      stopReason: "review required",
+    });
+
+    const log = new EventLog();
+    const events: Array<{
+      msg: { type: string; payload?: { cause?: string } };
+    }> = [];
+    log.subscribe((event) => events.push(event as never));
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      postToolUseHooks: [postHook],
+    });
+
+    const call: LLMToolCall = {
+      id: "c-prevent-post",
+      name: "stub.echo",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages.map((m) => m.role)).toEqual(["tool"]);
+    expect(state.messages[0]!.content).toBe("original");
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload?.cause === "hook_stopped_continuation",
+      ),
+    ).toBe(true);
+    expect(state.needsFollowUp).toBe(false);
+  });
+
+  test("pre-hook preventContinuation keeps result and stops follow-up", async () => {
+    const tool: Tool = {
+      name: "stub.echo",
+      description: "echoes",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "original" }),
+    };
+
+    const preHook: PreToolUseHook = async () => ({
+      kind: "continue",
+      preventContinuation: { stopReason: "pre review required" },
+    });
+
+    const log = new EventLog();
+    const events: Array<{
+      msg: { type: string; payload?: { cause?: string } };
+    }> = [];
+    log.subscribe((event) => events.push(event as never));
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+    });
+
+    const call: LLMToolCall = {
+      id: "c-prevent-pre",
+      name: "stub.echo",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages.map((m) => m.role)).toEqual(["tool"]);
+    expect(state.messages[0]!.content).toBe("original");
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload?.cause === "hook_stopped_continuation",
+      ),
+    ).toBe(true);
+    expect(state.needsFollowUp).toBe(false);
+    expect(state.preventContinuation).toBe(true);
+  });
+
+  test("pre-hook stop keeps cancel result and stops follow-up", async () => {
+    const tool: Tool = {
+      name: "stub.halt",
+      description: "halts",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "should not run" }),
+    };
+
+    const preHook: PreToolUseHook = async () => ({
+      kind: "stop",
+      stopReason: "explicit halt",
+    });
+
+    const log = new EventLog();
+    const events: Array<{
+      msg: { type: string; payload?: { cause?: string } };
+    }> = [];
+    log.subscribe((event) => events.push(event as never));
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+    });
+
+    const call: LLMToolCall = {
+      id: "c-stop-pre",
+      name: "stub.halt",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages.map((m) => m.role)).toEqual(["tool"]);
+    expect(String(state.messages[0]!.content)).toContain("explicit halt");
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload?.cause === "hook_stopped_continuation",
+      ),
+    ).toBe(true);
+    expect(state.needsFollowUp).toBe(false);
+    expect(state.preventContinuation).toBe(true);
   });
 
   test("live path binds router MCP resolution to the session, not the namespace heuristic", async () => {
@@ -538,7 +761,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
   test("streaming live path serializes MCP calls from non-allowlisted servers", async () => {
     let active = 0;
     let peak = 0;
-    const makeTool = (name: string): Tool & {
+    const makeTool = (
+      name: string,
+    ): Tool & {
       serverId: string;
       supportsParallelToolCalls: boolean;
     } => ({
@@ -555,10 +780,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         return { content: `${name}-ok` };
       },
     });
-    const registry = mkRegistry([
-      makeTool("listIssues"),
-      makeTool("getIssue"),
-    ]);
+    const registry = mkRegistry([makeTool("listIssues"), makeTool("getIssue")]);
     const session = mkSession({
       log: new EventLog(),
       registry,
@@ -593,7 +815,10 @@ describe("executeTools — T7 gap #109 pipeline", () => {
   test("AGENC_MAX_TOOL_USE_CONCURRENCY=2 limits parallel dispatch", async () => {
     let active = 0;
     let peak = 0;
-    const tool: Tool & { supportsParallelToolCalls?: boolean; concurrencyClass?: unknown } = {
+    const tool: Tool & {
+      supportsParallelToolCalls?: boolean;
+      concurrencyClass?: unknown;
+    } = {
       name: "FileRead",
       description: "read-only",
       inputSchema: { type: "object" },
@@ -635,8 +860,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       description: "",
       inputSchema: { type: "object" },
       execute: async (args) => {
-        const onProgress = (args as { __onProgress?: (e: { chunk: string }) => void })
-          .__onProgress;
+        const onProgress = (
+          args as { __onProgress?: (e: { chunk: string }) => void }
+        ).__onProgress;
         onProgress?.({ chunk: "line-1" });
         onProgress?.({ chunk: "line-2" });
         return { content: "done" };
@@ -778,8 +1004,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       inputSchema: { type: "object" },
       execute: async (args) => {
         executed += 1;
-        const onProgress = (args as { __onProgress?: (e: { chunk: string }) => void })
-          .__onProgress;
+        const onProgress = (
+          args as { __onProgress?: (e: { chunk: string }) => void }
+        ).__onProgress;
         onProgress?.({ chunk: "line-1" });
         return { content: "done" };
       },
@@ -808,7 +1035,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     await executeTools(state, mkCtx(), session);
 
     expect(executed).toBe(1);
-    expect(eventTypes.filter((type) => type === "tool_call_started")).toHaveLength(1);
+    expect(
+      eventTypes.filter((type) => type === "tool_call_started"),
+    ).toHaveLength(1);
     expect(eventTypes.indexOf("tool_progress")).toBeGreaterThan(
       eventTypes.indexOf("tool_call_started"),
     );
@@ -876,9 +1105,9 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(state.messages.length).toBe(1);
     expect(state.messages[0]!.role).toBe("tool");
     // The evaluator surfaces the deny through the error event log.
-    expect(
-      errorCauses.some((c) => c.startsWith("permission_denied:")),
-    ).toBe(true);
+    expect(errorCauses.some((c) => c.startsWith("permission_denied:"))).toBe(
+      true,
+    );
   });
 
   test("PreToolUse hookPermissionResult deny short-circuits through the permission path", async () => {
@@ -1629,9 +1858,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const state = mkState({ toolCalls: [call] });
 
     // Must not throw even though session.denialTracking is absent.
-    await expect(
-      executeTools(state, mkCtx(), session),
-    ).resolves.toBeDefined();
+    await expect(executeTools(state, mkCtx(), session)).resolves.toBeDefined();
 
     expect(executed).toBe(1);
     expect(state.messages.length).toBe(1);
@@ -1697,6 +1924,135 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(executed).toBe(1);
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.content).toBe("approved plan exit");
+  });
+
+  test("approval prompts observe executeTools abort signals", async () => {
+    let executed = 0;
+    let sawSignal = false;
+    let resolverStarted: (() => void) | undefined;
+    const resolverReady = new Promise<void>((resolve) => {
+      resolverStarted = resolve;
+    });
+    const tool: Tool = {
+      name: "ExitPlanMode",
+      description: "requests plan approval",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      approvalResolver: {
+        request: async (ctx) => {
+          sawSignal = ctx.signal instanceof AbortSignal;
+          resolverStarted?.();
+          return await new Promise<{ readonly kind: "abort" }>((resolve) => {
+            if (ctx.signal?.aborted === true) {
+              resolve({ kind: "abort" });
+              return;
+            }
+            ctx.signal?.addEventListener(
+              "abort",
+              () => resolve({ kind: "abort" }),
+              { once: true },
+            );
+          });
+        },
+      },
+    });
+
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "plan-exit-abort",
+          name: "ExitPlanMode",
+          arguments: "{}",
+        },
+      ],
+    });
+    const abortCtl = new AbortController();
+    const pending = executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as unknown as TurnContext,
+      session,
+      abortCtl.signal,
+    );
+
+    await resolverReady;
+    abortCtl.abort("user_cancelled");
+
+    const outcome = await Promise.race([
+      pending.then(() => "settled" as const),
+      new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 200),
+      ),
+    ]);
+
+    expect(outcome).toBe("settled");
+    expect(sawSignal).toBe(true);
+    expect(executed).toBe(0);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toContain("approval aborted");
+  });
+
+  test("approval abort decisions cancel the active turn", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "ExitPlanMode",
+      description: "requests plan approval",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const abortController = new AbortController();
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      abortController,
+      approvalResolver: {
+        request: async () => ({ kind: "abort" }),
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "plan-exit-user-abort",
+          name: "ExitPlanMode",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as unknown as TurnContext,
+      session,
+      abortController.signal,
+    );
+
+    expect(executed).toBe(0);
+    expect(abortController.signal.aborted).toBe(true);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toContain("approval aborted");
   });
 
   test("approved filesystem tools carry transient roots into dispatch args", async () => {
@@ -1915,6 +2271,298 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(approvalInput?.["planFilePath"]).toEqual(
       expect.stringContaining(join(agencHome, "plans")),
     );
+  });
+
+  test("enabled root tool batches start a summary that commit emits", async () => {
+    process.env[SUMMARY_ENV_VAR] = "1";
+    const { provider, chat } = mkSummaryProvider("  Probed runtime paths  ");
+    const tool: Tool = {
+      name: "SummaryProbe",
+      description: "returns a summary-test result",
+      inputSchema: { type: "object" },
+      execute: async (args) => ({
+        content: `result:${String((args as { target?: unknown }).target)}`,
+      }),
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      provider,
+    });
+    const call: LLMToolCall = {
+      id: "summary-a",
+      name: "SummaryProbe",
+      arguments: JSON.stringify({ target: "runtime" }),
+    };
+    const state = mkState({ toolCalls: [call] });
+    state.assistantMessages = [
+      {
+        uuid: "a-summary",
+        role: "assistant",
+        text: "I will inspect the runtime path.",
+        toolCalls: [call],
+      },
+    ];
+    state.toolUseBlocks = [
+      {
+        type: "tool_use",
+        id: "summary-a",
+        name: "SummaryProbe",
+        input: { target: "runtime" },
+      },
+      {
+        type: "tool_use",
+        id: "summary-missing",
+        name: "MissingResultProbe",
+        input: { target: "missing" },
+      },
+    ];
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.pendingToolUseSummary).toBeDefined();
+    const summary = await state.pendingToolUseSummary;
+    expect(summary).toMatchObject({
+      type: "tool_use_summary",
+      summary: "Probed runtime paths",
+      precedingToolUseIds: ["summary-a", "summary-missing"],
+    });
+    expect(chat).toHaveBeenCalledOnce();
+    const [messages, options] = chat.mock.calls[0]!;
+    expect(messages[0]?.content).toContain("I will inspect the runtime path.");
+    expect(messages[0]?.content).toContain("Tool: SummaryProbe");
+    expect(messages[0]?.content).toContain("result:runtime");
+    expect(messages[0]?.content).toContain("Tool: MissingResultProbe");
+    expect(messages[0]?.content).toContain("Output: null");
+    expect(options?.tools).toEqual([]);
+    expect(options?.toolChoice).toBe("none");
+    expect(options?.parallelToolCalls).toBe(false);
+    expect(options?.promptCacheKey).toBe("tool_use_summary_generation");
+
+    await commit(state, mkCtx(), session);
+
+    const emitted = (
+      session as unknown as {
+        readonly _emitted: Array<{
+          readonly msg: {
+            readonly type: string;
+            readonly payload?: { readonly message?: string };
+          };
+        }>;
+      }
+    )._emitted;
+    expect(
+      emitted.some(
+        (event) =>
+          event.msg.type === "agent_message" &&
+          event.msg.payload?.message === "Probed runtime paths",
+      ),
+    ).toBe(true);
+  });
+
+  test("tool-use summaries stay disabled unless the env gate is enabled", async () => {
+    const { provider, chat } = mkSummaryProvider("unused");
+    const tool: Tool = {
+      name: "SummaryProbe",
+      description: "returns a summary-test result",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "ok" }),
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      provider,
+    });
+    const state = mkState({
+      toolCalls: [
+        { id: "summary-disabled", name: "SummaryProbe", arguments: "{}" },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.pendingToolUseSummary).toBeUndefined();
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  test("tool-use summaries skip representative subagent turns", async () => {
+    process.env[SUMMARY_ENV_VAR] = "true";
+    const { provider, chat } = mkSummaryProvider("unused");
+    const tool: Tool = {
+      name: "SummaryProbe",
+      description: "returns a summary-test result",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "ok" }),
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      provider,
+      querySource: "agent:builtin:general",
+    });
+    const state = mkState({
+      toolCalls: [
+        { id: "summary-subagent", name: "SummaryProbe", arguments: "{}" },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.pendingToolUseSummary).toBeUndefined();
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  test("tool-use summaries skip aborted tool batches", async () => {
+    process.env[SUMMARY_ENV_VAR] = "1";
+    const { provider, chat } = mkSummaryProvider("unused");
+    const tool: Tool = {
+      name: "SummaryProbe",
+      description: "returns a summary-test result",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "should-not-run" }),
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      provider,
+    });
+    const state = mkState({
+      toolCalls: [
+        { id: "summary-aborted", name: "SummaryProbe", arguments: "{}" },
+      ],
+    });
+    const abortCtl = new AbortController();
+    abortCtl.abort("mode_changed");
+
+    await executeTools(state, mkCtx(), session, abortCtl.signal);
+
+    expect(state.pendingToolUseSummary).toBeUndefined();
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  test("executor-originated aborts propagate to the session controller", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const tool: Tool = {
+      name: "Cancelable",
+      description: "waits for cancellation",
+      inputSchema: { type: "object" },
+      execute: async (args) => {
+        markStarted?.();
+        const signal = args["__abortSignal"] as AbortSignal | undefined;
+        return await new Promise((resolve) => {
+          if (signal?.aborted) {
+            resolve({ content: "aborted", isError: true });
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => resolve({ content: "aborted", isError: true }),
+            { once: true },
+          );
+        });
+      },
+    };
+    const abortController = new AbortController();
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      abortController,
+    });
+    const state = mkState({
+      toolCalls: [{ id: "cancelable", name: "Cancelable", arguments: "{}" }],
+    });
+    const execution = executeTools(
+      state,
+      mkCtx(),
+      session,
+      abortController.signal,
+    );
+
+    await started;
+    state.streamingToolExecutor!.abort("mode_changed");
+
+    expect(abortController.signal.aborted).toBe(true);
+    await execution;
+  });
+
+  test("existing streamed executors observe executeTools abort signals", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let observedAbortReason: unknown;
+    const tool: Tool = {
+      name: "StreamedRead",
+      description: "waits for cancellation",
+      inputSchema: { type: "object" },
+      concurrencyClass: SHARED_READ,
+      isConcurrencySafe: () => true,
+      execute: async (args) => {
+        markStarted?.();
+        const signal = args["__abortSignal"] as AbortSignal | undefined;
+        return await new Promise((resolve) => {
+          if (signal?.aborted) {
+            observedAbortReason = signal.reason;
+            resolve({ content: "aborted", isError: true });
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              observedAbortReason = signal.reason;
+              resolve({ content: "aborted", isError: true });
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+    });
+    const call: LLMToolCall = {
+      id: "streamed-read",
+      name: "StreamedRead",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+    const streamSignal = new AbortController();
+    const executor = ensureStreamingToolExecutor(
+      state,
+      mkCtx(),
+      session,
+      streamSignal.signal,
+    );
+    queueStreamingToolCall(
+      executor,
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+      call,
+      session,
+    );
+    executor.dispatchPending({ safeOnly: true });
+    await started;
+
+    const turnAbort = new AbortController();
+    const pending = executeTools(state, mkCtx(), session, turnAbort.signal);
+    turnAbort.abort("mode_changed");
+    const outcome = await Promise.race([
+      pending.then(() => "settled" as const),
+      new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 200),
+      ),
+    ]);
+    if (outcome === "timeout") {
+      streamSignal.abort("test_cleanup");
+      await pending.catch(() => undefined);
+    }
+
+    expect(outcome).toBe("settled");
+    expect(observedAbortReason).toBe("mode_changed");
+    expect(state.messages).toHaveLength(1);
   });
 
   test("router classification does not leak tool_routing_classified warnings", async () => {

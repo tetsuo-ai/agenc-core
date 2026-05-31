@@ -9,7 +9,11 @@
  * @module
  */
 
-import type { LLMToolCall, LLMUsage } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMToolCall,
+  LLMUsage,
+} from "../llm/types.js";
 import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 
 export type PhaseEvent =
@@ -26,6 +30,15 @@ export type PhaseEvent =
       readonly type: "tool_result";
       readonly toolCall: LLMToolCall;
       readonly result: ToolDispatchResult;
+    }
+  | {
+      readonly type: "queued_command";
+      readonly uuid: string;
+      readonly commandMode: "prompt" | "task-notification";
+      readonly content: string | readonly LLMContentPart[];
+      readonly displayText: string;
+      readonly isMeta?: true;
+      readonly originKind?: string;
     }
   | {
       readonly type: "turn_complete";

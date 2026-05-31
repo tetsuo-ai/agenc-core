@@ -602,6 +602,7 @@ describe("session-store", () => {
     );
     expect(snapshot.toolCallTurnIds.get("call-resume")).toBe("turn-resume");
     resumed.close();
+    expect(readIndexSnapshot(resumed.indexPath)?.snapshotSequenceNumber).toBe(2);
   });
 
   test("reAppendSessionMetadata writes session_meta line again after compact", () => {

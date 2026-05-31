@@ -113,7 +113,7 @@ function buildAnthropicStructuredOutputTool(
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
-  const messages = prepareMessagesForWire(input.messages);
+  const messages = prepareMessagesForWire(input.messages, input.options);
   const systemMessages = messages.filter((message) =>
     message.role === "system" || message.role === "developer"
   );
@@ -352,7 +352,10 @@ export function parseAnthropicMessagesResponse(
       !Array.isArray(usageRecord.server_tool_use)
       ? (usageRecord.server_tool_use as Record<string, unknown>)
       : {};
-  const preparedMessages = prepareMessagesForWire(request.messages);
+  const preparedMessages = prepareMessagesForWire(
+    request.messages,
+    request.options,
+  );
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
     buildAnthropicMessagesRequest(request),

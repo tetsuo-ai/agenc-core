@@ -19,8 +19,12 @@ import {
   TASK_NOTIFICATION_TAG,
   TOOL_USE_ID_TAG,
 } from '../constants/xml.js'
-import { type QueryParams, query } from '../query.js'
 import { roughTokenCountEstimation } from '../services/tokenEstimation.js'
+import { requireCurrentRuntimeSession } from '../session/current-session.js'
+import {
+  runTurnCompat,
+  type TurnCompatParams,
+} from '../session/turn-compat.js'
 import type { SetAppState } from './Task.js'
 import { createTaskStateBase } from './Task.js'
 import type {
@@ -38,6 +42,7 @@ import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../utils/log.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
+import { isAssistantAPIErrorMessage } from '../utils/messages.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import {
   getAgentTranscriptPath,
@@ -95,7 +100,11 @@ export function registerMainSessionTask(
   setAppState: SetAppState,
   mainThreadAgentDefinition?: AgentDefinition,
   existingAbortController?: AbortController,
-): { taskId: string; abortSignal: AbortSignal } {
+): {
+  taskId: string
+  abortController: AbortController
+  abortSignal: AbortSignal
+} {
   const taskId = generateMainSessionTaskId()
 
   // Link output to an isolated per-task transcript file (same layout as
@@ -157,7 +166,11 @@ export function registerMainSessionTask(
     return prev
   })
 
-  return { taskId, abortSignal: abortController.signal }
+  return {
+    taskId,
+    abortController,
+    abortSignal: abortController.signal,
+  }
 }
 
 /**
@@ -342,12 +355,13 @@ export function startBackgroundSession({
   agentDefinition,
 }: {
   messages: Message[]
-  queryParams: Omit<QueryParams, 'messages'>
+  queryParams: Omit<TurnCompatParams, 'messages'>
   description: string
   setAppState: SetAppState
   agentDefinition?: AgentDefinition
 }): string {
-  const { taskId, abortSignal } = registerMainSessionTask(
+  const parentSession = requireCurrentRuntimeSession('background session')
+  const { taskId, abortController, abortSignal } = registerMainSessionTask(
     description,
     setAppState,
     agentDefinition,
@@ -378,10 +392,18 @@ export function startBackgroundSession({
       let toolCount = 0
       let tokenCount = 0
       let lastRecordedUuid: UUID | null = messages.at(-1)?.uuid ?? null
+      let sawAssistantApiError = false
 
-      for await (const event of query({
+      for await (const event of runTurnCompat(parentSession, {
         messages: bgMessages,
         ...queryParams,
+        toolUseContext: {
+          ...queryParams.toolUseContext,
+          abortController,
+        },
+      }, {
+        conversationId: taskId,
+        signal: abortSignal,
       })) {
         if (abortSignal.aborted) {
           // Aborted mid-stream — completeMainSessionTask won't be reached.
@@ -400,25 +422,38 @@ export function startBackgroundSession({
         }
 
         if (
-          event.type !== 'user' &&
-          event.type !== 'assistant' &&
-          event.type !== 'system'
+          event.type === 'phase' ||
+          event.type === 'progress' ||
+          event.type === 'usage' ||
+          event.type === 'max_turns'
         ) {
           continue
         }
 
-        bgMessages.push(event)
+        const message = event.message
+        if (isAssistantAPIErrorMessage(message)) {
+          sawAssistantApiError = true
+        }
+        if (
+          message.type !== 'user' &&
+          message.type !== 'assistant' &&
+          message.type !== 'system'
+        ) {
+          continue
+        }
+
+        bgMessages.push(message)
 
         // Per-message write (matches runAgent.ts pattern) — gives live
         // TaskOutput progress and keeps the transcript file current even if
         // /clear re-links the symlink mid-run.
-        void recordSidechainTranscript([event], taskId, lastRecordedUuid).catch(
+        void recordSidechainTranscript([message], taskId, lastRecordedUuid).catch(
           err => logForDebugging(`bg-session transcript write failed: ${err}`),
         )
-        lastRecordedUuid = event.uuid
+        lastRecordedUuid = message.uuid
 
-        if (event.type === 'assistant') {
-          for (const block of event.message.content) {
+        if (message.type === 'assistant') {
+          for (const block of message.message.content) {
             if (block.type === 'text') {
               tokenCount += roughTokenCountEstimation(block.text)
             } else if (block.type === 'tool_use') {
@@ -467,7 +502,7 @@ export function startBackgroundSession({
         })
       }
 
-      completeMainSessionTask(taskId, true, setAppState)
+      completeMainSessionTask(taskId, !sawAssistantApiError, setAppState)
     } catch (error) {
       logError(error)
       completeMainSessionTask(taskId, false, setAppState)

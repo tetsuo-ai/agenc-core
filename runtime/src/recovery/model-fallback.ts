@@ -22,17 +22,12 @@
  * @module
  */
 
-import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { readProviderIdentity } from "../llm/provider.js";
 import type { Session } from "../session/session.js";
-import type {
-  AssistantMessage,
-  TurnState,
-  UserMessage,
-} from "../session/turn-state.js";
+import type { TurnState } from "../session/turn-state.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import type { FallbackTriggeredError } from "./api-errors.js";
-import { synthesizeTerminalResults } from "./terminal-tool-result.js";
+import { appendTerminalToolResults } from "./terminal-tool-result.js";
 import { tombstoneOrphans } from "./tombstone.js";
 import { emitWarning } from "../session/event-log.js";
 
@@ -49,28 +44,6 @@ export interface RunModelFallbackOpts {
   readonly state: TurnState;
   readonly error: FallbackTriggeredError;
   readonly executor?: StreamingToolExecutor | null;
-}
-
-/**
- * Collect `tool_use` blocks from the current assistant batch that
- * have no matching `tool_result` row yet. Matching is by
- * `LLMToolCall.id` ↔ `UserMessage.toolCallId` (see execute-tools.ts
- * `toolResultUserRecord`). Used by the fallback path so every
- * orphan gets a synthetic terminal result before the next request.
- */
-function findOrphanToolCalls(state: TurnState): LLMToolCall[] {
-  const completedIds = new Set<string>();
-  for (const result of state.toolResults) {
-    const rec = result as Partial<UserMessage>;
-    if (rec.toolCallId) completedIds.add(rec.toolCallId);
-  }
-  const orphans: LLMToolCall[] = [];
-  for (const msg of state.assistantMessages as readonly AssistantMessage[]) {
-    for (const call of msg.toolCalls) {
-      if (!completedIds.has(call.id)) orphans.push(call);
-    }
-  }
-  return orphans;
 }
 
 /**
@@ -103,30 +76,11 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
   // a history with assistant tool_use_ids whose matching tool_result
   // rows were never emitted. Cause `provider_switched` documents the
   // reason for filter/telemetry consumers.
-  const orphanCalls = findOrphanToolCalls(state);
-  if (orphanCalls.length > 0) {
-    const synthetic = synthesizeTerminalResults(
-      orphanCalls,
-      "provider_switched",
-      `model_fallback ${error.fromModel} → ${error.toModel}`,
-    );
-    for (const syn of synthetic) {
-      const userRecord: UserMessage = {
-        uuid: crypto.randomUUID(),
-        role: "user",
-        toolCallId: syn.toolCallId,
-        toolName: syn.toolName,
-        content: syn.content,
-      };
-      state.toolResults.push(userRecord);
-      const msg: LLMMessage = {
-        role: "tool",
-        toolCallId: syn.toolCallId,
-        content: syn.content,
-      };
-      state.messages.push(msg);
-    }
-  }
+  const synthetic = appendTerminalToolResults(
+    state,
+    "provider_switched",
+    `model_fallback ${error.fromModel} → ${error.toModel}`,
+  );
 
   // Step 2: tombstone orphans + discard+null the executor. tombstone
   // handles discard() + streamingToolExecutor=null internally; we
@@ -169,7 +123,7 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
     session.eventLog,
     session.nextInternalSubId(),
     "model_fallback_triggered",
-    `falling back from ${error.fromModel} to ${error.toModel} (${tombstones.length} orphan messages tombstoned, ${orphanCalls.length} orphan tool_results synthesized)`,
+    `falling back from ${error.fromModel} to ${error.toModel} (${tombstones.length} orphan messages tombstoned, ${synthetic.length} orphan tool_results synthesized)`,
   );
 
   return {
@@ -177,6 +131,6 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
     fromModel: error.fromModel,
     toModel: error.toModel,
     tombstones: tombstones.length,
-    orphanToolResultsSynthesized: orphanCalls.length,
+    orphanToolResultsSynthesized: synthetic.length,
   };
 }

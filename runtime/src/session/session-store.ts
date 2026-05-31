@@ -306,6 +306,30 @@ export function readAndValidateSchemaVersion(
   }
 }
 
+function maxEventSeqInRollout(path: string): EventSeq {
+  if (!existsSync(path)) return 0;
+  let maxSeq: EventSeq = 0;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (line.trim().length === 0) continue;
+    try {
+      const parsed = parseRolloutLine(line);
+      if (parsed?.type !== "event_msg") continue;
+      const seq = validEventSeq(parsed.payload.seq);
+      if (seq !== undefined && seq > maxSeq) maxSeq = seq;
+    } catch {
+      // Tail repair runs before this scan; ignore any remaining malformed
+      // row and preserve the highest valid sequence we can recover.
+    }
+  }
+  return maxSeq;
+}
+
+function validEventSeq(value: unknown): EventSeq | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Flock (I-23)
 // ─────────────────────────────────────────────────────────────────────
@@ -879,6 +903,10 @@ export class SessionStore {
         this.fileSize = statSync(this.rolloutPath).size;
         const snapshot = readIndexSnapshot(this.indexPath);
         if (snapshot && snapshot.rolloutPath === this.rolloutPath) {
+          const snapshotSeq = validEventSeq(snapshot.snapshotSequenceNumber);
+          if (snapshotSeq !== undefined && snapshotSeq > this.lastSeqWritten) {
+            this.lastSeqWritten = snapshotSeq;
+          }
           this.toolResultBytesByTurn.clear();
           for (const [turnId, bytes] of Object.entries(
             snapshot.toolResultBytesByTurn ?? {},
@@ -910,6 +938,10 @@ export class SessionStore {
               this.offsetsBySeq.set(parsedSeq, offset);
             }
           }
+        }
+        const rolloutSeq = maxEventSeqInRollout(this.rolloutPath);
+        if (rolloutSeq > this.lastSeqWritten) {
+          this.lastSeqWritten = rolloutSeq;
         }
       } else {
         // Fresh file — write session_meta.

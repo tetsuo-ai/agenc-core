@@ -166,6 +166,7 @@ describe("tools/runtimes", () => {
     expect(readOnly.fileSystem.kind).toBe("restricted");
     expect(readOnly.fileSystem.entries.every((entry) => entry.access !== "write"))
       .toBe(true);
+    expect(readOnly.network).toBe("disabled");
 
     const workspaceWrite = permissionProfileForSandboxMode("workspace_write", {
       cwd: "/repo",
@@ -173,16 +174,19 @@ describe("tools/runtimes", () => {
     expect(workspaceWrite.fileSystem.kind).toBe("restricted");
     expect(workspaceWrite.fileSystem.entries.some((entry) => entry.access === "write"))
       .toBe(true);
+    expect(workspaceWrite.network).toBe("disabled");
 
     const full = permissionProfileForSandboxMode("danger_full_access", {
       cwd: "/repo",
     });
     expect(full.fileSystem.kind).toBe("unrestricted");
+    expect(full.network).toBe("enabled");
 
     const external = permissionProfileForSandboxMode("external_sandbox", {
       cwd: "/repo",
     });
     expect(external.fileSystem.kind).toBe("external_sandbox");
+    expect(external.network).toBe("restricted");
   });
 
   test("runtime sandbox enforcement denies read-only writes and outside-workspace writes", () => {

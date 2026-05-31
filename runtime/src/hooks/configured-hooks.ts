@@ -12,6 +12,8 @@ import type {
   PermissionDecisionResult,
   PostToolUseFailureHook,
   PostToolUseHook,
+  HookPermissionResult,
+  PreToolUseDecision,
   PreToolUseHook,
 } from "../tools/hooks.js";
 import type {
@@ -294,7 +296,7 @@ export class ConfiguredHooksRuntime {
           return { kind: "deny", reason: redactSecrets(reason) };
         }
       }
-      return { kind: "continue" };
+      return preToolUseContinueDecision(hook, specific);
     };
   }
 
@@ -1020,18 +1022,6 @@ function unsupportedPreToolUseOutput(
   if (output?.suppressOutput === true) {
     return "PreToolUse hook returned unsupported suppressOutput";
   }
-  if (output?.updatedInput !== undefined) {
-    return "PreToolUse hook returned unsupported updatedInput";
-  }
-  if (trimmedReason(output?.additionalContext) !== undefined) {
-    return "PreToolUse hook returned unsupported additionalContext";
-  }
-  if (output?.permissionDecision === "allow") {
-    return "PreToolUse hook returned unsupported permissionDecision:allow";
-  }
-  if (output?.permissionDecision === "ask") {
-    return "PreToolUse hook returned unsupported permissionDecision:ask";
-  }
   if (
     output?.permissionDecision === "deny" &&
     trimmedReason(output.permissionDecisionReason) === undefined
@@ -1045,6 +1035,47 @@ function unsupportedPreToolUseOutput(
     return "PreToolUse hook returned permissionDecisionReason without permissionDecision";
   }
   return null;
+}
+
+function preToolUseContinueDecision(
+  hook: IndividualHookConfig,
+  output: HookSpecificOutput | undefined,
+): PreToolUseDecision {
+  const args = output?.updatedInput;
+  const additionalContext = trimmedReason(output?.additionalContext);
+  const permissionBehavior = output?.permissionDecision;
+  const permissionReason = trimmedReason(output?.permissionDecisionReason);
+  const hookPermissionResult =
+    permissionBehavior === "allow" || permissionBehavior === "ask"
+      ? preToolUseHookPermissionResult(
+          hook,
+          permissionBehavior,
+          permissionReason,
+          args,
+        )
+      : undefined;
+  return {
+    kind: "continue",
+    ...(args !== undefined ? { args } : {}),
+    ...(hookPermissionResult !== undefined ? { hookPermissionResult } : {}),
+    ...(additionalContext !== undefined
+      ? { additionalContext: [redactSecrets(additionalContext)] }
+      : {}),
+  };
+}
+
+function preToolUseHookPermissionResult(
+  hook: IndividualHookConfig,
+  behavior: "allow" | "ask",
+  reason: string | undefined,
+  updatedInput: Record<string, unknown> | undefined,
+): HookPermissionResult {
+  return {
+    behavior,
+    hookName: hookCommandLabel(hook),
+    ...(reason !== undefined ? { message: redactSecrets(reason) } : {}),
+    ...(updatedInput !== undefined ? { updatedInput } : {}),
+  };
 }
 
 function unsupportedPermissionRequestOutput(

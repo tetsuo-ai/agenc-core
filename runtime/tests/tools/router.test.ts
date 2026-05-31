@@ -616,6 +616,50 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  test("direct dispatch timeout aborts the underlying tool signal", async () => {
+    let sawRuntimeSignal = false;
+    let signalAborted = false;
+    const execute = vi.fn(async (args: Record<string, unknown>) => {
+      const signal = args["__abortSignal"];
+      sawRuntimeSignal = signal instanceof AbortSignal;
+      return await new Promise<{ readonly content: string; readonly isError: true }>(
+        (resolve) => {
+          if (!(signal instanceof AbortSignal)) return;
+          signal.addEventListener(
+            "abort",
+            () => {
+              signalAborted = true;
+              resolve({ content: "aborted", isError: true });
+            },
+            { once: true },
+          );
+        },
+      );
+    });
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "DirectTimeoutTool",
+          description: "",
+          inputSchema: {},
+          timeoutMs: 10,
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+
+    const result = await router.dispatchToolCall(
+      makeInvocation({ name: "DirectTimeoutTool" }, "direct-timeout"),
+      {},
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("exceeded 10ms timeout");
+    expect(sawRuntimeSignal).toBe(true);
+    expect(signalAborted).toBe(true);
+  });
+
   test("direct dispatch permission-mode ask routes through guardian before resolver", async () => {
     const execute = vi.fn(async () => ({ content: "should-not-run" }));
     const router = new ToolRouter([

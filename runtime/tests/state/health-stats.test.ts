@@ -59,6 +59,37 @@ describe("StateSqliteHealthStatsReader", () => {
       writer.close();
     }
   });
+
+  it("aggregates counts across multiple state databases", () => {
+    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-health-state-other-"));
+    mkdirSync(join(otherCwd, ".git"));
+    const writerA = openStateDatabases({ cwd, agencHome: home });
+    const writerB = openStateDatabases({ cwd: otherCwd, agencHome: home });
+    try {
+      seedStateRows(writerA);
+      seedStateRows(writerB);
+      const pathsA = resolveStateDatabasePaths({ cwd, agencHome: home });
+      const pathsB = resolveStateDatabasePaths({
+        cwd: otherCwd,
+        agencHome: home,
+      });
+      const reader = new StateSqliteHealthStatsReader([pathsA, pathsB]);
+
+      expect(reader.readStateStats()).toEqual({
+        available: true,
+        readonly: true,
+        projectDir: pathsA.projectDir,
+        agentRuns: 2,
+        sessionStateSnapshots: 2,
+        inFlightToolCalls: 2,
+        logs: 2,
+      });
+    } finally {
+      writerA.close();
+      writerB.close();
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
 });
 
 function seedStateRows(driver: StateSqliteDriver): void {

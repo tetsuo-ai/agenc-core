@@ -164,6 +164,39 @@ describe("runModelFallback — T8 hardening", () => {
     expect(syntheticContent).toContain("tool_use_error");
   });
 
+  test("adds assistant tool call before synthetic terminal tool result during fallback", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState({
+      assistantMessages: [
+        {
+          uuid: "a1",
+          role: "assistant",
+          text: "partial",
+          toolCalls: [{ id: "tc-1", name: "bash", arguments: "{}" }],
+        },
+      ],
+    });
+
+    runModelFallback({
+      session,
+      state,
+      error: new FallbackTriggeredError("grok-3-fast", "grok-3"),
+    });
+
+    const assistantIndex = state.messages.findIndex(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === "tc-1") === true,
+    );
+    const toolIndex = state.messages.findIndex(
+      (message) => message.role === "tool" && message.toolCallId === "tc-1",
+    );
+
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(toolIndex).toBeGreaterThan(assistantIndex);
+  });
+
   test("sets transition reason model_fallback (reserved for FallbackTriggeredError path)", () => {
     const log = new EventLog();
     const session = mkSession(log);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { EventLog } from "../session/event-log.js";
+import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
 import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
 import {
@@ -14,6 +15,31 @@ interface FakeExecutor {
   discard(reason?: string): void;
 }
 
+interface FakeCompletedExecutor extends FakeExecutor {
+  getCompletedResults(): Iterable<{
+    readonly toolCall: {
+      readonly id: string;
+      readonly name: string;
+      readonly arguments: string;
+    };
+    readonly result: {
+      readonly content: string;
+      readonly isError?: boolean;
+      readonly metadata?: unknown;
+    };
+  }>;
+  getToolStates(): ReadonlyArray<{
+    readonly id: string;
+    readonly status: string;
+    readonly toolName: string;
+    readonly toolCall: {
+      readonly id: string;
+      readonly name: string;
+      readonly arguments: string;
+    };
+  }>;
+}
+
 function mkExecutor(): FakeExecutor {
   return {
     discardCount: 0,
@@ -24,11 +50,70 @@ function mkExecutor(): FakeExecutor {
   };
 }
 
+function mkCompletedExecutor(): FakeCompletedExecutor {
+  let yielded = false;
+  return {
+    ...mkExecutor(),
+    *getCompletedResults() {
+      if (yielded) return;
+      yielded = true;
+      yield {
+        toolCall: {
+          id: "tc-complete",
+          name: "stream_read",
+          arguments: "{}",
+        },
+        result: { content: "read-ok", isError: false },
+      };
+    },
+    getToolStates() {
+      return [
+        {
+          id: "tc-complete",
+          status: "yielded",
+          toolName: "stream_read",
+          toolCall: {
+            id: "tc-complete",
+            name: "stream_read",
+            arguments: "{}",
+          },
+        },
+      ];
+    },
+  };
+}
+
+function mkExecutingExecutor(): FakeCompletedExecutor {
+  return {
+    ...mkExecutor(),
+    *getCompletedResults() {
+      return;
+    },
+    getToolStates() {
+      return [
+        {
+          id: "tc-executing",
+          status: "executing",
+          toolName: "stream_write",
+          toolCall: {
+            id: "tc-executing",
+            name: "stream_write",
+            arguments: "{}",
+          },
+        },
+      ];
+    },
+  };
+}
+
 function mkSession(log: EventLog): Session {
   let i = 0;
   return {
     eventLog: log,
     nextInternalSubId: () => `s-${++i}`,
+    emit: (event) => {
+      log.emit(event);
+    },
   } as unknown as Session;
 }
 
@@ -45,6 +130,7 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
     assistantMessages: [],
     toolUseBlocks: [],
     needsFollowUp: false,
+    completedToolResults: [],
     toolResults: [],
     hasAttemptedReactiveCompact: false,
     maxOutputTokensOverride: undefined,
@@ -53,6 +139,7 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
     continuationNudgeCount: 0,
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
+    preventContinuation: false,
     pendingBudgetDecision: undefined,
     lastResponseUsage: undefined,
     turnCount: 1,
@@ -142,6 +229,131 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     expect(executor.discardCount).toBe(1);
     expect(executor.lastReason).toBe("max_output_tokens");
     expect(state.streamingToolExecutor).toBeNull();
+  });
+
+  test("continuation path preserves completed executor results in model history", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const executor = mkCompletedExecutor();
+    const state = mkState({
+      streamingToolExecutor: executor,
+      maxOutputTokensOverride: MAX_OUTPUT_TOKENS_ESCALATED,
+    });
+
+    const outcome = runMaxOutputTokensRecovery({ session, state });
+
+    expect(outcome.kind).toBe("continuation");
+    expect(
+      state.messages.some(
+        (message) =>
+          message.role === "assistant" &&
+          message.toolCalls?.some((call) => call.id === "tc-complete") === true,
+      ),
+    ).toBe(true);
+    expect(
+      state.messages.some(
+        (message) =>
+          message.role === "tool" &&
+          message.toolCallId === "tc-complete" &&
+          message.content === "read-ok",
+      ),
+    ).toBe(true);
+    expect(state.toolResults).toContainEqual(
+      expect.objectContaining({
+        role: "user",
+        toolCallId: "tc-complete",
+        toolName: "stream_read",
+        content: "read-ok",
+      }),
+    );
+  });
+
+  test("continuation path preserves terminal executor closures in model history", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const executor = mkExecutingExecutor();
+    const state = mkState({
+      streamingToolExecutor: executor,
+      maxOutputTokensOverride: MAX_OUTPUT_TOKENS_ESCALATED,
+    });
+
+    const outcome = runMaxOutputTokensRecovery({ session, state });
+
+    expect(outcome.kind).toBe("continuation");
+    expect(state.messages.map((message) => message.role)).toEqual([
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "tc-executing",
+          name: "stream_write",
+          arguments: "{}",
+        },
+      ],
+    });
+    expect(state.messages[1]).toMatchObject({
+      role: "tool",
+      toolCallId: "tc-executing",
+    });
+    expect(state.toolResults).toContainEqual(
+      expect.objectContaining({
+        role: "user",
+        toolCallId: "tc-executing",
+        toolName: "stream_write",
+      }),
+    );
+    expect(findToolTurnValidationIssue(state.messages)).toBeNull();
+  });
+
+  test("preserves already-completed executor results before discard", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const executor = mkCompletedExecutor();
+    const state = mkState({ streamingToolExecutor: executor });
+    const completions: Array<{
+      readonly callId: string;
+      readonly result: string;
+      readonly isError: boolean;
+      readonly metadata?: unknown;
+    }> = [];
+    log.subscribe((event) => {
+      if (event.msg.type === "tool_call_completed") {
+        completions.push(event.msg.payload);
+      }
+    });
+
+    const outcome = runMaxOutputTokensRecovery({ session, state });
+
+    expect(outcome.kind).toBe("escalate");
+    expect(state.completedToolResults).toEqual([
+      {
+        callId: "tc-complete",
+        toolName: "stream_read",
+        arguments: "{}",
+        content: "read-ok",
+        isError: false,
+      },
+    ]);
+    expect(completions).toEqual([
+      {
+        callId: "tc-complete",
+        result: "read-ok",
+        isError: false,
+      },
+    ]);
+    expect(state.toolResults).toEqual([]);
+    expect(
+      state.messages.some(
+        (message) =>
+          message.role === "tool" && message.toolCallId === "tc-complete",
+      ),
+    ).toBe(false);
+    expect(executor.discardCount).toBe(1);
+    expect(executor.lastReason).toBe("max_output_tokens");
   });
 
   test("no executor → escalate still works + emits warning", () => {

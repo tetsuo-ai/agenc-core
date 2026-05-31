@@ -4,7 +4,12 @@ import React, { useEffect } from "react";
 import { describe, expect, test, vi } from "vitest";
 
 import type { AppState } from "./state/AppState.js";
-import { ABORT, APPROVED, APPROVED_FOR_SESSION, DENIED } from "../permissions/review-decision.js";
+import {
+  ABORT,
+  APPROVED,
+  APPROVED_FOR_SESSION,
+  DENIED,
+} from "../permissions/review-decision.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
@@ -58,7 +63,7 @@ function createStreams(): {
 }
 
 async function sleep(ms = 10): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, ms));
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function waitFor(assertion: () => void): Promise<void> {
@@ -138,7 +143,9 @@ describe("permission request bridge coverage", () => {
     const session = createSession(previousResolver, previousBridge);
     const setModel = vi.fn<(next: string) => void>();
     const setExpandedView = vi.fn<(next: "none" | "tasks") => void>();
-    const setAppState = vi.fn<(updater: (prev: AppState) => AppState) => void>();
+    const setAppState =
+      vi.fn<(updater: (prev: AppState) => AppState) => void>();
+    const getAppState = vi.fn<() => AppState>(() => ({}) as AppState);
     let latestRequests: readonly PendingRequest[] = [];
 
     function Harness() {
@@ -147,6 +154,7 @@ describe("permission request bridge coverage", () => {
         setModel,
         setExpandedView,
         setAppState,
+        getAppState,
       );
 
       useEffect(() => {
@@ -172,7 +180,7 @@ describe("permission request bridge coverage", () => {
 
       session.appStateBridge?.setModel?.("model-next");
       session.appStateBridge?.setExpandedView?.("tasks");
-      session.appStateBridge?.setAppState?.(state => state);
+      session.appStateBridge?.setAppState?.((state) => state);
 
       expect(setModel).toHaveBeenCalledWith("model-next");
       expect(setExpandedView).toHaveBeenCalledWith("tasks");
@@ -192,7 +200,7 @@ describe("permission request bridge coverage", () => {
       const mcpDecision = resolver!.request(
         createCtx("mcp-read", "Read", {
           kind: "mcp",
-          rawArguments: "{\"path\":\"src/app.ts\"}",
+          rawArguments: '{"path":"src/app.ts"}',
         }),
       );
       const customDecision = resolver!.request(
@@ -218,7 +226,7 @@ describe("permission request bridge coverage", () => {
         expect(latestRequests).toHaveLength(5);
       });
       expect(
-        latestRequests.map(request => ({
+        latestRequests.map((request) => ({
           id: request.id,
           input: request.input,
           description: request.description,
@@ -257,7 +265,7 @@ describe("permission request bridge coverage", () => {
         { name: ASK_USER_QUESTION_TOOL_NAME },
       ]) as readonly ProjectedConfirm[];
       const confirms = new Map(
-        confirmQueue.map(confirm => [confirm.toolUseID, confirm]),
+        confirmQueue.map((confirm) => [confirm.toolUseID, confirm]),
       );
 
       expect(confirms.has("custom-empty")).toBe(false);
@@ -282,7 +290,9 @@ describe("permission request bridge coverage", () => {
 
       const askConfirm = confirms.get("ask-skip");
       expect(askConfirm).toBeDefined();
-      askConfirm!.onReject("The user provided enough answers for the plan interview");
+      askConfirm!.onReject(
+        "The user provided enough answers for the plan interview",
+      );
       await expect(askDecision).resolves.toEqual(APPROVED);
 
       const askTool = createAskUserQuestionTool();

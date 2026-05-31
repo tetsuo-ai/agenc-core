@@ -14,8 +14,10 @@ import type { PromptCommand } from '../commands.js'
 import { canonicalAgentRoleName } from '../agents/role-presentation.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
-import { query } from '../query.js'
-import { accumulateUsage, updateUsage } from '../services/api/anthropic.js'
+import { requireCurrentRuntimeSession } from '../session/current-session.js'
+import { runTurnCompat } from '../session/turn-compat.js'
+import type { LLMUsage } from '../llm/types.js'
+import { accumulateUsage } from '../services/api/anthropic.js'
 import { EMPTY_USAGE, type NonNullableUsage } from '../services/api/logging.js'
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
@@ -28,7 +30,9 @@ import type { REPLHookContext } from './hooks/postSamplingHooks.js'
 import {
   createUserMessage,
   extractTextContent,
+  getAssistantAPIErrorMessageText,
   getLastAssistantMessage,
+  isAssistantAPIErrorMessage,
 } from './messages.js'
 import { createDenialTrackingState } from './permissions/denialTracking.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
@@ -250,6 +254,12 @@ export function extractResultText(
 ): string {
   const lastAssistantMessage = getLastAssistantMessage(agentMessages)
   if (!lastAssistantMessage) return defaultText
+  if (
+    (lastAssistantMessage as { isApiErrorMessage?: unknown })
+      .isApiErrorMessage === true
+  ) {
+    throw new Error(getAssistantAPIErrorMessageText(lastAssistantMessage))
+  }
 
   const textContent = extractTextContent(
     lastAssistantMessage.message.content,
@@ -519,6 +529,7 @@ export async function runForkedAgent({
     toolUseContext,
     forkContextMessages,
   } = cacheSafeParams
+  const parentSession = requireCurrentRuntimeSession('forked agent')
 
   // Create isolated context to prevent mutation of parent state
   const isolatedToolUseContext = createSubagentContext(
@@ -551,7 +562,7 @@ export async function runForkedAgent({
 
   // Run the query loop with isolated context (cache-safe params preserved)
   try {
-    for await (const message of query({
+    for await (const event of runTurnCompat(parentSession, {
       messages: initialMessages,
       systemPrompt,
       userContext,
@@ -559,25 +570,24 @@ export async function runForkedAgent({
       canUseTool,
       toolUseContext: isolatedToolUseContext,
       querySource,
-      maxOutputTokensOverride: maxOutputTokens,
       maxTurns,
+      maxOutputTokensOverride: maxOutputTokens,
       skipCacheWrite,
+    }, {
+      ...(agentId !== undefined ? { conversationId: agentId } : {}),
+      signal: isolatedToolUseContext.abortController.signal,
     })) {
-      // Extract real usage from message_delta stream events (final usage per API call)
-      if (message.type === 'stream_event') {
-        if (
-          'event' in message &&
-          message.event?.type === 'message_delta' &&
-          message.event.usage
-        ) {
-          const turnUsage = updateUsage({ ...EMPTY_USAGE }, message.event.usage)
-          totalUsage = accumulateUsage(totalUsage, turnUsage)
-        }
+      if (event.type === 'phase') {
         continue
       }
-      if (message.type === 'stream_request_start') {
+      if (event.type === 'progress') {
         continue
       }
+      if (event.type === 'usage') {
+        totalUsage = accumulateUsage(totalUsage, usageFromLlmUsage(event.usage))
+        continue
+      }
+      const message = event.type === 'max_turns' ? event.message : event.message
 
       logForDebugging(
         `Forked agent [${forkLabel}] received message: type=${message.type}`,
@@ -604,6 +614,9 @@ export async function runForkedAgent({
           lastRecordedUuid = msg.uuid
         }
       }
+      if (isAssistantAPIErrorMessage(msg)) {
+        throw new Error(getAssistantAPIErrorMessageText(msg))
+      }
     }
   } finally {
     // Release cloned file state cache memory (same pattern as runAgent.ts)
@@ -619,5 +632,19 @@ export async function runForkedAgent({
   return {
     messages: outputMessages,
     totalUsage,
+  }
+}
+
+function usageFromLlmUsage(usage: LLMUsage): NonNullableUsage {
+  return {
+    ...EMPTY_USAGE,
+    input_tokens: usage.promptTokens ?? 0,
+    output_tokens: usage.completionTokens ?? 0,
+    cache_read_input_tokens: usage.cachedInputTokens ?? 0,
+    cache_creation_input_tokens: usage.cacheCreationInputTokens ?? 0,
+    server_tool_use: {
+      web_search_requests: usage.webSearchRequests ?? 0,
+      web_fetch_requests: 0,
+    },
   }
 }

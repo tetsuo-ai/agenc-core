@@ -150,7 +150,9 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   cancelActiveTurn?(reason?: string): Promise<void>;
   abortTerminal?(reason: string): void;
   flushEventLog?(): Promise<void> | void;
-  emit?(event: Event | { readonly kind: string; readonly [key: string]: unknown }): void;
+  emit?(
+    event: Event | { readonly kind: string; readonly [key: string]: unknown },
+  ): void;
   nextInternalSubId?(): string;
   readonly sessionConfiguration?: {
     readonly cwd?: string;
@@ -161,6 +163,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly cwd?: string;
   readonly home?: string;
   appStateBridge?: {
+    getAppState?: () => unknown;
     setModel?: (next: string) => void;
     setExpandedView?: (next: "none" | "tasks") => void;
     setAppState?: (updater: (prev: unknown) => unknown) => void;
@@ -195,7 +198,11 @@ export function installCompactProgressControls(
   target.onCompactProgress = controls.onCompactProgress;
   target.setSDKStatus = controls.setSDKStatus;
   return () => {
-    restoreCompactProgressControl(target, "setStreamMode", previous.setStreamMode);
+    restoreCompactProgressControl(
+      target,
+      "setStreamMode",
+      previous.setStreamMode,
+    );
     restoreCompactProgressControl(
       target,
       "setResponseLength",
@@ -206,7 +213,11 @@ export function installCompactProgressControls(
       "onCompactProgress",
       previous.onCompactProgress,
     );
-    restoreCompactProgressControl(target, "setSDKStatus", previous.setSDKStatus);
+    restoreCompactProgressControl(
+      target,
+      "setSDKStatus",
+      previous.setSDKStatus,
+    );
   };
 }
 

@@ -73,7 +73,7 @@ export function permissionProfileForSandboxMode(
   mode: SandboxMode,
   options: RuntimeSandboxProfileOptions,
 ): PermissionProfile {
-  const network = options.network ?? "enabled";
+  const network = options.network ?? defaultNetworkForSandboxMode(mode);
   switch (mode) {
     case "danger_full_access":
       return permissionProfileFromRuntimePermissions(
@@ -104,6 +104,18 @@ export function permissionProfileForSandboxMode(
   void options.cwd;
 }
 
+function defaultNetworkForSandboxMode(mode: SandboxMode): NetworkSandboxPolicy {
+  switch (mode) {
+    case "danger_full_access":
+      return "enabled";
+    case "external_sandbox":
+      return "restricted";
+    case "read_only":
+    case "workspace_write":
+      return "disabled";
+  }
+}
+
 export function sandboxModeRequiresPlatformIsolation(mode: SandboxMode): boolean {
   return mode === "read_only" || mode === "workspace_write";
 }
@@ -128,19 +140,24 @@ export function runtimePlatformSandboxStatus(
     case "darwin":
       return { available: true };
     case "win32":
-      if (
-        turn.windowsSandboxLevel === "permissive" ||
-        turn.windowsSandboxLevel === "strict" ||
-        turn.windowsSandboxLevel === "low" ||
-        turn.windowsSandboxLevel === "medium" ||
-        turn.windowsSandboxLevel === "high"
-      ) {
-        return { available: true };
+      if (isWindowsSandboxRequested(turn.windowsSandboxLevel)) {
+        return {
+          available: false,
+          reason: "windows restricted token sandbox is not implemented",
+        };
       }
       return { available: false, reason: "windows sandbox is disabled" };
     default:
       return { available: false, reason: `platform ${process.platform} has no sandbox` };
   }
+}
+
+function isWindowsSandboxRequested(value: unknown): boolean {
+  return value === "permissive" ||
+    value === "strict" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high";
 }
 
 function linuxSandboxStatus(
@@ -221,7 +238,9 @@ export function permissionProfileForRuntimeContext(
     );
   }
   const fileSystem = fileSystemPolicyFromContext(context, options.cwd);
-  const network = networkPolicyFromContext(context) ?? options.network ?? "enabled";
+  const network = networkPolicyFromContext(context) ??
+    options.network ??
+    defaultNetworkForSandboxMode(context.sandboxMode);
   const profile = fileSystem === undefined
     ? permissionProfileForSandboxMode(context.sandboxMode, {
         cwd: options.cwd,

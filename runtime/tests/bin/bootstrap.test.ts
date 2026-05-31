@@ -9,9 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  bootstrapLocalRuntimeSession,
-} from "./bootstrap.js";
+import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
 import {
   readStartupCliFlags,
   resolveStartupSelection,
@@ -29,6 +27,11 @@ import { Session } from "../session/session.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import { PERSONALITY_MIGRATION_FILENAME } from "../personality/migration.js";
+import {
+  adaptTranscriptEvents,
+  appendSessionTranscriptEventForTesting,
+  createSessionTranscriptStateForTesting,
+} from "../tui/session-transcript.js";
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -126,6 +129,22 @@ function writeRecordedThreadForBootstrap(params: {
       rolloutStore.close();
     }
   });
+}
+
+function rolloutEvent(
+  id: string,
+  type: string,
+  payload: unknown,
+  seq: number,
+): RolloutItem {
+  return {
+    type: "event_msg",
+    payload: {
+      id,
+      seq,
+      msg: { type, payload },
+    },
+  } as unknown as RolloutItem;
 }
 
 describe("resolveStartupSelection", () => {
@@ -581,6 +600,41 @@ describe("bootstrapLocalRuntimeSession", () => {
         type: "response_item",
         payload: { role: "user", content: "persisted ask" },
       } as RolloutItem);
+      for (const event of [
+        rolloutEvent("turn", "turn_started", { turnId: "turn-1" }, 1),
+        rolloutEvent(
+          "thinking-start",
+          "assistant_thinking_block_start",
+          { index: 0, redacted: false, kind: "thinking" },
+          2,
+        ),
+        rolloutEvent(
+          "thinking-delta",
+          "assistant_thinking_delta",
+          { index: 0, delta: "visible reasoning", kind: "thinking" },
+          3,
+        ),
+        rolloutEvent(
+          "thinking-stop",
+          "assistant_thinking_block_stop",
+          { index: 0, kind: "thinking" },
+          4,
+        ),
+        rolloutEvent(
+          "thinking-final",
+          "agent_thinking",
+          { text: "visible reasoning", redacted: false, kind: "thinking" },
+          5,
+        ),
+        rolloutEvent(
+          "complete",
+          "turn_complete",
+          { turnId: "turn-1", lastAgentMessage: "done" },
+          6,
+        ),
+      ]) {
+        first.rolloutStore.appendRollout(event);
+      }
       first.rolloutStore.flushDurable();
       await first.shutdown();
       firstShutdown = null;
@@ -603,12 +657,453 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(resumed.initialState.history).toEqual([
         { role: "user", content: "persisted ask" },
       ]);
+      const initialTranscriptEvents = resumed.session.getInitialTranscriptEvents();
+      expect(
+        initialTranscriptEvents.map((event) =>
+          typeof event === "object" && event !== null
+            ? (event as { readonly type?: unknown }).type
+            : undefined,
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          "turn_started",
+          "assistant_thinking_block_start",
+          "assistant_thinking_delta",
+          "assistant_thinking_block_stop",
+          "agent_thinking",
+          "turn_complete",
+        ]),
+      );
+      const transcript = adaptTranscriptEvents(
+        initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
+      );
+      expect(
+        transcript.messages.some(
+          (message) =>
+            message.type === "assistant" &&
+            Array.isArray(message.message?.content) &&
+            message.message.content.some(
+              (part: {
+                readonly type?: unknown;
+                readonly thinking?: unknown;
+              }) =>
+                part.type === "thinking" &&
+                part.thinking === "visible reasoning",
+            ),
+        ),
+      ).toBe(true);
       const resumedSnapshot = resumedManager!.snapshot(conversationId);
       expect(resumedSnapshot).toMatchObject({
         prewarm: "ready",
         historyLength: 1,
       });
       expect(resumedSnapshot.rolloutItemCount).toBeGreaterThanOrEqual(1);
+
+      const maxInitialSeq = Math.max(
+        0,
+        ...initialTranscriptEvents.map((event) =>
+          typeof event === "object" &&
+          event !== null &&
+          "seq" in event &&
+          typeof (event as { readonly seq?: unknown }).seq === "number"
+            ? (event as { readonly seq: number }).seq
+            : 0,
+        ),
+      );
+      const liveEvents: Parameters<
+        typeof appendSessionTranscriptEventForTesting
+      >[1][] = [];
+      const unsubscribe = resumed.session.eventLog.subscribe((event) => {
+        liveEvents.push(
+          event as Parameters<typeof appendSessionTranscriptEventForTesting>[1],
+        );
+      });
+      resumed.session.emit({
+        id: "live-after-resume",
+        msg: {
+          type: "agent_message",
+          payload: { message: "after resume" },
+        },
+      });
+      unsubscribe();
+      const liveEvent = liveEvents.find((event) => event.id === "live-after-resume");
+      expect(liveEvent?.seq).toBeGreaterThan(maxInitialSeq);
+
+      let transcriptState = createSessionTranscriptStateForTesting(
+        initialTranscriptEvents as Parameters<
+          typeof createSessionTranscriptStateForTesting
+        >[0],
+      );
+      transcriptState = appendSessionTranscriptEventForTesting(
+        transcriptState,
+        liveEvent!,
+      );
+      const transcriptAfterLive = adaptTranscriptEvents(transcriptState.events);
+      expect(
+        transcriptAfterLive.messages.some(
+          (message) =>
+            message.type === "assistant" &&
+            Array.isArray(message.message?.content) &&
+            message.message.content.some(
+              (part: { readonly type?: unknown; readonly text?: unknown }) =>
+                part.type === "text" && part.text === "after resume",
+            ),
+        ),
+      ).toBe(true);
+    } finally {
+      await resumedShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("replays streamed tool input events into resumed transcript state", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const conversationId = "conv-streamed-tool-input";
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      firstShutdown = first.shutdown;
+
+      first.rolloutStore.appendRollout(
+        rolloutEvent(
+          "tool-input-delta",
+          "tool_input_delta",
+          { index: 0, partialJson: '{"path":"src/partial' },
+          1,
+        ),
+      );
+      first.rolloutStore.appendRollout(
+        rolloutEvent(
+          "tool-input-start",
+          "tool_input_block_start",
+          {
+            callId: "tool-call-1",
+            index: 0,
+            toolName: "FileRead",
+            contentBlock: {
+              type: "tool_use",
+              id: "tool-call-1",
+              name: "FileRead",
+              input: {},
+            },
+          },
+          2,
+        ),
+      );
+      first.rolloutStore.flushDurable();
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      resumedShutdown = resumed.shutdown;
+
+      const initialTranscriptEvents = resumed.session.getInitialTranscriptEvents();
+      expect(
+        initialTranscriptEvents.map((event) =>
+          typeof event === "object" && event !== null
+            ? (event as { readonly type?: unknown }).type
+            : undefined,
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          "tool_input_delta",
+          "tool_input_block_start",
+        ]),
+      );
+
+      const transcript = adaptTranscriptEvents(
+        initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
+      );
+      expect(transcript.streamingToolUses).toHaveLength(1);
+      expect(transcript.streamingToolUses[0]).toMatchObject({
+        index: 0,
+        contentBlock: {
+          id: "tool-call-1",
+          name: "FileRead",
+        },
+        unparsedToolInput: '{"path":"src/partial',
+      });
+    } finally {
+      await resumedShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("replays MCP tool call events into resumed transcript state", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const conversationId = "conv-mcp-tool-call-replay";
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      firstShutdown = first.shutdown;
+
+      first.rolloutStore.appendRollout(
+        rolloutEvent(
+          "mcp-begin",
+          "mcp_tool_call_begin",
+          {
+            callId: "mcp-call-1",
+            server: "test-server",
+            toolName: "lookup",
+            args: JSON.stringify({ query: "runtime" }),
+          },
+          1,
+        ),
+      );
+      first.rolloutStore.appendRollout(
+        rolloutEvent(
+          "mcp-end",
+          "mcp_tool_call_end",
+          {
+            callId: "mcp-call-1",
+            isError: false,
+            result: "lookup result",
+            durationMs: 12,
+          },
+          2,
+        ),
+      );
+      first.rolloutStore.flushDurable();
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      resumedShutdown = resumed.shutdown;
+
+      const initialTranscriptEvents = resumed.session.getInitialTranscriptEvents();
+      expect(
+        initialTranscriptEvents.map((event) =>
+          typeof event === "object" && event !== null
+            ? (event as { readonly type?: unknown }).type
+            : undefined,
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          "mcp_tool_call_begin",
+          "mcp_tool_call_end",
+        ]),
+      );
+
+      const transcript = adaptTranscriptEvents(
+        initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
+      );
+      expect(transcript.messages.map((message) => message.type)).toEqual([
+        "assistant",
+        "user",
+      ]);
+      const toolUse = transcript.messages[0]?.message.content as Array<{
+        readonly id?: string;
+        readonly name?: string;
+      }>;
+      const toolResult = transcript.messages[1]?.message.content as Array<{
+        readonly tool_use_id?: string;
+        readonly content?: unknown;
+      }>;
+      expect(toolUse?.[0]).toMatchObject({
+        id: "mcp-call-1",
+        name: "lookup",
+      });
+      expect(toolResult?.[0]?.tool_use_id).toBe("mcp-call-1");
+      expect(JSON.stringify(toolResult?.[0]?.content ?? "")).toContain(
+        "lookup result",
+      );
+    } finally {
+      await resumedShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("replays token ledger events into resumed transcript state", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const conversationId = "conv-token-ledger-replay";
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      firstShutdown = first.shutdown;
+
+      first.rolloutStore.appendRollout(
+        rolloutEvent(
+          "usage",
+          "token_count",
+          {
+            promptTokens: 1200,
+            completionTokens: 450,
+            totalTokens: 1650,
+            cachedInputTokens: 300,
+            cacheCreationInputTokens: 50,
+            reasoningOutputTokens: 25,
+            webSearchRequests: 1,
+            model: "gpt-5.4",
+            provider: "openai",
+          },
+          1,
+        ),
+      );
+      first.rolloutStore.flushDurable();
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      resumedShutdown = resumed.shutdown;
+
+      const initialTranscriptEvents = resumed.session.getInitialTranscriptEvents();
+      expect(
+        initialTranscriptEvents.map((event) =>
+          typeof event === "object" && event !== null
+            ? (event as { readonly type?: unknown }).type
+            : undefined,
+        ),
+      ).toEqual(expect.arrayContaining(["token_count"]));
+
+      const transcript = adaptTranscriptEvents(
+        initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
+      );
+      expect(
+        transcript.messages.some(
+          (message) =>
+            message.type === "system" &&
+            typeof message.content === "string" &&
+            message.content.startsWith("Token ledger update:"),
+        ),
+      ).toBe(true);
     } finally {
       await resumedShutdown?.().catch(() => {
         /* best effort */

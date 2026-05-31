@@ -227,6 +227,19 @@ interface AgentLifecycleState {
   agents: Map<string, MutableAgent>;
 }
 
+interface PendingRunnerTermination {
+  readonly snapshot: AgenCBackgroundAgentSnapshot;
+  readonly transitionAt: string;
+}
+
+interface RunnerTerminationTarget {
+  readonly sessionIds: readonly string[];
+  readonly route: AgenCDaemonSnapshotRoute;
+  readonly status: AgentStatus;
+  readonly transitionAt: string;
+  readonly metadata?: JsonObject;
+}
+
 export class AgenCDaemonAgentManager {
   readonly #defaultCwd: () => string;
   readonly #now: () => string;
@@ -267,6 +280,10 @@ export class AgenCDaemonAgentManager {
   #shuttingDown = false;
   #activeCreates = 0;
   readonly #createWaiters = new Set<() => void>();
+  readonly #pendingRunnerTerminations = new Map<
+    string,
+    PendingRunnerTermination
+  >();
   readonly #state = new AsyncLock<AgentLifecycleState>({
     agents: new Map(),
   });
@@ -396,12 +413,33 @@ export class AgenCDaemonAgentManager {
           }
         }
 
-        const result = await this.#state.with((state) => {
+        const { result, pendingTermination } = await this.#state.with((state) => {
           state.agents.set(agent.agentId, agent);
-          return toAgentCreateResult(agent);
+          const pending = this.#pendingRunnerTerminations.get(agent.agentId);
+          let pendingTermination: RunnerTerminationTarget | null = null;
+          if (pending !== undefined) {
+            this.#pendingRunnerTerminations.delete(agent.agentId);
+            pendingTermination = this.#applyRunnerTerminationLocked(
+              state,
+              agent.agentId,
+              pending.snapshot,
+              pending.transitionAt,
+            );
+          }
+          return {
+            result: toAgentCreateResult(agent),
+            pendingTermination,
+          };
         });
+        if (pendingTermination !== null) {
+          await this.#finalizeRunnerTermination(
+            agent.agentId,
+            pendingTermination,
+          );
+        }
         return result;
       } catch (error) {
+        this.#pendingRunnerTerminations.delete(agent.agentId);
         await this.#runner.stopAgent?.(
           agent.agentId,
           "agent.create rollback after lifecycle failure",
@@ -486,6 +524,7 @@ export class AgenCDaemonAgentManager {
       finished = true;
       this.#activeCreates -= 1;
       if (this.#activeCreates === 0) {
+        this.#pendingRunnerTerminations.clear();
         for (const waiter of this.#createWaiters) {
           waiter();
         }
@@ -504,6 +543,7 @@ export class AgenCDaemonAgentManager {
   async listAgents(params: AgentListParams = {}): Promise<AgentListResult> {
     return this.#state.with(async (state) => {
       await this.#refreshAgentsFromRunner(state);
+      await this.#reconcileSessionBackedAgents(state);
       const cursor = normalizeCursor(params.cursor);
       const limit = normalizeLimit(params.limit);
       const agents = [...state.agents.values()]
@@ -611,7 +651,13 @@ export class AgenCDaemonAgentManager {
         await this.#refreshAgentFromRunner(state, agent);
       }
       const refreshed = state.agents.get(agentId);
-      return refreshed === undefined ? null : toAgentSummary(refreshed);
+      if (refreshed !== undefined) {
+        return toAgentSummary(refreshed);
+      }
+      const persisted = this.#listPersistedAgents(state).find(
+        (candidate) => candidate.agentId === agentId,
+      );
+      return persisted === undefined ? null : toAgentSummary(persisted);
     });
   }
 
@@ -621,6 +667,7 @@ export class AgenCDaemonAgentManager {
       const agent = state.agents.get(agentId);
       if (agent !== undefined) {
         await this.#refreshAgentFromRunner(state, agent);
+        await this.#reconcileAgentSessions(agent);
       }
       const refreshed = state.agents.get(agentId);
       if (refreshed !== undefined) {
@@ -717,15 +764,31 @@ export class AgenCDaemonAgentManager {
       }
       const refreshed = state.agents.get(agentId);
       if (refreshed === undefined) {
-        throw new AgenCDaemonAgentLifecycleError(
-          "AGENT_NOT_FOUND",
-          `AgenC daemon agent not found: ${agentId}`,
+        const persisted = this.#listPersistedAgents(state).find(
+          (candidate) => candidate.agentId === agentId,
         );
+        if (persisted === undefined) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "AGENT_NOT_FOUND",
+            `AgenC daemon agent not found: ${agentId}`,
+          );
+        }
+        if (!isActiveAgent(persisted)) {
+          return null;
+        }
+        transitionAt = this.#now();
+        return {
+          sessionIds: [...persisted.sessionIds],
+          route: snapshotRouteForAgent(persisted),
+          persistedOnly: true,
+          runnerStopRequired: false,
+        };
       }
       if (!isActiveAgent(refreshed)) {
         return null;
       }
-      if (stopRunner === undefined) {
+      const runnerStopRequired = !isStaleAgent(refreshed);
+      if (stopRunner === undefined && runnerStopRequired) {
         throw new AgenCDaemonAgentLifecycleError(
           "BACKGROUND_RUNNER_UNAVAILABLE",
           "agent.stop requires a background runner",
@@ -737,6 +800,8 @@ export class AgenCDaemonAgentManager {
       return {
         sessionIds: [...refreshed.sessionIds],
         route: snapshotRouteForAgent(refreshed),
+        persistedOnly: false,
+        runnerStopRequired,
       };
     });
 
@@ -751,40 +816,44 @@ export class AgenCDaemonAgentManager {
       reason,
       target.route,
     );
-    if (stopRunner === undefined) {
+    if (target.runnerStopRequired && stopRunner === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "agent.stop requires a background runner",
       );
     }
-    try {
-      await stopRunner(agentId, reason);
-    } catch (error) {
-      const failedAt = transitionAt ?? this.#now();
-      await this.#markAgentStopFailed(agentId, failedAt);
-      await this.#recordAgentStatusSnapshots(
-        target.sessionIds,
-        agentId,
-        "error",
-        failedAt,
-        reason,
-        target.route,
-      );
-      throw error;
+    if (target.runnerStopRequired) {
+      try {
+        await stopRunner!(agentId, reason);
+      } catch (error) {
+        const failedAt = transitionAt ?? this.#now();
+        await this.#markAgentStopFailed(agentId, failedAt);
+        await this.#recordAgentStatusSnapshots(
+          target.sessionIds,
+          agentId,
+          "error",
+          failedAt,
+          reason,
+          target.route,
+        );
+        throw error;
+      }
     }
 
     const stoppedAt = transitionAt ?? this.#now();
-    await this.#state.with((state) => {
-      const agent = state.agents.get(agentId);
-      if (agent === undefined) return;
-      agent.status = "stopped";
-      agent.lastActiveAt = stoppedAt;
-      agent.logSessionIds = uniqueNonEmptyStrings([
-        ...agent.logSessionIds,
-        ...agent.sessionIds,
-      ]);
-      agent.sessionIds = [];
-    });
+    if (!target.persistedOnly) {
+      await this.#state.with((state) => {
+        const agent = state.agents.get(agentId);
+        if (agent === undefined) return;
+        agent.status = "stopped";
+        agent.lastActiveAt = stoppedAt;
+        agent.logSessionIds = uniqueNonEmptyStrings([
+          ...agent.logSessionIds,
+          ...agent.sessionIds,
+        ]);
+        agent.sessionIds = [];
+      });
+    }
     await this.#recordAgentStatusSnapshots(
       target.sessionIds,
       agentId,
@@ -815,34 +884,69 @@ export class AgenCDaemonAgentManager {
     snapshot: AgenCBackgroundAgentSnapshot,
   ): Promise<void> {
     const transitionAt = this.#now();
-    const target = await this.#state.with(async (state) => {
-      const agent = state.agents.get(agentId);
-      if (agent === undefined) return null;
-      if (!isActiveAgent(agent)) return null;
-      const sessionIds = [...agent.sessionIds];
-      const route = snapshotRouteForAgent(agent);
-      applyAgentSnapshot(agent, snapshot);
-      agent.runtimeAvailable = false;
-      // Mirror stopAgent end-state: move active sessionIds into
-      // logSessionIds so subsequent log reads still address the
-      // archived sessions, and clear sessionIds so the agent is no
-      // longer treated as live.
-      agent.logSessionIds = uniqueNonEmptyStrings([
-        ...agent.logSessionIds,
-        ...agent.sessionIds,
-      ]);
-      agent.sessionIds = [];
-      return { sessionIds, route };
+    const target = await this.#state.with((state) => {
+      const target = this.#applyRunnerTerminationLocked(
+        state,
+        agentId,
+        snapshot,
+        transitionAt,
+      );
+      if (target !== null) return target;
+      if (this.#activeCreates > 0 && !state.agents.has(agentId)) {
+        this.#pendingRunnerTerminations.set(agentId, {
+          snapshot,
+          transitionAt,
+        });
+      }
+      return null;
     });
     if (target === null) return;
+    await this.#finalizeRunnerTermination(agentId, target);
+  }
+
+  #applyRunnerTerminationLocked(
+    state: AgentLifecycleState,
+    agentId: string,
+    snapshot: AgenCBackgroundAgentSnapshot,
+    transitionAt: string,
+  ): RunnerTerminationTarget | null {
+    const agent = state.agents.get(agentId);
+    if (agent === undefined) return null;
+    if (!isActiveAgent(agent)) return null;
+    const sessionIds = [...agent.sessionIds];
+    const route = snapshotRouteForAgent(agent);
+    applyAgentSnapshot(agent, snapshot);
+    agent.runtimeAvailable = false;
+    // Mirror stopAgent end-state: move active sessionIds into
+    // logSessionIds so subsequent log reads still address the
+    // archived sessions, and clear sessionIds so the agent is no
+    // longer treated as live.
+    agent.logSessionIds = uniqueNonEmptyStrings([
+      ...agent.logSessionIds,
+      ...agent.sessionIds,
+    ]);
+    agent.sessionIds = [];
+    return {
+      sessionIds,
+      route,
+      status: snapshot.status,
+      transitionAt,
+      ...(snapshot.metadata !== undefined ? { metadata: snapshot.metadata } : {}),
+    };
+  }
+
+  async #finalizeRunnerTermination(
+    agentId: string,
+    target: RunnerTerminationTarget,
+  ): Promise<void> {
     await this.#recordAgentStatusSnapshots(
       target.sessionIds,
       agentId,
-      snapshot.status,
-      transitionAt,
+      target.status,
+      target.transitionAt,
       "runner_terminated",
       target.route,
-      snapshot.metadata,
+      target.metadata,
     );
     await this.#terminateAgentSessions(target.sessionIds, "runner_terminated");
   }
@@ -1068,6 +1172,21 @@ export class AgenCDaemonAgentManager {
     }
     const session = await this.#sessionManager.getSession(params.sessionId);
     if (session === null || !isActiveSession(session)) {
+      return { sessionId: params.sessionId, cancelled: false, reason };
+    }
+    const canCancel = await this.#state.with(async (state) => {
+      const agent = state.agents.get(session.agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(session.agentId);
+      return (
+        refreshed !== undefined &&
+        isActiveAgent(refreshed) &&
+        !isRecoveredRuntimeUnavailable(refreshed)
+      );
+    });
+    if (!canCancel) {
       return { sessionId: params.sessionId, cancelled: false, reason };
     }
     if (this.#runner.interruptAgentTurn === undefined) {
@@ -1573,6 +1692,7 @@ export class AgenCDaemonAgentManager {
       const agent = state.agents.get(agentId);
       if (agent !== undefined) {
         await this.#refreshAgentFromRunner(state, agent);
+        await this.#reconcileAgentSessions(agent);
       }
       const refreshed = state.agents.get(agentId);
       if (refreshed === undefined || !isActiveAgent(refreshed)) {
@@ -1638,6 +1758,53 @@ export class AgenCDaemonAgentManager {
     }
   }
 
+  async #reconcileSessionBackedAgents(
+    state: AgentLifecycleState,
+  ): Promise<void> {
+    if (this.#sessionManager === undefined) return;
+    for (const agent of state.agents.values()) {
+      await this.#reconcileAgentSessions(agent);
+    }
+  }
+
+  async #reconcileAgentSessions(agent: MutableAgent): Promise<void> {
+    if (this.#sessionManager === undefined || agent.sessionIds.length === 0) {
+      return;
+    }
+    const activeSessionIds: string[] = [];
+    const inactiveSessionIds: string[] = [];
+    for (const sessionId of agent.sessionIds) {
+      const session = await this.#sessionManager.getSession(sessionId);
+      if (session !== null && isActiveSession(session)) {
+        activeSessionIds.push(sessionId);
+      } else {
+        inactiveSessionIds.push(sessionId);
+      }
+    }
+    if (inactiveSessionIds.length === 0) return;
+    agent.logSessionIds = uniqueNonEmptyStrings([
+      ...agent.logSessionIds,
+      ...inactiveSessionIds,
+    ]);
+    agent.sessionIds = activeSessionIds;
+    if (activeSessionIds.length === 0 && isActiveAgent(agent)) {
+      let stopFailed = false;
+      if (!isRecoveredRuntimeUnavailable(agent)) {
+        const stopRunner = this.#runner?.stopAgent?.bind(this.#runner);
+        if (stopRunner !== undefined) {
+          try {
+            await stopRunner(agent.agentId, "session_terminated");
+          } catch {
+            stopFailed = true;
+          }
+        }
+      }
+      agent.status = stopFailed ? "error" : "stopped";
+      agent.lastActiveAt = this.#now();
+      agent.runtimeAvailable = false;
+    }
+  }
+
   async #resolveAttachmentTarget(
     agentId: string,
   ): Promise<AgentAttachmentTarget> {
@@ -1645,9 +1812,19 @@ export class AgenCDaemonAgentManager {
       const agent = state.agents.get(agentId);
       if (agent !== undefined) {
         await this.#refreshAgentFromRunner(state, agent);
+        await this.#reconcileAgentSessions(agent);
       }
       const refreshed = state.agents.get(agentId);
       if (refreshed === undefined || !isActiveAgent(refreshed)) {
+        const persisted = this.#listPersistedAgents(state).find(
+          (candidate) => candidate.agentId === agentId,
+        );
+        if (persisted !== undefined) {
+          return {
+            agentId: persisted.agentId,
+            sessionIds: [...persisted.sessionIds],
+          };
+        }
         throw new AgenCDaemonAgentLifecycleError(
           "AGENT_NOT_FOUND",
           `AgenC daemon agent not found: ${agentId}`,

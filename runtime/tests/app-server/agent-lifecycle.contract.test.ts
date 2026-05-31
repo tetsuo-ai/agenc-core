@@ -340,6 +340,171 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("attaches to persisted agents when source agent id differs from thread id", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "thread-distinct-agent-attach");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "thread-distinct-agent-attach",
+        rolloutStore: rollout,
+        source: {
+          kind: "agent",
+          agentId: "agent-distinct-attach",
+          objective: "Attach persisted objective",
+        },
+        cwd,
+      });
+      threadStore.shutdownThread("thread-distinct-agent-attach");
+
+      const sessionManager = new AgenCDaemonSessionManager({
+        threadStore,
+        createAttachmentId: sequence(["attachment-persisted-agent"]),
+        now: sequence(["2026-05-01T12:31:00.000Z"]),
+      });
+      const recreated = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager,
+      });
+
+      await expect(recreated.listAgents()).resolves.toMatchObject({
+        agents: [
+          {
+            agentId: "agent-distinct-attach",
+            objective: "Attach persisted objective",
+            activeSessionIds: ["thread-distinct-agent-attach"],
+          },
+        ],
+      });
+      await expect(
+        recreated.attachAgent({
+          agentId: "agent-distinct-attach",
+          clientId: "tui_1",
+        }),
+      ).resolves.toMatchObject({
+        agentId: "agent-distinct-attach",
+        attachmentId: "attachment-persisted-agent",
+        runtimeSessionId: "agent-distinct-attach",
+        sessionIds: ["thread-distinct-agent-attach"],
+        sessions: [
+          {
+            sessionId: "thread-distinct-agent-attach",
+            agentId: "agent-distinct-attach",
+            status: "waiting",
+          },
+        ],
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("gets persisted agents when source agent id differs from thread id", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "thread-distinct-agent-get");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "thread-distinct-agent-get",
+        rolloutStore: rollout,
+        source: {
+          kind: "agent",
+          agentId: "agent-distinct-get",
+          objective: "Get persisted objective",
+        },
+        cwd,
+      });
+      threadStore.shutdownThread("thread-distinct-agent-get");
+
+      const recreated = new AgenCDaemonAgentManager({ threadStore });
+
+      await expect(recreated.listAgents()).resolves.toMatchObject({
+        agents: [
+          {
+            agentId: "agent-distinct-get",
+            objective: "Get persisted objective",
+            activeSessionIds: ["thread-distinct-agent-get"],
+          },
+        ],
+      });
+      await expect(recreated.getAgent("agent-distinct-get")).resolves.toMatchObject(
+        {
+          agentId: "agent-distinct-get",
+          objective: "Get persisted objective",
+          activeSessionIds: ["thread-distinct-agent-get"],
+        },
+      );
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stops persisted agents when source agent id differs from thread id", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "thread-distinct-agent-stop");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "thread-distinct-agent-stop",
+        rolloutStore: rollout,
+        source: {
+          kind: "agent",
+          agentId: "agent-distinct-stop",
+          objective: "Stop persisted objective",
+        },
+        cwd,
+      });
+      threadStore.shutdownThread("thread-distinct-agent-stop");
+
+      const sessionManager = new AgenCDaemonSessionManager({
+        threadStore,
+        now: sequence(["2026-05-01T12:32:00.000Z"]),
+      });
+      const recreated = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager,
+        now: sequence(["2026-05-01T12:31:00.000Z"]),
+      });
+
+      await expect(recreated.listAgents()).resolves.toMatchObject({
+        agents: [
+          {
+            agentId: "agent-distinct-stop",
+            objective: "Stop persisted objective",
+            activeSessionIds: ["thread-distinct-agent-stop"],
+          },
+        ],
+      });
+      await expect(
+        recreated.stopAgent({
+          agentId: "agent-distinct-stop",
+          reason: "operator stop",
+        }),
+      ).resolves.toEqual({
+        agentId: "agent-distinct-stop",
+        stopped: true,
+      });
+      await expect(recreated.listAgents()).resolves.toEqual({ agents: [] });
+
+      const fresh = new AgenCDaemonAgentManager({ threadStore });
+      await expect(fresh.listAgents()).resolves.toEqual({ agents: [] });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("rejects logs for existing persisted non-agent thread ids", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const rollout = openRollout(cwd, "non-agent-thread-log");
@@ -617,7 +782,9 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("allows restored agents marked runtime-available to accept messages", async () => {
-    const sessions = new AgenCDaemonSessionManager();
+    const sessions = new AgenCDaemonSessionManager({
+      now: () => "2026-05-01T12:07:01.000Z",
+    });
     await sessions.restoreSession({
       sessionId: "session-runtime-restored",
       agentId: "agent-runtime-restored",
@@ -669,7 +836,9 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("routes session.clear to the runner that owns the daemon session", async () => {
-    const sessions = new AgenCDaemonSessionManager();
+    const sessions = new AgenCDaemonSessionManager({
+      now: () => "2026-05-01T12:07:01.000Z",
+    });
     await sessions.restoreSession({
       sessionId: "session-clear-restored",
       agentId: "agent-clear-restored",
@@ -820,6 +989,222 @@ describe("AgenC background agent lifecycle", () => {
       "agent-cancel-active",
       "user_interrupt",
     );
+  });
+
+  it("does not cancel a recovered session without a live runtime", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-cancel-recovered",
+      agentId: "agent-cancel-recovered",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect recovery",
+    });
+    const interruptAgentTurn = vi.fn(async () => true);
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:07:00.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        interruptAgentTurn,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-cancel-recovered",
+      objective: "inspect recovery",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-cancel-recovered"],
+      runtimeAvailable: false,
+    });
+
+    await expect(
+      agents.attachAgent({ agentId: "agent-cancel-recovered" }),
+    ).resolves.toMatchObject({
+      sessionIds: ["session-cancel-recovered"],
+    });
+    await expect(
+      agents.cancelSessionTurn({
+        sessionId: "session-cancel-recovered",
+        reason: "user_interrupt",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-cancel-recovered",
+      cancelled: false,
+      reason: "user_interrupt",
+    });
+    expect(interruptAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it("stops recovered agents without a live runtime when no runner stop is available", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      now: () => "2026-05-01T12:07:01.000Z",
+    });
+    await sessions.restoreSession({
+      sessionId: "session-stop-recovered",
+      agentId: "agent-stop-recovered",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect recovery",
+    });
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: sequence([
+        "2026-05-01T12:07:00.000Z",
+        "2026-05-01T12:07:01.000Z",
+      ]),
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-stop-recovered",
+      objective: "inspect recovery",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-stop-recovered"],
+      runtimeAvailable: false,
+    });
+
+    await expect(
+      agents.stopAgent({
+        agentId: "agent-stop-recovered",
+        reason: "operator stop",
+      }),
+    ).resolves.toEqual({
+      agentId: "agent-stop-recovered",
+      stopped: true,
+    });
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(
+      sessions.getSession("session-stop-recovered"),
+    ).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:07:01.000Z",
+    });
+  });
+
+  it("drops recovered agents after their only session is terminated", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      now: sequence([
+        "2026-05-01T12:08:00.000Z",
+        "2026-05-01T12:08:01.000Z",
+      ]),
+    });
+    await sessions.restoreSession({
+      sessionId: "session-terminate-recovered",
+      agentId: "agent-terminate-recovered",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect recovery",
+    });
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:08:01.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-terminate-recovered",
+      objective: "inspect recovery",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-terminate-recovered"],
+      runtimeAvailable: false,
+    });
+
+    await expect(agents.listAgents()).resolves.toMatchObject({
+      agents: [
+        {
+          agentId: "agent-terminate-recovered",
+          activeSessionIds: ["session-terminate-recovered"],
+        },
+      ],
+    });
+    await sessions.terminateSession({
+      sessionId: "session-terminate-recovered",
+      reason: "session.terminate",
+    });
+
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(
+      agents.getAgent("agent-terminate-recovered"),
+    ).resolves.toMatchObject({
+      agentId: "agent-terminate-recovered",
+      status: "stopped",
+    });
+    await expect(
+      agents.attachAgent({ agentId: "agent-terminate-recovered" }),
+    ).rejects.toMatchObject({
+      code: "AGENT_NOT_FOUND",
+    });
+  });
+
+  it("stops live agents after their only session is terminated", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session-terminate-live"]),
+      now: sequence([
+        "2026-05-01T12:09:00.000Z",
+        "2026-05-01T12:09:01.000Z",
+      ]),
+    });
+    const stopAgent = vi.fn(async () => {});
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: sequence([
+        "2026-05-01T12:09:00.000Z",
+        "2026-05-01T12:09:02.000Z",
+      ]),
+      runner: {
+        startAgent: async () => ({
+          agentId: "agent-terminate-live",
+          startedAt: "2026-05-01T12:09:00.500Z",
+          status: "running",
+        }),
+        stopAgent,
+      },
+    });
+
+    await expect(
+      agents.createAgent({ objective: "inspect live termination" }),
+    ).resolves.toMatchObject({
+      agentId: "agent-terminate-live",
+      sessionId: "session-terminate-live",
+    });
+    await sessions.terminateSession({
+      sessionId: "session-terminate-live",
+      reason: "session.terminate",
+    });
+
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    expect(stopAgent).toHaveBeenCalledWith(
+      "agent-terminate-live",
+      "session_terminated",
+    );
+    await expect(agents.getAgent("agent-terminate-live")).resolves.toMatchObject(
+      {
+        agentId: "agent-terminate-live",
+        status: "stopped",
+      },
+    );
+    await expect(
+      agents.attachAgent({ agentId: "agent-terminate-live" }),
+    ).rejects.toMatchObject({
+      code: "AGENT_NOT_FOUND",
+    });
   });
 
   it("session.cancelTurn returns cancelled=false for an unknown session (idle no-op)", async () => {
@@ -4313,6 +4698,74 @@ describe("AgenC background agent lifecycle", () => {
     expect(
       listed.agents.find((agent) => agent.agentId === "agent_reaped"),
     ).toBeUndefined();
+  });
+
+  it("applies terminal runner snapshots that arrive during agent creation", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_fast_done"]),
+      now: () => "2026-05-01T12:00:01.000Z",
+    });
+    let terminatedCallback:
+      | ((
+          agentId: string,
+          snapshot: AgenCBackgroundAgentSnapshot,
+        ) => void | Promise<void>)
+      | undefined;
+    const transitions: Array<{
+      readonly agentId: string;
+      readonly status: string;
+      readonly reason?: string;
+    }> = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      setOnActiveAgentTerminated(callback) {
+        terminatedCallback = callback;
+      },
+      startAgent: async () => {
+        await terminatedCallback?.("agent_fast_done", {
+          status: "stopped",
+          lastActiveAt: "2026-05-01T12:00:00.750Z",
+        });
+        return {
+          agentId: "agent_fast_done",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        };
+      },
+      stopAgent: async () => {},
+      getAgentSnapshot: async () => null,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/tmp/agenc-fast-done",
+      now: () => "2026-05-01T12:00:02.000Z",
+      sessionManager: sessions,
+      runner,
+      recordAgentStatusTransition: (transition) => {
+        transitions.push({
+          agentId: transition.agentId,
+          status: transition.status,
+          ...(transition.reason !== undefined
+            ? { reason: transition.reason }
+            : {}),
+        });
+      },
+    });
+    runner.setOnActiveAgentTerminated?.((id, snapshot) =>
+      agents.handleRunnerTerminated(id, snapshot),
+    );
+
+    await agents.createAgent({ objective: "finish immediately" });
+
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(sessions.getSession("session_fast_done")).resolves.toMatchObject(
+      {
+        status: "closed",
+      },
+    );
+    expect(transitions).toContainEqual({
+      agentId: "agent_fast_done",
+      status: "stopped",
+      reason: "runner_terminated",
+    });
   });
 
   it("reaps recovered agents whose runtime never came back", async () => {

@@ -508,6 +508,54 @@ describe("buildAnthropicMessagesRequest", () => {
     });
   });
 
+  test("skipCacheWrite shifts the conversation cache marker off the final fork message", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "test-model",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "inspect" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_1",
+              name: "system.echo",
+              arguments: "{\"text\":\"ok\"}",
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call_1",
+          toolName: "system.echo",
+          content: "ok",
+        },
+        { role: "user", content: "continue" },
+      ],
+      tools: [],
+      options: { skipCacheWrite: true },
+    });
+
+    expect(countCacheControlBlocks(request)).toBe(2);
+    const messages = request.messages as Array<Record<string, unknown>>;
+    expect(messages.at(-2)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "call_1",
+          content: "ok",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    });
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: "continue",
+    });
+  });
+
   test("passes context management through the request body", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",

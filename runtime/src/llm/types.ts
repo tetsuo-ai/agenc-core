@@ -65,6 +65,7 @@ export interface LLMMessage {
    */
   runtimeOnly?: {
     readonly mergeBoundary?: "user_context";
+    readonly excludeFromDurableHistory?: true;
     /**
      * When `true`, this message is preserved across compaction
      * boundaries. Compaction extracts anchor-marked messages from
@@ -568,8 +569,13 @@ export interface LLMChatOptions {
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
    * optimization — has no effect on correctness. No server-side
    * conversation state is implied.
-   */
+  */
   readonly promptCacheKey?: string;
+  /**
+   * For fire-and-forget fork turns, avoid writing the fork's tail into
+   * provider prompt cache while preserving cache reads from the shared prefix.
+   */
+  readonly skipCacheWrite?: boolean;
   readonly toolRouting?: LLMChatToolRoutingOptions;
   /** Request-scoped tool catalog. Providers should prefer this over
    * constructor-time tools so late MCP/dynamic tools can appear after

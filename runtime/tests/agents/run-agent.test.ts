@@ -385,6 +385,35 @@ describe("runAgent", () => {
     }
   });
 
+  it("marks interrupted when the child turn reports cancellation", async () => {
+    const provider = makeProvider([{ content: "should not run" }]);
+    const session = makeStubSession({
+      services: {
+        provider,
+        guardianRejectionCircuitBreaker: {
+          clearTurn: vi.fn(),
+          isOpen: vi.fn(() => true),
+        } as never,
+      },
+    });
+    const { live } = await spawnLive(session);
+
+    const { events, result } = await collectRun(
+      runAgent({
+        live,
+        parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    expect(provider.chatStream).not.toHaveBeenCalled();
+    expect(result.outcome).toBe("interrupted");
+    expect(live.status.value.status).toBe("interrupted");
+    expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
+    expect(events.some((event) => event.kind === "run_complete")).toBe(false);
+  });
+
   it("removes the external abort listener after completion", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });
@@ -1656,6 +1685,61 @@ describe("runAgent", () => {
       expect(live.status.value.error).toContain("provider_boom");
     }
     expect(events.some((e) => e.kind === "run_error")).toBe(true);
+  });
+
+  it("classifies role timeout as run error", async () => {
+    vi.useFakeTimers();
+    let resolveStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let observedAbortReason: unknown;
+    const chatStream = vi.fn<LLMProvider["chatStream"]>().mockImplementation(
+      (_messages, _onChunk, options) =>
+        new Promise<LLMResponse>((_resolve, reject) => {
+          const signal = options?.signal;
+          signal?.addEventListener(
+            "abort",
+            () => {
+              observedAbortReason = signal.reason;
+              reject(new Error(String(signal.reason ?? "aborted")));
+            },
+            { once: true },
+          );
+          resolveStarted();
+        }),
+    );
+    const provider: LLMProvider = {
+      name: "fake",
+      chat: vi.fn(),
+      chatStream,
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+
+    const runPromise = collectRun(
+      runAgent({
+        live,
+        parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        timeoutMs: 1,
+      }),
+    );
+
+    await started;
+    await vi.advanceTimersByTimeAsync(1);
+    const { events, result } = await runPromise;
+
+    expect(observedAbortReason).toBe("role_timeout");
+    expect(result.outcome).toBe("errored");
+    expect(live.status.value.status).toBe("errored");
+    if (live.status.value.status === "errored") {
+      expect(live.status.value.error).toContain("role_timeout");
+    }
+    expect(events.some((e) => e.kind === "run_error")).toBe(true);
+    expect(events.some((e) => e.kind === "run_interrupted")).toBe(false);
   });
 
   it("marks interrupted on signal.abort", async () => {

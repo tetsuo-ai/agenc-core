@@ -13,6 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
+import { ThreadNotFoundError } from "../thread-store/store.js";
 import type {
   StoredThread,
   ThreadSource,
@@ -94,6 +95,7 @@ interface MutableSession {
   metadata?: JsonObject;
   closedAt?: string;
   terminationReason?: string;
+  recoveredFromThreadStore?: boolean;
   attachments: Map<string, AgenCSessionAttachment>;
 }
 
@@ -215,7 +217,7 @@ export class AgenCDaemonSessionManager {
 
   async getSession(sessionId: string): Promise<SessionSummary | null> {
     return this.#state.with((state) => {
-      const session = state.sessions.get(sessionId);
+      const session = this.#getOrMaterializeSession(state, sessionId);
       return session === undefined ? null : toSessionSummary(session);
     });
   }
@@ -225,6 +227,13 @@ export class AgenCDaemonSessionManager {
       let active = 0;
       let closed = 0;
       for (const session of state.sessions.values()) {
+        if (session.status === "closed") {
+          closed += 1;
+        } else {
+          active += 1;
+        }
+      }
+      for (const session of this.#listPersistedSessions(state, undefined)) {
         if (session.status === "closed") {
           closed += 1;
         } else {
@@ -272,7 +281,7 @@ export class AgenCDaemonSessionManager {
     params: SessionAttachParams,
   ): Promise<SessionAttachResult> {
     return this.#state.with((state) => {
-      const session = requireOpenSession(state, params.sessionId);
+      const session = this.#requireOpenSession(state, params.sessionId);
       const existing =
         params.clientId !== undefined
           ? findAttachmentByClientId(session, params.clientId)
@@ -297,7 +306,7 @@ export class AgenCDaemonSessionManager {
     params: SessionDetachParams,
   ): Promise<SessionDetachResult> {
     return this.#state.with((state) => {
-      const session = requireSession(state, params.sessionId);
+      const session = this.#requireSession(state, params.sessionId);
       const attachment = findAttachment(session, params);
 
       if (attachment === undefined) {
@@ -322,9 +331,10 @@ export class AgenCDaemonSessionManager {
     params: SessionTerminateParams,
   ): Promise<SessionTerminateResult> {
     return this.#state.with((state) => {
-      const session = requireSession(state, params.sessionId);
+      const session = this.#requireSession(state, params.sessionId);
 
       if (session.status === "closed") {
+        this.#archiveRecoveredThread(session);
         return toTerminateResult(session, false);
       }
 
@@ -332,37 +342,75 @@ export class AgenCDaemonSessionManager {
       session.closedAt = this.#now();
       session.attachments.clear();
       if (params.reason !== undefined) session.terminationReason = params.reason;
+      this.#archiveRecoveredThread(session);
       return toTerminateResult(session, true);
     });
   }
-}
 
-function requireSession(
-  state: SessionLifecycleState,
-  sessionId: string,
-): MutableSession {
-  const session = state.sessions.get(sessionId);
-  if (session === undefined) {
-    throw new AgenCSessionLifecycleError(
-      "SESSION_NOT_FOUND",
-      `AgenC daemon session not found: ${sessionId}`,
-    );
+  #archiveRecoveredThread(session: MutableSession): void {
+    if (!session.recoveredFromThreadStore || this.#threadStore === undefined) {
+      return;
+    }
+    try {
+      this.#threadStore.archiveThread({ threadId: session.sessionId });
+    } catch (error) {
+      if (error instanceof ThreadNotFoundError) return;
+      throw error;
+    }
   }
-  return session;
-}
 
-function requireOpenSession(
-  state: SessionLifecycleState,
-  sessionId: string,
-): MutableSession {
-  const session = requireSession(state, sessionId);
-  if (session.status === "closed") {
-    throw new AgenCSessionLifecycleError(
-      "SESSION_CLOSED",
-      `AgenC daemon session is closed: ${sessionId}`,
-    );
+  #getOrMaterializeSession(
+    state: SessionLifecycleState,
+    sessionId: string,
+  ): MutableSession | undefined {
+    const existing = state.sessions.get(sessionId);
+    if (existing !== undefined) return existing;
+    if (this.#threadStore === undefined) return undefined;
+
+    let thread: StoredThread;
+    try {
+      thread = this.#threadStore.readThread({
+        threadId: sessionId,
+        includeArchived: false,
+        includeHistory: false,
+      });
+    } catch (error) {
+      if (error instanceof ThreadNotFoundError) return undefined;
+      throw error;
+    }
+
+    const session = storedThreadToMutableSession(thread, this.#defaultAgentId);
+    state.sessions.set(session.sessionId, session);
+    return session;
   }
-  return session;
+
+  #requireSession(
+    state: SessionLifecycleState,
+    sessionId: string,
+  ): MutableSession {
+    const session = this.#getOrMaterializeSession(state, sessionId);
+    if (session === undefined) {
+      throw new AgenCSessionLifecycleError(
+        "SESSION_NOT_FOUND",
+        `AgenC daemon session not found: ${sessionId}`,
+      );
+    }
+    return session;
+  }
+
+  #requireOpenSession(
+    state: SessionLifecycleState,
+    sessionId: string,
+  ): MutableSession {
+    const session = this.#requireSession(state, sessionId);
+    if (session.status === "closed") {
+      throw new AgenCSessionLifecycleError(
+        "SESSION_CLOSED",
+        `AgenC daemon session is closed: ${sessionId}`,
+      );
+    }
+    return session;
+  }
 }
 
 function toSessionSummary(session: MutableSession): SessionSummary {
@@ -377,6 +425,23 @@ function toSessionSummary(session: MutableSession): SessionSummary {
       ? { activeAttachmentIds: activeAttachmentIds(session) }
       : {}),
     ...(session.closedAt !== undefined ? { closedAt: session.closedAt } : {}),
+  };
+}
+
+function storedThreadToMutableSession(
+  thread: StoredThread,
+  defaultAgentId: string,
+): MutableSession {
+  const summary = storedThreadToSessionSummary(thread, defaultAgentId);
+  return {
+    sessionId: summary.sessionId,
+    agentId: summary.agentId,
+    status: summary.status,
+    createdAt: summary.createdAt,
+    attachments: new Map(),
+    recoveredFromThreadStore: true,
+    ...(summary.cwd !== undefined ? { cwd: summary.cwd } : {}),
+    ...(summary.metadata !== undefined ? { metadata: summary.metadata } : {}),
   };
 }
 

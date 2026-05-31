@@ -114,6 +114,10 @@ export interface UserMessageEvent {
   readonly message: string | readonly LLMContentPart[];
   readonly displayText?: string;
   readonly images?: ReadonlyArray<string>;
+  readonly queuedCommandUuid?: string;
+  readonly messageId?: string;
+  readonly streamId?: string;
+  readonly acceptedAt?: string;
 }
 
 export interface TokenCountEvent {
@@ -495,6 +499,10 @@ export interface TurnContextItem {
   readonly sandboxPolicy: string;
   readonly fileSystemSandboxPolicy?: FileSystemSandboxPolicy;
   readonly model: string;
+  readonly modelContextWindow?: number;
+  readonly rawModelContextWindow?: number;
+  readonly modelEffectiveContextWindowPercent?: number;
+  readonly autoCompactTokenLimit?: number;
   readonly modelProviderId?: string;
   readonly personality?: Personality;
   readonly collaborationMode?: CollaborationMode;
@@ -989,6 +997,11 @@ export class EventLog {
     return this.nextSeq;
   }
 
+  seedLastSeq(seq: EventSeq): void {
+    if (!Number.isSafeInteger(seq) || seq <= this.nextSeq) return;
+    this.nextSeq = seq;
+  }
+
   close(): void {
     this.closed = true;
     this.listeners.clear();
@@ -1015,6 +1028,10 @@ export interface EmitErrorOptions {
   readonly status?: number;
 }
 
+interface EmitErrorTarget {
+  emit(event: Event): Event | void;
+}
+
 /**
  * I-8 entry point. Every error site MUST funnel through this helper
  * so post-mortem analysis can distinguish *what kind of failure
@@ -1023,36 +1040,38 @@ export interface EmitErrorOptions {
  * route on `stream_error` events).
  */
 export function emitError(
-  log: EventLog,
+  log: EmitErrorTarget,
   subId: string,
   options: EmitErrorOptions,
 ): Event {
-  if (options.streamError) {
-    return log.emit({
-      id: subId,
-      msg: {
-        type: "stream_error",
-        payload: {
-          cause: options.cause,
-          message: options.message,
-          ...(options.provider !== undefined ? { provider: options.provider } : {}),
-          ...(options.status !== undefined ? { status: options.status } : {}),
+  const event: Event = options.streamError
+    ? {
+        id: subId,
+        msg: {
+          type: "stream_error",
+          payload: {
+            cause: options.cause,
+            message: options.message,
+            ...(options.provider !== undefined
+              ? { provider: options.provider }
+              : {}),
+            ...(options.status !== undefined ? { status: options.status } : {}),
+          },
         },
-      },
-    });
-  }
-  return log.emit({
-    id: subId,
-    msg: {
-      type: "error",
-      payload: {
-        cause: options.cause,
-        message: options.message,
-        ...(options.turnId !== undefined ? { turnId: options.turnId } : {}),
-        ...(options.stack !== undefined ? { stack: options.stack } : {}),
-      },
-    },
-  });
+      }
+    : {
+        id: subId,
+        msg: {
+          type: "error",
+          payload: {
+            cause: options.cause,
+            message: options.message,
+            ...(options.turnId !== undefined ? { turnId: options.turnId } : {}),
+            ...(options.stack !== undefined ? { stack: options.stack } : {}),
+          },
+        },
+      };
+  return log.emit(event) ?? event;
 }
 
 /**

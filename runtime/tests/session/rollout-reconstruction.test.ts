@@ -373,6 +373,10 @@ describe("rollout-reconstruction", () => {
           approvalPolicy: "never",
           sandboxPolicy: "workspace-write",
           model: "grok-4",
+          modelContextWindow: 100_000,
+          rawModelContextWindow: 200_000,
+          modelEffectiveContextWindowPercent: 50,
+          autoCompactTokenLimit: 90_000,
           realtimeActive: true,
           personality: "friendly",
         } as unknown as import("./event-log.js").TurnContextItem,
@@ -392,6 +396,12 @@ describe("rollout-reconstruction", () => {
     expect(r.previousTurnSettings?.model).toBe("grok-4");
     expect(r.previousTurnSettings?.realtimeActive).toBe(true);
     expect(r.previousTurnSettings?.personality).toBe("friendly");
+    expect(r.previousTurnSettings?.contextWindow).toBe(200_000);
+    expect(r.previousTurnSettings?.modelInfo).toEqual({
+      contextWindow: 200_000,
+      effectiveContextWindowPercent: 50,
+      autoCompactTokenLimit: 90_000,
+    });
   });
 
   test("legacy compacted (no replacementHistory) rebuilds history via buildCompactedHistory", () => {

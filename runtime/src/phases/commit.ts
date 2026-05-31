@@ -34,14 +34,31 @@
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
+  AssistantMessage,
   CompletedToolResultRecord,
   TurnState,
 } from "../session/turn-state.js";
-import type { LLMMessage } from "../llm/types.js";
+import {
+  buildAgenCToolUseContext,
+  type AgenCToolUseContext,
+} from "../session/agenc-tool-use-context.js";
+import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import {
   ensureExtractMemoriesInitialized,
   executeExtractMemories,
 } from "../services/extractMemories/extractMemories.js";
+import { executePromptSuggestion } from "../services/PromptSuggestion/promptSuggestion.js";
+import { executeAutoDream } from "../services/autoDream/autoDream.js";
+import type { ToolUseContext } from "../tools/Tool.js";
+import type { Message } from "../types/message.js";
+import { getGlobalConfig } from "../utils/config.js";
+import { isBareMode, isEnvDefinedFalsy } from "../utils/envUtils.js";
+import {
+  createCacheSafeParams,
+  saveCacheSafeParams,
+} from "../utils/forkedAgent.js";
+import type { REPLHookContext } from "../utils/hooks/postSamplingHooks.js";
+import { asSystemPrompt } from "../utils/systemPromptType.js";
 import { evaluateStopHooks } from "./stop-hooks.js";
 
 /**
@@ -52,7 +69,11 @@ import { evaluateStopHooks } from "./stop-hooks.js";
 const MAX_STOP_HOOK_BLOCKS = 3;
 
 function toolUseSummaryText(summary: unknown): string | null {
-  if (summary === null || summary === undefined || typeof summary !== "object") {
+  if (
+    summary === null ||
+    summary === undefined ||
+    typeof summary !== "object"
+  ) {
     return null;
   }
   const record = summary as Record<string, unknown>;
@@ -110,11 +131,293 @@ function emitSavedMemoryMessage(
   });
 }
 
+interface CommitOptions {
+  readonly querySource?: string;
+}
+
+function querySourceForCommit(
+  session: Session,
+  options: CommitOptions,
+): string {
+  const raw =
+    options.querySource ??
+    (typeof session.services.querySource === "string"
+      ? session.services.querySource
+      : undefined);
+  return raw && raw.length > 0 ? raw : "repl_main_thread";
+}
+
+function isCacheSharingQuerySource(querySource: string): boolean {
+  return querySource === "repl_main_thread" || querySource === "sdk";
+}
+
+function isMainThreadQuerySource(querySource: string): boolean {
+  return querySource === "repl_main_thread";
+}
+
+function lastAssistantIsApiError(state: TurnState): boolean {
+  const lastAssistant = state.assistantMessages.at(-1);
+  return Boolean(
+    lastAssistant?.apiError ||
+    lastAssistant?.text?.startsWith("Prompt is too long"),
+  );
+}
+
+function contentText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+function legacyContent(
+  content: LLMMessage["content"],
+): string | LLMContentPart[] {
+  if (typeof content === "string") return content;
+  return content.map((part) => ({ ...part }));
+}
+
+function createHookMessageUuid(prefix: string, index: number): string {
+  return `${prefix}-${index}`;
+}
+
+function parseToolInput(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function buildToolResultErrorLookup(
+  state: TurnState,
+): ReadonlyMap<string, boolean> {
+  return new Map(
+    (state.completedToolResults ?? []).map((result) => [
+      result.callId,
+      result.isError,
+    ]),
+  );
+}
+
+function legacyUsage(
+  usage: LLMUsage | undefined,
+): Record<string, number> | undefined {
+  if (!usage) return undefined;
+  return {
+    input_tokens: usage.promptTokens,
+    output_tokens: usage.completionTokens,
+    cache_read_input_tokens: usage.cachedInputTokens ?? 0,
+    cache_creation_input_tokens: usage.cacheCreationInputTokens ?? 0,
+  };
+}
+
+function assistantContentBlocks(
+  assistant: AssistantMessage,
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [];
+  if (assistant.text && assistant.text.length > 0) {
+    blocks.push({ type: "text", text: assistant.text });
+  }
+  for (const call of assistant.toolCalls) {
+    blocks.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.name,
+      input: parseToolInput(call.arguments),
+    });
+  }
+  return blocks;
+}
+
+function legacyMessageFromLlm(
+  message: LLMMessage,
+  index: number,
+  toolResultErrors: ReadonlyMap<string, boolean>,
+): Message {
+  const uuid = createHookMessageUuid("history", index);
+  const timestamp = new Date().toISOString();
+
+  if (message.role === "assistant") {
+    const content: Array<Record<string, unknown>> = [];
+    const text = contentText(message.content);
+    if (text.length > 0) content.push({ type: "text", text });
+    for (const call of message.toolCalls ?? []) {
+      content.push({
+        type: "tool_use",
+        id: call.id,
+        name: call.name,
+        input: parseToolInput(call.arguments),
+      });
+    }
+    return {
+      type: "assistant",
+      uuid,
+      timestamp,
+      message: {
+        role: "assistant",
+        content,
+      },
+    };
+  }
+
+  if (message.role === "tool") {
+    return {
+      type: "user",
+      uuid,
+      timestamp,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: message.toolCallId ?? "",
+            content: legacyContent(message.content),
+            is_error:
+              message.toolCallId !== undefined
+                ? toolResultErrors.get(message.toolCallId) === true
+                : false,
+          },
+        ],
+      },
+    };
+  }
+
+  return {
+    type: message.role === "user" ? "user" : "system",
+    uuid,
+    timestamp,
+    message: {
+      role: message.role,
+      content: legacyContent(message.content),
+    },
+  };
+}
+
+function legacyMessageFromAssistant(
+  assistant: AssistantMessage,
+  index: number,
+  usage: LLMUsage | undefined,
+): Message {
+  const usageRecord = legacyUsage(usage);
+  return {
+    type: "assistant",
+    uuid: assistant.uuid || createHookMessageUuid("assistant", index),
+    timestamp: new Date().toISOString(),
+    ...(assistant.apiError ? { isApiErrorMessage: true } : {}),
+    message: {
+      role: "assistant",
+      content: assistantContentBlocks(assistant),
+      ...(usageRecord ? { usage: usageRecord } : {}),
+    },
+  };
+}
+
+function splitLeadingSystemPrompt(messages: readonly LLMMessage[]): {
+  readonly systemPrompt: readonly string[];
+  readonly rest: readonly LLMMessage[];
+} {
+  const systemPrompt: string[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    if (message.role !== "system" && message.role !== "developer") break;
+    const text = contentText(message.content).trim();
+    if (text.length > 0) systemPrompt.push(text);
+    index += 1;
+  }
+  return { systemPrompt, rest: messages.slice(index) };
+}
+
+function buildTerminalHookContext(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  querySource: string,
+): REPLHookContext {
+  const promptMessages =
+    state.messagesForQuery.length > 0 ? state.messagesForQuery : state.messages;
+  const { systemPrompt, rest } = splitLeadingSystemPrompt(promptMessages);
+  const toolResultErrors = buildToolResultErrorLookup(state);
+  const history = rest.map((message, index) =>
+    legacyMessageFromLlm(message, index, toolResultErrors),
+  );
+  const assistantMessages = state.assistantMessages.map((assistant, index) =>
+    legacyMessageFromAssistant(
+      assistant,
+      index,
+      index === state.assistantMessages.length - 1
+        ? state.lastResponseUsage
+        : undefined,
+    ),
+  );
+  const toolUseContext = buildAgenCToolUseContext(session, ctx, {
+    querySource,
+  }) as unknown as ToolUseContext;
+
+  return {
+    messages: [...history, ...assistantMessages],
+    systemPrompt: asSystemPrompt(systemPrompt),
+    userContext: {},
+    systemContext: {},
+    toolUseContext,
+    querySource,
+  };
+}
+
+function launchTerminalBackgroundHooks(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  querySource: string,
+): void {
+  if (lastAssistantIsApiError(state)) return;
+
+  const hookContext = buildTerminalHookContext(
+    state,
+    ctx,
+    session,
+    querySource,
+  );
+  if (isCacheSharingQuerySource(querySource)) {
+    saveCacheSafeParams(createCacheSafeParams(hookContext));
+  }
+
+  if (isBareMode()) return;
+
+  if (
+    isMainThreadQuerySource(querySource) &&
+    !isEnvDefinedFalsy(process.env.AGENC_ENABLE_PROMPT_SUGGESTION)
+  ) {
+    void executePromptSuggestion(
+      hookContext as unknown as Parameters<typeof executePromptSuggestion>[0],
+      {
+        cwd: ctx.cwd,
+        speculationEnabled: getGlobalConfig().speculationEnabled,
+      },
+    ).catch(() => {});
+  }
+
+  const typedToolUseContext =
+    hookContext.toolUseContext as unknown as AgenCToolUseContext;
+  if (
+    isCacheSharingQuerySource(querySource) &&
+    typedToolUseContext.agentId === undefined
+  ) {
+    void executeAutoDream(
+      hookContext,
+      typedToolUseContext.appendSystemMessage,
+    ).catch(() => {});
+  }
+}
+
 export async function commit(
   state: TurnState,
   ctx: TurnContext,
   session: Session,
   signal?: AbortSignal,
+  options: CommitOptions = {},
 ): Promise<TurnState> {
   // ── 1. Append history — await any pending tool-use summary promise
   //      so the UI sees the final summary before the next iteration.
@@ -188,6 +491,12 @@ export async function commit(
     !state.needsFollowUp;
 
   if (turnIsTerminating) {
+    launchTerminalBackgroundHooks(
+      state,
+      ctx,
+      session,
+      querySourceForCommit(session, options),
+    );
     const result = await evaluateStopHooks(state, ctx, session, signal);
     if (result.blocking) {
       if (state.stopHookBlockingCount >= MAX_STOP_HOOK_BLOCKS) {

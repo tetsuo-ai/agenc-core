@@ -518,11 +518,13 @@ export interface Config {
  * Every field here must exist on the rollout-side `TurnContextItem` in
  * `event-log.ts` as well. The rollout reader consumes this type
  * directly (no typed-cast recovery), so a rename on either side must
- * be reflected in both files before merging. The 8 "richer" fields
+ * be reflected in both files before merging. The richer fields
  * (`realtimeActive`, `userInstructions`, `developerInstructions`,
  * `finalOutputJsonSchema`, `truncationPolicy`, `collaborationMode`,
  * `fileSystemSandboxPolicy`, `traceId`) round-trip through
  * `toTurnContextItem` + the rollout reader with no lossy narrowing.
+ * Model-window metadata also round-trips so resume can evaluate
+ * model-downshift compaction against the previous model.
  */
 export interface TurnContextItem {
   readonly turnId?: string;
@@ -535,6 +537,10 @@ export interface TurnContextItem {
   readonly network?: TurnContextNetworkItem;
   readonly fileSystemSandboxPolicy?: FileSystemSandboxPolicy;
   readonly model: string;
+  readonly modelContextWindow?: number;
+  readonly rawModelContextWindow?: number;
+  readonly modelEffectiveContextWindowPercent?: number;
+  readonly autoCompactTokenLimit?: number;
   readonly modelProviderId?: string;
   readonly personality?: Personality;
   readonly collaborationMode?: CollaborationMode;
@@ -743,6 +749,12 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
     sandboxPolicy: ctx.sandboxPolicy.value,
     fileSystemSandboxPolicy: ctx.fileSystemSandboxPolicy,
     model: ctx.modelInfo.slug,
+    modelContextWindow: modelContextWindow(ctx),
+    rawModelContextWindow: ctx.modelInfo.contextWindow,
+    modelEffectiveContextWindowPercent:
+      ctx.modelInfo.effectiveContextWindowPercent,
+    autoCompactTokenLimit: (ctx.modelInfo as { autoCompactTokenLimit?: number })
+      .autoCompactTokenLimit,
     modelProviderId: ctx.modelProviderId,
     personality: normalizePersonality(ctx.personality ?? ctx.config.personality),
     collaborationMode: ctx.collaborationMode,

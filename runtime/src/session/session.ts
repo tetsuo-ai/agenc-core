@@ -70,10 +70,7 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
-import type {
-  AuthBackend,
-  AuthSubscriptionTier,
-} from "../auth/backend.js";
+import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
@@ -153,6 +150,7 @@ import {
 } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
+import { runWithCurrentRuntimeSession } from "./current-session.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
@@ -242,6 +240,7 @@ export interface SessionState {
     readonly autoCompactTokenLimit?: number;
     readonly modelInfo?: {
       readonly contextWindow?: number;
+      readonly effectiveContextWindowPercent?: number;
       readonly autoCompactTokenLimit?: number;
     };
   };
@@ -396,13 +395,13 @@ function uniqueSignals(
   signals: readonly (AbortSignal | undefined)[],
 ): AbortSignal[] {
   return Array.from(
-    new Set(signals.filter((signal): signal is AbortSignal => signal !== undefined)),
+    new Set(
+      signals.filter((signal): signal is AbortSignal => signal !== undefined),
+    ),
   );
 }
 
-function waitForAbortSignal(
-  signals: readonly (AbortSignal | undefined)[],
-): {
+function waitForAbortSignal(signals: readonly (AbortSignal | undefined)[]): {
   readonly aborted: boolean;
   readonly promise: Promise<null>;
   readonly cleanup: () => void;
@@ -467,12 +466,17 @@ export interface RolloutRecorder {
 export interface ModelsManager {
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
-  listModels(strategy?: "online_if_uncached"): Promise<ReadonlyArray<ModelInfo>>;
+  listModels(
+    strategy?: "online_if_uncached",
+  ): Promise<ReadonlyArray<ModelInfo>>;
 }
 
 /** agenc runtime `McpManager`. */
 export interface McpManager {
-  effectiveServers(config: unknown, auth: unknown): Promise<Map<string, McpServerInfo>>;
+  effectiveServers(
+    config: unknown,
+    auth: unknown,
+  ): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
   refreshFromConfig?(config: unknown): Promise<McpRefreshResult>;
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
@@ -550,7 +554,9 @@ export interface LspManager {
 export interface McpConnectionManager {
   setApprovalPolicy(policy: unknown): void;
   setSandboxPolicy(policy: unknown): void;
-  requiredStartupFailures(servers: ReadonlyArray<string>): Promise<ReadonlyArray<{ server: string; error: string }>>;
+  requiredStartupFailures(
+    servers: ReadonlyArray<string>,
+  ): Promise<ReadonlyArray<{ server: string; error: string }>>;
 }
 
 /** agenc runtime `AgentControl` service facade for subagents. */
@@ -612,14 +618,18 @@ export interface SkillsManager {
   >;
   clearInvokedSkillsForAgent?(agentId?: string): void;
   clearSkillCaches?(): void;
-  discoverSkillDirsForPaths?(paths: readonly string[]): Promise<readonly string[]>;
+  discoverSkillDirsForPaths?(
+    paths: readonly string[],
+  ): Promise<readonly string[]>;
 }
 export interface SkillsWatcher {
   start(): void | Promise<void>;
   stop?(): void | Promise<void>;
 }
 export interface PluginsManager {
-  pluginsForConfig(config: unknown): Promise<{ effectiveSkillRoots(): unknown }>;
+  pluginsForConfig(
+    config: unknown,
+  ): Promise<{ effectiveSkillRoots(): unknown }>;
 }
 
 /** agenc runtime `ExecPolicyManager`. */
@@ -862,9 +872,7 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
   "gemini",
 ]);
 
-function isRemoteAuthBackend(
-  authBackend: AuthBackend | undefined,
-): boolean {
+function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
 }
 
@@ -967,7 +975,7 @@ async function providerFactoryOptionsFromSettings(params: {
           provider: normalizedProvider,
           authBackend: params.authBackend,
           sessionId: params.sessionId,
-      })
+        })
       : undefined;
   const apiKey = params.settings?.apiKey ?? managedApiKey;
   return {
@@ -1166,15 +1174,19 @@ const NON_SELECTABLE_USER_TAGS = [
 ] as const;
 
 function isCompactBoundaryMessage(message: LLMMessage | undefined): boolean {
-  return message?.role === "user" &&
+  return (
+    message?.role === "user" &&
     typeof message.content === "string" &&
-    message.content.startsWith(COMPACT_BOUNDARY_PREFIX);
+    message.content.startsWith(COMPACT_BOUNDARY_PREFIX)
+  );
 }
 
 function isCompactSummaryMessage(message: LLMMessage | undefined): boolean {
-  return message?.role === "user" &&
+  return (
+    message?.role === "user" &&
     typeof message.content === "string" &&
-    message.content.startsWith(COMPACT_SUMMARY_PREFIX);
+    message.content.startsWith(COMPACT_SUMMARY_PREFIX)
+  );
 }
 
 function lastTextBlock(content: LLMMessage["content"]): string {
@@ -1192,8 +1204,9 @@ function isSelectableHistoryUserMessage(message: LLMMessage): boolean {
   if (isCompactSummaryMessage(message)) return false;
   const messageText = lastTextBlock(message.content);
   if (messageText.length === 0) return false;
-  return !NON_SELECTABLE_USER_TAGS.some((tag) =>
-    messageText.includes(`<${tag}`) || messageText.includes(`</${tag}>`)
+  return !NON_SELECTABLE_USER_TAGS.some(
+    (tag) =>
+      messageText.includes(`<${tag}`) || messageText.includes(`</${tag}>`),
   );
 }
 
@@ -1249,7 +1262,9 @@ function toCompactRuntimeMessages(
       ...(message.toolCalls !== undefined
         ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
         : {}),
-      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolCallId !== undefined
+        ? { toolCallId: message.toolCallId }
+        : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
       ...(message.role === "tool" ? { isMeta: true } : {}),
@@ -1257,7 +1272,9 @@ function toCompactRuntimeMessages(
   });
 }
 
-function toCompactRuntimeRole(role: LLMMessage["role"]): NonNullable<RuntimeMessage["role"]> {
+function toCompactRuntimeRole(
+  role: LLMMessage["role"],
+): NonNullable<RuntimeMessage["role"]> {
   if (role === "developer") return "system";
   if (role === "tool") return "user";
   return role;
@@ -1285,7 +1302,9 @@ function fromCompactRuntimeMessages(
 }
 
 function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
-  const role = normalizeCompactRuntimeRole(message.originalRole ?? message.role);
+  const role = normalizeCompactRuntimeRole(
+    message.originalRole ?? message.role,
+  );
   if (role === null) return null;
   const content = fromCompactRuntimeContent(
     message.message?.content ?? message.content ?? "",
@@ -1302,7 +1321,9 @@ function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
           })),
         }
       : {}),
-    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolCallId !== undefined
+      ? { toolCallId: message.toolCallId }
+      : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase === "commentary" || message.phase === "final_answer"
       ? { phase: message.phase }
@@ -1310,7 +1331,9 @@ function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
   };
 }
 
-function normalizeCompactRuntimeRole(value: unknown): LLMMessage["role"] | null {
+function normalizeCompactRuntimeRole(
+  value: unknown,
+): LLMMessage["role"] | null {
   if (
     value === "system" ||
     value === "developer" ||
@@ -1331,7 +1354,11 @@ function fromCompactRuntimeContent(content: unknown): LLMMessage["content"] {
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const record = part as Record<string, unknown>;
-    if (record.type === "image" && record.source && typeof record.source === "object") {
+    if (
+      record.type === "image" &&
+      record.source &&
+      typeof record.source === "object"
+    ) {
       const source = record.source as Record<string, unknown>;
       if (typeof source.url === "string") {
         textOnly = false;
@@ -1339,7 +1366,11 @@ function fromCompactRuntimeContent(content: unknown): LLMMessage["content"] {
       }
       continue;
     }
-    if (record.type === "image_url" && record.image_url && typeof record.image_url === "object") {
+    if (
+      record.type === "image_url" &&
+      record.image_url &&
+      typeof record.image_url === "object"
+    ) {
       const image = record.image_url as Record<string, unknown>;
       if (typeof image.url === "string") {
         textOnly = false;
@@ -1348,9 +1379,10 @@ function fromCompactRuntimeContent(content: unknown): LLMMessage["content"] {
       continue;
     }
     if (record.type === "document") {
-      const source = record.source && typeof record.source === "object"
-        ? record.source as Record<string, unknown>
-        : null;
+      const source =
+        record.source && typeof record.source === "object"
+          ? (record.source as Record<string, unknown>)
+          : null;
       if (
         source?.type === "base64" &&
         source.media_type === "application/pdf" &&
@@ -1377,20 +1409,27 @@ function fromCompactRuntimeContent(content: unknown): LLMMessage["content"] {
     }
   }
   if (textOnly) {
-    return parts.map((part) => part.type === "text" ? part.text : "").join("\n");
+    return parts
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("\n");
   }
   return parts;
 }
 
 function compactionMessage(result: CompactionResult): string {
-  const summary = result.summaryMessages.at(-1) ?? result.messagesToKeep?.at(-1);
-  if (summary === undefined) return result.userDisplayMessage ?? "Conversation summarized";
+  const summary =
+    result.summaryMessages.at(-1) ?? result.messagesToKeep?.at(-1);
+  if (summary === undefined)
+    return result.userDisplayMessage ?? "Conversation summarized";
   const content = summary.message?.content ?? summary.content ?? "";
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return result.userDisplayMessage ?? "Conversation summarized";
+  if (!Array.isArray(content))
+    return result.userDisplayMessage ?? "Conversation summarized";
   const text = content
     .map((part) =>
-      part && typeof part === "object" && "text" in part &&
+      part &&
+      typeof part === "object" &&
+      "text" in part &&
       typeof (part as { text?: unknown }).text === "string"
         ? (part as { text: string }).text
         : "",
@@ -1398,7 +1437,9 @@ function compactionMessage(result: CompactionResult): string {
     .filter(Boolean)
     .join("\n")
     .trim();
-  return text.length > 0 ? text : result.userDisplayMessage ?? "Conversation summarized";
+  return text.length > 0
+    ? text
+    : (result.userDisplayMessage ?? "Conversation summarized");
 }
 
 function activeAgentDefinitionsFromRoles(
@@ -1489,7 +1530,9 @@ export class Session {
    * dedicated mutex to keep the two-lock sequence race-free. See
    * `session/tasks.ts` for design notes.
    */
-  private readonly taskDispatchLock: AsyncLock<void> = new AsyncLock<void>(undefined);
+  private readonly taskDispatchLock: AsyncLock<void> = new AsyncLock<void>(
+    undefined,
+  );
 
   // ───────────────────────────────────────────────────────────
   // AgenC-specific additions (not in agenc runtime):
@@ -1553,9 +1596,7 @@ export class Session {
    * directly from the generator; the live TUI needs an in-session bus
    * so `useQuery` can observe the same stream.
    */
-  private readonly phaseEventListeners = new Set<
-    (event: PhaseEvent) => void
-  >();
+  private readonly phaseEventListeners = new Set<(event: PhaseEvent) => void>();
 
   /** Bootstrap-owned submit hook used by the TUI contract. */
   private turnDriverHooks: SessionTurnDriverHooks | null = null;
@@ -1630,9 +1671,11 @@ export class Session {
     // loose-cast through `unknown as SessionServices` can still reach
     // this branch with an `undefined` slot, so treat the cast-through
     // case as a missing registry and fall back to the empty default.
-    const rawRegistry = (opts.services as unknown as {
-      permissionModeRegistry?: PermissionModeRegistry;
-    }).permissionModeRegistry;
+    const rawRegistry = (
+      opts.services as unknown as {
+        permissionModeRegistry?: PermissionModeRegistry;
+      }
+    ).permissionModeRegistry;
     const resolvedRegistry =
       rawRegistry ??
       new PermissionModeRegistry(createEmptyToolPermissionContext());
@@ -1715,9 +1758,7 @@ export class Session {
    * poking `pendingProviderSwitch` directly, so the staging site has
    * a single well-typed entry point. Pass `null` to clear the slot.
    */
-  setPendingProviderSwitch(
-    pendingSwitch: PendingProviderSwitch | null,
-  ): void {
+  setPendingProviderSwitch(pendingSwitch: PendingProviderSwitch | null): void {
     this.pendingProviderSwitch = pendingSwitch;
   }
 
@@ -1773,7 +1814,11 @@ export class Session {
       | Pick<McpManager, "getTools">
       | null
       | undefined;
-    if (manager === null || manager === undefined || typeof manager.getTools !== "function") {
+    if (
+      manager === null ||
+      manager === undefined ||
+      typeof manager.getTools !== "function"
+    ) {
       return [];
     }
     return manager.getTools();
@@ -1818,9 +1863,7 @@ export class Session {
     readProviderHttpClient(target)?.clearResponsesResponseId();
   }
 
-  resetProviderIncrementalState(
-    provider?: LLMProvider,
-  ): void {
+  resetProviderIncrementalState(provider?: LLMProvider): void {
     const target =
       provider ?? (this.services as Partial<SessionServices>).provider;
     const client = readProviderHttpClient(target);
@@ -1847,20 +1890,23 @@ export class Session {
   async syncPermissionContextFromRegistry(
     nextCtx: Pick<
       ToolPermissionContext,
-      "mode" | "isAutoModeAvailable" | "autoModeActive" |
-        "bypassPermissionsAcceptedIn"
+      | "mode"
+      | "isAutoModeAvailable"
+      | "autoModeActive"
+      | "bypassPermissionsAcceptedIn"
     > = this.permissionModeRegistry.current(),
   ): Promise<void> {
     const state = this.state.unsafePeek();
-    const currentPermissionContext =
-      (state.sessionConfiguration as SessionConfiguration & {
+    const currentPermissionContext = (
+      state.sessionConfiguration as SessionConfiguration & {
         permissionContext?: {
           readonly mode?: PermissionMode;
           readonly isAutoModeAvailable?: boolean;
           readonly autoModeActive?: boolean;
           readonly bypassPermissionsAcceptedIn?: readonly string[];
         };
-      }).permissionContext;
+      }
+    ).permissionContext;
     state.sessionConfiguration = {
       ...state.sessionConfiguration,
       permissionContext: {
@@ -1931,11 +1977,15 @@ export class Session {
     let resolvedModel = pending.model;
     let resolvedProvider = pending.provider;
     if (pending.profile) {
-      const configStore = (this.services as Partial<SessionServices>).configStore;
+      const configStore = (this.services as Partial<SessionServices>)
+        .configStore;
       if (configStore && typeof configStore.current === "function") {
         try {
           const { resolveProfile } = await import("../config/profiles.js");
-          const overlaid = resolveProfile(configStore.current(), pending.profile);
+          const overlaid = resolveProfile(
+            configStore.current(),
+            pending.profile,
+          );
           if (overlaid.model && overlaid.model.length > 0) {
             resolvedModel = overlaid.model;
           }
@@ -1965,7 +2015,8 @@ export class Session {
         liveProviderIdentity === targetNormalizedProvider
           ? liveProviderOptions
           : undefined;
-      const configStore = (this.services as Partial<SessionServices>).configStore;
+      const configStore = (this.services as Partial<SessionServices>)
+        .configStore;
       const targetProviderSettings =
         targetNormalizedProvider !== null && configStore?.current
           ? resolveProviderSettings(
@@ -2024,12 +2075,14 @@ export class Session {
     const nextClient = readProviderHttpClient(preparedSwitch.instance);
 
     await this.state.with((state) => {
-      const cfg = (state as {
-        sessionConfiguration?: {
-          provider?: unknown;
-          collaborationMode?: { model?: string };
-        };
-      }).sessionConfiguration;
+      const cfg = (
+        state as {
+          sessionConfiguration?: {
+            provider?: unknown;
+            collaborationMode?: { model?: string };
+          };
+        }
+      ).sessionConfiguration;
       if (!cfg) return;
       cfg.provider = { slug: preparedSwitch.provider };
       cfg.collaborationMode = {
@@ -2043,7 +2096,8 @@ export class Session {
       ...this.config,
       model: preparedSwitch.model,
     };
-    (this.services as { provider: LLMProvider }).provider = preparedSwitch.instance;
+    (this.services as { provider: LLMProvider }).provider =
+      preparedSwitch.instance;
     previousClient?.resetResponsesContinuation();
     nextClient?.bindConversationId(this.conversationId);
     nextClient?.resetResponsesContinuation();
@@ -2101,25 +2155,42 @@ export class Session {
             opts.subId ?? this.nextInternalSubId(),
             opts.configOverrides,
           )
-        : this.newDefaultTurnWithSubId(
-            opts.subId ?? this.nextInternalSubId(),
-          ));
-    const { ctx: _ctx, subId: _subId, configOverrides: _configOverrides, ...runOpts } =
-      opts;
+        : this.newDefaultTurnWithSubId(opts.subId ?? this.nextInternalSubId()));
+    const {
+      ctx: _ctx,
+      subId: _subId,
+      configOverrides: _configOverrides,
+      ...runOpts
+    } = opts;
     void _ctx;
     void _subId;
     void _configOverrides;
     const { runTurnKernel } = await import("./run-turn.js");
     const history =
-      runOpts.history ?? normalizeHistoryMessages(this.state.unsafePeek().history);
-    const iter = runTurnKernel(this, ctx, userMessage, {
-      ...runOpts,
-      history,
-    });
-    while (true) {
-      const next = await iter.next();
-      if (next.done) return next.value;
-      yield next.value;
+      runOpts.history ??
+      normalizeHistoryMessages(this.state.unsafePeek().history);
+    const iter = runWithCurrentRuntimeSession(this, () =>
+      runTurnKernel(this, ctx, userMessage, {
+        ...runOpts,
+        history,
+      }),
+    );
+    let completed = false;
+    try {
+      while (true) {
+        const next = await runWithCurrentRuntimeSession(this, () => iter.next());
+        if (next.done) {
+          completed = true;
+          return next.value;
+        }
+        yield next.value;
+      }
+    } finally {
+      if (!completed) {
+        await runWithCurrentRuntimeSession(this, () =>
+          iter.return({ reason: "cancelled" }),
+        );
+      }
     }
   }
 
@@ -2255,7 +2326,8 @@ export class Session {
     try {
       this.throwIfPartialCompactAborted(abortController.signal);
       const sourceHistory = this.snapshotHistoryMessages();
-      const { prefixBeforeActive, activeHistory } = splitActiveHistory(sourceHistory);
+      const { prefixBeforeActive, activeHistory } =
+        splitActiveHistory(sourceHistory);
       const selectedIndex = activeHistoryIndexForOrdinal(
         activeHistory,
         params.messageOrdinal,
@@ -2274,7 +2346,9 @@ export class Session {
         context,
         {
           direction: params.direction,
-          ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+          ...(params.feedback !== undefined
+            ? { feedback: params.feedback }
+            : {}),
           signal: abortController.signal,
         },
       );
@@ -2291,7 +2365,8 @@ export class Session {
         id: `history-replaced-${task.subId}`,
       });
       const displayText =
-        compactionResult.userDisplayMessage ?? compactionMessage(compactionResult);
+        compactionResult.userDisplayMessage ??
+        compactionMessage(compactionResult);
 
       const commitFailure = await this.commitPartialCompaction({
         task,
@@ -2365,7 +2440,8 @@ export class Session {
 
     try {
       const sourceHistory = this.snapshotHistoryMessages();
-      const { prefixBeforeActive, activeHistory } = splitActiveHistory(sourceHistory);
+      const { prefixBeforeActive, activeHistory } =
+        splitActiveHistory(sourceHistory);
       const selectedIndex = activeHistoryIndexForOrdinal(
         activeHistory,
         params.messageOrdinal,
@@ -2505,8 +2581,8 @@ export class Session {
         );
         return;
       }
-      const ownsTask = await this.activeTurn.with((current) =>
-        current?.tasks.has(params.task.subId) === true
+      const ownsTask = await this.activeTurn.with(
+        (current) => current?.tasks.has(params.task.subId) === true,
       );
       if (!ownsTask) {
         failure = this.partialCompactFailure(
@@ -2530,10 +2606,14 @@ export class Session {
           type: "compacted",
           payload: {
             message: compactionMessage(params.compactionResult),
-            replacementHistory:
-              params.replacementHistory.map(llmMessageToResponseItem),
+            replacementHistory: params.replacementHistory.map(
+              llmMessageToResponseItem,
+            ),
             ...(params.compactionResult.preCompactTokenCount !== undefined
-              ? { preCompactTokens: params.compactionResult.preCompactTokenCount }
+              ? {
+                  preCompactTokens:
+                    params.compactionResult.preCompactTokenCount,
+                }
               : {}),
             ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
           },
@@ -2555,8 +2635,8 @@ export class Session {
   }): Promise<SessionRewindConversationToMessageResult | null> {
     let failure: SessionRewindConversationToMessageResult | null = null;
     await this.taskDispatchLock.with(async () => {
-      const ownsTask = await this.activeTurn.with((current) =>
-        current?.tasks.has(params.task.subId) === true
+      const ownsTask = await this.activeTurn.with(
+        (current) => current?.tasks.has(params.task.subId) === true,
       );
       if (!ownsTask) {
         failure = this.conversationRewindFailure(
@@ -2577,8 +2657,9 @@ export class Session {
           type: "compacted",
           payload: {
             message: "Conversation rewound",
-            replacementHistory:
-              params.replacementHistory.map(llmMessageToResponseItem),
+            replacementHistory: params.replacementHistory.map(
+              llmMessageToResponseItem,
+            ),
           },
         },
         { durable: true },
@@ -3092,9 +3173,7 @@ export class Session {
     const taken = await this.activeTurn.swap(null);
     if (taken === null) return;
     const tasks = Array.from(taken.tasks.values());
-    await Promise.all(
-      tasks.map((task) => this.handleTaskAbort(task, reason)),
-    );
+    await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
     // Upstream: `active_turn.clear_pending().await` — release any
     // dangling approvals / input pre-emptively so interrupted tasks
     // don't surface stale responses. We reach into `turnState` here
@@ -3234,13 +3313,14 @@ export class Session {
     let resolveResponse:
       | ((response: RequestUserInputResponse | null) => void)
       | undefined;
-    const responsePromise = new Promise<RequestUserInputResponse | null>((resolve) => {
-      resolveResponse = resolve;
-    });
+    const responsePromise = new Promise<RequestUserInputResponse | null>(
+      (resolve) => {
+        resolveResponse = resolve;
+      },
+    );
     await current.turnState.with((ts) => {
-      ts.pendingUserInput.set(
-        requestId,
-        (response) => resolveResponse?.(response as RequestUserInputResponse | null),
+      ts.pendingUserInput.set(requestId, (response) =>
+        resolveResponse?.(response as RequestUserInputResponse | null),
       );
     });
     const abortWaiter = waitForAbortSignal([
@@ -3347,9 +3427,8 @@ export class Session {
       resolveResponse = resolve;
     });
     await current.turnState.with((ts) => {
-      ts.pendingElicitations.set(
-        key,
-        (response) => resolveResponse?.(response as McpElicitationResponse),
+      ts.pendingElicitations.set(key, (response) =>
+        resolveResponse?.(response as McpElicitationResponse),
       );
     });
     const releasePause = this.beginOutOfBandElicitationPause();
@@ -3504,9 +3583,11 @@ export class Session {
     } catch {
       /* best-effort */
     }
-    const liveThread = (this.services as {
-      readonly liveThread?: { shutdown(): void };
-    }).liveThread;
+    const liveThread = (
+      this.services as {
+        readonly liveThread?: { shutdown(): void };
+      }
+    ).liveThread;
     try {
       liveThread?.shutdown();
     } catch {
@@ -3555,7 +3636,8 @@ function deriveMinimalSessionConfig(
   sessionConfiguration: SessionConfiguration,
   features: ManagedFeatures,
 ): Config {
-  const model = sessionConfiguration.collaborationMode?.model ?? "unknown-model";
+  const model =
+    sessionConfiguration.collaborationMode?.model ?? "unknown-model";
   const cwd = sessionConfiguration.cwd ?? process.cwd();
   return {
     model,

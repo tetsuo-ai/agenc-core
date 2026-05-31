@@ -31,18 +31,10 @@
  * @module
  */
 
-import type {
-  LLMContentPart,
-  LLMMessage,
-  LLMToolCall,
-} from "../llm/types.js";
+import type { LLMContentPart, LLMMessage, LLMToolCall } from "../llm/types.js";
 import { validateToolCallsForExecution } from "../llm/stream-parser.js";
-import {
-  StreamingToolExecutor,
-} from "../tools/streaming-executor.js";
-import {
-  createToolExecutionRuntime,
-} from "../tools/runtimes/parallel.js";
+import { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import { createToolExecutionRuntime } from "../tools/runtimes/parallel.js";
 import {
   ToolHookRegistry,
   type PermissionDecisionHook,
@@ -50,9 +42,7 @@ import {
   type PostToolUseHook,
   type PreToolUseHook,
 } from "../tools/hooks.js";
-import {
-  routerFromRegistry,
-} from "../tools/router.js";
+import { routerFromRegistry } from "../tools/router.js";
 import {
   type ApprovalPolicy as OrchestratorApprovalPolicy,
   type ApprovalResolver,
@@ -67,7 +57,13 @@ import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
 import type { TurnContext } from "../session/turn-context.js";
-import type { ToolUseBlock, TurnState, UserMessage } from "../session/turn-state.js";
+import type {
+  CompletedToolResultRecord,
+  ToolUseBlock,
+  ToolUseSummaryMessage,
+  TurnState,
+  UserMessage,
+} from "../session/turn-state.js";
 import {
   attachContextDefaults,
   hasPermissionsToUseTool,
@@ -75,10 +71,14 @@ import {
   type ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
-import {
-  recoverableFailureKind,
-} from "../tools/result-metadata.js";
+import { recoverableFailureKind } from "../tools/result-metadata.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
+import { isEnvTruthy } from "../utils/envUtils.js";
+import { createToolUseSummaryMessage } from "../utils/messages.js";
+import {
+  generateToolUseSummary,
+  type ToolUseSummaryToolInfo,
+} from "../services/toolUseSummary/toolUseSummaryGenerator.js";
 
 function toolResultMessage(
   callId: string,
@@ -328,7 +328,10 @@ export function ensureStreamingToolExecutor(
   signal?: AbortSignal,
 ): StreamingToolExecutor {
   let executor = state.streamingToolExecutor as StreamingToolExecutor | null;
-  if (executor) return executor;
+  if (executor) {
+    executor.attachAbortSignal(signal);
+    return executor;
+  }
 
   const runtime = createToolExecutionRuntime();
   const router = routerFromRegistry(session.services.registry);
@@ -366,6 +369,7 @@ export function ensureStreamingToolExecutor(
     registry: session.services.registry,
     maxConcurrency: resolveMaxToolUseConcurrency(),
     abortSignal: signal,
+    parentAbortController: session.abortController,
     runtime,
     onSiblingAbort: (reason) => {
       session.emit({
@@ -402,7 +406,10 @@ export function ensureStreamingToolExecutor(
         ...(session.services.permissionAuditLogger !== undefined
           ? { permissionAuditLogger: session.services.permissionAuditLogger }
           : {}),
-        onPermissionAuditError: (error: unknown, event: PermissionAuditEventInput) => {
+        onPermissionAuditError: (
+          error: unknown,
+          event: PermissionAuditEventInput,
+        ) => {
           try {
             session.services.onPermissionAuditError?.(error, event);
           } catch (handlerError) {
@@ -485,40 +492,102 @@ function recordCompletedToolCall(
   session: Session,
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
-): void {
+): CompletedToolResultRecord {
   markLoadedToolNamesDiscovered(
     toolCall.name,
     result,
     session.services.registry.getDiscoveredToolNames?.(),
   );
   const toolResultBytes = Buffer.byteLength(result.content, "utf8");
-  session.emit({
-    id: session.nextInternalSubId(),
-    msg: {
-      type: "tool_call_completed",
-      payload: {
-        callId: toolCall.id,
-        result: result.content,
-        isError: result.isError === true,
-        ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+  session.emit(
+    {
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: toolCall.id,
+          result: result.content,
+          isError: result.isError === true,
+          ...(result.metadata !== undefined
+            ? { metadata: result.metadata }
+            : {}),
+        },
       },
     },
-  }, {
-    turnId: ctx.subId,
-    toolResultBytes,
-  });
-  state.completedToolResults.push({
+    {
+      turnId: ctx.subId,
+      toolResultBytes,
+    },
+  );
+  const completed: CompletedToolResultRecord = {
     callId: toolCall.id,
     toolName: toolCall.name,
     arguments: toolCall.arguments,
     content: result.content,
     isError: result.isError === true,
     ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
-  });
+  };
+  state.completedToolResults.push(completed);
   state.toolResults.push(
     toolResultUserRecord(toolCall.id, toolCall.name, result),
   );
   state.messages.push(toolResultMessage(toolCall.id, result));
+  return completed;
+}
+
+function isSubagentSummaryTurn(ctx: TurnContext, session: Session): boolean {
+  if (ctx.depth > 0) return true;
+  if (ctx.sessionSource === "cli_subagent") return true;
+  if (
+    typeof ctx.sessionSource === "object" &&
+    ctx.sessionSource?.kind === "subagent"
+  ) {
+    return true;
+  }
+  const querySource = session.services.querySource;
+  return typeof querySource === "string" && querySource.startsWith("agent:");
+}
+
+function startToolUseSummaryGeneration(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  completedThisPass: ReadonlyMap<string, CompletedToolResultRecord>,
+  signal?: AbortSignal,
+): void {
+  if (!isEnvTruthy(process.env.AGENC_EMIT_TOOL_USE_SUMMARIES)) return;
+  if (state.toolUseBlocks.length === 0) return;
+  if (signal?.aborted) return;
+  if (isSubagentSummaryTurn(ctx, session)) return;
+
+  const summarySignal =
+    signal ?? session.abortController?.signal ?? new AbortController().signal;
+  const toolUseIds = state.toolUseBlocks.map((block) => block.id);
+  const tools: ToolUseSummaryToolInfo[] = state.toolUseBlocks.map((block) => {
+    const result = completedThisPass.get(block.id);
+    return {
+      name: block.name,
+      input: block.input,
+      output: result?.content ?? null,
+    };
+  });
+  const lastAssistantText = state.assistantMessages.at(-1)?.text;
+
+  state.pendingToolUseSummary = generateToolUseSummary({
+    tools,
+    signal: summarySignal,
+    isNonInteractiveSession: false,
+    provider: session.services.provider,
+    ...(lastAssistantText !== undefined ? { lastAssistantText } : {}),
+  })
+    .then((summary): ToolUseSummaryMessage | null => {
+      if (!summary) return null;
+      return createToolUseSummaryMessage(
+        summary,
+        toolUseIds,
+      ) as ToolUseSummaryMessage;
+    })
+    .catch(() => null);
 }
 
 export async function executeTools(
@@ -542,7 +611,10 @@ export async function executeTools(
   const batch = validateToolCallsForDispatch(assistantToolCalls, session);
   const validCallIds = new Set(batch.valid.map((c) => c.id));
   const normalizedToolCalls = batch.valid.filter((c) => validCallIds.has(c.id));
-  if (normalizedToolCalls.length === 0 && state.streamingToolExecutor === null) {
+  if (
+    normalizedToolCalls.length === 0 &&
+    state.streamingToolExecutor === null
+  ) {
     // All calls malformed — nothing to dispatch. Return so post-
     // sample recovery / continuation can route via the normal
     // `needsFollowUp` flow.
@@ -552,6 +624,8 @@ export async function executeTools(
 
   const executor = ensureStreamingToolExecutor(state, ctx, session, signal);
   const additionalContexts: string[] = [];
+  const completedThisPass = new Map<string, CompletedToolResultRecord>();
+  let preventContinuation = false;
 
   const toolBlocksById = new Map(
     state.toolUseBlocks.map((block) => [block.id, block] as const),
@@ -588,11 +662,30 @@ export async function executeTools(
   // Signal the executor that no more tools will arrive; drain results.
   executor.close();
 
-  for await (const { toolCall, result, additionalContexts: contexts } of executor.getRemainingResults()) {
-    recordCompletedToolCall(state, ctx, session, toolCall, result);
+  for await (const {
+    toolCall,
+    result,
+    additionalContexts: contexts,
+  } of executor.getRemainingResults()) {
+    const completed = recordCompletedToolCall(
+      state,
+      ctx,
+      session,
+      toolCall,
+      result,
+    );
+    completedThisPass.set(completed.callId, completed);
     additionalContexts.push(...(contexts ?? []));
+    if (result.preventContinuation === true) {
+      preventContinuation = true;
+    }
   }
   appendHookAdditionalContexts(state, session, additionalContexts);
+  if (preventContinuation) {
+    state.needsFollowUp = false;
+    state.preventContinuation = true;
+  }
+  startToolUseSummaryGeneration(state, ctx, session, completedThisPass, signal);
 
   // Clear the executor from state so commit starts a fresh one next
   // iteration. Matches AgenC query.ts's per-iteration

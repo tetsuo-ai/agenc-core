@@ -69,7 +69,9 @@ function deriveInput(ctx: ApprovalCtx): Record<string, unknown> {
       );
     case "mcp":
       return parseJsonObject(
-        typeof record.rawArguments === "string" ? record.rawArguments : undefined,
+        typeof record.rawArguments === "string"
+          ? record.rawArguments
+          : undefined,
       );
     case "custom":
       return { input: typeof record.input === "string" ? record.input : "" };
@@ -114,7 +116,9 @@ export function buildToolUseConfirm(
   // can't resolve the tool, auto-deny via DENIED + log the
   // mismatch on the daemon side, then return null so no overlay
   // ever renders.
-  const tool = tools.find((candidate) => candidate.name === request.ctx.toolName);
+  const tool = tools.find(
+    (candidate) => candidate.name === request.ctx.toolName,
+  );
   if (!tool) {
     // Surface the auto-deny via the existing resolve path so the
     // request flows back through the same channel as a manual deny.
@@ -146,10 +150,7 @@ export function buildToolUseConfirm(
     onAbort() {
       request.resolve(ABORT);
     },
-    onAllow(
-      updatedInput: unknown,
-      permissionUpdates: readonly unknown[] = [],
-    ) {
+    onAllow(updatedInput: unknown, permissionUpdates: readonly unknown[] = []) {
       if (request.ctx.toolName === ASK_USER_QUESTION_TOOL_NAME) {
         recordAskUserQuestionUpdatedInput(request.ctx.callId, updatedInput);
       }
@@ -184,7 +185,9 @@ export function buildToolUseConfirm(
   };
 }
 
-type ProjectedToolUseConfirm = NonNullable<ReturnType<typeof buildToolUseConfirm>> & {
+type ProjectedToolUseConfirm = NonNullable<
+  ReturnType<typeof buildToolUseConfirm>
+> & {
   readonly tool: {
     readonly name: string;
     userFacingName?(input: unknown): string;
@@ -218,6 +221,7 @@ export function usePermissionRequests(
   setModel: (next: string) => void,
   setExpandedView: (next: "none" | "tasks") => void,
   setAppState: (updater: (prev: AppState) => AppState) => void,
+  getAppState: () => AppState,
 ) {
   const [requests, setRequests] = useState<readonly PendingRequest[]>([]);
 
@@ -235,11 +239,14 @@ export function usePermissionRequests(
             id: ctx.callId,
             ctx,
             input: deriveInput(ctx),
-            description: ctx.retryReason ?? `Permission required to use ${ctx.toolName}`,
+            description:
+              ctx.retryReason ?? `Permission required to use ${ctx.toolName}`,
             resolve,
           };
           const settle = (decision: ReviewDecision): void => {
-            setRequests((queue) => queue.filter((item) => item.id !== request.id));
+            setRequests((queue) =>
+              queue.filter((item) => item.id !== request.id),
+            );
             resolve(decision);
           };
           const onAbort = (): void => settle(ABORT);
@@ -261,12 +268,13 @@ export function usePermissionRequests(
       setModel,
       setExpandedView,
       setAppState,
+      getAppState,
     );
     return () => {
       session.services.approvalResolver = previousResolver;
       session.appStateBridge = previousBridge;
     };
-  }, [session, setAppState, setExpandedView, setModel]);
+  }, [getAppState, session, setAppState, setExpandedView, setModel]);
 
   return requests;
 }
@@ -283,13 +291,22 @@ export function AgenCPermissionOverlay({
 }) {
   const toolUseConfirm = useMemo(() => {
     if (!request) return null;
-    return buildToolUseConfirm(request, tools) as ProjectedToolUseConfirm | null;
+    return buildToolUseConfirm(
+      request,
+      tools,
+    ) as ProjectedToolUseConfirm | null;
   }, [request, tools]);
 
   if (request === undefined || toolUseConfirm === null) {
     return null;
   }
-  return <AgenCApprovalOverlay key={request.id} request={request} toolUseConfirm={toolUseConfirm} />;
+  return (
+    <AgenCApprovalOverlay
+      key={request.id}
+      request={request}
+      toolUseConfirm={toolUseConfirm}
+    />
+  );
 }
 
 function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
@@ -379,22 +396,23 @@ function AgenCApprovalOverlay({
         return;
       }
       if (key.backspace || key.delete) {
-        setTyped(value => value.slice(0, -1));
+        setTyped((value) => value.slice(0, -1));
         return;
       }
       if (input.length === 1 && !key.ctrl && !key.meta) {
-        setTyped(value => (value + input).slice(0, requiredWord.length));
+        setTyped((value) => (value + input).slice(0, requiredWord.length));
       }
     },
     { isActive: destructive },
   );
 
   const name = toolLabel(toolUseConfirm);
-  const title = risk === "destructive"
-    ? "destructive high-risk approval"
-    : risk === "medium"
-      ? "medium-risk approval"
-      : "needs approval";
+  const title =
+    risk === "destructive"
+      ? "destructive high-risk approval"
+      : risk === "medium"
+        ? "medium-risk approval"
+        : "needs approval";
   return (
     <Box flexDirection="column" gap={1}>
       <ApprovalCard
@@ -406,10 +424,17 @@ function AgenCApprovalOverlay({
           {
             label: "scope",
             value: risk === "low" ? "session" : risk,
-            color: destructive ? "error" : risk === "medium" ? "warning" : "text2",
+            color: destructive
+              ? "error"
+              : risk === "medium"
+                ? "warning"
+                : "text2",
           },
           { label: "request", value: request.id },
-          { label: "confirmation", value: destructive ? `type ${requiredWord}` : "enter" },
+          {
+            label: "confirmation",
+            value: destructive ? `type ${requiredWord}` : "enter",
+          },
         ]}
         note={toolUseConfirm.description}
         confirmLabel={

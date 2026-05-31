@@ -146,8 +146,10 @@ export class SandboxManager {
         break;
       }
       case "windows_restricted_token":
-        command = argv;
-        break;
+        throw new SandboxTransformError(
+          "windows_restricted_token_unimplemented",
+          "windows restricted token sandbox is not implemented; refusing to run unsandboxed",
+        );
     }
 
     return {

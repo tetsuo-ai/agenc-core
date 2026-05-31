@@ -1524,6 +1524,7 @@ export function adaptTranscriptEvents(
   const settledToolCallIds = new Set<string>();
   const suppressedToolResults = new Set<string>();
   const pendingToolInputDeltas = new Map<number, string[]>();
+  const durableQueuedPromptUuids = new Set<string>();
   const collabAgents = new Map<string, CollabAgentDisplay>();
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
@@ -1693,7 +1694,32 @@ export function adaptTranscriptEvents(
         // so close any live assistant text here before accumulating the next
         // response.
         flushStreamingText();
+        if (typeof payload.queuedCommandUuid === "string") {
+          durableQueuedPromptUuids.add(payload.queuedCommandUuid);
+        }
         out.push(makeUserMessage(payload.displayText ?? payload.message));
+        break;
+      case "queued_command":
+        if (
+          typeof payload.uuid === "string" &&
+          durableQueuedPromptUuids.has(payload.uuid)
+        ) {
+          break;
+        }
+        if (
+          payload.commandMode === "prompt" &&
+          payload.isMeta !== true &&
+          (payload.originKind === undefined || payload.originKind === "human")
+        ) {
+          const displayText =
+            typeof payload.displayText === "string"
+              ? payload.displayText
+              : typeof payload.content === "string"
+                ? payload.content
+                : "";
+          flushStreamingText();
+          out.push(makeUserMessage(displayText));
+        }
         break;
       case "request_user_input":
       case "mcp_elicitation_request":
