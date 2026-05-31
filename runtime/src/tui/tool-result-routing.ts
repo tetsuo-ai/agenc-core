@@ -46,7 +46,56 @@ export type ToolResultDispatchTarget =
   | "grep-matches-view"
   | "glob-paths-view"
   | "tool-error-view"
+  | "suppress"
   | "generic";
+
+/**
+ * The live daemon's `exec_command` result is a PLAIN string (no
+ * `<bash-stdout>` envelope): raw stdout, then a trailer line
+ * `[exec exit_code=0 wall_time=0.0300s tokens=69]`. Match that trailer so the
+ * raw exec result still routes to the capped bash-output view.
+ */
+const EXEC_TRAILER_RE = /\[exec exit_code=-?\d+/;
+
+/**
+ * The live daemon's `FileRead` result is the file body with line-number
+ * prefixes, e.g. `  31→    ...` (number, then a `→` arrow). Detect at least one
+ * such line so a raw read result routes to the "Read N lines" view.
+ */
+const FILE_READ_LINE_RE = /(^|\n)\s*\d+→/;
+
+/**
+ * The live daemon's `Grep` result is either a files-with-matches block
+ * (`Found 1 file\n<path>`), a per-file count block ending in
+ * `Found N total occurrences across M files.`, or a `file:line:content` /
+ * `file:count` match list. Detect the `Found ...` summary or a `path:line`
+ * shape so a raw grep result routes to the tidy count view.
+ */
+const GREP_FOUND_RE = /Found \d+ (file|files|match|matches|total occurrences)/;
+
+/**
+ * The live daemon's `Edit`/`MultiEdit`/`Write` SUCCESS result is the bare
+ * sentence `The file <path> has been updated successfully.` (no diff data — the
+ * diff is rendered from the tool-use INPUT on the call row instead). Match it so
+ * the redundant result body is suppressed and the diff appears exactly once.
+ */
+const EDIT_SUCCESS_RE = /\bhas been updated successfully\.?$/;
+const WRITE_SUCCESS_RE = /\bhas been (created|written) successfully\.?$/;
+
+/**
+ * Heuristic for a bare Grep match list with no `Found ...` summary line — every
+ * non-empty line looks like `path:line:content` or `path:count` (the
+ * files-with-counts and matches shapes the daemon emits). Used so a raw match
+ * list still routes to the count view instead of dumping under the call row.
+ */
+function isGrepMatchList(content: string): boolean {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return false;
+  return lines.every((line) => /^[^:\n]+:\d+(:|$)/.test(line));
+}
 
 /**
  * Decide the rendering target for a tool result.
@@ -74,6 +123,11 @@ export function pickToolResultDispatch(
   if (joinedContent.includes("<tool-error>")) {
     return "tool-error-view";
   }
+  // -------------------------------------------------------------------------
+  // Tagged-envelope paths (produced by
+  // `session-transcript.formatStructuredToolResult` when the daemon emits a
+  // structured `*_end` event). Kept for backward/forward compatibility.
+  // -------------------------------------------------------------------------
   if (
     (toolName === BASH_TOOL_NAME_FOR_DISPATCH ||
       toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH) &&
@@ -110,6 +164,44 @@ export function pickToolResultDispatch(
     joinedContent.includes("<glob-paths>")
   ) {
     return "glob-paths-view";
+  }
+  // -------------------------------------------------------------------------
+  // LIVE raw-string paths. The running daemon sends tool results as plain
+  // strings WITHOUT any envelope tags (confirmed against session rollouts), so
+  // the routing must recognize the actual shapes the daemon emits.
+  // -------------------------------------------------------------------------
+  if (
+    toolName === BASH_TOOL_NAME_FOR_DISPATCH ||
+    toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH
+  ) {
+    if (EXEC_TRAILER_RE.test(joinedContent)) {
+      return "bash-output-view";
+    }
+  }
+  if (toolName === FILE_READ_TOOL_NAME_FOR_DISPATCH) {
+    if (FILE_READ_LINE_RE.test(joinedContent)) {
+      return "file-read-view";
+    }
+  }
+  if (toolName === GREP_TOOL_NAME_FOR_DISPATCH) {
+    if (GREP_FOUND_RE.test(joinedContent) || isGrepMatchList(joinedContent)) {
+      return "grep-matches-view";
+    }
+  }
+  // Edit/MultiEdit/Write success: the result has NO diff data — the compact
+  // diff is rendered from the tool-use INPUT on the call row instead. Suppress
+  // the redundant "updated successfully" body so the result shows once (the
+  // diff), not twice. Failed edits do NOT match this and still render their
+  // error through the generic/error path (P0).
+  if (
+    toolName === EDIT_TOOL_NAME_FOR_DISPATCH ||
+    toolName === "MultiEdit" ||
+    toolName === FILE_WRITE_TOOL_NAME_FOR_DISPATCH
+  ) {
+    const trimmed = joinedContent.trim();
+    if (EDIT_SUCCESS_RE.test(trimmed) || WRITE_SUCCESS_RE.test(trimmed)) {
+      return "suppress";
+    }
   }
   return "generic";
 }

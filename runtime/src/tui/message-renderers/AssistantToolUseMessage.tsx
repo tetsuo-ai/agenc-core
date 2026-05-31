@@ -15,11 +15,12 @@ import { MessageResponse } from '../components/MessageResponse';
 import { useSelectedMessageBg } from '../components/messageActions';
 import { SentryErrorBoundary } from '../components/SentryErrorBoundary';
 import { HookProgressMessage } from './HookProgressMessage';
-import { Tool as V2Tool, type ToolKind, type ToolState } from '../components/v2/primitives.js';
+import { Tool as V2Tool, DiffInline, type ToolKind, type ToolState } from '../components/v2/primitives.js';
 import { extractTag } from '../../utils/messages.js';
 import { summarizeFileEditError } from '../../tools/FileEditTool/UI.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
 import { summarizeToolInput } from './toolRowPreview.js';
+import { buildEditDiffPreview } from '../edit-diff-preview.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -254,10 +255,27 @@ export function AssistantToolUseMessage({
   // into that same annotation (P1).
   const rowResult: string | React.ReactNode | undefined = failedReason;
   const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
-  const detail = extraDetail || toolUseTag || progressDetail || queuedDetail
+  // Compact green/red diff for Edit/MultiEdit/Write, rendered HERE on the call
+  // row from the tool-use INPUT (old_string/new_string for Edit/MultiEdit,
+  // content for Write). The live daemon's success result carries no diff data,
+  // so the result-render context can't produce it — the call row has the input
+  // (param.input) and is the right place. The redundant "updated successfully"
+  // result body is suppressed in tool-result-routing.ts so the diff appears
+  // exactly once. A FAILED row renders no diff (the inline failure reason wins);
+  // a still-running/queued row also waits until it resolves.
+  const editDiffDetail =
+    (param.name === "Edit" ||
+      param.name === "MultiEdit" ||
+      param.name === "Write") &&
+    isResolved &&
+    toolState !== "failed"
+      ? renderEditDiffPreview(param.name, input.data)
+      : null;
+  const detail = extraDetail || editDiffDetail || toolUseTag || progressDetail || queuedDetail
     ? (
       <Box flexDirection="column">
         {extraDetail}
+        {editDiffDetail}
         {toolUseTag}
         {progressDetail}
         {queuedDetail}
@@ -277,6 +295,44 @@ export function AssistantToolUseMessage({
         expanded={detail !== null}
       />
     </Box>
+  );
+}
+
+/**
+ * Render the compact green/red diff for a resolved Edit/MultiEdit/Write call
+ * directly under its call row, built from the tool-use INPUT. Returns null when
+ * there is no diffable change (so the row stays clean). Reuses the `DiffInline`
+ * primitive + the shared diff engine via `buildEditDiffPreview`.
+ */
+function renderEditDiffPreview(
+  toolName: string,
+  input: unknown,
+): React.ReactNode {
+  let preview: ReturnType<typeof buildEditDiffPreview>;
+  try {
+    preview = buildEditDiffPreview(toolName, input);
+  } catch (error) {
+    logError(
+      new Error(`Error building edit diff preview for ${toolName}: ${error}`),
+    );
+    return null;
+  }
+  if (preview === null) return null;
+  const lines = [...preview.lines];
+  if (preview.remaining > 0) {
+    lines.push({
+      kind: "ctx",
+      code: `… +${preview.remaining} more ${
+        preview.remaining === 1 ? "line" : "lines"
+      }`,
+    });
+  }
+  return (
+    <DiffInline
+      file={preview.file.length > 0 ? preview.file : "file"}
+      stats={preview.stats}
+      lines={lines}
+    />
   );
 }
 

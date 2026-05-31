@@ -157,6 +157,17 @@ export function FileReadView({
   if (lineCount === null && body.length > 0) {
     lineCount = body.replace(/\n$/, "").split("\n").length;
   }
+  // LIVE format: the result has NO envelope — it's the raw file body with
+  // line-number prefixes (`  31→...`). Count the `N→`-prefixed content lines so
+  // the summary reflects what was actually read instead of dumping the body.
+  if (lineCount === null) {
+    const numbered = content
+      .split("\n")
+      .filter((line) => /^\s*\d+→/.test(line)).length;
+    if (numbered > 0) {
+      lineCount = numbered;
+    }
+  }
   if (lineCount === null) {
     return <Text dimColor>(empty file)</Text>;
   }
@@ -191,21 +202,67 @@ export function GrepMatchesView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  // Capped preview: a single "Found N matches" summary line rather than the
-  // full match list under the call row.
-  const matchesBlock = extractToolTag(content, "grep-matches") ?? "";
-  const matchLines =
-    matchesBlock.length > 0
-      ? matchesBlock.split("\n").filter((line) => line.trim().length > 0)
-      : [];
-  if (matchLines.length === 0) {
-    return <Text dimColor>No matches</Text>;
+  // Capped preview: a single "Found N match(es)/file(s)" summary line rather
+  // than the full match list under the call row.
+  const tagged = extractToolTag(content, "grep-matches");
+  if (tagged !== null) {
+    const matchLines = tagged
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+    if (matchLines.length === 0) {
+      return <Text dimColor>No matches</Text>;
+    }
+    return (
+      <Text dimColor>{`Found ${matchLines.length} ${
+        matchLines.length === 1 ? "match" : "matches"
+      }`}</Text>
+    );
   }
-  return (
-    <Text dimColor>{`Found ${matchLines.length} ${
-      matchLines.length === 1 ? "match" : "matches"
-    }`}</Text>
+  // LIVE format: the result has NO envelope. It is one of:
+  //   - files-with-matches: `Found N file(s)\n<path>\n...`
+  //   - count summary:      `...\nFound N total occurrences across M files.`
+  //   - bare match/count list: `path:line:content` or `path:count` per line.
+  const summary = summarizeRawGrepResult(content);
+  return <Text dimColor>{summary}</Text>;
+}
+
+/**
+ * Compact one-line summary of a raw (envelope-less) Grep result. Prefers an
+ * explicit `Found ...` line from the daemon; otherwise counts the match/file
+ * lines itself.
+ */
+function summarizeRawGrepResult(content: string): string {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  // Daemon's own "Found N total occurrences across M files." summary.
+  const occ = content.match(
+    /Found (\d+) total occurrences across (\d+) files?\.?/,
   );
+  if (occ) {
+    const n = Number.parseInt(occ[1]!, 10);
+    const f = Number.parseInt(occ[2]!, 10);
+    return `Found ${n} ${n === 1 ? "match" : "matches"} in ${f} ${
+      f === 1 ? "file" : "files"
+    }`;
+  }
+  // Daemon's "Found N file(s)" header (files-with-matches mode).
+  const filesHeader = content.match(/Found (\d+) files?/);
+  if (filesHeader) {
+    const n = Number.parseInt(filesHeader[1]!, 10);
+    return `Found ${n} ${n === 1 ? "file" : "files"}`;
+  }
+  const matchesHeader = content.match(/Found (\d+) match(?:es)?/);
+  if (matchesHeader) {
+    const n = Number.parseInt(matchesHeader[1]!, 10);
+    return `Found ${n} ${n === 1 ? "match" : "matches"}`;
+  }
+  // Bare list with no header — count the entries.
+  if (lines.length === 0) {
+    return "No matches";
+  }
+  return `Found ${lines.length} ${lines.length === 1 ? "match" : "matches"}`;
 }
 
 /**
@@ -303,6 +360,40 @@ function capPreviewLines(
   return { lines: all.slice(0, maxLines), remaining: all.length - maxLines };
 }
 
+/**
+ * Live `exec_command` trailer line, e.g.
+ * `[exec exit_code=0 wall_time=0.0300s tokens=69]`. The daemon appends this to
+ * the raw stdout (preceded by blank lines). We strip it from the displayed body
+ * and read the exit code from it.
+ */
+const EXEC_TRAILER_LINE_RE = /^\[exec exit_code=(-?\d+)[^\]]*\]$/;
+
+/**
+ * Split a PLAIN live `exec_command` result (raw stdout + blank lines + an
+ * `[exec exit_code=... wall_time=... tokens=...]` trailer) into the stdout body
+ * and the parsed exit code. The daemon's exec result has NO `<bash-stdout>`
+ * envelope and folds everything (including stderr) into one stream, so there is
+ * no separate stderr to color — the whole body is shown, capped.
+ */
+function parsePlainExecResult(content: string): {
+  readonly stdout: string;
+  readonly exitCode: number | null;
+} {
+  const lines = content.split("\n");
+  let exitCode: number | null = null;
+  // The trailer is the last non-empty line. Walk back over trailing blanks.
+  let end = lines.length;
+  while (end > 0 && lines[end - 1]!.trim().length === 0) end--;
+  if (end > 0) {
+    const match = lines[end - 1]!.match(EXEC_TRAILER_LINE_RE);
+    if (match && match[1] !== undefined) {
+      exitCode = Number.parseInt(match[1], 10);
+      end--; // drop the trailer line from the body
+    }
+  }
+  return { stdout: lines.slice(0, end).join("\n"), exitCode };
+}
+
 export function BashOutputView({
   content,
   verbose: _verbose,
@@ -310,15 +401,24 @@ export function BashOutputView({
   readonly content: string;
   readonly verbose?: boolean;
 }): React.ReactElement {
-  const stdoutRaw = extractToolTag(content, "bash-stdout") ?? "";
-  const stderrRaw = extractToolTag(content, "bash-stderr") ?? "";
+  const hasEnvelope =
+    content.includes("<bash-stdout>") || content.includes("<bash-stderr>");
+  // The LIVE daemon sends a PLAIN exec result (no envelope): raw stdout, blank
+  // lines, then a `[exec exit_code=...]` trailer. Parse that here so the capped
+  // view works on the actual wire format, not just the tagged one.
+  const plain = hasEnvelope ? null : parsePlainExecResult(content);
+  const stdoutRaw = plain
+    ? plain.stdout
+    : (extractToolTag(content, "bash-stdout") ?? "");
+  const stderrRaw = plain ? "" : (extractToolTag(content, "bash-stderr") ?? "");
   // Color the output by exit-code: zero stays plain (success), non-zero
-  // surfaces stderr in red so a failed command is visually distinct.
-  const exitCodeMatch = content.match(/exit_code=(-?\d+)/);
-  const exitCode =
-    exitCodeMatch && exitCodeMatch[1] !== undefined
-      ? Number.parseInt(exitCodeMatch[1], 10)
-      : null;
+  // surfaces a compact indicator so a failed command is visually distinct.
+  const exitCode = plain
+    ? plain.exitCode
+    : (() => {
+        const m = content.match(/exit_code=(-?\d+)/);
+        return m && m[1] !== undefined ? Number.parseInt(m[1], 10) : null;
+      })();
   const isFailure = exitCode !== null && exitCode !== 0;
   const stdoutTrimmed = stdoutRaw.trim();
   const stderrTrimmed = stderrRaw.trim();
@@ -337,6 +437,10 @@ export function BashOutputView({
   const stderrCap = showStderr
     ? capPreviewLines(stderrTrimmed, BASH_PREVIEW_MAX_LINES)
     : null;
+  // Compact non-zero-exit indicator. The plain exec result folds stderr into
+  // stdout (no separate stderr stream), so on a failed command with no tagged
+  // stderr we still surface the exit code as a small red note.
+  const showExitNote = isFailure && stderrCap === null;
   return (
     <Box flexDirection="column">
       {stdoutCap.lines.map((line, idx) => (
@@ -358,6 +462,9 @@ export function BashOutputView({
         <Text dimColor>{`… +${stderrCap.remaining} ${
           stderrCap.remaining === 1 ? "line" : "lines"
         }`}</Text>
+      ) : null}
+      {showExitNote ? (
+        <Text color="red">{`(exit ${exitCode})`}</Text>
       ) : null}
     </Box>
   );
@@ -697,6 +804,12 @@ export function createTuiTool(name: string): any {
       const joined = resultTextForTuiTool(content);
       const target = pickToolResultDispatch(name, joined);
       switch (target) {
+        case "suppress":
+          // Edit/MultiEdit/Write SUCCESS: the result body ("…updated
+          // successfully.") is redundant — the compact green/red diff is
+          // rendered once on the call row (AssistantToolUseMessage) from the
+          // tool-use input. Returning null here suppresses the duplicate.
+          return null;
         case "tool-error-view":
           return <ToolErrorView content={joined} />;
         case "bash-output-view":
