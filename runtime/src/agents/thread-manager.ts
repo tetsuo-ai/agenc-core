@@ -578,7 +578,7 @@ async function submitToSession(
       });
       return session.conversationId;
     case "interrupt":
-      session.abortTerminal("user_interrupt");
+      await session.abortAllTasks("interrupted");
       return session.conversationId;
     case "shutdown":
       await session.shutdown();
@@ -642,10 +642,14 @@ async function submitToLiveAgent(
       live.status.markInterrupted(live.agentId, op.reason ?? "interrupt");
       return live.agentId;
     case "shutdown":
-      live.upInbox.close(op.reason ?? "shutdown");
-      live.downInbox.close(op.reason ?? "shutdown");
+      const reason = op.reason ?? "shutdown";
+      live.upInbox.close(reason);
+      live.downInbox.close(reason);
       live.status.markShutdown();
       live.status.complete();
+      if (!live.abortController.signal.aborted) {
+        live.abortController.abort(reason);
+      }
       return live.agentId;
     case "refresh_mcp_servers":
       // Route the refresh to the child's run loop, which applies it to the

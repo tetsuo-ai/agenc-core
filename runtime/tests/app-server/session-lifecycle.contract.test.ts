@@ -225,7 +225,11 @@ describe("AgenC daemon session lifecycle", () => {
       });
       threadStore.shutdownThread("stored-session");
 
-      const recreated = new AgenCDaemonSessionManager({ threadStore });
+      const recreated = new AgenCDaemonSessionManager({
+        threadStore,
+        createAttachmentId: sequence(["attachment-stored"]),
+        now: sequence(["2026-05-01T10:31:00.000Z"]),
+      });
       await expect(recreated.listSessions()).resolves.toMatchObject({
         sessions: [
           {
@@ -242,6 +246,69 @@ describe("AgenC daemon session lifecycle", () => {
           },
         ],
       });
+      await expect(recreated.countSessions()).resolves.toEqual({
+        active: 1,
+        closed: 0,
+        total: 1,
+      });
+      await expect(
+        recreated.attachSession({
+          sessionId: "stored-session",
+          clientId: "tui_1",
+        }),
+      ).resolves.toEqual({
+        sessionId: "stored-session",
+        attachmentId: "attachment-stored",
+        clientId: "tui_1",
+        attachedAt: "2026-05-01T10:31:00.000Z",
+        activeAttachmentIds: ["attachment-stored"],
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("persists termination of stored on-disk threads after manager recreation", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "stored-close");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "stored-close",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+      });
+      threadStore.shutdownThread("stored-close");
+
+      const manager = new AgenCDaemonSessionManager({
+        threadStore,
+        now: sequence(["2026-05-01T10:32:00.000Z"]),
+      });
+      await expect(
+        manager.terminateSession({
+          sessionId: "stored-close",
+          reason: "closed by operator",
+        }),
+      ).resolves.toMatchObject({
+        sessionId: "stored-close",
+        terminated: true,
+        status: "closed",
+        reason: "closed by operator",
+      });
+
+      const recreated = new AgenCDaemonSessionManager({ threadStore });
+      await expect(recreated.listSessions()).resolves.toEqual({ sessions: [] });
+      await expect(recreated.countSessions()).resolves.toEqual({
+        active: 0,
+        closed: 0,
+        total: 0,
+      });
+      await expect(recreated.getSession("stored-close")).resolves.toBeNull();
     } finally {
       threadStore.close();
       rollout.close();

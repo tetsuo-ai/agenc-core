@@ -13,6 +13,7 @@ function makeSession() {
     submit: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
     abortTerminal: vi.fn(),
+    abortAllTasks: vi.fn(async () => {}),
     mailbox: { send: vi.fn(() => 1) },
     services: {
       mcpManager: { refreshFromConfig: vi.fn(async () => {}) },
@@ -58,6 +59,24 @@ describe("ThreadManager", () => {
 
     expect(session.submit).toHaveBeenCalledWith("hello");
     expect(manager.getThread("root-thread").kind).toBe("root");
+  });
+
+  it("routes root interrupts through resettable turn cancellation", async () => {
+    const session = makeSession();
+    const manager = new ThreadManager(session);
+
+    await manager.sendOp("root-thread", {
+      type: "interrupt",
+      reason: "user_cancel",
+    });
+    await manager.sendOp("root-thread", {
+      type: "user_input",
+      input: "next turn",
+    });
+
+    expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
+    expect(session.abortTerminal).not.toHaveBeenCalled();
+    expect(session.submit).toHaveBeenCalledWith("next turn");
   });
 
   it("registers live agents and routes IAC through the child inbox", async () => {
@@ -145,6 +164,16 @@ describe("ThreadManager", () => {
     expect(manager.hasThread("child-thread")).toBe(true);
     expect(manager.removeThread("child-thread")?.threadId).toBe("child-thread");
     expect(manager.hasThread("child-thread")).toBe(false);
+  });
+
+  it("aborts live agents when shutting down a managed child thread", async () => {
+    const manager = new ThreadManager(makeSession());
+    const live = makeLive();
+    manager.registerLiveAgent(live, { parentThreadId: "root-thread" });
+
+    await manager.getThread("child-thread").shutdown("test_shutdown");
+
+    expect(live.abortController.signal.aborted).toBe(true);
   });
 
   it("shuts down tracked threads within a bounded window", async () => {

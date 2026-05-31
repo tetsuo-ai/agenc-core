@@ -224,8 +224,20 @@ export function isStreamingFallbackOccured(state: TurnState): boolean {
     lastAssistant.text !== undefined &&
     lastAssistant.text.length > 0 &&
     lastStreamError !== undefined &&
+    !isPartialProviderResponseError(lastStreamError) &&
     !isFallbackTriggeredError(lastStreamError)
   );
+}
+
+export function isPartialProviderResponseError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const response = (err as { readonly response?: unknown }).response;
+  if (!response || typeof response !== "object") return false;
+  const record = response as {
+    readonly finishReason?: unknown;
+    readonly partial?: unknown;
+  };
+  return record.finishReason === "error" && record.partial === true;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -238,6 +250,7 @@ export function isStreamingFallbackOccured(state: TurnState): boolean {
  * backoff (500ms → 8s). Non-transient errors surface as terminal.
  */
 export function isTransientProviderError(err: unknown): boolean {
+  if (isPartialProviderResponseError(err)) return false;
   return isTransientProviderErrorInner(err, new Set<object>(), 0);
 }
 

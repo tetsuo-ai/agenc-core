@@ -84,6 +84,7 @@ export interface ToolDispatchResult {
   readonly codeModeResult?: unknown;
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
   readonly metadata?: Record<string, unknown>;
+  readonly preventContinuation?: boolean;
 }
 
 export interface CodeModeNestedToolDispatch {

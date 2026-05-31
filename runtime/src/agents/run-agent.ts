@@ -36,10 +36,16 @@ import type {
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import type { StartupPrewarmStore } from "../session/startup-prewarm.js";
-import { readProviderFactoryOptions, readProviderIdentity } from "../llm/provider.js";
+import {
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
-import type { ToolRegistry, ToolDispatchResult } from "./_deps/tool-registry.js";
+import type {
+  ToolRegistry,
+  ToolDispatchResult,
+} from "./_deps/tool-registry.js";
 import {
   safeStringify,
   type Tool,
@@ -164,7 +170,11 @@ export type RunAgentProgressEvent =
       readonly outputTokens: number;
       readonly totalTokens: number;
     }
-  | { readonly kind: "run_complete"; readonly finalMessage?: string; readonly toolCallCount: number }
+  | {
+      readonly kind: "run_complete";
+      readonly finalMessage?: string;
+      readonly toolCallCount: number;
+    }
   | {
       /**
        * Emitted between turns in a keepAlive run, before the agent loop
@@ -176,6 +186,11 @@ export type RunAgentProgressEvent =
        */
       readonly kind: "turn_complete";
       readonly finalMessage?: string;
+      readonly turnId: string;
+    }
+  | {
+      readonly kind: "turn_interrupted";
+      readonly reason: string;
       readonly turnId: string;
     }
   | { readonly kind: "run_error"; readonly error: string }
@@ -405,10 +420,7 @@ function buildChatOptions(
   } = { signal };
   // Only forward reasoning-effort values the provider options type
   // accepts — AgentRole allows "none", LLMChatOptions does not.
-  if (
-    roleConfig.reasoningEffort &&
-    roleConfig.reasoningEffort !== "none"
-  ) {
+  if (roleConfig.reasoningEffort && roleConfig.reasoningEffort !== "none") {
     opts.reasoningEffort = roleConfig.reasoningEffort;
   }
   const effectiveTimeout = timeoutOverrideMs ?? roleConfig.timeoutMs;
@@ -551,7 +563,10 @@ interface AgentRunContext {
   readonly onCompactProgress: (event: unknown) => void;
   readonly setSDKStatus: (status: "compacting" | null) => void;
   readonly addNotification: (notification: unknown) => void;
-  readonly emitWarning: (warning: { readonly cause: string; readonly message: string }) => void;
+  readonly emitWarning: (warning: {
+    readonly cause: string;
+    readonly message: string;
+  }) => void;
   readonly queryTracking?: {
     readonly chainId?: string;
     readonly depth?: number;
@@ -592,7 +607,10 @@ type SessionSurface = {
   readonly onCompactProgress?: (event: unknown) => void;
   readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly addNotification?: (notification: unknown) => void;
-  readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
+  readonly emitWarning?: (warning: {
+    readonly cause: string;
+    readonly message: string;
+  }) => void;
 };
 
 function buildAgentRunContext(
@@ -621,7 +639,9 @@ function buildAgentRunContext(
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
       ...(providerOverride !== undefined ? { providerOverride } : {}),
-      ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
+      ...(opts.querySource !== undefined
+        ? { querySource: opts.querySource }
+        : {}),
       agentDefinitions,
       isNonInteractiveSession: false,
       cwd,
@@ -658,7 +678,9 @@ function buildAgentRunContext(
       ? { queryTracking: surface.queryTracking }
       : {}),
     clearProviderResponseId: () => session.clearProviderResponseId(),
-    ...(session.rolloutStore !== undefined ? { rolloutStore: session.rolloutStore } : {}),
+    ...(session.rolloutStore !== undefined
+      ? { rolloutStore: session.rolloutStore }
+      : {}),
     ...(session.rolloutStore !== undefined
       ? { session: { rolloutStore: session.rolloutStore } }
       : {}),
@@ -715,7 +737,9 @@ function buildAgentProviderOverride(
   };
 }
 
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();
@@ -725,7 +749,10 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 }
 
 function readAgentSessionSurface(session: Session): SessionSurface {
-  const snapshot = session.state.unsafePeek() as unknown as Record<string, unknown>;
+  const snapshot = session.state.unsafePeek() as unknown as Record<
+    string,
+    unknown
+  >;
   const direct = session as unknown as Record<string, unknown>;
   const read = <T>(key: keyof SessionSurface): T | undefined => {
     const directValue = direct[key];
@@ -738,8 +765,9 @@ function readAgentSessionSurface(session: Session): SessionSurface {
     readFileState: read<Map<string, unknown>>("readFileState"),
     loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
     mcpClients: read<readonly unknown[]>("mcpClients"),
-    agentDefinitions:
-      read<{ readonly activeAgents?: readonly unknown[] }>("agentDefinitions"),
+    agentDefinitions: read<{ readonly activeAgents?: readonly unknown[] }>(
+      "agentDefinitions",
+    ),
     tasks: read<Record<string, unknown>>("tasks"),
     queryTracking: read<{ readonly chainId?: string; readonly depth?: number }>(
       "queryTracking",
@@ -752,9 +780,9 @@ function readAgentSessionSurface(session: Session): SessionSurface {
     setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
     addNotification: read<(notification: unknown) => void>("addNotification"),
     emitWarning:
-      read<(warning: { readonly cause: string; readonly message: string }) => void>(
-        "emitWarning",
-      ),
+      read<
+        (warning: { readonly cause: string; readonly message: string }) => void
+      >("emitWarning"),
   };
 }
 
@@ -834,7 +862,8 @@ function relayToParentMailbox(params: {
   } catch (err) {
     if (
       err instanceof MailboxClosedError &&
-      (params.live.abortController.signal.aborted || isFinal(params.live.status.value))
+      (params.live.abortController.signal.aborted ||
+        isFinal(params.live.status.value))
     ) {
       return;
     }
@@ -868,7 +897,8 @@ function sendSubagentNotificationToParent(params: {
   } catch (err) {
     if (
       err instanceof MailboxClosedError &&
-      (params.live.abortController.signal.aborted || isFinal(params.live.status.value))
+      (params.live.abortController.signal.aborted ||
+        isFinal(params.live.status.value))
     ) {
       return;
     }
@@ -885,18 +915,16 @@ function requestParentFollowupTurn(params: {
   readonly live: LiveAgent;
   readonly parent: Session;
 }): void {
-  void params.parent
-    .submit("", { displayUserMessage: null })
-    .catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message === "Session submit hook is not installed") return;
-      emitWarning(
-        params.parent.eventLog,
-        params.parent.nextInternalSubId(),
-        "subagent_followup_turn_failed",
-        `subagent ${params.live.agentPath} could not start parent follow-up turn: ${message}`,
-      );
-    });
+  void params.parent.submit("", { displayUserMessage: null }).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === "Session submit hook is not installed") return;
+    emitWarning(
+      params.parent.eventLog,
+      params.parent.nextInternalSubId(),
+      "subagent_followup_turn_failed",
+      `subagent ${params.live.agentPath} could not start parent follow-up turn: ${message}`,
+    );
+  });
 }
 
 function parentAgentPathFor(agentPath: string): string {
@@ -976,7 +1004,8 @@ function drainChildMailbox(live: LiveAgent): {
       typeof item.metadata?.kind === "string" ? item.metadata.kind : undefined;
     if (kind === "interrupt") {
       const reason =
-        typeof item.metadata?.reason === "string" && item.metadata.reason.length > 0
+        typeof item.metadata?.reason === "string" &&
+        item.metadata.reason.length > 0
           ? item.metadata.reason
           : item.content.trim().length > 0
             ? item.content
@@ -1001,7 +1030,10 @@ function drainChildMailbox(live: LiveAgent): {
     const inputContent = item.metadata?.inputContent;
     if (isLlmContentParts(inputContent)) {
       nextTurnParts.push(inputContent);
-    } else if (typeof inputContent === "string" && inputContent.trim().length > 0) {
+    } else if (
+      typeof inputContent === "string" &&
+      inputContent.trim().length > 0
+    ) {
       nextTurnParts.push(inputContent);
     } else if (item.content.trim().length > 0) {
       nextTurnParts.push(item.content);
@@ -1031,9 +1063,9 @@ function drainChildMailbox(live: LiveAgent): {
   };
 }
 
-export function drainChildMailboxForTesting(live: LiveAgent): ReturnType<
-  typeof drainChildMailbox
-> {
+export function drainChildMailboxForTesting(
+  live: LiveAgent,
+): ReturnType<typeof drainChildMailbox> {
   return drainChildMailbox(live);
 }
 
@@ -1064,13 +1096,19 @@ function isLlmContentParts(value: unknown): value is readonly LLMContentPart[] {
     Array.isArray(value) &&
     value.every((part) => {
       if (part === null || typeof part !== "object") return false;
-      const candidate = part as { type?: unknown; text?: unknown; image_url?: unknown };
+      const candidate = part as {
+        type?: unknown;
+        text?: unknown;
+        image_url?: unknown;
+      };
       if (candidate.type === "text") return typeof candidate.text === "string";
       if (candidate.type === "image_url") {
         const image = candidate.image_url as { url?: unknown } | null;
-        return image !== null &&
+        return (
+          image !== null &&
           typeof image === "object" &&
-          typeof image.url === "string";
+          typeof image.url === "string"
+        );
       }
       return false;
     })
@@ -1107,8 +1145,7 @@ export function buildFilteredRegistry(
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
   const disabled = opts.disabledTools ?? new Set<string>();
   const isEligible = (name: string): boolean =>
-    !disabled.has(name) &&
-    (allowed === null || allowed.has(name));
+    !disabled.has(name) && (allowed === null || allowed.has(name));
   const wrappedTools = base.tools
     .filter((tool) => isEligible(tool.name))
     .map((tool) => wrapToolForChild(tool, opts));
@@ -1186,7 +1223,9 @@ export function buildFilteredRegistry(
         return {
           content: result.content,
           ...(result.isError !== undefined ? { isError: result.isError } : {}),
-          ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+          ...(result.metadata !== undefined
+            ? { metadata: result.metadata }
+            : {}),
         };
       }
 
@@ -1301,7 +1340,9 @@ type ParsedToolCallArguments =
  * as errors — tool arguments must be a JSON object per the
  * function-calling contract used by all openai-compatible providers.
  */
-function parseToolCallArguments(raw: string | undefined): ParsedToolCallArguments {
+function parseToolCallArguments(
+  raw: string | undefined,
+): ParsedToolCallArguments {
   const text = raw ?? "{}";
   let parsed: unknown;
   try {
@@ -1454,11 +1495,17 @@ function wrapToolForChild(
       // SECURITY: strip model-supplied `__agenc*` keys before the child
       // policy/injection runs (idempotent if the caller already stripped).
       const sanitizedArgs = stripModelSuppliedChildArgs(args);
-      const policyResult = await applyChildToolPolicy(tool, sanitizedArgs, opts);
+      const policyResult = await applyChildToolPolicy(
+        tool,
+        sanitizedArgs,
+        opts,
+      );
       if ("result" in policyResult) {
         return policyResult.result;
       }
-      return tool.execute(injectChildToolArgs(policyResult.args, tool.name, opts));
+      return tool.execute(
+        injectChildToolArgs(policyResult.args, tool.name, opts),
+      );
     },
   };
 }
@@ -1467,8 +1514,9 @@ function recoveryCategoryForTool(
   registry: ToolRegistry,
   toolName: string,
 ): ToolRecoveryCategory | undefined {
-  const category = registry.tools.find((tool) => tool.name === toolName)
-    ?.recoveryCategory;
+  const category = registry.tools.find(
+    (tool) => tool.name === toolName,
+  )?.recoveryCategory;
   return category === "idempotent" ||
     category === "side-effecting" ||
     category === "interactive"
@@ -1599,7 +1647,9 @@ function splitInitialMessages(
     return { history: [], userMessage: fallbackUserMessage };
   }
 
-  const history = initialMessages.slice(0, -1).map((message) => ({ ...message }));
+  const history = initialMessages
+    .slice(0, -1)
+    .map((message) => ({ ...message }));
   const last = initialMessages[initialMessages.length - 1];
   if (last?.role === "user" && typeof last.content === "string") {
     return { history, userMessage: last.content };
@@ -1635,25 +1685,22 @@ function buildChildSession(
         : {}),
     },
   );
-  const registry = buildFilteredRegistry(
-    params.parent.services.registry,
-    {
-      allowlist:
-        params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
-      childConversationId: params.live.agentId,
-      worktree: params.worktree,
-      disabledTools: mergeRoleDisallowlist(
-        resolveThreadSpawnDisabledTools({
-          depth: params.live.depth,
-          maxDepth: resolveSessionMaxAgentDepth(params.parent),
-        }),
-        params.live.role.config.disallowlist,
-      ),
-      ...(params.childToolPolicy !== undefined
-        ? { childToolPolicy: params.childToolPolicy }
-        : {}),
-    },
-  );
+  const registry = buildFilteredRegistry(params.parent.services.registry, {
+    allowlist:
+      params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
+    childConversationId: params.live.agentId,
+    worktree: params.worktree,
+    disabledTools: mergeRoleDisallowlist(
+      resolveThreadSpawnDisabledTools({
+        depth: params.live.depth,
+        maxDepth: resolveSessionMaxAgentDepth(params.parent),
+      }),
+      params.live.role.config.disallowlist,
+    ),
+    ...(params.childToolPolicy !== undefined
+      ? { childToolPolicy: params.childToolPolicy }
+      : {}),
+  });
 
   const childSession = new ChildSession({
     conversationId: params.live.agentId,
@@ -1676,7 +1723,9 @@ function buildChildSession(
     config: buildChildConfig(params.parent, sessionConfiguration),
     modelInfo: buildChildModelInfo(params.parent, sessionConfiguration),
   });
-  params.live.configSnapshot = threadConfigSnapshot(sessionConfiguration) as unknown as Record<string, unknown>;
+  params.live.configSnapshot = threadConfigSnapshot(
+    sessionConfiguration,
+  ) as unknown as Record<string, unknown>;
 
   if (!params.silent) {
     try {
@@ -1738,8 +1787,8 @@ export async function* runAgent(
         if (!merged.signal.aborted) {
           merged.abort(
             String(
-              (params.externalSignal as AbortSignal & { reason?: unknown }).reason ??
-                "external_aborted",
+              (params.externalSignal as AbortSignal & { reason?: unknown })
+                .reason ?? "external_aborted",
             ),
           );
         }
@@ -1781,7 +1830,9 @@ export async function* runAgent(
     const mcp = await initMcpForAgent({
       parent,
       signal: merged.signal,
-      ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      ...(params.timeoutMs !== undefined
+        ? { timeoutMs: params.timeoutMs }
+        : {}),
       roleConfig: live.role.config as RoleLikeConfig,
     });
     if (!mcp.ready) {
@@ -1916,7 +1967,11 @@ export async function* runAgent(
             captureCacheSafeParams,
           )
         : parent.services.startupPrewarm;
-    childSession = buildChildSession(params, childProvider, childStartupPrewarm);
+    childSession = buildChildSession(
+      params,
+      childProvider,
+      childStartupPrewarm,
+    );
     const { history, userMessage } = splitInitialMessages(
       params.initialMessages,
       params.taskPrompt,
@@ -2073,6 +2128,52 @@ export async function* runAgent(
         };
       }
 
+      if (stopReason === "cancelled") {
+        if (roleTimeoutFired) {
+          const message = `role_timeout after ${roleTimeoutMs}ms`;
+          live.status.markErrored(turnId, message);
+          sendParentNotification();
+          relayAgentEvent({
+            content: message,
+            triggerTurn: false,
+            metadata: {
+              kind: "subagent_error",
+              turnId,
+            },
+          });
+          yield { kind: "run_error", error: message };
+          return {
+            threadId: live.agentId,
+            durationMs: Date.now() - startedAt,
+            outcome: "errored",
+            error: new Error(message),
+            toolCallCount,
+          };
+        }
+        const reason =
+          terminalError instanceof Error
+            ? terminalError.message
+            : typeof terminalError === "string"
+              ? terminalError
+              : "cancelled";
+        live.status.markInterrupted(turnId, reason);
+        relayAgentEvent({
+          content: reason,
+          triggerTurn: false,
+          metadata: {
+            kind: "subagent_interrupted",
+            turnId,
+          },
+        });
+        yield { kind: "run_interrupted", reason };
+        return {
+          threadId: live.agentId,
+          durationMs: Date.now() - startedAt,
+          outcome: "interrupted",
+          toolCallCount,
+        };
+      }
+
       firstTurn = false;
       if (assistantText.length > 0) {
         live.messages.push({ role: "assistant", content: assistantText });
@@ -2100,9 +2201,10 @@ export async function* runAgent(
         nextUserMessage = pendingChildInput.nextUserMessage;
         live.messages.push({
           role: "user",
-          content: typeof nextUserMessage === "string"
-            ? nextUserMessage
-            : [...nextUserMessage],
+          content:
+            typeof nextUserMessage === "string"
+              ? nextUserMessage
+              : [...nextUserMessage],
         });
         relayAgentEvent({
           content: `accepted follow-up input for ${live.agentPath}`,

@@ -1,7 +1,11 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { randomUUID } from 'crypto'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
-import { query } from '../../query.js'
+import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import {
+  createTurnCompatSession,
+  structuredOutputFromToolResult,
+} from '../../session/turn-compat.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { type Tool, toolMatchesName } from '../../tools/Tool.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
@@ -14,7 +18,7 @@ import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
 import type { HookResult } from '../hooks.js'
-import { createUserMessage, handleMessageFromStream } from '../messages.js'
+import { createUserMessage } from '../messages.js'
 import { getSmallFastModel } from '../model/model.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { getAgentTranscriptPath, getTranscriptPath } from '../sessionStorage.js'
@@ -77,7 +81,11 @@ export async function execAgentHook(
     const { signal: parentTimeoutSignal, cleanup: cleanupCombinedSignal } =
       createCombinedAbortSignal(signal, { timeoutMs: hookTimeoutMs })
     const onParentTimeout = () => hookAbortController.abort()
-    parentTimeoutSignal.addEventListener('abort', onParentTimeout)
+    if (parentTimeoutSignal.aborted) {
+      hookAbortController.abort()
+    } else {
+      parentTimeoutSignal.addEventListener('abort', onParentTimeout)
+    }
 
     // Combined signal is just our controller's signal now
     const combinedSignal = hookAbortController.signal
@@ -160,64 +168,52 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       registerStructuredOutputEnforcement(
         toolUseContext.setAppState,
         hookAgentId,
+        'SubagentStop',
       )
       hookAgentIdForCleanup = hookAgentId
 
       let structuredOutputResult: { ok: boolean; reason?: string } | null = null
       let turnCount = 0
-      let hitMaxTurns = false
 
-      // Use query() for multi-turn execution
-      for await (const message of query({
-        messages: agentMessages,
-        systemPrompt,
-        userContext: {},
-        systemContext: {},
-        canUseTool: hasPermissionsToUseTool,
-        toolUseContext: agentToolUseContext,
+      const parentSession = requireCurrentRuntimeSession('agent hook')
+      const turn = await createTurnCompatSession(
+        parentSession,
+        {
+          messages: agentMessages,
+          systemPrompt,
+          userContext: {},
+          systemContext: {},
+          canUseTool: hasPermissionsToUseTool,
+          toolUseContext: agentToolUseContext,
+          querySource: 'hook_agent',
+          maxTurns: MAX_AGENT_TURNS,
+        },
+        { conversationId: hookAgentId },
+      )
+      let lastAssistantLength = 0
+      for await (const event of turn.session.runTurn(turn.userMessage, {
+        history: turn.history,
+        systemPrompt: turn.systemPrompt,
+        signal: combinedSignal,
         querySource: 'hook_agent',
+        configOverrides: { maxTurns: MAX_AGENT_TURNS },
       })) {
-        // Process stream events to update response length in the spinner
-        handleMessageFromStream(
-          message,
-          () => {}, // onMessage - we handle messages below
-          newContent =>
-            toolUseContext.setResponseLength(
-              length => length + newContent.length,
-            ),
-          toolUseContext.setStreamMode ?? (() => {}),
-          () => {}, // onStreamingToolUses - not needed for hooks
-        )
-
-        // Skip streaming events for further processing
-        if (
-          message.type === 'stream_event' ||
-          message.type === 'stream_request_start'
-        ) {
+        if (event.type === 'assistant_text') {
+          const delta = event.content.slice(lastAssistantLength)
+          lastAssistantLength = event.content.length
+          if (delta.length > 0) {
+            toolUseContext.setResponseLength(length => length + delta.length)
+            toolUseContext.setStreamMode?.('responding')
+          }
           continue
         }
 
-        // Count assistant turns
-        if (message.type === 'assistant') {
-          turnCount++
-
-          // Check if we've hit the turn limit
-          if (turnCount >= MAX_AGENT_TURNS) {
-            hitMaxTurns = true
-            logForDebugging(
-              `Hooks: Agent turn ${turnCount} hit max turns, aborting`,
-            )
-            hookAbortController.abort()
-            break
-          }
-        }
-
-        // Check for structured output in attachments
         if (
-          message.type === 'attachment' &&
-          message.attachment.type === 'structured_output'
+          event.type === 'tool_result' &&
+          toolMatchesName(structuredOutputTool, event.toolCall.name)
         ) {
-          const parsed = hookResponseSchema().safeParse(message.attachment.data)
+          const output = structuredOutputFromToolResult(event.result)
+          const parsed = hookResponseSchema().safeParse(output)
           if (parsed.success) {
             structuredOutputResult = parsed.data
             logForDebugging(
@@ -227,6 +223,17 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
             hookAbortController.abort()
             break
           }
+          continue
+        }
+
+        if (event.type === 'turn_complete') {
+          turnCount++
+          if (event.stopReason === 'error') {
+            throw new Error(event.error?.message ?? 'Agent hook turn failed')
+          }
+          if (event.stopReason === 'max_turns') {
+            throw new Error(`Agent hook exceeded maxTurns (${MAX_AGENT_TURNS})`)
+          }
         }
       }
 
@@ -235,24 +242,14 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
 
       // Check if we got a result
       if (!structuredOutputResult) {
-        // If we hit max turns, just log and return cancelled (no UI message)
-        if (hitMaxTurns) {
-          logForDebugging(
-            `Hooks: Agent hook did not complete within ${MAX_AGENT_TURNS} turns`,
-          )
+        logForDebugging(`Hooks: Agent hook did not return structured output`)
+        if (combinedSignal.aborted) {
           return {
             hook,
             outcome: 'cancelled',
           }
         }
-
-        // For other cases (e.g., agent finished without calling structured output tool),
-        // just log and return cancelled (don't show error to user)
-        logForDebugging(`Hooks: Agent hook did not return structured output`)
-        return {
-          hook,
-          outcome: 'cancelled',
-        }
+        throw new Error('Agent hook did not return structured output')
       }
 
       // Return result based on structured output

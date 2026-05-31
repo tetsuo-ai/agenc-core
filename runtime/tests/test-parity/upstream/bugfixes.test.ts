@@ -73,27 +73,27 @@ describe('Session timeout fix', () => {
 // Fix 3: Agent loop continuation nudge
 // ---------------------------------------------------------------------------
 describe('Agent loop continuation nudge', () => {
-  test('query.ts has continuation signal detection', async () => {
-    const content = await file('query.ts').text()
+  test('continuation-nudge phase has continuation signal detection', async () => {
+    const content = await file('phases/continuation-nudge.ts').text()
 
-    expect(content).toContain('continuationSignals')
-    expect(content).toContain('Continuation nudge triggered')
+    expect(content).toContain('CONTINUATION_SIGNALS')
+    expect(content).toContain('matchesContinuationSignal')
     expect(content).toContain('continuation_nudge')
   })
 
   test('continuation signals include tightened patterns', async () => {
-    const content = await file('query.ts').text()
+    const content = await file('phases/continuation-nudge.ts').text()
 
     // Should detect tightened patterns requiring explicit action verbs
     expect(content).toMatch(/so now \(i\|let me\|we\)/)
-    expect(content).toContain('completionMarkers')
+    expect(content).toContain('COMPLETION_MARKERS')
     expect(content).toContain('MAX_CONTINUATION_NUDGES')
     // Verify the nudge counter guard exists
-    expect(content).toMatch(/continuationNudgeCount\s*<\s*MAX_CONTINUATION_NUDGES/)
+    expect(content).toMatch(/continuationNudgeCount\s*>=\s*MAX_CONTINUATION_NUDGES/)
   })
 
   test('nudge creates a meta user message to continue', async () => {
-    const content = await file('query.ts').text()
+    const content = await file('phases/continuation-nudge.ts').text()
 
     expect(content).toContain(
       'Continue with the task. Use the appropriate tools to proceed.',
@@ -280,11 +280,11 @@ describe('Context overflow 500 fix', () => {
     expect(content).toContain('The conversation has grown too large')
   })
 
-  test('query.ts has circuit breaker safety net for oversized context', async () => {
-    const content = await file('query.ts').text()
+  test('run-turn has mid-turn auto-compact safety net for oversized context', async () => {
+    const content = await file('session/run-turn.ts').text()
 
-    expect(content).toContain('Safety net: when auto-compact')
-    expect(content).toContain('circuit breaker has tripped')
-    expect(content).toContain('automatic compaction has failed')
+    expect(content).toContain('Mid-turn compaction')
+    expect(content).toContain('auto_compact_limit')
+    expect(content).toContain('runAutoCompact')
   })
 })

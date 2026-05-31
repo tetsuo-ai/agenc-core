@@ -49,7 +49,15 @@ describe("tombstone", () => {
     expect(state.toolResults).toHaveLength(0);
     expect(state.toolUseBlocks).toHaveLength(0);
     expect(state.needsFollowUp).toBe(false);
-    expect(state.messages).toHaveLength(2);
+    expect(state.messages).toHaveLength(3);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      toolCalls: [{ id: "tc-1" }],
+    });
+    expect(state.messages[1]).toMatchObject({
+      role: "tool",
+      toolCallId: "tc-1",
+    });
     const m = state.messages.find((msg) => msg.role === "user")!;
     expect(m.role).toBe("user");
     expect(typeof m.content).toBe("string");

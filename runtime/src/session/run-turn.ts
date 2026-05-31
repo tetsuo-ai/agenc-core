@@ -51,15 +51,18 @@ import {
 import type {
   LLMContentPart,
   LLMMessage,
-  LLMProvider,
   LLMTool,
+  LLMToolCall,
   LLMUsage,
 } from "../llm/types.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
+import type { QueuedCommand } from "../types/textInputTypes.js";
 import { safeStringify } from "../tools/types.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
-import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
+import type {
+  CompactionResult,
+  RuntimeMessage,
+} from "../services/compact/types.js";
+import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
+import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
 import { commit } from "../phases/commit.js";
 import { continuationNudge } from "../phases/continuation-nudge.js";
@@ -68,7 +71,10 @@ import { executeTools } from "../phases/execute-tools.js";
 import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
-import { postSampleRecovery } from "../phases/post-sample-recovery.js";
+import {
+  applyPendingBudgetContinuation,
+  postSampleRecovery,
+} from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
@@ -91,7 +97,10 @@ import {
   StreamModelError,
   type StreamModelRequestContract,
 } from "../phases/stream-model.js";
-import { isTransientProviderError } from "../recovery/api-errors.js";
+import {
+  isPartialProviderResponseError,
+  isTransientProviderError,
+} from "../recovery/api-errors.js";
 import { reconnectWithBackoff } from "../recovery/reconnection.js";
 import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
@@ -101,6 +110,7 @@ import { llmMessageToResponseItem } from "./message-history-conversion.js";
 import {
   modelContextWindow,
   toTurnContextItem,
+  type ModelInfo,
   type TurnContext,
   type TurnContextItem,
 } from "./turn-context.js";
@@ -112,6 +122,14 @@ import type {
 } from "./tasks.js";
 import { emitError } from "./event-log.js";
 import {
+  getCommandsByMaxPriority,
+  isSlashCommand,
+  remove as removeFromQueue,
+} from "../utils/messageQueueManager.js";
+import { notifyCommandLifecycle } from "../utils/commandLifecycle.js";
+import { wrapCommandText } from "../utils/messages.js";
+import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
+import {
   buildInitialTurnState,
   resetIterationFields,
   type AssistantMessage,
@@ -119,11 +137,18 @@ import {
   type Terminal,
   type TurnState,
 } from "./turn-state.js";
+import {
+  buildAgenCToolUseContext,
+  toAgenCModelContext,
+  type AgenCToolUseContext,
+} from "./agenc-tool-use-context.js";
 
 export interface RunTurnOptions {
   readonly systemPrompt?: string;
   readonly history?: readonly LLMMessage[];
   readonly signal?: AbortSignal;
+  readonly querySource?: string;
+  readonly skipCacheWrite?: boolean;
   /**
    * Optional transcript-facing text when the model-visible prompt was
    * expanded. `null` suppresses the user-message transcript event for
@@ -165,251 +190,6 @@ const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
-
-interface AgenCModelContext {
-  readonly model: string;
-  readonly contextWindowTokens: number;
-  readonly maxOutputTokens?: number;
-}
-
-function toAgenCModelContext(ctx: TurnContext): AgenCModelContext {
-  const contextWindowTokens = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
-  if (
-    typeof contextWindowTokens !== "number" ||
-    !Number.isFinite(contextWindowTokens) ||
-    contextWindowTokens <= 0
-  ) {
-    throw new Error(`Missing context window for model ${ctx.modelInfo.slug}`);
-  }
-  return {
-    model: ctx.modelInfo.slug,
-    contextWindowTokens,
-    ...(ctx.modelInfo.maxOutputTokens !== undefined
-      ? { maxOutputTokens: ctx.modelInfo.maxOutputTokens }
-      : {}),
-  };
-}
-
-
-
-interface AgenCToolUseContext {
-  readonly abortController: AbortController;
-  readonly agentId?: string;
-  readonly sessionId: string;
-  readonly options: {
-    readonly mainLoopModel: string;
-    readonly tools: readonly AgenCRuntimeTool[];
-    readonly mcpClients: readonly unknown[];
-    readonly contextWindowTokens: number;
-    readonly maxOutputTokens?: number;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
-    readonly querySource?: string;
-    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
-    readonly isNonInteractiveSession: boolean;
-    readonly cwd?: string;
-    readonly verbose: boolean;
-  };
-  readonly getAppState: () => {
-    readonly toolPermissionContext: unknown;
-    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
-    readonly tasks: Record<string, unknown>;
-  };
-  readonly readFileState: Map<string, unknown>;
-  readonly loadedNestedMemoryPaths: Set<string>;
-  readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
-  readonly setResponseLength: (updater: (length: number) => number) => void;
-  readonly onCompactProgress: (event: unknown) => void;
-  readonly setSDKStatus: (status: "compacting" | null) => void;
-  readonly addNotification: (notification: unknown) => void;
-  readonly emitWarning: (warning: { readonly cause: string; readonly message: string }) => void;
-  readonly queryTracking?: {
-    readonly chainId?: string;
-    readonly depth?: number;
-  };
-  readonly clearProviderResponseId: () => void;
-  readonly rolloutStore?: unknown;
-  readonly session?: { readonly rolloutStore?: unknown };
-  readonly provider?: LLMProvider;
-  readonly cwd?: string;
-}
-
-type AgenCRuntimeTool = LLMTool & {
-  readonly name: string;
-  readonly description: string;
-  readonly inputJSONSchema: Record<string, unknown>;
-  readonly isMcp: boolean;
-  readonly maxResultSizeChars: number;
-};
-
-function buildAgenCToolUseContext(
-  session: Session,
-  ctx: TurnContext,
-  opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
-): AgenCToolUseContext {
-  const model = toAgenCModelContext(ctx);
-  const providerOverride = buildProviderOverride(session, model.model);
-  const surface = readSessionSurface(session);
-  const agentDefinitions = {
-    activeAgents: Array.isArray(surface.agentDefinitions?.activeAgents)
-      ? [...surface.agentDefinitions.activeAgents]
-      : [],
-  };
-  const cwd = ctx.cwd;
-  return {
-    abortController: session.abortController ?? new AbortController(),
-    sessionId: session.conversationId,
-    options: {
-      mainLoopModel: model.model,
-      tools: toAgenCRuntimeTools(session.services.registry.toLLMTools()),
-      mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
-      contextWindowTokens: model.contextWindowTokens,
-      ...(model.maxOutputTokens !== undefined
-        ? { maxOutputTokens: model.maxOutputTokens }
-        : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
-      ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
-      agentDefinitions,
-      isNonInteractiveSession: false,
-      cwd,
-      verbose: opts.verbose ?? false,
-    },
-    getAppState: () => ({
-      toolPermissionContext:
-        session.permissionModeRegistry?.current?.() ??
-        session.services.permissionModeRegistry?.current?.() ??
-        createEmptyToolPermissionContext(),
-      agentDefinitions,
-      tasks: surface.tasks ?? {},
-    }),
-    readFileState: surface.readFileState ?? new Map<string, unknown>(),
-    loadedNestedMemoryPaths:
-      surface.loadedNestedMemoryPaths ?? new Set<string>(),
-    setStreamMode: surface.setStreamMode ?? (() => {}),
-    setResponseLength: surface.setResponseLength ?? (() => {}),
-    onCompactProgress: surface.onCompactProgress ?? (() => {}),
-    setSDKStatus: surface.setSDKStatus ?? (() => {}),
-    addNotification: surface.addNotification ?? (() => {}),
-    emitWarning:
-      surface.emitWarning ??
-      ((warning) => {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: warning,
-          },
-        });
-      }),
-    ...(surface.queryTracking !== undefined
-      ? { queryTracking: surface.queryTracking }
-      : {}),
-    clearProviderResponseId: () => session.clearProviderResponseId(),
-    ...(session.rolloutStore !== undefined ? { rolloutStore: session.rolloutStore } : {}),
-    ...(session.rolloutStore !== undefined
-      ? { session: { rolloutStore: session.rolloutStore } }
-      : {}),
-    provider: session.services.provider,
-    cwd,
-  };
-}
-
-function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
-  return tools.map((tool) => {
-    const name = tool.function.name;
-    return {
-      ...tool,
-      name,
-      description: tool.function.description,
-      inputJSONSchema: tool.function.parameters,
-      isMcp: name.startsWith("mcp__"),
-      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
-    };
-  });
-}
-
-function buildProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgenCToolUseContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
-}
-
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-type SessionSurface = {
-  readonly readFileState?: Map<string, unknown>;
-  readonly loadedNestedMemoryPaths?: Set<string>;
-  readonly mcpClients?: readonly unknown[];
-  readonly agentDefinitions?: { readonly activeAgents?: readonly unknown[] };
-  readonly tasks?: Record<string, unknown>;
-  readonly queryTracking?: {
-    readonly chainId?: string;
-    readonly depth?: number;
-  };
-  readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
-  readonly setResponseLength?: (updater: (length: number) => number) => void;
-  readonly onCompactProgress?: (event: unknown) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
-  readonly addNotification?: (notification: unknown) => void;
-  readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
-};
-
-function readSessionSurface(session: Session): SessionSurface {
-  const snapshot = session.state.unsafePeek() as unknown as Record<string, unknown>;
-  const direct = session as unknown as Record<string, unknown>;
-  const read = <T>(key: keyof SessionSurface): T | undefined => {
-    const directValue = direct[key];
-    if (directValue !== undefined) return directValue as T;
-    const snapshotValue = snapshot[key];
-    if (snapshotValue !== undefined) return snapshotValue as T;
-    return undefined;
-  };
-  return {
-    readFileState: read<Map<string, unknown>>("readFileState"),
-    loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
-    mcpClients: read<readonly unknown[]>("mcpClients"),
-    agentDefinitions:
-      read<{ readonly activeAgents?: readonly unknown[] }>("agentDefinitions"),
-    tasks: read<Record<string, unknown>>("tasks"),
-    queryTracking: read<{ readonly chainId?: string; readonly depth?: number }>(
-      "queryTracking",
-    ),
-    setStreamMode:
-      read<(mode: "requesting" | "responding" | null) => void>("setStreamMode"),
-    setResponseLength:
-      read<(updater: (length: number) => number) => void>("setResponseLength"),
-    onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
-    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
-    addNotification: read<(notification: unknown) => void>("addNotification"),
-    emitWarning:
-      read<(warning: { readonly cause: string; readonly message: string }) => void>(
-        "emitWarning",
-      ),
-  };
-}
-
-
-
 const AGENC_COMPACT_BOUNDARY = "<compact>";
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 const COMPACT_CONTEXT_GUARD_ENV = [
@@ -440,12 +220,7 @@ interface AgenCAutoCompactResult {
   readonly consecutiveFailures?: number;
 }
 
-type AgenCMessageRole =
-  | "system"
-  | "developer"
-  | "user"
-  | "assistant"
-  | "tool";
+type AgenCMessageRole = "system" | "developer" | "user" | "assistant" | "tool";
 
 interface AgenCMessage {
   readonly role: AgenCMessageRole;
@@ -490,12 +265,15 @@ type AgenCCompactionResult = {
   readonly truePostCompactTokenCount?: number;
 };
 
-type CompactGuardEnv = Partial<Record<(typeof COMPACT_CONTEXT_GUARD_ENV)[number], string>>;
+type CompactGuardEnv = Partial<
+  Record<(typeof COMPACT_CONTEXT_GUARD_ENV)[number], string>
+>;
 
 async function prepareAgenCTurnContext(
   state: TurnState,
   ctx: TurnContext,
   session: Session,
+  querySource: string,
   signal?: AbortSignal,
 ): Promise<void> {
   delete (state as PreparedState)[PREPARED_TERMINAL];
@@ -503,13 +281,13 @@ async function prepareAgenCTurnContext(
   toAgenCModelContext(ctx);
   const messages = messagesAfterAgenCBoundary(state.messages);
   const toolUseContext = buildAgenCToolUseContext(session, ctx, {
-    querySource: "repl_main_thread",
+    querySource,
   });
   try {
     const prepared = await prepareAgenCQueryMessages({
       messages,
       toolUseContext,
-      querySource: "repl_main_thread",
+      querySource,
       applyContextCollapse: isAgenCContextCollapseRequested(),
     });
     state.messagesForQuery = prepared.messages;
@@ -614,7 +392,9 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
   return {
     role: message.role,
     content: cloneContent(message.content),
-    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolCallId !== undefined
+      ? { toolCallId: message.toolCallId }
+      : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
   };
@@ -669,9 +449,7 @@ async function prepareAgenCQueryMessages(params: {
   try {
     const result = await withCompactContextGuards(async () => {
       let messages = toAgenCRuntimeMessages(params.messages);
-      const budgeted = await applyToolResultBudget(
-        messages,
-      );
+      const budgeted = await applyToolResultBudget(messages);
       messages = budgeted.messages as AgenCRuntimeMessage[];
       const { microcompactMessages } =
         await import("../services/compact/microCompact.js");
@@ -683,9 +461,7 @@ async function prepareAgenCQueryMessages(params: {
       messages = microcompactResult.messages as AgenCRuntimeMessage[];
       let committed = false;
       if (params.applyContextCollapse) {
-        const projected = await applyCollapsesIfNeeded(
-          messages,
-        );
+        const projected = await applyCollapsesIfNeeded(messages);
         messages = projected.messages as AgenCRuntimeMessage[];
         committed = projected.committed > 0;
       }
@@ -705,18 +481,17 @@ async function prepareAgenCQueryMessages(params: {
   }
 }
 
-async function applyToolResultBudget(
-  messages: RuntimeMessage[],
-): Promise<{
+async function applyToolResultBudget(messages: RuntimeMessage[]): Promise<{
   readonly messages: RuntimeMessage[];
   readonly newlyReplaced: readonly unknown[];
 }> {
   return { messages, newlyReplaced: [] };
 }
 
-async function applyCollapsesIfNeeded(
-  messages: RuntimeMessage[],
-): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
+async function applyCollapsesIfNeeded(messages: RuntimeMessage[]): Promise<{
+  readonly messages: RuntimeMessage[];
+  readonly committed: number;
+}> {
   return { messages, committed: 0 };
 }
 
@@ -724,13 +499,18 @@ async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
   toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
-  const replacementHistory = await withCompactContextGuards(async () => {
-    const { buildPostCompactMessages } =
-      await import("../services/compact/compact.js");
-    return fromAgenCRuntimeMessages(
-      buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
-    );
-  }, toolUseContext ? envForToolUseContext(toolUseContext) : undefined);
+  const replacementHistory = await withCompactContextGuards(
+    async () => {
+      const { buildPostCompactMessages } =
+        await import("../services/compact/compact.js");
+      return fromAgenCRuntimeMessages(
+        buildPostCompactMessages(
+          toCompactServiceResult(result),
+        ) as AgenCRuntimeMessage[],
+      );
+    },
+    toolUseContext ? envForToolUseContext(toolUseContext) : undefined,
+  );
   const postCompactTokens =
     result.truePostCompactTokenCount ?? result.postCompactTokenCount;
   return {
@@ -746,7 +526,9 @@ async function toAgenCCompactionResult(
   };
 }
 
-function toCompactServiceResult(result: AgenCCompactionResult): CompactionResult {
+function toCompactServiceResult(
+  result: AgenCCompactionResult,
+): CompactionResult {
   if (!result.boundaryMarker) {
     throw new Error("Compaction result is missing its boundary marker");
   }
@@ -816,7 +598,9 @@ function toAgenCRuntimeMessages(
   });
 }
 
-function toAgenCRuntimeWireRole(role: LLMMessage["role"]): AgenCRuntimeWireRole {
+function toAgenCRuntimeWireRole(
+  role: LLMMessage["role"],
+): AgenCRuntimeWireRole {
   if (role === "tool") return "user";
   if (role === "developer") return "system";
   return role;
@@ -838,7 +622,9 @@ function fromAgenCRuntimeMessage(
     return {
       role,
       content: fromRuntimeMessageContent(message.content),
-      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolCallId !== undefined
+        ? { toolCallId: message.toolCallId }
+        : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       // pwd-storm root cause: previously this round-trip dropped the
       // assistant's `toolCalls` array. `toAgenCRuntimeMessages` writes
@@ -898,9 +684,7 @@ function normalizeRole(value: unknown): LLMMessage["role"] | null {
   return null;
 }
 
-function readContent(
-  message: AgenCRuntimeMessage,
-): LLMMessage["content"] {
+function readContent(message: AgenCRuntimeMessage): LLMMessage["content"] {
   const content = message.message?.content ?? message.content ?? "";
   return cloneContent(content);
 }
@@ -1073,7 +857,9 @@ function fromRuntimeMessageContent(content: unknown): LLMMessage["content"] {
     }
   }
   if (textOnly) {
-    return parts.map((part) => part.type === "text" ? part.text : "").join("\n");
+    return parts
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("\n");
   }
   return parts;
 }
@@ -1140,7 +926,6 @@ function isAgenCContextCollapseRequested(): boolean {
   return true;
 }
 
-
 function streamRetryErrorCause(error: unknown): unknown {
   return error instanceof StreamModelError ? error.cause : error;
 }
@@ -1205,14 +990,15 @@ function cleanupInterruptedStreamAttempt(
       },
     });
   }
-  const executor = state.streamingToolExecutor as
-    | { abort?: (reason?: string) => void; discard?: (reason?: string) => void }
-    | null;
+  const executor = state.streamingToolExecutor as {
+    abort?: (reason?: string) => void;
+    discard?: (reason?: string) => void;
+  } | null;
   try {
-    if (typeof executor?.abort === "function") {
-      executor.abort("connection_lost");
-    } else if (typeof executor?.discard === "function") {
+    if (typeof executor?.discard === "function") {
       executor.discard("connection_lost");
+    } else if (typeof executor?.abort === "function") {
+      executor.abort("connection_lost");
     }
   } catch {
     // I-41: cleanup paths must remain idempotent if the executor is already aborting.
@@ -1224,10 +1010,7 @@ function cleanupInterruptedStreamAttempt(
   state.streamingToolExecutor = null;
 }
 
-function isReplaySafeStreamTool(
-  session: Session,
-  toolName: string,
-): boolean {
+function isReplaySafeStreamTool(session: Session, toolName: string): boolean {
   const tool = session.services.registry.tools.find(
     (candidate) => candidate.name === toolName,
   );
@@ -1239,20 +1022,42 @@ function isReplaySafeStreamTool(
   return tool?.isReadOnly === true || tool?.metadata?.mutating === false;
 }
 
+type InterruptedStreamHistoryState = TurnState & {
+  suppressInterruptedStreamToolHistory?: boolean;
+  interruptedStartedStreamToolCalls?: ReadonlyMap<string, LLMToolCall>;
+};
+
+function snapshotStartedInterruptedTools(state: TurnState): void {
+  const executor = state.streamingToolExecutor as {
+    getToolStates?: () => ReadonlyArray<{
+      readonly id: string;
+      readonly hasDispatched?: boolean;
+      readonly toolCall?: LLMToolCall;
+    }>;
+  } | null;
+  const started = new Map<string, LLMToolCall>();
+  for (const tool of executor?.getToolStates?.() ?? []) {
+    if (tool.hasDispatched !== true || tool.toolCall === undefined) continue;
+    started.set(tool.id, { ...tool.toolCall });
+  }
+  if (started.size > 0) {
+    (state as InterruptedStreamHistoryState).interruptedStartedStreamToolCalls =
+      started;
+  }
+}
+
 function interruptedStreamRetryBlockReason(
   state: TurnState,
   session: Session,
 ): string | null {
   if (state.toolUseBlocks.length === 0) return null;
-  const executor = state.streamingToolExecutor as
-    | {
-        getToolStates?: () => ReadonlyArray<{
-          readonly id: string;
-          readonly status: string;
-          readonly toolName: string;
-        }>;
-      }
-    | null;
+  const executor = state.streamingToolExecutor as {
+    getToolStates?: () => ReadonlyArray<{
+      readonly id: string;
+      readonly status: string;
+      readonly toolName: string;
+    }>;
+  } | null;
   const toolStates = new Map(
     executor?.getToolStates?.().map((tool) => [tool.id, tool]) ?? [],
   );
@@ -1265,15 +1070,213 @@ function interruptedStreamRetryBlockReason(
 }
 
 function cancelQueuedInterruptedTools(state: TurnState): void {
-  const executor = state.streamingToolExecutor as
-    | { cancelQueued?: (reason?: "connection_lost") => void }
-    | null;
+  const executor = state.streamingToolExecutor as {
+    cancelQueued?: (reason?: "connection_lost") => void;
+  } | null;
   executor?.cancelQueued?.("connection_lost");
 }
 
 function suppressInterruptedStreamToolHistory(state: TurnState): void {
-  (state as TurnState & { suppressInterruptedStreamToolHistory?: boolean })
-    .suppressInterruptedStreamToolHistory = true;
+  snapshotStartedInterruptedTools(state);
+  (state as InterruptedStreamHistoryState).suppressInterruptedStreamToolHistory =
+    true;
+}
+
+function isInlineQueuedCommand(command: QueuedCommand): boolean {
+  return command.mode === "prompt" || command.mode === "task-notification";
+}
+
+function isMainThreadQueueSource(querySource: string): boolean {
+  return querySource.startsWith("repl_main_thread") || querySource === "sdk";
+}
+
+function textFromQueuedCommandValue(value: QueuedCommand["value"]): string {
+  if (typeof value === "string") return value;
+  return value
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+function imagePartsFromQueuedCommandValue(
+  value: QueuedCommand["value"],
+): LLMContentPart[] {
+  if (typeof value === "string") return [];
+  const parts: LLMContentPart[] = [];
+  for (const block of value) {
+    if (block.type !== "image") continue;
+    const source = block.source;
+    if (source.type !== "base64" || source.data.length === 0) continue;
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: `data:${source.media_type};base64,${source.data}`,
+      },
+    });
+  }
+  return parts;
+}
+
+function imagePartsFromQueuedPastes(
+  pastedContents: QueuedCommand["pastedContents"],
+): LLMContentPart[] {
+  if (!pastedContents) return [];
+  const parts: LLMContentPart[] = [];
+  for (const pasted of Object.values(pastedContents)) {
+    if (pasted.type !== "image" || pasted.content.length === 0) continue;
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: `data:${pasted.mediaType ?? "image/png"};base64,${pasted.content}`,
+      },
+    });
+  }
+  return parts;
+}
+
+function queuedCommandContent(
+  command: QueuedCommand,
+): string | LLMContentPart[] {
+  const text = textFromQueuedCommandValue(command.value);
+  const origin =
+    command.origin ??
+    (command.mode === "task-notification"
+      ? ({ kind: "task-notification" } as const)
+      : undefined);
+  const wrapped = `<system-reminder>\n${wrapCommandText(text, origin)}\n</system-reminder>`;
+  const imageParts = [
+    ...imagePartsFromQueuedCommandValue(command.value),
+    ...imagePartsFromQueuedPastes(command.pastedContents),
+  ];
+  if (imageParts.length === 0) return wrapped;
+  return [{ type: "text", text: wrapped }, ...imageParts];
+}
+
+function queuedCommandDisplayText(command: QueuedCommand): string {
+  if (
+    typeof command.preExpansionValue === "string" &&
+    command.preExpansionValue.length > 0
+  ) {
+    return command.preExpansionValue;
+  }
+  return textFromQueuedCommandValue(command.value);
+}
+
+function queuedCommandMatchesTurn(
+  command: QueuedCommand,
+  querySource: string,
+  currentAgentId: string | undefined,
+): boolean {
+  if (!isInlineQueuedCommand(command)) return false;
+  if (isSlashCommand(command)) return false;
+  if (isMainThreadQueueSource(querySource)) {
+    return command.agentId === undefined;
+  }
+  return (
+    command.mode === "task-notification" &&
+    currentAgentId !== undefined &&
+    command.agentId === currentAgentId
+  );
+}
+
+function queuedCommandIsDurableUserPrompt(
+  command: QueuedCommand,
+  origin: { readonly kind?: unknown } | undefined,
+): boolean {
+  return (
+    command.mode === "prompt" &&
+    command.isMeta !== true &&
+    (origin === undefined || origin.kind === "human")
+  );
+}
+
+function excludeFromDurableHistory(message: LLMMessage): boolean {
+  return message.runtimeOnly?.excludeFromDurableHistory === true;
+}
+
+function drainQueuedCommandsAfterTools(params: {
+  readonly state: TurnState;
+  readonly session: Session;
+  readonly ctx: TurnContext;
+  readonly querySource: string;
+  readonly sleepRan: boolean;
+  readonly consumedCommandUuids: string[];
+}): PhaseEvent[] {
+  const currentAgentId = isMainThreadQueueSource(params.querySource)
+    ? undefined
+    : buildAgenCToolUseContext(params.session, params.ctx, {
+        querySource: params.querySource,
+      }).agentId;
+  const commands = getCommandsByMaxPriority(
+    params.sleepRan ? "later" : "next",
+  ).filter((command) =>
+    queuedCommandMatchesTurn(command, params.querySource, currentAgentId),
+  );
+  if (commands.length === 0) return [];
+
+  const events: PhaseEvent[] = [];
+  for (const command of commands) {
+    const content = queuedCommandContent(command);
+    const origin =
+      command.origin ??
+      (command.mode === "task-notification"
+        ? ({ kind: "task-notification" } as const)
+        : undefined);
+    const durableUserPrompt = queuedCommandIsDurableUserPrompt(
+      command,
+      origin,
+    );
+    const uuid =
+      typeof command.uuid === "string" ? command.uuid : crypto.randomUUID();
+    const displayText = queuedCommandDisplayText(command);
+    params.state.toolResults.push({
+      uuid,
+      role: "user",
+      kind: "attachment",
+      content,
+    });
+    params.state.messages.push({
+      role: "user",
+      content,
+      runtimeOnly: {
+        mergeBoundary: "user_context",
+        ...(!durableUserPrompt
+          ? { excludeFromDurableHistory: true as const }
+          : {}),
+      },
+    });
+    if (typeof command.uuid === "string") {
+      params.consumedCommandUuids.push(command.uuid);
+      notifyCommandLifecycle(command.uuid, "started");
+    }
+    if (durableUserPrompt) {
+      params.session.emit({
+        id: uuid,
+        msg: {
+          type: "user_message",
+          payload: {
+            message: content,
+            displayText,
+            queuedCommandUuid: uuid,
+          },
+        },
+      });
+    }
+    events.push({
+      type: "queued_command",
+      uuid,
+      commandMode:
+        command.mode === "task-notification" ? "task-notification" : "prompt",
+      content,
+      displayText,
+      ...(!durableUserPrompt
+        ? { isMeta: true as const }
+        : {}),
+      ...(origin?.kind !== undefined ? { originKind: String(origin.kind) } : {}),
+    });
+  }
+  removeFromQueue(commands);
+  return events;
 }
 
 function buildSeedMessages(
@@ -1297,12 +1300,14 @@ function readRealtimeUpdateBaseline(session: Session): {
   readonly previousContextItem?: TurnContextItem;
   readonly previousTurnSettings?: ContextualUpdatePreviousTurnSettings;
 } {
-  const peek = (session.state as unknown as {
-    unsafePeek?: () => {
-      readonly referenceContextItem?: TurnContextItem;
-      readonly previousTurnSettings?: ContextualUpdatePreviousTurnSettings;
-    };
-  }).unsafePeek?.();
+  const peek = (
+    session.state as unknown as {
+      unsafePeek?: () => {
+        readonly referenceContextItem?: TurnContextItem;
+        readonly previousTurnSettings?: ContextualUpdatePreviousTurnSettings;
+      };
+    }
+  ).unsafePeek?.();
   return {
     ...(peek?.referenceContextItem !== undefined
       ? { previousContextItem: peek.referenceContextItem }
@@ -1324,7 +1329,8 @@ function buildRealtimeInstructionUpdateMessage(
     return realtimeEndInstructionMessage("inactive");
   }
   if (
-    (previousRealtimeActive === false || previousRealtimeActive === undefined) &&
+    (previousRealtimeActive === false ||
+      previousRealtimeActive === undefined) &&
     ctx.realtimeActive === true
   ) {
     const instructions = realtimeStartInstructionsOverride(ctx);
@@ -1372,10 +1378,14 @@ function resolveModelInstructionsForTurn(
   });
 }
 
-function realtimeStartInstructionsOverride(ctx: TurnContext): string | undefined {
-  const value = (ctx.config as {
-    readonly experimental_realtime_start_instructions?: unknown;
-  }).experimental_realtime_start_instructions;
+function realtimeStartInstructionsOverride(
+  ctx: TurnContext,
+): string | undefined {
+  const value = (
+    ctx.config as {
+      readonly experimental_realtime_start_instructions?: unknown;
+    }
+  ).experimental_realtime_start_instructions;
   return typeof value === "string" ? value : undefined;
 }
 
@@ -1428,10 +1438,12 @@ function mergePendingInputIntoUserContent(
   if (pending.length === 0) {
     return typeof userMessage === "string" ? userMessage : [...userMessage];
   }
-  const hasMultimodalContent = pending.some(
-    (message) => Array.isArray(message.content) &&
-      message.content.some((part) => part.type !== "text"),
-  ) || Array.isArray(userMessage);
+  const hasMultimodalContent =
+    pending.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type !== "text"),
+    ) || Array.isArray(userMessage);
   if (!hasMultimodalContent) {
     const parts = [
       typeof userMessage === "string" && userMessage.trim().length > 0
@@ -1504,6 +1516,15 @@ function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
     promptTokens: acc.promptTokens + (next.promptTokens ?? 0),
     completionTokens: acc.completionTokens + (next.completionTokens ?? 0),
     totalTokens: acc.totalTokens + (next.totalTokens ?? 0),
+    cachedInputTokens:
+      (acc.cachedInputTokens ?? 0) + (next.cachedInputTokens ?? 0),
+    cacheCreationInputTokens:
+      (acc.cacheCreationInputTokens ?? 0) +
+      (next.cacheCreationInputTokens ?? 0),
+    reasoningOutputTokens:
+      (acc.reasoningOutputTokens ?? 0) + (next.reasoningOutputTokens ?? 0),
+    webSearchRequests:
+      (acc.webSearchRequests ?? 0) + (next.webSearchRequests ?? 0),
   };
 }
 
@@ -1540,8 +1561,8 @@ function messageHasImageContent(message: LLMMessage | undefined): boolean {
 }
 
 function isAutoCompactEnabledForNotices(): boolean {
-  const raw = process.env.DISABLE_AUTO_COMPACT ??
-    process.env.AGENC_DISABLE_AUTO_COMPACT;
+  const raw =
+    process.env.DISABLE_AUTO_COMPACT ?? process.env.AGENC_DISABLE_AUTO_COMPACT;
   if (raw === undefined) return true;
   return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
@@ -1566,35 +1587,45 @@ function terminalToStopReason(
 function sessionQuerySourceForPostSampling(session: Session): string {
   const raw =
     typeof session.services.querySource === "string" &&
-      session.services.querySource.length > 0
+    session.services.querySource.length > 0
       ? session.services.querySource
       : "repl_main_thread";
-  const source = (session as unknown as {
-    readonly sessionConfiguration?: {
-      readonly sessionSource?: unknown;
-    };
-  }).sessionConfiguration?.sessionSource;
+  const source = (
+    session as unknown as {
+      readonly sessionConfiguration?: {
+        readonly sessionSource?: unknown;
+      };
+    }
+  ).sessionConfiguration?.sessionSource;
   const sourceKind =
     typeof source === "object" && source !== null
       ? (source as { readonly kind?: unknown }).kind
       : undefined;
-  if (
-    raw === "repl_main_thread" &&
-    sourceKind === "subagent"
-  ) {
+  if (raw === "repl_main_thread" && sourceKind === "subagent") {
     return `agent:${session.conversationId}`;
   }
   return raw;
 }
 
+function sessionQuerySourceForTurn(
+  session: Session,
+  override?: string,
+): string {
+  if (typeof override === "string" && override.length > 0) {
+    return override;
+  }
+  return sessionQuerySourceForPostSampling(session);
+}
+
 function launchMagicDocsPostSampling(
   state: TurnState,
   session: Session,
+  querySource: string,
   signal?: AbortSignal,
 ): void {
   void runMagicDocsPostSamplingHook({
     messages: state.messages,
-    querySource: sessionQuerySourceForPostSampling(session),
+    querySource,
     session,
     ...(signal !== undefined ? { signal } : {}),
   }).catch((error) => {
@@ -1604,10 +1635,7 @@ function launchMagicDocsPostSampling(
         type: "warning",
         payload: {
           cause: "magic_docs_update_failed",
-          message:
-            error instanceof Error
-              ? error.message
-              : String(error),
+          message: error instanceof Error ? error.message : String(error),
         },
       },
     });
@@ -1618,6 +1646,7 @@ function launchSessionMemoryPostSampling(
   state: TurnState,
   session: Session,
   ctx: TurnContext,
+  querySource: string,
   signal?: AbortSignal,
 ): void {
   const baseInstructions =
@@ -1630,7 +1659,7 @@ function launchSessionMemoryPostSampling(
   void runSessionMemoryPostSamplingHook({
     messages,
     ...(baseInstructions !== undefined ? { baseInstructions } : {}),
-    querySource: sessionQuerySourceForPostSampling(session),
+    querySource,
     session,
     ...(signal !== undefined ? { signal } : {}),
   }).catch((error) => {
@@ -1640,10 +1669,7 @@ function launchSessionMemoryPostSampling(
         type: "warning",
         payload: {
           cause: "session_memory_update_failed",
-          message:
-            error instanceof Error
-              ? error.message
-              : String(error),
+          message: error instanceof Error ? error.message : String(error),
         },
       },
     });
@@ -1669,6 +1695,11 @@ export type CompactionPhase = "pre_turn" | "in_turn" | "post_turn";
 export type InitialContextInjection =
   | "before_last_user_message"
   | "do_not_inject";
+
+interface RunAutoCompactOptions {
+  readonly propagateErrors?: boolean;
+  readonly querySource?: string;
+}
 
 /**
  * Structural shape of the resolved AgenC auto-compact export.
@@ -1698,13 +1729,13 @@ function autoCompactImplOverrideGlobal(): AutoCompactImplOverrideGlobal {
 }
 
 function getAutoCompactImplOverride(): AutoCompactImpl | null {
-  return autoCompactImplOverrideGlobal().__agencRunTurnAutoCompactImplOverride ??
-    null;
+  return (
+    autoCompactImplOverrideGlobal().__agencRunTurnAutoCompactImplOverride ??
+    null
+  );
 }
 
-export function setAutoCompactImplForTests(
-  impl: AutoCompactImpl | null,
-): void {
+export function setAutoCompactImplForTests(impl: AutoCompactImpl | null): void {
   autoCompactImplOverrideGlobal().__agencRunTurnAutoCompactImplOverride = impl;
 }
 
@@ -1724,8 +1755,8 @@ export function setAutoCompactImplForTests(
  *     compacted view. (agenc runtime's pre-sampling compact runs before the
  *     first phase iteration; mutating state here is how we guarantee
  *     `prepareContext` reads the compacted view.)
- *   - Never swallows errors silently — emits `warning:auto_compact_failed`
- *     and returns false so the caller proceeds with uncompacted state.
+ *   - Never swallows errors silently: emits `warning:auto_compact_failed`,
+ *     then either returns false or rethrows for fail-closed callers.
  *
  * Returns true when compaction actually ran.
  */
@@ -1736,6 +1767,7 @@ async function runAutoCompact(
   reason: CompactionReason,
   phase: CompactionPhase,
   state?: TurnState,
+  options: RunAutoCompactOptions = {},
 ): Promise<boolean> {
   // Source-of-truth for the message set depends on when the dispatcher
   // is called. Pre-sampling compact runs before the phase loop, so
@@ -1752,29 +1784,31 @@ async function runAutoCompact(
     state.messagesForQuery.length === 0 &&
     messageHasImageContent(state.messages.at(-1));
   const querySource =
-    reason === "model_downshift" ? "model_downshift" : "repl_main_thread";
+    reason === "model_downshift"
+      ? "model_downshift"
+      : sessionQuerySourceForTurn(session, options.querySource);
   const force = shouldForceAutoCompact(reason, phase);
   try {
     const autoCompactImplOverride = getAutoCompactImplOverride();
     const result = autoCompactImplOverride
       ? await autoCompactImplOverride(
-        messages,
-        { session, ctx, querySource },
-        state?.autoCompactTracking,
-        state?.snipTokensFreed ?? 0,
-        initialContextInjection,
-        { force },
-      )
+          messages,
+          { session, ctx, querySource },
+          state?.autoCompactTracking,
+          state?.snipTokensFreed ?? 0,
+          initialContextInjection,
+          { force },
+        )
       : await runAgenCAutoCompact({
-        session,
-        ctx,
-        state,
-        querySource,
-        reason,
-        phase,
-        initialContextInjection,
-        force,
-      });
+          session,
+          ctx,
+          state,
+          querySource,
+          reason,
+          phase,
+          initialContextInjection,
+          force,
+        });
 
     if (result.wasCompacted && state) {
       if (!result.compactionResult) {
@@ -1844,6 +1878,7 @@ async function runAutoCompact(
         },
       },
     });
+    if (options.propagateErrors === true) throw error;
     return false;
   }
 }
@@ -1858,7 +1893,7 @@ function shouldForceAutoCompact(
 /**
  * Port of agenc runtime `maybe_run_previous_model_inline_compact` (turn.rs:749-788).
  * When the user switches to a model with a smaller context window and
- * total token usage exceeds the new auto-compact limit, compact
+ * total token usage reaches the new auto-compact limit, compact
  * against the PREVIOUS model's context before continuing.
  *
  * Returns true when compaction ran, false otherwise.
@@ -1878,48 +1913,117 @@ export async function maybeRunPreviousModelInlineCompact(
   // `ctx.modelInfo`, not from the previous turn. This makes the
   // model-downshift branch reachable instead of comparing
   // `oldContextWindow > oldContextWindow`, which can never be true.
-  const previousTurnSettings = (session.state as unknown as {
-    unsafePeek?: () => {
-      previousTurnSettings?: {
-        model: string;
-        contextWindow?: number;
-        modelInfo?: { contextWindow?: number };
+  const previousTurnSettings = (
+    session.state as unknown as {
+      unsafePeek?: () => {
+        previousTurnSettings?: {
+          model: string;
+          contextWindow?: number;
+          modelInfo?: Partial<ModelInfo> & {
+            contextWindow?: number;
+            effectiveContextWindowPercent?: number;
+            autoCompactTokenLimit?: number;
+          };
+        };
       };
-    };
-  }).unsafePeek?.()?.previousTurnSettings;
+    }
+  ).unsafePeek?.()?.previousTurnSettings;
   if (!previousTurnSettings) return false;
+  const previousModel =
+    typeof previousTurnSettings.model === "string" &&
+    previousTurnSettings.model.length > 0
+      ? previousTurnSettings.model
+      : undefined;
+  if (previousModel === undefined) return false;
 
-  const newContextWindow =
-    (ctx.modelInfo as unknown as { contextWindow?: number }).contextWindow;
+  const newContextWindow = modelContextWindow(ctx);
   const oldContextWindow =
-    previousTurnSettings.contextWindow ??
-    previousTurnSettings.modelInfo?.contextWindow;
+    effectivePreviousModelContextWindow(previousTurnSettings);
   if (oldContextWindow === undefined || newContextWindow === undefined) {
     return false;
   }
-  const newAutoCompactLimit =
-    getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
   const totalUsageTokens = _totalUsageTokens;
+  const newAutoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
+  const previousModelLimitReached =
+    (newAutoCompactLimit !== undefined &&
+      totalUsageTokens > newAutoCompactLimit) ||
+    totalUsageTokens >= newContextWindow;
   const shouldRun =
-    totalUsageTokens > newAutoCompactLimit &&
-    previousTurnSettings.model !== ctx.modelInfo.slug &&
+    previousModelLimitReached &&
+    previousModel !== ctx.modelInfo.slug &&
     oldContextWindow > newContextWindow;
   if (!shouldRun) return false;
 
+  const previousModelContext = turnContextForPreviousModel(
+    ctx,
+    previousTurnSettings,
+    previousModel,
+  );
   return await runAutoCompact(
     session,
-    ctx,
+    previousModelContext,
     "do_not_inject",
     "model_downshift",
     "pre_turn",
     state,
+    { propagateErrors: true },
   );
+}
+
+function turnContextForPreviousModel(
+  ctx: TurnContext,
+  previousTurnSettings: {
+    readonly model: string;
+    readonly contextWindow?: number;
+    readonly modelInfo?: Partial<ModelInfo> & {
+      readonly contextWindow?: number;
+      readonly effectiveContextWindowPercent?: number;
+      readonly autoCompactTokenLimit?: number;
+    };
+  },
+  previousModel: string,
+): TurnContext {
+  const previousModelInfo = {
+    ...(ctx.modelInfo as unknown as Record<string, unknown>),
+    ...((previousTurnSettings.modelInfo ?? {}) as Record<string, unknown>),
+    slug: previousModel,
+    ...(previousTurnSettings.contextWindow !== undefined
+      ? { contextWindow: previousTurnSettings.contextWindow }
+      : {}),
+  } as unknown as TurnContext["modelInfo"];
+  return {
+    ...ctx,
+    modelInfo: previousModelInfo,
+    collaborationMode: {
+      ...ctx.collaborationMode,
+      model: previousModel,
+    },
+  };
+}
+
+function effectivePreviousModelContextWindow(previousTurnSettings: {
+  readonly contextWindow?: number;
+  readonly modelInfo?: Partial<ModelInfo> & {
+    readonly contextWindow?: number;
+    readonly effectiveContextWindowPercent?: number;
+  };
+}): number | undefined {
+  const contextWindow = finitePositive(
+    previousTurnSettings.contextWindow ??
+      previousTurnSettings.modelInfo?.contextWindow,
+  );
+  if (contextWindow === undefined) return undefined;
+  const percent =
+    finitePositive(
+      previousTurnSettings.modelInfo?.effectiveContextWindowPercent,
+    ) ?? 100;
+  return Math.floor((contextWindow * percent) / 100);
 }
 
 /**
  * Port of agenc runtime `run_pre_sampling_compact` (turn.rs:712-741). Runs
  * (a) previous-model inline compact on model downshift and
- * (b) auto-compact when total-usage-tokens exceeds the current
+ * (b) auto-compact when total-usage-tokens reaches the current
  * model's auto-compact limit.
  *
  * Returns true when any compaction ran.
@@ -1927,17 +2031,25 @@ export async function maybeRunPreviousModelInlineCompact(
 async function runPreSamplingCompact(
   session: Session,
   ctx: TurnContext,
+  querySource: string,
   state?: TurnState,
 ): Promise<boolean> {
-  const totalUsageTokensBefore = getTotalTokenUsage(session);
+  const activeContextTokensBefore = getActiveContextTokenUsage(
+    session,
+    ctx,
+    state,
+  );
   let preSamplingCompacted = await maybeRunPreviousModelInlineCompact(
     session,
     ctx,
-    totalUsageTokensBefore,
+    activeContextTokensBefore,
     state,
   );
-  const autoCompactLimit = getAutoCompactTokenLimit(ctx);
-  if (autoCompactLimit !== undefined) {
+  const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
+  if (
+    autoCompactLimit !== undefined &&
+    activeContextTokensBefore >= autoCompactLimit
+  ) {
     const contextLimitCompacted = await runAutoCompact(
       session,
       ctx,
@@ -1945,18 +2057,60 @@ async function runPreSamplingCompact(
       "context_limit",
       "pre_turn",
       state,
+      { propagateErrors: true, querySource },
     );
     preSamplingCompacted = preSamplingCompacted || contextLimitCompacted;
   }
   return preSamplingCompacted;
 }
 
+function getActiveContextTokenUsage(
+  session: Session,
+  ctx: TurnContext,
+  state?: TurnState,
+): number {
+  const messages =
+    state === undefined
+      ? undefined
+      : state.messagesForQuery.length > 0
+        ? state.messagesForQuery
+        : state.messages;
+  if (messages === undefined || messages.length === 0) {
+    return getTotalTokenUsage(session);
+  }
+  return roughTokenCountEstimationForMessages(messages, {
+    model: ctx.modelInfo.slug,
+    provider: ctx.modelProviderId,
+  });
+}
+
+function getPreSamplingAutoCompactTokenLimit(
+  ctx: TurnContext,
+): number | undefined {
+  if (!isAutoCompactEnabledForNotices()) return undefined;
+  const explicit = finitePositive(
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
+      .autoCompactTokenLimit,
+  );
+  if (explicit !== undefined) return explicit;
+  const contextWindowTokens = finitePositive(modelContextWindow(ctx));
+  if (contextWindowTokens === undefined) return undefined;
+  return getAutoCompactThreshold({
+    options: {
+      mainLoopModel: ctx.modelInfo.slug,
+      contextWindowTokens,
+    },
+  });
+}
+
 function getTotalTokenUsage(session: Session): number {
-  const peek = (session.state as unknown as {
-    unsafePeek?: () => {
-      totalTokenUsage?: number | { totalTokens?: number };
-    };
-  }).unsafePeek?.();
+  const peek = (
+    session.state as unknown as {
+      unsafePeek?: () => {
+        totalTokenUsage?: number | { totalTokens?: number };
+      };
+    }
+  ).unsafePeek?.();
   const field = peek?.totalTokenUsage;
   if (typeof field === "number") return Number.isFinite(field) ? field : 0;
   const totalTokens = field?.totalTokens;
@@ -1995,16 +2149,17 @@ export function buildPrompt(
       .map((t) => t.name),
   );
   const visibleTools =
-    deferred.size === 0 ? tools : tools.filter((spec) => !deferred.has(spec.function.name));
-  const contextWindowTokens = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
+    deferred.size === 0
+      ? tools
+      : tools.filter((spec) => !deferred.has(spec.function.name));
+  const contextWindowTokens =
+    modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
   return {
     input,
     tools: visibleTools,
     parallelToolCalls: ctx.modelInfo.supportsParallelToolCalls ?? false,
     baseInstructions,
-    ...(contextWindowTokens !== undefined
-      ? { contextWindowTokens }
-      : {}),
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(ctx.modelInfo.maxOutputTokens !== undefined
       ? { maxOutputTokens: ctx.modelInfo.maxOutputTokens }
       : {}),
@@ -2048,7 +2203,9 @@ export function insertContextMessagesAfterLeadingSystem(
  * exist (e.g. opening-turn replays where the rolled-back projection is
  * empty).
  */
-function extractLastUserText(messages: ReadonlyArray<LLMMessage>): string | null {
+function extractLastUserText(
+  messages: ReadonlyArray<LLMMessage>,
+): string | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message?.role !== "user") continue;
@@ -2091,7 +2248,10 @@ function discoverDirectMcpToolMentions(
   session.services.registry.discoverToolNames?.(directMcpToolNames);
 }
 
-function builtTools(session: Session, _ctx: TurnContext): ReadonlyArray<LLMTool> {
+function builtTools(
+  session: Session,
+  _ctx: TurnContext,
+): ReadonlyArray<LLMTool> {
   return session.services.registry.toLLMTools();
 }
 
@@ -2100,9 +2260,8 @@ function buildSamplingRequestContract(
   session: Session,
   ctx: TurnContext,
 ): StreamModelRequestContract {
-  const baseInstructions = (
-    ctx as TurnContext & { baseInstructions?: string }
-  ).baseInstructions;
+  const baseInstructions = (ctx as TurnContext & { baseInstructions?: string })
+    .baseInstructions;
   const request = buildPrompt(
     state.messagesForQuery,
     builtTools(session, ctx),
@@ -2113,6 +2272,9 @@ function buildSamplingRequestContract(
     ...request,
     ...(state.maxOutputTokensOverride !== undefined
       ? { maxOutputTokens: state.maxOutputTokensOverride }
+      : {}),
+    ...(state.skipCacheWrite !== undefined
+      ? { skipCacheWrite: state.skipCacheWrite }
       : {}),
   };
 }
@@ -2196,9 +2358,10 @@ async function tryRunSamplingRequest(
   session: Session,
   signal: AbortSignal,
   events: PhaseEvent[],
+  querySource: string,
 ): Promise<SamplingRequestResult> {
   // Phase 1: prepare context.
-  await prepareAgenCTurnContext(state, ctx, session, signal);
+  await prepareAgenCTurnContext(state, ctx, session, querySource, signal);
   const prepareTerminal = getAgenCPreparedTerminal(state);
   if (prepareTerminal) {
     const assistantText = prepareTerminal.assistantMessage.text ?? "";
@@ -2241,9 +2404,7 @@ async function tryRunSamplingRequest(
   // in `runtime/src/prompts/attachments/orchestrator.ts`.
   const agencHome = session.services.configStore?.agencHome;
   const currentConfig = session.services.configStore?.current();
-  const fileMentionAllowedRoots = extractMentionAllowedRoots(
-    currentConfig,
-  );
+  const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   const userInput = extractLastUserText(state.messagesForQuery);
   discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
@@ -2253,15 +2414,16 @@ async function tryRunSamplingRequest(
     discoveredToolNames:
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
     messages: state.messagesForQuery,
-    permissionContext:
-      session.permissionModeRegistry.current(),
+    permissionContext: session.permissionModeRegistry.current(),
     cwd: ctx.cwd,
     subagentDepth: ctx.depth,
     signal,
     ...(typeof agencHome === "string" && agencHome.length > 0
       ? { agencHome }
       : {}),
-    ...(fileMentionAllowedRoots !== undefined ? { fileMentionAllowedRoots } : {}),
+    ...(fileMentionAllowedRoots !== undefined
+      ? { fileMentionAllowedRoots }
+      : {}),
     skillsManager: session.services.skillsManager,
     config: currentConfig,
     contextWindowTokens: ctx.modelInfo.contextWindow,
@@ -2344,7 +2506,9 @@ async function tryRunSamplingRequest(
   // `state.lastStreamError` + ordered trigger evaluation (I-10).
   if (streamModelError) {
     (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
-      streamModelError.cause ?? streamModelError;
+      isPartialProviderResponseError(streamModelError)
+        ? streamModelError
+        : streamModelError.cause ?? streamModelError;
   } else {
     (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
       undefined;
@@ -2363,7 +2527,8 @@ async function tryRunSamplingRequest(
   // swallow the stream error and let the outer loop re-enter
   // PrepareContext.
   if (state.transition !== undefined) {
-    (state as TurnState & { lastStreamError?: unknown }).lastStreamError = undefined;
+    (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
+      undefined;
     streamModelError = null;
   }
 
@@ -2418,12 +2583,15 @@ async function runSamplingRequest(
   session: Session,
   signal: AbortSignal,
   events: PhaseEvent[],
+  querySource: string,
 ): Promise<SamplingRequestResult> {
   const outcome = await reconnectWithBackoff<SamplingRequestResult>({
     session,
     signal,
-    attempt: () => tryRunSamplingRequest(state, ctx, session, signal, events),
+    attempt: () =>
+      tryRunSamplingRequest(state, ctx, session, signal, events, querySource),
     isTransient: (err) => {
+      if (isPartialProviderResponseError(err)) return false;
       if (isRetryableStreamError(err)) return true;
       // Fall-through: the raw-error classifier covers bare
       // ECONNRESET / 5xx / socket-hang-up failures that never got
@@ -2438,7 +2606,7 @@ async function runSamplingRequest(
       if (blockedReason !== null) {
         suppressInterruptedStreamToolHistory(state);
         cancelQueuedInterruptedTools(state);
-        emitError(session.eventLog, session.nextInternalSubId(), {
+        emitError(session, session.nextInternalSubId(), {
           cause: "stream_disconnected",
           message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
           provider: session.services.provider.name,
@@ -2456,7 +2624,7 @@ async function runSamplingRequest(
         return false;
       }
       cleanupInterruptedStreamAttempt(state, session, err);
-      emitError(session.eventLog, session.nextInternalSubId(), {
+      emitError(session, session.nextInternalSubId(), {
         cause: "stream_disconnected",
         message: `Reconnecting after stream interruption (attempt ${attempt}): ${streamRetryErrorMessage(err)}`,
         provider: session.services.provider.name,
@@ -2472,7 +2640,9 @@ async function runSamplingRequest(
     const abortReason =
       (signal as AbortSignal & { reason?: unknown }).reason ?? outcome.reason;
     throw new StreamModelError(
-      abortReason instanceof Error ? abortReason : new Error(String(abortReason)),
+      abortReason instanceof Error
+        ? abortReason
+        : new Error(String(abortReason)),
     );
   }
   // exhausted
@@ -2507,6 +2677,7 @@ async function runSamplingRequest(
  */
 export function isRetryableStreamError(error: unknown): boolean {
   if (!(error instanceof StreamModelError)) return false;
+  if (isPartialProviderResponseError(error)) return false;
   const cause = error.cause;
 
   // Explicitly non-retryable typed causes — fail closed before any
@@ -2557,7 +2728,11 @@ export function isRetryableStreamError(error: unknown): boolean {
  */
 function resolveMaxTurns(ctx: TurnContext): number {
   const explicit = (ctx.config as unknown as { maxTurns?: number }).maxTurns;
-  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+  if (
+    typeof explicit === "number" &&
+    Number.isFinite(explicit) &&
+    explicit > 0
+  ) {
     return explicit;
   }
   const envRaw = process.env.AGENC_MAX_TURNS;
@@ -2566,6 +2741,29 @@ function resolveMaxTurns(ctx: TurnContext): number {
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return 1000;
+}
+
+function appendInterruptedAssistantToolCalls(
+  state: TurnState,
+  toolCalls: ReadonlyMap<string, LLMToolCall>,
+): void {
+  const missing: LLMToolCall[] = [];
+  for (const [id, toolCall] of toolCalls) {
+    const alreadyPresent = state.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === id) === true,
+    );
+    if (!alreadyPresent) {
+      missing.push({ ...toolCall });
+    }
+  }
+  if (missing.length === 0) return;
+  state.messages.push({
+    role: "assistant",
+    content: "",
+    toolCalls: missing,
+  });
 }
 
 /**
@@ -2578,9 +2776,9 @@ function resolveMaxTurns(ctx: TurnContext): number {
  * stream and appended to `state.messages` / `state.toolResults` so
  * every orphan `tool_use` block sent by the model during the
  * abort/error window has a paired `tool_result`. Without this, the
-   * next turn's provider request would fail the tool-use-id pairing
-   * contract enforced by chat-completion providers.
-  *
+ * next turn's provider request would fail the tool-use-id pairing
+ * contract enforced by chat-completion providers.
+ *
  * The executor's internal abort + discard logic is responsible for
  * generating the synthetic terminal results themselves. This helper
  * only closes the queue, iterates the result stream, records each
@@ -2594,32 +2792,31 @@ export async function drainInFlight(
   ctx: TurnContext,
   session: Session,
 ): Promise<void> {
+  const interruptedState = state as InterruptedStreamHistoryState;
   const suppressToolHistory =
-    (state as TurnState & { suppressInterruptedStreamToolHistory?: boolean })
-      .suppressInterruptedStreamToolHistory === true;
-  const exec = state.streamingToolExecutor as
-    | {
-        close?: () => void;
-        getRemainingResults?: () => AsyncIterable<{
-          toolCall: { id: string; name: string };
-          result: {
-            content: string;
-            isError?: boolean;
-            metadata?: Record<string, unknown>;
-          };
-          status: "completed" | "synthetic_error";
-        }>;
-      }
-    | null;
+    interruptedState.suppressInterruptedStreamToolHistory === true;
+  const startedToolCalls = interruptedState.interruptedStartedStreamToolCalls;
+  const exec = state.streamingToolExecutor as {
+    close?: () => void;
+    getRemainingResults?: () => AsyncIterable<{
+      toolCall: LLMToolCall;
+      result: {
+        content: string;
+        isError?: boolean;
+        metadata?: Record<string, unknown>;
+      };
+      status: "completed" | "synthetic_error";
+    }>;
+  } | null;
   if (!exec || typeof exec.close !== "function") {
-    delete (state as TurnState & {
-      suppressInterruptedStreamToolHistory?: boolean;
-    }).suppressInterruptedStreamToolHistory;
+    delete interruptedState.suppressInterruptedStreamToolHistory;
+    delete interruptedState.interruptedStartedStreamToolCalls;
     return;
   }
   try {
     exec.close();
     if (typeof exec.getRemainingResults === "function") {
+      let appendedInterruptedAssistantToolCalls = false;
       for await (const drained of exec.getRemainingResults()) {
         const callId = drained.toolCall.id;
         const toolName = drained.toolCall.name;
@@ -2647,7 +2844,23 @@ export async function drainInFlight(
             toolResultBytes,
           },
         );
-        if (!suppressToolHistory) {
+        const preserveInterruptedStartedResult =
+          suppressToolHistory && startedToolCalls?.has(callId) === true;
+        if (!suppressToolHistory || preserveInterruptedStartedResult) {
+          if (!suppressToolHistory) {
+            appendInterruptedAssistantToolCalls(
+              state,
+              new Map([[callId, drained.toolCall]]),
+            );
+          } else if (
+            suppressToolHistory &&
+            preserveInterruptedStartedResult &&
+            !appendedInterruptedAssistantToolCalls &&
+            startedToolCalls !== undefined
+          ) {
+            appendInterruptedAssistantToolCalls(state, startedToolCalls);
+            appendedInterruptedAssistantToolCalls = true;
+          }
           // Append both the LLM-facing tool message and the user-facing
           // tool_result record so the pair shows up in the next
           // request and in session history.
@@ -2682,9 +2895,8 @@ export async function drainInFlight(
       },
     });
   } finally {
-    delete (state as TurnState & {
-      suppressInterruptedStreamToolHistory?: boolean;
-    }).suppressInterruptedStreamToolHistory;
+    delete interruptedState.suppressInterruptedStreamToolHistory;
+    delete interruptedState.interruptedStartedStreamToolCalls;
   }
 }
 
@@ -2924,7 +3136,11 @@ async function* runTurnKernelInner(
 
   let state: TurnState = buildInitialTurnState(ctx, user, {
     priorMessages: priorFull,
+    ...(opts.skipCacheWrite !== undefined
+      ? { initialSkipCacheWrite: opts.skipCacheWrite }
+      : {}),
   });
+  const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount = priorExisting.length;
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
@@ -2943,6 +3159,7 @@ async function* runTurnKernelInner(
     }
     const nextItems = state.messages.slice(persistedMessageCount);
     for (const message of nextItems) {
+      if (excludeFromDurableHistory(message)) continue;
       session.rolloutStore.appendRollout({
         type: "response_item",
         payload: toResponseItem(message),
@@ -2952,7 +3169,9 @@ async function* runTurnKernelInner(
   };
   const syncSessionState = async (): Promise<void> => {
     persistNewResponseItems();
-    const durableHistory = state.messages.slice(durableHistoryStartIndex);
+    const durableHistory = state.messages
+      .slice(durableHistoryStartIndex)
+      .filter((message) => !excludeFromDurableHistory(message));
     const autoCompactTokenLimit = getAutoCompactTokenLimit(ctx);
     const resolvedPersonality = resolveTurnPersonality(ctx);
     await session.state.with((sessionState) => {
@@ -2962,7 +3181,9 @@ async function* runTurnKernelInner(
           ? { content: message.content.map((part) => ({ ...part })) }
           : {}),
         ...(message.toolCalls !== undefined
-          ? { toolCalls: message.toolCalls.map((toolCall) => ({ ...toolCall })) }
+          ? {
+              toolCalls: message.toolCalls.map((toolCall) => ({ ...toolCall })),
+            }
           : {}),
       }));
       sessionState.previousTurnSettings = {
@@ -2981,6 +3202,8 @@ async function* runTurnKernelInner(
               contextWindow: ctx.modelInfo.contextWindow,
               modelInfo: {
                 contextWindow: ctx.modelInfo.contextWindow,
+                effectiveContextWindowPercent:
+                  ctx.modelInfo.effectiveContextWindowPercent,
                 ...(autoCompactTokenLimit !== undefined
                   ? { autoCompactTokenLimit }
                   : {}),
@@ -3016,7 +3239,8 @@ async function* runTurnKernelInner(
         type: "user_message",
         payload: {
           message: opts.displayUserMessage ?? userContent,
-          displayText: opts.displayUserMessage ?? userContentDisplayText(userContent),
+          displayText:
+            opts.displayUserMessage ?? userContentDisplayText(userContent),
           ...(Array.isArray(userContent)
             ? {
                 images: userContent
@@ -3035,7 +3259,7 @@ async function* runTurnKernelInner(
   // client session, reset it (agenc runtime 155-157 — AgenC has no prewarm
   // today).
   try {
-    await runPreSamplingCompact(session, ctx, state);
+    await runPreSamplingCompact(session, ctx, turnQuerySource, state);
   } catch (error) {
     session.emit({
       id: session.nextInternalSubId(),
@@ -3088,6 +3312,17 @@ async function* runTurnKernelInner(
     totalTokens: 0,
   };
   let lastContent = "";
+  const consumedCommandUuids: string[] = [];
+  const completeConsumedCommands = (): void => {
+    for (const uuid of consumedCommandUuids) {
+      notifyCommandLifecycle(uuid, "completed");
+    }
+    consumedCommandUuids.length = 0;
+  };
+  const returnTerminal = (terminal: Terminal): Terminal => {
+    completeConsumedCommands();
+    return terminal;
+  };
 
   yield { type: "turn_start", turnIndex: 0 };
 
@@ -3099,7 +3334,9 @@ async function* runTurnKernelInner(
       // close the turn boundary with the actual reason.
       await syncSessionState();
       emitTurnAborted(
-        String((signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled"),
+        String(
+          (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
+        ),
       );
       const terminal: Terminal = { reason: "cancelled" };
       yield {
@@ -3108,7 +3345,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "cancelled",
       };
-      return terminal;
+      return returnTerminal(terminal);
     }
 
     // Guardian-rejection circuit-breaker interrupt (inspected runtime
@@ -3139,7 +3376,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "cancelled",
       };
-      return terminal;
+      return returnTerminal(terminal);
     }
 
     const maxTurns = resolveMaxTurns(ctx);
@@ -3154,7 +3391,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "max_turns",
       };
-      return terminal;
+      return returnTerminal(terminal);
     }
 
     // I-13: pending provider switch — complete this turn cleanly so
@@ -3170,7 +3407,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "completed",
       };
-      return terminal;
+      return returnTerminal(terminal);
     }
 
     resetIterationFields(state);
@@ -3183,7 +3420,14 @@ async function* runTurnKernelInner(
     // the `token_limit_reached && needs_follow_up` arm at turn.rs:493.
     let modelNeedsFollowUp = false;
     try {
-      const result = await runSamplingRequest(state, ctx, session, signal, pending);
+      const result = await runSamplingRequest(
+        state,
+        ctx,
+        session,
+        signal,
+        pending,
+        turnQuerySource,
+      );
       for (const ev of pending) {
         yield ev;
       }
@@ -3204,7 +3448,7 @@ async function* runTurnKernelInner(
           usage,
           stopReason: terminalToStopReason(result.terminal.reason),
         };
-        return result.terminal;
+        return returnTerminal(result.terminal);
       }
     } catch (error) {
       await drainInFlight(state, ctx, session);
@@ -3218,6 +3462,7 @@ async function* runTurnKernelInner(
       if (signal.aborted) {
         // T6 gap #119: cancelled-with-error still gets `turn_aborted`
         // so rollout reconstruction sees a closed turn boundary.
+        await syncSessionState();
         emitTurnAborted(
           String(
             (signal as AbortSignal & { reason?: unknown }).reason ??
@@ -3233,7 +3478,7 @@ async function* runTurnKernelInner(
           stopReason: "cancelled",
           error: underlying,
         };
-        return terminal;
+        return returnTerminal(terminal);
       }
       // T6 gap #119: error-terminated turn still completes the turn
       // boundary for rollout reducers.
@@ -3247,7 +3492,7 @@ async function* runTurnKernelInner(
         stopReason: "error",
         error: underlying,
       };
-      return terminal;
+      return returnTerminal(terminal);
     }
 
     // Recovery re-entry? postSampleRecovery or continuationNudge may
@@ -3347,6 +3592,7 @@ async function* runTurnKernelInner(
           "context_limit",
           "in_turn",
           state,
+          { querySource: turnQuerySource },
         );
       } catch (error) {
         // agenc runtime returns None on mid-turn compact failure. AgenC's
@@ -3377,7 +3623,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error: underlying,
         };
-        return terminal;
+        return returnTerminal(terminal);
       }
 
       if (!midTurnCompacted) {
@@ -3389,8 +3635,7 @@ async function* runTurnKernelInner(
         // the token-limit condition as a terminal error matching the
         // semantics of agenc runtime's `return None`.
         await drainInFlight(state, ctx, session);
-        const reasonText =
-          `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
+        const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
         session.emit({
           id: session.nextInternalSubId(),
           msg: {
@@ -3412,7 +3657,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error: underlying,
         };
-        return terminal;
+        return returnTerminal(terminal);
       }
 
       // agenc runtime `client_session.reset_websocket_session()` parity.
@@ -3438,16 +3683,25 @@ async function* runTurnKernelInner(
 
     // No tool calls + no transition → commit + terminate.
     if (!state.needsFollowUp && state.toolUseBlocks.length === 0) {
-      await commit(state, ctx, session, signal);
+      await commit(state, ctx, session, signal, {
+        querySource: turnQuerySource,
+      });
       await syncSessionState();
       // commit may set a stop-hook transition (I-17). If so, re-enter.
       if (state.transition !== undefined) {
         state.transition = undefined;
         continue;
       }
-      const stopReason = assistantText.length === 0 ? "empty_response" : "completed";
-      launchMagicDocsPostSampling(state, session, signal);
-      launchSessionMemoryPostSampling(state, session, ctx, signal);
+      const stopReason =
+        assistantText.length === 0 ? "empty_response" : "completed";
+      launchMagicDocsPostSampling(state, session, turnQuerySource, signal);
+      launchSessionMemoryPostSampling(
+        state,
+        session,
+        ctx,
+        turnQuerySource,
+        signal,
+      );
       // T6 gap #119: canonical happy-path `turn_complete` so rollouts
       // record the close of this turn's lifecycle.
       emitTurnComplete(lastContent);
@@ -3459,7 +3713,7 @@ async function* runTurnKernelInner(
         stopReason,
       };
       await drainPendingExtraction();
-      return terminal;
+      return returnTerminal(terminal);
     }
 
     // Phase 5 — execute tools. Emit tool_call / tool_result events
@@ -3470,6 +3724,9 @@ async function* runTurnKernelInner(
         yield event;
       }
     }
+    const sleepRan = state.toolUseBlocks.some(
+      (block) => block.name === SLEEP_TOOL_NAME,
+    );
     await executeTools(state, ctx, session, signal);
     if (lastAssistant) {
       const completedByCallId = new Map(
@@ -3510,6 +3767,46 @@ async function* runTurnKernelInner(
         };
       }
     }
+    if (state.preventContinuation) {
+      state.toolUseBlocks = [];
+      await commit(state, ctx, session, signal, {
+        querySource: turnQuerySource,
+      });
+      await syncSessionState();
+      if (state.transition !== undefined) {
+        state.transition = undefined;
+        continue;
+      }
+      launchMagicDocsPostSampling(state, session, turnQuerySource, signal);
+      launchSessionMemoryPostSampling(
+        state,
+        session,
+        ctx,
+        turnQuerySource,
+        signal,
+      );
+      emitTurnComplete(lastContent);
+      const terminal: Terminal = { reason: "completed" };
+      yield {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "completed",
+      };
+      await drainPendingExtraction();
+      return returnTerminal(terminal);
+    }
+    const drainedQueuedCommandEvents = drainQueuedCommandsAfterTools({
+      state,
+      session,
+      ctx,
+      querySource: turnQuerySource,
+      sleepRan,
+      consumedCommandUuids,
+    });
+    for (const event of drainedQueuedCommandEvents) {
+      yield event;
+    }
 
     const postToolExplicitAutoCompactLimit = finitePositive(
       (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
@@ -3536,6 +3833,7 @@ async function* runTurnKernelInner(
         "context_limit",
         "in_turn",
         state,
+        { querySource: turnQuerySource },
       );
       if (midTurnCompacted) {
         session.bindProviderConversation();
@@ -3544,22 +3842,15 @@ async function* runTurnKernelInner(
     }
 
     // Phase 6 — commit iteration. Stop-hook may request re-entry.
-    await commit(state, ctx, session, signal);
+    await commit(state, ctx, session, signal, { querySource: turnQuerySource });
     await syncSessionState();
 
-    // Token-budget decision from streamModel: if exceeded, run-turn
-    // today takes the cautious path and terminates. T8 wires the
-    // token_budget_continuation recovery that re-enters prepare.
     if (state.pendingBudgetDecision?.kind === "stop") {
-      emitTurnComplete(lastContent);
-      const terminal: Terminal = { reason: "completed" };
-      yield {
-        type: "turn_complete",
-        content: lastContent,
-        usage,
-        stopReason: "completed",
-      };
-      return terminal;
+      await applyPendingBudgetContinuation(state, ctx, session, signal);
+      if (state.transition !== undefined) {
+        state.transition = undefined;
+        continue;
+      }
     }
 
     // D1 fix: usage is accumulated immediately after runSamplingRequest
@@ -3582,6 +3873,7 @@ export function runTurn(
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         signal?: AbortSignal;
+        querySource?: string;
         displayUserMessage?: string | null;
       },
     ) => AsyncGenerator<PhaseEvent, Terminal>;
@@ -3592,6 +3884,7 @@ export function runTurn(
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       signal: opts.signal,
+      querySource: opts.querySource,
       displayUserMessage: opts.displayUserMessage,
     });
   }

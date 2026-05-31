@@ -7,13 +7,55 @@ import {
   ensureExtractMemoriesInitialized,
   executeExtractMemories,
 } from "../services/extractMemories/extractMemories.js";
+import { cloneFileStateCache } from "../utils/fileStateCache.js";
 import { commit } from "./commit.js";
 import { MAX_STOP_HOOK_BLOCKS } from "./stop-hooks.js";
+
+const terminalHookMocks = vi.hoisted(() => ({
+  promptCalls: [] as Array<{ context: unknown; options: unknown }>,
+  autoCalls: [] as Array<{ context: unknown; appendSystemMessage: unknown }>,
+  cacheParams: [] as unknown[],
+  order: [] as string[],
+  promptReject: false,
+  autoReject: false,
+}));
 
 vi.mock("../services/extractMemories/extractMemories.js", () => ({
   ensureExtractMemoriesInitialized: vi.fn(),
   executeExtractMemories: vi.fn(async () => {}),
 }));
+
+vi.mock("../services/PromptSuggestion/promptSuggestion.js", () => ({
+  executePromptSuggestion: vi.fn(async (context: unknown, options: unknown) => {
+    terminalHookMocks.order.push("prompt");
+    terminalHookMocks.promptCalls.push({ context, options });
+    if (terminalHookMocks.promptReject) throw new Error("prompt_boom");
+  }),
+}));
+
+vi.mock("../services/autoDream/autoDream.js", () => ({
+  executeAutoDream: vi.fn(
+    async (context: unknown, appendSystemMessage: unknown) => {
+      terminalHookMocks.order.push("dream");
+      terminalHookMocks.autoCalls.push({ context, appendSystemMessage });
+      if (terminalHookMocks.autoReject) throw new Error("dream_boom");
+    },
+  ),
+}));
+
+vi.mock("../utils/forkedAgent.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../utils/forkedAgent.js")
+  >("../utils/forkedAgent.js");
+  return {
+    ...actual,
+    saveCacheSafeParams: vi.fn((params: unknown) => {
+      terminalHookMocks.cacheParams.push(params);
+    }),
+  };
+});
+
+const originalPromptSuggestionEnv = process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
 
 function mkCtx(): TurnContext {
   return {
@@ -26,6 +68,9 @@ function mkCtx(): TurnContext {
     },
     modelInfo: {
       slug: "stub-model",
+      contextWindow: 200_000,
+      effectiveContextWindowPercent: 100,
+      maxOutputTokens: 4096,
     },
   } as unknown as TurnContext;
 }
@@ -62,14 +107,43 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
   };
 }
 
+function terminalAssistant(
+  text: string,
+  opts: { readonly apiError?: string } = {},
+): TurnState["assistantMessages"][number] {
+  return {
+    uuid: "assistant-1",
+    role: "assistant",
+    text,
+    toolCalls: [],
+    ...(opts.apiError ? { apiError: opts.apiError } : {}),
+  };
+}
+
 function mkSession(): Session {
   return {
     emit: vi.fn(),
     nextInternalSubId: () => "sub-1",
+    nextEventId: () => "event-1",
+    clearProviderResponseId: vi.fn(),
     rolloutStore: undefined,
     eventLog: new EventLog(),
     conversationId: "conv-1",
     services: {
+      querySource: "repl_main_thread",
+      registry: {
+        toLLMTools: () => [],
+      },
+      permissionModeRegistry: {
+        current: () => ({
+          mode: "default",
+          additionalWorkingDirectories: new Map(),
+          alwaysAllowRules: {},
+          alwaysDenyRules: {},
+          alwaysAskRules: {},
+          isBypassPermissionsModeAvailable: false,
+        }),
+      },
       hooks: {
         stopHooks: [],
       },
@@ -80,6 +154,17 @@ function mkSession(): Session {
 describe("commit", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    terminalHookMocks.promptCalls = [];
+    terminalHookMocks.autoCalls = [];
+    terminalHookMocks.cacheParams = [];
+    terminalHookMocks.order = [];
+    terminalHookMocks.promptReject = false;
+    terminalHookMocks.autoReject = false;
+    if (originalPromptSuggestionEnv === undefined) {
+      delete process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
+    } else {
+      process.env.AGENC_ENABLE_PROMPT_SUGGESTION = originalPromptSuggestionEnv;
+    }
   });
 
   test("keeps resolved tool-use summaries out of model-visible history", async () => {
@@ -177,6 +262,193 @@ describe("commit", () => {
     expect(executeExtractMemories).not.toHaveBeenCalled();
   });
 
+  test("launches terminal background hooks before blocking stop hooks", async () => {
+    const session = mkSession();
+    (
+      session as Session & {
+        appStateBridge?: {
+          getAppState?: () => unknown;
+          setAppState?: (updater: unknown) => void;
+        };
+      }
+    ).appStateBridge = {
+      getAppState: () => ({
+        toolPermissionContext:
+          session.services.permissionModeRegistry.current(),
+        agentDefinitions: { activeAgents: [], allowedAgentTypes: [] },
+        tasks: {},
+        promptSuggestionEnabled: true,
+        pendingWorkerRequest: null,
+        pendingSandboxRequest: null,
+        elicitation: { queue: [] },
+      }),
+      setAppState: vi.fn(),
+    };
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [
+        { role: "system", content: "system line" },
+        { role: "user", content: "hello" },
+      ],
+      assistantMessages: [terminalAssistant("done")],
+      lastResponseUsage: {
+        promptTokens: 12,
+        completionTokens: 3,
+        totalTokens: 15,
+        cachedInputTokens: 4,
+        cacheCreationInputTokens: 5,
+      },
+    });
+    (
+      session.services.hooks as {
+        stopHooks: Array<{ name: string; run: () => Promise<unknown> }>;
+      }
+    ).stopHooks = [
+      {
+        name: "lint",
+        run: async () => {
+          terminalHookMocks.order.push("stop");
+          return {
+            shouldStop: false,
+            shouldBlock: true,
+            blockReason: "lint errors",
+            continuationFragments: ["fix lint"],
+          };
+        },
+      },
+    ];
+
+    await commit(state, mkCtx(), session);
+
+    expect(terminalHookMocks.order).toEqual(["prompt", "dream", "stop"]);
+    expect(terminalHookMocks.cacheParams).toHaveLength(1);
+    expect(terminalHookMocks.promptCalls).toHaveLength(1);
+    expect(terminalHookMocks.autoCalls).toHaveLength(1);
+    const context = terminalHookMocks.promptCalls[0].context as {
+      readonly systemPrompt: readonly string[];
+      readonly messages: Array<{
+        readonly type: string;
+        readonly message: {
+          readonly role: string;
+          readonly usage?: Record<string, number>;
+        };
+      }>;
+      readonly toolUseContext: {
+        readonly readFileState: unknown;
+        readonly getAppState: () => {
+          readonly promptSuggestionEnabled?: unknown;
+        };
+        readonly setAppState?: unknown;
+      };
+      readonly querySource?: string;
+    };
+    expect(context.querySource).toBe("repl_main_thread");
+    expect(context.systemPrompt).toEqual(["system line"]);
+    expect(context.messages.map((message) => message.message.role)).toEqual([
+      "user",
+      "assistant",
+    ]);
+    expect(context.messages.at(-1)?.message.usage).toMatchObject({
+      input_tokens: 12,
+      output_tokens: 3,
+      cache_read_input_tokens: 4,
+      cache_creation_input_tokens: 5,
+    });
+    expect(context.toolUseContext.getAppState().promptSuggestionEnabled).toBe(
+      true,
+    );
+    expect(typeof context.toolUseContext.setAppState).toBe("function");
+    expect(() =>
+      cloneFileStateCache(context.toolUseContext.readFileState as never),
+    ).not.toThrow();
+    expect(state.transition?.reason).toBe("stop_hook_blocking");
+  });
+
+  test("saves cache for sdk terminal turns without launching prompt suggestion", async () => {
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [{ role: "user", content: "hello" }],
+      assistantMessages: [terminalAssistant("done")],
+    });
+
+    await commit(state, mkCtx(), mkSession(), undefined, {
+      querySource: "sdk",
+    });
+
+    expect(terminalHookMocks.cacheParams).toHaveLength(1);
+    expect(terminalHookMocks.promptCalls).toHaveLength(0);
+    expect(terminalHookMocks.autoCalls).toHaveLength(1);
+  });
+
+  test("defined-falsy prompt suggestion env still saves cache but skips prompt", async () => {
+    process.env.AGENC_ENABLE_PROMPT_SUGGESTION = "0";
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [{ role: "user", content: "hello" }],
+      assistantMessages: [terminalAssistant("done")],
+    });
+
+    await commit(state, mkCtx(), mkSession());
+
+    expect(terminalHookMocks.cacheParams).toHaveLength(1);
+    expect(terminalHookMocks.promptCalls).toHaveLength(0);
+    expect(terminalHookMocks.autoCalls).toHaveLength(1);
+  });
+
+  test("api-error terminal turns skip cache sharing and background hooks", async () => {
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [{ role: "user", content: "hello" }],
+      assistantMessages: [
+        terminalAssistant("failed", { apiError: "rate limit" }),
+      ],
+    });
+
+    await commit(state, mkCtx(), mkSession());
+
+    expect(terminalHookMocks.cacheParams).toHaveLength(0);
+    expect(terminalHookMocks.promptCalls).toHaveLength(0);
+    expect(terminalHookMocks.autoCalls).toHaveLength(0);
+  });
+
+  test("agent query source skips main-thread background hooks", async () => {
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [{ role: "user", content: "hello" }],
+      assistantMessages: [terminalAssistant("done")],
+    });
+
+    await commit(state, mkCtx(), mkSession(), undefined, {
+      querySource: "agent:child",
+    });
+
+    expect(terminalHookMocks.cacheParams).toHaveLength(0);
+    expect(terminalHookMocks.promptCalls).toHaveLength(0);
+    expect(terminalHookMocks.autoCalls).toHaveLength(0);
+  });
+
+  test("background hook rejections are non-fatal", async () => {
+    terminalHookMocks.promptReject = true;
+    terminalHookMocks.autoReject = true;
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [{ role: "user", content: "hello" }],
+      assistantMessages: [terminalAssistant("done")],
+    });
+
+    await expect(commit(state, mkCtx(), mkSession())).resolves.toBe(state);
+    await Promise.resolve();
+
+    expect(terminalHookMocks.promptCalls).toHaveLength(1);
+    expect(terminalHookMocks.autoCalls).toHaveLength(1);
+  });
+
   test("third blocking stop hook hits the cap without re-entering", async () => {
     const session = mkSession();
     const state = mkState({
@@ -205,7 +477,9 @@ describe("commit", () => {
     expect(state.stopHookBlockingCount).toBe(MAX_STOP_HOOK_BLOCKS);
     expect(state.transition).toBeUndefined();
     expect(state.stopHookActive).toBe(false);
-    expect((session.emit as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+    expect(
+      (session.emit as ReturnType<typeof vi.fn>).mock.calls,
+    ).toContainEqual([
       {
         id: "sub-1",
         msg: {

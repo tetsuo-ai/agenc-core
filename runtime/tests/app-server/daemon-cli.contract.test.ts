@@ -1896,6 +1896,9 @@ snapshot_max_bytes = 64
       "run-other",
       "run-restart",
     ]);
+    const stats = await client.request("health.stats", {});
+    expect(stats.sessions.active).toBe(2);
+    expect(stats.state?.agentRuns).toBe(2);
     expect(agentList.agents[1]).toMatchObject({
       agentId: "run-restart",
       objective: "recover daemon state",

@@ -111,17 +111,43 @@ function makeTopLevelRunner(opts: {
   const stub = makeStubConversationThreadManager({
     threadId: opts.conversationId,
   });
+  const phaseSubscribers: Array<(phase: unknown) => void> = [];
+  const eventLogSubscribers: Array<(event: unknown) => void> = [];
   const session = {
     conversationId: opts.conversationId,
     permissionModeRegistry,
-    subscribeToEvents: () => () => {},
-    emitPhaseEvent: () => {},
+    eventLog: {
+      subscribe: (listener: (event: unknown) => void) => {
+        eventLogSubscribers.push(listener);
+        return () => {
+          const index = eventLogSubscribers.indexOf(listener);
+          if (index >= 0) eventLogSubscribers.splice(index, 1);
+        };
+      },
+    },
+    subscribeToEvents: (listener: (phase: unknown) => void) => {
+      phaseSubscribers.push(listener);
+      return () => {
+        const index = phaseSubscribers.indexOf(listener);
+        if (index >= 0) phaseSubscribers.splice(index, 1);
+      };
+    },
+    emitPhaseEvent: (phase: unknown) => {
+      for (const listener of [...phaseSubscribers]) listener(phase);
+    },
+    emitSessionEvent: (event: unknown) => {
+      for (const listener of [...eventLogSubscribers]) listener(event);
+    },
+    emit: vi.fn((event: unknown) => {
+      for (const listener of [...eventLogSubscribers]) listener(event);
+    }),
     services: { conversationThreadManager: stub },
   };
   const control = {
     shutdown: vi.fn(async () => {}),
     sendInput: vi.fn(async () => {}),
     interrupt: vi.fn(),
+    openThreadSpawnChildren: vi.fn(() => []),
     clearConversationHistory: vi.fn(async () => {}),
   };
   const bootstrap = vi.fn(async () => ({
@@ -496,6 +522,377 @@ describe("AgenC delegate background-agent runner", () => {
     expect(emitted).toHaveLength(1);
   });
 
+  it("[managed-thread] persists daemon-visible user prompts without duplicate live rows", async () => {
+    const { runner, control, session } = makeTopLevelRunner({
+      conversationId: "session-user-durable",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "first visible prompt",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(session.emit).toHaveBeenCalledWith({
+      id: "user-initial-session-user-durable",
+      msg: {
+        type: "user_message",
+        payload: {
+          message: "first visible prompt",
+          displayText: "first visible prompt",
+        },
+      },
+    });
+
+    await runner.attachAgentSessionEvents("session-user-durable", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+
+    expect(
+      emitted.filter(
+        (event) =>
+          typeof event === "object" &&
+          event !== null &&
+          (event as { readonly params?: { readonly event?: { type?: string } } })
+            .params?.event?.type === "user_message",
+      ),
+    ).toHaveLength(1);
+
+    emitted.length = 0;
+    control.sendInput.mockImplementationOnce(async () => {
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          agentId: "session-user-durable",
+          eventId: "message_2",
+          event: {
+            id: "message_2",
+            type: "user_message",
+            messageId: "message_2",
+            streamId: "stream_2",
+            acceptedAt: "2026-05-01T12:00:02.000Z",
+            payload: {
+              message: "second visible prompt",
+              displayText: "second visible prompt",
+            },
+          },
+        },
+      });
+    });
+
+    await runner.submitAgentMessage("session-user-durable", {
+      sessionId: "session_1",
+      content: "second visible prompt",
+      originalContent: "second visible prompt",
+      messageId: "message_2",
+      streamId: "stream_2",
+      acceptedAt: "2026-05-01T12:00:02.000Z",
+    });
+
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-user-durable",
+      "second visible prompt",
+    );
+    expect(emitted).toHaveLength(1);
+    expect(session.emit).toHaveBeenCalledWith({
+      id: "message_2",
+      msg: {
+        type: "user_message",
+        payload: {
+          message: "second visible prompt",
+          displayText: "second visible prompt",
+          messageId: "message_2",
+          streamId: "stream_2",
+          acceptedAt: "2026-05-01T12:00:02.000Z",
+        },
+      },
+    });
+  });
+
+  it("[managed-thread] forwards durable queued prompt events to attached clients", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-queued-user-event",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-queued-user-event", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    session.emitSessionEvent({
+      id: "queued-1",
+      msg: {
+        type: "user_message",
+        payload: {
+          message: "<system-reminder>wrapped</system-reminder>",
+          displayText: "visible queued prompt",
+          queuedCommandUuid: "queued-1",
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            sessionId: "session_1",
+            agentId: "session-queued-user-event",
+            eventId: "queued-1",
+            event: expect.objectContaining({
+              id: "queued-1",
+              type: "user_message",
+              payload: expect.objectContaining({
+                displayText: "visible queued prompt",
+                queuedCommandUuid: "queued-1",
+              }),
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it("[managed-thread] replays objective-only first prompts to attached clients", async () => {
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-objective-first-prompt",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "audit first prompt",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    expect(stub.thread.submit).toHaveBeenCalledWith({
+      type: "user_input",
+      input: "audit first prompt",
+    });
+
+    await runner.attachAgentSessionEvents("session-objective-first-prompt", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        method: "event.session_event",
+        params: expect.objectContaining({
+          sessionId: "session_1",
+          agentId: "session-objective-first-prompt",
+          event: expect.objectContaining({
+            type: "user_message",
+            payload: expect.objectContaining({
+              message: "audit first prompt",
+              displayText: "audit first prompt",
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("[managed-thread] reports max-turn terminal phases as errored status", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-max-turns",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-max-turns", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "partial output",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      stopReason: "max_turns",
+    });
+
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "error",
+            runStatus: "errored",
+            message: "Agent exceeded maxTurns",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("[managed-thread] reports interrupted thread status as idle reusable status", async () => {
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-interrupted-status",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-interrupted-status", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    stub.pushStatus({
+      status: "interrupted",
+      turnId: "turn-interrupted",
+      endedAtMs: 123,
+      reason: "user_cancel",
+    } as AgentStatus);
+
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "idle",
+            runStatus: "completed",
+            turnId: "turn-interrupted",
+            message: "user_cancel",
+          }),
+        }),
+      );
+    });
+    await expect(
+      runner.getAgentSnapshot("session-interrupted-status"),
+    ).resolves.toMatchObject({ status: "idle" });
+  });
+
+  it("[managed-thread] records cancelled turn phases as idle and accepts follow-up messages", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-cancelled-turn-status",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-cancelled-turn-status", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      stopReason: "cancelled",
+    });
+
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "idle",
+            runStatus: "completed",
+            message: "cancelled",
+          }),
+        }),
+      );
+    });
+    await expect(
+      runner.getAgentSnapshot("session-cancelled-turn-status"),
+    ).resolves.toMatchObject({ status: "idle" });
+
+    await expect(
+      runner.submitAgentMessage("session-cancelled-turn-status", {
+        sessionId: "session_1",
+        content: "continue after cancel",
+        originalContent: "continue after cancel",
+        messageId: "message-after-cancel",
+        streamId: "stream-after-cancel",
+        acceptedAt: "2026-05-09T00:00:01.000Z",
+      }),
+    ).resolves.toBeUndefined();
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-cancelled-turn-status",
+      "continue after cancel",
+    );
+  });
+
+  it("[managed-thread] records completed turn phases as idle snapshots", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-completed-turn-status",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-completed-turn-status", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "done",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      stopReason: "completed",
+    });
+
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "idle",
+            runStatus: "completed",
+            message: "done",
+          }),
+        }),
+      );
+    });
+    await expect(
+      runner.getAgentSnapshot("session-completed-turn-status"),
+    ).resolves.toMatchObject({ status: "idle" });
+  });
+
   it("[managed-thread] interruptAgentTurn submits interrupt op on managed thread", async () => {
     const { runner, stub } = makeTopLevelRunner({
       conversationId: "session-interrupt",
@@ -519,6 +916,45 @@ describe("AgenC delegate background-agent runner", () => {
       type: "interrupt",
       reason: "user_cancel",
     });
+  });
+
+  it("[managed-thread] interruptAgentTurn cascades cancellation to live child agents", async () => {
+    const { runner, stub, control } = makeTopLevelRunner({
+      conversationId: "session-interrupt-subtree",
+    });
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    control.openThreadSpawnChildren.mockReturnValue([
+      [
+        "child-agent",
+        {
+          agentId: "child-agent",
+          agentPath: "/root/worker",
+          depth: 1,
+        },
+      ],
+    ]);
+    stub.thread.submit.mockClear();
+
+    const interrupted = await runner.interruptAgentTurn(
+      "session-interrupt-subtree",
+      "user_cancel",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(interrupted).toBe(true);
+    expect(stub.thread.submit).toHaveBeenCalledWith({
+      type: "interrupt",
+      reason: "user_cancel",
+    });
+    expect(control.openThreadSpawnChildren).toHaveBeenCalledWith(
+      "session-interrupt-subtree",
+    );
+    expect(control.interrupt).toHaveBeenCalledWith("child-agent", "user_cancel");
   });
 
   it("[managed-thread] stopAgent shuts down the managed thread", async () => {

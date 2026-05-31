@@ -20,7 +20,12 @@ describe("session memory runtime contract", () => {
   it("wires the post-sampling hook into the live turn loop", () => {
     const runTurnSource = readFileSync(resolve(root, "runtime/src/session/run-turn.ts"), "utf8");
     expect(runTurnSource).toContain("runSessionMemoryPostSamplingHook");
-    expect(runTurnSource).toContain("launchSessionMemoryPostSampling(state, session, ctx, signal)");
+    expect(runTurnSource).toMatch(
+      /function launchSessionMemoryPostSampling\([\s\S]*?querySource: string/,
+    );
+    expect(runTurnSource).toMatch(
+      /launchSessionMemoryPostSampling\(\s*state,\s*session,\s*ctx,\s*turnQuerySource,/,
+    );
     expect(runTurnSource).toContain("state.messagesForQuery.length > 0");
     expect(runTurnSource).toContain("baseInstructions");
     expect(runTurnSource).toContain("session_memory_update_failed");

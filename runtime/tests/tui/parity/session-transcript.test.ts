@@ -56,6 +56,52 @@ describe("AgenC TUI session transcript", () => {
     });
   });
 
+  test("renders drained queued prompts without exposing hidden queue events as user turns", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "visible-queued",
+        msg: {
+          type: "user_message",
+          payload: {
+            message: "<system-reminder>wrapped</system-reminder>",
+            displayText: "visible queued prompt",
+            queuedCommandUuid: "visible-queued",
+          },
+        },
+      },
+      {
+        type: "queued_command",
+        uuid: "visible-queued",
+        commandMode: "prompt",
+        content: "<system-reminder>wrapped</system-reminder>",
+        displayText: "visible queued prompt",
+      },
+      {
+        type: "queued_command",
+        uuid: "hidden-task",
+        commandMode: "task-notification",
+        content: "<system-reminder>task</system-reminder>",
+        displayText: "hidden task note",
+        isMeta: true,
+        originKind: "task-notification",
+      },
+      {
+        type: "queued_command",
+        uuid: "hidden-meta",
+        commandMode: "prompt",
+        content: "<system-reminder>meta</system-reminder>",
+        displayText: "hidden meta prompt",
+        isMeta: true,
+      },
+    ]);
+
+    expect(transcript.messages).toHaveLength(1);
+    expect(transcript.messages[0]).toMatchObject({
+      type: "user",
+      message: { content: "visible queued prompt" },
+    });
+  });
+
   test("renders elicitation request events instead of dropping pending prompts", () => {
     const transcript = adaptTranscriptEvents([
       {

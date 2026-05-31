@@ -99,7 +99,7 @@ async function recoverFromOverflow(
   messages: RuntimeMessage[],
 ): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
   if (messages.length < 4) return { messages, committed: 0 };
-  const keepCount = Math.min(3, messages.length);
+  const retainedTail = selectOverflowRetainedTail(messages);
   const compacted = await compactConversation(
     messages,
     {},
@@ -109,10 +109,56 @@ async function recoverFromOverflow(
     messages: [
       compacted.boundaryMarker,
       ...compacted.summaryMessages,
-      ...messages.slice(-keepCount),
+      ...retainedTail,
     ],
     committed: 1,
   };
+}
+
+function selectOverflowRetainedTail(
+  messages: readonly RuntimeMessage[],
+): readonly RuntimeMessage[] {
+  const keepCount = Math.min(3, messages.length);
+  let start = messages.length - keepCount;
+  const first = messages[start];
+  const toolCallId = toolResultId(first);
+  if (toolCallId === null) return messages.slice(start);
+
+  const assistantIndex = findAssistantToolCallOwner(
+    messages,
+    start - 1,
+    toolCallId,
+  );
+  if (assistantIndex !== null) {
+    start = assistantIndex;
+  }
+  return messages.slice(start);
+}
+
+function toolResultId(message: RuntimeMessage | undefined): string | null {
+  if (!message) return null;
+  const candidate = message as CollapseRuntimeMessage;
+  if (candidate.originalRole !== "tool" && candidate.role !== "tool") {
+    return null;
+  }
+  const id = candidate.toolCallId?.trim();
+  return id && id.length > 0 ? id : null;
+}
+
+function findAssistantToolCallOwner(
+  messages: readonly RuntimeMessage[],
+  fromIndex: number,
+  toolCallId: string,
+): number | null {
+  for (let index = fromIndex; index >= 0; index -= 1) {
+    const message = messages[index] as CollapseRuntimeMessage | undefined;
+    if (!message) continue;
+    if (toolResultId(message) !== null) continue;
+    const calls = message.toolCalls ?? [];
+    if (calls.some((call) => call.id === toolCallId)) return index;
+    return null;
+  }
+  return null;
 }
 
 function toCollapseRuntimeMessages(
@@ -175,11 +221,13 @@ function fromCollapseRuntimeMessages(
 function fromCollapseRuntimeMessage(
   message: CollapseRuntimeMessage,
 ): LLMMessage | null {
+  const toolCalls = cloneToolCalls(message);
   if (message.role && message.content !== undefined) {
     const role = message.originalRole ?? message.role;
     return {
       role,
       content: fromRuntimeMessageContent(message.content),
+      ...(toolCalls !== undefined ? { toolCalls } : {}),
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase === "commentary" || message.phase === "final_answer"
@@ -192,7 +240,19 @@ function fromCollapseRuntimeMessage(
   return {
     role,
     content: fromRuntimeMessageContent(readContent(message)),
+    ...(toolCalls !== undefined ? { toolCalls } : {}),
   };
+}
+
+function cloneToolCalls(
+  message: CollapseRuntimeMessage,
+): LLMMessage["toolCalls"] | undefined {
+  if (!message.toolCalls || message.toolCalls.length === 0) return undefined;
+  return message.toolCalls.map((call) => ({
+    id: call.id,
+    name: call.name,
+    arguments: call.arguments ?? "",
+  }));
 }
 
 function normalizeRole(value: unknown): LLMMessage["role"] | null {
@@ -391,41 +451,16 @@ export async function postSampleRecovery(
 ): Promise<TurnState> {
   if (signal?.aborted) return state;
 
-  // I-22: if stream-model stashed a budget-exceeded decision on the
-  // state, route to token_budget_continuation BEFORE walking the
-  // trigger ladder. Mid-stream overshoot is its own recovery branch.
-  if (state.pendingBudgetDecision?.kind === "stop") {
-    const reservation = await reserveRecoveryReentry(session, state, {
-      triggerName: "token_budget_continuation",
-    });
-    if (reservation.kind === "exhausted") {
-      state.pendingBudgetDecision = undefined;
-      state.transition = undefined;
-      return state;
-    }
-    const continuationMessage = state.pendingBudgetDecision.reason;
-    resetContextCollapseAttempted(state);
-    emitWarning(
-      session.eventLog,
-      session.nextInternalSubId(),
-      "token_budget_continuation",
-      continuationMessage,
-    );
-    state.messages.push({
-      role: "user",
-      content: continuationMessage,
-    });
-    state.transition = { reason: "token_budget_continuation" };
-    // Match AgenC's continuation branch as closely as the current
-    // phase split allows: clear recovery-specific one-shot state before
-    // re-entering PrepareContext with the injected continuation prompt.
-    state.hasAttemptedReactiveCompact = false;
-    state.maxOutputTokensRecoveryCount = 0;
-    state.maxOutputTokensOverride = undefined;
-    state.pendingToolUseSummary = undefined;
-    state.stopHookActive = undefined;
-    state.pendingBudgetDecision = undefined;
-    return state;
+  // I-22: if stream-model stashed a budget-exceeded decision on a
+  // tool-free response, route to token_budget_continuation before the
+  // trigger ladder. If tool calls are pending, run-turn applies the
+  // same continuation after Phase 5 so history remains paired.
+  if (
+    state.pendingBudgetDecision?.kind === "stop" &&
+    state.toolUseBlocks.length === 0 &&
+    (state.assistantMessages.at(-1)?.toolCalls.length ?? 0) === 0
+  ) {
+    return applyPendingBudgetContinuation(state, ctx, session, signal);
   }
 
   const lastMessage = state.assistantMessages.at(-1);
@@ -455,7 +490,7 @@ export async function postSampleRecovery(
             return drain;
           }
         }
-        emitError(c.session.eventLog, c.session.nextInternalSubId(), {
+        emitError(c.session, c.session.nextInternalSubId(), {
           cause: "prompt_too_long_exhausted",
           message: "413 recovery exhausted",
         });
@@ -464,7 +499,7 @@ export async function postSampleRecovery(
       },
 
       async onMedia(c) {
-        emitError(c.session.eventLog, c.session.nextInternalSubId(), {
+        emitError(c.session, c.session.nextInternalSubId(), {
           cause: "image_error",
           message: "media-size recovery exhausted",
         });
@@ -487,7 +522,7 @@ export async function postSampleRecovery(
           return { kind: "applied", reason: outcome.kind };
         }
         if (outcome.kind === "exhausted") {
-          emitError(c.session.eventLog, c.session.nextInternalSubId(), {
+          emitError(c.session, c.session.nextInternalSubId(), {
             cause: "max_output_tokens_exhausted",
             message: outcome.reason,
           });
@@ -566,6 +601,46 @@ export async function postSampleRecovery(
       // No recovery fired — normal stream completion path.
       return state;
   }
+}
+
+export async function applyPendingBudgetContinuation(
+  state: TurnState,
+  _ctx: TurnContext,
+  session: Session,
+  signal?: AbortSignal,
+): Promise<TurnState> {
+  if (signal?.aborted) return state;
+  if (state.pendingBudgetDecision?.kind !== "stop") return state;
+
+  const reservation = await reserveRecoveryReentry(session, state, {
+    triggerName: "token_budget_continuation",
+  });
+  if (reservation.kind === "exhausted") {
+    state.pendingBudgetDecision = undefined;
+    state.transition = undefined;
+    return state;
+  }
+
+  const continuationMessage = state.pendingBudgetDecision.reason;
+  resetContextCollapseAttempted(state);
+  emitWarning(
+    session.eventLog,
+    session.nextInternalSubId(),
+    "token_budget_continuation",
+    continuationMessage,
+  );
+  state.messages.push({
+    role: "user",
+    content: continuationMessage,
+  });
+  state.transition = { reason: "token_budget_continuation" };
+  state.hasAttemptedReactiveCompact = false;
+  state.maxOutputTokensRecoveryCount = 0;
+  state.maxOutputTokensOverride = undefined;
+  state.pendingToolUseSummary = undefined;
+  state.stopHookActive = undefined;
+  state.pendingBudgetDecision = undefined;
+  return state;
 }
 
 // Re-export so run-turn can detect the wire-layer error class without

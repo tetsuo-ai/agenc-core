@@ -32,6 +32,7 @@ vi.mock("axios", () => {
 import { drainInFlight } from "./run-turn.js";
 import { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import { EXCLUSIVE } from "../tools/concurrency.js";
+import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { TurnState, UserMessage, AttachmentMessage } from "./turn-state.js";
@@ -106,6 +107,7 @@ describe("drainInFlight — AgenC behavior (T6)", () => {
     expect(toolMsgs).toHaveLength(2);
     expect((toolMsgs[0] as { toolCallId: string }).toolCallId).toBe("u1");
     expect((toolMsgs[1] as { toolCallId: string }).toolCallId).toBe("u2");
+    expect(findToolTurnValidationIssue(state.messages)).toBeNull();
     // state.toolResults mirrors with user-side records.
     expect(state.toolResults).toHaveLength(2);
     expect((state.toolResults[0] as UserMessage).toolCallId).toBe("u1");
@@ -177,6 +179,7 @@ describe("drainInFlight — AgenC behavior (T6)", () => {
     expect(
       (toolMsgs[0] as { toolCallId: string; content: string }).content,
     ).toBe("real-w1");
+    expect(findToolTurnValidationIssue(state.messages)).toBeNull();
   });
 
   test("emits warning on drain failure without throwing", async () => {

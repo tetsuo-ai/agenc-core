@@ -909,10 +909,10 @@ async function runAgenCDaemonForeground(
   const health = new AgenCDaemonHealthService({
     sessionCounter: sessionManager,
     stateCounter: new StateSqliteHealthStatsReader(
-      resolveStateDatabasePaths({
-        cwd: process.cwd(),
-        agencHome: authStartup.daemonHome,
-      }),
+      discoverAgenCDaemonStateDatabasePaths(
+        authStartup.daemonHome,
+        process.cwd(),
+      ),
     ),
     ready: () => !shuttingDown,
   });
@@ -1302,10 +1302,7 @@ function recoverAgenCDaemonStartupState(
   config: AgenCConfig,
 ): DaemonStartupRecoveryReport {
   const recoveredAt = new Date().toISOString();
-  const paths = uniqueStateDatabasePaths([
-    ...discoverStateDatabasePaths(daemonHome),
-    resolveStateDatabasePaths({ cwd, agencHome: daemonHome }),
-  ]);
+  const paths = discoverAgenCDaemonStateDatabasePaths(daemonHome, cwd);
   const recoveredRuns: RecoveredAgentRun[] = [];
   const recoveredToolCalls: RecoveredInFlightToolCall[] = [];
   const warnings: DaemonStartupRecoveryReport["warnings"][number][] = [];
@@ -1332,6 +1329,16 @@ function recoverAgenCDaemonStartupState(
     recoveredToolCalls,
     warnings,
   };
+}
+
+function discoverAgenCDaemonStateDatabasePaths(
+  daemonHome: string,
+  cwd: string,
+): StateDatabasePaths[] {
+  return uniqueStateDatabasePaths([
+    ...discoverStateDatabasePaths(daemonHome),
+    resolveStateDatabasePaths({ cwd, agencHome: daemonHome }),
+  ]);
 }
 
 function uniqueStateDatabasePaths(

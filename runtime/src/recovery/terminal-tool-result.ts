@@ -226,6 +226,29 @@ export function findOrphanToolCalls(
   return Array.from(pendingById.values());
 }
 
+function appendMissingAssistantToolCalls(
+  state: Pick<TurnState, "messages">,
+  toolCalls: readonly LLMToolCall[],
+): void {
+  const missing: LLMToolCall[] = [];
+  for (const toolCall of toolCalls) {
+    const alreadyPresent = state.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === toolCall.id) === true,
+    );
+    if (!alreadyPresent) {
+      missing.push({ ...toolCall });
+    }
+  }
+  if (missing.length === 0) return;
+  state.messages.push({
+    role: "assistant",
+    content: "",
+    toolCalls: missing,
+  });
+}
+
 /**
  * Append synthetic terminal tool results to both the next-request
  * message history (`state.messages`) and the turn-local `toolResults`
@@ -240,6 +263,7 @@ export function appendTerminalToolResults(
   if (orphanCalls.length === 0) return [];
 
   const synthetic = synthesizeTerminalResults(orphanCalls, cause, detail);
+  appendMissingAssistantToolCalls(state, orphanCalls);
   for (const syn of synthetic) {
     const userRecord: UserMessage = {
       uuid: crypto.randomUUID(),

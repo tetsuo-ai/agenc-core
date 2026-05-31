@@ -42,6 +42,12 @@ vi.mock("../memory/session/sessionMemory.js", () => ({
 }));
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
+  enqueue,
+  getCommandQueueSnapshot,
+  resetCommandQueue,
+} from "../utils/messageQueueManager.js";
+import { setCommandLifecycleListener } from "../utils/commandLifecycle.js";
+import {
   insertContextMessagesAfterLeadingSystem,
   isRetryableStreamError,
   maybeRunPreviousModelInlineCompact,
@@ -79,9 +85,14 @@ import type {
   LLMToolCall,
   StreamProgressCallback,
 } from "../llm/types.js";
+import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
+import type { AgentId } from "../types/ids.js";
 import { StreamingToolExecutor as LiveStreamingToolExecutor } from "../phases/_deps/tool-runtime.js";
+import type { PhaseEvent } from "../phases/events.js";
+import { SHARED_READ } from "../tools/concurrency.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import type { PostToolUseHook } from "../tools/hooks.js";
 import type { Tool } from "../tools/types.js";
 import { BudgetTracker } from "../conversation/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -111,6 +122,8 @@ afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
   sessionMemoryPostSamplingMockState.error = null;
   clearSessionReadState("conv-test");
+  resetCommandQueue();
+  setCommandLifecycleListener(null);
 });
 
 function mkCtx(): TurnContext {
@@ -283,6 +296,23 @@ function testMessageText(message: LLMMessage): string {
     .join("");
 }
 
+function rolloutCallText(item: unknown): string {
+  if (!item || typeof item !== "object") return "";
+  const record = item as {
+    readonly payload?: { readonly content?: unknown };
+  };
+  const content = record.payload?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      part && typeof part === "object" && "text" in part
+        ? String((part as { readonly text?: unknown }).text ?? "")
+        : "",
+    )
+    .join("\n");
+}
+
 function mkRegistry(): ToolRegistry {
   return {
     tools: [],
@@ -319,6 +349,8 @@ function mkSession(opts: {
   };
   readonly configStore?: { current: () => unknown };
   readonly permissionModeRegistry?: PermissionModeRegistry;
+  readonly querySource?: string;
+  readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
 }): {
   session: Session;
   events: Event[];
@@ -335,7 +367,10 @@ function mkSession(opts: {
       realtimeActive?: boolean;
       personality?: "none" | "friendly" | "pragmatic";
       contextWindow?: number;
-      modelInfo?: { contextWindow?: number };
+      modelInfo?: {
+        contextWindow?: number;
+        effectiveContextWindowPercent?: number;
+      };
     };
     referenceContextItem?: {
       model?: string;
@@ -354,7 +389,10 @@ function mkSession(opts: {
       realtimeActive?: boolean;
       personality?: "none" | "friendly" | "pragmatic";
       contextWindow?: number;
-      modelInfo?: { contextWindow?: number };
+      modelInfo?: {
+        contextWindow?: number;
+        effectiveContextWindowPercent?: number;
+      };
     };
     referenceContextItem?: {
       model?: string;
@@ -383,8 +421,10 @@ function mkSession(opts: {
     },
     provider: opts.provider,
     registry: opts.registry,
+    ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
     hooks: {
       executeStop: async () => ({}),
+      postToolUseHooks: opts.postToolUseHooks ?? [],
     },
     ...(opts.codeModeService !== undefined
       ? { codeModeService: opts.codeModeService }
@@ -488,6 +528,64 @@ async function drain(
   for await (const _ of gen) {
     // drain
   }
+}
+
+function mkSingleToolFollowUpProvider(params: {
+  readonly seenMessages: LLMMessage[][];
+  readonly toolName?: string;
+  readonly toolCallId?: string;
+  readonly toolArguments?: string;
+  readonly finalContent?: string;
+}): { readonly provider: LLMProvider; readonly calls: () => number } {
+  let calls = 0;
+  const toolName = params.toolName ?? "queue_tool";
+  const provider: LLMProvider = {
+    ...mkProvider({}),
+    chatStream: async (messages) => {
+      calls += 1;
+      params.seenMessages.push(messages.map((message) => ({ ...message })));
+      return calls === 1
+        ? {
+            content: "",
+            toolCalls: [
+              {
+                id: params.toolCallId ?? `tool_${toolName}_1`,
+                name: toolName,
+                arguments: params.toolArguments ?? "{}",
+              },
+            ],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          }
+        : {
+            content: params.finalContent ?? "final",
+            toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+    },
+  };
+  return { provider, calls: () => calls };
+}
+
+function mkStaticToolRegistry(
+  toolName = "queue_tool",
+  content = "tool output",
+): ToolRegistry {
+  const tool: Tool = {
+    name: toolName,
+    description: "queue test tool",
+    inputSchema: { type: "object", additionalProperties: false },
+    requiresApproval: false,
+    execute: async () => ({ content, isError: false }),
+  };
+  return {
+    tools: [tool],
+    toLLMTools: () => [],
+    dispatch: async () => ({ content, isError: false }),
+  } as unknown as ToolRegistry;
 }
 
 describe("runTurn — T6 gap #119 lifecycle emits", () => {
@@ -912,6 +1010,495 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(firstUserContent).toBe("<tick>12:00:00 PM</tick>");
   });
 
+  test("drains queued prompt into the post-tool follow-up and closes lifecycle", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const lifecycle: Array<{ uuid: string; state: string }> = [];
+    const queuedUuid = crypto.randomUUID();
+    setCommandLifecycleListener((uuid, state) => {
+      lifecycle.push({ uuid, state });
+    });
+    enqueue({
+      uuid: queuedUuid,
+      value: "please include the queued context",
+      mode: "prompt",
+      priority: "next",
+    });
+    let calls = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (messages) => {
+        calls += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [
+              {
+                id: "tool_queue_1",
+                name: "queue_tool",
+                arguments: "{}",
+              },
+            ],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        return {
+          content: "final",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const tool: Tool = {
+      name: "queue_tool",
+      description: "queue test tool",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false,
+      execute: async () => ({ content: "tool output", isError: false }),
+    };
+    const registry: ToolRegistry = {
+      tools: [tool],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "tool output", isError: false }),
+    } as unknown as ToolRegistry;
+    const append = vi.fn();
+    const appendRollout = vi.fn();
+    const { session } = mkSession({ provider, registry });
+    session.rolloutStore = {
+      append,
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    expect(calls).toBe(2);
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).toContain("tool output");
+    expect(secondRequestText).toContain(
+      "The user sent a new message while you were working:",
+    );
+    expect(secondRequestText).toContain("please include the queued context");
+    expect(getCommandQueueSnapshot()).toHaveLength(0);
+    expect(lifecycle).toEqual([
+      { uuid: queuedUuid, state: "started" },
+      { uuid: queuedUuid, state: "completed" },
+    ]);
+    const toolResultIndex = yielded.findIndex(
+      (event) => event.type === "tool_result",
+    );
+    const queuedCommandIndex = yielded.findIndex(
+      (event) => event.type === "queued_command",
+    );
+    const turnCompleteIndex = yielded.findIndex(
+      (event) => event.type === "turn_complete",
+    );
+    expect(toolResultIndex).toBeGreaterThanOrEqual(0);
+    expect(queuedCommandIndex).toBeGreaterThan(toolResultIndex);
+    expect(turnCompleteIndex).toBeGreaterThan(queuedCommandIndex);
+    const queuedCommandEvent = yielded.find(
+      (event): event is Extract<PhaseEvent, { type: "queued_command" }> =>
+        event.type === "queued_command",
+    );
+    expect(queuedCommandEvent).toMatchObject({
+      uuid: queuedUuid,
+      commandMode: "prompt",
+      displayText: "please include the queued context",
+    });
+    expect(queuedCommandEvent?.originKind).toBeUndefined();
+    expect(queuedCommandEvent?.isMeta).toBeUndefined();
+    expect(
+      append.mock.calls
+        .map(([event]) => event)
+        .filter(
+          (event) =>
+            event?.msg?.type === "user_message" &&
+            event.msg.payload?.queuedCommandUuid === queuedUuid,
+        ),
+    ).toEqual([
+      expect.objectContaining({
+        id: queuedUuid,
+        msg: {
+          type: "user_message",
+          payload: expect.objectContaining({
+            displayText: "please include the queued context",
+            queuedCommandUuid: queuedUuid,
+          }),
+        },
+      }),
+    ]);
+  });
+
+  test("post-tool preventContinuation stops before follow-up sampling", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const { provider, calls } = mkSingleToolFollowUpProvider({
+      seenMessages,
+    });
+    const postHook: PostToolUseHook = async () => ({
+      kind: "preventContinuation",
+      stopReason: "review required",
+    });
+    const { session } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry("queue_tool", "tool output"),
+      postToolUseHooks: [postHook],
+    });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    expect(calls()).toBe(1);
+    expect(seenMessages).toHaveLength(1);
+    expect(yielded.some((event) => event.type === "tool_result")).toBe(true);
+    expect(yielded.at(-1)?.type).toBe("turn_complete");
+  });
+
+  test("leaves slash commands queued for input dispatch", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const lifecycle: Array<{ uuid: string; state: string }> = [];
+    setCommandLifecycleListener((uuid, state) => {
+      lifecycle.push({ uuid, state });
+    });
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "/help",
+      mode: "prompt",
+      priority: "next",
+    });
+    let calls = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (messages) => {
+        calls += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        return calls === 1
+          ? {
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool_queue_2",
+                  name: "queue_tool",
+                  arguments: "{}",
+                },
+              ],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "test-model",
+              finishReason: "tool_calls",
+            }
+          : {
+              content: "final",
+              toolCalls: [],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "test-model",
+              finishReason: "stop",
+            };
+      },
+    };
+    const tool: Tool = {
+      name: "queue_tool",
+      description: "queue test tool",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false,
+      execute: async () => ({ content: "tool output", isError: false }),
+    };
+    const registry: ToolRegistry = {
+      tools: [tool],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "tool output", isError: false }),
+    } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).not.toContain("/help");
+    expect(getCommandQueueSnapshot()).toHaveLength(1);
+    expect(lifecycle).toEqual([]);
+  });
+
+  test("drains later-priority commands after Sleep runs", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const queuedUuid = crypto.randomUUID();
+    enqueue({
+      uuid: queuedUuid,
+      value: "wake-up context",
+      mode: "prompt",
+      priority: "later",
+    });
+    let calls = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (messages) => {
+        calls += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        return calls === 1
+          ? {
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool_sleep_1",
+                  name: "Sleep",
+                  arguments: JSON.stringify({ durationMs: 0 }),
+                },
+              ],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "test-model",
+              finishReason: "tool_calls",
+            }
+          : {
+              content: "awake",
+              toolCalls: [],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "test-model",
+              finishReason: "stop",
+            };
+      },
+    };
+    const sleepTool: Tool = {
+      name: "Sleep",
+      description: "sleep test tool",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false,
+      execute: async () => ({ content: "slept", isError: false }),
+    };
+    const registry: ToolRegistry = {
+      tools: [sleepTool],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "slept", isError: false }),
+    } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).toContain("wake-up context");
+    expect(getCommandQueueSnapshot()).toHaveLength(0);
+  });
+
+  test("wraps task notifications as background task context", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const appendRollout = vi.fn();
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "background task finished",
+      mode: "task-notification",
+      priority: "next",
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+    });
+    session.rolloutStore = {
+      append: vi.fn(),
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).toContain(
+      "A background agent completed a task:\nbackground task finished",
+    );
+    expect(secondRequestText).not.toContain(
+      "The user sent a new message while you were working:",
+    );
+    expect(getCommandQueueSnapshot()).toHaveLength(0);
+    expect(
+      yielded.find((event) => event.type === "queued_command"),
+    ).toMatchObject({
+      commandMode: "task-notification",
+      displayText: "background task finished",
+      isMeta: true,
+      originKind: "task-notification",
+    });
+    const persistedText = appendRollout.mock.calls
+      .map(([item]) => rolloutCallText(item))
+      .join("\n");
+    expect(persistedText).not.toContain("background task finished");
+    const historyText = (getState().history as LLMMessage[])
+      .map(testMessageText)
+      .join("\n");
+    expect(historyText).not.toContain("background task finished");
+  });
+
+  test("keeps meta queued prompts transient while still injecting them into the follow-up", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const appendRollout = vi.fn();
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "internal reminder",
+      mode: "prompt",
+      priority: "next",
+      isMeta: true,
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+    });
+    session.rolloutStore = {
+      append: vi.fn(),
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).toContain("internal reminder");
+    expect(
+      yielded.find((event) => event.type === "queued_command"),
+    ).toMatchObject({
+      commandMode: "prompt",
+      displayText: "internal reminder",
+      isMeta: true,
+    });
+    const persistedText = appendRollout.mock.calls
+      .map(([item]) => rolloutCallText(item))
+      .join("\n");
+    expect(persistedText).not.toContain("internal reminder");
+    const historyText = (getState().history as LLMMessage[])
+      .map(testMessageText)
+      .join("\n");
+    expect(historyText).not.toContain("internal reminder");
+  });
+
+  test("keeps bash and non-sleep later commands queued", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "echo still queued",
+      mode: "bash",
+      priority: "next",
+    });
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "later still queued",
+      mode: "prompt",
+      priority: "later",
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+    });
+
+    await drain(session.runTurn("start", { ctx: mkCtx() }));
+
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).not.toContain("echo still queued");
+    expect(secondRequestText).not.toContain("later still queued");
+    expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual([
+      "echo still queued",
+      "later still queued",
+    ]);
+  });
+
+  test("routes subagent queue drains to matching task notifications only", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const childAgentId = "child" as AgentId;
+    const otherAgentId = "other" as AgentId;
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "main user prompt",
+      mode: "prompt",
+      priority: "next",
+    });
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "child notification",
+      mode: "task-notification",
+      priority: "next",
+      agentId: childAgentId,
+    });
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "other notification",
+      mode: "task-notification",
+      priority: "next",
+      agentId: otherAgentId,
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+      querySource: "agent:child",
+    });
+
+    await drain(
+      session.runTurn("start", {
+        ctx: mkCtx(),
+        querySource: "agent:child",
+      }),
+    );
+
+    const secondRequestText = seenMessages[1]?.map(testMessageText).join("\n");
+    expect(secondRequestText).toContain("child notification");
+    expect(secondRequestText).not.toContain("main user prompt");
+    expect(secondRequestText).not.toContain("other notification");
+    expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual([
+      "main user prompt",
+      "other notification",
+    ]);
+  });
+
+  test("preserves pasted images on drained queued prompts", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    enqueue({
+      uuid: crypto.randomUUID(),
+      value: "queued image prompt",
+      mode: "prompt",
+      priority: "next",
+      pastedContents: {
+        1: {
+          id: 1,
+          type: "image",
+          content: "aW1hZ2U=",
+          mediaType: "image/png",
+          filename: "image.png",
+        },
+      },
+    });
+    const { provider } = mkSingleToolFollowUpProvider({ seenMessages });
+    const { session } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+    });
+
+    await drain(session.runTurn("start", { ctx: mkCtx() }));
+
+    const imageMessage = seenMessages[1]?.find((message) =>
+      Array.isArray(message.content),
+    );
+    const parts = imageMessage?.content as
+      | Array<{ type?: string; image_url?: { url?: string }; text?: string }>
+      | undefined;
+    expect(parts?.[0]?.text).toContain("queued image prompt");
+    expect(parts?.[1]?.image_url?.url).toBe(
+      "data:image/png;base64,aW1hZ2U=",
+    );
+  });
+
   test("emits turn_complete on happy-path termination", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession({
@@ -1047,6 +1634,19 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         }),
       },
     );
+  });
+
+  test("cleans active turn when consumer stops after terminal event", async () => {
+    const { session } = mkSession({
+      provider: mkProvider({ content: "reply" }),
+      registry: mkRegistry(),
+    });
+
+    for await (const event of session.runTurn("hello", { ctx: mkCtx() })) {
+      if (event.type === "turn_complete") break;
+    }
+
+    expect(session.activeTurn.unsafePeek()).toBeNull();
   });
 
   test("writes finalized history back into session state and consumes it on the next turn", async () => {
@@ -1604,6 +2204,94 @@ describe("runTurn — token budget tracker reset", () => {
     expect(tracker.emitted).toBe(0);
     expect(tracker.continuationCount).toBe(0);
   });
+
+  test("executes pending tools before budget continuation reentry", async () => {
+    const ctx = mkCtx();
+    const seenMessages: LLMMessage[][] = [];
+    let calls = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (messages) => {
+        calls += 1;
+        seenMessages.push(
+          messages.map((message) => ({
+            ...message,
+            ...(message.toolCalls !== undefined
+              ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+              : {}),
+          })),
+        );
+        return calls === 1
+          ? {
+              content: "checking",
+              toolCalls: [
+                {
+                  id: "tool-budget-1",
+                  name: "queue_tool",
+                  arguments: "{}",
+                },
+              ],
+              usage: {
+                promptTokens: 20,
+                completionTokens: 400,
+                totalTokens: 420,
+              },
+              model: "test-model",
+              finishReason: "tool_calls",
+            }
+          : {
+              content: "done",
+              toolCalls: [],
+              usage: {
+                promptTokens: 20,
+                completionTokens: 900,
+                totalTokens: 920,
+              },
+              model: "test-model",
+              finishReason: "stop",
+            };
+      },
+    };
+    const { session } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry("queue_tool", "tool output"),
+    });
+    (session as unknown as { budgetTracker: BudgetTracker }).budgetTracker =
+      new BudgetTracker(1_000, 100);
+
+    const events: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx })) {
+      events.push(event);
+    }
+
+    expect(
+      events.some(
+        (event) =>
+          event.type === "tool_result" &&
+          event.toolCall.id === "tool-budget-1",
+      ),
+    ).toBe(true);
+    expect(seenMessages.length).toBeGreaterThanOrEqual(2);
+    const secondRequest = seenMessages[1]!;
+    const assistantIndex = secondRequest.findIndex(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === "tool-budget-1"),
+    );
+    const toolIndex = secondRequest.findIndex(
+      (message) =>
+        message.role === "tool" &&
+        message.toolCallId === "tool-budget-1",
+    );
+    const continuationIndex = secondRequest.findIndex(
+      (message) =>
+        message.role === "user" &&
+        testMessageText(message).includes("Stopped at 40% of token target"),
+    );
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(toolIndex).toBeGreaterThan(assistantIndex);
+    expect(continuationIndex).toBeGreaterThan(toolIndex);
+  });
 });
 
 describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () => {
@@ -1779,6 +2467,7 @@ describe("runTurn — live sampling request contract", () => {
           tools?: readonly LLMTool[];
           parallelToolCalls?: boolean;
           reasoningEffort?: string;
+          skipCacheWrite?: boolean;
         }
       | undefined;
     const provider: LLMProvider = {
@@ -1812,7 +2501,7 @@ describe("runTurn — live sampling request contract", () => {
       } as unknown as ToolRegistry,
     });
 
-    await drain(session.runTurn("hello", { ctx }));
+    await drain(session.runTurn("hello", { ctx, skipCacheWrite: true }));
 
     expect(seenMessages[0]).toEqual({
       role: "system",
@@ -1827,6 +2516,7 @@ describe("runTurn — live sampling request contract", () => {
     ]);
     expect(seenOptions?.parallelToolCalls).toBe(true);
     expect(seenOptions?.reasoningEffort).toBe("high");
+    expect(seenOptions?.skipCacheWrite).toBe(true);
   });
 
   test("plan mode sanitizes visible assistant text but still completes the raw proposed plan", async () => {
@@ -2082,6 +2772,11 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
       provider,
       registry: mkRegistry(),
     });
+    const append = vi.fn();
+    session.rolloutStore = {
+      append,
+      appendRollout: vi.fn(),
+    } as unknown as Session["rolloutStore"];
 
     await drain(session.runTurn("hello", { ctx: mkCtx() }));
 
@@ -2099,12 +2794,103 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         },
       }),
     );
+    expect(
+      append.mock.calls.some(([event]) => {
+        const msg = (event as Event).msg;
+        return (
+          msg.type === "stream_error" &&
+          msg.payload.cause === "stream_disconnected" &&
+          msg.payload.provider === "stub-provider" &&
+          msg.payload.status === 502
+        );
+      }),
+    ).toBe(true);
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
           type: "turn_complete",
           payload: expect.objectContaining({
             lastAgentMessage: "resumed",
+          }),
+        },
+      }),
+    );
+  });
+
+  test("does not retry a partial provider-error response as streaming fallback", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    const seenMessages: LLMMessage[][] = [];
+    const providerError = new LLMServerError(
+      "stub-provider",
+      502,
+      "upstream stream failed",
+    );
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        if (attempts === 1) {
+          onChunk({ content: "partial", done: false });
+          return {
+            content: "partial",
+            toolCalls: [],
+            usage: { promptTokens: 3, completionTokens: 1, totalTokens: 4 },
+            model: "test-model",
+            finishReason: "error",
+            error: providerError,
+            partial: true,
+          };
+        }
+        return {
+          content: "should not retry",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 3, totalTokens: 6 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("hello", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    expect(attempts).toBe(1);
+    expect(seenMessages).toHaveLength(1);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "error",
+        error: providerError,
+      }),
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "warning",
+          payload: expect.objectContaining({
+            cause: "streaming_fallback_tombstoned",
+          }),
+        },
+      }),
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "should not retry",
           }),
         },
       }),
@@ -2358,7 +3144,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         };
       },
     };
-    const { session, events } = mkSession({
+    const { session, events, getState } = mkSession({
       provider,
       registry,
       permissionModeRegistry: new PermissionModeRegistry(
@@ -2373,6 +3159,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(attempts).toBe(2);
+    expect(session.abortController.signal.aborted).toBe(false);
     expect(staleSideEffect).toBe(false);
     if (staleInvocations > 0) {
       expect(staleSawAbort).toBe(true);
@@ -2406,6 +3193,96 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         },
       }),
     );
+  });
+
+  test("aborted stream-error path persists drained streamed tool results", async () => {
+    const controller = new AbortController();
+    let markToolStarted!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    let markToolCompleted!: () => void;
+    const toolCompleted = new Promise<void>((resolve) => {
+      markToolCompleted = resolve;
+    });
+    const streamTool: Tool = {
+      name: "stream_read_completed_before_abort",
+      description: "streamed read",
+      inputSchema: { type: "object", additionalProperties: false },
+      concurrencyClass: SHARED_READ,
+      metadata: { mutating: false },
+      isReadOnly: true,
+      execute: async () => {
+        markToolStarted();
+        markToolCompleted();
+        return { content: "read-ok", isError: false };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [streamTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        streamTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        onChunk({
+          content: "",
+          done: false,
+          toolCalls: [
+            {
+              id: "tool_stream_abort_sync",
+              name: "stream_read_completed_before_abort",
+              arguments: "{}",
+            },
+          ],
+        });
+        await toolStarted;
+        await toolCompleted;
+        await Promise.resolve();
+        controller.abort(new Error("user cancelled"));
+        throw new LLMAuthenticationError("stub-provider", 401, "expired");
+      },
+    };
+    const { session, events, getState } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      ),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx(), signal: controller.signal }));
+
+    const completed = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_completed" &&
+        event.msg.payload.callId === "tool_stream_abort_sync",
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.msg.payload).toEqual(
+      expect.objectContaining({
+        result: "read-ok",
+        isError: false,
+      }),
+    );
+    const history = getState().history as LLMMessage[];
+    expect(findToolTurnValidationIssue(history)).toBeNull();
+    expect(
+      history.some(
+        (message) =>
+          message.role === "tool" &&
+          message.toolCallId === "tool_stream_abort_sync" &&
+          message.content === "read-ok",
+      ),
+    ).toBe(true);
   });
 
   test("LP-07 suppresses streamed tool history when reconnect cap is exhausted", async () => {
@@ -2657,6 +3534,355 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         }),
       }),
     );
+  });
+
+  test("LP-07 preserves already-started streamed tool results in durable history after retry refusal", async () => {
+    let attempts = 0;
+    let sideEffects = 0;
+    let releaseTool!: () => void;
+    const toolReleased = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    let markToolStarted!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    const sideEffectTool: Tool = {
+      name: "stream_write_started",
+      description: "streamed write",
+      inputSchema: { type: "object", additionalProperties: false },
+      concurrencyClass: SHARED_READ,
+      execute: async () => {
+        sideEffects += 1;
+        markToolStarted();
+        await toolReleased;
+        return { content: "wrote once", isError: false };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [sideEffectTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        sideEffectTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: "tool_started_durable",
+                name: "stream_write_started",
+                arguments: "{}",
+              },
+            ],
+          });
+          await toolStarted;
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          });
+        }
+        return {
+          content: "should not retry",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events, getState } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      ),
+    });
+
+    const turn = drain(session.runTurn("hello", { ctx: mkCtx() }));
+    await toolStarted;
+    releaseTool();
+    await turn;
+
+    expect(attempts).toBe(1);
+    expect(sideEffects).toBe(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "tool_call_completed",
+          payload: expect.objectContaining({
+            callId: "tool_started_durable",
+            isError: false,
+            result: "wrote once",
+          }),
+        },
+      }),
+    );
+    const history = getState().history as LLMMessage[];
+    expect(history).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        toolCalls: [
+          expect.objectContaining({
+            id: "tool_started_durable",
+            name: "stream_write_started",
+            arguments: "{}",
+          }),
+        ],
+      }),
+    );
+    expect(history).toContainEqual(
+      expect.objectContaining({
+        role: "tool",
+        toolCallId: "tool_started_durable",
+        content: "wrote once",
+      }),
+    );
+  });
+
+  test("max-output recovery closes streamed tool attempts that started before truncation", async () => {
+    let attempts = 0;
+    let markToolStarted!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    let sawAbort = false;
+    const streamTool: Tool = {
+      name: "stream_read_truncated",
+      description: "streamed read",
+      inputSchema: { type: "object", additionalProperties: false },
+      concurrencyClass: SHARED_READ,
+      metadata: { mutating: false },
+      isReadOnly: true,
+      execute: async (args) => {
+        markToolStarted();
+        const signal = (args as { readonly __abortSignal?: AbortSignal })
+          .__abortSignal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        sawAbort = signal?.aborted === true;
+        return {
+          content: sawAbort ? "aborted" : "read",
+          isError: sawAbort,
+        };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [streamTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        streamTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: "tool_max_output",
+                name: "stream_read_truncated",
+                arguments: "{}",
+              },
+            ],
+          });
+          await toolStarted;
+          return {
+            content: "",
+            toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "length",
+          };
+        }
+        return {
+          content: "recovered",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events, getState } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      ),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(2);
+    expect(sawAbort).toBe(true);
+    const started = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_started" &&
+        event.msg.payload.callId === "tool_max_output",
+    );
+    const completed = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_completed" &&
+        event.msg.payload.callId === "tool_max_output",
+    );
+    expect(started).toHaveLength(1);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.msg.payload).toEqual(
+      expect.objectContaining({
+        isError: true,
+        metadata: { cause: "max_output_tokens" },
+      }),
+    );
+    const history = getState().history as LLMMessage[];
+    expect(
+      history.some(
+        (message) =>
+          message.role === "tool" && message.toolCallId === "tool_max_output",
+      ),
+    ).toBe(false);
+    expect(
+      history.some((message) =>
+        message.toolCalls?.some((call) => call.id === "tool_max_output"),
+      ),
+    ).toBe(false);
+  });
+
+  test("max-output recovery preserves completed streamed tool results while retrying", async () => {
+    let attempts = 0;
+    let markToolCompleted!: () => void;
+    const toolCompleted = new Promise<void>((resolve) => {
+      markToolCompleted = resolve;
+    });
+    const streamTool: Tool = {
+      name: "stream_read_completed_before_truncation",
+      description: "streamed read",
+      inputSchema: { type: "object", additionalProperties: false },
+      concurrencyClass: SHARED_READ,
+      metadata: { mutating: false },
+      isReadOnly: true,
+      execute: async () => {
+        markToolCompleted();
+        return { content: "read-ok", isError: false };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [streamTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        streamTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: "tool_max_output_completed",
+                name: "stream_read_completed_before_truncation",
+                arguments: "{}",
+              },
+            ],
+          });
+          await toolCompleted;
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 0);
+          });
+          return {
+            content: "",
+            toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "length",
+          };
+        }
+        return {
+          content: "recovered",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events, getState } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      ),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(2);
+    const started = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_started" &&
+        event.msg.payload.callId === "tool_max_output_completed",
+    );
+    const completed = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_completed" &&
+        event.msg.payload.callId === "tool_max_output_completed",
+    );
+    expect(started).toHaveLength(1);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.msg.payload).toEqual(
+      expect.objectContaining({
+        result: "read-ok",
+        isError: false,
+      }),
+    );
+    const history = getState().history as LLMMessage[];
+    expect(
+      history.some(
+        (message) =>
+          message.role === "tool" &&
+          message.toolCallId === "tool_max_output_completed",
+      ),
+    ).toBe(true);
+    expect(
+      history.some((message) =>
+        message.toolCalls?.some(
+          (call) => call.id === "tool_max_output_completed",
+        ),
+      ),
+    ).toBe(true);
   });
 
   test("LP-07 aborts live executor work before replay-safe retry cleanup", async () => {
@@ -3127,10 +4353,13 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     setAutoCompactImplForTests(null);
   });
 
+  const compactPressureHistory = (chars = 600): LLMMessage[] => [
+    { role: "user", content: `old ${"x".repeat(chars)}` },
+  ];
+
   test("pre-sampling context-limit compact calls autoCompactIfNeeded when threshold is hit", async () => {
-    // Inject an autoCompactTokenLimit low enough that any totalTokenUsage
-    // reading will exceed it. Seed totalTokenUsage on the session state
-    // so runPreSamplingCompact picks the context-limit branch.
+    // Inject an autoCompactTokenLimit low enough that active history
+    // exceeds it, so runPreSamplingCompact picks the context-limit branch.
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
       .autoCompactTokenLimit = 10;
@@ -3139,11 +4368,11 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       provider: mkProvider({ content: "ok" }),
       registry: mkRegistry(),
     });
-    // Push totalTokenUsage above the limit so runPreSamplingCompact fires.
+    const history = compactPressureHistory();
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
       with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 999 }),
+        fn({ history, totalTokenUsage: 0 }),
     };
 
     const calls: Array<unknown[]> = [];
@@ -3175,6 +4404,77 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     expect(firstInitialContextInjection).toBe("do_not_inject");
   });
 
+  test("pre-sampling compact preserves the caller querySource", async () => {
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
+      .autoCompactTokenLimit = 10;
+
+    const { session } = mkSession({
+      provider: mkProvider({ content: "ok" }),
+      registry: mkRegistry(),
+      querySource: "agent:worker",
+    });
+    const history = compactPressureHistory();
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history, totalTokenUsage: 0 }),
+    };
+
+    const calls: Array<unknown[]> = [];
+    setAutoCompactImplForTests(async (...args) => {
+      calls.push(args);
+      return { wasCompacted: false };
+    });
+
+    await drain(session.runTurn("hello", { ctx }));
+
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        querySource: "agent:worker",
+      }),
+    );
+  });
+
+  test("runTurn querySource option overrides the session default", async () => {
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
+      .autoCompactTokenLimit = 10;
+
+    const { session } = mkSession({
+      provider: mkProvider({ content: "ok" }),
+      registry: mkRegistry(),
+      querySource: "agent:session-default",
+    });
+    const history = compactPressureHistory();
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history, totalTokenUsage: 0 }),
+    };
+
+    const calls: Array<unknown[]> = [];
+    setAutoCompactImplForTests(async (...args) => {
+      calls.push(args);
+      return { wasCompacted: false };
+    });
+
+    await drain(
+      session.runTurn("hello", {
+        ctx,
+        querySource: "hook_agent",
+      }),
+    );
+
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        querySource: "hook_agent",
+      }),
+    );
+  });
+
   test("pre-sampling context-limit compact runs from context-window data without a local token limit", async () => {
     const ctx = mkCtx();
     delete (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
@@ -3185,10 +4485,11 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       provider: mkProvider({ content: "ok" }),
       registry: mkRegistry(),
     });
+    const history = compactPressureHistory();
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
       with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 999 }),
+        fn({ history, totalTokenUsage: 0 }),
     };
 
     const calls: Array<unknown[]> = [];
@@ -3213,17 +4514,19 @@ describe("runTurn — runAutoCompact dispatcher", () => {
   test("autoCompactIfNeeded is NOT called when total usage is below the threshold", async () => {
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 1_000_000; // far above any test usage
+      .autoCompactTokenLimit = 100;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
       registry: mkRegistry(),
     });
-    // Keep totalTokenUsage at 0 — below the astronomical limit.
+    // Keep active history tiny, but set cumulative provider usage high:
+    // pre-sampling compaction must gate on active context pressure, not
+    // cumulative throughput.
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 0 }),
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
       with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 0 }),
+        fn({ history: [], totalTokenUsage: 999 }),
     };
 
     const impl = vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false }));
@@ -3231,18 +4534,31 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
     await drain(session.runTurn("hi", { ctx }));
 
-    // AgenC context adapter Stage 6 may still invoke autoCompactIfNeeded from
-    // inside the phase loop, but the pre-sampling dispatcher path that
-    // this suite targets must NOT have fired. We assert on the explicit
-    // `context_limit` marker by observing no auto-compact-failed
-    // warnings and that runPreSamplingCompact did not route through the
-    // dispatcher (verified via injection: any calls must originate from
-    // Stage 6, which passes `"repl_main_thread"` rather than
-    // `"model_downshift"`).
-    const callsWithDownshift = impl.mock.calls.filter(
-      (args) => args[4] === "model_downshift",
-    );
-    expect(callsWithDownshift.length).toBe(0);
+    expect(impl).not.toHaveBeenCalled();
+  });
+
+  test("pre-sampling context-limit compact runs when active usage reaches the threshold", async () => {
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
+      .autoCompactTokenLimit = 999;
+
+    const { session } = mkSession({
+      provider: mkProvider({ content: "ok" }),
+      registry: mkRegistry(),
+    });
+    const history = compactPressureHistory(5_000);
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history, totalTokenUsage: 0 }),
+    };
+
+    const impl = vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false }));
+    setAutoCompactImplForTests(impl);
+
+    await drain(session.runTurn("hi", { ctx }));
+
+    expect(impl).toHaveBeenCalled();
   });
 
   test("compaction result rehydrates the full post-compact replacement history", async () => {
@@ -3250,16 +4566,6 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
       .autoCompactTokenLimit = 10;
     const appendRollout = vi.fn();
-
-    const { session } = mkSession({
-      provider: mkProvider({ content: "ok" }),
-      registry: mkRegistry(),
-    });
-    (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
-      with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 999 }),
-    };
 
     // Return a compactionResult so the dispatcher splices messages
     // back into TurnState. We then verify prepareContext (next phase)
@@ -3321,10 +4627,11 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         reAppendSessionMetadata: vi.fn(),
       },
     } as unknown as Session["rolloutStore"];
+    const history = compactPressureHistory();
     (session2 as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
       with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 999 }),
+        fn({ history, totalTokenUsage: 0 }),
     };
 
     await drain(session2.runTurn("first user input", { ctx }));
@@ -3383,10 +4690,11 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       },
       registry: mkRegistry(),
     });
+    const history = compactPressureHistory();
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
       with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 999 }),
+        fn({ history, totalTokenUsage: 0 }),
     };
 
     setAutoCompactImplForTests(async () => ({
@@ -3417,19 +4725,26 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     expect(imageUser?.content).toEqual(userContent);
   });
 
-  test("dispatcher errors emit warning:auto_compact_failed and continue with uncompacted state", async () => {
+  test("pre-sampling dispatcher errors emit warning and abort before sampling", async () => {
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
       .autoCompactTokenLimit = 10;
+    const baseProvider = mkProvider({ content: "still ok" });
+    const provider = {
+      ...baseProvider,
+      chat: vi.fn(baseProvider.chat),
+      chatStream: vi.fn(baseProvider.chatStream),
+    };
 
     const { session, events } = mkSession({
-      provider: mkProvider({ content: "still ok" }),
+      provider,
       registry: mkRegistry(),
     });
+    const history = compactPressureHistory();
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history, totalTokenUsage: 0 }),
       with: async (fn: (s: unknown) => unknown) =>
-        fn({ history: [], totalTokenUsage: 999 }),
+        fn({ history, totalTokenUsage: 0 }),
     };
 
     const thrown = new Error("compact-blew-up");
@@ -3438,8 +4753,6 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     };
     setAutoCompactImplForTests(fakeImpl);
 
-    // Must NOT throw out of runTurn — errors are swallowed into a
-    // warning event.
     await drain(session.runTurn("hello", { ctx }));
 
     const warnings = events.filter(
@@ -3452,6 +4765,14 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     if (first?.msg.type === "warning") {
       expect(first.msg.payload.message).toContain("compact-blew-up");
     }
+    const errors = events.filter(
+      (e) =>
+        e.msg.type === "error" &&
+        e.msg.payload.cause === "pre_sampling_compact_failed",
+    );
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(provider.chatStream).not.toHaveBeenCalled();
   });
 
   test("maybeRunPreviousModelInlineCompact invokes dispatcher with model_downshift reason", async () => {
@@ -3497,7 +4818,80 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     // querySource is carried on the AgenC adapter context object.
     expect(calls.length).toBeGreaterThanOrEqual(1);
     expect(calls[0]?.[1]).toEqual(
-      expect.objectContaining({ querySource: "model_downshift" }),
+      expect.objectContaining({
+        querySource: "model_downshift",
+        ctx: expect.objectContaining({
+          modelInfo: expect.objectContaining({
+            slug: "old-big-model",
+            contextWindow: 200_000,
+          }),
+          collaborationMode: expect.objectContaining({
+            model: "old-big-model",
+          }),
+        }),
+      }),
     );
   });
+
+  test("maybeRunPreviousModelInlineCompact compares effective context windows", async () => {
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as {
+      contextWindow: number;
+      effectiveContextWindowPercent: number;
+      autoCompactTokenLimit: number;
+      slug: string;
+    }) = {
+      ...(ctx.modelInfo as unknown as Record<string, unknown>),
+      contextWindow: 200_000,
+      effectiveContextWindowPercent: 50,
+      autoCompactTokenLimit: 3_000,
+      slug: "new-half-window-model",
+    } as never;
+
+    const { session } = mkSession({
+      provider: mkProvider({}),
+      registry: mkRegistry(),
+    });
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({
+        history: [],
+        totalTokenUsage: 5_000,
+        previousTurnSettings: {
+          model: "old-full-window-model",
+          contextWindow: 200_000,
+          modelInfo: {
+            contextWindow: 200_000,
+            effectiveContextWindowPercent: 100,
+          },
+        },
+      }),
+    };
+
+    const calls: Array<unknown[]> = [];
+    setAutoCompactImplForTests(async (...args) => {
+      calls.push(args);
+      return { wasCompacted: false };
+    });
+
+    const ran = await maybeRunPreviousModelInlineCompact(
+      session,
+      ctx,
+      5_000,
+    );
+    expect(ran).toBe(false);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        querySource: "model_downshift",
+        ctx: expect.objectContaining({
+          modelInfo: expect.objectContaining({
+            slug: "old-full-window-model",
+            contextWindow: 200_000,
+            effectiveContextWindowPercent: 100,
+          }),
+        }),
+      }),
+    );
+  });
+
 });

@@ -147,6 +147,7 @@ export interface LiveToolDispatchOptions {
   readonly turn: TurnContext;
   readonly tracker: SharedTurnDiffTracker;
   readonly signal?: AbortSignal;
+  readonly abortController?: AbortController;
   readonly source?: ToolCallSource;
   readonly approvalPolicy: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
@@ -617,23 +618,45 @@ export class ToolRouter {
               invocation: dispatchInvocation,
             },
           );
-          return executeToolDispatch({
-            rawArgs: dispatchRawArgs,
-            ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-            currentTurnId: directDispatchTurnId(invocation),
-            eventLog: invocation.session.eventLog,
-            subId: invocation.callId,
-            tool: spec.tool,
-            invocation: dispatchInvocation,
-            approvalAlreadyResolved: dispatchContext.approvalResolved,
-            runtimeAttemptContext,
-            ...(opts.permissionAuditLogger !== undefined
-              ? { permissionAuditLogger: opts.permissionAuditLogger }
-              : {}),
-            ...(opts.onPermissionAuditError !== undefined
-              ? { onPermissionAuditError: opts.onPermissionAuditError }
-              : {}),
-          });
+          const toolAbortController = new AbortController();
+          const forwardAbort = (): void => {
+            if (toolAbortController.signal.aborted) return;
+            try {
+              toolAbortController.abort(
+                (opts.signal as AbortSignal & { reason?: unknown } | undefined)
+                  ?.reason,
+              );
+            } catch {
+              // already aborted
+            }
+          };
+          if (opts.signal?.aborted) {
+            forwardAbort();
+          } else if (opts.signal) {
+            opts.signal.addEventListener("abort", forwardAbort, { once: true });
+          }
+          try {
+            return await executeToolDispatch({
+              rawArgs: dispatchRawArgs,
+              signal: toolAbortController.signal,
+              currentTurnId: directDispatchTurnId(invocation),
+              eventLog: invocation.session.eventLog,
+              subId: invocation.callId,
+              tool: spec.tool,
+              invocation: dispatchInvocation,
+              approvalAlreadyResolved: dispatchContext.approvalResolved,
+              runtimeAttemptContext,
+              abortController: toolAbortController,
+              ...(opts.permissionAuditLogger !== undefined
+                ? { permissionAuditLogger: opts.permissionAuditLogger }
+                : {}),
+              ...(opts.onPermissionAuditError !== undefined
+                ? { onPermissionAuditError: opts.onPermissionAuditError }
+                : {}),
+            });
+          } finally {
+            opts.signal?.removeEventListener("abort", forwardAbort);
+          }
         },
       });
     } catch (err) {
@@ -730,6 +753,9 @@ export class ToolRouter {
     let forcedApprovalReason: string | undefined;
     let preHookPermissionDecision: MergedHookPermissionDecision | undefined;
     let hookPermissionResult: HookPermissionResult | undefined;
+    let prePreventContinuation:
+      | { readonly stopReason?: string }
+      | undefined;
     let permissionAlreadyAllowed = false;
     const preHooks = opts.preHooks ?? [];
     if (preHooks.length > 0) {
@@ -759,6 +785,12 @@ export class ToolRouter {
           "hook_additional_context",
           `PreToolUse:${spec.tool.name} context: ${context}`,
         );
+      }
+      if (preDecision.additionalContexts.length > 0) {
+        opts.onHookAdditionalContext?.(preDecision.additionalContexts);
+      }
+      if (preDecision.preventContinuation !== undefined) {
+        prePreventContinuation = preDecision.preventContinuation;
       }
       if (preDecision.kind === "deny") {
         const message = preDecision.reason ?? "denied by pre-tool-use hook";
@@ -794,7 +826,7 @@ export class ToolRouter {
           "hook_stopped_continuation",
           `PreToolUse:${spec.tool.name} stopped execution${preDecision.stopReason ? `: ${preDecision.stopReason}` : ""}`,
           );
-        return { content: message, isError: true };
+        return { content: message, isError: true, preventContinuation: true };
       }
     }
 
@@ -894,6 +926,7 @@ export class ToolRouter {
       toolName: toolCall.name,
       turnId: opts.turn.subId,
       ...networkPolicyInterfacesFromTurn(opts.turn),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(forcedApprovalReason !== undefined
         ? { retryReason: forcedApprovalReason }
         : {}),
@@ -960,6 +993,7 @@ export class ToolRouter {
       const result = await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx,
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         approvalPolicy: effectiveApprovalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: executionPayload,
@@ -1037,6 +1071,9 @@ export class ToolRouter {
             ...(preHookPermissionDecision !== undefined
               ? { preHookPermissionDecision }
               : {}),
+            ...(prePreventContinuation !== undefined
+              ? { prePreventContinuation }
+              : {}),
             approvalAlreadyResolved: dispatchContext.approvalResolved,
             abortController: toolAbortController,
             subId: toolCall.id,
@@ -1051,6 +1088,14 @@ export class ToolRouter {
       );
       return result;
     } catch (err) {
+      if (
+        err instanceof ApprovalRejectedError &&
+        err.decision.kind === "abort" &&
+        opts.abortController !== undefined &&
+        !opts.abortController.signal.aborted
+      ) {
+        opts.abortController.abort(err.message);
+      }
       return toolDispatchErrorResult(err);
     } finally {
       opts.signal?.removeEventListener("abort", forwardAbort);
@@ -1315,6 +1360,7 @@ function rawDispatchOptions(
     readonly abortController: AbortController;
     readonly subId: string;
     readonly preHookPermissionDecision?: MergedHookPermissionDecision;
+    readonly prePreventContinuation?: { readonly stopReason?: string };
     readonly approvalAlreadyResolved?: boolean;
     readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
   },
@@ -1344,6 +1390,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.preHookPermissionDecision !== undefined
       ? { preHookPermissionDecision: opts.preHookPermissionDecision }
+      : {}),
+    ...(opts.prePreventContinuation !== undefined
+      ? { prePreventContinuation: opts.prePreventContinuation }
       : {}),
     ...(opts.approvalAlreadyResolved !== undefined
       ? { approvalAlreadyResolved: opts.approvalAlreadyResolved }

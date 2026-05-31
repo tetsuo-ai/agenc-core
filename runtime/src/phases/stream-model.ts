@@ -68,6 +68,7 @@ export interface StreamModelRequestContract {
   readonly baseInstructions: string;
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
+  readonly skipCacheWrite?: boolean;
 }
 
 interface AssistantDisplayState {
@@ -154,6 +155,9 @@ function buildProviderOptions(
       : {}),
     ...(request.maxOutputTokens !== undefined
       ? { maxOutputTokens: request.maxOutputTokens }
+      : {}),
+    ...(request.skipCacheWrite !== undefined
+      ? { skipCacheWrite: request.skipCacheWrite }
       : {}),
     ...(planMode && request.tools.length > 0
       ? { toolChoice: "required" as const }
@@ -517,10 +521,13 @@ function estimateChunkTokens(chunk: LLMStreamChunk): number {
 function emitMalformedToolCallSyntheticResults(
   session: Session,
   failures: ReadonlyArray<{ readonly raw: unknown; readonly cause: string }>,
+  emittedCallIds: Set<string>,
 ): void {
   for (const failure of failures) {
     const id = extractToolUseId(failure.raw);
     if (!id) continue;
+    if (emittedCallIds.has(id)) continue;
+    emittedCallIds.add(id);
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -597,6 +604,7 @@ export async function streamModel(
   const providerName = session.services.provider.name;
   const streamedToolCalls = new Map<string, LLMToolCall>();
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
+  const malformedToolCompletionIds = new Set<string>();
   let receivedProviderChunk = false;
 
   const onChunk = (chunk: LLMStreamChunk): void => {
@@ -655,6 +663,7 @@ export async function streamModel(
         emitMalformedToolCallSyntheticResults(
           session,
           validatedToolCalls.failures,
+          malformedToolCompletionIds,
         );
       }
       if (validatedToolCalls.valid.length === 0) return;
@@ -767,6 +776,7 @@ export async function streamModel(
       emitMalformedToolCallSyntheticResults(
         session,
         validatedMergedToolCalls.failures,
+        malformedToolCompletionIds,
       );
     }
     assistant = {

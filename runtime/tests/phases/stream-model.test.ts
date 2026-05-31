@@ -36,25 +36,38 @@ vi.mock("./execute-tools.js", () => ({
     raw: unknown[],
     session?: { nextInternalSubId?: () => string; emit?: (event: Event) => void },
   ) => {
-    const valid = raw.filter((item) => {
-      if (!item || typeof item !== "object") return false;
+    const valid: LLMToolCall[] = [];
+    const failures: Array<{ raw: unknown; cause: string }> = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") {
+        failures.push({ raw: item, cause: "invalid_shape" });
+        continue;
+      }
       const candidate = item as { id?: unknown; name?: unknown; arguments?: unknown };
       if (typeof candidate.id !== "string" || candidate.id.trim().length === 0) {
-        return false;
+        failures.push({ raw: item, cause: "invalid_shape" });
+        continue;
       }
       if (typeof candidate.name !== "string" || candidate.name.trim().length === 0) {
-        return false;
+        failures.push({ raw: item, cause: "invalid_shape" });
+        continue;
       }
-      if (typeof candidate.arguments !== "string") return false;
+      if (typeof candidate.arguments !== "string") {
+        failures.push({ raw: item, cause: "invalid_shape" });
+        continue;
+      }
       try {
         const parsed = JSON.parse(candidate.arguments);
-        return !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
+        if (!!parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          valid.push(item as LLMToolCall);
+        } else {
+          failures.push({ raw: item, cause: "invalid_shape" });
+        }
       } catch {
-        return false;
+        failures.push({ raw: item, cause: "invalid_json" });
       }
-    });
-    const failures = raw.length - valid.length;
-    for (let i = 0; i < failures; i += 1) {
+    }
+    for (let i = 0; i < failures.length; i += 1) {
       session?.emit?.({
         id: session.nextInternalSubId?.() ?? `sub-${i}`,
         msg: {
@@ -68,9 +81,7 @@ vi.mock("./execute-tools.js", () => ({
     }
     return {
       valid,
-      failures: Array.from({ length: failures }, () => ({
-        cause: "invalid_json",
-      })),
+      failures,
     };
   },
 }));
@@ -502,6 +513,13 @@ describe("streamModel — live assistant text sanitization", () => {
 
     expect(streamedDispatchCalls).toEqual([]);
     expect(state.toolUseBlocks).toEqual([]);
+    expect(
+      events.filter(
+        (event) =>
+          event.msg.type === "tool_call_completed" &&
+          event.msg.payload.callId === "tool-bad",
+      ),
+    ).toHaveLength(1);
     expect(
       events.some(
         (event) =>

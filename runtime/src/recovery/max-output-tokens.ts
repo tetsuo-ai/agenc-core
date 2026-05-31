@@ -25,12 +25,15 @@
  * @module
  */
 
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
-import { appendTerminalToolResults } from "./terminal-tool-result.js";
+import {
+  appendTerminalToolResults,
+  buildTerminalToolResult,
+} from "./terminal-tool-result.js";
 import { ESCALATED_MAX_OUTPUT_TOKENS } from "../llm/openai-compatible-token-limits.js";
 
 export const MAX_OUTPUT_TOKENS_ESCALATED = ESCALATED_MAX_OUTPUT_TOKENS;
@@ -62,14 +65,19 @@ export interface RunMaxOutputTokensOpts {
 function discardExecutorForMaxOutputTokens(
   session: Session,
   state: TurnState,
+  opts: { readonly appendCompletedHistory?: boolean } = {},
 ): void {
+  const executor = state.streamingToolExecutor as StreamingToolExecutor | null;
+  if (executor !== null && executor !== undefined) {
+    emitMaxOutputCompletedExecutorResults(session, state, executor, opts);
+  }
   appendTerminalToolResults(
     state,
     "aborted",
     "max_output_tokens recovery aborted in-flight tool execution",
   );
-  const executor = state.streamingToolExecutor as StreamingToolExecutor | null;
   if (executor !== null && executor !== undefined) {
+    emitMaxOutputExecutorClosures(session, state, executor, opts);
     try {
       (executor as { discard: (reason?: string) => void }).discard(
         "max_output_tokens",
@@ -85,6 +93,250 @@ function discardExecutorForMaxOutputTokens(
     "executor_discarded",
     "max_output_tokens",
   );
+}
+
+function emitMaxOutputCompletedExecutorResults(
+  session: Session,
+  state: TurnState,
+  executor: StreamingToolExecutor,
+  opts: { readonly appendCompletedHistory?: boolean },
+): void {
+  const getCompletedResults = (executor as {
+    getCompletedResults?: () => Iterable<{
+      readonly toolCall: {
+        readonly id: string;
+        readonly name: string;
+        readonly arguments: string;
+      };
+      readonly result: {
+        readonly content: string;
+        readonly isError?: boolean;
+        readonly metadata?: Record<string, unknown>;
+      };
+    }>;
+  }).getCompletedResults;
+  if (typeof getCompletedResults !== "function") return;
+
+  for (const completed of getCompletedResults.call(executor)) {
+    const metadata = completed.result.metadata;
+    if (opts.appendCompletedHistory === true) {
+      appendCompletedExecutorResultHistory(state, completed);
+    }
+    state.completedToolResults.push({
+      callId: completed.toolCall.id,
+      toolName: completed.toolCall.name,
+      arguments: completed.toolCall.arguments,
+      content: completed.result.content,
+      isError: completed.result.isError === true,
+      ...(metadata !== undefined ? { metadata } : {}),
+    });
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: completed.toolCall.id,
+          result: completed.result.content,
+          isError: completed.result.isError === true,
+          ...(metadata !== undefined ? { metadata } : {}),
+        },
+      },
+    });
+  }
+}
+
+function appendCompletedExecutorResultHistory(
+  state: TurnState,
+  completed: {
+    readonly toolCall: LLMToolCall;
+    readonly result: { readonly content: string };
+  },
+): void {
+  const alreadyRecorded = state.messages.some(
+    (message) =>
+      message.role === "tool" &&
+      message.toolCallId === completed.toolCall.id,
+  );
+  if (alreadyRecorded) return;
+  appendMissingAssistantToolCalls(state, [completed.toolCall]);
+  state.toolResults.push({
+    uuid: crypto.randomUUID(),
+    role: "user",
+    toolCallId: completed.toolCall.id,
+    toolName: completed.toolCall.name,
+    content: completed.result.content,
+  });
+  state.messages.push({
+    role: "tool",
+    toolCallId: completed.toolCall.id,
+    content: completed.result.content,
+  });
+}
+
+function appendMissingAssistantToolCalls(
+  state: Pick<TurnState, "messages">,
+  toolCalls: readonly LLMToolCall[],
+): void {
+  const missing: LLMToolCall[] = [];
+  for (const toolCall of toolCalls) {
+    const alreadyPresent = state.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === toolCall.id) === true,
+    );
+    if (!alreadyPresent) {
+      missing.push({ ...toolCall });
+    }
+  }
+  if (missing.length === 0) return;
+  state.messages.push({
+    role: "assistant",
+    content: "",
+    toolCalls: missing,
+  });
+}
+
+function emitMaxOutputExecutorClosures(
+  session: Session,
+  state: TurnState,
+  executor: StreamingToolExecutor,
+  opts: { readonly appendCompletedHistory?: boolean },
+): void {
+  const getToolStates = (executor as {
+    getToolStates?: () => ReadonlyArray<{
+      readonly id: string;
+      readonly status: string;
+      readonly toolName: string;
+      readonly toolCall: {
+        readonly id: string;
+        readonly name: string;
+        readonly arguments: string;
+      };
+    }>;
+  }).getToolStates;
+  if (typeof getToolStates !== "function") return;
+
+  const completedIds = new Set<string>();
+  for (const result of state.completedToolResults) {
+    completedIds.add(result.callId);
+  }
+  for (const result of state.toolResults) {
+    if (
+      "toolCallId" in result &&
+      typeof result.toolCallId === "string" &&
+      result.toolCallId.length > 0
+    ) {
+      completedIds.add(result.toolCallId);
+    }
+  }
+  for (const message of state.messages) {
+    if (
+      message.role === "tool" &&
+      typeof message.toolCallId === "string" &&
+      message.toolCallId.length > 0
+    ) {
+      completedIds.add(message.toolCallId);
+    }
+  }
+
+  for (const tool of getToolStates.call(executor)) {
+    if (tool.status === "yielded" || completedIds.has(tool.id)) continue;
+    const result = {
+      ...buildTerminalToolResult({
+        toolCall: tool.toolCall,
+        cause: "aborted",
+        detail: "max_output_tokens recovery discarded streamed tool execution",
+      }),
+      metadata: { cause: "max_output_tokens" },
+    };
+    if (
+      opts.appendCompletedHistory === true &&
+      shouldAppendTerminalExecutorClosureHistory(session, tool)
+    ) {
+      appendTerminalExecutorClosureHistory(state, tool, result);
+    }
+    completedIds.add(tool.id);
+    state.completedToolResults.push({
+      callId: tool.id,
+      toolName: tool.toolName,
+      arguments: tool.toolCall.arguments ?? "",
+      content: result.content,
+      isError: true,
+      metadata: result.metadata,
+    });
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: tool.id,
+          result: result.content,
+          isError: true,
+          metadata: result.metadata,
+        },
+      },
+    });
+  }
+}
+
+function shouldAppendTerminalExecutorClosureHistory(
+  session: Session,
+  tool: { readonly toolName: string; readonly toolCall: LLMToolCall },
+): boolean {
+  const services = (session as Partial<Session> & {
+    readonly services?: {
+      readonly registry?: {
+        readonly tools?: ReadonlyArray<{
+          readonly name: string;
+          readonly isReadOnly?: boolean;
+          readonly metadata?: { readonly mutating?: boolean };
+          readonly requiresUserInteraction?: () => boolean;
+        }>;
+      };
+    };
+  }).services;
+  const registeredTool = services?.registry?.tools?.find(
+    (candidate) =>
+      candidate.name === tool.toolName || candidate.name === tool.toolCall.name,
+  );
+  if (registeredTool === undefined) return true;
+  try {
+    if (registeredTool.requiresUserInteraction?.() === true) return true;
+  } catch {
+    return true;
+  }
+  return !(
+    registeredTool.isReadOnly === true ||
+    registeredTool.metadata?.mutating === false
+  );
+}
+
+function appendTerminalExecutorClosureHistory(
+  state: TurnState,
+  tool: {
+    readonly id: string;
+    readonly toolName: string;
+    readonly toolCall: LLMToolCall;
+  },
+  result: { readonly content: string },
+): void {
+  const alreadyRecorded = state.messages.some(
+    (message) => message.role === "tool" && message.toolCallId === tool.id,
+  );
+  if (alreadyRecorded) return;
+  appendMissingAssistantToolCalls(state, [tool.toolCall]);
+  state.toolResults.push({
+    uuid: crypto.randomUUID(),
+    role: "user",
+    toolCallId: tool.id,
+    toolName: tool.toolName,
+    content: result.content,
+  });
+  state.messages.push({
+    role: "tool",
+    toolCallId: tool.id,
+    content: result.content,
+  });
 }
 
 function removeTruncatedAssistantForRetry(state: TurnState): void {
@@ -128,6 +380,9 @@ export function runMaxOutputTokensRecovery(
 
   // Step 2: continuation path — bump counter if under the cap.
   if (state.maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+    discardExecutorForMaxOutputTokens(session, state, {
+      appendCompletedHistory: true,
+    });
     const metaMessage: LLMMessage = {
       role: "user",
       content: RESUME_META_CONTENT,
@@ -135,7 +390,6 @@ export function runMaxOutputTokensRecovery(
     state.messages.push(metaMessage);
     state.maxOutputTokensRecoveryCount += 1;
     state.transition = { reason: "max_output_tokens_recovery" };
-    discardExecutorForMaxOutputTokens(session, state);
     return { kind: "continuation" };
   }
 

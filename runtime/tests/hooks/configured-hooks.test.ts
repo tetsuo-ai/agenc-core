@@ -1326,28 +1326,7 @@ describe("configured hooks runtime", () => {
     );
   });
 
-  test.each([
-    [
-      "permissionDecision allow",
-      { permissionDecision: "allow" },
-      "PreToolUse hook returned unsupported permissionDecision:allow",
-    ],
-    [
-      "permissionDecision ask",
-      { permissionDecision: "ask" },
-      "PreToolUse hook returned unsupported permissionDecision:ask",
-    ],
-    [
-      "updatedInput",
-      { updatedInput: { redacted: true } },
-      "PreToolUse hook returned unsupported updatedInput",
-    ],
-    [
-      "additionalContext",
-      { additionalContext: "context" },
-      "PreToolUse hook returned unsupported additionalContext",
-    ],
-  ])("records unsupported PreToolUse %s output", async (_name, output, error) => {
+  test("PreToolUse structured output rewrites input and adds context", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
       env: process.env,
@@ -1377,7 +1356,8 @@ describe("configured hooks runtime", () => {
               command: jsonStdoutCommand({
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse",
-                  ...output,
+                  updatedInput: { redacted: true },
+                  additionalContext: "context",
                 },
               }),
             },
@@ -1389,12 +1369,86 @@ describe("configured hooks runtime", () => {
     const decision = await target.preToolUseHooks[0]!({
       invocation: { callId: "c-pre" } as never,
       tool: { name: "Write" } as never,
-      args: {},
+      args: { original: true },
     });
 
-    expect(decision).toEqual({ kind: "continue" });
-    expect(runtime.latestDiagnostics()[0]?.error).toContain(error);
+    expect(decision).toEqual({
+      kind: "continue",
+      args: { redacted: true },
+      additionalContext: ["context"],
+    });
+    expect(
+      runtime.latestDiagnostics().map((diag) => diag.error).filter(Boolean),
+    ).toEqual([]);
   });
+
+  test.each(["allow", "ask"] as const)(
+    "PreToolUse permissionDecision %s becomes a hook permission result",
+    async (behavior) => {
+      const runtime = new ConfiguredHooksRuntime({
+        cwd: process.cwd(),
+        env: process.env,
+        agencHome: "/tmp/agenc-test",
+        // Existing behavioral tests assume a TRUSTED workspace (production
+        // establishes trust through the normal flow before hooks run). The new
+        // trust gate is exercised separately in the "trust gate" describe block.
+        isWorkspaceTrusted: () => true,
+        shellPath: process.env.SHELL ?? "/bin/sh",
+      });
+      const target: HookInstallTarget = {
+        preToolUseHooks: [],
+        postToolUseHooks: [],
+        failureToolUseHooks: [],
+        permissionDecisionHooks: [],
+        userPromptSubmitHooks: [],
+        stopHooks: [],
+        stopFailureHooks: [],
+      };
+      runtime.attachTarget(target);
+      runtime.load({
+        PreToolUse: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: jsonStdoutCommand({
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: behavior,
+                    permissionDecisionReason: "from policy",
+                    updatedInput: { redacted: behavior },
+                    additionalContext: "context",
+                  },
+                }),
+                statusMessage: "policy hook",
+              },
+            ],
+          },
+        ],
+      });
+
+      const decision = await target.preToolUseHooks[0]!({
+        invocation: { callId: "c-pre" } as never,
+        tool: { name: "Write" } as never,
+        args: { original: true },
+      });
+
+      expect(decision).toEqual({
+        kind: "continue",
+        args: { redacted: behavior },
+        hookPermissionResult: {
+          behavior,
+          message: "from policy",
+          updatedInput: { redacted: behavior },
+          hookName: "policy hook",
+        },
+        additionalContext: ["context"],
+      });
+      expect(
+        runtime.latestDiagnostics().map((diag) => diag.error).filter(Boolean),
+      ).toEqual([]);
+    },
+  );
 
   test("PreToolUse matcher aliases select apply_patch hooks", async () => {
     const runtime = new ConfiguredHooksRuntime({

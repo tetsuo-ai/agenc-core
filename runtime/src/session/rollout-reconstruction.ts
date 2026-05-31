@@ -93,6 +93,12 @@ export interface PreviousTurnSettings {
   readonly model: string;
   readonly realtimeActive?: boolean;
   readonly personality?: Personality;
+  readonly contextWindow?: number;
+  readonly modelInfo?: {
+    readonly contextWindow?: number;
+    readonly effectiveContextWindowPercent?: number;
+    readonly autoCompactTokenLimit?: number;
+  };
 }
 
 export interface RolloutReconstruction {
@@ -505,6 +511,27 @@ export function reconstructFromRollout(
               : {}),
             ...(item.payload.personality !== undefined
               ? { personality: item.payload.personality }
+              : {}),
+            ...(item.payload.rawModelContextWindow !== undefined ||
+            item.payload.modelContextWindow !== undefined
+              ? {
+                  contextWindow:
+                    item.payload.rawModelContextWindow ??
+                    item.payload.modelContextWindow,
+                  modelInfo: {
+                    contextWindow:
+                      item.payload.rawModelContextWindow ??
+                      item.payload.modelContextWindow,
+                    effectiveContextWindowPercent:
+                      item.payload.modelEffectiveContextWindowPercent ?? 100,
+                    ...(item.payload.autoCompactTokenLimit !== undefined
+                      ? {
+                          autoCompactTokenLimit:
+                            item.payload.autoCompactTokenLimit,
+                        }
+                      : {}),
+                  },
+                }
               : {}),
           };
           active.previousTurnSettings = next;

@@ -47,6 +47,7 @@ const BOUNDARY_PREFIXES = [
 
 export interface NormalizeMessagesForAPIOptions {
   readonly dropOrphanToolMessages?: boolean;
+  readonly skipCacheWrite?: boolean;
 }
 
 export function normalizeMessagesForAPI(
@@ -139,7 +140,11 @@ export function normalizeMessagesForAPI(
   // We mutate the final array in-place by replacing up to three
   // messages with copies that carry the tag. Providers that do not
   // support cache_control strip the tag silently.
-  return applyCacheControlBreakpoints(final);
+  return applyCacheControlBreakpoints(final, {
+    ...(options?.skipCacheWrite !== undefined
+      ? { skipCacheWrite: options.skipCacheWrite }
+      : {}),
+  });
 }
 
 /**
@@ -157,10 +162,15 @@ export function normalizeMessagesForAPI(
  */
 export function applyCacheControlBreakpoints(
   messages: readonly LLMMessage[],
+  options?: { readonly skipCacheWrite?: boolean },
 ): readonly LLMMessage[] {
   if (messages.length === 0) return messages;
   const result: LLMMessage[] = messages.slice();
-  const tagIndexes = selectCacheBreakpointIndexes(result);
+  const tagIndexes = selectCacheBreakpointIndexes(result, {
+    ...(options?.skipCacheWrite !== undefined
+      ? { skipCacheWrite: options.skipCacheWrite }
+      : {}),
+  });
   if (tagIndexes.length === 0) return result;
   for (const idx of tagIndexes) {
     const msg = result[idx];
@@ -186,6 +196,7 @@ export function applyCacheControlBreakpoints(
  */
 function selectCacheBreakpointIndexes(
   messages: readonly LLMMessage[],
+  options?: { readonly skipCacheWrite?: boolean },
 ): readonly number[] {
   let lastSystem = -1;
   let lastUser = -1;
@@ -200,6 +211,11 @@ function selectCacheBreakpointIndexes(
   }
   const picked = new Set<number>();
   if (lastSystem >= 0) picked.add(lastSystem);
+  if (options?.skipCacheWrite === true) {
+    const shifted = messages.length - 2;
+    if (shifted >= 0 && shifted !== lastSystem) picked.add(shifted);
+    return [...picked];
+  }
   if (lastUser >= 0) picked.add(lastUser);
   if (lastTool >= 0) picked.add(lastTool);
   return [...picked];

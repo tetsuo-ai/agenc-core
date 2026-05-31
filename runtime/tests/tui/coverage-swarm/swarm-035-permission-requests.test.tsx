@@ -58,7 +58,7 @@ function createStreams(): {
 }
 
 async function sleep(ms = 10): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, ms));
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function waitFor(assertion: () => void): Promise<void> {
@@ -158,7 +158,9 @@ describe("permission request swarm coverage", () => {
     const session = createSession(previousResolver, previousBridge);
     const setModel = vi.fn<(next: string) => void>();
     const setExpandedView = vi.fn<(next: "none" | "tasks") => void>();
-    const setAppState = vi.fn<(updater: (prev: AppState) => AppState) => void>();
+    const setAppState =
+      vi.fn<(updater: (prev: AppState) => AppState) => void>();
+    const getAppState = vi.fn<() => AppState>(() => ({}) as AppState);
     let latestRequests: readonly PendingRequest[] = [];
 
     function Harness() {
@@ -167,6 +169,7 @@ describe("permission request swarm coverage", () => {
         setModel,
         setExpandedView,
         setAppState,
+        getAppState,
       );
 
       useEffect(() => {
@@ -192,7 +195,7 @@ describe("permission request swarm coverage", () => {
 
       session.appStateBridge?.setModel?.("next-model");
       session.appStateBridge?.setExpandedView?.("tasks");
-      session.appStateBridge?.setAppState?.(state => state);
+      session.appStateBridge?.setAppState?.((state) => state);
       expect(setModel).toHaveBeenCalledWith("next-model");
       expect(setExpandedView).toHaveBeenCalledWith("tasks");
       expect(setAppState).toHaveBeenCalledTimes(1);
@@ -220,7 +223,7 @@ describe("permission request swarm coverage", () => {
       const arrayPayloadDecision = resolver!.request(
         createCtx("array-json", "Write", {
           kind: "function",
-          arguments: "[\"not\", \"an\", \"object\"]",
+          arguments: '["not", "an", "object"]',
         }),
       );
       const blankMcpDecision = resolver!.request(
@@ -251,9 +254,11 @@ describe("permission request swarm coverage", () => {
         expect(latestRequests).toHaveLength(5);
       });
       await expect(preAbortedDecision).resolves.toEqual(ABORT);
-      expect(latestRequests.map(request => request.id)).not.toContain("pre-aborted-shell");
+      expect(latestRequests.map((request) => request.id)).not.toContain(
+        "pre-aborted-shell",
+      );
       expect(
-        latestRequests.map(request => ({
+        latestRequests.map((request) => ({
           id: request.id,
           input: request.input,
           description: request.description,
@@ -289,7 +294,9 @@ describe("permission request swarm coverage", () => {
       abortController.abort();
       await expect(badShellDecision).resolves.toEqual(ABORT);
       await waitFor(() => {
-        expect(latestRequests.map(request => request.id)).not.toContain("bad-shell");
+        expect(latestRequests.map((request) => request.id)).not.toContain(
+          "bad-shell",
+        );
       });
 
       const confirmQueue = buildToolUseConfirmQueue(latestRequests, [
@@ -299,13 +306,15 @@ describe("permission request swarm coverage", () => {
         { name: "CustomTool" },
       ]) as readonly ProjectedConfirm[];
       const confirms = new Map(
-        confirmQueue.map(confirm => [confirm.toolUseID, confirm]),
+        confirmQueue.map((confirm) => [confirm.toolUseID, confirm]),
       );
 
       confirms.get("missing-payload")!.onAllow({}, []);
       confirms.get("array-json")!.onReject("No thanks");
       confirms.get("blank-mcp")!.onAbort();
-      confirms.get("custom-text")!.onAllow(confirms.get("custom-text")!.input, []);
+      confirms
+        .get("custom-text")!
+        .onAllow(confirms.get("custom-text")!.input, []);
 
       await expect(missingPayloadDecision).resolves.toEqual(APPROVED);
       await expect(arrayPayloadDecision).resolves.toEqual(DENIED);
@@ -329,18 +338,24 @@ describe("permission request swarm coverage", () => {
     clearAskUserQuestionResponsesForTest();
 
     const deniedDecisions: ReviewDecision[] = [];
-    const missingToolRequest = createPendingRequest("MissingTool", {}, decision => {
-      deniedDecisions.push(decision);
-    });
+    const missingToolRequest = createPendingRequest(
+      "MissingTool",
+      {},
+      (decision) => {
+        deniedDecisions.push(decision);
+      },
+    );
 
-    expect(buildToolUseConfirm(missingToolRequest, [{ name: "OtherTool" }])).toBeNull();
+    expect(
+      buildToolUseConfirm(missingToolRequest, [{ name: "OtherTool" }]),
+    ).toBeNull();
     expect(deniedDecisions).toEqual([DENIED]);
 
     const invalidAskDecisions: ReviewDecision[] = [];
     const invalidAskRequest = createPendingRequest(
       ASK_USER_QUESTION_TOOL_NAME,
       {},
-      decision => {
+      (decision) => {
         invalidAskDecisions.push(decision);
       },
     );
@@ -355,7 +370,7 @@ describe("permission request swarm coverage", () => {
     const askRequest = createPendingRequest(
       ASK_USER_QUESTION_TOOL_NAME,
       askInput,
-      decision => {
+      (decision) => {
         askDecisions.push(decision);
       },
     );
@@ -364,7 +379,9 @@ describe("permission request swarm coverage", () => {
     ]) as ProjectedConfirm;
 
     await askConfirm.recheckPermission();
-    askConfirm.onReject("The user wants to clarify these questions before answering");
+    askConfirm.onReject(
+      "The user wants to clarify these questions before answering",
+    );
     expect(askDecisions).toEqual([APPROVED]);
 
     const askTool = createAskUserQuestionTool();

@@ -7,7 +7,7 @@ import type { KeybindingContextName } from './types.js'
  * Use this in non-React contexts (commands, services, etc.).
  *
  * This lives in its own module (not useShortcutDisplay.ts) so that
- * non-React callers like query/stopHooks.ts don't pull React into their
+ * non-React callers like command services don't pull React into their
  * module graph via the sibling hook.
  *
  * @param action - The action name (e.g., 'app:toggleTranscript')

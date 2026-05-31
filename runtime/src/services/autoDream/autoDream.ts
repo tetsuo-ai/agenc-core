@@ -110,8 +110,7 @@ let runner:
   | null = null
 
 /**
- * Call once at startup (from backgroundHousekeeping alongside
- * initExtractMemories), or per-test in beforeEach for a fresh closure.
+ * Lazily initializes the auto-dream runner on the first terminal hook.
  */
 function initAutoDream(): void {
   let lastSessionScanAt = 0
@@ -294,12 +293,13 @@ function makeDreamProgressWatcher(
   }
 }
 /**
- * Entry point from stopHooks. No-op until initAutoDream() has been called.
+ * Entry point from stopHooks. Lazily initializes the runner on first use.
  * Per-turn cost when enabled: one GB cache read + one stat.
  */
 export async function executeAutoDream(
   context: REPLHookContext,
   appendSystemMessage?: AppendSystemMessageFn,
 ): Promise<void> {
+  if (runner === null) initAutoDream()
   await runner?.(context, appendSystemMessage)
 }

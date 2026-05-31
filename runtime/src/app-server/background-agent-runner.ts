@@ -64,6 +64,7 @@ import type {
   McpServerMutationResult,
   Session,
 } from "../session/session.js";
+import type { Event } from "../session/event-log.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
   respondToSessionElicitation,
@@ -646,27 +647,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // user_message event directly. Turn 1 reaches the session via
         // `managedThread.submit({type: "user_input"})` → runTurn, but
         // the daemon turn-driver hooks force `displayUserMessage: null`
-        // on runTurn to prevent dedup-incompatible duplicate emits, and
-        // the eventLog bridge (`daemonEventFromUnboundSessionEvent`)
-        // does not handle `user_message`. Without this explicit emit the
-        // first user prompt is invisible in the transcript.
+        // on runTurn to prevent dedup-incompatible duplicate emits.
+        // Without this explicit emit the first user prompt is invisible
+        // in the transcript.
         //
         // The event is buffered when `sessionBinding === undefined`
         // (the TUI's `agent.attach` has not yet completed) and replayed
         // when the binding attaches, so it always reaches the
         // subscriber.
-        if (params.initialContent !== undefined) {
-          const displayText = messageContentDisplayText(params.initialContent);
-          if (displayText.length > 0) {
-            await this.#emitOrBufferEvent(active, {
-              id: `user-initial-${managedThread.threadId}`,
-              type: "user_message",
-              payload: {
-                message: params.initialContent,
-                displayText,
-              },
-            });
-          }
+        const transcriptContent = params.initialContent ?? params.objective;
+        const displayText = messageContentDisplayText(transcriptContent);
+        if (displayText.length > 0) {
+          await this.#emitPersistedUserMessage(active, {
+            id: `user-initial-${managedThread.threadId}`,
+            type: "user_message",
+            payload: {
+              message: transcriptContent,
+              displayText,
+            },
+          });
         }
         void managedThread
           .submit({ type: "user_input", input: firstInput })
@@ -974,7 +973,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         params.displayUserMessage ?? messageContentDisplayText(params.content);
       // The TUI must see the submitted prompt before assistant deltas;
       // sendInput can synchronously stream and complete a whole turn.
-      await this.#emitOrBufferEvent(active, {
+      await this.#emitPersistedUserMessage(active, {
         id: params.messageId,
         type: "user_message",
         messageId: params.messageId,
@@ -983,6 +982,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         payload: {
           message: params.originalContent,
           displayText,
+          messageId: params.messageId,
+          streamId: params.streamId,
+          acceptedAt: params.acceptedAt,
         },
       });
     }
@@ -1251,6 +1253,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     void active.thread.submit({ type: "interrupt", reason }).catch(() => {
       /* interrupt delivery surfaces via session events */
     });
+    for (const [childThreadId] of active.control.openThreadSpawnChildren(
+      active.thread.threadId,
+    )) {
+      active.control.interrupt(childThreadId, reason);
+    }
     active.lastActiveAt = this.#now();
     return true;
   }
@@ -1482,10 +1489,38 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
       return;
     }
+    this.#applyProgressStatus(active, progress);
     await this.#emitOrBufferEvent(
       active,
       withAgentBudgetUsage(active, event, this.#budgetNowMs()),
     );
+  }
+
+  #applyProgressStatus(
+    active: ActiveBackgroundAgent,
+    progress: RunAgentProgressEvent,
+  ): void {
+    if (active.budgetHalt !== undefined) return;
+    let status: DaemonAgentStatus | null = null;
+    switch (progress.kind) {
+      case "run_error":
+        status = "error";
+        break;
+      case "run_interrupted":
+        status = "stopped";
+        break;
+      case "turn_interrupted":
+        status = "idle";
+        break;
+      case "run_complete":
+      case "turn_complete":
+        status = "idle";
+        break;
+      default:
+        return;
+    }
+    active.status = status;
+    active.lastActiveAt = this.#now();
   }
 
   #installAgentBudget(
@@ -1688,6 +1723,32 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (raised) throw emitError;
   }
 
+  async #emitPersistedUserMessage(
+    active: ActiveBackgroundAgent,
+    event: BackgroundAgentDaemonEvent,
+  ): Promise<void> {
+    const sessionEvent = sessionUserMessageEventFromDaemonEvent(event);
+    if (sessionEvent === null) {
+      await this.#emitOrBufferEvent(active, event);
+      return;
+    }
+
+    const previousDispatch = active.dispatchChain;
+    const session = active.bootstrap.session as {
+      emit?: (event: Event) => void;
+    };
+    if (typeof session.emit !== "function") {
+      await this.#emitOrBufferEvent(active, event);
+      return;
+    }
+    session.emit(sessionEvent);
+    if (active.dispatchChain === previousDispatch) {
+      await this.#emitOrBufferEvent(active, event);
+      return;
+    }
+    await active.dispatchChain;
+  }
+
   async #emitDaemonEvent(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
@@ -1706,6 +1767,45 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ),
     );
   }
+}
+
+function sessionUserMessageEventFromDaemonEvent(
+  event: BackgroundAgentDaemonEvent,
+): Event | null {
+  if (
+    event.type !== "user_message" ||
+    event.payload === undefined ||
+    event.payload.message === undefined
+  ) {
+    return null;
+  }
+  return {
+    id: event.id,
+    msg: {
+      type: "user_message",
+      payload: {
+        message: event.payload.message as string | readonly LLMContentPart[],
+        ...(typeof event.payload.displayText === "string"
+          ? { displayText: event.payload.displayText }
+          : {}),
+        ...(Array.isArray(event.payload.images)
+          ? { images: stringArray(event.payload.images) }
+          : {}),
+        ...(typeof event.payload.queuedCommandUuid === "string"
+          ? { queuedCommandUuid: event.payload.queuedCommandUuid }
+          : {}),
+        ...(typeof event.messageId === "string"
+          ? { messageId: event.messageId }
+          : {}),
+        ...(typeof event.streamId === "string"
+          ? { streamId: event.streamId }
+          : {}),
+        ...(typeof event.acceptedAt === "string"
+          ? { acceptedAt: event.acceptedAt }
+          : {}),
+      },
+    },
+  };
 }
 
 function normalizeAgentBudget(
@@ -2153,6 +2253,7 @@ function notificationFromDaemonEvent(
         ...(agentRunStatusFromPayload(payload.runStatus) !== undefined
           ? { runStatus: agentRunStatusFromPayload(payload.runStatus) }
           : {}),
+        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
         ...(typeof payload.message === "string"
           ? { message: payload.message }
           : {}),
@@ -2168,6 +2269,7 @@ function notificationFromDaemonEvent(
   if (
     (event.type === "turn_started" ||
       event.type === "turn_complete" ||
+      event.type === "turn_aborted" ||
       event.type === "error") &&
     isJsonObject(payload)
   ) {
@@ -2184,6 +2286,8 @@ function notificationFromDaemonEvent(
           : {}),
         ...(typeof payload.message === "string"
           ? { message: payload.message }
+          : typeof payload.reason === "string"
+            ? { message: payload.reason }
           : typeof payload.lastAgentMessage === "string"
             ? { message: payload.lastAgentMessage }
             : {}),
@@ -2241,6 +2345,8 @@ function agentStatusFromEventType(type: string): DaemonAgentStatus {
       return "running";
     case "error":
       return "error";
+    case "turn_aborted":
+      return "stopped";
     case "turn_complete":
     default:
       return "idle";
@@ -2253,6 +2359,8 @@ function agentRunStatusFromEventType(type: string): AgentRunStatus {
       return "running";
     case "error":
       return "errored";
+    case "turn_aborted":
+      return "stopped";
     case "turn_complete":
     default:
       return "completed";
@@ -2742,6 +2850,7 @@ function toolRequestInputFromPayload(
  *
  *   - elicitation/user-input requests (`request_user_input`,
  *     `mcp_elicitation_request`, `mcp_elicitation_complete`)
+ *   - durable user transcript messages emitted by runtime turns
  *   - collab-agent lifecycle events emitted by `spawn_agent`,
  *     `wait_agent`, `send_message`, and `close_agent`
  *   - streaming tool progress chunks (`tool_progress`)
@@ -2833,6 +2942,37 @@ export function daemonEventFromUnboundSessionEvent(event: {
       payload: {
         serverName: payload.serverName,
         elicitationId: payload.elicitationId,
+      },
+    };
+  }
+  if (
+    type === "user_message" &&
+    isJsonObject(payload) &&
+    payload.message !== undefined
+  ) {
+    const messageId =
+      typeof payload.messageId === "string" ? payload.messageId : undefined;
+    const streamId =
+      typeof payload.streamId === "string" ? payload.streamId : undefined;
+    const acceptedAt =
+      typeof payload.acceptedAt === "string" ? payload.acceptedAt : undefined;
+    return {
+      id,
+      type,
+      ...(messageId !== undefined ? { messageId } : {}),
+      ...(streamId !== undefined ? { streamId } : {}),
+      ...(acceptedAt !== undefined ? { acceptedAt } : {}),
+      payload: {
+        message: payload.message,
+        ...(typeof payload.displayText === "string"
+          ? { displayText: payload.displayText }
+          : {}),
+        ...(Array.isArray(payload.images)
+          ? { images: stringArray(payload.images) }
+          : {}),
+        ...(typeof payload.queuedCommandUuid === "string"
+          ? { queuedCommandUuid: payload.queuedCommandUuid }
+          : {}),
       },
     };
   }
@@ -2996,6 +3136,8 @@ function phaseEventToProgressEvent(
       return null;
     case "history_cleared":
       return null;
+    case "queued_command":
+      return null;
     case "assistant_text":
       return {
         kind: "message",
@@ -3021,7 +3163,11 @@ function phaseEventToProgressEvent(
         event.usage?.totalTokens ?? 0
       }`;
       if (event.stopReason === "cancelled") {
-        return { kind: "run_interrupted", reason: "cancelled" };
+        return {
+          kind: "turn_interrupted",
+          reason: "cancelled",
+          turnId,
+        };
       }
       if (event.stopReason === "error") {
         return {
@@ -3029,9 +3175,15 @@ function phaseEventToProgressEvent(
           error: event.error?.message ?? "turn errored",
         };
       }
-      // "completed" | "max_turns" | "empty_response" — a per-turn
-      // completion. Emit turn_complete (NOT run_complete — the session
-      // continues across turns; run_complete would trigger cleanup).
+      if (event.stopReason === "max_turns") {
+        return {
+          kind: "run_error",
+          error: "Agent exceeded maxTurns",
+        };
+      }
+      // "completed" | "empty_response" — a per-turn completion. Emit
+      // turn_complete (NOT run_complete — the session continues across
+      // turns; run_complete would trigger cleanup).
       return {
         kind: "turn_complete",
         turnId,
@@ -3047,7 +3199,6 @@ function awaitTerminalStatus(thread: ManagedThread): Promise<void> {
       if (
         status.status === "completed" ||
         status.status === "errored" ||
-        status.status === "interrupted" ||
         status.status === "shutdown" ||
         status.status === "not_found"
       ) {
@@ -3064,9 +3215,10 @@ function mapThreadStatus(status: ThreadAgentStatus): DaemonAgentStatus {
     case "not_found":
     case "shutdown":
       return "stopped";
+    case "interrupted":
+      return "idle";
     case "errored":
       return "error";
-    case "interrupted":
     case "pending_init":
     case "running":
       return "running";
@@ -3114,11 +3266,13 @@ function eventFromThreadStatus(
       };
     case "interrupted":
       return {
-        id: status.turnId,
-        type: "turn_aborted",
+        id: `interrupted-${status.turnId}`,
+        type: "agent_status",
         payload: {
+          status: "idle",
+          runStatus: "completed",
           turnId: status.turnId,
-          reason: status.reason,
+          message: status.reason,
         },
       };
     case "shutdown":
@@ -3231,6 +3385,17 @@ function eventFromProgress(
         payload: {
           status: "stopped",
           runStatus: "stopped",
+          message: progress.reason,
+        },
+      };
+    case "turn_interrupted":
+      return {
+        id: `turn-interrupted-${agentId}-${progress.turnId}`,
+        type: "agent_status",
+        payload: {
+          status: "idle",
+          runStatus: "completed",
+          turnId: progress.turnId,
           message: progress.reason,
         },
       };

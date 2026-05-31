@@ -532,8 +532,17 @@ const TRANSCRIPT_BOOT_EVENT_TYPES = new Set<string>([
   "turn_complete",
   "turn_aborted",
   "user_message",
+  "token_count",
   "agent_message",
   "agent_message_delta",
+  "agent_thinking",
+  "assistant_thinking_block_start",
+  "assistant_thinking_delta",
+  "assistant_thinking_block_stop",
+  "tool_input_block_start",
+  "tool_input_delta",
+  "mcp_tool_call_begin",
+  "mcp_tool_call_end",
   "tool_call_started",
   "tool_call_completed",
   "tool_progress",
@@ -740,6 +749,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
       allowlist: [],
       denylist: [],
       allowManagedDomainsOnly: false,
+      enabled: sandbox === "danger_full_access",
     },
     windowsSandboxLevel: "none",
     ...(params.provider
@@ -1369,6 +1379,7 @@ export async function bootstrapLocalRuntimeSession(
 
         try {
           const existingItems = rolloutStore.readAll();
+          s.eventLog.seedLastSeq(maxRolloutEventSeq(existingItems));
           if (existingItems.length > 0) {
             const indexSnapshot = readIndexSnapshot(
               join(
@@ -1607,4 +1618,16 @@ export async function bootstrapLocalRuntimeSession(
     }
     throw err;
   }
+}
+
+function maxRolloutEventSeq(items: readonly RolloutItem[]): number {
+  let maxSeq = 0;
+  for (const item of items) {
+    if (item.type !== "event_msg") continue;
+    const seq = (item.payload as { readonly seq?: unknown }).seq;
+    if (typeof seq === "number" && Number.isSafeInteger(seq) && seq > maxSeq) {
+      maxSeq = seq;
+    }
+  }
+  return maxSeq;
 }

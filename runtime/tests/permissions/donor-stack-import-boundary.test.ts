@@ -33,8 +33,6 @@ const BASELINE: readonly string[] = [
   "services/api/anthropic.ts",
   "services/api/logging.ts",
   "services/api/promptCacheBreakDetection.ts",
-  "services/tools/toolExecution.ts",
-  "services/tools/toolHooks.ts",
   "skills/bundledSkills.ts",
   "tasks/InProcessTeammateTask/types.ts",
   "tools/AgentTool/agentToolUtils.ts",
@@ -74,7 +72,12 @@ const BASELINE: readonly string[] = [
   "types/permissions.ts",
 ];
 
-const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "src");
+const SRC_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "src",
+);
 
 function currentDonorImporters(): string[] {
   // `git grep` is fast and respects the working tree; fall back to empty on

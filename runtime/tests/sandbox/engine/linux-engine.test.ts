@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   SandboxManager,
+  SandboxTransformError,
   compatibilitySandboxPolicyForPermissionProfile,
   createLinuxSandboxCommandArgsForPermissionProfile,
   restrictedFileSystemPolicy,
@@ -87,6 +88,35 @@ describe("Linux sandbox engine", () => {
         platform: "linux",
       }),
     ).toBe("none");
+  });
+
+  it("fails closed for the unimplemented Windows sandbox transform", () => {
+    const manager = new SandboxManager();
+    const act = () =>
+      manager.transform({
+        command: {
+          program: "cmd.exe",
+          args: ["/c", "echo ok"],
+          cwd: "C:\\repo",
+          env: {},
+        },
+        permissions: {
+          fileSystem: restrictedFileSystemPolicy([
+            { path: { kind: "path", path: "C:\\repo" }, access: "write" },
+          ]),
+          network: "disabled",
+        },
+        sandbox: "windows_restricted_token",
+        enforceManagedNetwork: false,
+        sandboxPolicyCwd: "C:\\repo",
+        useLegacyLandlock: false,
+        windowsSandboxLevel: "low",
+        windowsSandboxPrivateDesktop: false,
+        platform: "win32",
+      });
+
+    expect(act).toThrow(SandboxTransformError);
+    expect(act).toThrow(/refusing to run unsandboxed/);
   });
 
   it("wraps Linux commands with effective additional permissions", () => {

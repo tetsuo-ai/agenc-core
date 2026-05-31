@@ -1,8 +1,10 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   StreamingToolExecutor,
   type StreamingToolUpdate,
 } from "./streaming-executor.js";
+import { routerFromRegistry } from "./router.js";
+import { EventLog } from "../session/event-log.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { Tool } from "./types.js";
@@ -106,15 +108,75 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       makeCall("read1", "FileRead"),
     );
     exec.close();
-    const results: string[] = [];
+    const results: Array<{
+      readonly id: string;
+      readonly status: string;
+      readonly content: string;
+    }> = [];
     for await (const r of exec.getRemainingResults()) {
-      results.push(`${r.toolCall.id}:${r.status}`);
+      results.push({
+        id: r.toolCall.id,
+        status: r.status,
+        content: String(r.result.content),
+      });
     }
     expect(bashErrored).toBe(1);
-    expect(results[0]).toBe("bash1:completed");
+    expect(results[0]).toMatchObject({ id: "bash1", status: "completed" });
     // Sibling read gets a synthetic error after bash failed.
-    const read = results.find((r) => r.startsWith("read1"));
+    const read = results.find((r) => r.id === "read1");
     expect(read).toBeDefined();
+    expect(read?.status).toBe("synthetic_error");
+    expect(read?.content).toContain(
+      "sibling tool errored; this tool was cancelled",
+    );
+    expect(read?.content).not.toContain("Streaming fallback occurred");
+  });
+
+  test("exec_command error cascades sibling-abort", async () => {
+    const dispatched: string[] = [];
+    const siblingReasons: string[] = [];
+    const exec = new StreamingToolExecutor({
+      ...mockGuardedDispatch(async (call) => {
+        dispatched.push(call.id);
+        if (call.name === "exec_command") {
+          return { content: "shell failed", isError: true };
+        }
+        return { content: `ran ${call.name}` };
+      }),
+      onSiblingAbort: (reason) => {
+        siblingReasons.push(reason);
+      },
+    });
+    exec.setConcurrencyClassFor("exec_command", EXCLUSIVE);
+    exec.setConcurrencyClassFor("Write", EXCLUSIVE);
+    exec.addTool(
+      makeBlock("shell1", "exec_command"),
+      makeCall("shell1", "exec_command"),
+    );
+    exec.addTool(makeBlock("write1", "Write"), makeCall("write1", "Write"));
+    exec.close();
+
+    const results: Array<{
+      readonly id: string;
+      readonly status: string;
+      readonly content: string;
+    }> = [];
+    for await (const r of exec.getRemainingResults()) {
+      results.push({
+        id: r.toolCall.id,
+        status: r.status,
+        content: String(r.result.content),
+      });
+    }
+
+    expect(dispatched).toEqual(["shell1"]);
+    expect(siblingReasons).toEqual(["bash_error:exec_command"]);
+    const write = results.find((r) => r.id === "write1");
+    expect(write).toBeDefined();
+    expect(write?.status).toBe("synthetic_error");
+    expect(write?.content).toContain(
+      "sibling tool errored; this tool was cancelled",
+    );
   });
 
   test("I-41 re-entrance guard: second discard is no-op", () => {
@@ -180,6 +242,151 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     const async_: unknown[] = [];
     for await (const r of exec.getRemainingResults()) async_.push(r);
     expect(async_).toEqual([]);
+  });
+
+  test("discard aborts in-flight child signals without bubbling to parent", async () => {
+    let started!: () => void;
+    let aborted!: (reason: string) => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const abortedPromise = new Promise<string>((resolve) => {
+      aborted = resolve;
+    });
+    const parentAbort = new AbortController();
+    const writeTool = testTool({ name: "Write", concurrencyClass: EXCLUSIVE });
+    const exec = new StreamingToolExecutor({
+      registry: mockRegistry(async () => ({ content: "unused" }), [writeTool]),
+      parentAbortController: parentAbort,
+      runToolUseFn: async (_call, signal) => {
+        started();
+        return await new Promise<ToolDispatchResult>((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted(String(signal.reason ?? ""));
+              resolve({ content: "aborted", isError: true });
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+
+    exec.addTool(makeBlock("w1", "Write"), makeCall("w1", "Write"));
+    exec.dispatchPending();
+    await startedPromise;
+
+    exec.discard("streaming_fallback");
+
+    const reason = await Promise.race([
+      abortedPromise,
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("not-aborted"), 50),
+      ),
+    ]);
+    expect(reason).toBe("streaming_fallback");
+    expect(parentAbort.signal.aborted).toBe(false);
+  });
+
+  test("discarded Bash abort does not emit sibling-abort warnings", async () => {
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const siblingReasons: string[] = [];
+    const bashTool = testTool({
+      name: "system.bash",
+      concurrencyClass: EXCLUSIVE,
+    });
+    const exec = new StreamingToolExecutor({
+      registry: mockRegistry(async () => ({ content: "unused" }), [bashTool]),
+      runToolUseFn: async (_call, signal) => {
+        started();
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        return { content: "aborted bash", isError: true };
+      },
+      onSiblingAbort: (reason) => {
+        siblingReasons.push(reason);
+      },
+    });
+
+    exec.addTool(
+      makeBlock("bash1", "system.bash"),
+      makeCall("bash1", "system.bash"),
+    );
+    exec.dispatchPending();
+    await startedPromise;
+
+    exec.discard("streaming_fallback");
+
+    for (
+      let tick = 0;
+      exec.getToolStates()[0]?.status === "executing" && tick < 10;
+      tick += 1
+    ) {
+      await Promise.resolve();
+    }
+    expect(exec.getToolStates()[0]?.status).toBe("completed");
+    expect(siblingReasons).toEqual([]);
+  });
+
+  test("live dispatch accepts model tool aliases before unknown-tool synthesis", async () => {
+    const execute = vi.fn(async (args: Record<string, unknown>) => ({
+      content: `read ${String(args.file_path)}`,
+    }));
+    const readTool = testTool({
+      name: "FileRead",
+      concurrencyClass: SHARED_READ,
+      execute,
+    });
+    const registry = mockRegistry(
+      async () => ({ content: "registry dispatch should not run", isError: true }),
+      [readTool],
+    );
+    const exec = new StreamingToolExecutor({
+      registry,
+      liveToolDispatch: {
+        router: routerFromRegistry(registry),
+        options: {
+          session: {
+            eventLog: new EventLog(),
+            services: {},
+          } as never,
+          turn: { subId: "turn-read-alias" } as never,
+          tracker: {
+            appendFileDiff: () => {},
+            snapshot: () => [],
+            clear: () => {},
+          },
+          approvalPolicy: "never",
+          sandboxMode: "workspace_write",
+        },
+      },
+    });
+    const call: LLMToolCall = {
+      id: "read-alias",
+      name: "Read",
+      arguments: JSON.stringify({ file_path: "main.c" }),
+    };
+
+    exec.addTool(makeBlock(call.id, call.name), call);
+    exec.close();
+    const results = [];
+    for await (const result of exec.getRemainingResults()) {
+      results.push(result);
+    }
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ file_path: "main.c" }),
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]!.result.content).toBe("read main.c");
+    expect(results[0]!.result.content).not.toContain("No such tool available");
   });
 
   test("external abort reasons are preserved in synthetic terminal results", async () => {

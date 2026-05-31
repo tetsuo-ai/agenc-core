@@ -1453,6 +1453,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   });
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
+  const getBridgeAppState = useCallback(() => appStateStore.getState(), [appStateStore]);
   useEffect(() => {
     const subscribe = props.session.subscribeToEvents;
     if (typeof subscribe !== "function") return;
@@ -1523,7 +1524,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       expandedView: next_1
     }));
   }, [setAppState]);
-  const permissionRequests = usePermissionRequests(props.session, setModel, setExpandedView, setAppState);
+  const permissionRequests = usePermissionRequests(props.session, setModel, setExpandedView, setAppState, getBridgeAppState);
   const elicitation = useTuiElicitation(props.session);
   const toolNames = useMemo(() => {
     const names = new Set(transcript.toolNames);

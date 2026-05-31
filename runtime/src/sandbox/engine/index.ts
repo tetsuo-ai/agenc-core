@@ -143,6 +143,7 @@ export class SandboxTransformError extends Error {
     readonly code:
       | "missing_linux_sandbox_executable"
       | "wsl1_unsupported_for_bubblewrap"
+      | "windows_restricted_token_unimplemented"
       | "seatbelt_unavailable",
     message: string,
   ) {

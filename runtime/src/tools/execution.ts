@@ -164,6 +164,7 @@ const RICH_OUTPUT_CONTENT_ITEMS = new WeakMap<
   readonly FunctionCallOutputContentItem[]
 >();
 const STRUCTURED_CODE_MODE_RESULTS = new WeakMap<ToolOutput, unknown>();
+const PREVENT_CONTINUATION_OUTPUTS = new WeakSet<ToolOutput>();
 
 /** Appended marker when a result is truncated. */
 const TRUNCATION_MARKER_TEMPLATE =
@@ -918,6 +919,7 @@ export interface RunToolUseOptions {
   readonly tool: Tool & Partial<ToolExecutionOverrides>;
   readonly invocation: ToolInvocation;
   readonly preHooks?: ReadonlyArray<PreToolUseHook>;
+  readonly prePreventContinuation?: { readonly stopReason?: string };
   readonly postHooks?: ReadonlyArray<PostToolUseHook>;
   readonly failureHooks?: ReadonlyArray<PostToolUseFailureHook>;
   readonly onHookTiming?: (record: HookTimingRecord) => void;
@@ -1093,7 +1095,8 @@ export async function runToolUse(
   // Step 3: PreToolUse hooks — BEFORE the permission gate.
   let args: Record<string, unknown> = parsedArgs;
   let hookPermissionResult: HookPermissionResult | undefined;
-  let prePreventContinuation: { readonly stopReason?: string } | undefined;
+  let prePreventContinuation = opts.prePreventContinuation;
+  let shouldPreventContinuation = prePreventContinuation !== undefined;
   const preHooks = opts.preHooks ?? [];
   if (preHooks.length > 0) {
     const preDecision = await runPreToolUseHooks(
@@ -1122,8 +1125,12 @@ export async function runToolUse(
         `PreToolUse:${tool.name} context: ${c}`,
       );
     }
+    if (preDecision.additionalContexts.length > 0) {
+      opts.onHookAdditionalContext?.(preDecision.additionalContexts);
+    }
     if (preDecision.preventContinuation) {
       prePreventContinuation = preDecision.preventContinuation;
+      shouldPreventContinuation = true;
     }
 
     if (preDecision.kind === "deny") {
@@ -1164,11 +1171,13 @@ export async function runToolUse(
         "hook_stopped_continuation",
         `PreToolUse:${tool.name} stopped execution${preDecision.stopReason ? `: ${preDecision.stopReason}` : ""}`,
       );
-      return errorOutput({
+      const output = errorOutput({
         invocation,
         content: CANCEL_MESSAGE,
         elapsedMs: performance.now() - startedAt,
       });
+      PREVENT_CONTINUATION_OUTPUTS.add(output);
+      return output;
     }
   }
 
@@ -1761,6 +1770,7 @@ export async function runToolUse(
       );
     }
     if (postDecision.kind === "stop") {
+      shouldPreventContinuation = true;
       emitHookAttachment(
         opts.eventLog,
         subId,
@@ -1768,6 +1778,7 @@ export async function runToolUse(
         `PostToolUse:${tool.name} stopped execution${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
       );
     } else if (postDecision.kind === "preventContinuation") {
+      shouldPreventContinuation = true;
       emitHookAttachment(
         opts.eventLog,
         subId,
@@ -1821,6 +1832,9 @@ export async function runToolUse(
     if (finalDispatch.codeModeResult !== undefined) {
       STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
     }
+    if (shouldPreventContinuation) {
+      PREVENT_CONTINUATION_OUTPUTS.add(output);
+    }
     return output;
   }
   const output = functionToolOutput({
@@ -1836,6 +1850,9 @@ export async function runToolUse(
   });
   if (finalDispatch.codeModeResult !== undefined) {
     STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+  }
+  if (shouldPreventContinuation) {
+    PREVENT_CONTINUATION_OUTPUTS.add(output);
   }
   return output;
 }
@@ -1866,6 +1883,9 @@ export async function executeToolDispatch(
       : codeModeResult(output),
     ...(RICH_OUTPUT_CONTENT_ITEMS.get(output) !== undefined
       ? { contentItems: RICH_OUTPUT_CONTENT_ITEMS.get(output)! }
+      : {}),
+    ...(PREVENT_CONTINUATION_OUTPUTS.has(output)
+      ? { preventContinuation: true }
       : {}),
     metadata: output.metadata ? { ...output.metadata } : undefined,
   };

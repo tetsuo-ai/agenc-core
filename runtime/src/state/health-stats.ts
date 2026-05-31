@@ -15,34 +15,58 @@ type StateCountTable =
  * Read-only health counter for persisted AgenC state.
  */
 export class StateSqliteHealthStatsReader {
-  readonly #paths: StateDatabasePaths;
+  readonly #paths: readonly StateDatabasePaths[];
 
-  constructor(paths: StateDatabasePaths) {
-    this.#paths = paths;
+  constructor(paths: StateDatabasePaths | readonly StateDatabasePaths[]) {
+    this.#paths = Array.isArray(paths) ? [...paths] : [paths];
   }
 
   readStateStats(): HealthStateStats {
-    if (
-      !existsSync(this.#paths.stateDbPath) ||
-      !existsSync(this.#paths.logsDbPath)
-    ) {
-      return emptyStats(this.#paths.projectDir);
-    }
-    const reader = openStateDatabasePathReader(this.#paths);
-    try {
-      return {
-        available: true,
-        readonly: true,
-        projectDir: reader.projectDir,
-        agentRuns: countRows(reader, "agent_runs"),
-        sessionStateSnapshots: countRows(reader, "session_state_snapshots"),
-        inFlightToolCalls: countRows(reader, "in_flight_tool_calls"),
-        logs: countLogs(reader),
-      };
-    } finally {
-      reader.close();
-    }
+    const first = this.#paths[0];
+    if (!first) return emptyStats("");
+    const stats = this.#paths.map((paths) => readStateStatsForPath(paths));
+    if (stats.length === 1) return stats[0] ?? emptyStats(first.projectDir);
+    return {
+      available: stats.some((stat) => stat.available),
+      readonly: true,
+      projectDir: first.projectDir,
+      agentRuns: sumStats(stats, "agentRuns"),
+      sessionStateSnapshots: sumStats(stats, "sessionStateSnapshots"),
+      inFlightToolCalls: sumStats(stats, "inFlightToolCalls"),
+      logs: sumStats(stats, "logs"),
+    };
   }
+}
+
+function readStateStatsForPath(paths: StateDatabasePaths): HealthStateStats {
+  if (!existsSync(paths.stateDbPath) || !existsSync(paths.logsDbPath)) {
+    return emptyStats(paths.projectDir);
+  }
+  const reader = openStateDatabasePathReader(paths);
+  try {
+    return {
+      available: true,
+      readonly: true,
+      projectDir: reader.projectDir,
+      agentRuns: countRows(reader, "agent_runs"),
+      sessionStateSnapshots: countRows(reader, "session_state_snapshots"),
+      inFlightToolCalls: countRows(reader, "in_flight_tool_calls"),
+      logs: countLogs(reader),
+    };
+  } finally {
+    reader.close();
+  }
+}
+
+function sumStats(
+  stats: readonly HealthStateStats[],
+  key:
+    | "agentRuns"
+    | "sessionStateSnapshots"
+    | "inFlightToolCalls"
+    | "logs",
+): number {
+  return stats.reduce((total, stat) => total + stat[key], 0);
 }
 
 function countRows(reader: StateSqliteReader, table: StateCountTable): number {

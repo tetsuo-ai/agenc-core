@@ -329,6 +329,19 @@ function isSyntheticApiErrorMessage(
   )
 }
 
+export function isAssistantAPIErrorMessage(
+  message: Message,
+): message is AssistantMessage & { isApiErrorMessage: true } {
+  return message.type === 'assistant' && message.isApiErrorMessage === true
+}
+
+export function getAssistantAPIErrorMessageText(
+  message: AssistantMessage,
+  fallback = 'Agent turn failed',
+): string {
+  return extractTextContent(message.message.content, '\n') || fallback
+}
+
 export function getLastAssistantMessage(
   messages: Message[],
 ): AssistantMessage | undefined {
