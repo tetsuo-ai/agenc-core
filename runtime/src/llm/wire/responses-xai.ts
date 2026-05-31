@@ -14,7 +14,10 @@ import type {
   LLMMessage,
   LLMToolChoice,
 } from "../types.js";
-import { buildStructuredOutputTextFormat } from "../structured-output.js";
+import {
+  buildStructuredOutputTextFormat,
+  supportsXaiReasoningEffortParam,
+} from "../structured-output.js";
 import { documentFallbackText, readDocumentPayload } from "./shared.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 export { toXaiResponsesTools } from "./tools.js";
@@ -152,7 +155,12 @@ export function buildXaiResponsesRequest(input: {
   ) {
     params.max_turns = Math.floor(input.options.maxTurns);
   }
-  if (input.options?.reasoningEffort) {
+  // Only `grok-4.20-multi-agent*` accepts `reasoning_effort`; strip it for
+  // every other Grok model rather than letting xAI reject the request.
+  if (
+    input.options?.reasoningEffort &&
+    supportsXaiReasoningEffortParam(input.model)
+  ) {
     params.reasoning = { effort: input.options.reasoningEffort };
   }
   if (input.options?.includeEncryptedReasoning) {

@@ -242,20 +242,28 @@ export async function delegate(
     // Async mode — fire-and-forget; caller sees the AgentThread handle.
     let thread!: AgentThread;
     const joinPromise = Promise.resolve().then(async () => {
+      let asyncResult: RunAgentResult | undefined;
       try {
-        return await execute(thread);
+        asyncResult = await execute(thread);
+        return asyncResult;
       } finally {
         await markAsyncThreadSpawnEdgeClosed({
           control: opts.control,
           thread,
           parent: opts.parent,
         });
+        // On a terminal non-completed outcome (or a thrown run), release the
+        // agent so its registry path/slot are freed and a re-spawn at the same
+        // path does not collide with a leaked reservation. A clean completion
+        // keeps the prior fire-and-forget behavior (no delegate-scoped shutdown).
+        const shutdownAgent =
+          asyncResult === undefined || asyncResult.outcome !== "completed";
         await teardown({
           thread,
           control: opts.control,
           registry: opts.registry,
           parent: opts.parent,
-          shutdownAgent: false,
+          shutdownAgent,
           ...(baseCommit !== null ? { baseCommit } : {}),
         });
       }

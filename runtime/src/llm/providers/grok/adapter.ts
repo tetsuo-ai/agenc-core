@@ -34,7 +34,6 @@ import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
   assertProviderStructuredOutputCompatibility,
-  assertXaiReasoningEffortCompatibility,
   assertXaiStructuredOutputToolCompatibility,
 } from "../../provider-capabilities.js";
 import {
@@ -44,6 +43,7 @@ import {
 import {
   buildStructuredOutputTextFormat,
   parseStructuredOutputText,
+  supportsXaiReasoningEffortParam,
 } from "../../structured-output.js";
 import { withTimeout } from "../../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-turn-validator.js";
@@ -1760,12 +1760,12 @@ export class GrokProvider implements LLMProvider {
     }
     const reasoningEffort =
       options?.reasoningEffort ?? this.config.reasoningEffort;
-    if (reasoningEffort) {
-      assertXaiReasoningEffortCompatibility({
-        providerName: this.name,
-        model,
-        reasoningEffortRequested: true,
-      });
+    // Only `grok-4.20-multi-agent*` accepts `reasoning_effort`; every other
+    // Grok model rejects it with an API error. Strip the field for
+    // unsupported models (matching the chat-completions wire strip) rather
+    // than throwing, so an inherited/config effort doesn't hard-fail a
+    // request on a model that simply reasons automatically.
+    if (reasoningEffort && supportsXaiReasoningEffortParam(model)) {
       params.reasoning = { effort: reasoningEffort };
     }
     const includeEncryptedReasoning =

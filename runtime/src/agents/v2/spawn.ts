@@ -260,6 +260,37 @@ async function resolveSpawnServiceTier(opts: {
   return {};
 }
 
+function buildSpawnModelSchema(
+  session: Session | null,
+): Record<string, unknown> {
+  const currentSlug = session?.modelInfo?.slug;
+  const slugs = session?.services?.modelsManager
+    ?.tryListModels()
+    ?.map((candidate) => candidate.slug)
+    .filter((slug): slug is string => typeof slug === "string" && slug.length > 0);
+  const inheritClause = currentSlug
+    ? `omit to inherit the parent's current model (\`${currentSlug}\`)`
+    : "omit to inherit the parent's current model";
+  if (slugs && slugs.length > 0) {
+    const uniqueSlugs = [...new Set(slugs)];
+    return {
+      type: "string",
+      enum: uniqueSlugs,
+      description:
+        `Optional model override; ${inheritClause}. ` +
+        `If set, must be one of this provider's models: ${uniqueSlugs.join(", ")}. ` +
+        "Do NOT use cross-provider aliases like sonnet/opus/haiku.",
+    };
+  }
+  return {
+    type: "string",
+    description:
+      `Optional model override; ${inheritClause}. ` +
+      "If set, it must be one of the active provider's model slugs. " +
+      "Do NOT use cross-provider aliases like sonnet/opus/haiku.",
+  };
+}
+
 function roleModel(role: AgentRole | undefined): string | undefined {
   return role?.config.model;
 }
@@ -299,7 +330,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             "Use only a listed role name. For implementation, edits, or tests use `runner`. For codebase reconnaissance use `scanner`. Omit this field for a general `netrunner` fork. Do not invent role names such as `code-implementer` or `reviewer` unless they are listed here.",
           ].join("\n\n"),
       },
-      model: { type: "string" },
+      model: buildSpawnModelSchema(opts.getSession()),
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
       fork_turns: {

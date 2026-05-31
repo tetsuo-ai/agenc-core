@@ -1,6 +1,7 @@
 import {
   supportsAnthropicStructuredOutputToolUse,
   supportsOpenAIStructuredOutputs,
+  supportsXaiReasoningEffortParam,
   supportsXaiStructuredOutputs,
   supportsXaiStructuredOutputsWithTools,
 } from "./structured-output.js";
@@ -235,8 +236,11 @@ function resolveGrokImageHistory(model: string): boolean {
 }
 
 function resolveGrokReasoningEffort(model: string): boolean {
-  void model;
-  return false;
+  // Only `grok-4.20-multi-agent*` accepts the `reasoning_effort` param;
+  // all other Grok models reject it. Delegate to the single source of
+  // truth so inherited effort is stripped for unsupported models instead
+  // of flowing through to the adapter (which would otherwise reject it).
+  return supportsXaiReasoningEffortParam(model);
 }
 
 function matchesModelFamily(model: string, pattern: RegExp): boolean {

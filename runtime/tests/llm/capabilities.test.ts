@@ -16,7 +16,7 @@ describe("normalizeProviderSlug", () => {
 });
 
 describe("resolveProviderModelCapabilities", () => {
-  it("uses documented xAI model metadata while keeping reasoning effort disabled", () => {
+  it("uses documented xAI model metadata and enables reasoning effort on multi-agent variants", () => {
     const caps = resolveProviderModelCapabilities({
       provider: "xai",
       model: "grok-4.20-multi-agent-latest",
@@ -39,7 +39,9 @@ describe("resolveProviderModelCapabilities", () => {
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
-      acceptsReasoningEffort: false,
+      // grok-4.20-multi-agent* is the one Grok family that accepts the
+      // `reasoning_effort` request param; all others reject it.
+      acceptsReasoningEffort: true,
     });
   });
 

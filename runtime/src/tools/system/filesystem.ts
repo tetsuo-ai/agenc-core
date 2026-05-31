@@ -181,7 +181,84 @@ export interface SessionReadSeedEntry {
 }
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
+
+/**
+ * Workspace-scoped mirror of the per-session read state, keyed by
+ * `workspaceRoot -> canonicalPath -> snapshot`.
+ *
+ * RATIONALE (cross-agent read-before-write): the per-session map above is
+ * keyed by the `__agencSessionId` arg, but two dispatch paths inject
+ * DIFFERENT ids for the same logical conversation — the canonical tool
+ * surface injects the main-process session id, while spawned subagents
+ * inject their own agent/conversation id (run-agent.ts
+ * `injectChildToolArgs`). A FULL `FileRead` recorded under one id was
+ * therefore invisible to an `Edit`/`Write` gate checking under the other,
+ * surfacing as a spurious READ_BEFORE_WRITE_ERROR immediately after a
+ * successful read.
+ *
+ * This mirror lets the gate fall back to "has ANY agent in this same
+ * workspace performed a full read of this exact canonical path?". It does
+ * NOT weaken the gate to "no read needed": a full read must still exist
+ * somewhere, and only full (non-partial) snapshots are mirrored, so
+ * partial offset/limit reads never authorize an edit via the fallback.
+ */
+const workspaceReadState = new Map<string, Map<string, SessionReadSnapshot>>();
+
 const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
+
+/**
+ * Resolve the workspace root used to key {@link workspaceReadState}. This
+ * is the process-global session workspace root (env `AGENC_WORKSPACE`,
+ * falling back to `process.cwd()`), which is shared by the canonical tool
+ * surface and all subagents running inside the same daemon process — the
+ * correct scope for the cross-agent fallback.
+ */
+function resolveWorkspaceReadScopeRoot(): string {
+  try {
+    return resolve(resolveSessionWorkspaceRoot()).normalize("NFC");
+  } catch {
+    return resolveSessionWorkspaceRoot();
+  }
+}
+
+/**
+ * Mirror a recorded read into the workspace-scoped index. Only FULL,
+ * non-partial snapshots are mirrored so the cross-agent fallback can only
+ * ever authorize an edit when a full read of the path actually occurred.
+ */
+function mirrorWorkspaceRead(
+  canonicalPath: string,
+  snapshot: SessionReadSnapshot,
+): void {
+  if (snapshot.viewKind !== "full" || snapshot.isPartialView === true) {
+    return;
+  }
+  const workspaceRoot = resolveWorkspaceReadScopeRoot();
+  let fileMap = workspaceReadState.get(workspaceRoot);
+  if (!fileMap) {
+    fileMap = new Map();
+    workspaceReadState.set(workspaceRoot, fileMap);
+  }
+  fileMap.set(canonicalPath, snapshot);
+}
+
+/**
+ * Look up a FULL read of `canonicalPath` recorded by ANY agent within the
+ * current workspace root. Returns undefined when no full read exists.
+ */
+function getWorkspaceReadSnapshot(
+  canonicalPath: string,
+): SessionReadSnapshot | undefined {
+  if (!canonicalPath || canonicalPath.trim().length === 0) return undefined;
+  const snapshot = workspaceReadState
+    .get(resolveWorkspaceReadScopeRoot())
+    ?.get(canonicalPath);
+  if (!snapshot) return undefined;
+  if (snapshot.viewKind !== "full" || snapshot.isPartialView === true) {
+    return undefined;
+  }
+  return snapshot;
+}
 
 function resolveLocalFileHistoryRoot(): string {
   const configuredRoot = process.env.AGENC_FILESYSTEM_HISTORY_ROOT?.trim();
@@ -318,7 +395,10 @@ function rehydrateSessionReadSnapshot(
   canonicalPath: string,
 ): SessionReadSnapshot | undefined {
   if (!sessionId || sessionId.trim().length === 0) {
-    return undefined;
+    // Even without a session id, a full read recorded by ANY agent in
+    // this workspace satisfies the read-before-write gate (cross-agent
+    // fallback). Partial reads are excluded by getWorkspaceReadSnapshot.
+    return getWorkspaceReadSnapshot(canonicalPath);
   }
 
   const existingSnapshot = sessionReadState.get(sessionId)?.get(canonicalPath);
@@ -328,7 +408,15 @@ function rehydrateSessionReadSnapshot(
 
   const persistedSnapshot = loadPersistedSessionReadSnapshot(sessionId, canonicalPath);
   if (!persistedSnapshot) {
-    return undefined;
+    // No agent-scoped snapshot for this (sessionId, path). Fall back to a
+    // workspace-scoped full read recorded by a sibling agent under a
+    // different `__agencSessionId` for the SAME canonical path. This is
+    // what makes a `FileRead` issued via one dispatch path (e.g. the
+    // canonical surface) authorize an `Edit` checked under another (e.g.
+    // a spawned subagent's conversation id). The gate stays closed when
+    // nobody has read the path: getWorkspaceReadSnapshot returns
+    // undefined in that case.
+    return getWorkspaceReadSnapshot(canonicalPath);
   }
 
   let fileMap = sessionReadState.get(sessionId);
@@ -364,6 +452,7 @@ export function recordSessionRead(
       snapshot?.viewKind ?? "full";
   }
   fileMap.set(canonicalPath, nextSnapshot);
+  mirrorWorkspaceRead(canonicalPath, nextSnapshot);
   persistLocalFileHistorySnapshot(sessionId, canonicalPath, nextSnapshot);
 }
 

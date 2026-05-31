@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useMemo, type RefObject } from "react";
 
-import { Box, Text } from "../ink.js";
+import { Box, NoSelect, Text } from "../ink.js";
 import { ModalContext } from "../context/modalContext.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
@@ -79,11 +79,19 @@ export function WorkbenchLayout({
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
       {rows >= 8 ? <WorkbenchStatusBar columns={columns} /> : null}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
-        {showExplorer ? <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} /> : null}
+        {showExplorer ? (
+          <NoSelect flexShrink={0} width={explorerWidth} height="100%">
+            <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} />
+          </NoSelect>
+        ) : null}
         <ContentWidthProvider width={surfaceContentWidth}>
           <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} />
         </ContentWidthProvider>
-        {showAgents ? <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} /> : null}
+        {showAgents ? (
+          <NoSelect flexShrink={0} width={agentsWidth} height="100%">
+            <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} />
+          </NoSelect>
+        ) : null}
       </Box>
       {overlay ? (
         <Box flexDirection="column" borderColor="warning" borderTop paddingX={1}>
@@ -100,12 +108,16 @@ export function WorkbenchLayout({
       {rows >= 5 ? <WorkbenchFooter /> : null}
       {layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
         <Box position="absolute" right={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
-          <AgentsRail focused={true} width={Math.min(34, columns)} />
+          <NoSelect width={Math.min(34, columns)} height="100%">
+            <AgentsRail focused={true} width={Math.min(34, columns)} />
+          </NoSelect>
         </Box>
       ) : null}
       {layoutSize === "narrow" && workbench.explorerVisible && focusedPane === "explorer" ? (
         <Box position="absolute" left={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
-          <ProjectExplorer focused={true} width={Math.min(34, columns)} />
+          <NoSelect width={Math.min(34, columns)} height="100%">
+            <ProjectExplorer focused={true} width={Math.min(34, columns)} />
+          </NoSelect>
         </Box>
       ) : null}
       {modal ? (
