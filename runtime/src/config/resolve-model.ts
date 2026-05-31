@@ -29,14 +29,20 @@ export function configuredModelForProvider(
   if (configuredProvider && configuredProvider !== provider) {
     return undefined;
   }
-  if (!configuredProvider && provider !== "grok" && configuredModel === "grok-4.3") {
+  if (
+    !configuredProvider &&
+    provider !== "grok" &&
+    configuredModel === BUILT_IN_PROVIDER_DEFAULT_MODELS.grok
+  ) {
     return undefined;
   }
   return configuredModel;
 }
 
 export function defaultModelForProvider(provider: ProviderSlug): string {
-  return BUILT_IN_PROVIDER_DEFAULT_MODELS[provider] ?? "grok-4.3";
+  // The single source of truth for "which model is default" is
+  // BUILT_IN_PROVIDER_DEFAULT_MODELS; every provider slug has an entry there.
+  return BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
 }
 
 export function resolveModelSelection(params: {
@@ -70,7 +76,8 @@ export function resolveModelSelection(params: {
     return configuredModel;
   }
 
-  return "grok-4.3";
+  // Ultimate default reads from the one defaults map rather than a literal.
+  return BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
 }
 
 export function resolveDisambiguatedModelSelection(params: {

@@ -13,6 +13,7 @@
  */
 
 import type { LLMProviderExecutionProfile } from "../types.js";
+import { resolveModelCatalogMetadata } from "../registry/model-catalog.js";
 
 export interface GatewayLLMConfig {
   readonly provider?: "grok" | "ollama" | "openai-compat" | string;
@@ -48,15 +49,15 @@ const LEGACY_GROK_MODEL_ALIASES: Record<string, string> = {
   "grok-4.20-multi-agent-beta-0309": "grok-4.20-multi-agent-0309",
 };
 
+// Fallback context windows for grok models NOT yet migrated to
+// REGISTERED_MODEL_CATALOG. Models covered by the registry (grok-4.3,
+// grok-4.20-*) are resolved from there first in inferGrokContextWindowTokens,
+// so they are intentionally absent here.
 const GROK_CONTEXT_WINDOW_BY_PREFIX: ReadonlyArray<{
   readonly prefix: string;
   readonly contextWindowTokens: number;
 }> = [
-  { prefix: "grok-4.3", contextWindowTokens: 1_000_000 },
   { prefix: "grok-latest", contextWindowTokens: 1_000_000 },
-  { prefix: "grok-4.20-multi-agent-0309", contextWindowTokens: 2_000_000 },
-  { prefix: "grok-4.20-0309-reasoning", contextWindowTokens: 2_000_000 },
-  { prefix: "grok-4.20-0309-non-reasoning", contextWindowTokens: 2_000_000 },
   { prefix: "grok-4-1-fast", contextWindowTokens: 2_000_000 },
   { prefix: "grok-4-fast", contextWindowTokens: 2_000_000 },
   { prefix: "grok-code-fast-1", contextWindowTokens: 256_000 },
@@ -76,6 +77,16 @@ export function normalizeGrokModel(
 function inferGrokContextWindowTokens(model: string | undefined): number {
   const normalized = normalizeGrokModel(model);
   if (!normalized) return DEFAULT_GROK_CONTEXT_WINDOW_TOKENS;
+  // Registry is the single source of truth: prefer the catalog context window
+  // when the (alias-normalized) model is registered. This keeps grok-4.3 at
+  // 1M consistently with the TUI resolver and removes the 2M/1M mismatch.
+  const catalogContextWindow = resolveModelCatalogMetadata({
+    provider: "grok",
+    model: normalized,
+  })?.contextWindow;
+  if (catalogContextWindow !== undefined) return catalogContextWindow;
+  // Fallback for grok models not yet migrated to the registry
+  // (grok-4-fast, grok-code-fast-1, grok-3, ...).
   for (const entry of GROK_CONTEXT_WINDOW_BY_PREFIX) {
     if (normalized.startsWith(entry.prefix)) return entry.contextWindowTokens;
   }

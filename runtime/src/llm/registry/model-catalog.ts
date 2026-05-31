@@ -71,6 +71,18 @@ const TEXT_IMAGE_MODALITIES = Object.freeze([
 ] as const satisfies readonly ModelInputModality[]);
 const FAST_SPEED_TIER = Object.freeze(["fast"] as const);
 const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
+const NO_REASONING_LEVELS = Object.freeze(
+  [] as const satisfies readonly ReasoningEffort[],
+);
+// grok-4.20-multi-agent* is the only Grok family that accepts the
+// `reasoning_effort` request parameter (see supportsXaiReasoningEffortParam
+// in structured-output.ts). All other Grok 4 models reason automatically and
+// reject the parameter, so they expose no selectable reasoning levels.
+const GROK_MULTI_AGENT_REASONING_LEVELS = Object.freeze([
+  "low",
+  "medium",
+  "high",
+] as const satisfies readonly ReasoningEffort[]);
 const OPENAI_FRIENDLY_PERSONALITY =
   "You optimize for team morale and being a supportive teammate as much as code quality.";
 const OPENAI_PRAGMATIC_PERSONALITY =
@@ -218,6 +230,116 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: 29,
       visibility: "hide",
     },
+    {
+      // New model — added as a single registry entry. Sorts first within the
+      // grok family (lowest priority number) so it leads the picker.
+      provider: "grok",
+      model: "grok-build-0.1",
+      displayName: "Grok Build 0.1",
+      contextWindow: 1_000_000,
+      maxContextWindow: 1_000_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 30,
+      visibility: "list",
+    },
+    {
+      provider: "grok",
+      model: "grok-4.3",
+      displayName: "grok-4.3",
+      // Live grok adapter path (_deps/context-window.ts) uses 1_000_000 for
+      // grok-4.3. Match that so context-window is consistent everywhere.
+      contextWindow: 1_000_000,
+      maxContextWindow: 1_000_000,
+      // Capability flags below mirror the existing grok capability functions
+      // (resolveGrokImageHistory / supportsXaiStructuredOutputs /
+      // supportsGrokServerSideTools) so migrated models behave identically.
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      // grok-4.3 reasons automatically and rejects reasoning_effort.
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 31,
+      visibility: "list",
+    },
+    {
+      provider: "grok",
+      model: "grok-4.20-0309-reasoning",
+      displayName: "grok-4.20-0309-reasoning",
+      contextWindow: 2_000_000,
+      maxContextWindow: 2_000_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 32,
+      visibility: "list",
+    },
+    {
+      provider: "grok",
+      model: "grok-4.20-0309-non-reasoning",
+      displayName: "grok-4.20-0309-non-reasoning",
+      contextWindow: 2_000_000,
+      maxContextWindow: 2_000_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 33,
+      visibility: "list",
+    },
+    {
+      // The only Grok family that accepts reasoning_effort; keep the
+      // supportsXaiReasoningEffortParam gating intact by exposing levels here.
+      provider: "grok",
+      model: "grok-4.20-multi-agent-0309",
+      displayName: "grok-4.20-multi-agent-0309",
+      contextWindow: 2_000_000,
+      maxContextWindow: 2_000_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: GROK_MULTI_AGENT_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 34,
+      visibility: "list",
+    },
   ]);
 
 export function listRegisteredModelCatalogEntries(
@@ -270,6 +392,39 @@ export function resolveModelCatalogMetadata(input: {
       }
       : {}),
   };
+}
+
+/**
+ * Groups REGISTERED_MODEL_CATALOG entries by provider into the flat
+ * `{ provider: string[] }` shape consumed by BUILT_IN_PROVIDER_MODEL_CATALOG
+ * and the model-registry catalog. Entries with `visibility: "none"` are
+ * omitted (they should not appear in any catalog listing); "hide" entries are
+ * kept so they remain resolvable while being filtered from the picker
+ * downstream. Order within a provider follows ascending `priority`.
+ *
+ * This makes REGISTERED_MODEL_CATALOG the single source of truth: adding one
+ * entry here surfaces the model in every flat-catalog consumer.
+ */
+export function deriveFlatCatalog(): Readonly<Record<string, readonly string[]>> {
+  const byProvider = new Map<string, RegisteredModelCatalogEntry[]>();
+  for (const entry of REGISTERED_MODEL_CATALOG) {
+    if (entry.visibility === "none") continue;
+    const key = normalizeProvider(entry.provider);
+    const list = byProvider.get(key);
+    if (list) {
+      list.push(entry);
+    } else {
+      byProvider.set(key, [entry]);
+    }
+  }
+  const result: Record<string, readonly string[]> = {};
+  for (const [provider, entries] of byProvider) {
+    const ordered = [...entries].sort(
+      (left, right) => left.priority - right.priority,
+    );
+    result[provider] = Object.freeze(ordered.map((entry) => entry.model));
+  }
+  return Object.freeze(result);
 }
 
 export function resolveModelCapabilityHints(input: {

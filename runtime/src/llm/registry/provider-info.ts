@@ -6,6 +6,43 @@
  *     stores request/catalog metadata only.
  */
 
+import { deriveFlatCatalog } from "./model-catalog.js";
+
+// Single source of truth: model lists for providers that have entries in
+// REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
+// import this module, so this one-directional import introduces no cycle.
+const DERIVED_FLAT_CATALOG = deriveFlatCatalog();
+
+/**
+ * Merges registry-derived models for a provider with any extra hand-listed
+ * models that do not (yet) have a REGISTERED_MODEL_CATALOG entry. Registry
+ * models lead (priority order from the registry); extras are appended in the
+ * order given, de-duplicated.
+ */
+function mergeDerivedProviderModels(
+  provider: string,
+  options: {
+    readonly leadingExtras?: readonly string[];
+    readonly trailingExtras?: readonly string[];
+  } = {},
+): readonly string[] {
+  const derived = DERIVED_FLAT_CATALOG[provider] ?? [];
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (
+    const model of [
+      ...(options.leadingExtras ?? []),
+      ...derived,
+      ...(options.trailingExtras ?? []),
+    ]
+  ) {
+    if (seen.has(model)) continue;
+    seen.add(model);
+    merged.push(model);
+  }
+  return Object.freeze(merged);
+}
+
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
@@ -75,22 +112,15 @@ export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
 export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   Record<BuiltInProviderSlug, readonly string[]>
 > = Object.freeze({
-  grok: Object.freeze([
-    "grok-4.3",
-    "grok-4.20-0309-reasoning",
-    "grok-4.20-0309-non-reasoning",
-    "grok-4.20-multi-agent-0309",
-  ]),
-  openai: Object.freeze([
-    "gpt-5",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
-    "gpt-5.2",
-    "codex-auto-review", // branding-scan: allow OpenAI model identifier
-    "o3",
-  ]),
+  // grok is fully covered by REGISTERED_MODEL_CATALOG: derived directly.
+  grok: mergeDerivedProviderModels("grok"),
+  // openai is registry-derived plus the two models that still live only as
+  // bare strings. gpt-5 (the provider default) leads so it stays first; o3
+  // trails the registry entries, matching the prior literal's tail.
+  openai: mergeDerivedProviderModels("openai", {
+    leadingExtras: ["gpt-5"],
+    trailingExtras: ["o3"],
+  }),
   anthropic: Object.freeze(["claude-opus-4-7"]),
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
