@@ -65,19 +65,19 @@ describe("TUI tool rendering helpers", () => {
     expect(names.filter((name) => name === "Bash")).toHaveLength(1);
   });
 
-  test("Write summaries cover path-only, content-only, and empty inputs", () => {
+  test("Write args are the file path only (no char-count noise)", () => {
     const tool = createTuiTool("Write");
 
+    // Readable args = path only; the byte/size detail lives in the result
+    // preview, not stuffed into the call-row args.
     expect(tool.renderToolUseMessage({ file_path: "notes.md" })).toBe(
       "notes.md",
     );
-    expect(tool.renderToolUseMessage({ content: "x" })).toBe(
-      "file content (1 char)",
-    );
+    expect(tool.renderToolUseMessage({ content: "x" })).toBe("file");
     expect(tool.renderToolUseMessage({})).toBe("file");
   });
 
-  test("Edit summaries include size changes with and without a path", () => {
+  test("Edit args are the file path only (stats live in the result preview)", () => {
     const tool = createTuiTool("Edit");
 
     expect(
@@ -86,10 +86,23 @@ describe("TUI tool rendering helpers", () => {
         old_string: "x",
         new_string: "yz",
       }),
-    ).toBe("src/a.ts (1 char -> 2 chars)");
+    ).toBe("src/a.ts");
     expect(
       tool.renderToolUseMessage({ old_string: "old", new_string: "newer" }),
-    ).toBe("edit (3 chars -> 5 chars)");
+    ).toBe("edit");
+  });
+
+  test("Grep args render as \"pattern\" in path (no raw JSON, no flags)", () => {
+    const tool = createTuiTool("Grep");
+
+    expect(
+      tool.renderToolUseMessage({
+        pattern: "IO_NUMBER",
+        path: "src/syntax/lexer.c",
+        "-A": 3,
+      }),
+    ).toBe('"IO_NUMBER" in src/syntax/lexer.c');
+    expect(tool.renderToolUseMessage({ pattern: "needle" })).toBe('"needle"');
   });
 
   test("search and MCP tool summaries cover multi-select and populated dynamic inputs", () => {
@@ -127,41 +140,35 @@ describe("TUI tool rendering helpers", () => {
     expect(tool.renderToolUseMessage("raw")).toBe('{"value":"raw"}');
   });
 
-  test("EditDiffView renders an unheaded diff when the file tag is absent", () => {
+  test("EditDiffView renders a capped (+a -r) stat line plus green/red changes", () => {
     const children = flatten(
       EditDiffView({
         content: "<edit-diff>@@ -1 +1 @@\n-old\n+new</edit-diff>",
       }),
     );
 
+    // No bold header, no cyan hunk lines — the @@ markers are dropped from the
+    // capped preview. The stat line is dim; one '-' (red) + one '+' (green).
     expect(children.find((child) => child.props.bold === true)).toBeUndefined();
-    expect(children.find((child) => child.props.color === "cyan")).toBeDefined();
+    expect(children.find((child) => child.props.color === "cyan")).toBeUndefined();
+    expect(
+      children.find(
+        (child) => child.props.dimColor === true && child.props.children === "(+1 -1)",
+      ),
+    ).toBeDefined();
     expect(children.find((child) => child.props.color === "red")).toBeDefined();
     expect(children.find((child) => child.props.color === "green")).toBeDefined();
   });
 
-  test("BashOutputView dims duration-only metadata and still marks silent output", () => {
-    const children = flatten(
-      BashOutputView({
-        content: "<bash-stdout></bash-stdout>[duration_ms=42]",
-      }),
-    );
+  test("BashOutputView marks silent (zero-exit) output as (No output)", () => {
+    // Capped preview: silent success collapses to a single dim "(No output)"
+    // line; the raw [duration_ms=...] metadata block is no longer surfaced.
+    const node = BashOutputView({
+      content: "<bash-stdout></bash-stdout>[duration_ms=42]",
+    }) as { readonly props: ChildProps };
 
-    expect(
-      children.find(
-        (child) =>
-          child.props.children === "(No output)" &&
-          child.props.dimColor === true,
-      ),
-    ).toBeDefined();
-    expect(
-      children.find(
-        (child) =>
-          child.props.children === "[duration_ms=42]" &&
-          child.props.dimColor === true &&
-          child.props.color === undefined,
-      ),
-    ).toBeDefined();
+    expect(node.props.children).toBe("(No output)");
+    expect(node.props.dimColor).toBe(true);
   });
 
   test("ToolErrorView falls back to raw content when no error envelope exists", () => {
@@ -181,39 +188,27 @@ describe("TUI tool rendering helpers", () => {
   });
 
   test("file, grep, and glob views keep visible fallbacks for missing content", () => {
-    const readChildren = flatten(
-      FileReadView({
-        content: "<read-file>x.ts</read-file><read-content>unterminated",
-      }),
-    );
-    expect(
-      readChildren.find(
-        (child) =>
-          child.props.children === "(empty file)" &&
-          child.props.dimColor === true,
-      ),
-    ).toBeDefined();
+    // FileReadView: an unterminated <read-content> yields no body, so the
+    // capped preview falls back to a single dim "(empty file)" Text.
+    const readNode = FileReadView({
+      content: "<read-file>x.ts</read-file><read-content>unterminated",
+    }) as { readonly props: ChildProps };
+    expect(readNode.props.children).toBe("(empty file)");
+    expect(readNode.props.dimColor).toBe(true);
 
-    const writeChildren = flatten(FileWriteView({ content: "" }));
-    expect(
-      writeChildren.find(
-        (child) =>
-          child.props.children === "Wrote file" &&
-          child.props.color === "green",
-      ),
-    ).toBeDefined();
+    // FileWriteView: empty envelope still surfaces the green default summary.
+    const writeNode = FileWriteView({ content: "" }) as {
+      readonly props: ChildProps;
+    };
+    expect(writeNode.props.children).toBe("Wrote file");
+    expect(writeNode.props.color).toBe("green");
 
-    const grepChildren = flatten(
-      GrepMatchesView({ content: "<grep-matches></grep-matches>" }),
-    );
-    expect(grepChildren.find((child) => child.props.bold === true)).toBeUndefined();
-    expect(
-      grepChildren.find(
-        (child) =>
-          child.props.children === "(no matches)" &&
-          child.props.dimColor === true,
-      ),
-    ).toBeDefined();
+    // GrepMatchesView: empty match block collapses to a dim "No matches".
+    const grepNode = GrepMatchesView({
+      content: "<grep-matches></grep-matches>",
+    }) as { readonly props: ChildProps };
+    expect(grepNode.props.children).toBe("No matches");
+    expect(grepNode.props.dimColor).toBe(true);
 
     const globChildren = flatten(
       GlobPathsView({

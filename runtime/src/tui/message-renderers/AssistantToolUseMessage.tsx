@@ -19,12 +19,7 @@ import { Tool as V2Tool, type ToolKind, type ToolState } from '../components/v2/
 import { extractTag } from '../../utils/messages.js';
 import { summarizeFileEditError } from '../../tools/FileEditTool/UI.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
-import {
-  buildEditRowPreview,
-  successToolRowPreview,
-  summarizeToolInput,
-  toolNameOwnsInlinePreview,
-} from './toolRowPreview.js';
+import { summarizeToolInput } from './toolRowPreview.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -245,40 +240,19 @@ export function AssistantToolUseMessage({
           : `×${retriedFailureCount} attempts failed`
         : `succeeded after ${retriedFailureCount} attempts`
       : baseReason;
-  let toolArgs =
+  const toolArgs =
     typeof renderedToolUseMessage === "string" &&
     renderedToolUseMessage.length > 0
       ? renderedToolUseMessage
       : summarizeToolInput(input.data, toolKind);
-  // FIX 2/3: render the tool RESULT once, inline under the call row
-  // (industry-standard CLI-agent convention). The detached UserToolSuccessMessage suppresses
-  // itself for these kinds (see toolKindOwnsInlinePreview) so nothing renders
-  // twice. Failed rows keep the real error reason; only done rows get a
-  // success preview. Verbose mode opts out and keeps the full detached blocks.
-  let successPreview: React.ReactNode | undefined;
-  if (
-    !verbose &&
-    toolState === "done" &&
-    failedReason === undefined &&
-    toolNameOwnsInlinePreview(param.name)
-  ) {
-    if (toolKind === "edit") {
-      const editPreview = buildEditRowPreview(param.name, input.data);
-      if (editPreview) {
-        // Append "(+a -r)" to the args and render the compact diff under ⎿.
-        toolArgs = `${toolArgs} (${editPreview.stats})`;
-        successPreview = editPreview.node;
-      }
-    } else {
-      successPreview =
-        successToolRowPreview(
-          toolKind,
-          rawToolResultContent(lookups, param.id),
-        ) ?? undefined;
-    }
-  }
-  const rowResult: string | React.ReactNode | undefined =
-    failedReason ?? successPreview;
+  // The tool RESULT preview is rendered EXACTLY ONCE by the adjacent detached
+  // UserToolSuccessMessage, via the thin-client tool's renderToolResultMessage
+  // (the capped per-tool views in tool-rendering.tsx — "Read N lines", capped
+  // stdout, "Found N matches", compact edit diff). Nothing is rendered on the
+  // success path here, so there is no double-render and no vanish. A FAILED row
+  // still surfaces its one-line reason inline (P0); the retry rollup is folded
+  // into that same annotation (P1).
+  const rowResult: string | React.ReactNode | undefined = failedReason;
   const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
   const detail = extraDetail || toolUseTag || progressDetail || queuedDetail
     ? (

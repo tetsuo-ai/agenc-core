@@ -23,6 +23,14 @@
  * exec); if the live names change, update these in lockstep.
  */
 export const BASH_TOOL_NAME_FOR_DISPATCH = "Bash";
+/**
+ * The live daemon registers the shell tool as `exec_command` (shown "Run" in
+ * the TUI), not "Bash". Its `exec_command_end` result is wrapped in the same
+ * `<bash-stdout>` envelope as Bash (see
+ * `session-transcript.formatStructuredToolResult`), so it dispatches to the
+ * same bash-output view.
+ */
+export const EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH = "exec_command";
 export const EDIT_TOOL_NAME_FOR_DISPATCH = "Edit";
 export const FILE_READ_TOOL_NAME_FOR_DISPATCH = "FileRead";
 export const FILE_WRITE_TOOL_NAME_FOR_DISPATCH = "Write";
@@ -67,7 +75,8 @@ export function pickToolResultDispatch(
     return "tool-error-view";
   }
   if (
-    toolName === BASH_TOOL_NAME_FOR_DISPATCH &&
+    (toolName === BASH_TOOL_NAME_FOR_DISPATCH ||
+      toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH) &&
     joinedContent.includes("<bash-stdout>")
   ) {
     return "bash-output-view";

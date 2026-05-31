@@ -48,30 +48,18 @@ function textOf(child: ChildElement): string {
 }
 
 describe("coverage swarm row 017 tool-rendering branches", () => {
-  test("EditDiffView renders no-change headers and truncates long diff output", () => {
-    const emptyChildren = flatten(
-      EditDiffView({
-        content: "<edit-file>src/a.ts</edit-file><edit-diff></edit-diff>",
-      }),
-    );
-
-    expect(
-      emptyChildren.find(
-        (child) => child.props.bold === true && child.props.children === "src/a.ts",
-      ),
-    ).toBeDefined();
-    expect(
-      emptyChildren.find(
-        (child) =>
-          child.props.dimColor === true &&
-          child.props.children === "(No changes)",
-      ),
-    ).toBeDefined();
+  test("EditDiffView renders a (No changes) fallback and a capped (+a -r) diff", () => {
+    const emptyNode = EditDiffView({
+      content: "<edit-file>src/a.ts</edit-file><edit-diff></edit-diff>",
+    }) as { props: ChildProps };
+    expect(emptyNode.props.children).toBe("(No changes)");
+    expect(emptyNode.props.dimColor).toBe(true);
 
     const longDiff = [
       "--- a/src/a.ts",
       "+++ b/src/a.ts",
       " unchanged context",
+      "+added line",
       "x".repeat(9000),
     ].join("\n");
     const diffChildren = flatten(
@@ -80,90 +68,52 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
       }),
     );
 
+    // The +++ / --- header lines are excluded from the change rows; the stat
+    // line carries the path and (+a -r) summary.
+    expect(
+      diffChildren.some((child) => textOf(child).startsWith("--- a/src")),
+    ).toBe(false);
+    expect(
+      diffChildren.some((child) => textOf(child).startsWith("+++ b/src")),
+    ).toBe(false);
     expect(
       diffChildren.find(
-        (child) => child.props.dimColor === true && textOf(child).startsWith("---"),
+        (child) =>
+          child.props.dimColor === true && textOf(child).includes("(+1 -0)"),
       ),
     ).toBeDefined();
-    expect(
-      diffChildren.find(
-        (child) => child.props.dimColor === true && textOf(child).startsWith("+++"),
-      ),
-    ).toBeDefined();
-    expect(diffChildren.some((child) => textOf(child).includes("chars truncated")))
-      .toBe(true);
+    // The added line is width-capped on the change row.
+    expect(diffChildren.some((child) => child.props.color === "green")).toBe(true);
   });
 
-  test("FileReadView renders ranged content and omits an empty header", () => {
-    const rangedChildren = flatten(
-      FileReadView({
-        content:
-          "<read-file>src/a.ts</read-file><read-lines>10-12</read-lines><read-content>body</read-content>",
-      }),
-    );
+  test("FileReadView summarizes ranged content as 'Read N lines'", () => {
+    const ranged = FileReadView({
+      content:
+        "<read-file>src/a.ts</read-file><read-lines>10-12</read-lines><read-content>body</read-content>",
+    }) as { props: ChildProps };
+    expect(ranged.props.children).toBe("Read 3 lines");
 
-    expect(
-      rangedChildren.find(
-        (child) =>
-          child.props.bold === true &&
-          child.props.children === "src/a.ts [10-12]",
-      ),
-    ).toBeDefined();
-    expect(rangedChildren.find((child) => child.props.children === "body"))
-      .toBeDefined();
-
-    const bodyOnlyChildren = flatten(
-      FileReadView({ content: "<read-content>body only</read-content>" }),
-    );
-    expect(bodyOnlyChildren.find((child) => child.props.bold === true))
-      .toBeUndefined();
-    expect(bodyOnlyChildren.find((child) => child.props.children === "body only"))
-      .toBeDefined();
+    const bodyOnly = FileReadView({
+      content: "<read-content>body only</read-content>",
+    }) as { props: ChildProps };
+    expect(bodyOnly.props.children).toBe("Read 1 line");
   });
 
-  test("GrepMatchesView renders singular, plural, and truncated match lists", () => {
-    const singleChildren = flatten(
-      GrepMatchesView({
-        content:
-          "<grep-pattern>needle</grep-pattern><grep-matches>src/a.ts:1:needle</grep-matches>",
-      }),
-    );
-
-    expect(
-      singleChildren.find(
-        (child) =>
-          child.props.bold === true &&
-          child.props.children === "Grep: needle (1 match)",
-      ),
-    ).toBeDefined();
-    expect(
-      singleChildren.find((child) => child.props.children === "src/a.ts:1:needle"),
-    ).toBeDefined();
+  test("GrepMatchesView summarizes singular and plural match counts", () => {
+    const single = GrepMatchesView({
+      content:
+        "<grep-pattern>needle</grep-pattern><grep-matches>src/a.ts:1:needle</grep-matches>",
+    }) as { props: ChildProps };
+    expect(single.props.children).toBe("Found 1 match");
 
     const matches = Array.from(
       { length: 202 },
       (_, index) => `src/${index}.ts:${index}:hit`,
     ).join("\n");
-    const manyChildren = flatten(
-      GrepMatchesView({
-        content: `<grep-pattern>hit</grep-pattern><grep-matches>${matches}</grep-matches>`,
-      }),
-    );
-
-    expect(
-      manyChildren.find(
-        (child) =>
-          child.props.bold === true &&
-          child.props.children === "Grep: hit (202 matches)",
-      ),
-    ).toBeDefined();
-    expect(
-      manyChildren.find(
-        (child) =>
-          child.props.dimColor === true &&
-          textOf(child).includes("2 more matches truncated"),
-      ),
-    ).toBeDefined();
+    const many = GrepMatchesView({
+      content: `<grep-pattern>hit</grep-pattern><grep-matches>${matches}</grep-matches>`,
+    }) as { props: ChildProps };
+    expect(many.props.children).toBe("Found 202 matches");
   });
 
   test("GlobPathsView renders singular headers, headerless lists, and truncation", () => {
@@ -213,7 +163,7 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
     ).toBeDefined();
   });
 
-  test("BashOutputView colors stderr and failed metadata while omitting silent state", () => {
+  test("BashOutputView shows stdout + red stderr on failure, no metadata line", () => {
     const failedChildren = flatten(
       BashOutputView({
         content:
@@ -223,19 +173,16 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
 
     expect(failedChildren.find((child) => child.props.children === "ok"))
       .toBeDefined();
+    // Non-zero exit surfaces stderr in red.
     expect(
       failedChildren.find(
         (child) => child.props.color === "red" && child.props.children === "err",
       ),
     ).toBeDefined();
+    // The raw [exit_code=... duration_ms=...] metadata block is no longer shown.
     expect(
-      failedChildren.find(
-        (child) =>
-          child.props.color === "red" &&
-          child.props.dimColor === false &&
-          child.props.children === "[exit_code=2 duration_ms=3]",
-      ),
-    ).toBeDefined();
+      failedChildren.some((child) => textOf(child).startsWith("[exit_code=")),
+    ).toBe(false);
     expect(failedChildren.some((child) => child.props.children === "(No output)"))
       .toBe(false);
 

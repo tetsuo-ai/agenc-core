@@ -97,138 +97,101 @@ describe("createTuiTool('Bash').renderToolResultMessage — end-to-end dispatch"
   });
 });
 
-describe("BashOutputView — local renderer fidelity to upstream visual contract", () => {
-  test("renders no-output indicator when both stdout and stderr are empty (regardless of meta presence)", () => {
+/**
+ * Flatten the children of a BashOutputView node into an array of child
+ * elements. When the view returns a bare <Text> (the silent / no-output case)
+ * the node itself is the only "child".
+ */
+function flattenBash(node: unknown): { props: { children?: unknown; color?: string } }[] {
+  const children = (node as { props?: { children?: unknown } }).props?.children;
+  const isElementWithChildrenArray =
+    children !== undefined &&
+    (Array.isArray(children) ||
+      (typeof children === "object" && children !== null));
+  const arr = isElementWithChildrenArray
+    ? Array.isArray(children)
+      ? children
+      : [children]
+    : [node];
+  return arr
+    .flat(Infinity)
+    .filter(
+      (child): child is { props: { children?: unknown; color?: string } } =>
+        typeof child === "object" && child !== null,
+    );
+}
+
+describe("BashOutputView — capped preview visual contract", () => {
+  test("renders no-output indicator when both stdout and stderr are empty (zero exit)", () => {
+    // Capped preview: silent success collapses to a single dim "(No output)".
     const node = BashOutputView({
       content: "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>[exit_code=0]",
-    });
-    // Walk the children of the Box returned by BashOutputView; assert one of
-    // them carries the (No output) text.
-    const children = (node as { props: { children: unknown[] } }).props.children;
-    const flat = (Array.isArray(children) ? children : [children])
-      .flat(Infinity)
-      .filter((child) => child !== null);
-    const found = flat.some(
-      (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        (child as { props?: { children?: unknown } }).props?.children ===
-          "(No output)",
-    );
-    expect(found).toBe(true);
+    }) as { props: { children?: unknown; dimColor?: boolean } };
+    expect(node.props.children).toBe("(No output)");
+    expect(node.props.dimColor).toBe(true);
   });
 
-  test("non-zero exit code colors the metadata line red (visually distinct from zero exit)", () => {
-    const failing = BashOutputView({
+  test("silent non-zero exit notes the failed exit instead of a metadata line", () => {
+    // The raw [exit_code=...] metadata block is no longer surfaced; a silent
+    // failure is summarized inline instead.
+    const node = BashOutputView({
       content: "<bash-stdout></bash-stdout>[exit_code=1]",
-    });
-    const childrenF = (failing as { props: { children: unknown[] } }).props
-      .children;
-    const flatF = (Array.isArray(childrenF) ? childrenF : [childrenF])
-      .flat(Infinity)
-      .filter((child) => child !== null);
-    const metaLineF = flatF.find(
-      (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        typeof (child as { props?: { children?: unknown } }).props?.children ===
-          "string" &&
-        ((child as { props: { children: string } }).props.children as string).includes(
-          "exit_code=1",
-        ),
-    ) as { props: { color?: string; dimColor?: boolean } } | undefined;
-    expect(metaLineF?.props.color).toBe("red");
-    expect(metaLineF?.props.dimColor).toBeFalsy();
-
-    const passing = BashOutputView({
-      content: "<bash-stdout></bash-stdout>[exit_code=0]",
-    });
-    const childrenP = (passing as { props: { children: unknown[] } }).props
-      .children;
-    const flatP = (Array.isArray(childrenP) ? childrenP : [childrenP])
-      .flat(Infinity)
-      .filter((child) => child !== null);
-    const metaLineP = flatP.find(
-      (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        typeof (child as { props?: { children?: unknown } }).props?.children ===
-          "string" &&
-        ((child as { props: { children: string } }).props.children as string).includes(
-          "exit_code=0",
-        ),
-    ) as { props: { color?: string; dimColor?: boolean } } | undefined;
-    expect(metaLineP?.props.color).toBeUndefined();
-    expect(metaLineP?.props.dimColor).toBe(true);
+    }) as { props: { children?: unknown } };
+    expect(node.props.children).toBe("(no output, non-zero exit)");
   });
 
-  test("oversized stdout is truncated to ~8KB with a [N chars truncated] marker (no megabyte-scale renders)", () => {
+  test("oversized single stdout line is width-capped with a [N chars truncated] marker", () => {
     const huge = "a".repeat(50_000);
     const node = BashOutputView({
       content: `<bash-stdout>${huge}</bash-stdout>[exit_code=0]`,
     });
-    const children = (node as { props: { children: unknown[] } }).props.children;
-    const flat = (Array.isArray(children) ? children : [children])
-      .flat(Infinity)
-      .filter((child) => child !== null);
+    const flat = flattenBash(node);
     const stdoutLine = flat.find(
       (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        typeof (child as { props?: { children?: unknown } }).props?.children ===
-          "string" &&
-        ((child as { props: { children: string } }).props.children as string).startsWith(
-          "a",
-        ),
-    ) as { props: { children: string } } | undefined;
+        typeof child.props?.children === "string" &&
+        (child.props.children as string).startsWith("a"),
+    );
     expect(stdoutLine).toBeDefined();
     expect((stdoutLine!.props.children as string).length).toBeLessThan(10_000);
     expect(stdoutLine!.props.children as string).toContain("chars truncated");
   });
 
-  test("non-empty stderr with empty stdout still renders the stderr block (independent stdout/stderr conditional render)", () => {
+  test("non-zero exit surfaces stderr in red even when stdout is empty", () => {
     const node = BashOutputView({
       content: "<bash-stdout></bash-stdout><bash-stderr>oops</bash-stderr>[exit_code=1]",
     });
-    const children = (node as { props: { children: unknown[] } }).props.children;
-    const flat = (Array.isArray(children) ? children : [children])
-      .flat(Infinity)
-      .filter((child) => child !== null);
+    const flat = flattenBash(node);
     const stderrLine = flat.find(
-      (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        (child as { props?: { color?: string; children?: unknown } }).props
-          ?.color === "red" &&
-        (child as { props: { children: string } }).props.children === "oops",
+      (child) => child.props?.color === "red" && child.props.children === "oops",
     );
     expect(stderrLine).toBeDefined();
     // No (No output) indicator should appear because stderr is non-empty.
     const hasNoOutput = flat.some(
-      (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        (child as { props?: { children?: unknown } }).props?.children ===
-          "(No output)",
+      (child) => child.props?.children === "(No output)",
     );
     expect(hasNoOutput).toBe(false);
   });
 
-  test("ANSI escape sequences inside <bash-stdout> are passed through verbatim — interpretation is the renderer's responsibility", () => {
+  test("zero exit does NOT surface stderr (only failures append it)", () => {
+    const node = BashOutputView({
+      content: "<bash-stdout>ok</bash-stdout><bash-stderr>warn</bash-stderr>[exit_code=0]",
+    });
+    const flat = flattenBash(node);
+    expect(
+      flat.some((child) => child.props?.children === "ok"),
+    ).toBe(true);
+    expect(
+      flat.some((child) => child.props?.children === "warn"),
+    ).toBe(false);
+  });
+
+  test("ANSI escape sequences inside <bash-stdout> are passed through verbatim", () => {
     const ansi = "\x1b[31mred\x1b[0m text";
     const node = BashOutputView({
       content: `<bash-stdout>${ansi}</bash-stdout>[exit_code=0]`,
     });
-    const children = (node as { props: { children: unknown[] } }).props.children;
-    const flat = (Array.isArray(children) ? children : [children])
-      .flat(Infinity)
-      .filter((child) => child !== null);
-    const stdoutLine = flat.find(
-      (child) =>
-        typeof child === "object" &&
-        child !== null &&
-        (child as { props?: { children?: unknown } }).props?.children === ansi,
-    );
+    const flat = flattenBash(node);
+    const stdoutLine = flat.find((child) => child.props?.children === ansi);
     expect(stdoutLine).toBeDefined();
   });
 });

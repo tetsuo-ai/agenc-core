@@ -70,6 +70,16 @@ function truncateForDisplay(value: string, limit: number): string {
  * (`UserToolSuccessMessage` already passes `options.input` to
  * `renderToolResultMessage`).
  */
+/** Number of changed diff rows shown inline before collapsing to "… +N more". */
+const EDIT_PREVIEW_MAX_LINES = 8;
+
+/**
+ * Capped Edit/Write diff preview. Parses the unified-diff body, counts
+ * additions/removals for the "(+a -r)" stat line, and renders a compact
+ * green/red change list capped to a handful of rows (industry-standard
+ * CLI-agent convention). File-header lines (`+++`/`---`) and hunk markers
+ * (`@@`) are dropped from the count; only real content changes are shown.
+ */
 export function EditDiffView({
   content,
 }: {
@@ -77,37 +87,43 @@ export function EditDiffView({
 }): React.ReactElement {
   const file = extractToolTag(content, "edit-file") ?? "";
   const diff = extractToolTag(content, "edit-diff") ?? "";
-  if (diff.length === 0) {
-    return (
-      <Box flexDirection="column">
-        {file.length > 0 ? <Text bold>{file}</Text> : null}
-        <Text dimColor>(No changes)</Text>
-      </Box>
-    );
+  const displayFile = file.length > 0 ? formatToolPathForDisplay(file) : "";
+  if (diff.trim().length === 0) {
+    return <Text dimColor>(No changes)</Text>;
   }
   const truncatedDiff = truncateForDisplay(diff, BASH_OUTPUT_TRUNCATION_LIMIT);
-  const lines = truncatedDiff.split("\n");
+  const changes: { readonly kind: "add" | "rem"; readonly code: string }[] = [];
+  let additions = 0;
+  let removals = 0;
+  for (const line of truncatedDiff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("@@")) continue;
+    if (line.startsWith("+")) {
+      additions++;
+      changes.push({ kind: "add", code: line.slice(1) });
+    } else if (line.startsWith("-")) {
+      removals++;
+      changes.push({ kind: "rem", code: line.slice(1) });
+    }
+  }
+  const stats = `(+${additions} -${removals})`;
+  const shown = changes.slice(0, EDIT_PREVIEW_MAX_LINES);
+  const remaining = changes.length - shown.length;
   return (
     <Box flexDirection="column">
-      {file.length > 0 ? <Text bold>{file}</Text> : null}
-      {lines.map((line, idx) => {
-        let color: string | undefined;
-        let dim: boolean | undefined;
-        if (line.startsWith("+++") || line.startsWith("---")) {
-          dim = true;
-        } else if (line.startsWith("+")) {
-          color = "green";
-        } else if (line.startsWith("-")) {
-          color = "red";
-        } else if (line.startsWith("@@")) {
-          color = "cyan";
-        }
-        return (
-          <Text key={idx} color={color} dimColor={dim}>
-            {line}
-          </Text>
-        );
-      })}
+      <Text dimColor>
+        {displayFile.length > 0 ? `${displayFile} ${stats}` : stats}
+      </Text>
+      {shown.map((change, idx) => (
+        <Text key={idx} color={change.kind === "add" ? "green" : "red"}>
+          {`${change.kind === "add" ? "+" : "-"} ${change.code}`}
+        </Text>
+      ))}
+      {remaining > 0 ? (
+        <Text dimColor>{`… +${remaining} more ${
+          remaining === 1 ? "line" : "lines"
+        }`}</Text>
+      ) : null}
     </Box>
   );
 }
@@ -123,21 +139,29 @@ export function FileReadView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const file = extractToolTag(content, "read-file") ?? "";
-  const lines = extractToolTag(content, "read-lines") ?? "";
+  // Capped preview (industry-standard CLI-agent convention): one summary line
+  // "Read N lines" instead of dumping the whole file body under the call row.
+  // Prefer an explicit `<read-lines>start-end>` range when present, else count
+  // the lines in `<read-content>`.
+  const range = extractToolTag(content, "read-lines") ?? "";
   const body = extractToolTag(content, "read-content") ?? "";
-  const truncatedBody = truncateForDisplay(body, BASH_OUTPUT_TRUNCATION_LIMIT);
-  const headerText =
-    lines.length > 0 ? `${file} [${lines}]` : file;
+  let lineCount: number | null = null;
+  const rangeMatch = range.match(/(\d+)\s*-\s*(\d+)/);
+  if (rangeMatch) {
+    const start = Number.parseInt(rangeMatch[1]!, 10);
+    const end = Number.parseInt(rangeMatch[2]!, 10);
+    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+      lineCount = end - start + 1;
+    }
+  }
+  if (lineCount === null && body.length > 0) {
+    lineCount = body.replace(/\n$/, "").split("\n").length;
+  }
+  if (lineCount === null) {
+    return <Text dimColor>(empty file)</Text>;
+  }
   return (
-    <Box flexDirection="column">
-      {file.length > 0 ? <Text bold>{headerText}</Text> : null}
-      {truncatedBody.length > 0 ? (
-        <Text>{truncatedBody}</Text>
-      ) : (
-        <Text dimColor>(empty file)</Text>
-      )}
-    </Box>
+    <Text dimColor>{`Read ${lineCount} ${lineCount === 1 ? "line" : "lines"}`}</Text>
   );
 }
 
@@ -150,14 +174,11 @@ export function FileWriteView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const file = extractToolTag(content, "write-file") ?? "";
+  // Capped preview: the one-line "Wrote N bytes to <path>" summary. The live
+  // Write result envelope carries no unified diff (only the summary), so there
+  // is no green/red body to render — the summary itself is the compact result.
   const summary = extractToolTag(content, "write-summary") ?? "Wrote file";
-  return (
-    <Box flexDirection="column">
-      {file.length > 0 ? <Text bold>{file}</Text> : null}
-      <Text color="green">{summary}</Text>
-    </Box>
-  );
+  return <Text color="green">{summary}</Text>;
 }
 
 /**
@@ -170,37 +191,20 @@ export function GrepMatchesView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const pattern = extractToolTag(content, "grep-pattern") ?? "";
+  // Capped preview: a single "Found N matches" summary line rather than the
+  // full match list under the call row.
   const matchesBlock = extractToolTag(content, "grep-matches") ?? "";
-  const matchLines = matchesBlock.length > 0 ? matchesBlock.split("\n") : [];
+  const matchLines =
+    matchesBlock.length > 0
+      ? matchesBlock.split("\n").filter((line) => line.trim().length > 0)
+      : [];
   if (matchLines.length === 0) {
-    const emptyHeader = pattern.length > 0 ? `Grep: ${pattern}` : null;
-    return (
-      <Box flexDirection="column">
-        {emptyHeader !== null ? <Text bold>{emptyHeader}</Text> : null}
-        <Text dimColor>(no matches)</Text>
-      </Box>
-    );
+    return <Text dimColor>No matches</Text>;
   }
-  const TRUNCATE_AT = 200;
-  const visible = matchLines.slice(0, TRUNCATE_AT);
-  const truncatedCount = matchLines.length - visible.length;
-  const headerText =
-    pattern.length > 0
-      ? `Grep: ${pattern} (${matchLines.length} ${
-          matchLines.length === 1 ? "match" : "matches"
-        })`
-      : null;
   return (
-    <Box flexDirection="column">
-      {headerText !== null ? <Text bold>{headerText}</Text> : null}
-      {visible.map((line, idx) => (
-        <Text key={idx}>{line}</Text>
-      ))}
-      {truncatedCount > 0 ? (
-        <Text dimColor>{`… ${truncatedCount} more matches truncated`}</Text>
-      ) : null}
-    </Box>
+    <Text dimColor>{`Found ${matchLines.length} ${
+      matchLines.length === 1 ? "match" : "matches"
+    }`}</Text>
   );
 }
 
@@ -273,6 +277,32 @@ export function ToolErrorView({
   );
 }
 
+/** Default number of stdout lines shown inline under a Run/Bash call row. */
+const BASH_PREVIEW_MAX_LINES = 5;
+/** Width cap for an individual previewed line (keeps the gutter tidy). */
+const MAX_PREVIEW_LINE_WIDTH = 200;
+
+function truncatePreviewWidth(line: string): string {
+  if (line.length <= MAX_PREVIEW_LINE_WIDTH) return line;
+  return `${line.slice(0, MAX_PREVIEW_LINE_WIDTH - 1)}… [${
+    line.length - (MAX_PREVIEW_LINE_WIDTH - 1)
+  } chars truncated]`;
+}
+
+/**
+ * Cap a block to the first `maxLines` non-trailing-whitespace lines (each line
+ * also width-capped), appending a "… +K lines" continuation when the block is
+ * longer. Matches the common CLI-agent `output_lines` convention.
+ */
+function capPreviewLines(
+  value: string,
+  maxLines: number,
+): { readonly lines: readonly string[]; readonly remaining: number } {
+  const all = value.replace(/\s+$/, "").split("\n").map(truncatePreviewWidth);
+  if (all.length <= maxLines) return { lines: all, remaining: 0 };
+  return { lines: all.slice(0, maxLines), remaining: all.length - maxLines };
+}
+
 export function BashOutputView({
   content,
   verbose: _verbose,
@@ -282,34 +312,52 @@ export function BashOutputView({
 }): React.ReactElement {
   const stdoutRaw = extractToolTag(content, "bash-stdout") ?? "";
   const stderrRaw = extractToolTag(content, "bash-stderr") ?? "";
-  const stdout = truncateForDisplay(stdoutRaw, BASH_OUTPUT_TRUNCATION_LIMIT);
-  const stderr = truncateForDisplay(stderrRaw, BASH_OUTPUT_TRUNCATION_LIMIT);
-  // Surface the metadata block (e.g. "[exit_code=0 duration_ms=42]")
-  // verbatim so the user can read exit-code / duration alongside the
-  // captured output without having to expand a verbose mode.
-  const metaMatch = content.match(/\[(?:exit_code|duration_ms)[^\]]*\]/);
-  const meta = metaMatch ? metaMatch[0] : null;
-  // Color the metadata line by exit-code: zero stays dim (success),
-  // non-zero turns red so a failed command is visually distinct.
+  // Color the output by exit-code: zero stays plain (success), non-zero
+  // surfaces stderr in red so a failed command is visually distinct.
   const exitCodeMatch = content.match(/exit_code=(-?\d+)/);
   const exitCode =
     exitCodeMatch && exitCodeMatch[1] !== undefined
       ? Number.parseInt(exitCodeMatch[1], 10)
       : null;
   const isFailure = exitCode !== null && exitCode !== 0;
-  // No-output indicator when the command produced nothing on either
-  // stream — keeps the renderer honest about silence instead of
-  // showing an apparently-empty box.
-  const isSilent = stdoutRaw.length === 0 && stderrRaw.length === 0;
+  const stdoutTrimmed = stdoutRaw.trim();
+  const stderrTrimmed = stderrRaw.trim();
+  // Capped stdout: first N lines + "… +K lines". On a non-zero exit the stderr
+  // is appended (also capped) so the failure reason is visible inline.
+  const isSilent = stdoutTrimmed.length === 0 && stderrTrimmed.length === 0;
+  if (isSilent) {
+    return (
+      <Text dimColor>
+        {isFailure ? "(no output, non-zero exit)" : "(No output)"}
+      </Text>
+    );
+  }
+  const stdoutCap = capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES);
+  const showStderr = isFailure && stderrTrimmed.length > 0;
+  const stderrCap = showStderr
+    ? capPreviewLines(stderrTrimmed, BASH_PREVIEW_MAX_LINES)
+    : null;
   return (
     <Box flexDirection="column">
-      {stdout.length > 0 ? <Text>{stdout}</Text> : null}
-      {stderr.length > 0 ? <Text color="red">{stderr}</Text> : null}
-      {isSilent ? <Text dimColor>(No output)</Text> : null}
-      {meta ? (
-        <Text color={isFailure ? "red" : undefined} dimColor={!isFailure}>
-          {meta}
-        </Text>
+      {stdoutCap.lines.map((line, idx) => (
+        <Text key={`o${idx}`}>{line}</Text>
+      ))}
+      {stdoutCap.remaining > 0 ? (
+        <Text dimColor>{`… +${stdoutCap.remaining} ${
+          stdoutCap.remaining === 1 ? "line" : "lines"
+        }`}</Text>
+      ) : null}
+      {stderrCap
+        ? stderrCap.lines.map((line, idx) => (
+            <Text key={`e${idx}`} color="red">
+              {line}
+            </Text>
+          ))
+        : null}
+      {stderrCap && stderrCap.remaining > 0 ? (
+        <Text dimColor>{`… +${stderrCap.remaining} ${
+          stderrCap.remaining === 1 ? "line" : "lines"
+        }`}</Text>
       ) : null}
     </Box>
   );
@@ -372,6 +420,33 @@ function commandFromExecInput(record: Record<string, unknown>): string | null {
   return typeof command === "string" && command.trim().length > 0
     ? truncateInline(command)
     : null;
+}
+
+/**
+ * Readable Grep/search arg summary: `"<pattern>" in <path>`. Mirrors the
+ * common CLI-agent convention — never a raw JSON dump, never -A/-B flag noise.
+ * Falls back to just the quoted pattern when no path is given.
+ */
+function grepSummaryForInput(record: Record<string, unknown>): string | null {
+  const pattern =
+    typeof record.pattern === "string"
+      ? record.pattern
+      : typeof record.query === "string"
+        ? record.query
+        : null;
+  if (pattern === null || pattern.trim().length === 0) return null;
+  const rawPath =
+    typeof record.path === "string"
+      ? record.path
+      : typeof record.glob === "string"
+        ? record.glob
+        : null;
+  const displayPath =
+    rawPath !== null && rawPath.trim().length > 0
+      ? formatToolPathForDisplay(rawPath)
+      : "";
+  const quoted = `"${truncateInline(pattern, 80)}"`;
+  return displayPath.length > 0 ? `${quoted} in ${displayPath}` : quoted;
 }
 
 function searchToolsSummary(record: Record<string, unknown>): string {
@@ -460,6 +535,10 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   if (name === "exec_command") {
     return commandFromExecInput(record) ?? "command";
   }
+  if (name === "Grep" || name === "Glob") {
+    const grep = grepSummaryForInput(record);
+    if (grep !== null) return grep;
+  }
   if (name === "system.searchTools") {
     return searchToolsSummary(record);
   }
@@ -470,18 +549,15 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   if (isMcpToolName(name)) {
     return mcpInputSummary(record);
   }
-  if (name === "Write") {
-    const size = contentLengthSummary(record.content);
-    if (displayPath.length > 0 && size !== null) return `${displayPath} (${size})`;
-    if (displayPath.length > 0) return displayPath;
-    return size !== null ? `file content (${size})` : "file";
+  if (name === "Write" || name === "MultiEdit") {
+    // Readable args = the file path only (no char-count noise). The result
+    // preview carries the size/diff stats under the call row.
+    return displayPath.length > 0 ? displayPath : "file";
   }
   if (name === "Edit") {
-    const oldSize = contentLengthSummary(record.old_string);
-    const newSize = contentLengthSummary(record.new_string);
-    const sizes =
-      oldSize !== null && newSize !== null ? ` (${oldSize} -> ${newSize})` : "";
-    return displayPath.length > 0 ? `${displayPath}${sizes}` : `edit${sizes}`;
+    // Readable args = the file path only. The "(+a -r)" stats + diff are
+    // surfaced in the result preview, not stuffed into the args row.
+    return displayPath.length > 0 ? displayPath : "edit";
   }
   if (name === "Bash" && typeof record.command === "string") {
     return truncateInline(record.command);

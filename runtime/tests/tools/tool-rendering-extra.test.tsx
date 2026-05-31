@@ -72,15 +72,15 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     expect(names).not.toContain("Read");
   });
 
-  test("Write tool-use cards summarize long content instead of raw JSON", () => {
+  test("Write tool-use cards show the file path only (size lives in the result)", () => {
     const tool = createTuiTool("Write");
     const content = "x".repeat(50_000);
 
     expect(
       tool.renderToolUseMessage({ file_path: "game.py", content }),
-    ).toBe("game.py (50000 chars)");
+    ).toBe("game.py");
     expect(tool.getActivityDescription({ file_path: "game.py", content })).toBe(
-      "Write game.py (50000 chars)",
+      "Write game.py",
     );
   });
 
@@ -90,7 +90,7 @@ describe("createTuiTools — pre-seed canonicalization", () => {
 
     expect(
       write.renderToolUseMessage({ file_path: "/root/game.py", content: "x" }),
-    ).toBe("/root/game.py (agent namespace, not a file path) (1 char)");
+    ).toBe("/root/game.py (agent namespace, not a file path)");
     expect(read.renderToolUseMessage({ file_path: "/root/game.py" })).toBe(
       "/root/game.py (agent namespace, not a file path)",
     );
@@ -196,40 +196,38 @@ describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispa
     expect((node as { type: unknown }).type).not.toBe(FileReadView);
   });
 
-  test("FileReadView renders bold path header with line range and the body content", () => {
+  test("FileReadView renders a 'Read N lines' summary using the line range", () => {
+    // Capped preview: a single "Read N lines" line derived from <read-lines>.
     const node = FileReadView({
       content:
         "<read-file>src/foo.ts</read-file>\n<read-lines>5-10</read-lines>\n<read-content>function hello() {}</read-content>",
-    });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toBe("src/foo.ts [5-10]");
-    const body = children.find(
-      (c) =>
-        typeof c.props.children === "string" &&
-        c.props.children === "function hello() {}",
-    );
-    expect(body).toBeDefined();
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Read 6 lines");
+    expect(node.props.dimColor).toBe(true);
+  });
+
+  test("FileReadView falls back to counting body lines when no range is present", () => {
+    const body = Array.from({ length: 3 }, (_, i) => `line ${i + 1}`).join("\n");
+    const node = FileReadView({
+      content: `<read-file>x</read-file>\n<read-content>${body}</read-content>`,
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Read 3 lines");
   });
 
   test("FileReadView shows (empty file) indicator when the read returns no content", () => {
     const node = FileReadView({
       content: "<read-file>x</read-file>\n<read-content></read-content>",
-    });
-    const children = flatten(node);
-    const empty = children.find(
-      (c) => c.props.children === "(empty file)" && c.props.dimColor === true,
-    );
-    expect(empty).toBeDefined();
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("(empty file)");
+    expect(node.props.dimColor).toBe(true);
   });
 
-  test("FileReadView with content but no <read-file> tag (slice-only result) renders the body without a bold header", () => {
-    const node = FileReadView({ content: "<read-content>just body</read-content>" });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header).toBeUndefined();
-    const body = children.find((c) => c.props.children === "just body");
-    expect(body).toBeDefined();
+  test("FileReadView with content but no <read-file> tag still summarizes line count", () => {
+    const node = FileReadView({
+      content: "<read-content>just body</read-content>",
+    }) as { props: ChildProps };
+    // Single-line body -> singular "line".
+    expect(node.props.children).toBe("Read 1 line");
   });
 
   test("FileRead with the legacy single-string content shape (no envelope tags at all) falls through to the generic Text renderer instead of FileReadView", () => {
@@ -242,20 +240,12 @@ describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispa
     expect((node as { type: unknown }).type).not.toBe(FileReadView);
   });
 
-  test("FileReadView truncates a megabyte-scale file body to ~8KB with a [N chars truncated] marker", () => {
-    const huge = "x".repeat(50_000);
+  test("FileReadView summarizes a megabyte-scale file body as a single line count (no body dump)", () => {
+    const huge = Array.from({ length: 5000 }, (_, i) => `x${i}`).join("\n");
     const node = FileReadView({
       content: `<read-file>big.txt</read-file>\n<read-content>${huge}</read-content>`,
-    });
-    const children = flatten(node);
-    const body = children.find(
-      (c) =>
-        typeof c.props.children === "string" &&
-        (c.props.children as string).startsWith("x") &&
-        (c.props.children as string).includes("chars truncated"),
-    );
-    expect(body).toBeDefined();
-    expect((body!.props.children as string).length).toBeLessThan(10_000);
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Read 5000 lines");
   });
 });
 
@@ -270,16 +260,13 @@ describe("createTuiTool('Write').renderToolResultMessage — end-to-end dispatch
     expect((node as { type: unknown }).type).toBe(FileWriteView);
   });
 
-  test("FileWriteView renders bold path header and a green summary line", () => {
+  test("FileWriteView renders a single green summary line (no separate header)", () => {
     const node = FileWriteView({
       content:
         "<write-file>src/out.ts</write-file>\n<write-summary>Wrote 42 bytes</write-summary>",
-    });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toBe("src/out.ts");
-    const summary = children.find((c) => c.props.color === "green");
-    expect(summary?.props.children).toBe("Wrote 42 bytes");
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Wrote 42 bytes");
+    expect(node.props.color).toBe("green");
   });
 
   test("Write with the legacy single-string content shape (no envelope) falls through to generic Text instead of FileWriteView", () => {
@@ -293,10 +280,9 @@ describe("createTuiTool('Write').renderToolResultMessage — end-to-end dispatch
   });
 
   test("FileWriteView renders the default summary even when path is missing", () => {
-    const node = FileWriteView({ content: "" });
-    const children = flatten(node);
-    const summary = children.find((c) => c.props.color === "green");
-    expect(summary?.props.children).toBe("Wrote file");
+    const node = FileWriteView({ content: "" }) as { props: ChildProps };
+    expect(node.props.children).toBe("Wrote file");
+    expect(node.props.color).toBe("green");
   });
 });
 
@@ -311,72 +297,43 @@ describe("createTuiTool('Grep').renderToolResultMessage — end-to-end dispatch"
     expect((node as { type: unknown }).type).toBe(GrepMatchesView);
   });
 
-  test("GrepMatchesView renders the bold pattern header with a match count and one Text child per match", () => {
+  test("GrepMatchesView renders a 'Found N matches' summary (no per-match dump)", () => {
     const node = GrepMatchesView({
       content:
         "<grep-pattern>TODO</grep-pattern>\n<grep-matches>a.ts:1:foo\nb.ts:2:bar\nc.ts:3:baz</grep-matches>",
-    });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toContain("Grep: TODO");
-    expect(header?.props.children).toContain("3 matches");
-    const matchLines = children.filter(
-      (c) =>
-        typeof c.props.children === "string" &&
-        (c.props.children as string).includes(":"),
-    );
-    expect(matchLines.length).toBeGreaterThanOrEqual(3);
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Found 3 matches");
+    expect(node.props.dimColor).toBe(true);
   });
 
-  test("GrepMatchesView renders (no matches) when matches are empty AND preserves the bold pattern header (behavior 3)", () => {
+  test("GrepMatchesView renders 'No matches' when the match block is empty", () => {
     const node = GrepMatchesView({
       content: "<grep-pattern>X</grep-pattern>\n<grep-matches></grep-matches>",
-    });
-    const children = flatten(node);
-    const header = children.find(
-      (c) => c.props.bold === true && c.props.children === "Grep: X",
-    );
-    expect(header).toBeDefined();
-    const noMatches = children.find(
-      (c) => c.props.children === "(no matches)" && c.props.dimColor === true,
-    );
-    expect(noMatches).toBeDefined();
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("No matches");
+    expect(node.props.dimColor).toBe(true);
   });
 
-  test("GrepMatchesView with single match renders 'Grep: X (1 match)' (singular), not 'matches'", () => {
+  test("GrepMatchesView with a single match uses the singular 'Found 1 match'", () => {
     const node = GrepMatchesView({
       content: "<grep-pattern>X</grep-pattern>\n<grep-matches>a.ts:1:hit</grep-matches>",
-    });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toBe("Grep: X (1 match)");
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Found 1 match");
   });
 
-  test("GrepMatchesView without <grep-pattern> tag renders matches without a header (no header crash)", () => {
+  test("GrepMatchesView counts matches even without a <grep-pattern> tag", () => {
     const node = GrepMatchesView({
-      content: "<grep-matches>a.ts:1:hit</grep-matches>",
-    });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header).toBeUndefined();
-    const matchLine = children.find(
-      (c) => c.props.children === "a.ts:1:hit",
-    );
-    expect(matchLine).toBeDefined();
+      content: "<grep-matches>a.ts:1:hit\nb.ts:2:hit</grep-matches>",
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Found 2 matches");
   });
 
-  test("GrepMatchesView truncates large match lists to 200 visible + a dim N-more-truncated marker", () => {
+  test("GrepMatchesView counts large match lists exactly (no 200-cap truncation in the summary)", () => {
     const lines = Array.from({ length: 350 }, (_, i) => `f${i}.ts:1:hit`).join("\n");
     const node = GrepMatchesView({
       content: `<grep-pattern>X</grep-pattern>\n<grep-matches>${lines}</grep-matches>`,
-    });
-    const children = flatten(node);
-    const truncated = children.find(
-      (c) =>
-        typeof c.props.children === "string" &&
-        (c.props.children as string).includes("more matches truncated"),
-    );
-    expect(truncated).toBeDefined();
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("Found 350 matches");
   });
 });
 
@@ -587,10 +544,9 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
     const joined = blocks.map((b) => b.text).join("\n");
     expect(joined).toContain("<read-file>src/foo.ts</read-file>");
     expect(joined).toContain("<read-lines>1-3</read-lines>");
-    const node = FileReadView({ content: joined });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toBe("src/foo.ts [1-3]");
+    const node = FileReadView({ content: joined }) as { props: ChildProps };
+    // <read-lines>1-3</read-lines> -> "Read 3 lines".
+    expect(node.props.children).toBe("Read 3 lines");
   });
 
   test("Write envelope produced by formatStructuredToolResult is consumed by FileWriteView", async () => {
@@ -601,10 +557,9 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
       { result: { path: "src/out.ts", bytesWritten: 100 } },
     );
     const joined = blocks.map((b) => b.text).join("\n");
-    const node = FileWriteView({ content: joined });
-    const children = flatten(node);
-    const summary = children.find((c) => c.props.color === "green");
-    expect(summary?.props.children).toContain("100 bytes");
+    const node = FileWriteView({ content: joined }) as { props: ChildProps };
+    expect(node.props.color).toBe("green");
+    expect(node.props.children).toContain("100 bytes");
   });
 
   test("Grep envelope produced by formatStructuredToolResult is consumed by GrepMatchesView", async () => {
@@ -620,10 +575,9 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
       },
     );
     const joined = blocks.map((b) => b.text).join("\n");
-    const node = GrepMatchesView({ content: joined });
-    const children = flatten(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toContain("Grep: TODO");
+    const node = GrepMatchesView({ content: joined }) as { props: ChildProps };
+    // One match -> "Found 1 match".
+    expect(node.props.children).toBe("Found 1 match");
   });
 
   test("Glob envelope produced by formatStructuredToolResult is consumed by GlobPathsView", async () => {

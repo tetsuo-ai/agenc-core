@@ -10,7 +10,6 @@ import { extractTag, type buildMessageLookups } from '../../../utils/messages.js
 import { MessageResponse } from '../../components/MessageResponse';
 import { HookProgressMessage } from '../HookProgressMessage';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
-import { toolNameOwnsInlinePreview } from '../toolRowPreview.js';
 type Props = {
   message: NormalizedUserMessage;
   lookups: ReturnType<typeof buildMessageLookups>;
@@ -138,18 +137,13 @@ export function UserToolSuccessMessage({
         </Box> : null;
   }
   const toolResult = parsedOutput?.data ?? message.toolUseResult;
-  // De-duplication: the call row (AssistantToolUseMessage) now renders a
-  // compact, capped preview/diff of the result inline under the "● Tool(...)"
-  // line for the Read/Bash/Grep/Edit/Write family. Suppress the now-redundant
-  // detached success BODY here so the result does NOT render twice. Keyed off
-  // the canonical tool NAME (not a fuzzy kind) to avoid suppressing unrelated
-  // tools. Verbose mode keeps the full detached result (the call row opts out
-  // there too). Classifier approval rows + the PostToolUse hook block below
-  // still render regardless.
-  const ownsInlinePreview = !verbose && toolNameOwnsInlinePreview(tool.name);
-  const renderedMessage = ownsInlinePreview
-    ? null
-    : tool.renderToolResultMessage?.(toolResult as never, filterToolProgressMessages(progressMessagesForMessage), {
+  // The capped per-tool RESULT preview ("Read N lines", capped stdout, "Found N
+  // matches", compact edit diff) is produced HERE — once — by the thin-client
+  // tool's renderToolResultMessage (see tool-rendering.tsx). This detached body
+  // sits directly under the "● Tool(...)" call row, so it reads as the call's
+  // result without any inline-on-call-row duplication. The call row itself
+  // renders no success preview (only failed-row reasons live there).
+  const renderedMessage = tool.renderToolResultMessage?.(toolResult as never, filterToolProgressMessages(progressMessagesForMessage), {
     style,
     theme,
     tools,
@@ -159,10 +153,8 @@ export function UserToolSuccessMessage({
     input: lookups.toolUseByToolUseID.get(toolUseID)?.input
   }) ?? null;
 
-  // Don't render anything if the tool result message is null — unless we
-  // deliberately suppressed it for an inline-preview tool, in which case the
-  // classifier-approval rows and PostToolUse hook block below must still show.
-  if (renderedMessage === null && !ownsInlinePreview) {
+  // Don't render anything if the tool result message is null.
+  if (renderedMessage === null) {
     return null;
   }
 

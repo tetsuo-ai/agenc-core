@@ -1,23 +1,32 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { Tool } from '../../../src/tools/Tool.js'
+// `bun:bundle` feature() resolves to a no-op in tests; BASH_CLASSIFIER off so
+// the classifier-approval chrome stays out of the asserted output.
+vi.mock('bun:bundle', () => ({
+  feature: () => false,
+}))
+
 import type {
   AgenCToolUseBlockParam,
   NormalizedMessage,
 } from '../../../src/types/message.js'
+import type { Tools } from '../../../src/tools/Tool.js'
 import { renderToString } from '../../../src/utils/staticRender.js'
-import { Text } from '../../../src/tui/ink.js'
+// REAL live-daemon thin-client tool registry + REAL transcript builders. These
+// are the exact code paths the daemon TUI uses (App.tsx builds the tool list
+// via createTuiTools; session-transcript adapts events into tool_use /
+// tool_result messages). Driving them here — instead of mocking
+// renderToolUseMessage to '' (the prior false-green) — reproduces the LIVE
+// render path end to end.
+import { createTuiTools } from '../../../src/tui/tool-rendering.js'
+import {
+  formatStructuredToolResult,
+  makeToolResultMessage,
+  makeToolUseMessage,
+} from '../../../src/tui/session-transcript.js'
 import { AssistantToolUseMessage } from '../../../src/tui/message-renderers/AssistantToolUseMessage.js'
 import { UserToolSuccessMessage } from '../../../src/tui/message-renderers/UserToolResultMessage/UserToolSuccessMessage.js'
-import {
-  buildEditRowPreview,
-  successToolRowPreview,
-  summarizeToolInput,
-} from '../../../src/tui/message-renderers/toolRowPreview.js'
 
 const classifierMock = vi.hoisted(() => ({ checking: false }))
 const appStateMock = vi.hoisted(() => ({
@@ -29,12 +38,14 @@ const appStateMock = vi.hoisted(() => ({
 }))
 
 vi.mock('../../../src/tui/hooks/useTerminalSize.js', () => ({
-  useTerminalSize: () => ({ columns: 80, rows: 24 }),
+  useTerminalSize: () => ({ columns: 100, rows: 24 }),
 }))
 vi.mock('../../../src/utils/classifierApprovalsHook.js', () => ({
   useIsClassifierChecking: () => classifierMock.checking,
 }))
 vi.mock('../../../src/tui/state/AppState.js', () => ({
+  useAppState: (selector: (state: { isBriefOnly: boolean }) => unknown) =>
+    selector({ isBriefOnly: false }),
   useAppStateMaybeOutsideOfProvider: (
     selector: (state: typeof appStateMock) => unknown,
   ) => selector(appStateMock),
@@ -46,57 +57,11 @@ vi.mock('../../../src/tui/ink.js', async () => {
   return { ...actual, useTheme: () => ['dark'] }
 })
 
-function makeTool(overrides: Partial<Tool> = {}): Tool {
-  return {
-    name: 'Tool',
-    inputSchema: { safeParse: (input: unknown) => ({ success: true, data: input }) },
-    userFacingName: () => 'Tool',
-    renderToolUseMessage: () => '',
-    renderToolUseProgressMessage: () => null,
-    ...overrides,
-  } as unknown as Tool
-}
-
-/** Build lookups with a resolved tool result for `id`. */
-function makeLookups(id: string, resultContent: string) {
-  const resultMsg: NormalizedMessage = {
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [
-        { type: 'tool_result', tool_use_id: id, content: resultContent },
-      ],
-    },
-  } as unknown as NormalizedMessage
-  return {
-    resolvedToolUseIDs: new Set<string>([id]),
-    erroredToolUseIDs: new Set<string>(),
-    toolResultByToolUseID: new Map<string, NormalizedMessage>([[id, resultMsg]]),
-    toolUseByToolUseID: new Map(),
-  } as never
-}
-
-async function renderRow(
-  param: AgenCToolUseBlockParam,
-  tool: Tool,
-  lookups: unknown,
-): Promise<string> {
-  return renderToString(
-    <AssistantToolUseMessage
-      param={param}
-      addMargin={false}
-      tools={[tool] as never}
-      commands={[]}
-      verbose={false}
-      inProgressToolUseIDs={new Set()}
-      progressMessagesForMessage={[]}
-      shouldAnimate={false}
-      shouldShowDot={false}
-      lookups={lookups as never}
-    />,
-    80,
-  )
-}
+// The live registered tool NAMES (file-read.ts -> FileRead, the shell tool ->
+// exec_command, grep.ts -> Grep, file-edit.ts -> Edit). Build the registry the
+// way App.tsx does.
+const LIVE_TOOL_NAMES = ['FileRead', 'exec_command', 'Grep', 'Edit'] as const
+const tools = createTuiTools([...LIVE_TOOL_NAMES]) as unknown as Tools
 
 beforeEach(() => {
   classifierMock.checking = false
@@ -105,224 +70,274 @@ beforeEach(() => {
   appStateMock.toolPermissionContext.strippedDangerousRules = undefined
 })
 
-describe('summarizeToolInput (FIX 1: readable args, no raw JSON)', () => {
-  it('renders grep as "pattern" in path, ignoring flags', () => {
-    expect(
-      summarizeToolInput(
-        { pattern: 'Reader, Lexer', path: 'PLAN.md', '-A': 3, '-i': true },
-        'grep',
-      ),
-    ).toBe('"Reader, Lexer" in PLAN.md')
-  })
+/**
+ * Build the (call-row lookups, tool_use param, tool_result message) triple the
+ * exact way the daemon path does: tool_use input is the JSON-parsed args, the
+ * tool_result content comes from formatStructuredToolResult wrapped by
+ * makeToolResultMessage (matching adaptTranscriptEvents / pushToolResult).
+ */
+function buildLiveCase(opts: {
+  readonly id: string
+  readonly toolName: string
+  readonly input: unknown
+  readonly eventType: string
+  readonly payload: Record<string, unknown>
+  readonly isError?: boolean
+}): {
+  readonly param: AgenCToolUseBlockParam
+  readonly resultMessage: NormalizedMessage
+  readonly lookups: never
+} {
+  const useMsg = makeToolUseMessage(opts.id, opts.toolName, opts.input)
+  const param = useMsg.message.content[0] as AgenCToolUseBlockParam
+  const structured = formatStructuredToolResult(
+    opts.toolName,
+    opts.eventType,
+    opts.payload,
+  )
+  const resultMessage = makeToolResultMessage(
+    opts.id,
+    structured,
+    opts.isError ?? false,
+  ) as NormalizedMessage
+  const lookups = {
+    resolvedToolUseIDs: new Set<string>([opts.id]),
+    erroredToolUseIDs: new Set<string>(),
+    toolResultByToolUseID: new Map<string, NormalizedMessage>([
+      [opts.id, resultMessage],
+    ]),
+    toolUseByToolUseID: new Map<string, { input: unknown }>([
+      [opts.id, { input: opts.input }],
+    ]),
+    inProgressHookCounts: new Map<string, Map<string, number>>(),
+    resolvedHookCounts: new Map<string, Map<string, number>>(),
+  } as never
+  return { param, resultMessage, lookups }
+}
 
-  it('renders Read/Edit/Write file_path', () => {
-    expect(summarizeToolInput({ file_path: 'src/lexer.c' }, 'read')).toBe(
-      'src/lexer.c',
-    )
-  })
+/** Render the call row exactly as Message.tsx (assistant tool_use) does. */
+async function renderCallRow(
+  param: AgenCToolUseBlockParam,
+  lookups: never,
+): Promise<string> {
+  return renderToString(
+    <AssistantToolUseMessage
+      param={param}
+      addMargin={false}
+      tools={tools}
+      commands={[]}
+      verbose={false}
+      inProgressToolUseIDs={new Set()}
+      progressMessagesForMessage={[]}
+      shouldAnimate={false}
+      shouldShowDot={false}
+      lookups={lookups}
+    />,
+    100,
+  )
+}
 
-  it('renders Bash command', () => {
-    expect(
-      summarizeToolInput({ command: 'cmake --build build' }, 'bash'),
-    ).toBe('cmake --build build')
-  })
+/**
+ * Render the result body exactly as Message.tsx (tool_result ->
+ * UserToolResultMessage -> UserToolSuccessMessage) does. Looks up the live tool
+ * by name from the same registry the call row uses.
+ */
+async function renderResultBody(opts: {
+  readonly toolName: string
+  readonly id: string
+  readonly resultMessage: NormalizedMessage
+  readonly lookups: never
+}): Promise<string> {
+  const tool = (tools as readonly { name: string }[]).find(
+    (t) => t.name === opts.toolName,
+  )
+  expect(tool, `tool ${opts.toolName} present in registry`).toBeDefined()
+  return renderToString(
+    <UserToolSuccessMessage
+      message={opts.resultMessage as never}
+      lookups={opts.lookups}
+      toolUseID={opts.id}
+      progressMessagesForMessage={[]}
+      tool={tool as never}
+      tools={tools}
+      verbose={false}
+      width={100}
+    />,
+    100,
+  )
+}
 
-  it('never dumps raw JSON for unknown objects', () => {
-    const out = summarizeToolInput({ alpha: 'one', beta: 2, gamma: true })
-    expect(out).not.toContain('{')
-    expect(out).not.toContain('"alpha"')
-    expect(out).toContain('alpha=one')
-  })
-})
+/** Count non-overlapping occurrences of `needle` in `haystack`. */
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle.length === 0) return 0
+  let count = 0
+  let idx = haystack.indexOf(needle)
+  while (idx !== -1) {
+    count++
+    idx = haystack.indexOf(needle, idx + needle.length)
+  }
+  return count
+}
 
-describe('successToolRowPreview (FIX 2: capped result preview)', () => {
-  it('Read counts lines when no header present', () => {
-    const body = Array.from({ length: 5 }, (_, i) => `${i + 1}\tline`).join('\n')
-    expect(successToolRowPreview('read', body)).toBe('Read 5 lines')
-  })
-
-  it('Read honors an explicit "Read N lines" header', () => {
-    expect(successToolRowPreview('read', 'Read 1592 lines\n...')).toBe(
-      'Read 1592 lines',
-    )
-  })
-
-  it('Bash caps stdout and appends "+N lines"', () => {
-    const stdout = Array.from({ length: 20 }, (_, i) => `out ${i}`).join('\n')
-    const preview = successToolRowPreview('bash', stdout, 6)
-    expect(preview).toContain('out 0')
-    expect(preview).toContain('out 5')
-    expect(preview).not.toContain('out 6')
-    expect(preview).toContain('+14 lines')
-  })
-
-  it('Bash strips the {exitCode,stdout} JSON wrapper', () => {
-    const wrapped = JSON.stringify({ exitCode: 0, stdout: 'hello\nworld' })
-    expect(successToolRowPreview('bash', wrapped)).toBe('hello\nworld')
-  })
-
-  it('Grep summarizes match count', () => {
-    expect(successToolRowPreview('grep', 'Found 3 matches')).toBe('Found 3 matches')
-  })
-})
-
-describe('AssistantToolUseMessage inline preview (call row)', () => {
-  it('Read row shows "Read N lines" under the call', async () => {
-    const id = 'tu_read'
-    const param: AgenCToolUseBlockParam = {
-      type: 'tool_use',
-      id,
-      name: 'Read',
-      input: { file_path: 'PLAN.md' },
-    }
-    const tool = makeTool({
-      name: 'Read',
-      userFacingName: () => 'Read',
-      renderToolUseMessage: () => 'PLAN.md',
-    })
-    const out = await renderRow(param, tool, makeLookups(id, 'a\nb\nc\nd'))
-    expect(out).toContain('PLAN.md')
-    expect(out).toContain('Read 4 lines')
-  })
-
-  it('Bash row shows capped stdout + "+N lines"', async () => {
-    const id = 'tu_bash'
-    const param: AgenCToolUseBlockParam = {
-      type: 'tool_use',
-      id,
-      name: 'Bash',
-      input: { command: 'seq 20' },
-    }
-    const tool = makeTool({
-      name: 'Bash',
-      userFacingName: () => 'Bash',
-      renderToolUseMessage: () => 'seq 20',
-    })
-    const stdout = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n')
-    const out = await renderRow(param, tool, makeLookups(id, stdout))
-    expect(out).toContain('line0')
-    expect(out).toContain('+14 lines')
-  })
-
-  it('Grep row shows readable "pattern" in path arg and match count', async () => {
-    const id = 'tu_grep'
-    const param: AgenCToolUseBlockParam = {
-      type: 'tool_use',
-      id,
-      name: 'Grep',
-      input: { pattern: 'Reader, Lexer', path: 'PLAN.md' },
-    }
-    const tool = makeTool({
-      name: 'Grep',
-      userFacingName: () => 'Grep',
-      // Force the call-row arg summarizer (return '' so it falls back).
-      renderToolUseMessage: () => '',
-    })
-    const out = await renderRow(param, tool, makeLookups(id, 'Found 3 matches'))
-    expect(out).toContain('"Reader, Lexer" in PLAN.md')
-    expect(out).toContain('Found 3 matches')
-  })
-})
-
-describe('de-duplication (CRITICAL: result rendered exactly once)', () => {
-  it('toolNameOwnsInlinePreview matches the Read/Bash/Grep/Edit/Write family', async () => {
-    const { toolNameOwnsInlinePreview } = await import(
-      '../../../src/tui/message-renderers/toolRowPreview.js'
-    )
-    expect(toolNameOwnsInlinePreview('Read')).toBe(true)
-    expect(toolNameOwnsInlinePreview('Bash')).toBe(true)
-    expect(toolNameOwnsInlinePreview('Grep')).toBe(true)
-    expect(toolNameOwnsInlinePreview('Edit')).toBe(true)
-    expect(toolNameOwnsInlinePreview('Write')).toBe(true)
-    expect(toolNameOwnsInlinePreview('WebFetch')).toBe(false)
-    expect(toolNameOwnsInlinePreview(undefined)).toBe(false)
-  })
-
-  it('the detached success body is suppressed for previewed tools (no double render)', async () => {
-    const renderToolResultMessage = vi.fn(() => (
-      <Text>DETACHED_RESULT_BODY</Text>
-    ))
-    const tool = {
-      name: 'Read',
-      renderToolResultMessage,
-      userFacingName: () => 'Read',
-    } as unknown as Tool
-    const out = await renderToString(
-      <UserToolSuccessMessage
-        message={{
-          type: 'user',
-          message: {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: 'tu_x',
-                content: 'a\nb',
-              },
-            ],
-          },
-          toolUseResult: { ok: true },
-        } as never}
-        lookups={
-          {
-            toolUseByToolUseID: new Map([['tu_x', { input: {} }]]),
-            inProgressHookCounts: new Map(),
-            resolvedHookCounts: new Map(),
-          } as never
-        }
-        toolUseID="tu_x"
-        progressMessagesForMessage={[] as never}
-        tool={tool}
-        tools={[tool] as never}
-        verbose={false}
-        width={72}
-      />,
-      { columns: 80, rows: 12 },
-    )
-    // The call row owns the preview, so the detached body must NOT appear.
-    expect(out).not.toContain('DETACHED_RESULT_BODY')
-    expect(renderToolResultMessage).not.toHaveBeenCalled()
-  })
-})
-
-describe('buildEditRowPreview (FIX 3: compact diff)', () => {
-  it('returns +a -r stats and a diff node', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'edit-preview-'))
-    const file = join(dir, 'lexer.c')
-    // The file on disk reflects the AFTER state (edit already applied).
-    writeFileSync(file, 'int k = j;\nreturn k;\n')
-    const preview = buildEditRowPreview('Edit', {
-      file_path: file,
-      old_string: 'int k = i;',
-      new_string: 'int k = j;',
-    })
-    expect(preview).not.toBeNull()
-    expect(preview!.stats).toBe('+1 -1')
-  })
-
-  it('renders green/red diff lines and "(+a -r)" on the row', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'edit-row-'))
-    const file = join(dir, 'lexer.c')
-    writeFileSync(file, 'int k = j;\nreturn k;\n')
-    const id = 'tu_edit'
-    const param: AgenCToolUseBlockParam = {
-      type: 'tool_use',
-      id,
-      name: 'Edit',
-      input: {
-        file_path: file,
-        old_string: 'int k = i;',
-        new_string: 'int k = j;',
+describe('live daemon TUI tool output (real createTuiTools render path)', () => {
+  it('Grep: readable args ("pattern" in path), capped "Found N matches", once', async () => {
+    const c = buildLiveCase({
+      id: 'tu_grep',
+      toolName: 'Grep',
+      input: { pattern: 'IO_NUMBER', path: 'src/syntax/lexer.c' },
+      eventType: 'tool_call_completed',
+      payload: {
+        result: {
+          pattern: 'IO_NUMBER',
+          matches: [
+            { file: 'src/syntax/lexer.c', line: 41, content: 'IO_NUMBER a' },
+            { file: 'src/syntax/lexer.c', line: 88, content: 'IO_NUMBER b' },
+            { file: 'src/syntax/lexer.c', line: 90, content: 'IO_NUMBER c' },
+          ],
+        },
       },
-    }
-    const tool = makeTool({
-      name: 'Edit',
-      userFacingName: () => 'Edit',
-      renderToolUseMessage: () => file,
     })
-    const out = await renderRow(param, tool, makeLookups(id, 'File updated'))
-    expect(out).toContain('(+1 -1)')
-    expect(out).toContain('int k = j;')
-    expect(out).toContain('int k = i;')
+    const row = await renderCallRow(c.param, c.lookups)
+    const body = await renderResultBody({
+      toolName: 'Grep',
+      id: 'tu_grep',
+      resultMessage: c.resultMessage,
+      lookups: c.lookups,
+    })
+
+    // Readable args on the call row — NOT raw JSON.
+    expect(row).toContain('"IO_NUMBER" in src/syntax/lexer.c')
+    expect(row).not.toContain('{"pattern"')
+    expect(row).not.toContain('"path":')
+
+    // Capped result preview appears, exactly once.
+    const combined = `${row}\n${body}`
+    expect(body).toContain('Found 3 matches')
+    expect(countOccurrences(combined, 'Found 3 matches')).toBe(1)
+    // The raw match list must NOT be dumped under the call row.
+    expect(combined).not.toContain('IO_NUMBER a')
+  })
+
+  it('FileRead: path args, "Read N lines" preview, once (never vanishes)', async () => {
+    const fileBody = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join(
+      '\n',
+    )
+    const c = buildLiveCase({
+      id: 'tu_read',
+      toolName: 'FileRead',
+      input: { file_path: 'PLAN.md' },
+      eventType: 'tool_call_completed',
+      payload: {
+        result: { path: 'PLAN.md', startLine: 1, endLine: 12, content: fileBody },
+      },
+    })
+    const row = await renderCallRow(c.param, c.lookups)
+    const body = await renderResultBody({
+      toolName: 'FileRead',
+      id: 'tu_read',
+      resultMessage: c.resultMessage,
+      lookups: c.lookups,
+    })
+
+    expect(row).toContain('PLAN.md')
+    const combined = `${row}\n${body}`
+    expect(body).toContain('Read 12 lines')
+    expect(countOccurrences(combined, 'Read 12 lines')).toBe(1)
+    // Result must NOT vanish and the file body must NOT be dumped.
+    expect(body.trim().length).toBeGreaterThan(0)
+    expect(combined).not.toContain('line 7')
+  })
+
+  it('exec_command: command args, capped stdout + "+N lines", once', async () => {
+    const stdout = Array.from({ length: 9 }, (_, i) => `out ${i}`).join('\n')
+    const c = buildLiveCase({
+      id: 'tu_exec',
+      toolName: 'exec_command',
+      input: { command: 'cmake --build build' },
+      eventType: 'exec_command_end',
+      payload: { stdout, stderr: '', exitCode: 0, durationMs: 12 },
+    })
+    const row = await renderCallRow(c.param, c.lookups)
+    const body = await renderResultBody({
+      toolName: 'exec_command',
+      id: 'tu_exec',
+      resultMessage: c.resultMessage,
+      lookups: c.lookups,
+    })
+
+    // "Run" facing name + the command as readable args.
+    expect(row).toContain('cmake --build build')
+
+    const combined = `${row}\n${body}`
+    // Capped stdout: first 5 lines shown, rest collapsed to "… +4 lines".
+    expect(body).toContain('out 0')
+    expect(body).toContain('out 4')
+    expect(body).not.toContain('out 5')
+    expect(body).toContain('+4 lines')
+    expect(countOccurrences(combined, 'out 0')).toBe(1)
+  })
+
+  it('exec_command: non-zero exit surfaces stderr', async () => {
+    const c = buildLiveCase({
+      id: 'tu_exec_fail',
+      toolName: 'exec_command',
+      input: { command: 'make' },
+      eventType: 'exec_command_end',
+      payload: {
+        stdout: '',
+        stderr: 'error: undefined reference',
+        exitCode: 2,
+        durationMs: 5,
+      },
+      isError: true,
+    })
+    const body = await renderResultBody({
+      toolName: 'exec_command',
+      id: 'tu_exec_fail',
+      resultMessage: c.resultMessage,
+      lookups: c.lookups,
+    })
+    expect(body).toContain('error: undefined reference')
+  })
+
+  it('Edit: path args, compact "(+a -r)" diff with green/red, once', async () => {
+    const diff = [
+      '--- a/src/syntax/lexer.c',
+      '+++ b/src/syntax/lexer.c',
+      '@@ -1,3 +1,3 @@',
+      '-int old_token;',
+      '+int new_token;',
+      '+int extra_token;',
+    ].join('\n')
+    const c = buildLiveCase({
+      id: 'tu_edit',
+      toolName: 'Edit',
+      input: {
+        file_path: 'src/syntax/lexer.c',
+        old_string: 'int old_token;',
+        new_string: 'int new_token;\nint extra_token;',
+      },
+      eventType: 'tool_call_completed',
+      payload: { result: { path: 'src/syntax/lexer.c', diff } },
+    })
+    const row = await renderCallRow(c.param, c.lookups)
+    const body = await renderResultBody({
+      toolName: 'Edit',
+      id: 'tu_edit',
+      resultMessage: c.resultMessage,
+      lookups: c.lookups,
+    })
+
+    // Args = path only, never char-count noise.
+    expect(row).toContain('src/syntax/lexer.c')
+    expect(row).not.toContain('->')
+    expect(row).not.toContain('chars')
+
+    const combined = `${row}\n${body}`
+    // 2 additions, 1 removal.
+    expect(body).toContain('(+2 -1)')
+    expect(body).toContain('new_token')
+    expect(body).toContain('old_token')
+    expect(countOccurrences(combined, '(+2 -1)')).toBe(1)
   })
 })

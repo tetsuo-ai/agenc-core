@@ -87,64 +87,77 @@ describe("createTuiTool('Edit').renderToolResultMessage — end-to-end dispatch"
   });
 });
 
-describe("EditDiffView — local renderer fidelity to upstream visual contract", () => {
-  test("renders the file path as a bold header and colors '+' lines green, '-' lines red, '@@' hunk headers cyan", () => {
+describe("EditDiffView — capped (+a -r) diff preview", () => {
+  test("renders a dim '(path (+a -r))' stat line plus green '+' / red '-' change rows", () => {
     const node = EditDiffView({
       content:
         "<edit-file>src/foo.ts</edit-file>\n<edit-diff>--- a\n+++ b\n@@ -1,3 +1,3 @@\n-old line\n+new line</edit-diff>",
     });
     const children = flattenChildren(node);
-    const header = children.find((c) => c.props.bold === true);
-    expect(header?.props.children).toBe("src/foo.ts");
+    // Stat header: dim, path + (+1 -1). No bold, no cyan hunk line.
+    const stat = children.find(
+      (c) =>
+        c.props.dimColor === true &&
+        typeof c.props.children === "string" &&
+        (c.props.children as string).includes("(+1 -1)"),
+    );
+    expect(stat).toBeDefined();
+    expect(stat!.props.children).toContain("src/foo.ts");
+    expect(children.find((c) => c.props.bold === true)).toBeUndefined();
+    expect(children.find((c) => c.props.color === "cyan")).toBeUndefined();
+
     const greenLine = children.find(
       (c) =>
         c.props.color === "green" &&
         typeof c.props.children === "string" &&
-        c.props.children.startsWith("+new"),
+        (c.props.children as string).includes("new line"),
     );
     expect(greenLine).toBeDefined();
     const redLine = children.find(
       (c) =>
         c.props.color === "red" &&
         typeof c.props.children === "string" &&
-        c.props.children.startsWith("-old"),
+        (c.props.children as string).includes("old line"),
     );
     expect(redLine).toBeDefined();
-    const hunkLine = children.find((c) => c.props.color === "cyan");
-    expect(typeof hunkLine?.props.children).toBe("string");
-    expect((hunkLine?.props.children as string).startsWith("@@")).toBe(true);
   });
 
-  test("dims '+++' / '---' header lines (these are file-path metadata, not edits)", () => {
+  test("'+++' / '---' / '@@' lines are excluded from the change count and rows", () => {
     const node = EditDiffView({
       content:
         "<edit-file>src/foo.ts</edit-file>\n<edit-diff>--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-x\n+y</edit-diff>",
     });
     const children = flattenChildren(node);
-    const dimMinus = children.find(
-      (c) =>
-        c.props.dimColor === true &&
-        typeof c.props.children === "string" &&
-        (c.props.children as string).startsWith("---"),
+    // Exactly one add + one remove counted (header/hunk lines dropped).
+    const stat = children.find(
+      (c) => typeof c.props.children === "string" && (c.props.children as string).includes("(+1 -1)"),
     );
-    expect(dimMinus).toBeDefined();
-    const dimPlus = children.find(
-      (c) =>
-        c.props.dimColor === true &&
-        typeof c.props.children === "string" &&
-        (c.props.children as string).startsWith("+++"),
-    );
-    expect(dimPlus).toBeDefined();
+    expect(stat).toBeDefined();
+    expect(children.filter((c) => c.props.color === "green").length).toBe(1);
+    expect(children.filter((c) => c.props.color === "red").length).toBe(1);
+    // No metadata header lines leaked into the change rows.
+    expect(
+      children.some(
+        (c) =>
+          typeof c.props.children === "string" &&
+          ((c.props.children as string).includes("--- a/src") ||
+            (c.props.children as string).includes("+++ b/src")),
+      ),
+    ).toBe(false);
   });
 
-  test("new-file diff (only '+' lines) renders all additions in green without crashing on missing '---' header", () => {
+  test("new-file diff (only '+' lines) counts all additions, zero removals", () => {
     const node = EditDiffView({
       content:
         "<edit-file>src/new.ts</edit-file>\n<edit-diff>+line one\n+line two\n+line three</edit-diff>",
     });
     const children = flattenChildren(node);
-    const greens = children.filter((c) => c.props.color === "green");
-    expect(greens.length).toBe(3);
+    expect(children.filter((c) => c.props.color === "green").length).toBe(3);
+    expect(
+      children.some(
+        (c) => typeof c.props.children === "string" && (c.props.children as string).includes("(+3 -0)"),
+      ),
+    ).toBe(true);
   });
 
   test("file-deletion diff (only '-' lines) renders all deletions in red", () => {
@@ -153,41 +166,38 @@ describe("EditDiffView — local renderer fidelity to upstream visual contract",
         "<edit-file>src/old.ts</edit-file>\n<edit-diff>-line one\n-line two</edit-diff>",
     });
     const children = flattenChildren(node);
-    const reds = children.filter((c) => c.props.color === "red");
-    expect(reds.length).toBe(2);
+    expect(children.filter((c) => c.props.color === "red").length).toBe(2);
   });
 
-  test("multi-hunk diff renders all hunks (no truncation to first hunk only)", () => {
+  test("long diff is capped to 8 change rows with a '… +N more lines' marker", () => {
+    const diffBody = Array.from({ length: 14 }, (_, i) => `+l${i}`).join("\n");
     const node = EditDiffView({
-      content:
-        "<edit-file>src/foo.ts</edit-file>\n<edit-diff>@@ -1 +1 @@\n-a\n+A\n@@ -10 +10 @@\n-z\n+Z</edit-diff>",
+      content: `<edit-file>src/big.ts</edit-file>\n<edit-diff>${diffBody}</edit-diff>`,
     });
     const children = flattenChildren(node);
-    const hunkHeaders = children.filter(
-      (c) =>
-        c.props.color === "cyan" &&
-        typeof c.props.children === "string" &&
-        (c.props.children as string).startsWith("@@"),
-    );
-    expect(hunkHeaders.length).toBe(2);
+    expect(children.filter((c) => c.props.color === "green").length).toBe(8);
+    expect(
+      children.some(
+        (c) =>
+          typeof c.props.children === "string" &&
+          (c.props.children as string).includes("+6 more"),
+      ),
+    ).toBe(true);
   });
 
-  test("empty diff body falls back to (No changes) indicator instead of an empty box", () => {
+  test("empty diff body falls back to (No changes) indicator", () => {
     const node = EditDiffView({
       content: "<edit-file>src/foo.ts</edit-file>\n<edit-diff></edit-diff>",
-    });
-    const children = flattenChildren(node);
-    const noChanges = children.find(
-      (c) => c.props.children === "(No changes)" && c.props.dimColor === true,
-    );
-    expect(noChanges).toBeDefined();
+    }) as { props: ChildProps };
+    expect(node.props.children).toBe("(No changes)");
+    expect(node.props.dimColor).toBe(true);
   });
 
-  test("malformed payload (no envelope tags at all) falls back to (No changes) — does not throw on missing tags", () => {
-    const node = EditDiffView({ content: "raw text with no tags" });
-    const children = flattenChildren(node);
-    const noChanges = children.find((c) => c.props.children === "(No changes)");
-    expect(noChanges).toBeDefined();
+  test("malformed payload (no envelope tags at all) falls back to (No changes)", () => {
+    const node = EditDiffView({ content: "raw text with no tags" }) as {
+      props: ChildProps;
+    };
+    expect(node.props.children).toBe("(No changes)");
   });
 });
 
@@ -211,15 +221,20 @@ describe("formatStructuredToolResult ⇄ EditDiffView wire-shape lock", () => {
     const node = EditDiffView({ content: joined });
     expect(node).toBeDefined();
     const children = flattenChildren(node);
-    const fileHeader = children.find(
-      (c) => c.props.bold === true && c.props.children === "src/foo.ts",
+    // Stat line carries the path and (+1 -1); the green change row carries the
+    // added line. This wire shape must stay in lockstep with the emitter.
+    const stat = children.find(
+      (c) =>
+        typeof c.props.children === "string" &&
+        (c.props.children as string).includes("src/foo.ts") &&
+        (c.props.children as string).includes("(+1 -1)"),
     );
-    expect(fileHeader).toBeDefined();
+    expect(stat).toBeDefined();
     const greenLine = children.find(
       (c) =>
         c.props.color === "green" &&
         typeof c.props.children === "string" &&
-        (c.props.children as string).startsWith("+new"),
+        (c.props.children as string).includes("new"),
     );
     expect(greenLine).toBeDefined();
   });
