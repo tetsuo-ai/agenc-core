@@ -6,6 +6,7 @@ import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
 import { getModelCapability } from './model/modelCapabilities.js'
 import { getOpenAIContextWindow, getOpenAIMaxOutputTokens } from './model/openaiContextWindows.js'
+import { resolveModelCatalogMetadata } from '../llm/registry/model-catalog.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -90,6 +91,15 @@ export function getContextWindowForModel(
     return 1_000_000
   }
 
+  // Registry first: REGISTERED_MODEL_CATALOG is the single source of truth for
+  // model context windows. When the model resolves to a catalog entry (e.g.
+  // grok-* and registered openai models), use that value so the TUI resolver
+  // agrees with the grok adapter path (kills the 2M-vs-1M grok-4.3 mismatch).
+  const catalogContextWindow = resolveCatalogContextWindow(model)
+  if (catalogContextWindow !== undefined) {
+    return catalogContextWindow
+  }
+
   // openai-compatible provider — use known context windows for the model.
   // Unknown models get a conservative 128k default. This was previously 8k,
   // but that caused auto-compact to fire on every turn because the effective
@@ -135,6 +145,20 @@ export function getContextWindowForModel(
     }
   }
   return MODEL_CONTEXT_WINDOW_DEFAULT
+}
+
+/**
+ * Resolves a model's context window from REGISTERED_MODEL_CATALOG when the
+ * model is registered. Scoped to grok-* model strings: this is the family the
+ * registry migration covers, and limiting the lookup keeps openai/anthropic
+ * TUI resolution behavior unchanged for models still resolved elsewhere.
+ */
+function resolveCatalogContextWindow(model: string): number | undefined {
+  const normalized = model.trim().toLowerCase()
+  if (!normalized.startsWith('grok-')) {
+    return undefined
+  }
+  return resolveModelCatalogMetadata({ provider: 'grok', model })?.contextWindow
 }
 
 export function getSonnet1mExpTreatmentEnabled(model: string): boolean {
