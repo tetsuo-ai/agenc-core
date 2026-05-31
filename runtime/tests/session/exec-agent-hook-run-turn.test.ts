@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod/v4";
 
-import type { LLMMessage, LLMProvider, LLMResponse } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+} from "../llm/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
@@ -988,7 +993,7 @@ describe("execAgentHook run-turn integration", () => {
     });
   });
 
-  test("projects max-turn terminal state into legacy assistant error messages", async () => {
+  test("returns max-turn terminal state as a graceful max_turns event without an API-error message", async () => {
     const provider = providerWithResponses([
       {
         content: "checking",
@@ -1021,17 +1026,124 @@ describe("execAgentHook run-turn integration", () => {
       events.push(event);
     }
 
+    // Legacy contract: max_turns returns partial results gracefully, never a
+    // synthesized API-error message that would make forks throw.
     const errorMessage = events.find(
       (event) =>
         event.type === "message" &&
         event.message.type === "assistant" &&
         event.message.isApiErrorMessage === true,
     );
-    expect(errorMessage?.message.message.content[0]).toMatchObject({
-      type: "text",
-      text: "Agent exceeded maxTurns (1)",
-    });
+    expect(errorMessage).toBeUndefined();
     expect(events.at(-1)?.type).toBe("max_turns");
+  });
+
+  test("preserves image content blocks through legacy->LLM conversion", async () => {
+    const provider = providerWithResponses([
+      {
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      },
+    ]);
+    const parent = createParentSession(provider);
+
+    for await (const _ of runTurnCompat(parent, {
+      messages: [
+        createUserMessage({
+          content: [
+            { type: "text", text: "describe this" },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "AAAA",
+              },
+            },
+          ],
+        }),
+      ],
+      systemPrompt: asSystemPrompt(["system"]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
+      toolUseContext: createToolUseContext(),
+      querySource: "hook_agent",
+      maxTurns: 1,
+    })) {
+      void _;
+    }
+
+    const sentMessages = provider.chatStream.mock.calls[0]![0] as LLMMessage[];
+    const userMsg = sentMessages.find(
+      (m) => m.role === "user" && Array.isArray(m.content),
+    );
+    expect(userMsg).toBeDefined();
+    const parts = userMsg!.content as LLMContentPart[];
+    expect(parts).toContainEqual({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,AAAA" },
+    });
+    expect(parts.some((p) => p.type === "text")).toBe(true);
+  });
+
+  test("preserves base64 document (PDF) content blocks through legacy->LLM conversion", async () => {
+    const provider = providerWithResponses([
+      {
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      },
+    ]);
+    const parent = createParentSession(provider);
+
+    for await (const _ of runTurnCompat(parent, {
+      messages: [
+        createUserMessage({
+          content: [
+            { type: "text", text: "summarize this" },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: "JVBERi0=",
+              },
+            },
+          ],
+        }),
+      ],
+      systemPrompt: asSystemPrompt(["system"]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
+      toolUseContext: createToolUseContext(),
+      querySource: "hook_agent",
+      maxTurns: 1,
+    })) {
+      void _;
+    }
+
+    const sentMessages = provider.chatStream.mock.calls[0]![0] as LLMMessage[];
+    const userMsg = sentMessages.find(
+      (m) => m.role === "user" && Array.isArray(m.content),
+    );
+    expect(userMsg).toBeDefined();
+    const parts = userMsg!.content as LLMContentPart[];
+    expect(parts).toContainEqual({
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: "JVBERi0=",
+      },
+    });
+    expect(parts.some((p) => p.type === "text")).toBe(true);
   });
 
   test("marks background main sessions failed on terminal assistant API errors", async () => {
@@ -1224,7 +1336,7 @@ describe("execAgentHook run-turn integration", () => {
     expect(providerB.chatStream).not.toHaveBeenCalled();
   });
 
-  test("forked agents reject max-turn terminal state after surfacing it", async () => {
+  test("forked agents return partial results on max-turn terminal state instead of throwing", async () => {
     const provider = providerWithResponses([
       {
         content: "checking",
@@ -1242,36 +1354,49 @@ describe("execAgentHook run-turn integration", () => {
     ]);
     const parent = createParentSession(provider);
     setCurrentRuntimeSession(parent);
-    const seenMessages: unknown[] = [];
+    const seenMessages: Message[] = [];
 
-    await expect(
-      runForkedAgent({
-        promptMessages: [createUserMessage({ content: "fork" })],
-        cacheSafeParams: {
-          systemPrompt: asSystemPrompt(["system"]),
-          userContext: {},
-          systemContext: {},
-          toolUseContext: createToolUseContext({ tools: [echoTool()] }),
-          forkContextMessages: [],
-        },
-        canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
-        querySource: "hook_agent",
-        forkLabel: "test",
-        maxTurns: 1,
-        skipTranscript: true,
-        onMessage: message => seenMessages.push(message),
-      }),
-    ).rejects.toThrow("Agent exceeded maxTurns (1)");
+    const result = await runForkedAgent({
+      promptMessages: [createUserMessage({ content: "fork" })],
+      cacheSafeParams: {
+        systemPrompt: asSystemPrompt(["system"]),
+        userContext: {},
+        systemContext: {},
+        toolUseContext: createToolUseContext({ tools: [echoTool()] }),
+        forkContextMessages: [],
+      },
+      canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
+      querySource: "hook_agent",
+      forkLabel: "test",
+      maxTurns: 1,
+      skipTranscript: true,
+      onMessage: message => seenMessages.push(message),
+    });
 
+    // Did NOT throw; returned accumulated partial result.
+    expect(result.messages.length).toBeGreaterThan(0);
+    // Partial work (the Echo tool turn) survives.
+    expect(
+      result.messages.some(
+        message => message.type === "user" || message.type === "assistant",
+      ),
+    ).toBe(true);
+    // The max_turns_reached attachment is delivered, not an API-error message.
+    expect(
+      result.messages.some(
+        message =>
+          message.type === "attachment" &&
+          (message as { attachment?: { type?: string } }).attachment?.type ===
+            "max_turns_reached",
+      ),
+    ).toBe(true);
     expect(
       seenMessages.some(
         message =>
-          typeof message === "object" &&
-          message !== null &&
-          "isApiErrorMessage" in message &&
-          message.isApiErrorMessage === true,
+          (message as { isApiErrorMessage?: boolean }).isApiErrorMessage ===
+          true,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("agent result finalizers reject assistant API errors", () => {

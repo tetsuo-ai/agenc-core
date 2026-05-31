@@ -2118,25 +2118,34 @@ async function* executeHooks({
   // Bind the prompt callback to this hook's name and tool input summary so the UI can display context
   const boundRequestPrompt = requestPrompt?.(hookName, toolInputSummary)
 
-  // SECURITY: ALL hooks require workspace trust in interactive mode
-  // This centralized check prevents RCE vulnerabilities for all current and future hooks
-  if (shouldSkipHookDueToTrust()) {
-    logForDebugging(
-      `Skipping ${hookName} hook execution - workspace trust not accepted`,
-    )
-    return
-  }
+  // SECURITY: workspace trust gates only hooks that execute external
+  // payloads (command/http/prompt/agent) — those are the RCE vectors a
+  // freshly-cloned untrusted workspace could weaponize. In-process
+  // function/callback hooks carry AgenC-owned TypeScript and must still run
+  // (e.g. structured-output enforcement on SubagentStop), so they are not
+  // gated here.
+  const trustSkipped = shouldSkipHookDueToTrust()
 
   const appState = toolUseContext ? toolUseContext.getAppState() : undefined
   // Use the agent's session ID if available, otherwise fall back to main session
   const sessionId = toolUseContext?.agentId ?? getSessionId()
-  const matchingHooks = await getMatchingHooks(
+  let matchingHooks = await getMatchingHooks(
     appState,
     sessionId,
     hookEvent,
     hookInput,
     toolUseContext?.options?.tools,
   )
+  if (trustSkipped) {
+    matchingHooks = matchingHooks.filter(
+      m => m.hook.type === 'function' || m.hook.type === 'callback',
+    )
+    if (matchingHooks.length === 0) {
+      logForDebugging(
+        `Skipping ${hookName} hook execution - workspace trust not accepted`,
+      )
+    }
+  }
   if (matchingHooks.length === 0) {
     return
   }

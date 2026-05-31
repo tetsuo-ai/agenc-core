@@ -24,6 +24,12 @@ import {
 import type { SystemPrompt } from "../utils/systemPromptType.js";
 import { zodToJsonSchema } from "../utils/zodToJsonSchema.js";
 import { getCwdOverrideForCurrentContext } from "../utils/cwd.js";
+import {
+  getAgentName,
+  getTeamName,
+  isTeammate,
+} from "../utils/teammate.js";
+import { getTaskListId, listTasks } from "../utils/tasks.js";
 import { Session, type SessionServices } from "./session.js";
 
 type StructuredOutputMetadata = {
@@ -160,9 +166,14 @@ function createCompatSessionStopHook(
   return {
     name: "compat_session_hooks",
     async run(request: StopRequest): Promise<StopHookOutcome> {
-      const { executeStopHooks, getStopHookMessage } = await import(
-        "../utils/hooks.js"
-      );
+      const {
+        executeStopHooks,
+        getStopHookMessage,
+        executeTaskCompletedHooks,
+        executeTeammateIdleHooks,
+        getTaskCompletedHookMessage,
+        getTeammateIdleHookMessage,
+      } = await import("../utils/hooks.js");
       const blockingFragments: string[] = [];
       let stopReason: string | undefined;
       let preventContinuation = false;
@@ -203,6 +214,89 @@ function createCompatSessionStopHook(
           continuationFragments: blockingFragments,
         };
       }
+
+      // After Stop hooks pass, run TaskCompleted and TeammateIdle hooks if
+      // this session is a teammate. Mirrors the legacy handleStopHooks
+      // teammate boundary (query/stopHooks.ts) which the unification dropped.
+      if (isTeammate()) {
+        const signal = params.toolUseContext.abortController.signal;
+        const teammateName = getAgentName() ?? "";
+        const teamName = getTeamName() ?? "";
+        const teammateFragments: string[] = [];
+        let teammatePrevented = false;
+        let teammateStopReason: string | undefined;
+
+        const taskListId = getTaskListId();
+        const tasks = await listTasks(taskListId);
+        const inProgressTasks = tasks.filter(
+          (task) =>
+            task.status === "in_progress" && task.owner === teammateName,
+        );
+
+        for (const task of inProgressTasks) {
+          for await (const result of executeTaskCompletedHooks(
+            task.id,
+            task.subject,
+            task.description,
+            teammateName,
+            teamName,
+            request.permissionMode,
+            signal,
+            undefined,
+            params.toolUseContext,
+          )) {
+            if (result.preventContinuation) {
+              teammatePrevented = true;
+              teammateStopReason =
+                result.stopReason ||
+                "TaskCompleted hook prevented continuation";
+            }
+            if (result.blockingError) {
+              teammateFragments.push(
+                getTaskCompletedHookMessage(result.blockingError),
+              );
+            }
+          }
+        }
+
+        for await (const result of executeTeammateIdleHooks(
+          teammateName,
+          teamName,
+          request.permissionMode,
+          signal,
+        )) {
+          if (result.preventContinuation) {
+            teammatePrevented = true;
+            teammateStopReason =
+              result.stopReason || "TeammateIdle hook prevented continuation";
+          }
+          if (result.blockingError) {
+            teammateFragments.push(
+              getTeammateIdleHookMessage(result.blockingError),
+            );
+          }
+        }
+
+        if (teammatePrevented) {
+          return {
+            shouldStop: true,
+            ...(teammateStopReason !== undefined
+              ? { stopReason: teammateStopReason }
+              : {}),
+            shouldBlock: false,
+            continuationFragments: [],
+          };
+        }
+        if (teammateFragments.length > 0) {
+          return {
+            shouldStop: false,
+            shouldBlock: true,
+            blockReason: teammateFragments.join("\n\n"),
+            continuationFragments: teammateFragments,
+          };
+        }
+      }
+
       return {
         shouldStop: true,
         shouldBlock: false,
@@ -433,12 +527,6 @@ export async function* runTurnCompat(
         }
         if (event.stopReason === "max_turns") {
           yield {
-            type: "message",
-            message: createAssistantAPIErrorMessage({
-              content: formatMaxTurnsErrorMessage(params.maxTurns),
-            }),
-          };
-          yield {
             type: "max_turns",
             message: createAttachmentMessage({
               type: "max_turns_reached",
@@ -474,12 +562,6 @@ export async function* runTurnCompat(
     unsubscribe();
     queueWake = null;
   }
-}
-
-function formatMaxTurnsErrorMessage(maxTurns: number | undefined): string {
-  return maxTurns === undefined
-    ? "Agent exceeded maxTurns"
-    : `Agent exceeded maxTurns (${maxTurns})`;
 }
 
 function parseLegacyProgressMessage(chunk: string): Message | null {
@@ -630,19 +712,45 @@ function messageToLlmMessages(message: Message): LLMMessage[] {
   if (message?.type === "user") {
     const content = message.message?.content ?? message.content ?? "";
     if (Array.isArray(content)) {
-      return content.flatMap((part: ContentBlockParam): LLMMessage[] => {
+      const out: LLMMessage[] = [];
+      const userParts: LLMContentPart[] = [];
+      const flushUser = (): void => {
+        if (userParts.length === 0) return;
+        out.push({ role: "user", content: [...userParts] });
+        userParts.length = 0;
+      };
+      for (const part of content as ContentBlockParam[]) {
         if (part.type === "tool_result") {
-          return [{
-            role: "tool" as const,
+          flushUser();
+          out.push({
+            role: "tool",
             toolCallId: part.tool_use_id,
             content: toolResultContentToText(part.content),
-          }];
+          });
+        } else if (part.type === "text") {
+          userParts.push({ type: "text", text: part.text });
+        } else if (part.type === "image") {
+          const url =
+            part.source.type === "base64"
+              ? `data:${part.source.media_type};base64,${part.source.data}`
+              : part.source.url;
+          userParts.push({ type: "image_url", image_url: { url } });
+        } else if (part.type === "document" && part.source.type === "base64") {
+          userParts.push({
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: part.source.data,
+            },
+            ...(part.title ? { title: part.title } : {}),
+          });
         }
-        if (part.type === "text") {
-          return [{ role: "user" as const, content: part.text }];
-        }
-        return [];
-      });
+        // other block types (thinking, tool_use, etc.) intentionally
+        // skipped on user messages
+      }
+      flushUser();
+      return out;
     }
     return [{ role: "user", content: String(content) }];
   }

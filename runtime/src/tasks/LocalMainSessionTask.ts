@@ -42,7 +42,10 @@ import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../utils/log.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
-import { isAssistantAPIErrorMessage } from '../utils/messages.js'
+import {
+  createAssistantAPIErrorMessage,
+  isAssistantAPIErrorMessage,
+} from '../utils/messages.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import {
   getAgentTranscriptPath,
@@ -393,6 +396,7 @@ export function startBackgroundSession({
       let tokenCount = 0
       let lastRecordedUuid: UUID | null = messages.at(-1)?.uuid ?? null
       let sawAssistantApiError = false
+      let sawMaxTurns = false
 
       for await (const event of runTurnCompat(parentSession, {
         messages: bgMessages,
@@ -421,11 +425,19 @@ export function startBackgroundSession({
           return
         }
 
+        if (event.type === 'max_turns') {
+          // runTurnCompat now returns max_turns gracefully (partial results,
+          // no synthesized API-error message) to match the legacy fork
+          // contract. Background main sessions still treat hitting maxTurns
+          // as a failure, so synthesize the failed terminal state here rather
+          // than relying on the compat stream emitting an API-error message.
+          sawMaxTurns = true
+          continue
+        }
         if (
           event.type === 'phase' ||
           event.type === 'progress' ||
-          event.type === 'usage' ||
-          event.type === 'max_turns'
+          event.type === 'usage'
         ) {
           continue
         }
@@ -502,7 +514,44 @@ export function startBackgroundSession({
         })
       }
 
-      completeMainSessionTask(taskId, !sawAssistantApiError, setAppState)
+      if (sawMaxTurns && !sawAssistantApiError) {
+        // Surface the maxTurns failure as a terminal API-error message so the
+        // transcript tail and task failure state match the legacy contract for
+        // background main sessions (which do not return partial results like
+        // forks do).
+        const maxTurnsErrorMessage = createAssistantAPIErrorMessage({
+          content:
+            queryParams.maxTurns === undefined
+              ? 'Agent exceeded maxTurns'
+              : `Agent exceeded maxTurns (${queryParams.maxTurns})`,
+        })
+        bgMessages.push(maxTurnsErrorMessage)
+        void recordSidechainTranscript(
+          [maxTurnsErrorMessage],
+          taskId,
+          lastRecordedUuid,
+        ).catch(err =>
+          logForDebugging(`bg-session transcript write failed: ${err}`),
+        )
+        lastRecordedUuid = maxTurnsErrorMessage.uuid
+        setAppState(prev => {
+          const task = prev.tasks[taskId]
+          if (!task || task.type !== 'local_agent') return prev
+          return {
+            ...prev,
+            tasks: {
+              ...prev.tasks,
+              [taskId]: { ...task, messages: bgMessages },
+            },
+          }
+        })
+      }
+
+      completeMainSessionTask(
+        taskId,
+        !sawAssistantApiError && !sawMaxTurns,
+        setAppState,
+      )
     } catch (error) {
       logError(error)
       completeMainSessionTask(taskId, false, setAppState)
