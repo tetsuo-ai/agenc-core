@@ -338,6 +338,47 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
+  it("setAgentPermissionMode mutates the real session permission registry", async () => {
+    const { runner, permissionModeRegistry, permissionUpdates } =
+      makeTopLevelRunner({
+        conversationId: "parent-session",
+        argv: ["node", "agenc"],
+      });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    permissionUpdates.length = 0;
+    (permissionModeRegistry.update as ReturnType<typeof vi.fn>).mockClear();
+
+    const result = await runner.setAgentPermissionMode("parent-session", {
+      sessionId: "session_1",
+      mode: "plan",
+    });
+
+    expect(result).toEqual({
+      applied: true,
+      previousMode: "default",
+      mode: "plan",
+    });
+    // The genuine daemon registry — the one the tool evaluator reads — is
+    // updated to the new mode.
+    expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
+    expect(permissionUpdates[0]).toMatchObject({ mode: "plan" });
+  });
+
+  it("setAgentPermissionMode rejects internal-only modes", async () => {
+    const { runner } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.setAgentPermissionMode("parent-session", {
+        sessionId: "session_1",
+        mode: "unattended",
+      }),
+    ).rejects.toThrow(/internal-only/);
+  });
+
   it("passes the daemon AuthBackend into delegate bootstrap", async () => {
     const authBackend = makeAuthBackend("local", "managed-key");
     const { runner, bootstrap } = makeTopLevelRunner({

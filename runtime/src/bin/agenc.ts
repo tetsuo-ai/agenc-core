@@ -2271,6 +2271,16 @@ type TuiSessionShape = {
   emitPhaseEvent?: (event: PhaseEvent) => void;
   clearDaemonSession?: () => Promise<void>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
+  partialCompactFromMessage?: (params: {
+    readonly messageOrdinal: number;
+    readonly direction: "from" | "up_to";
+    readonly feedback?: string;
+    readonly signal?: AbortSignal;
+  }) => Promise<unknown>;
+  setPendingProviderSwitch?: (
+    pending: { provider: string; model: string; profile?: string } | null,
+  ) => void;
+  setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
   getInitialTranscriptEvents?: () => readonly unknown[];
   activeTurn?: {
     unsafePeek?: () => { readonly turnId: string } | null;
@@ -2506,6 +2516,50 @@ async function createDeferredDaemonPromptTuiSession(params: {
         return undefined;
       }
       return live.getDaemonSessionSnapshot();
+    },
+    // Same forwarder pattern as clearDaemonSession/getDaemonSessionSnapshot:
+    // `/compact` reaches the daemon's already-wired
+    // `session.partialCompactFromMessage` RPC only through liveSession. The
+    // deferred wrapper is the outer `props.session` App.tsx dispatches
+    // against, so without forwarding, /compact silently no-ops on the
+    // daemon path.
+    partialCompactFromMessage: async (compactParams) => {
+      if (liveSession === null) {
+        throw new Error(
+          "Cannot compact yet: no live daemon session. Send a message first.",
+        );
+      }
+      const live = liveSession as TuiSessionShape;
+      if (typeof live.partialCompactFromMessage !== "function") {
+        throw new Error(
+          "Conversation compaction is not supported by this session.",
+        );
+      }
+      return live.partialCompactFromMessage(compactParams);
+    },
+    // `/model` and `/provider` stage their switch by calling
+    // setPendingProviderSwitch; forward to liveSession so the daemon's
+    // session.setModel RPC runs the real switch machinery. No-op before a
+    // live session exists (nothing to switch yet).
+    setPendingProviderSwitch: (pending) => {
+      const live = liveSession as TuiSessionShape | null;
+      live?.setPendingProviderSwitch?.(pending);
+    },
+    // `/permissions mode` and `/plan` route their mode change to the
+    // daemon's real registry through liveSession.setDaemonPermissionMode.
+    setDaemonPermissionMode: async (mode) => {
+      if (liveSession === null) {
+        throw new Error(
+          "Cannot change permission mode yet: no live daemon session. Send a message first.",
+        );
+      }
+      const live = liveSession as TuiSessionShape;
+      if (typeof live.setDaemonPermissionMode !== "function") {
+        throw new Error(
+          "Permission-mode switching is not supported by this session.",
+        );
+      }
+      return live.setDaemonPermissionMode(mode);
     },
     activeTurn: {
       unsafePeek: () =>

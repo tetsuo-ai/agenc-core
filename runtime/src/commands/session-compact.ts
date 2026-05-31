@@ -73,6 +73,30 @@ function tryAllocateTurnContext(ctx: SlashCommandContext): {
   return { ok: true, turnContext };
 }
 
+/**
+ * Result of the daemon-backed `session.partialCompactFromMessage` RPC,
+ * narrowed to the fields `/compact` needs. The bridge session declares
+ * this method (tui/daemon-session.ts); the in-process Session does not,
+ * so its absence is the signal to fall back to the in-process path.
+ */
+interface DaemonCompactResult {
+  readonly ok: boolean;
+  readonly message?: string;
+}
+
+type DaemonCompactFn = (params: {
+  readonly messageOrdinal: number;
+  readonly direction: "from" | "up_to";
+  readonly feedback?: string;
+}) => Promise<DaemonCompactResult>;
+
+function daemonCompactFn(ctx: SlashCommandContext): DaemonCompactFn | null {
+  const fn = (ctx.session as unknown as {
+    partialCompactFromMessage?: DaemonCompactFn;
+  }).partialCompactFromMessage;
+  return typeof fn === "function" ? fn.bind(ctx.session) : null;
+}
+
 export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Compact the current conversation",
@@ -84,6 +108,33 @@ export const compactCommand: SlashCommand = {
       await ensureNoActiveTurn(ctx);
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
+        // Daemon-backed TUI: the in-process compaction path is unavailable
+        // (no `newDefaultTurnWithSubId`), but the daemon already exposes a
+        // fully-wired `session.partialCompactFromMessage` RPC. Compact the
+        // live session forward from its first active message
+        // (messageOrdinal: 0, direction: "from") = a full compaction. The
+        // daemon emits its own `context_compacted` boundary event, already
+        // rendered by the transcript, so we only surface a short summary.
+        const daemonCompact = daemonCompactFn(ctx);
+        if (daemonCompact !== null) {
+          const feedback = ctx.argsRaw.trim();
+          const result = await daemonCompact({
+            messageOrdinal: 0,
+            direction: "from",
+            ...(feedback.length > 0 ? { feedback } : {}),
+          });
+          if (!result.ok) {
+            return {
+              kind: "error",
+              message:
+                result.message ?? "Conversation compaction failed.",
+            };
+          }
+          return {
+            kind: "compact",
+            text: "Conversation compacted.",
+          };
+        }
         const contextText = await buildFallbackContextUsageText(
           ctx,
           allocated.message,

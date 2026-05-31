@@ -123,6 +123,8 @@ const expectedNotifications = [
 const expectedInternalMethods = [
   "session.partialCompactFromMessage",
   "session.rewindConversationToMessage",
+  "session.setModel",
+  "session.setPermissionMode",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {

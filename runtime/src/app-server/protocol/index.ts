@@ -82,6 +82,8 @@ export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.partialCompactFromMessage",
   "session.rewindConversationToMessage",
+  "session.setModel",
+  "session.setPermissionMode",
 ] as const;
 
 export type AgenCDaemonInternalMethod =
@@ -469,6 +471,22 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     description:
       "TUI-internal request to rewind daemon-owned session history before a selected prompt.",
   },
+  "session.setModel": {
+    method: "session.setModel",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to switch the active model and/or provider on the daemon-owned session.",
+  },
+  "session.setPermissionMode": {
+    method: "session.setPermissionMode",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to switch the permission mode on the daemon-owned session registry.",
+  },
 });
 
 export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
@@ -749,6 +767,17 @@ export interface SessionPartialCompactFromMessageParams extends JsonObject {
 export interface SessionRewindConversationToMessageParams extends JsonObject {
   readonly sessionId: string;
   readonly messageOrdinal: number;
+}
+
+export interface SessionSetModelParams extends JsonObject {
+  readonly sessionId: string;
+  readonly model?: string;
+  readonly provider?: string;
+}
+
+export interface SessionSetPermissionModeParams extends JsonObject {
+  readonly sessionId: string;
+  readonly mode: string;
 }
 
 export type MessageContentBlock =
@@ -1444,6 +1473,21 @@ export interface SessionRewindConversationToMessageResult extends JsonObject {
   readonly event?: JsonObject;
 }
 
+export interface SessionSetModelResult extends JsonObject {
+  readonly sessionId: string;
+  /** `true` when the switch was applied or staged on the live session. */
+  readonly applied: boolean;
+  /** Human-readable summary of the switch outcome, surfaced to the user. */
+  readonly summary: string;
+}
+
+export interface SessionSetPermissionModeResult extends JsonObject {
+  readonly sessionId: string;
+  readonly applied: boolean;
+  readonly previousMode: string;
+  readonly mode: string;
+}
+
 export interface MessageSendResult extends JsonObject {
   readonly messageId: string;
   readonly acceptedAt: string;
@@ -1621,6 +1665,8 @@ export interface AgenCDaemonResultByMethod {
 export interface AgenCDaemonInternalResultByMethod {
   readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
+  readonly "session.setModel": SessionSetModelResult;
+  readonly "session.setPermissionMode": SessionSetPermissionModeResult;
 }
 
 export type AgenCDaemonKnownResultByMethod =

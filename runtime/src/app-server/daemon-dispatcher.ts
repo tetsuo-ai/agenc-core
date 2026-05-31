@@ -77,6 +77,8 @@ import {
   type SessionListParams,
   type SessionPartialCompactFromMessageParams,
   type SessionRewindConversationToMessageParams,
+  type SessionSetModelParams,
+  type SessionSetPermissionModeParams,
   type SessionTerminateParams,
   type ThreadRealtimeAppendAudioParams,
   type ThreadRealtimeAppendTextParams,
@@ -139,6 +141,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "addMcpServerToSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
+    | "setSessionModel"
+    | "setSessionPermissionMode"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -202,6 +206,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "addMcpServerToSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
+    | "setSessionModel"
+    | "setSessionPermissionMode"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -495,6 +501,20 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.rewindConversationToMessage(
             validateSessionRewindConversationToMessageParams(params),
+          ),
+        );
+      case "session.setModel":
+        return successResponse(
+          id,
+          await this.#agentManager.setSessionModel(
+            validateSessionSetModelParams(params),
+          ),
+        );
+      case "session.setPermissionMode":
+        return successResponse(
+          id,
+          await this.#agentManager.setSessionPermissionMode(
+            validateSessionSetPermissionModeParams(params),
           ),
         );
       case "message.send":
@@ -1471,6 +1491,34 @@ function validateSessionRewindConversationToMessageParams(
     );
   }
   return validated as SessionRewindConversationToMessageParams;
+}
+
+function validateSessionSetModelParams(
+  params: JsonObject,
+): SessionSetModelParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.setModel",
+    stringFields: ["sessionId", "model", "provider"],
+  });
+  validateRequiredString(validated, "session.setModel", "sessionId");
+  if (validated.model === undefined && validated.provider === undefined) {
+    throw invalidParams(
+      "session.setModel requires at least one of model or provider",
+    );
+  }
+  return validated as SessionSetModelParams;
+}
+
+function validateSessionSetPermissionModeParams(
+  params: JsonObject,
+): SessionSetPermissionModeParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.setPermissionMode",
+    stringFields: ["sessionId", "mode"],
+  });
+  validateRequiredString(validated, "session.setPermissionMode", "sessionId");
+  validateRequiredString(validated, "session.setPermissionMode", "mode");
+  return validated as SessionSetPermissionModeParams;
 }
 
 function validateMessageSendParams(params: JsonObject): MessageSendParams {

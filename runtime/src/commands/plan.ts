@@ -123,6 +123,21 @@ export function getPermissionModeRegistry(
 // Command
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the daemon-backed `session.setPermissionMode` forwarder when the
+ * TUI runs against the daemon. The bridge session declares
+ * `setDaemonPermissionMode` (tui/daemon-session.ts); the in-process Session
+ * does not, so its absence means the local registry is authoritative.
+ */
+function daemonPermissionModeFn(
+  ctx: SlashCommandContext,
+): ((mode: string) => Promise<unknown>) | null {
+  const fn = (ctx.session as unknown as {
+    setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
+  }).setDaemonPermissionMode;
+  return typeof fn === "function" ? fn.bind(ctx.session) : null;
+}
+
 function emitWarning(session: Session, cause: string, message: string): void {
   const msg: EventMsg = {
     type: "warning",
@@ -189,6 +204,19 @@ export const planCommand: SlashCommand = {
           ...transitionPermissionMode(currentMode, "plan", currentCtx),
           mode: "plan" as const,
         };
+        // Daemon-backed TUI: the local `registry` is a client-side shim the
+        // daemon's tool evaluator never reads. Route the plan-mode switch to
+        // the daemon's REAL registry via session.setPermissionMode so the
+        // mode actually gates tool use. Best-effort: a failure leaves the
+        // local registry updated so the chrome still reflects plan mode.
+        const daemonSetMode = daemonPermissionModeFn(ctx);
+        if (daemonSetMode !== null) {
+          try {
+            await daemonSetMode("plan");
+          } catch {
+            // best-effort; fall through to local update + warning.
+          }
+        }
         await registry.update(nextCtx);
         emitWarning(
           ctx.session,

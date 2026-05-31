@@ -623,6 +623,79 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("forwards setPendingProviderSwitch to the daemon session.setModel RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    // /model and /provider stage the switch synchronously; the bridge
+    // fires session.setModel fire-and-forget. Flush the microtask queue
+    // so the request lands before assertion.
+    (session as unknown as {
+      setPendingProviderSwitch: (
+        spec: { provider: string; model: string } | null,
+      ) => void;
+    }).setPendingProviderSwitch({ provider: "openai", model: "gpt-x" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.setModel",
+        params: {
+          sessionId: "session_1",
+          model: "gpt-x",
+          provider: "openai",
+        },
+      },
+    ]);
+  });
+
+  it("ignores a null setPendingProviderSwitch without issuing an RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    (session as unknown as {
+      setPendingProviderSwitch: (spec: null) => void;
+    }).setPendingProviderSwitch(null);
+    await Promise.resolve();
+
+    expect(client.requests).toEqual([]);
+  });
+
+  it("forwards setDaemonPermissionMode to the daemon session.setPermissionMode RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await (session as unknown as {
+      setDaemonPermissionMode: (mode: string) => Promise<unknown>;
+    }).setDaemonPermissionMode("plan");
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.setPermissionMode",
+        params: {
+          sessionId: "session_1",
+          mode: "plan",
+        },
+      },
+    ]);
+  });
+
   it("exposes realtime controls that route through the daemon thread RPC surface", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

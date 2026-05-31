@@ -13,6 +13,72 @@ describe("slash /compact contract", () => {
     expect(registry.find("compact")?.immediate).toBe(true);
   });
 
+  test("daemon-backed compact routes to session.partialCompactFromMessage", async () => {
+    const registry = buildDefaultRegistry();
+    const command = registry.find("compact");
+    const partialCompactFromMessage = vi.fn(async () => ({
+      sessionId: "session_1",
+      ok: true,
+      eventAlreadyEmitted: true,
+    }));
+    // A daemon bridge session: no in-process turn allocation, but the
+    // daemon-forwarder method is present. This mirrors props.session in
+    // the live daemon-backed TUI.
+    const daemonSession = {
+      conversationId: "session_1",
+      services: {},
+      activeTurn: { unsafePeek: () => null },
+      partialCompactFromMessage,
+    };
+
+    const result = await command?.execute({
+      session: daemonSession as never,
+      argsRaw: "focus on the goal",
+      cwd: "/tmp",
+      home: "/tmp",
+    });
+
+    expect(result).toEqual({ kind: "compact", text: "Conversation compacted." });
+    expect(partialCompactFromMessage).toHaveBeenCalledWith({
+      messageOrdinal: 0,
+      direction: "from",
+      feedback: "focus on the goal",
+    });
+  });
+
+  test("daemon-backed compact surfaces an RPC failure as an error", async () => {
+    const registry = buildDefaultRegistry();
+    const command = registry.find("compact");
+    const partialCompactFromMessage = vi.fn(async () => ({
+      sessionId: "session_1",
+      ok: false,
+      eventAlreadyEmitted: true,
+      message: "nothing to compact",
+    }));
+    const daemonSession = {
+      conversationId: "session_1",
+      services: {},
+      activeTurn: { unsafePeek: () => null },
+      partialCompactFromMessage,
+    };
+
+    const result = await command?.execute({
+      session: daemonSession as never,
+      argsRaw: "",
+      cwd: "/tmp",
+      home: "/tmp",
+    });
+
+    expect(result).toEqual({
+      kind: "error",
+      message: "nothing to compact",
+    });
+    expect(partialCompactFromMessage).toHaveBeenCalledWith({
+      messageOrdinal: 0,
+      direction: "from",
+    });
+  });
+
   test("manual compact refuses active-turn mutation", async () => {
     const registry = buildDefaultRegistry();
     const command = registry.find("compact");

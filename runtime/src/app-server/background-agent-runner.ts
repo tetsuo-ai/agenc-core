@@ -51,7 +51,18 @@ import {
   DEFAULT_MODEL_COSTS,
   type ModelUsage,
 } from "../session/cost.js";
-import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import {
+  transitionPermissionMode,
+  type PermissionModeRegistry,
+} from "../permissions/permission-mode.js";
+import {
+  isPermissionMode,
+  USER_ADDRESSABLE_PERMISSION_MODES,
+  type PermissionMode,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
+import { applyModelSwitch } from "../commands/model.js";
+import { applyProviderSwitch } from "../commands/provider.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
 import {
@@ -209,6 +220,28 @@ export interface AgenCBackgroundAgentConversationRewindParams {
   readonly messageOrdinal: number;
 }
 
+export interface AgenCBackgroundAgentSetModelParams {
+  readonly sessionId: string;
+  readonly model?: string;
+  readonly provider?: string;
+}
+
+export interface AgenCBackgroundAgentSetModelResult {
+  readonly applied: boolean;
+  readonly summary: string;
+}
+
+export interface AgenCBackgroundAgentSetPermissionModeParams {
+  readonly sessionId: string;
+  readonly mode: string;
+}
+
+export interface AgenCBackgroundAgentSetPermissionModeResult {
+  readonly applied: boolean;
+  readonly previousMode: string;
+  readonly mode: string;
+}
+
 export interface AgenCBackgroundAgentToolDecisionParams {
   readonly requestId: string;
   readonly decision: ReviewDecision;
@@ -261,6 +294,14 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindConversationToMessageResult>;
+  setAgentModel?(
+    agentId: string,
+    params: AgenCBackgroundAgentSetModelParams,
+  ): Promise<AgenCBackgroundAgentSetModelResult>;
+  setAgentPermissionMode?(
+    agentId: string,
+    params: AgenCBackgroundAgentSetPermissionModeParams,
+  ): Promise<AgenCBackgroundAgentSetPermissionModeResult>;
   resolveToolDecision?(
     agentId: string,
     params: AgenCBackgroundAgentToolDecisionParams,
@@ -1195,6 +1236,75 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       code: result.ok ? "NO_EVENT" : result.code,
       message: result.ok ? "No replacement event was produced." : result.message,
     };
+  }
+
+  async setAgentModel(
+    agentId: string,
+    params: AgenCBackgroundAgentSetModelParams,
+  ): Promise<AgenCBackgroundAgentSetModelResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const session = active.bootstrap.session;
+    // Run the switch against the genuine in-process session so the
+    // I-13 (mid-turn abort) + I-57 (history-compat) machinery on the
+    // real session actually fires. The turn loop's
+    // `consumePendingProviderSwitch` is the authority on the next turn.
+    let summary: string;
+    if (params.model !== undefined) {
+      summary = await applyModelSwitch(session, params.model, params.provider);
+    } else if (params.provider !== undefined) {
+      summary = await applyProviderSwitch(session, params.provider);
+    } else {
+      return {
+        applied: false,
+        summary: "No model or provider was supplied.",
+      };
+    }
+    const applied =
+      summary.startsWith("Model switched ") ||
+      summary.startsWith("Model switch staged:") ||
+      summary.startsWith("Provider switched ") ||
+      summary.startsWith("Provider switch staged:");
+    return { applied, summary };
+  }
+
+  async setAgentPermissionMode(
+    agentId: string,
+    params: AgenCBackgroundAgentSetPermissionModeParams,
+  ): Promise<AgenCBackgroundAgentSetPermissionModeResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (!isPermissionMode(params.mode)) {
+      throw new Error(
+        `Unknown permission mode: "${params.mode}". Expected one of: ${USER_ADDRESSABLE_PERMISSION_MODES.join(", ")}`,
+      );
+    }
+    const target = params.mode as PermissionMode;
+    if (
+      !(USER_ADDRESSABLE_PERMISSION_MODES as readonly PermissionMode[]).includes(
+        target,
+      )
+    ) {
+      throw new Error(
+        `Permission mode "${params.mode}" is internal-only and cannot be set this way.`,
+      );
+    }
+    // Mutate the daemon's REAL permission registry — the one the tool
+    // evaluator reads on every tool call (background-agent-runner installs
+    // it from bootstrap.session.permissionModeRegistry).
+    const registry = active.bootstrap.session.permissionModeRegistry;
+    const current = registry.current();
+    if (current.mode === target) {
+      return { applied: false, previousMode: current.mode, mode: target };
+    }
+    const transitioned = transitionPermissionMode(current.mode, target, current);
+    const nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
+    await registry.update(nextCtx);
+    return { applied: true, previousMode: current.mode, mode: target };
   }
 
   async resolveToolDecision(

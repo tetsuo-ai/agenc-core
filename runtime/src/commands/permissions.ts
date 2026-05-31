@@ -89,6 +89,29 @@ function findPermissionRegistry(
   return services?.permissionModeRegistry ?? null;
 }
 
+/**
+ * Result of the daemon-backed `session.setPermissionMode` RPC, narrowed
+ * to the fields the command surfaces. The bridge session declares
+ * `setDaemonPermissionMode` (tui/daemon-session.ts); the in-process
+ * Session does not, so its absence means we mutate the local registry.
+ */
+interface DaemonSetPermissionModeResult {
+  readonly applied: boolean;
+  readonly previousMode: string;
+  readonly mode: string;
+}
+
+function daemonPermissionModeFn(
+  ctx: SlashCommandContext,
+): ((mode: string) => Promise<DaemonSetPermissionModeResult>) | null {
+  const fn = (ctx.session as unknown as {
+    setDaemonPermissionMode?: (
+      mode: string,
+    ) => Promise<DaemonSetPermissionModeResult>;
+  }).setDaemonPermissionMode;
+  return typeof fn === "function" ? fn.bind(ctx.session) : null;
+}
+
 function diskEnvForCtx(ctx: SlashCommandContext): DiskEnv {
   return {
     home: ctx.home,
@@ -446,6 +469,32 @@ async function handleModeSubcommand(
   }
   if (target === current.mode) {
     return { kind: "text", text: `Mode already: ${current.mode}` };
+  }
+
+  // Daemon-backed TUI: the local `registry` is a client-side shim the
+  // daemon never reads. Route the mode change to the daemon's REAL
+  // registry (the one the tool evaluator enforces) via the
+  // session.setPermissionMode RPC. Bypass-consent gating is handled
+  // here; the daemon does an unconditional transition.
+  const daemonSetMode = daemonPermissionModeFn(ctx);
+  if (daemonSetMode !== null && target !== "bypassPermissions") {
+    try {
+      const result = await daemonSetMode(target);
+      // Keep the client-local registry in sync so subsequent /permissions
+      // reads (which still read the local registry) reflect the change.
+      await registry.update({ ...current, mode: target });
+      return {
+        kind: "text",
+        text: result.applied
+          ? `Mode: ${result.previousMode} → ${result.mode}`
+          : `Mode already: ${result.mode}`,
+      };
+    } catch (err) {
+      return {
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   let transitioned: ReturnType<typeof transitionPermissionMode>;

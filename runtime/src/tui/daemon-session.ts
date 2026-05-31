@@ -22,6 +22,10 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
+  SessionSetModelParams,
+  SessionSetModelResult,
+  SessionSetPermissionModeParams,
+  SessionSetPermissionModeResult,
   SessionSnapshotResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
@@ -95,6 +99,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   rewindConversationToMessage?(params: {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindConversationToMessageResult>;
+  setPendingProviderSwitch?(
+    pending: { provider: string; model: string; profile?: string } | null,
+  ): void;
+  setDaemonPermissionMode?(mode: string): Promise<SessionSetPermissionModeResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   readonly activeTurn?: {
     unsafePeek(): { readonly turnId: string } | null;
@@ -158,6 +166,16 @@ export interface AgenCDaemonTuiClient {
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionRewindConversationToMessageResult>;
+  request(
+    method: "session.setModel",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionSetModelResult>;
+  request(
+    method: "session.setPermissionMode",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionSetPermissionModeResult>;
   request<Method extends AgenCDaemonMethod>(
     method: Method,
     params?: JsonObject,
@@ -408,6 +426,35 @@ export function createDaemonTuiSession<
         sessionId,
         messageOrdinal: params.messageOrdinal,
       } satisfies SessionRewindConversationToMessageParams),
+    // `/model` and `/provider` stage their switch by calling
+    // `session.setPendingProviderSwitch` on this bridge. The in-process
+    // session would mutate `pendingProviderSwitch` directly, but on the
+    // daemon path that field lives on the REAL session inside the daemon.
+    // Forward the spec as `session.setModel` so the daemon runs the
+    // genuine I-13/I-57 switch machinery; its turn loop's
+    // `consumePendingProviderSwitch` is the authority. Fire-and-forget to
+    // match the synchronous `void` signature the commands expect.
+    setPendingProviderSwitch: (pending) => {
+      if (pending === null) return;
+      void client
+        .request("session.setModel", {
+          sessionId,
+          ...(pending.model !== undefined ? { model: pending.model } : {}),
+          ...(pending.provider !== undefined
+            ? { provider: pending.provider }
+            : {}),
+        } satisfies SessionSetModelParams)
+        .catch(() => {
+          // Best-effort: a disconnected daemon socket throws. The user's
+          // optimistic chrome update already landed; the next snapshot /
+          // turn surfaces any disconnection separately.
+        });
+    },
+    setDaemonPermissionMode: async (mode) =>
+      client.request("session.setPermissionMode", {
+        sessionId,
+        mode,
+      } satisfies SessionSetPermissionModeParams),
     subscribeToEvents: (cb) => {
       eventSubscribers.add(cb);
       ensureDaemonEventsSubscribed();

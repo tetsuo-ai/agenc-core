@@ -401,6 +401,50 @@ describe("permissionsCommand — mode", () => {
     if (r.kind !== "text") throw new Error("expected text");
     expect(r.text).toMatch(/already/);
   });
+
+  it("'/permissions mode plan' routes to the daemon registry on a bridge session", async () => {
+    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const setDaemonPermissionMode = vi.fn(async (mode: string) => ({
+      applied: true,
+      previousMode: "default",
+      mode,
+    }));
+    // A daemon bridge session exposes setDaemonPermissionMode; the local
+    // registry is only a client-side shim, so the command must forward.
+    const session = {
+      services: { permissionModeRegistry: registry },
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-1",
+      setDaemonPermissionMode,
+    } as unknown as Session;
+    const ctx = stubCtx({ registry, argsRaw: "mode plan", session });
+    const r = await permissionsCommand.execute(ctx);
+    if (r.kind !== "text") throw new Error("expected text");
+    expect(r.text).toContain("default → plan");
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("plan");
+    // Local registry is kept in sync for subsequent /permissions reads.
+    expect(registry.current().mode).toBe("plan");
+  });
+
+  it("'/permissions mode plan' surfaces a daemon RPC failure as an error", async () => {
+    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const setDaemonPermissionMode = vi.fn(async () => {
+      throw new Error("daemon refused");
+    });
+    const session = {
+      services: { permissionModeRegistry: registry },
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-1",
+      setDaemonPermissionMode,
+    } as unknown as Session;
+    const ctx = stubCtx({ registry, argsRaw: "mode plan", session });
+    const r = await permissionsCommand.execute(ctx);
+    expect(r.kind).toBe("error");
+    if (r.kind !== "error") throw new Error("expected error");
+    expect(r.message).toContain("daemon refused");
+    // Local registry untouched when the daemon switch fails.
+    expect(registry.current().mode).toBe("default");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

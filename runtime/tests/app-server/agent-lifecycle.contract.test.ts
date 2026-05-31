@@ -991,6 +991,108 @@ describe("AgenC background agent lifecycle", () => {
     );
   });
 
+  it("routes session.setModel to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-setmodel",
+      agentId: "agent-setmodel",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const setAgentModel = vi.fn(async () => ({
+      applied: true,
+      summary: "Model switched to \"gpt-x\" on \"openai\".",
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        setAgentModel,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-setmodel",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-setmodel"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.setSessionModel({
+        sessionId: "session-setmodel",
+        model: "gpt-x",
+        provider: "openai",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-setmodel",
+      applied: true,
+      summary: "Model switched to \"gpt-x\" on \"openai\".",
+    });
+    expect(setAgentModel).toHaveBeenCalledWith("agent-setmodel", {
+      sessionId: "session-setmodel",
+      model: "gpt-x",
+      provider: "openai",
+    });
+  });
+
+  it("routes session.setPermissionMode to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-setmode",
+      agentId: "agent-setmode",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const setAgentPermissionMode = vi.fn(async () => ({
+      applied: true,
+      previousMode: "default",
+      mode: "plan",
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        setAgentPermissionMode,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-setmode",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-setmode"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.setSessionPermissionMode({
+        sessionId: "session-setmode",
+        mode: "plan",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-setmode",
+      applied: true,
+      previousMode: "default",
+      mode: "plan",
+    });
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("agent-setmode", {
+      sessionId: "session-setmode",
+      mode: "plan",
+    });
+  });
+
   it("does not cancel a recovered session without a live runtime", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({

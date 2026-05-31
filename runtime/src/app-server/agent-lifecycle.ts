@@ -46,6 +46,10 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
+  SessionSetModelParams,
+  SessionSetModelResult,
+  SessionSetPermissionModeParams,
+  SessionSetPermissionModeResult,
   SessionSummary,
   ToolApproveParams,
   ToolCancelParams,
@@ -1391,6 +1395,68 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  async setSessionModel(
+    params: SessionSetModelParams,
+  ): Promise<SessionSetModelResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.setModel requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.setAgentModel === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.setModel requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowSetModel: true },
+    );
+    const summary = await this.#runner.setAgentModel(agentId, {
+      sessionId: params.sessionId,
+      ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.provider !== undefined ? { provider: params.provider } : {}),
+    });
+    return {
+      sessionId: params.sessionId,
+      applied: summary.applied,
+      summary: summary.summary,
+    };
+  }
+
+  async setSessionPermissionMode(
+    params: SessionSetPermissionModeParams,
+  ): Promise<SessionSetPermissionModeResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.setPermissionMode requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.setAgentPermissionMode === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.setPermissionMode requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowSetPermissionMode: true },
+    );
+    const result = await this.#runner.setAgentPermissionMode(agentId, {
+      sessionId: params.sessionId,
+      mode: params.mode,
+    });
+    return {
+      sessionId: params.sessionId,
+      applied: result.applied,
+      previousMode: result.previousMode,
+      mode: result.mode,
+    };
+  }
+
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -1562,6 +1628,8 @@ export class AgenCDaemonAgentManager {
       readonly allowConversationRewind?: boolean;
       readonly allowMcpAddServer?: boolean;
       readonly allowSnapshot?: boolean;
+      readonly allowSetModel?: boolean;
+      readonly allowSetPermissionMode?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -1595,6 +1663,12 @@ export class AgenCDaemonAgentManager {
     const hasSnapshotRunner =
       options.allowSnapshot === true &&
       this.#runner?.snapshotAgentSession !== undefined;
+    const hasSetModelRunner =
+      options.allowSetModel === true &&
+      this.#runner?.setAgentModel !== undefined;
+    const hasSetPermissionModeRunner =
+      options.allowSetPermissionMode === true &&
+      this.#runner?.setAgentPermissionMode !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
@@ -1604,7 +1678,9 @@ export class AgenCDaemonAgentManager {
       !hasPartialCompactRunner &&
       !hasConversationRewindRunner &&
       !hasMcpAddServerRunner &&
-      !hasSnapshotRunner
+      !hasSnapshotRunner &&
+      !hasSetModelRunner &&
+      !hasSetPermissionModeRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
