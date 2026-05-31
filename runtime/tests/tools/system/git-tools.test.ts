@@ -19,7 +19,7 @@
  *    languages, worktrees.
  */
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -216,6 +216,47 @@ describe("createGitAndRepoTools", () => {
       const tool = toolByName(tools, "system.gitDiff");
       const result = await tool.execute({ path: root, fromRef: "does-not-exist-rev" });
       expect(result.isError).toBe(true);
+    });
+
+    it("neutralizes an argument-injection fromRef (--output= clobber)", async () => {
+      const clobber = join(root, "clobbered.txt");
+      const tool = toolByName(tools, "system.gitDiff");
+      const result = await tool.execute({ path: root, fromRef: `--output=${clobber}` });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("fromRef must not begin with '-'");
+      // The injected --output ref must never reach git, so no file is written.
+      await expect(stat(clobber)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("neutralizes an argument-injection toRef", async () => {
+      const tool = toolByName(tools, "system.gitDiff");
+      const result = await tool.execute({
+        path: root,
+        fromRef: "HEAD",
+        toRef: "--ext-diff",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("toRef must not begin with '-'");
+    });
+  });
+
+  describe("system.gitShow", () => {
+    it("shows a commit by ref", async () => {
+      const tool = toolByName(tools, "system.gitShow");
+      const result = await tool.execute({ path: root, ref: "HEAD" });
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content);
+      expect(payload.output).toContain("init");
+    });
+
+    it("neutralizes an argument-injection ref (--output= clobber)", async () => {
+      const clobber = join(root, "clobbered.txt");
+      const tool = toolByName(tools, "system.gitShow");
+      const result = await tool.execute({ path: root, ref: `--output=${clobber}` });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("ref must not begin with '-'");
+      // The injected --output ref must never reach git, so no file is written.
+      await expect(stat(clobber)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 

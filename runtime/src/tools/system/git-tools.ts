@@ -162,6 +162,15 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (args.staged === true) command.push("--cached");
       const fromRef = toOptionalString(args.fromRef);
       const toRef = toOptionalString(args.toRef);
+      // Refs are model-controlled. A ref beginning with "-" is parsed by git as
+      // an option (e.g. "--output=/path" clobbers files, "--ext-diff" enables
+      // RCE), so reject those rather than smuggling them into argv.
+      if (fromRef?.startsWith("-")) {
+        return errorResult("fromRef must not begin with '-'");
+      }
+      if (toRef?.startsWith("-")) {
+        return errorResult("toRef must not begin with '-'");
+      }
       if (fromRef && toRef) {
         command.push(fromRef, toRef);
       } else if (fromRef) {
@@ -208,6 +217,12 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const ref = toOptionalString(args.ref);
       if (!ref) return errorResult("ref must be a non-empty string");
+      // The ref is model-controlled. A ref beginning with "-" is parsed by git
+      // as an option (e.g. "--output=/path" clobbers files, "--ext-diff"
+      // enables RCE), so reject it rather than smuggling it into argv.
+      if (ref.startsWith("-")) {
+        return errorResult("ref must not begin with '-'");
+      }
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
       const result = await runCommand(

@@ -884,23 +884,67 @@ export class OpenAIProvider implements LLMProvider {
               ? (event.data.item as Record<string, unknown>)
               : undefined;
           if (item?.type === "function_call") {
-            const toolCall = validateProviderToolCallOrThrow(
-              this.name,
-              {
-                id: String(item.call_id ?? item.id ?? "").trim(),
-                // Streaming-path decode (mirrors the non-streaming
-                // path in `parseOpenAIResponsesResponse`). Without
-                // this, mid-stream `onChunk(toolCalls)` carries the
-                // wire-form `mcp__server__tool` straight into the
-                // dispatcher, which keys on the dotted internal form
-                // and reports a silent dispatch miss.
-                name: decodeMcpToolNameFromWire(
-                  String(item.name ?? "").trim(),
-                ),
-                arguments: String(item.arguments ?? "{}"),
-              },
-              OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-            );
+            let toolCall: LLMToolCall;
+            try {
+              toolCall = validateProviderToolCallOrThrow(
+                this.name,
+                {
+                  id: String(item.call_id ?? item.id ?? "").trim(),
+                  // Streaming-path decode (mirrors the non-streaming
+                  // path in `parseOpenAIResponsesResponse`). Without
+                  // this, mid-stream `onChunk(toolCalls)` carries the
+                  // wire-form `mcp__server__tool` straight into the
+                  // dispatcher, which keys on the dotted internal form
+                  // and reports a silent dispatch miss.
+                  name: decodeMcpToolNameFromWire(
+                    String(item.name ?? "").trim(),
+                  ),
+                  arguments: String(item.arguments ?? "{}"),
+                },
+                OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+              );
+            } catch (validationError) {
+              // A single malformed function_call must not discard output
+              // already forwarded to the consumer. When nothing has been
+              // emitted yet, rethrow so the outer fallback/retry path can
+              // act; otherwise surface a partial response (mirrors the
+              // Anthropic adapter's partial-recovery and the in-stream
+              // `response.failed` branch below).
+              if (
+                streamedContent.length === 0 &&
+                streamedToolCalls.size === 0
+              ) {
+                throw validationError;
+              }
+              const partialError =
+                validationError instanceof Error
+                  ? validationError
+                  : new LLMProviderError(
+                    this.name,
+                    OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+                  );
+              const recoveredToolCalls = Array.from(streamedToolCalls.values());
+              onChunk({
+                content: "",
+                done: true,
+                ...(recoveredToolCalls.length > 0
+                  ? { toolCalls: recoveredToolCalls }
+                  : {}),
+              });
+              return {
+                content: streamedContent,
+                toolCalls: recoveredToolCalls,
+                usage: {
+                  promptTokens: 0,
+                  completionTokens: 0,
+                  totalTokens: 0,
+                },
+                model,
+                finishReason: "error",
+                error: partialError,
+                partial: true,
+              };
+            }
             streamedToolCalls.set(toolCall.id, toolCall);
             onChunk({ content: "", done: false, toolCalls: [toolCall] });
           }
@@ -1073,6 +1117,12 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       let content = "";
+      // DeepSeek-reasoner / openai-compat reasoning models stream
+      // chain-of-thought on `delta.reasoning_content` rather than
+      // `delta.content`. Accumulate it alongside content so it is not
+      // dropped from the streamed path (the non-streaming path in
+      // `parseChatCompletionsResponse` already falls back to it).
+      let reasoningContent = "";
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let usage: Record<string, unknown> = {};
@@ -1131,6 +1181,13 @@ export class OpenAIProvider implements LLMProvider {
           if (typeof delta.content === "string" && delta.content.length > 0) {
             content += delta.content;
             onChunk({ content: delta.content, done: false });
+          }
+          if (
+            typeof delta.reasoning_content === "string" &&
+            delta.reasoning_content.length > 0
+          ) {
+            reasoningContent += delta.reasoning_content;
+            onChunk({ content: delta.reasoning_content, done: false });
           }
 
           const deltaToolCalls = Array.isArray(delta.tool_calls)
@@ -1202,7 +1259,17 @@ export class OpenAIProvider implements LLMProvider {
               {
                 message: {
                   role: "assistant",
-                  content,
+                  // Pass an explicit non-string `content` when only
+                  // reasoning was streamed so `parseChatCompletionsResponse`
+                  // reaches its `reasoning_content` fallback instead of
+                  // short-circuiting on an empty string.
+                  content:
+                    content.length > 0 || reasoningContent.length === 0
+                      ? content
+                      : null,
+                  ...(reasoningContent.length > 0
+                    ? { reasoning_content: reasoningContent }
+                    : {}),
                   ...(toolCalls.length > 0
                     ? {
                       tool_calls: toolCalls.map((toolCall) => ({

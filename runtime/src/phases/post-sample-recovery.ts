@@ -35,7 +35,7 @@ import {
   isWithheld413Message,
 } from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
-import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
+import { resetRecoveryReentries } from "../recovery/fallback-ladder.js";
 import { runMaxOutputTokensRecovery } from "../recovery/max-output-tokens.js";
 import { runModelFallback } from "../recovery/model-fallback.js";
 import { escalatedMaxOutputTokensForModel } from "../llm/model-metadata.js";
@@ -603,6 +603,18 @@ export async function postSampleRecovery(
   }
 }
 
+// Token-budget continuations are a *legitimate* productive loop driven
+// by the user's token target (e.g. "+500k") — they are NOT a recovery
+// loop, so they must not share the 5-entry recovery safety cap
+// (MAX_RECOVERY_REENTRIES). Sharing it caused large targets to silently
+// halt after ~5 continuations. The real "stop" signal for this path is
+// the BudgetTracker's own diminishing-returns guard (token-budget.ts),
+// which stops emitting `pendingBudgetDecision` once the target is met or
+// progress stalls; this counter is only a runaway backstop sized far
+// above any realistic continuation count for a single turn.
+const MAX_BUDGET_CONTINUATIONS = 10_000;
+const budgetContinuationCounts = new WeakMap<TurnState, number>();
+
 export async function applyPendingBudgetContinuation(
   state: TurnState,
   _ctx: TurnContext,
@@ -612,14 +624,30 @@ export async function applyPendingBudgetContinuation(
   if (signal?.aborted) return state;
   if (state.pendingBudgetDecision?.kind !== "stop") return state;
 
-  const reservation = await reserveRecoveryReentry(session, state, {
-    triggerName: "token_budget_continuation",
-  });
-  if (reservation.kind === "exhausted") {
+  // Use a dedicated per-turn counter independent of the recovery
+  // re-entry cap. A successful budget continuation is a clean,
+  // non-recovery iteration, so it also resets the recovery safety cap
+  // (via resetRecoveryReentries) — preserving that cap exclusively for
+  // genuine back-to-back recovery loops.
+  const budgetCount = (budgetContinuationCounts.get(state) ?? 0) + 1;
+  if (budgetCount > MAX_BUDGET_CONTINUATIONS) {
+    emitError(session.eventLog, session.nextInternalSubId(), {
+      cause: "recovery_loop",
+      message: `token-budget continuation exceeded MAX_BUDGET_CONTINUATIONS=${MAX_BUDGET_CONTINUATIONS}`,
+    });
+    budgetContinuationCounts.delete(state);
     state.pendingBudgetDecision = undefined;
     state.transition = undefined;
     return state;
   }
+  budgetContinuationCounts.set(state, budgetCount);
+  resetRecoveryReentries(state);
+  emitWarning(
+    session.eventLog,
+    session.nextInternalSubId(),
+    "recovery_triggered",
+    `trigger=token_budget_continuation, budgetContinuation=${budgetCount}/${MAX_BUDGET_CONTINUATIONS}`,
+  );
 
   const continuationMessage = state.pendingBudgetDecision.reason;
   resetContextCollapseAttempted(state);

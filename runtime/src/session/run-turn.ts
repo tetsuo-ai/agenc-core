@@ -3114,7 +3114,18 @@ async function* runTurnKernelInner(
     contextualInstructionUpdates.length > 0
       ? [...priorExisting, ...contextualInstructionUpdates]
       : priorExisting;
-  const durableHistoryStartIndex = system ? 1 : 0;
+  // Durable history excludes the leading seed `system` message (which is
+  // re-derived from instructions, not replayed from history). Computing this
+  // index dynamically — rather than freezing `system ? 1 : 0` for the whole
+  // turn — keeps it correct after auto-compact replaces `state.messages` with
+  // the post-compact replacement history, whose index 0 is the `<compact>`
+  // boundary marker (a real `user` message), not a system message. Freezing
+  // the index dropped that boundary marker (and the first kept message) from
+  // in-memory history, diverging from the manual-compact contract which writes
+  // the full replacementHistory (boundary marker included) to session.history.
+  const durableHistoryStartIndex = (
+    messages: readonly LLMMessage[],
+  ): number => (messages[0]?.role === "system" ? 1 : 0);
 
   let state: TurnState = buildInitialTurnState(ctx, user, {
     priorMessages: priorFull,
@@ -3152,7 +3163,7 @@ async function* runTurnKernelInner(
   const syncSessionState = async (): Promise<void> => {
     persistNewResponseItems();
     const durableHistory = state.messages
-      .slice(durableHistoryStartIndex)
+      .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message));
     const autoCompactTokenLimit = getAutoCompactTokenLimit(ctx);
     const resolvedPersonality = resolveTurnPersonality(ctx);

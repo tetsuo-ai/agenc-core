@@ -707,10 +707,31 @@ async function shutdownWithTimeout(
 }
 
 export function readRolloutHistory(path: string): RolloutItem[] {
-  return readFileSync(path, "utf8")
+  let corruptLines = 0;
+  let lastCorruptError: unknown;
+  const items = readFileSync(path, "utf8")
     .split(/\r?\n/u)
     .flatMap((line) => {
-      const item = parseRolloutLine(line);
+      let item: RolloutItem | null;
+      try {
+        item = parseRolloutLine(line);
+      } catch (error) {
+        // Skip a corrupt interior line rather than aborting the whole
+        // history rebuild — one bad row must not strand every later row.
+        corruptLines += 1;
+        lastCorruptError = error;
+        return [];
+      }
       return item === null ? [] : [item];
     });
+  // If the file contained corrupt rows but nothing at all survived, surface
+  // the failure so callers (e.g. conversation replay) can record a replay
+  // error instead of silently treating a fully-corrupt rollout as empty
+  // history. A partial recovery (at least one good row) is still returned.
+  if (items.length === 0 && corruptLines > 0) {
+    throw lastCorruptError instanceof Error
+      ? lastCorruptError
+      : new Error("rollout history is corrupt");
+  }
+  return items;
 }

@@ -27,8 +27,10 @@ import { structuredPatch } from "diff";
 
 import {
   dropSessionReadSnapshot,
+  getSessionReadSnapshot,
   recordSessionRead,
   safePathAllowingSessionPlanFile,
+  type SessionReadSnapshot,
   type SessionReadViewKind,
 } from "../system/filesystem.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
@@ -56,6 +58,17 @@ export interface ApplyPatchResult {
   readonly summary: string;
   readonly metadata: Record<string, unknown>;
 }
+
+// Verbatim parity with the Edit/MultiEdit read-before-write gate
+// (system/file-edit.ts). The apply_patch update path enforces the same
+// invariants so the model cannot bypass them by routing an edit through
+// a patch: an existing file must have been fully read this session, and
+// it must not have drifted on disk since that read.
+const READ_BEFORE_WRITE_ERROR =
+  "File has not been read yet. Read it first before writing to it.";
+
+const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
+  "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
 
 interface Replacement {
   readonly startIndex: number;
@@ -204,13 +217,9 @@ function applyReplacements(
   return next;
 }
 
-async function deriveNewContentsFromChunks(
-  pathAbs: string,
-  chunks: readonly UpdateFileChunk[],
-): Promise<AppliedPatch> {
-  let originalContents: string;
+async function readFileToUpdate(pathAbs: string): Promise<string> {
   try {
-    originalContents = await readFile(pathAbs, "utf8");
+    return await readFile(pathAbs, "utf8");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     throw new ApplyPatchRuntimeError(
@@ -219,6 +228,15 @@ async function deriveNewContentsFromChunks(
         : `Failed to read file to update ${pathAbs}`,
     );
   }
+}
+
+async function deriveNewContentsFromChunks(
+  pathAbs: string,
+  chunks: readonly UpdateFileChunk[],
+  preReadContents?: string,
+): Promise<AppliedPatch> {
+  const originalContents =
+    preReadContents ?? (await readFileToUpdate(pathAbs));
 
   const originalLines = splitSourceLines(originalContents);
   const replacements = computeReplacements(originalLines, pathAbs, chunks);
@@ -360,6 +378,70 @@ function printSummary(affected: AffectedPaths): string {
   return `${lines.join("\n")}\n`;
 }
 
+function isFullSessionRead(snapshot: SessionReadSnapshot | undefined): boolean {
+  return snapshot?.viewKind === "full" && snapshot.isPartialView !== true;
+}
+
+function comparableSessionContent(
+  snapshot: SessionReadSnapshot | undefined,
+): string | undefined {
+  const content =
+    typeof snapshot?.rawContent === "string"
+      ? snapshot.rawContent
+      : snapshot?.content;
+  return typeof content === "string"
+    ? content.replaceAll("\r\n", "\n")
+    : undefined;
+}
+
+/**
+ * Read-before-write / mtime-drift gate for the apply_patch update path,
+ * mirroring the Edit/MultiEdit enforcement in system/file-edit.ts.
+ *
+ * Only runs when a session id is present (the production tool surface
+ * injects one). The existing file MUST have a full read snapshot for
+ * this session, otherwise the patch is rejected with the same verbatim
+ * error Edit uses. If the on-disk mtime advanced past the recorded read
+ * — and the content actually differs (Windows cloud-sync benign-touch
+ * guard) — the patch is rejected so the model is forced to re-read.
+ */
+async function assertReadBeforeWriteGate(
+  sessionId: string | undefined,
+  pathAbs: string,
+  currentContents: string,
+): Promise<void> {
+  if (sessionId === undefined) return;
+
+  const recordedSnapshot = getSessionReadSnapshot(sessionId, pathAbs);
+  if (!isFullSessionRead(recordedSnapshot)) {
+    throw new ApplyPatchRuntimeError(READ_BEFORE_WRITE_ERROR);
+  }
+
+  const recordedTs = recordedSnapshot?.timestamp;
+  if (typeof recordedTs !== "number" || !Number.isFinite(recordedTs)) return;
+
+  let currentMtimeMs: number | undefined;
+  try {
+    const current = await stat(pathAbs);
+    if (Number.isFinite(current.mtimeMs)) currentMtimeMs = current.mtimeMs;
+  } catch {
+    // Best effort: a failed stat leaves the drift check inconclusive,
+    // matching Edit's fall-through behavior when the re-stat fails.
+    return;
+  }
+
+  if (currentMtimeMs === undefined || currentMtimeMs <= recordedTs) return;
+
+  const recordedContent = comparableSessionContent(recordedSnapshot);
+  const normalizedCurrent = currentContents.replaceAll("\r\n", "\n");
+  const isFullContentMatch =
+    recordedSnapshot?.viewKind === "full" &&
+    recordedContent === normalizedCurrent;
+  if (!isFullContentMatch) {
+    throw new ApplyPatchRuntimeError(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+  }
+}
+
 async function applyHunksToFiles(
   hunks: readonly ApplyPatchHunk[],
   opts: ApplyPatchRuntimeOptions,
@@ -421,7 +503,13 @@ async function applyHunksToFiles(
       continue;
     }
 
-    const applied = await deriveNewContentsFromChunks(pathAbs, hunk.chunks);
+    const currentContents = await readFileToUpdate(pathAbs);
+    await assertReadBeforeWriteGate(opts.sessionId, pathAbs, currentContents);
+    const applied = await deriveNewContentsFromChunks(
+      pathAbs,
+      hunk.chunks,
+      currentContents,
+    );
     const writePathAbs =
       hunk.movePath === null
         ? pathAbs

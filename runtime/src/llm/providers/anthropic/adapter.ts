@@ -32,6 +32,7 @@ import {
   parseAnthropicMessagesResponse,
 } from "../../wire/messages-anthropic.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { coerceUsage } from "../../wire/shared.js";
 import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
@@ -104,7 +105,9 @@ function mergeAnthropicUsage(
       : undefined;
   return {
     input_tokens:
-      typeof record.input_tokens === "number" && record.input_tokens > 0
+      typeof record.input_tokens === "number" &&
+      Number.isFinite(record.input_tokens) &&
+      record.input_tokens >= 0
         ? record.input_tokens
         : usage.input_tokens,
     output_tokens:
@@ -790,11 +793,14 @@ export class AnthropicProvider implements LLMProvider {
         return {
           content,
           toolCalls: partialToolCalls,
-          usage: {
+          usage: coerceUsage({
             promptTokens: usage.input_tokens,
             completionTokens: usage.output_tokens,
-            totalTokens: usage.input_tokens + usage.output_tokens,
-          },
+            cachedInputTokens: usage.cache_read_input_tokens,
+            cacheCreationInputTokens: usage.cache_creation_input_tokens,
+            reasoningOutputTokens: usage.reasoning_output_tokens,
+            webSearchRequests: usage.server_tool_use?.web_search_requests,
+          }),
           model,
           finishReason: "error",
           error: mappedError,

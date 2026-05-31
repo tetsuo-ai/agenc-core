@@ -1125,17 +1125,22 @@ export class SessionStore {
       return;
     }
     // I-83 suspend detection: if the batch was open for > 10s (e.g.
-    // system suspend/resume gap), emit TWO events (warning + sentinel
-    // system_resumed_from) and abandon the pending batch.
+    // system suspend/resume gap), emit TWO marker events (warning +
+    // sentinel system_resumed_from) AHEAD of the pending batch.
+    // The markers are informational warnings (non-state-mutating in the
+    // reducer); the queued durable response_item / session_state lines
+    // that straddle the suspend window MUST be preserved and flushed,
+    // not discarded — dropping them permanently loses in-flight history.
     if (
       this.batchOpenedAtMs !== null &&
       monotonicMs() - this.batchOpenedAtMs > I83_SUSPEND_DETECTION_MS
     ) {
       const durationMs = Math.round(monotonicMs() - this.batchOpenedAtMs);
       this.batchOpenedAtMs = null;
-      // Replace pending with the two I-83 marker events so the log
-      // shows (a) the operator-visible warning and (b) a structural
-      // sentinel the reducer can reason about.
+      // Prepend the two I-83 marker events so the log shows (a) the
+      // operator-visible warning and (b) a structural sentinel the
+      // reducer can reason about, while the original pending items
+      // remain queued behind them.
       const warning: RolloutItem = {
         type: "event_msg",
         payload: {
@@ -1165,7 +1170,7 @@ export class SessionStore {
           },
         },
       };
-      this.pending = [warning, sentinel];
+      this.pending = [warning, sentinel, ...this.pending];
       this.emitDiagnostic({
         at: Date.now(),
         level: "warning",

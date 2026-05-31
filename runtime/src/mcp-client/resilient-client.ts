@@ -100,6 +100,19 @@ interface ResilientMCPBridgeOptions {
    */
   readonly callObserver?: MCPCallObserver;
   readonly serverOrigin?: string;
+  /**
+   * Invoked after a successful reconnect with the freshly-spawned MCP
+   * `client`. The owning `MCPManager` wires this so it can rebuild the
+   * resource + prompt bridges against the new client — otherwise those
+   * bridges would keep their reference to the OLD (now-closed) client and
+   * the manager's `readResource` / `renderPrompt` would talk to a dead
+   * connection. The resilient bridge only rebuilds the *tool* bridge
+   * itself; the resource/prompt surface lives on the manager, so it must
+   * be refreshed through this hook. Rejections are swallowed by the caller
+   * so a resource/prompt-bridge failure never aborts an otherwise-good
+   * tool reconnect.
+   */
+  readonly onReconnect?: (client: unknown) => void | Promise<void>;
 }
 
 /**
@@ -218,11 +231,23 @@ export class ResilientMCPBridge implements MCPToolBridge {
     try {
       // Dispose old bridge (best-effort)
       try { await this.inner.dispose(); } catch { /* ignore */ }
+      // dispose() may have run while we awaited the old bridge teardown.
+      if (this.disposed) { this.reconnecting = false; return; }
 
       const { createMCPConnection } = await import("./connection.js");
       const { createToolBridge } = await import("./tools.js");
 
       const client = await createMCPConnection(this.config, this.logger);
+      // A `dispose()` racing this reconnect already cleared `reconnectTimer`
+      // and disposed `this.inner`, but it cannot see the client we just
+      // spawned. Without this re-check the fresh (detached stdio child)
+      // client would be orphaned — a process leak. Close it ourselves.
+      if (this.disposed) {
+        await closeClientQuietly(client);
+        this.reconnecting = false;
+        return;
+      }
+
       const newBridge = await createToolBridge(
         client,
         this.serverName,
@@ -250,9 +275,32 @@ export class ResilientMCPBridge implements MCPToolBridge {
         },
       );
 
+      // Disposed while building the bridge: tear the new bridge down (its
+      // dispose() closes the client + kills the child) so nothing leaks.
+      if (this.disposed) {
+        try { await newBridge.dispose(); } catch { /* ignore */ }
+        this.reconnecting = false;
+        return;
+      }
+
       this.inner = newBridge;
       this.reconnecting = false;
       this.backoffMs = 0;
+
+      // (a) Rebuild the manager's resource + prompt bridges against the new
+      // client. The resilient bridge owns only the tool surface; without
+      // this the manager's readResource / renderPrompt would keep calling
+      // the OLD, closed client. Best-effort: a failure here must not undo an
+      // otherwise-successful tool reconnect.
+      if (this.options.onReconnect !== undefined) {
+        try {
+          await this.options.onReconnect(client);
+        } catch (hookError) {
+          this.logger.warn?.(
+            `MCP server "${this.serverName}" reconnect resource/prompt refresh failed: ${(hookError as Error).message}`,
+          );
+        }
+      }
 
       this.logger.info(`MCP server "${this.serverName}" reconnected (${newBridge.tools.length} tools)`);
     } catch (error) {
@@ -263,6 +311,20 @@ export class ResilientMCPBridge implements MCPToolBridge {
       // Schedule another attempt with increased backoff
       this.scheduleReconnect();
     }
+  }
+}
+
+/**
+ * Best-effort close of a freshly-spawned MCP client that we have to abandon
+ * because `dispose()` raced our reconnect. Mirrors the tool bridge's own
+ * `client.close()` teardown (tools.ts) — for stdio this terminates the
+ * detached child process, preventing a leak.
+ */
+async function closeClientQuietly(client: unknown): Promise<void> {
+  try {
+    await (client as { close?: () => Promise<void> }).close?.();
+  } catch {
+    /* ignore — abandoning anyway */
   }
 }
 

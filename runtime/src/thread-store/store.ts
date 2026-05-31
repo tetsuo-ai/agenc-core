@@ -938,7 +938,14 @@ export class FileThreadStore implements ThreadStore {
     const items: RolloutItem[] = [];
     for (const line of raw.split(/\r?\n/)) {
       if (line.trim().length === 0) continue;
-      const parsed = parseRolloutLine(line);
+      let parsed: RolloutItem | null;
+      try {
+        parsed = parseRolloutLine(line);
+      } catch {
+        // Skip a corrupt interior line rather than aborting the whole
+        // reconstruction — one bad row must not strand every later row.
+        continue;
+      }
       if (parsed !== null) items.push(parsed);
     }
     return items;

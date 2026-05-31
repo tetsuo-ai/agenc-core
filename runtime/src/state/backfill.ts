@@ -130,7 +130,15 @@ function reindexWholeRolloutFile(args: {
       byteOffset += lineBytes;
       continue;
     }
-    const parsed = parseRolloutLine(line);
+    let parsed: RolloutItem | null;
+    try {
+      parsed = parseRolloutLine(line);
+    } catch {
+      // Skip a corrupt interior line rather than aborting the whole
+      // backfill — one bad row must not strand every later row.
+      byteOffset += lineBytes;
+      continue;
+    }
     if (parsed !== null) {
       if (parsed.type === "session_meta") {
         firstMeta ??= parsed;
@@ -198,7 +206,16 @@ function indexAppendedTail(args: {
       lineNumber += 1;
       continue;
     }
-    const parsed = parseRolloutLine(line);
+    let parsed: RolloutItem | null;
+    try {
+      parsed = parseRolloutLine(line);
+    } catch {
+      // Skip a corrupt interior line rather than aborting the whole
+      // tail backfill — one bad row must not strand every later row.
+      byteOffset += lineBytes;
+      lineNumber += 1;
+      continue;
+    }
     if (parsed !== null) {
       if (parsed.type === "session_meta") {
         firstMeta ??= parsed;

@@ -243,7 +243,11 @@ function truncate(
   if (Buffer.byteLength(text, "utf-8") <= maxBytes)
     return { text, truncated: false };
   const buf = Buffer.from(text, "utf-8");
-  const truncatedText = buf.subarray(0, maxBytes).toString("utf-8");
+  // Back the cut off any continuation bytes (0b10xxxxxx) so we never split a
+  // multi-byte UTF-8 sequence and emit a U+FFFD replacement char (the I-78 bug).
+  let end = Math.min(maxBytes, buf.length);
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  const truncatedText = buf.subarray(0, end).toString("utf-8");
   return { text: truncatedText + "\n[truncated]", truncated: true };
 }
 

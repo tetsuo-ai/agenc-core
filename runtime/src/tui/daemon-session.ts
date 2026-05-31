@@ -514,8 +514,8 @@ function subscribeToDaemonEvents(
     (event) => {
       const transcriptEvent = toTranscriptEvent(event);
       cb(transcriptEvent);
-      void maybeBridgeDaemonApproval(client, sessionId, session, transcriptEvent);
-      void maybeBridgeDaemonElicitation(client, sessionId, session, transcriptEvent);
+      void maybeBridgeDaemonApproval(client, sessionId, session, transcriptEvent, cb);
+      void maybeBridgeDaemonElicitation(client, sessionId, session, transcriptEvent, cb);
     },
   );
   const unsubscribeRealtime = client.subscribeToNotifications?.((event) => {
@@ -536,11 +536,42 @@ function subscribeToDaemonEvents(
   };
 }
 
+/**
+ * Surface a failed delivery RPC to the user as a warning notice.
+ *
+ * The approve/deny/elicitation decision the user made could not be delivered
+ * to the daemon (e.g. a transient/disconnected socket). Without surfacing it,
+ * the tool call hangs forever with no feedback. Mirror the connection-notice
+ * shape so the TUI renders it like other daemon warnings.
+ */
+function emitDaemonDeliveryFailureNotice(
+  cb: (event: unknown) => void,
+  requestId: string,
+  action: string,
+  error: unknown,
+): void {
+  const message =
+    error instanceof Error && error.message.length > 0
+      ? error.message
+      : String(error);
+  cb({
+    id: `agenc-daemon-delivery-failed-${requestId}`,
+    type: "warning",
+    payload: {
+      message: `failed to deliver ${action} to daemon: ${message}`,
+      cause: "daemon_delivery_failed",
+      action,
+      requestId,
+    },
+  });
+}
+
 async function maybeBridgeDaemonApproval(
   client: AgenCDaemonTuiClient,
   sessionId: string,
   session: AgenCTuiBridgeSession,
   event: unknown,
+  cb: (event: unknown) => void,
 ): Promise<void> {
   if (!isJsonObject(event) || event.type !== "request_permissions") return;
   const payload = event.payload;
@@ -552,19 +583,31 @@ async function maybeBridgeDaemonApproval(
   const decision = await resolver
     .request(buildDaemonApprovalCtx(session, payload, toolName))
     .catch((): ReviewDecision => ({ kind: "denied" }));
-  if (reviewDecisionIsAllow(decision)) {
-    await client.request("tool.approve", {
+  // A transient daemon RPC failure here silently drops the user's
+  // approve/deny decision and the tool call hangs forever. Catch and surface
+  // it so the user gets feedback instead of an indefinite hang.
+  try {
+    if (reviewDecisionIsAllow(decision)) {
+      await client.request("tool.approve", {
+        sessionId,
+        requestId: payload.callId,
+        scope: decision.kind === "approved_for_session" ? "session" : "once",
+      });
+      return;
+    }
+    await client.request("tool.deny", {
       sessionId,
       requestId: payload.callId,
-      scope: decision.kind === "approved_for_session" ? "session" : "once",
+      reason: decision.kind,
     });
-    return;
+  } catch (error) {
+    emitDaemonDeliveryFailureNotice(
+      cb,
+      payload.callId,
+      reviewDecisionIsAllow(decision) ? "tool.approve" : "tool.deny",
+      error,
+    );
   }
-  await client.request("tool.deny", {
-    sessionId,
-    requestId: payload.callId,
-    reason: decision.kind,
-  });
 }
 
 async function maybeBridgeDaemonElicitation(
@@ -572,6 +615,7 @@ async function maybeBridgeDaemonElicitation(
   sessionId: string,
   session: AgenCTuiBridgeSession,
   event: unknown,
+  cb: (event: unknown) => void,
 ): Promise<void> {
   if (!isJsonObject(event) || typeof event.type !== "string") return;
   const payload = event.payload;
@@ -597,14 +641,23 @@ async function maybeBridgeDaemonElicitation(
     } catch {
       response = null;
     }
-    await client.request("elicitation.respond", {
-      sessionId,
-      requestId: typeof payload.requestId === "string"
-        ? payload.requestId
-        : payload.callId,
-      kind: "request_user_input",
-      response: (response ?? { action: "cancel" }) as unknown as JsonObject,
-    } satisfies ElicitationRespondParams);
+    const requestId =
+      typeof payload.requestId === "string" ? payload.requestId : payload.callId;
+    try {
+      await client.request("elicitation.respond", {
+        sessionId,
+        requestId,
+        kind: "request_user_input",
+        response: (response ?? { action: "cancel" }) as unknown as JsonObject,
+      } satisfies ElicitationRespondParams);
+    } catch (error) {
+      emitDaemonDeliveryFailureNotice(
+        cb,
+        requestId,
+        "elicitation.respond",
+        error,
+      );
+    }
     return;
   }
   if (
@@ -626,13 +679,22 @@ async function maybeBridgeDaemonElicitation(
       })
       .catch((): McpElicitationResponse => ({ action: "cancel" }));
     if (isMcpUrlCompletionResponse(response)) return;
-    await client.request("elicitation.respond", {
-      sessionId,
-      requestId: payload.requestId,
-      kind: "mcp",
-      serverName: payload.serverName,
-      response: (response ?? { action: "cancel" }) as unknown as JsonObject,
-    } satisfies ElicitationRespondParams);
+    try {
+      await client.request("elicitation.respond", {
+        sessionId,
+        requestId: payload.requestId,
+        kind: "mcp",
+        serverName: payload.serverName,
+        response: (response ?? { action: "cancel" }) as unknown as JsonObject,
+      } satisfies ElicitationRespondParams);
+    } catch (error) {
+      emitDaemonDeliveryFailureNotice(
+        cb,
+        String(payload.requestId),
+        "elicitation.respond",
+        error,
+      );
+    }
   }
 }
 

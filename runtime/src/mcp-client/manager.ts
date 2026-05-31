@@ -692,6 +692,80 @@ export class MCPManager {
     return bridge.renderPrompt(parsed.rest, args);
   }
 
+  /**
+   * (Re)build the resource + prompt bridges for `config` against `client`,
+   * replacing any existing bridges for the server. Shared by the initial
+   * connect and the resilient bridge's reconnect hook so a reconnected
+   * server's resource/prompt surface tracks the live client instead of a
+   * stale, closed one.
+   *
+   * T9-D: resource + prompt bridges are optional on many servers; a failure
+   * to build either must not take down the server connection — log and move
+   * on so the tool surface still works. Old bridges are disposed best-effort
+   * before being replaced (the resource/prompt bridge `dispose()` only flips
+   * an internal flag — the tool bridge owns the client lifecycle — so this
+   * never double-closes the client).
+   */
+  private async refreshResourceAndPromptBridges(
+    config: MCPServerConfig,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    client: any,
+  ): Promise<void> {
+    try {
+      const resourceBridge = await createResourceBridge(
+        client,
+        config.name,
+        this.logger,
+        {
+          ...(config.timeout !== undefined
+            ? { rpcTimeoutMs: config.timeout }
+            : {}),
+        },
+      );
+      const previous = this.resourceBridges.get(config.name);
+      this.resourceBridges.set(config.name, resourceBridge);
+      if (previous) {
+        try {
+          await previous.dispose();
+        } catch {
+          /* best effort — replacing anyway */
+        }
+      }
+    } catch (error) {
+      this.logger.warn?.(
+        `MCP server "${config.name}" resource bridge unavailable:`,
+        error,
+      );
+    }
+
+    try {
+      const promptBridge = await createPromptBridge(
+        client,
+        config.name,
+        this.logger,
+        {
+          ...(config.timeout !== undefined
+            ? { rpcTimeoutMs: config.timeout }
+            : {}),
+        },
+      );
+      const previous = this.promptBridges.get(config.name);
+      this.promptBridges.set(config.name, promptBridge);
+      if (previous) {
+        try {
+          await previous.dispose();
+        } catch {
+          /* best effort — replacing anyway */
+        }
+      }
+    } catch (error) {
+      this.logger.warn?.(
+        `MCP server "${config.name}" prompt bridge unavailable:`,
+        error,
+      );
+    }
+  }
+
   private async connectServer(
     config: MCPServerConfig,
     startupGate?: StartupGate,
@@ -757,6 +831,13 @@ export class MCPManager {
           ...(this.callObserver !== undefined
             ? { callObserver: this.callObserver }
             : {}),
+          // On automatic reconnect the resilient bridge rebuilds only the
+          // tool surface and spawns a fresh client. Rebuild the resource +
+          // prompt bridges against that new client too — otherwise they keep
+          // pointing at the OLD, closed client and `readResource` /
+          // `renderPrompt` would talk to a dead connection.
+          onReconnect: (newClient: unknown) =>
+            this.refreshResourceAndPromptBridges(config, newClient),
         },
       );
       this.bridges.set(config.name, bridge);
@@ -764,43 +845,7 @@ export class MCPManager {
       // T9-D: resource + prompt bridges are optional on many servers.
       // Failures here must not take down the whole server connection —
       // log and continue so the tool surface still works.
-      try {
-        const resourceBridge = await createResourceBridge(
-          client,
-          config.name,
-          this.logger,
-          {
-            ...(config.timeout !== undefined
-              ? { rpcTimeoutMs: config.timeout }
-              : {}),
-          },
-        );
-        this.resourceBridges.set(config.name, resourceBridge);
-      } catch (error) {
-        this.logger.warn?.(
-          `MCP server "${config.name}" resource bridge unavailable:`,
-          error,
-        );
-      }
-
-      try {
-        const promptBridge = await createPromptBridge(
-          client,
-          config.name,
-          this.logger,
-          {
-            ...(config.timeout !== undefined
-              ? { rpcTimeoutMs: config.timeout }
-              : {}),
-          },
-        );
-        this.promptBridges.set(config.name, promptBridge);
-      } catch (error) {
-        this.logger.warn?.(
-          `MCP server "${config.name}" prompt bridge unavailable:`,
-          error,
-        );
-      }
+      await this.refreshResourceAndPromptBridges(config, client);
 
       this.connectedConnections.set(config.name, {
         type: "connected",

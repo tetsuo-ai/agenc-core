@@ -108,9 +108,14 @@ interface ActiveRealtimeFanout {
   closed: boolean;
 }
 
+interface RealtimeStartupGuard {
+  cancelled: boolean;
+}
+
 export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
   readonly #registeredThreads = new Map<string, AgenCRealtimeThreadBinding>();
   readonly #activeFanouts = new Map<string, ActiveRealtimeFanout>();
+  readonly #startupGuards = new Map<string, RealtimeStartupGuard>();
   readonly #resolveThread:
     | ((
         threadId: string,
@@ -138,10 +143,13 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
   ): Promise<ThreadRealtimeStartResponse> {
     const binding = await this.#requireThread(params.threadId);
     const transport = normalizeRealtimeStartTransport(params.transport);
+    const guard: RealtimeStartupGuard = { cancelled: false };
+    this.#startupGuards.set(params.threadId, guard);
     this.#deferRealtimeStartup({
       params,
       binding,
       transport,
+      guard,
       sendNotification: context.sendNotification,
     });
     return {};
@@ -151,6 +159,7 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
     readonly params: ThreadRealtimeStartParams;
     readonly binding: AgenCRealtimeThreadBinding;
     readonly transport: RealtimeTransportSelection;
+    readonly guard: RealtimeStartupGuard;
     readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
   }): void {
     setImmediate(() => {
@@ -162,12 +171,17 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
     readonly params: ThreadRealtimeStartParams;
     readonly binding: AgenCRealtimeThreadBinding;
     readonly transport: RealtimeTransportSelection;
+    readonly guard: RealtimeStartupGuard;
     readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
   }): Promise<void> {
-    const { params, binding, transport, sendNotification } = options;
+    const { params, binding, transport, guard, sendNotification } = options;
     let activeFanout: ActiveRealtimeFanout | undefined;
     let active: RealtimeActiveHandle | undefined;
     try {
+      if (guard.cancelled) {
+        await this.#sendStartupCancelled(params.threadId, sendNotification);
+        return;
+      }
       const config = await this.#buildSessionConfig(binding, params);
       let providerSdp: string | undefined;
       let connectTransport = binding.connectTransport;
@@ -226,6 +240,14 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
           `realtime fanout is already registered for thread: ${params.threadId}`,
         );
       }
+
+      if (guard.cancelled) {
+        // A stop() arrived while the conversation was connecting. Tear the
+        // now-live session down cleanly instead of orphaning it. The fanout's
+        // finally block emits the "requested" closed notification.
+        activeFanout.closeReason = "requested";
+        await binding.conversation.finishIfActive(started.active);
+      }
     } catch (error) {
       if (activeFanout !== undefined && active !== undefined) {
         activeFanout.closeReason = "error";
@@ -242,7 +264,21 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
           message: errorMessage(error),
         },
       }).catch(() => {});
+    } finally {
+      if (this.#startupGuards.get(params.threadId) === guard) {
+        this.#startupGuards.delete(params.threadId);
+      }
     }
+  }
+
+  async #sendStartupCancelled(
+    threadId: string,
+    sendNotification: AgenCRealtimeNotificationSender | undefined,
+  ): Promise<void> {
+    await this.#send(sendNotification, {
+      method: "thread/realtime/closed",
+      params: { threadId, reason: "requested" },
+    }).catch(() => {});
   }
 
   async appendAudio(
@@ -277,7 +313,14 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
   ): Promise<ThreadRealtimeStopResponse> {
     const binding = await this.#requireThread(params.threadId);
     const running = await binding.conversation.runningState();
-    if (running === undefined) return {};
+    if (running === undefined) {
+      // A stop() may race ahead of a deferred startup that has not yet brought
+      // the conversation into a running state. Flag the in-flight guard so the
+      // startup path cancels cleanly instead of orphaning the session.
+      const pending = this.#startupGuards.get(params.threadId);
+      if (pending !== undefined) pending.cancelled = true;
+      return {};
+    }
     const fanout = this.#activeFanouts.get(params.threadId);
     if (fanout !== undefined) fanout.closeReason = "requested";
     await binding.conversation.finishIfActive(running.active);
