@@ -160,7 +160,7 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
       ['ClaimSubmit', 'Claim Submit', { path: 'claim.json' }, 'claim.json'],
       ['SettleTrade', 'Settle Market', { query: 'market-1' }, 'market-1'],
       ['StakeVote', 'Stake Lock', { path: 'stake.toml' }, 'stake.toml'],
-      ['PlainRead', 'Plain Read', { value: 42 }, '{"value":42}'],
+      ['PlainRead', 'Plain Read', { value: 42 }, 'value=42'],
     ] as const
 
     for (const [name, label, input, expectedArg] of cases) {

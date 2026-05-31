@@ -866,7 +866,14 @@ export function Tool({
   readonly label?: string
   readonly state?: ToolState
   readonly args: string
-  readonly result?: string
+  /**
+   * Continuation content rendered under the call row behind a `⎿` gutter,
+   * matching the industry-standard convention. A string is split on newlines
+   * and each line gets its own row (gutter on the first, indented after); a
+   * ReactNode is rendered verbatim inside the gutter column (used for compact
+   * inline diffs).
+   */
+  readonly result?: string | ReactNode
   readonly detail?: ReactNode
   readonly expanded?: boolean
   readonly time?: string
@@ -886,13 +893,8 @@ export function Tool({
         <ThemedText color="inactive">)</ThemedText>
         {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
       </Box>
-      {result ? (
-        <Box flexDirection="row" paddingLeft={1} gap={1}>
-          <ThemedText color="muted3">⎿</ThemedText>
-          <ThemedText color={state === 'failed' ? 'error' : 'subtle'} wrap="wrap">
-            {result}
-          </ThemedText>
-        </Box>
+      {result != null && result !== '' ? (
+        <ToolResultLines state={state}>{result}</ToolResultLines>
       ) : null}
       {expanded && detail ? (
         <ThemedBox
@@ -905,6 +907,45 @@ export function Tool({
           {detail}
         </ThemedBox>
       ) : null}
+    </Box>
+  )
+}
+
+/**
+ * Renders the `⎿`-gutter continuation block under a tool call row. A ReactNode
+ * child (e.g. a compact diff) is placed verbatim in the gutter column; a string
+ * is split on newlines so the gutter glyph sits on the first line and following
+ * lines indent to align under it — matching common CLI-agent output.
+ */
+function ToolResultLines({
+  state,
+  children,
+}: {
+  readonly state: ToolState
+  readonly children: string | ReactNode
+}): React.ReactNode {
+  const color: ThemeColor = state === 'failed' ? 'error' : 'subtle'
+  if (typeof children !== 'string') {
+    return (
+      <Box flexDirection="row" paddingLeft={1} gap={1}>
+        <ThemedText color="muted3">⎿</ThemedText>
+        <Box flexDirection="column" flexGrow={1}>
+          {children}
+        </Box>
+      </Box>
+    )
+  }
+  const lines = children.split('\n')
+  return (
+    <Box flexDirection="row" paddingLeft={1} gap={1}>
+      <ThemedText color="muted3">⎿</ThemedText>
+      <Box flexDirection="column" flexGrow={1}>
+        {lines.map((line, index) => (
+          <ThemedText key={index} color={color} wrap="wrap">
+            {line === '' ? ' ' : line}
+          </ThemedText>
+        ))}
+      </Box>
     </Box>
   )
 }

@@ -19,6 +19,12 @@ import { Tool as V2Tool, type ToolKind, type ToolState } from '../components/v2/
 import { extractTag } from '../../utils/messages.js';
 import { summarizeFileEditError } from '../../tools/FileEditTool/UI.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
+import {
+  buildEditRowPreview,
+  successToolRowPreview,
+  summarizeToolInput,
+  toolNameOwnsInlinePreview,
+} from './toolRowPreview.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -239,11 +245,40 @@ export function AssistantToolUseMessage({
           : `×${retriedFailureCount} attempts failed`
         : `succeeded after ${retriedFailureCount} attempts`
       : baseReason;
-  const toolArgs =
+  let toolArgs =
     typeof renderedToolUseMessage === "string" &&
     renderedToolUseMessage.length > 0
       ? renderedToolUseMessage
-      : summarizeToolInput(input.data);
+      : summarizeToolInput(input.data, toolKind);
+  // FIX 2/3: render the tool RESULT once, inline under the call row
+  // (industry-standard CLI-agent convention). The detached UserToolSuccessMessage suppresses
+  // itself for these kinds (see toolKindOwnsInlinePreview) so nothing renders
+  // twice. Failed rows keep the real error reason; only done rows get a
+  // success preview. Verbose mode opts out and keeps the full detached blocks.
+  let successPreview: React.ReactNode | undefined;
+  if (
+    !verbose &&
+    toolState === "done" &&
+    failedReason === undefined &&
+    toolNameOwnsInlinePreview(param.name)
+  ) {
+    if (toolKind === "edit") {
+      const editPreview = buildEditRowPreview(param.name, input.data);
+      if (editPreview) {
+        // Append "(+a -r)" to the args and render the compact diff under ⎿.
+        toolArgs = `${toolArgs} (${editPreview.stats})`;
+        successPreview = editPreview.node;
+      }
+    } else {
+      successPreview =
+        successToolRowPreview(
+          toolKind,
+          rawToolResultContent(lookups, param.id),
+        ) ?? undefined;
+    }
+  }
+  const rowResult: string | React.ReactNode | undefined =
+    failedReason ?? successPreview;
   const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
   const detail = extraDetail || toolUseTag || progressDetail || queuedDetail
     ? (
@@ -263,7 +298,7 @@ export function AssistantToolUseMessage({
         label={userFacingToolName}
         state={toolState}
         args={toolArgs}
-        result={failedReason}
+        result={rowResult}
         detail={detail}
         expanded={detail !== null}
       />
@@ -299,7 +334,7 @@ function selectHasStrippedRules(state: {
   return !!state.toolPermissionContext.strippedDangerousRules;
 }
 
-function toolKindForName(name: string, label: string): ToolKind {
+export function toolKindForName(name: string, label: string): ToolKind {
   const value = `${name} ${label}`.toLowerCase();
   if (value.includes("bash") || value.includes("shell") || value.includes("powershell")) return "bash";
   if (value.includes("grep") || value.includes("glob") || value.includes("search")) return "grep";
@@ -358,21 +393,6 @@ function failedToolRowReason(
     .map(line => line.trim())
     .find(line => line.length > 0);
   return firstLine ? firstLineOf(firstLine) : undefined;
-}
-
-function summarizeToolInput(input: unknown): string {
-  if (input && typeof input === "object") {
-    const record = input as Record<string, unknown>;
-    for (const key of ["command", "file_path", "path", "query", "pattern", "description", "prompt"]) {
-      const value = record[key];
-      if (typeof value === "string" && value.trim().length > 0) return value;
-    }
-  }
-  try {
-    return JSON.stringify(input) ?? "";
-  } catch {
-    return String(input);
-  }
 }
 
 function selectPermissionMode(state: {

@@ -103,7 +103,11 @@ describe('AssistantToolUseMessage hook fallback coverage', () => {
     )
 
     expect(runningOutput).toContain('Reader')
-    expect(runningOutput).toContain('[object Object]')
+    // FIX 1: args are summarized to readable key=value, never a raw JSON /
+    // [object Object] dump — even for a circular input (the object-valued
+    // `self` key is skipped, the scalar `ignored` is shown).
+    expect(runningOutput).toContain('ignored=true')
+    expect(runningOutput).not.toContain('[object Object]')
     expect(runningOutput).not.toContain('message render failed')
     expect(runningOutput).not.toContain('progress render failed')
     expect(runningTool.renderToolUseMessage).toHaveBeenCalledTimes(1)
