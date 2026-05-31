@@ -62,8 +62,10 @@ export interface ApplyPatchResult {
 // Verbatim parity with the Edit/MultiEdit read-before-write gate
 // (system/file-edit.ts). The apply_patch update path enforces the same
 // invariants so the model cannot bypass them by routing an edit through
-// a patch: an existing file must have been fully read this session, and
-// it must not have drifted on disk since that read.
+// a patch: an existing file must have been read this session (a full OR
+// partial offset/limit read authorizes it; only an absent read or a
+// synthetic partial view is rejected), and it must not have drifted on
+// disk since that read.
 const READ_BEFORE_WRITE_ERROR =
   "File has not been read yet. Read it first before writing to it.";
 
@@ -378,8 +380,19 @@ function printSummary(affected: AffectedPaths): string {
   return `${lines.join("\n")}\n`;
 }
 
-function isFullSessionRead(snapshot: SessionReadSnapshot | undefined): boolean {
-  return snapshot?.viewKind === "full" && snapshot.isPartialView !== true;
+/**
+ * Read-before-write authorization predicate. ANY real read of the path —
+ * full OR partial offset/limit window — authorizes the patch; the gate
+ * only exists to force the model to observe real bytes first. Reject only
+ * an absent snapshot or a SYNTHETIC partial view (`isPartialView === true`)
+ * that never reflected disk bytes the model chose to read. Mirrors the
+ * Edit gate predicate; the mtime-drift check below still rejects
+ * independently.
+ */
+function isAuthorizingSessionRead(
+  snapshot: SessionReadSnapshot | undefined,
+): boolean {
+  return snapshot !== undefined && snapshot.isPartialView !== true;
 }
 
 function comparableSessionContent(
@@ -399,9 +412,11 @@ function comparableSessionContent(
  * mirroring the Edit/MultiEdit enforcement in system/file-edit.ts.
  *
  * Only runs when a session id is present (the production tool surface
- * injects one). The existing file MUST have a full read snapshot for
- * this session, otherwise the patch is rejected with the same verbatim
- * error Edit uses. If the on-disk mtime advanced past the recorded read
+ * injects one). The existing file MUST have been read in this session —
+ * a full OR partial offset/limit read authorizes the patch; only an
+ * absent read or a synthetic partial view is rejected with the same
+ * verbatim error Edit uses. If the on-disk mtime advanced past the
+ * recorded read
  * — and the content actually differs (Windows cloud-sync benign-touch
  * guard) — the patch is rejected so the model is forced to re-read.
  */
@@ -413,7 +428,7 @@ async function assertReadBeforeWriteGate(
   if (sessionId === undefined) return;
 
   const recordedSnapshot = getSessionReadSnapshot(sessionId, pathAbs);
-  if (!isFullSessionRead(recordedSnapshot)) {
+  if (!isAuthorizingSessionRead(recordedSnapshot)) {
     throw new ApplyPatchRuntimeError(READ_BEFORE_WRITE_ERROR);
   }
 

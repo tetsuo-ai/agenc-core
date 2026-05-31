@@ -222,15 +222,18 @@ function resolveWorkspaceReadScopeRoot(): string {
 }
 
 /**
- * Mirror a recorded read into the workspace-scoped index. Only FULL,
- * non-partial snapshots are mirrored so the cross-agent fallback can only
- * ever authorize an edit when a full read of the path actually occurred.
+ * Mirror a recorded read into the workspace-scoped index. Any REAL read
+ * (full or partial offset/limit window) is mirrored so the cross-agent
+ * fallback authorizes an edit whenever the path was actually read by some
+ * agent. Only SYNTHETIC partial views (`isPartialView === true`), which
+ * never reflected disk bytes the model chose to read, are excluded — this
+ * matches the read-before-write predicate in {@link hasSessionRead}.
  */
 function mirrorWorkspaceRead(
   canonicalPath: string,
   snapshot: SessionReadSnapshot,
 ): void {
-  if (snapshot.viewKind !== "full" || snapshot.isPartialView === true) {
+  if (snapshot.isPartialView === true) {
     return;
   }
   const workspaceRoot = resolveWorkspaceReadScopeRoot();
@@ -243,8 +246,11 @@ function mirrorWorkspaceRead(
 }
 
 /**
- * Look up a FULL read of `canonicalPath` recorded by ANY agent within the
- * current workspace root. Returns undefined when no full read exists.
+ * Look up a real read of `canonicalPath` recorded by ANY agent within the
+ * current workspace root. A full OR partial offset/limit read authorizes
+ * the cross-agent edit fallback; only synthetic partial views
+ * (`isPartialView === true`) and an absent read return undefined, matching
+ * the {@link hasSessionRead} predicate.
  */
 function getWorkspaceReadSnapshot(
   canonicalPath: string,
@@ -254,7 +260,7 @@ function getWorkspaceReadSnapshot(
     .get(resolveWorkspaceReadScopeRoot())
     ?.get(canonicalPath);
   if (!snapshot) return undefined;
-  if (snapshot.viewKind !== "full" || snapshot.isPartialView === true) {
+  if (snapshot.isPartialView === true) {
     return undefined;
   }
   return snapshot;

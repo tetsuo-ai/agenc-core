@@ -524,7 +524,7 @@ describe("runToolUse end-to-end", () => {
     expect(seenCallId).toBe("c-session");
   });
 
-  test("rejects live Write after an offset FileRead only captured a partial snapshot", async () => {
+  test("authorizes live Write after an offset FileRead captured a partial snapshot", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-write-partial-live-"));
     try {
       const target = join(root, "tracked.txt");
@@ -568,13 +568,11 @@ describe("runToolUse end-to-end", () => {
         },
       );
 
-      expect(writeOut.isError).toBe(true);
-      expect(writeOut.content).toBe(
-        "File has not been read yet. Read it first before writing to it.",
-      );
-      await expect(readFile(target, "utf8")).resolves.toBe(
-        "alpha\nbeta\ngamma\n",
-      );
+      // A partial (offset/limit) read is a REAL read and satisfies the
+      // read-before-write gate; the overwrite is authorized (it only
+      // fails on mtime drift, which does not occur here).
+      expect(writeOut.isError).toBe(false);
+      await expect(readFile(target, "utf8")).resolves.toBe("replacement\n");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

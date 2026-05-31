@@ -1,11 +1,16 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { applyPatchText, unifiedDiffFromChunks } from "./runtime.js";
 import { parsePatch } from "./parser.js";
+import {
+  canonicalizePath,
+  clearSessionReadState,
+  recordSessionRead,
+} from "../system/filesystem.js";
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-apply-patch-"));
@@ -175,5 +180,115 @@ describe("apply-patch runtime", () => {
         { cwd: root, allowedPaths: [root] },
       ),
     ).rejects.toThrow("path is outside allowed directories");
+  });
+});
+
+describe("apply-patch read-before-write gate", () => {
+  const SESSION_ID = "apply-patch-gate-test-session";
+
+  afterEach(() => {
+    clearSessionReadState(SESSION_ID);
+  });
+
+  const updatePatch = (file: string, from: string, to: string): string =>
+    wrapPatch(`*** Update File: ${file}\n@@\n-${from}\n+${to}`);
+
+  test("rejects an update when the file was not read this session", async () => {
+    const root = await tempRoot();
+    const path = join(root, "unread.txt");
+    await writeFile(path, "foo\n", "utf8");
+    // intentionally do NOT record a session read
+
+    await expect(
+      applyPatchText(updatePatch(path, "foo", "bar"), {
+        cwd: root,
+        allowedPaths: [root],
+        sessionId: SESSION_ID,
+      }),
+    ).rejects.toThrow(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    await expect(readFile(path, "utf8")).resolves.toBe("foo\n");
+  });
+
+  test("authorizes an update after a partial offset/limit read", async () => {
+    // Regression: a partial read must satisfy the gate just like a full
+    // read so a model reading in windows is not stuck in an edit loop.
+    const root = await tempRoot();
+    const path = join(root, "partial.txt");
+    await writeFile(path, "foo\n", "utf8");
+    const canonical = await canonicalizePath(path);
+    const fileStats = await stat(path);
+    recordSessionRead(SESSION_ID, canonical, {
+      content: "foo\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "partial",
+      readOffset: 1,
+      readLimit: 1,
+    });
+
+    const result = await applyPatchText(updatePatch(path, "foo", "bar"), {
+      cwd: root,
+      allowedPaths: [root],
+      sessionId: SESSION_ID,
+    });
+
+    expect(result.affected.modified.length).toBe(1);
+    await expect(readFile(path, "utf8")).resolves.toBe("bar\n");
+  });
+
+  test("rejects a synthetic processed partial view", async () => {
+    const root = await tempRoot();
+    const path = join(root, "synthetic.txt");
+    await writeFile(path, "foo\n", "utf8");
+    const canonical = await canonicalizePath(path);
+    const fileStats = await stat(path);
+    recordSessionRead(SESSION_ID, canonical, {
+      content: "foo\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "partial",
+      isPartialView: true,
+    });
+
+    await expect(
+      applyPatchText(updatePatch(path, "foo", "bar"), {
+        cwd: root,
+        allowedPaths: [root],
+        sessionId: SESSION_ID,
+      }),
+    ).rejects.toThrow(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    await expect(readFile(path, "utf8")).resolves.toBe("foo\n");
+  });
+
+  test("rejects a stale partial read when the file mtime advanced", async () => {
+    const root = await tempRoot();
+    const path = join(root, "stale.txt");
+    await writeFile(path, "foo\n", "utf8");
+    const canonical = await canonicalizePath(path);
+    const initial = await stat(path);
+    recordSessionRead(SESSION_ID, canonical, {
+      content: "foo\n",
+      timestamp: initial.mtimeMs,
+      viewKind: "partial",
+      readOffset: 1,
+      readLimit: 1,
+    });
+    // External mutation: change content and force a newer mtime.
+    await writeFile(path, "changed\n", "utf8");
+    const newer = await stat(path);
+    await utimes(path, newer.atime, new Date(initial.mtimeMs + 5_000));
+
+    await expect(
+      applyPatchText(updatePatch(path, "changed", "bar"), {
+        cwd: root,
+        allowedPaths: [root],
+        sessionId: SESSION_ID,
+      }),
+    ).rejects.toThrow(
+      "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.",
+    );
+    await expect(readFile(path, "utf8")).resolves.toBe("changed\n");
   });
 });

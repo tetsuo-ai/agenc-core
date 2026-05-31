@@ -24,8 +24,10 @@
  *     view of cells, source, text outputs, errors, and embedded images.
  *   - `offset` / `limit` produce a partial line view. Partial reads
  *     are recorded with `viewKind: "partial"` in the session-read
- *     tracker so `Edit`/`Write`'s read-before-write gate still rejects
- *     edits made off a partial view.
+ *     tracker for range-aware dedup, but — like full reads — they
+ *     satisfy `Edit`/`Write`'s read-before-write gate: any real read of
+ *     the path authorizes a subsequent edit. Only synthetic processed
+ *     partial views (`isPartialView: true`) fail the gate.
  *   - Successful reads that DO yield content are recorded with the
  *     content snapshot so AgenC's compaction-aware re-injection helpers
  *     (`snapshotTopRecentReads`) can rebuild context after a compact.

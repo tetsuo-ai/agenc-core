@@ -4,9 +4,10 @@
  * Lifted from the upstream file-edit tool and
  * adapted to the AgenC tool contract. Behavior summary:
  *
- *   - Read-before-write enforcement via {@link hasSessionRead}. The
- *     model must have called the AgenC read tool on the path with a
- *     full view earlier in the session, otherwise the edit is rejected
+ *   - Read-before-write enforcement via {@link isAuthorizingSessionRead}.
+ *     The model must have called the AgenC read tool on the path earlier
+ *     in the session — a full OR partial offset/limit read authorizes the
+ *     edit; only an absent read or a synthetic partial view is rejected
  *     with the verbatim AgenC error string.
  *   - Modification-time check: if the file mtime advanced past the
  *     recorded read snapshot, the edit is rejected with AgenC's
@@ -446,10 +447,20 @@ function comparableSessionContent(
     : undefined;
 }
 
-function isFullSessionRead(
+/**
+ * Read-before-write authorization predicate. ANY real read of the path —
+ * full OR partial offset/limit window — authorizes a subsequent edit; the
+ * gate only exists to force the model to observe real bytes before
+ * mutating. We reject only when no snapshot exists at all, or when the
+ * snapshot is a SYNTHETIC partial view (`isPartialView === true`), which is
+ * an auto-injected processed view that never reflected real disk bytes the
+ * model chose to read. This mirrors {@link hasSessionRead}. The separate
+ * mtime-staleness check below still independently rejects stale edits.
+ */
+function isAuthorizingSessionRead(
   snapshot: ReturnType<typeof getSessionReadSnapshot>,
 ): boolean {
-  return snapshot?.viewKind === "full" && snapshot.isPartialView !== true;
+  return snapshot !== undefined && snapshot.isPartialView !== true;
 }
 
 async function writeFileCreatingParents(
@@ -850,8 +861,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
-      // Read-before-write enforcement. Existing files require a full read
-      // snapshot; partial offset/limit reads do not authorize edits.
+      // Read-before-write enforcement. Existing files require a real read
+      // snapshot — a full OR partial offset/limit read authorizes the edit;
+      // only an absent read or a synthetic partial view is rejected.
       //
       // Production callers MUST inject a session id via SESSION_ID_ARG
       // (canonicalToolSurface.ts:mapCanonicalInput does this from
@@ -865,7 +877,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         undefined;
       if (sessionId !== undefined) {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
-        if (!isFullSessionRead(recordedSnapshot)) {
+        if (!isAuthorizingSessionRead(recordedSnapshot)) {
           return errorResult(READ_BEFORE_WRITE_ERROR);
         }
       } else if (!bypassSessionGuard) {
@@ -1153,7 +1165,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         undefined;
       if (sessionId !== undefined) {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
-        if (!isFullSessionRead(recordedSnapshot)) {
+        if (!isAuthorizingSessionRead(recordedSnapshot)) {
           return errorResult(READ_BEFORE_WRITE_ERROR);
         }
       } else if (!bypassSessionGuard) {

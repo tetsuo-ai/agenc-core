@@ -15,10 +15,12 @@ import {
  *
  * Two dispatch paths inject DIFFERENT `__agencSessionId` values for the
  * same logical conversation (canonical surface = main-process session id;
- * spawned subagents = agent/conversation id). A FULL `FileRead` recorded
- * under one id must satisfy the `Edit`/`Write` read-before-write gate when
- * that gate is later evaluated under the OTHER id, for the SAME canonical
- * path within the SAME workspace root. A path nobody read must still fail.
+ * spawned subagents = agent/conversation id). Any real `FileRead` (full OR
+ * partial offset/limit) recorded under one id must satisfy the
+ * `Edit`/`Write` read-before-write gate when that gate is later evaluated
+ * under the OTHER id, for the SAME canonical path within the SAME workspace
+ * root. A path nobody read — and a synthetic partial view — must still
+ * fail.
  */
 describe("cross-agent session-read workspace fallback", () => {
   const SESSION_A = "agent-A-session-id";
@@ -76,10 +78,12 @@ describe("cross-agent session-read workspace fallback", () => {
     expect(getSessionReadSnapshot(SESSION_B, unreadPath)).toBeUndefined();
   });
 
-  it("does NOT let a PARTIAL read by another agent authorize the gate", () => {
+  it("a PARTIAL read by another agent authorizes the gate", () => {
     const canonicalPath = join(workspaceRoot, "src", "partial.ts");
 
-    // Agent A only did a partial (offset/limit) read.
+    // Agent A did a partial (offset/limit) read. Any real read — full or
+    // partial — must satisfy the cross-agent fallback so a model reading
+    // in windows is not stuck in an unsatisfiable edit loop.
     recordSessionRead(SESSION_A, canonicalPath, {
       content: "line 1\nline 2\n",
       timestamp: Date.now(),
@@ -88,7 +92,24 @@ describe("cross-agent session-read workspace fallback", () => {
       readLimit: 2,
     });
 
-    // Cross-agent fallback must not be satisfied by a partial read.
+    expect(hasSessionRead(SESSION_B, canonicalPath)).toBe(true);
+    const snapshot = getSessionReadSnapshot(SESSION_B, canonicalPath);
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.viewKind).toBe("partial");
+  });
+
+  it("does NOT let a SYNTHETIC partial view by another agent authorize the gate", () => {
+    const canonicalPath = join(workspaceRoot, "src", "synthetic.ts");
+
+    // Agent A only has an auto-injected processed partial view, which
+    // never reflected disk bytes the model chose to read.
+    recordSessionRead(SESSION_A, canonicalPath, {
+      content: "line 1\nline 2\n",
+      timestamp: Date.now(),
+      viewKind: "partial",
+      isPartialView: true,
+    });
+
     expect(hasSessionRead(SESSION_B, canonicalPath)).toBe(false);
     expect(getSessionReadSnapshot(SESSION_B, canonicalPath)).toBeUndefined();
   });

@@ -29,6 +29,8 @@ const COMPACTABLE_TOOLS = new Set([
   "Write",
 ]);
 
+const PATH_BEARING_READ_TOOLS = new Set(["Read"]);
+
 let microcompactSequence = 0;
 
 export async function microcompactMessages(
@@ -42,6 +44,7 @@ export async function microcompactMessages(
   };
 }> {
   const compactableIds = collectCompactableToolUseIds(messages);
+  const readPathByToolUseId = collectReadFilePaths(messages);
   const compactableResultPositions = collectCompactableToolResultPositions(
     messages,
     compactableIds,
@@ -51,6 +54,18 @@ export async function microcompactMessages(
       .slice(-MICROCOMPACT_KEEP_RECENT)
       .map((position) => position.toolUseId),
   );
+  // Path-aware retention: always preserve the most-recently-read result for
+  // each distinct file path the agent has read. Without this, the active
+  // working file is evicted by the flat recent-N window and the agent
+  // re-reads it on the next turn (context-retention thrash).
+  for (
+    const toolUseId of latestReadResultPerPath(
+      compactableResultPositions,
+      readPathByToolUseId,
+    )
+  ) {
+    keepIds.add(toolUseId);
+  }
   const clearAfterMs = getTimeBasedMicrocompactClearAfterMs();
   const now = Date.now();
   const apiContextManagement = getAPIContextManagement(
@@ -58,11 +73,13 @@ export async function microcompactMessages(
   );
   return {
     messages: messages.map((message) => {
-      const rewrittenBlocks = microcompactContentBlocks(
-        message.message?.content ?? message.content,
-        compactableIds,
-        keepIds,
-      );
+      const rewrittenBlocks = isWithinTimeWindow(message, now, clearAfterMs)
+        ? undefined
+        : microcompactContentBlocks(
+          message.message?.content ?? message.content,
+          compactableIds,
+          keepIds,
+        );
       if (rewrittenBlocks !== undefined) {
         return {
           ...message,
@@ -137,6 +154,73 @@ function collectCompactableToolUseIds(
     }
   }
   return ids;
+}
+
+/**
+ * Map every Read tool_use id to the file path it read. Read tool uses carry
+ * their target under `file_path` (in `toolCalls[].arguments` JSON for the
+ * standalone-message shape, or in the `input` object for content blocks).
+ */
+function collectReadFilePaths(
+  messages: readonly RuntimeMessage[],
+): Map<string, string> {
+  const paths = new Map<string, string>();
+  for (const message of messages) {
+    for (const call of message.toolCalls ?? []) {
+      if (!PATH_BEARING_READ_TOOLS.has(call.name)) continue;
+      const filePath = readFilePathFromArguments(call.arguments);
+      if (filePath !== undefined) paths.set(call.id, filePath);
+    }
+    const blocks = asContentBlocks(message.message?.content ?? message.content);
+    for (const block of blocks) {
+      if (block.type !== "tool_use") continue;
+      if (typeof block.id !== "string" || typeof block.name !== "string") {
+        continue;
+      }
+      if (!PATH_BEARING_READ_TOOLS.has(block.name)) continue;
+      const filePath = readFilePathFromInput(block.input);
+      if (filePath !== undefined) paths.set(block.id, filePath);
+    }
+  }
+  return paths;
+}
+
+function readFilePathFromArguments(
+  argumentsJson: string | undefined,
+): string | undefined {
+  if (typeof argumentsJson !== "string" || argumentsJson.length === 0) {
+    return undefined;
+  }
+  try {
+    return readFilePathFromInput(JSON.parse(argumentsJson));
+  } catch {
+    return undefined;
+  }
+}
+
+function readFilePathFromInput(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const filePath = (input as Record<string, unknown>).file_path;
+  return typeof filePath === "string" && filePath.length > 0
+    ? filePath
+    : undefined;
+}
+
+/**
+ * For each distinct file path, return the tool_use id of its last (most
+ * recent) result position so that the active working file is never evicted.
+ */
+function latestReadResultPerPath(
+  resultPositions: ReadonlyArray<{ readonly toolUseId: string }>,
+  readPathByToolUseId: ReadonlyMap<string, string>,
+): Set<string> {
+  const latestByPath = new Map<string, string>();
+  for (const position of resultPositions) {
+    const filePath = readPathByToolUseId.get(position.toolUseId);
+    if (filePath === undefined) continue;
+    latestByPath.set(filePath, position.toolUseId);
+  }
+  return new Set(latestByPath.values());
 }
 
 function collectCompactableToolResultPositions(

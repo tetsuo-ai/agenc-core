@@ -310,38 +310,60 @@ export function createFileWriteTool(
           return errorResult(READ_REQUIRED_MESSAGE);
         }
 
-        // Modification-since-read: compare current on-disk content
-        // (CRLF-normalized) against the snapshot the session captured
-        // at read time. This mirrors AgenC's check (which uses
-        // mtime + content fallback) but uses AgenC's content-compare
-        // semantics for parity with `Write` / `Edit`.
+        // Modification-since-read drift check. A FULL read carries the
+        // captured content, so we compare current on-disk content
+        // (CRLF-normalized) against the snapshot for parity with
+        // `Edit`. A PARTIAL offset/limit read authorized the overwrite
+        // above (read-before-write only forces the model to see real
+        // bytes) but cannot prove the whole file is unchanged, so we
+        // fall back to an mtime-drift check that mirrors `Edit`'s gate.
         const snapshot = getSessionReadSnapshot(sessionId, absolutePath);
         const snapshotContent =
           typeof snapshot?.rawContent === "string"
             ? snapshot.rawContent
             : snapshot?.content;
-        if (
-          snapshot?.viewKind !== "full" ||
-          typeof snapshotContent !== "string"
-        ) {
-          return errorResult(READ_REQUIRED_MESSAGE);
-        }
+        const isFullSnapshot =
+          snapshot?.viewKind === "full" &&
+          snapshot.isPartialView !== true &&
+          typeof snapshotContent === "string";
 
-        let onDisk: string;
-        try {
-          const buffer = await readFile(absolutePath);
-          onDisk = normalizeNewlines(buffer.toString("utf-8"));
-          existingContentForUi = onDisk;
-        } catch (err) {
-          const code = (err as NodeJS.ErrnoException)?.code;
-          return errorResult(
-            code
-              ? `${code}: failed to re-read ${filePath} before overwrite`
-              : `failed to re-read ${filePath} before overwrite`,
-          );
-        }
-        if (onDisk !== normalizeNewlines(snapshotContent)) {
-          return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+        if (isFullSnapshot) {
+          let onDisk: string;
+          try {
+            const buffer = await readFile(absolutePath);
+            onDisk = normalizeNewlines(buffer.toString("utf-8"));
+            existingContentForUi = onDisk;
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException)?.code;
+            return errorResult(
+              code
+                ? `${code}: failed to re-read ${filePath} before overwrite`
+                : `failed to re-read ${filePath} before overwrite`,
+            );
+          }
+          if (onDisk !== normalizeNewlines(snapshotContent as string)) {
+            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+          }
+        } else {
+          // Partial-read fallback: reject only when the on-disk mtime
+          // advanced past the recorded read timestamp (an external
+          // mutation), so the model is forced to re-read stale state.
+          const recordedTs = snapshot?.timestamp;
+          if (
+            existingStat !== null &&
+            typeof recordedTs === "number" &&
+            Number.isFinite(recordedTs) &&
+            existingStat.mtimeMs > recordedTs
+          ) {
+            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+          }
+          // Populate the UI snapshot from disk best-effort.
+          try {
+            const buffer = await readFile(absolutePath);
+            existingContentForUi = normalizeNewlines(buffer.toString("utf-8"));
+          } catch {
+            existingContentForUi = "";
+          }
         }
       } else if (existed && existingStat !== null) {
         try {

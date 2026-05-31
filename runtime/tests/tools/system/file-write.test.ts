@@ -4,6 +4,7 @@ import {
   readFile,
   rm,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -190,14 +191,50 @@ describe("Write tool", () => {
     await expect(readFile(target, "utf8")).resolves.toBe("alpha\nbeta\n");
   });
 
-  test("rejects overwrite after only a partial session read", async () => {
+  test("authorizes overwrite after a partial session read", async () => {
+    // Regression for the unsatisfiable edit loop: a partial offset/limit
+    // read records `viewKind: "partial"` and must satisfy the
+    // read-before-write gate. The partial snapshot lacks full content, so
+    // the gate falls back to an mtime-drift check; recording the read at
+    // the current mtime means no drift, so the overwrite proceeds.
     const target = join(root, "partial-read.txt");
     await writeFile(target, "alpha\nbeta\ngamma\n", "utf8");
+    const fileStats = await stat(target);
     seedSessionReadState(sessionId, [
       {
         path: target,
         content: "beta\n",
+        timestamp: fileStats.mtimeMs,
         viewKind: "partial",
+        readOffset: 2,
+        readLimit: 1,
+      },
+    ]);
+
+    const tool = createFileWriteTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: target,
+      content: "replacement\n",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(target, "utf8")).resolves.toBe("replacement\n");
+  });
+
+  test("rejects overwrite after only a synthetic processed partial view", async () => {
+    // Auto-injected processed partial views never reflected disk bytes the
+    // model chose to read, so they must NOT authorize an overwrite.
+    const target = join(root, "synthetic-partial.txt");
+    await writeFile(target, "alpha\nbeta\ngamma\n", "utf8");
+    const fileStats = await stat(target);
+    seedSessionReadState(sessionId, [
+      {
+        path: target,
+        content: "beta\n",
+        timestamp: fileStats.mtimeMs,
+        viewKind: "partial",
+        isPartialView: true,
       },
     ]);
 
@@ -214,6 +251,40 @@ describe("Write tool", () => {
     );
     await expect(readFile(target, "utf8")).resolves.toBe(
       "alpha\nbeta\ngamma\n",
+    );
+  });
+
+  test("rejects overwrite when a partial read is stale (mtime advanced)", async () => {
+    // The partial-read fallback still rejects when the file drifted on
+    // disk after the read so the model is forced to re-read.
+    const target = join(root, "stale-partial.txt");
+    await writeFile(target, "alpha\nbeta\ngamma\n", "utf8");
+    const initial = await stat(target);
+    seedSessionReadState(sessionId, [
+      {
+        path: target,
+        content: "beta\n",
+        timestamp: initial.mtimeMs,
+        viewKind: "partial",
+        readOffset: 2,
+        readLimit: 1,
+      },
+    ]);
+    // External mutation: change content and force a newer mtime.
+    await writeFile(target, "alpha\nDRIFT\ngamma\n", "utf8");
+    const newer = await stat(target);
+    await utimes(target, newer.atime, new Date(initial.mtimeMs + 5_000));
+
+    const tool = createFileWriteTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: target,
+      content: "replacement\n",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBe(true);
+    await expect(readFile(target, "utf8")).resolves.toBe(
+      "alpha\nDRIFT\ngamma\n",
     );
   });
 

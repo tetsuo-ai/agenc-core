@@ -431,7 +431,11 @@ describe("Edit tool", () => {
     await expect(readFile(file, "utf8")).resolves.toBe("external\n");
   });
 
-  test("Edit and MultiEdit reject partial session reads", async () => {
+  test("Edit and MultiEdit authorize partial session reads", async () => {
+    // Regression for the unsatisfiable edit loop: a model that reads a
+    // file in offset/limit windows records `viewKind: "partial"` reads.
+    // Any real read — full OR partial — must authorize a subsequent
+    // edit; the gate only forces the model to observe real bytes first.
     const editFile = join(root, "partial-edit.txt");
     const multiFile = join(root, "partial-multi.txt");
     await writeFile(editFile, "alpha beta\n", "utf8");
@@ -467,16 +471,73 @@ describe("Edit tool", () => {
       [SESSION_ID_ARG]: SESSION_ID,
     });
 
-    expect(editResult.isError).toBe(true);
-    expect(editResult.content).toBe(
+    expect(editResult.isError).toBeUndefined();
+    expect(multiResult.isError).toBeUndefined();
+    await expect(readFile(editFile, "utf8")).resolves.toBe("alpha gamma\n");
+    await expect(readFile(multiFile, "utf8")).resolves.toBe("alpha gamma\n");
+  });
+
+  test("Edit rejects a synthetic processed partial view", async () => {
+    // Auto-injected processed partial views (`isPartialView: true`) never
+    // reflected disk bytes the model chose to read, so they must NOT
+    // authorize an edit even though a snapshot is present.
+    const file = join(root, "synthetic-partial.txt");
+    await writeFile(file, "alpha beta\n", "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "alpha\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "partial",
+      isPartialView: true,
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
       "File has not been read yet. Read it first before writing to it.",
     );
-    expect(multiResult.isError).toBe(true);
-    expect(multiResult.content).toBe(
-      "File has not been read yet. Read it first before writing to it.",
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha beta\n");
+  });
+
+  test("Edit rejects a stale partial read when the file mtime advanced", async () => {
+    // The read-before-write gate now accepts partial reads, but the
+    // independent mtime-drift check must still reject an edit when the
+    // file changed on disk after the partial read.
+    const file = join(root, "stale-partial.txt");
+    await writeFile(file, "alpha beta\n", "utf8");
+    const initial = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "alpha\n",
+      timestamp: initial.mtimeMs,
+      viewKind: "partial",
+      readOffset: 1,
+      readLimit: 1,
+    });
+    // External mutation: change content and force a newer mtime.
+    await writeFile(file, "alpha delta\n", "utf8");
+    const newer = await stat(file);
+    await utimes(file, newer.atime, new Date(initial.mtimeMs + 5_000));
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "delta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.",
     );
-    await expect(readFile(editFile, "utf8")).resolves.toBe("alpha beta\n");
-    await expect(readFile(multiFile, "utf8")).resolves.toBe("alpha beta\n");
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha delta\n");
   });
 
   test("smart-quote normalization preserves file quote style in replacements", async () => {

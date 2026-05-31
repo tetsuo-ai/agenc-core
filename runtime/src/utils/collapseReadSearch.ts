@@ -373,6 +373,76 @@ function isNonCollapsibleToolUse(
   return false
 }
 
+/**
+ * For a non-collapsible tool-use message (Edit/Write/Bash etc.), build a stable
+ * "same tool + same target" key so consecutive retries of the *same* operation
+ * can be rolled up into a single row. Returns null when the message is not a
+ * single non-collapsible tool use we can key (e.g. grouped/multi tool uses).
+ *
+ * The target is the file path (Edit/Write) or the command (Bash); when neither
+ * is present we fall back to the tool name alone so unrelated calls don't merge.
+ */
+function nonCollapsibleToolUseKey(msg: RenderableMessage): string | null {
+  if (msg.type !== 'assistant') return null
+  const content = msg.message.content?.[0]
+  if (content?.type !== 'tool_use') return null
+  // Only single-tool-use assistant messages are keyable here; grouped tool uses
+  // are handled by the existing collapse paths.
+  if (msg.message.content.length !== 1) return null
+  const input = content.input as
+    | { file_path?: string; path?: string; command?: string }
+    | undefined
+  const target = input?.file_path ?? input?.path ?? input?.command ?? ''
+  return `${content.name} ${target}`
+}
+
+/**
+ * Get the tool-use IDs declared by a single assistant tool-use message.
+ */
+function assistantToolUseIds(msg: RenderableMessage): string[] {
+  if (msg.type !== 'assistant') return []
+  const ids: string[] = []
+  for (const content of msg.message.content ?? []) {
+    if (content?.type === 'tool_use') ids.push(content.id)
+  }
+  return ids
+}
+
+/**
+ * Determine whether a user message is an *error* tool_result for the given
+ * tool-use IDs. Only treats the message as an error result when every tool
+ * result it carries belongs to those IDs and at least one is flagged is_error.
+ */
+function isErrorToolResultFor(
+  msg: RenderableMessage,
+  toolUseIds: Set<string>,
+): boolean {
+  if (msg.type !== 'user') return false
+  const results = (msg.message.content ?? []).filter(
+    (c: any) => c?.type === 'tool_result',
+  )
+  if (results.length === 0) return false
+  if (!results.every((r: any) => toolUseIds.has(r.tool_use_id))) return false
+  return results.some((r: any) => r.is_error === true)
+}
+
+/**
+ * Tracks an in-progress rollup of consecutive *failed* retries of the same
+ * non-collapsible tool call so earlier attempts can be dropped from the output.
+ */
+type FailedRetryRollup = {
+  /** "<toolName> <target>" key identifying the retried operation. */
+  key: string
+  /** Index in `result` of the kept (latest) tool-use message. */
+  toolUseIndex: number
+  /** Index in `result` of the kept error result message, if seen yet. */
+  resultIndex: number | null
+  /** Tool-use IDs of the kept tool-use message (to match its result). */
+  toolUseIds: Set<string>
+  /** How many failed attempts have been folded into this row (>= 1). */
+  retries: number
+}
+
 function isPreToolHookSummary(
   msg: RenderableMessage,
 ): msg is SystemStopHookSummaryMessage {
@@ -773,6 +843,18 @@ export function collapseReadSearchGroups(
   let currentGroup = createEmptyGroup()
   let deferredSkippable: RenderableMessage[] = []
 
+  // Rollup state for consecutive *failed* retries of the same non-collapsible
+  // tool call (e.g. 5 Edits to lexer.c that all fail). We keep only the LAST
+  // attempt's row + result and annotate it with the retry count so the
+  // transcript shows one "✕ Edit(lexer.c) ×5" row instead of N noisy rows.
+  let pendingRollup: FailedRetryRollup | null = null
+
+  // Reset the rollup tracker whenever something is emitted that is not part of
+  // the contiguous failed-retry sequence (text, a different tool, a success).
+  function breakRollup(): void {
+    pendingRollup = null
+  }
+
   function flushGroup(): void {
     if (currentGroup.messages.length === 0) {
       return
@@ -783,6 +865,7 @@ export function collapseReadSearchGroups(
     }
     deferredSkippable = []
     currentGroup = createEmptyGroup()
+    breakRollup()
   }
 
   for (const msg of messages) {
@@ -942,16 +1025,85 @@ export function collapseReadSearchGroups(
         result.push(msg)
       }
     } else if (isTextBreaker(msg)) {
-      // Assistant text breaks the group
+      // Assistant text breaks the group (and the failed-retry rollup).
       flushGroup()
+      breakRollup()
       result.push(msg)
     } else if (isNonCollapsibleToolUse(msg, tools)) {
-      // Non-collapsible tool use breaks the group
+      // Non-collapsible tool use breaks the read/search group.
       flushGroup()
+      const key = nonCollapsibleToolUseKey(msg)
+      // Roll up only when this is a retry of the immediately-preceding call
+      // that we already saw FAIL (resultIndex set). Same tool + same target.
+      const prev = pendingRollup as FailedRetryRollup | null
+      if (
+        key !== null &&
+        prev !== null &&
+        prev.key === key &&
+        prev.resultIndex !== null
+      ) {
+        const prevResultIndex: number = prev.resultIndex
+        // Drop the previous attempt's row + its error result, keep this one.
+        // Splice the higher index first so the lower index stays valid.
+        const [lo, hi] =
+          prev.toolUseIndex < prevResultIndex
+            ? [prev.toolUseIndex, prevResultIndex]
+            : [prevResultIndex, prev.toolUseIndex]
+        result.splice(hi, 1)
+        result.splice(lo, 1)
+        const retries: number = prev.retries + 1
+        const ids = new Set(assistantToolUseIds(msg))
+        // Annotate the kept (latest) row with the accumulated retry count. The
+        // count rides on the tool_use *content block* (the `param` the renderer
+        // receives), so we shallow-clone the message + its content array rather
+        // than mutating the shared normalized message in place.
+        const msgAny = msg as any
+        const annotated: any = {
+          ...msgAny,
+          message: {
+            ...msgAny.message,
+            content: msgAny.message.content.map((block: any, i: number) =>
+              i === 0 ? { ...block, retriedFailureCount: retries } : block,
+            ),
+          },
+        }
+        pendingRollup = {
+          key,
+          toolUseIndex: result.length,
+          resultIndex: null,
+          toolUseIds: ids,
+          retries,
+        }
+        result.push(annotated)
+      } else {
+        breakRollup()
+        if (key !== null) {
+          pendingRollup = {
+            key,
+            toolUseIndex: result.length,
+            resultIndex: null,
+            toolUseIds: new Set(assistantToolUseIds(msg)),
+            retries: 1,
+          }
+        }
+        result.push(msg)
+      }
+    } else if (
+      pendingRollup !== null &&
+      pendingRollup.resultIndex === null &&
+      isErrorToolResultFor(msg, pendingRollup.toolUseIds)
+    ) {
+      // The error result for the pending non-collapsible tool use: keep it and
+      // mark the rollup as "failed" so a same-key retry can fold this attempt.
+      // No active read/search group can exist here (the preceding tool-use
+      // flushed it), so we don't flush — flushing would clear pendingRollup.
+      pendingRollup.resultIndex = result.length
       result.push(msg)
     } else {
-      // User messages with non-collapsible tool results break the group
+      // Any other message (success result, different tool result, etc.) breaks
+      // the read/search group and the failed-retry rollup.
       flushGroup()
+      breakRollup()
       result.push(msg)
     }
   }

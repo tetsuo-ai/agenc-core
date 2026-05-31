@@ -60,6 +60,132 @@ describe("micro compact", () => {
     expect(getMicrocompactSequenceForTests()).toBe(0);
   });
 
+  test("keeps the latest read of the active file path beyond the recent window", async () => {
+    // Read /active/file.ts first, then >5 unrelated compactable reads. Even
+    // though the active read falls outside the flat recent-5 window, its
+    // content must survive so the agent does not re-read it.
+    const messages = [
+      {
+        ...assistantToolUse([{ id: "active", name: "Read" }]),
+        toolCalls: [
+          {
+            id: "active",
+            name: "Read",
+            arguments: JSON.stringify({ file_path: "/active/file.ts" }),
+          },
+        ],
+      },
+      toolResult("active", "A".repeat(16_000)),
+      assistantToolUse(
+        Array.from({ length: 6 }, (_, index) => ({
+          id: `other-${index + 1}`,
+          name: "Read",
+        })),
+      ),
+      ...Array.from({ length: 6 }, (_, index) =>
+        toolResult(`other-${index + 1}`, "x".repeat(6_500))),
+    ];
+
+    const result = await microcompactMessages(messages);
+    const byId = new Map(
+      result.messages
+        .filter((entry) => entry.toolCallId !== undefined)
+        .map((entry) => [entry.toolCallId, entry.content]),
+    );
+
+    // Active file content retained despite being old.
+    expect(byId.get("active")).toBe("A".repeat(16_000));
+    // The oldest unrelated read is still cleared.
+    expect(byId.get("other-1")).toMatch(/^\[microcompact:\d+\]/);
+  });
+
+  test("clears the older duplicate read of a path but keeps the newest", async () => {
+    const readArgs = JSON.stringify({ file_path: "/dup/file.ts" });
+    const messages = [
+      {
+        ...assistantToolUse([{ id: "dup-old", name: "Read" }]),
+        toolCalls: [{ id: "dup-old", name: "Read", arguments: readArgs }],
+      },
+      toolResult("dup-old", "O".repeat(16_000)),
+      assistantToolUse(
+        Array.from({ length: 6 }, (_, index) => ({
+          id: `mid-${index + 1}`,
+          name: "Read",
+        })),
+      ),
+      ...Array.from({ length: 6 }, (_, index) =>
+        toolResult(`mid-${index + 1}`, "x".repeat(6_500))),
+      {
+        ...assistantToolUse([{ id: "dup-new", name: "Read" }]),
+        toolCalls: [{ id: "dup-new", name: "Read", arguments: readArgs }],
+      },
+      toolResult("dup-new", "N".repeat(16_000)),
+    ];
+
+    const result = await microcompactMessages(messages);
+    const byId = new Map(
+      result.messages
+        .filter((entry) => entry.toolCallId !== undefined)
+        .map((entry) => [entry.toolCallId, entry.content]),
+    );
+
+    // Newest read of the path retained.
+    expect(byId.get("dup-new")).toBe("N".repeat(16_000));
+    // Older duplicate read of the same path cleared.
+    expect(byId.get("dup-old")).toMatch(/^\[microcompact:\d+\]/);
+  });
+
+  test("path-aware retention applies to the block-form content path", async () => {
+    const longText = "B".repeat(16_000);
+    // First (older) read of /active.ts.
+    const oldActiveUse = [
+      { type: "tool_use", id: "active-old", name: "Read", input: { file_path: "/active.ts" } },
+    ];
+    const oldActiveResult = [
+      { type: "tool_result", tool_use_id: "active-old", content: longText },
+    ];
+    const fillerToolUse = Array.from({ length: 6 }, (_, index) => ({
+      type: "tool_use",
+      id: `filler-${index}`,
+      name: "Read",
+      input: { file_path: `/filler-${index}.ts` },
+    }));
+    const fillerResults = Array.from({ length: 6 }, (_, index) => ({
+      type: "tool_result",
+      tool_use_id: `filler-${index}`,
+      content: longText,
+    }));
+    // Second (newer) read of the same /active.ts path.
+    const newActiveUse = [
+      { type: "tool_use", id: "active-new", name: "Read", input: { file_path: "/active.ts" } },
+    ];
+    const newActiveResult = [
+      { type: "tool_result", tool_use_id: "active-new", content: longText },
+    ];
+    const messages = [
+      blockMessage("assistant", oldActiveUse),
+      blockMessage("user", oldActiveResult),
+      blockMessage("assistant", fillerToolUse),
+      blockMessage("user", fillerResults),
+      blockMessage("assistant", newActiveUse),
+      blockMessage("user", newActiveResult),
+    ] satisfies RuntimeMessage[];
+
+    const result = await microcompactMessages(messages);
+    const oldActiveBlocks = result.messages[1]?.content as Array<
+      Record<string, unknown>
+    >;
+    const newActiveBlocks = result.messages[5]?.content as Array<
+      Record<string, unknown>
+    >;
+
+    // Newest read of /active.ts survives.
+    expect(newActiveBlocks[0]?.content).toBe(longText);
+    // Older duplicate read of the same path is cleared (path-aware retention
+    // keeps only the latest result per path in the block-form path too).
+    expect(oldActiveBlocks[0]?.content).toBe("[Old tool result content cleared]");
+  });
+
   test("reports API context-management microcompact settings", async () => {
     const result = await microcompactMessages([], {
       options: {
@@ -133,6 +259,18 @@ function assistantToolUse(
     toolCalls,
     content: "",
     message: { role: "assistant", content: "" },
+  };
+}
+
+function blockMessage(
+  role: "assistant" | "user",
+  content: Array<Record<string, unknown>>,
+): RuntimeMessage {
+  return {
+    role,
+    type: role,
+    content,
+    message: { role, content },
   };
 }
 

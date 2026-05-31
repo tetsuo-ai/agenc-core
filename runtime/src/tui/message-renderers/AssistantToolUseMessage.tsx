@@ -16,6 +16,9 @@ import { useSelectedMessageBg } from '../components/messageActions';
 import { SentryErrorBoundary } from '../components/SentryErrorBoundary';
 import { HookProgressMessage } from './HookProgressMessage';
 import { Tool as V2Tool, type ToolKind, type ToolState } from '../components/v2/primitives.js';
+import { extractTag } from '../../utils/messages.js';
+import { summarizeFileEditError } from '../../tools/FileEditTool/UI.js';
+import { firstLineOf } from '../../utils/stringUtils.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -210,6 +213,32 @@ export function AssistantToolUseMessage({
       : isQueued
         ? "queued"
         : "running";
+  const toolKind = toolKindForName(param.name, userFacingToolName);
+  // Number of failed retries of this same tool+target that collapseReadSearch
+  // folded into this single row (>=2 means earlier attempts were dropped).
+  const retriedFailureCount =
+    typeof (param as { retriedFailureCount?: number }).retriedFailureCount === "number"
+      ? (param as { retriedFailureCount?: number }).retriedFailureCount
+      : undefined;
+  // On a failed row, surface the concrete one-line failure reason inline on the
+  // "✕ Tool(...)" line (verbose mode keeps the full detached error block).
+  const baseReason =
+    !verbose && toolState === "failed"
+      ? failedToolRowReason(
+          toolKind,
+          rawToolResultContent(lookups, param.id),
+        )
+      : undefined;
+  // Roll the retry count into the inline annotation, e.g.
+  // "✕ Edit(lexer.c)  ×5 (last: File has not been read yet)".
+  const failedReason =
+    retriedFailureCount && retriedFailureCount >= 2
+      ? toolState === "failed"
+        ? baseReason
+          ? `×${retriedFailureCount} (last: ${baseReason})`
+          : `×${retriedFailureCount} attempts failed`
+        : `succeeded after ${retriedFailureCount} attempts`
+      : baseReason;
   const toolArgs =
     typeof renderedToolUseMessage === "string" &&
     renderedToolUseMessage.length > 0
@@ -230,10 +259,11 @@ export function AssistantToolUseMessage({
   return (
     <Box flexDirection="column" marginTop={marginTop} width="100%" backgroundColor={bg}>
       <V2Tool
-        kind={toolKindForName(param.name, userFacingToolName)}
+        kind={toolKind}
         label={userFacingToolName}
         state={toolState}
         args={toolArgs}
+        result={failedReason}
         detail={detail}
         expanded={detail !== null}
       />
@@ -280,6 +310,54 @@ function toolKindForName(name: string, label: string): ToolKind {
   if (value.includes("settle")) return "settle";
   if (value.includes("stake")) return "stake";
   return "read";
+}
+
+/**
+ * Pull the raw tool_result content string for a tool use out of the message
+ * lookups. Returns null when no result block (or a non-string result) exists.
+ */
+function rawToolResultContent(
+  lookups: ReturnType<typeof buildMessageLookups>,
+  toolUseId: string,
+): string | null {
+  const resultMsg = lookups.toolResultByToolUseID?.get(toolUseId);
+  if (resultMsg?.type !== 'user') return null;
+  const content = resultMsg.message?.content;
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (
+      block?.type === 'tool_result' &&
+      block.tool_use_id === toolUseId &&
+      typeof block.content === 'string'
+    ) {
+      return block.content;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a concise one-line reason to attach to a failed tool row, so the user
+ * sees *why* a tool call failed directly on the "✕ Tool(...)" line instead of a
+ * masked generic message or a detached block. Edit-kind failures reuse the
+ * file-edit summarizer (friendly intended-behavior phrasing); other tools fall
+ * back to the first non-empty line of their error text.
+ */
+function failedToolRowReason(
+  kind: ToolKind,
+  rawResult: string | null,
+): string | undefined {
+  if (rawResult === null) return undefined;
+  if (kind === 'edit') {
+    return summarizeFileEditError(rawResult) ?? undefined;
+  }
+  const errorText = extractTag(rawResult, 'tool_use_error') ?? rawResult;
+  const cleaned = errorText.replace(/<\/?error>/g, '').trim();
+  const firstLine = cleaned
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line.length > 0);
+  return firstLine ? firstLineOf(firstLine) : undefined;
 }
 
 function summarizeToolInput(input: unknown): string {

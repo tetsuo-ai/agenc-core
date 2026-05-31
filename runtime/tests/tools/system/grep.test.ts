@@ -1035,4 +1035,94 @@ describe("Grep tool", () => {
     expect(result.isError).toBeUndefined();
     expect(lines(result.content)).toEqual(["Found 1 file", "src/file.ts"]);
   });
+
+  // Regression: a `path` pointing at a single FILE (not a directory) must be
+  // accepted and return that file's matches. ripgrep takes a file argument
+  // directly; the tool resolves a file target's searchRoot to its parent and
+  // hands rg the absolute file path. Previously an agent could not grep a
+  // single file (e.g. {"pattern":"IO_NUMBER","path":"src/syntax/lexer.c"}) and
+  // had to re-Read whole files instead.
+  test("ripgrep path=<single file> returns matching content lines", async () => {
+    await mkdir(join(root, "src", "syntax"), { recursive: true });
+    const target = join(root, "src", "syntax", "lexer.c");
+    await writeFile(
+      target,
+      "line one\nIO_NUMBER here\nIO_NUMBER again\nline four\n",
+      "utf8",
+    );
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "IO_NUMBER",
+      path: target,
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(lines(result.content)).toEqual([
+      "src/syntax/lexer.c:2:IO_NUMBER here",
+      "src/syntax/lexer.c:3:IO_NUMBER again",
+    ]);
+  });
+
+  test("ripgrep path=<single file> works in default files_with_matches mode", async () => {
+    await mkdir(join(root, "src"), { recursive: true });
+    const target = join(root, "src", "lexer.c");
+    await writeFile(target, "alpha\nIO_NUMBER\nomega\n", "utf8");
+    // A sibling that also matches must NOT appear: the file target scopes
+    // the search to exactly one file.
+    await writeFile(join(root, "src", "other.c"), "IO_NUMBER\n", "utf8");
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "IO_NUMBER",
+      path: target,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(lines(result.content)).toEqual(["Found 1 file", "src/lexer.c"]);
+  });
+
+  test("ripgrep path=<single file> works in count mode", async () => {
+    const target = join(root, "lexer.c");
+    await writeFile(target, "IO_NUMBER\nx\nIO_NUMBER\n", "utf8");
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "IO_NUMBER",
+      path: target,
+      output_mode: "count",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("lexer.c:2");
+    expect(result.content).toContain("2 total occurrences");
+  });
+
+  test("ripgrep accepts a RELATIVE single-file path resolved against cwd", async () => {
+    await mkdir(join(root, "src", "syntax"), { recursive: true });
+    const target = join(root, "src", "syntax", "lexer.c");
+    await writeFile(target, "line one\nIO_NUMBER here\n", "utf8");
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const prevCwd = process.cwd();
+    process.chdir(root);
+    try {
+      const result = await tool.execute({
+        pattern: "IO_NUMBER",
+        path: "src/syntax/lexer.c",
+        output_mode: "content",
+      });
+      expect(result.isError).toBeUndefined();
+      expect(lines(result.content)).toEqual([
+        "src/syntax/lexer.c:2:IO_NUMBER here",
+      ]);
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
 });

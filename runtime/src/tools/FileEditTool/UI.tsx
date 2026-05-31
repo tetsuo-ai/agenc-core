@@ -124,6 +124,40 @@ export function renderToolUseRejectedMessage(input: {
   }
   return <EditRejectionDiff filePath={filePath} oldString={oldString} newString={newString} replaceAll={replaceAll} style={style} verbose={verbose} />;
 }
+/**
+ * Reduce a raw file-edit tool error to a concise, single-line reason suitable
+ * for an inline failed-row annotation. Returns null when there is no usable
+ * error text (callers then fall back to the verbose renderer).
+ *
+ * Unlike the previous behavior this never masks the concrete cause behind a
+ * generic "Error editing file" string — it surfaces the real first line (e.g.
+ * "File has not been read yet", the failing old_string context) so the user
+ * can see why the edit failed directly on the "✕ Edit(...)" row.
+ */
+export function summarizeFileEditError(result: ToolResultBlockParam['content']): string | null {
+  if (typeof result !== 'string') {
+    return null;
+  }
+  const errorMessage = extractTag(result, 'tool_use_error') ?? result;
+  if (!errorMessage.trim()) {
+    return null;
+  }
+  // Show a less scary message for intended behavior.
+  if (errorMessage.includes('File has not been read yet')) {
+    return 'File must be read first';
+  }
+  if (errorMessage.includes(FILE_NOT_FOUND_CWD_NOTE)) {
+    return 'File not found';
+  }
+  // Surface the concrete reason: strip wrapper <error> tags and collapse to the
+  // first non-empty line so it fits on the failed row instead of a generic mask.
+  const cleaned = errorMessage.replace(/<\/?error>/g, '').trim();
+  const firstLine = cleaned
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line.length > 0);
+  return firstLine ? firstLineOf(firstLine) : null;
+}
 export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'], options: {
   progressMessagesForMessage: ProgressMessage[];
   tools: Tools;
@@ -133,21 +167,14 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
     verbose
   } = options;
   if (!verbose && typeof result === 'string' && extractTag(result, 'tool_use_error')) {
-    const errorMessage = extractTag(result, 'tool_use_error');
-    // Show a less scary message for intended behavior
-    if (errorMessage?.includes('File has not been read yet')) {
+    const reason = summarizeFileEditError(result);
+    if (reason) {
+      // Intended-behavior cases render dimmed; genuine failures render in error color.
+      const isIntended = reason === 'File must be read first';
       return <MessageResponse>
-          <Text dimColor>File must be read first</Text>
+          <Text dimColor={isIntended} color={isIntended ? undefined : 'error'}>{reason}</Text>
         </MessageResponse>;
     }
-    if (errorMessage?.includes(FILE_NOT_FOUND_CWD_NOTE)) {
-      return <MessageResponse>
-          <Text color="error">File not found</Text>
-        </MessageResponse>;
-    }
-    return <MessageResponse>
-        <Text color="error">Error editing file</Text>
-      </MessageResponse>;
   }
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
