@@ -1102,15 +1102,18 @@ describe("Grep tool", () => {
     expect(result.content).toContain("2 total occurrences");
   });
 
-  test("ripgrep accepts a RELATIVE single-file path resolved against cwd", async () => {
+  test("ripgrep accepts a RELATIVE single-file path resolved against the allowed root, not cwd", async () => {
     await mkdir(join(root, "src", "syntax"), { recursive: true });
     const target = join(root, "src", "syntax", "lexer.c");
     await writeFile(target, "line one\nIO_NUMBER here\n", "utf8");
     __setRipgrepAvailabilityForTests(true);
     const tool = createGrepTool({ allowedPaths: [root] });
 
+    // Run from a cwd that is NOT the allowed root. The relative path must be
+    // resolved against `root`, not `process.cwd()`. Use the OS temp dir
+    // (outside `root`) as cwd so resolving against cwd would be denied.
     const prevCwd = process.cwd();
-    process.chdir(root);
+    process.chdir(tmpdir());
     try {
       const result = await tool.execute({
         pattern: "IO_NUMBER",
@@ -1121,6 +1124,27 @@ describe("Grep tool", () => {
       expect(lines(result.content)).toEqual([
         "src/syntax/lexer.c:2:IO_NUMBER here",
       ]);
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
+
+  test("relative single-file path with ZERO matches is not an error", async () => {
+    await mkdir(join(root, "src", "syntax"), { recursive: true });
+    const target = join(root, "src", "syntax", "empty.c");
+    await writeFile(target, "line one\nline two\n", "utf8");
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const prevCwd = process.cwd();
+    process.chdir(tmpdir());
+    try {
+      const result = await tool.execute({
+        pattern: "IO_NUMBER",
+        path: "src/syntax/empty.c",
+        output_mode: "content",
+      });
+      expect(result.isError).toBeFalsy();
     } finally {
       process.chdir(prevCwd);
     }

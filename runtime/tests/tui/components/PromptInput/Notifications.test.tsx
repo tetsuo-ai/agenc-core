@@ -33,6 +33,7 @@ const harness = vi.hoisted(() => ({
   removeNotification: vi.fn(),
   subscriptionType: 'pro' as 'enterprise' | 'pro' | 'team',
   tokenUsage: 1234,
+  usesAnthropicAccountFlow: true,
   usingOverage: false,
 }))
 
@@ -82,6 +83,10 @@ vi.mock('../../../utils/ide.js', () => ({
 
 vi.mock('../../../utils/messages.js', () => ({
   getMessagesAfterCompactBoundary: (messages: unknown[]) => messages,
+}))
+
+vi.mock('../../../utils/model/providers.js', () => ({
+  usesAnthropicAccountFlow: () => harness.usesAnthropicAccountFlow,
 }))
 
 vi.mock('../../../utils/tokens.js', () => ({
@@ -233,6 +238,7 @@ function resetHarness() {
   harness.removeNotification.mockClear()
   harness.subscriptionType = 'pro'
   harness.tokenUsage = 1234
+  harness.usesAnthropicAccountFlow = true
   harness.usingOverage = false
 }
 

@@ -310,11 +310,41 @@ async function resolveSearchPath(params: {
   if (!candidate) {
     return { error: "No search path resolved" };
   }
-  const safe = await safePath(candidate, allowedPaths);
-  if (!safe.safe) {
-    return { error: `Access denied: ${safe.reason}` };
+  // A relative `path` must be resolved against an allowed root, NOT
+  // `process.cwd()` (the runtime dir). Resolving against cwd would push the
+  // candidate outside `allowedPaths` and `safePath` would reject it. We make
+  // it absolute against each allowed root and pick the first that exists and
+  // re-validates safely. `safePath` below still confines the result to the
+  // allowed set, so this does not widen access. Single-root is production.
+  const isCandidateAbsolute =
+    isAbsolute(candidate) || isWindowsAbsolutePath(candidate);
+  const candidates = isCandidateAbsolute
+    ? [candidate]
+    : allowedPaths.map((root) => join(root, candidate));
+
+  let safe: Awaited<ReturnType<typeof safePath>> | undefined;
+  let targetStat: Awaited<ReturnType<typeof stat>> | undefined;
+  let lastDenied: string | undefined;
+  for (const rawCandidate of candidates) {
+    const candidateSafe = await safePath(rawCandidate, allowedPaths);
+    if (!candidateSafe.safe) {
+      lastDenied = candidateSafe.reason;
+      continue;
+    }
+    const candidateStat = await stat(candidateSafe.resolved).catch(
+      () => undefined,
+    );
+    if (!candidateStat) continue;
+    safe = candidateSafe;
+    targetStat = candidateStat;
+    break;
   }
-  const targetStat = await stat(safe.resolved).catch(() => undefined);
+  if (!safe) {
+    if (lastDenied !== undefined) {
+      return { error: `Access denied: ${lastDenied}` };
+    }
+    return { error: `Path does not exist: ${candidate}` };
+  }
   if (!targetStat) {
     return { error: `Path does not exist: ${candidate}` };
   }

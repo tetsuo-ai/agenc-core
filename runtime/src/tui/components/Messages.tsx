@@ -16,6 +16,7 @@ import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
 import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
+import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import type { Screen } from '../types/screen.js';
 import type { Tools } from '../../tools/Tool.js';
 import { findToolByName } from '../../tools/Tool.js';
@@ -62,6 +63,32 @@ import {
 // and pegs CPU at 100%. Memo on agentDefinitions so a new messages array
 // doesn't invalidate the logo subtree. LogoV2/StatusNotices internally
 // subscribe to useAppState/useSettings for their own updates.
+// Resolves the effective model (same source the footer uses, so it reflects
+// the user's config model) and renders the welcome panel with it. Isolated in
+// its own component so the useMainLoopModel hook is only invoked on the
+// welcome path -- LogoHeader's non-welcome render keeps its original
+// AppState-free dependency footprint (see the perf note above).
+function WelcomeColdPanelWithModel(): React.ReactNode {
+  const model = useMainLoopModel();
+  return <WelcomeColdPanel model={model} />;
+}
+
+// Error boundary fallback: if the model can't be resolved (e.g. rendered
+// outside an <AppStateProvider />), fall back to the placeholder panel so the
+// welcome box still renders rather than crashing the header subtree.
+class WelcomePanelBoundary extends React.Component<
+  { readonly children: React.ReactNode },
+  { readonly failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+  render(): React.ReactNode {
+    return this.state.failed ? <WelcomeColdPanel /> : this.props.children;
+  }
+}
+
 const LogoHeader = React.memo(function LogoHeader(t0: {
   readonly agentDefinitions?: AgentDefinitionsResult;
   readonly showWelcome?: boolean;
@@ -70,7 +97,7 @@ const LogoHeader = React.memo(function LogoHeader(t0: {
     agentDefinitions,
     showWelcome = false,
   } = t0;
-  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomeColdPanel /> : null}</Box></OffscreenFreeze>;
+  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
 });
 
 // Dead code elimination: conditional import for brief mode
