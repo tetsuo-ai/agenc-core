@@ -121,6 +121,24 @@ export class AgenCStdioTransport {
       return;
     }
 
+    if (isControlMessage(message)) {
+      // Control messages (request.cancel) must NOT queue behind the in-flight
+      // long request they target, or cancellation can never run. They carry no
+      // ordering dependency on normal requests (they reference a target by
+      // requestId, not by arrival position), so dispatch them off-chain. The
+      // promise is still tracked in #pendingMessages so close() drains it.
+      const pending = Promise.resolve(this.#options.onMessage(message)).catch(
+        (error) => {
+          this.#options.onError?.(asError(error), line);
+        },
+      );
+      this.#pendingMessages.add(pending);
+      pending.finally(() => {
+        this.#pendingMessages.delete(pending);
+      });
+      return;
+    }
+
     // Chain dispatch on a per-connection promise so pipelined,
     // order-dependent requests are handed to onMessage in arrival order
     // instead of racing. A handler rejection is caught here so it cannot
@@ -170,6 +188,22 @@ export function writeJsonLine(
       resolve();
     });
   });
+}
+
+/**
+ * Pure-control messages that must bypass the per-connection dispatch FIFO.
+ *
+ * `request.cancel` references its target by requestId and has no ordering
+ * dependency on normal requests, so queuing it behind a long-running request
+ * would let that request starve the very cancellation meant to abort it. The
+ * dispatcher handles it synchronously up to `controller.abort()`, so running it
+ * off-chain is concurrency-safe. Extend this predicate to the other side-effect
+ * free aborts (`session.cancelTurn`, `tool.cancel`, `commandExec.terminate`)
+ * only if they prove starved as well — never to anything with ordering or
+ * mutating side effects, which must stay strictly FIFO.
+ */
+function isControlMessage(message: JsonObject): boolean {
+  return message.method === "request.cancel";
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {

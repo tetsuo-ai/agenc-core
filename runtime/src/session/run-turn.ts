@@ -288,7 +288,6 @@ async function prepareAgenCTurnContext(
       messages,
       toolUseContext,
       querySource,
-      applyContextCollapse: isAgenCContextCollapseRequested(),
     });
     state.messagesForQuery = prepared.messages;
     state.snipTokensFreed = prepared.snipTokensFreed;
@@ -440,7 +439,6 @@ async function prepareAgenCQueryMessages(params: {
   readonly messages: readonly LLMMessage[];
   readonly toolUseContext: AgenCToolUseContext;
   readonly querySource: string;
-  readonly applyContextCollapse: boolean;
 }): Promise<{
   readonly messages: LLMMessage[];
   readonly snipTokensFreed: number;
@@ -459,12 +457,7 @@ async function prepareAgenCQueryMessages(params: {
         params.querySource,
       );
       messages = microcompactResult.messages as AgenCRuntimeMessage[];
-      let committed = false;
-      if (params.applyContextCollapse) {
-        const projected = await applyCollapsesIfNeeded(messages);
-        messages = projected.messages as AgenCRuntimeMessage[];
-        committed = projected.committed > 0;
-      }
+      const committed = false;
       return {
         messages: fromAgenCRuntimeMessages(messages),
         snipTokensFreed: 0,
@@ -486,13 +479,6 @@ async function applyToolResultBudget(messages: RuntimeMessage[]): Promise<{
   readonly newlyReplaced: readonly unknown[];
 }> {
   return { messages, newlyReplaced: [] };
-}
-
-async function applyCollapsesIfNeeded(messages: RuntimeMessage[]): Promise<{
-  readonly messages: RuntimeMessage[];
-  readonly committed: number;
-}> {
-  return { messages, committed: 0 };
 }
 
 async function toAgenCCompactionResult(
@@ -920,10 +906,6 @@ function envForToolUseContext(
     AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
       toolUseContext.options.contextWindowTokens.toString(),
   };
-}
-
-function isAgenCContextCollapseRequested(): boolean {
-  return true;
 }
 
 function streamRetryErrorCause(error: unknown): unknown {

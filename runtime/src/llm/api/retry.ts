@@ -1,85 +1,25 @@
 /**
- * Ports upstream `src/services/api/withRetry.ts` retry arithmetic and
- * transient-error classification onto a provider-neutral AgenC helper.
+ * Provider-neutral retry arithmetic and rate-limit parsing helpers ported from
+ * upstream `src/services/api/withRetry.ts`.
  *
- * Why this lives here / shape difference from upstream:
- *   - Upstream retries are coupled to one SDK, auth refresh, analytics, and
- *     foreground/background query sources. AgenC exposes the pure retry core
- *     so providers can opt into the same backoff semantics.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Subscriber gates, fast-mode fallback, persistent unattended heartbeats,
- *     and provider-specific auth cache mutation.
+ * Scope: this module exposes only the pure backoff/delay math and header
+ * parsing used by the provider adapters' fallback ladders
+ * (`getRetryDelay`, `sleepMs`, `getRateLimitResetDelayMs`, `parseOpenAIDuration`,
+ * `is529Error`, `parseMaxTokensContextOverflowError`). The actual
+ * retry/backoff/Retry-After orchestration on the live request path lives in
+ * `src/llm/client-session.ts` (`requestWithRetry` / `acquireStreamAttempt`),
+ * which is the authoritative loop; this module is intentionally not a driver.
  */
 
-import { AgenCApiError } from "./errors.js";
-import {
-  evaluateProviderFallback,
-  type ProviderFallbackLadderOptions,
-} from "./fallback-ladder.js";
-
-const DEFAULT_MAX_RETRIES = 10;
 const BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 32_000;
 const MAX_RETRY_AFTER_MS = 300_000;
 const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000;
-const FLOOR_OUTPUT_TOKENS = 3000;
-const MAX_TOKENS_CONTEXT_SAFETY_BUFFER = 1000;
 
 export interface MaxTokensContextOverflow {
   readonly inputTokens: number;
   readonly maxTokens: number;
   readonly contextLimit: number;
-}
-
-export interface RetryContext {
-  readonly attempt: number;
-  readonly maxRetries: number;
-  readonly lastError?: unknown;
-  readonly maxTokensContextOverflow?: MaxTokensContextOverflow;
-  readonly maxTokensOverride?: number;
-}
-
-export interface WithRetryOptions {
-  readonly maxRetries?: number;
-  readonly maxDelayMs?: number;
-  readonly retryStatuses?: ReadonlySet<number> | readonly number[];
-  readonly signal?: AbortSignal;
-  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-  readonly random?: () => number;
-  readonly maxTokensContext?: {
-    readonly floorOutputTokens?: number;
-    readonly safetyBufferTokens?: number;
-    readonly minRequiredTokens?: number;
-  };
-  readonly fallback?: ProviderFallbackLadderOptions;
-  readonly onRetry?: (event: {
-    readonly attempt: number;
-    readonly delayMs: number;
-    readonly error: unknown;
-    readonly maxTokensOverride?: number;
-  }) => void;
-  readonly emitWarning?: (warning: {
-    readonly cause: string;
-    readonly message: string;
-  }) => void;
-}
-
-export class CannotRetryError extends Error {
-  readonly originalError: unknown;
-  readonly retryContext: RetryContext;
-
-  constructor(originalError: unknown, retryContext: RetryContext) {
-    const message =
-      originalError instanceof Error ? originalError.message : String(originalError);
-    super(message);
-    this.name = "CannotRetryError";
-    this.originalError = originalError;
-    this.retryContext = retryContext;
-    if (originalError instanceof Error && originalError.stack) {
-      this.stack = originalError.stack;
-    }
-  }
 }
 
 export class RetryAfterTooLongError extends Error {
@@ -128,23 +68,6 @@ export function parseMaxTokensContextOverflowError(
     return undefined;
   }
   return { inputTokens, maxTokens, contextLimit };
-}
-
-function resolveMaxTokensContextOverflowOverride(
-  overflow: MaxTokensContextOverflow,
-  options: WithRetryOptions["maxTokensContext"] = {},
-): number | undefined {
-  const floorOutputTokens =
-    options.floorOutputTokens ?? FLOOR_OUTPUT_TOKENS;
-  const safetyBufferTokens =
-    options.safetyBufferTokens ?? MAX_TOKENS_CONTEXT_SAFETY_BUFFER;
-  const minRequiredTokens = options.minRequiredTokens ?? 1;
-  const availableContext = Math.max(
-    0,
-    overflow.contextLimit - overflow.inputTokens - safetyBufferTokens,
-  );
-  if (availableContext < floorOutputTokens) return undefined;
-  return Math.max(floorOutputTokens, availableContext, minRequiredTokens);
 }
 
 export function is529Error(error: unknown): boolean {
@@ -242,152 +165,6 @@ export function getRetryDelay(
   return baseDelay + jitter;
 }
 
-function shouldRetryApiError(
-  error: unknown,
-  retryStatuses: ReadonlySet<number> | readonly number[] = [
-    408,
-    409,
-    429,
-    500,
-    502,
-    503,
-    504,
-    529,
-  ],
-): boolean {
-  if (isAbortError(error)) return false;
-  if (is529Error(error)) return true;
-  if (parseMaxTokensContextOverflowError(error)) return true;
-  if (isRetryableNetworkError(error)) return true;
-
-  const status = readStatus(error);
-  if (status === undefined) return false;
-  const statuses =
-    retryStatuses instanceof Set ? retryStatuses : new Set(retryStatuses);
-  return statuses.has(status);
-}
-
-export async function withRetry<T>(
-  operation: (context: RetryContext) => Promise<T>,
-  options: WithRetryOptions = {},
-): Promise<T> {
-  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const sleep = options.sleep ?? sleepMs;
-  let lastError: unknown;
-  let maxTokensContextOverflow: MaxTokensContextOverflow | undefined;
-  let maxTokensOverride: number | undefined;
-  let consecutiveFallbackFailures = 0;
-
-  for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
-    if (options.signal?.aborted) {
-      throw abortReasonToError(options.signal.reason);
-    }
-
-    const context: RetryContext = {
-      attempt,
-      maxRetries,
-      lastError,
-      maxTokensContextOverflow,
-      maxTokensOverride,
-    };
-    try {
-      return await operation(context);
-    } catch (error) {
-      lastError = error;
-      if (attempt > maxRetries) {
-        throw new CannotRetryError(error, context);
-      }
-
-      const overflow = parseMaxTokensContextOverflowError(error);
-      if (overflow) {
-        const override = resolveMaxTokensContextOverflowOverride(
-          overflow,
-          options.maxTokensContext,
-        );
-        if (override === undefined) {
-          throw new CannotRetryError(error, context);
-        }
-        maxTokensContextOverflow = overflow;
-        maxTokensOverride = override;
-        options.onRetry?.({
-          attempt,
-          delayMs: 0,
-          error,
-          maxTokensOverride,
-        });
-        continue;
-      }
-
-      let shouldRetryFallback = false;
-      if (options.fallback) {
-        const fallbackDecision = evaluateProviderFallback({
-          ...options.fallback,
-          error,
-          consecutiveFailures: consecutiveFallbackFailures,
-        });
-        if (fallbackDecision.kind === "trigger") {
-          throw fallbackDecision.error;
-        }
-        consecutiveFallbackFailures =
-          fallbackDecision.kind === "wait"
-            ? fallbackDecision.consecutiveFailures
-            : 0;
-        shouldRetryFallback = fallbackDecision.kind === "wait";
-      }
-
-      if (
-        !shouldRetryFallback &&
-        !shouldRetryApiError(error, options.retryStatuses)
-      ) {
-        throw new CannotRetryError(error, context);
-      }
-
-      const retryAfterHeader = getRetryAfterHeader(error);
-      const parsedRetryAfter = parseRetryAfterMs(retryAfterHeader);
-      if (parsedRetryAfter.exceedsMaxWait) {
-        options.emitWarning?.({
-          cause: "retry_after_exceeds_max_wait",
-          message: `provider requested a Retry-After longer than ${MAX_RETRY_AFTER_MS}ms; aborting retry instead of sleeping unbounded`,
-        });
-        throw new CannotRetryError(error, context);
-      }
-
-      const delayMs =
-        parsedRetryAfter.delayMs ??
-        getRetryDelay(
-          attempt,
-          undefined,
-          options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS,
-          options.random ?? Math.random,
-        );
-      options.onRetry?.({ attempt, delayMs, error, maxTokensOverride });
-      await sleep(delayMs, options.signal);
-    }
-  }
-
-  throw new CannotRetryError(lastError, {
-    attempt: maxRetries + 1,
-    maxRetries,
-    lastError,
-  });
-}
-
-function readStatus(error: unknown): number | undefined {
-  const raw =
-    error instanceof AgenCApiError
-      ? error.status
-      : error && typeof error === "object"
-        ? (error as { status?: unknown; statusCode?: unknown }).status ??
-          (error as { statusCode?: unknown }).statusCode
-        : undefined;
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-  if (typeof raw === "string") {
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
 function readHeader(
   headers: Headers | Readonly<Record<string, string | undefined>>,
   name: string,
@@ -400,42 +177,6 @@ function readHeader(
     if (key.toLowerCase() === lowerName) return value ?? null;
   }
   return null;
-}
-
-function getRetryAfterHeader(error: unknown): string | null {
-  const headers =
-    error instanceof AgenCApiError
-      ? error.headers
-      : error && typeof error === "object"
-        ? (error as { headers?: unknown }).headers
-        : undefined;
-  if (!headers) return null;
-  if (typeof (headers as Headers).get === "function") {
-    return (headers as Headers).get("retry-after");
-  }
-  if (typeof headers === "object") {
-    return readHeader(
-      headers as Readonly<Record<string, string | undefined>>,
-      "retry-after",
-    );
-  }
-  return null;
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "AbortError" ||
-      (error as { code?: string }).code === "ABORT_ERR")
-  );
-}
-
-function isRetryableNetworkError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (isAbortError(error)) return false;
-  return /socket connection was closed unexpectedly|ECONNRESET|EPIPE|socket hang up|Connection reset by peer|fetch failed|network/i.test(
-    error.message,
-  );
 }
 
 function abortReasonToError(reason: unknown): Error {

@@ -2,7 +2,7 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
   PROACTIVE: false,
   KAIROS: false,
   BRIDGE_MODE: false,
-  CONTEXT_COLLAPSE: true,
+  CONTEXT_COLLAPSE: false,
   COMMIT_ATTRIBUTION: false,
   UDS_INBOX: false,
   BG_SESSIONS: false,

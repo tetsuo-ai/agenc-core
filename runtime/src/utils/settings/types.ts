@@ -984,6 +984,21 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enable background memory consolidation (auto-dream). When set, overrides the server-side default.',
         ),
+      autoDreamMinHours: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'Minimum hours since the last memory consolidation before auto-dream may fire. Default: 24.',
+        ),
+      autoDreamMinSessions: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Minimum number of other sessions touched since the last consolidation before auto-dream may fire. Default: 5.',
+        ),
       showThinkingSummaries: z
         .boolean()
         .optional()

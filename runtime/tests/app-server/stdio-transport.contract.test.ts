@@ -154,6 +154,56 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
+  it("dispatches request.cancel ahead of an in-flight long request", async () => {
+    // Regression for the transport-FIFO cancellation starvation: a
+    // request.cancel chained behind a long-running request could never run
+    // until that request completed, defeating cancellation. Control messages
+    // must dispatch off-chain so cancel runs while the target is still in
+    // flight, while normal requests stay FIFO (guarded by the test above).
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseLong: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const longStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      onMessage: async (message) => {
+        if (message.method === "session.partialCompactFromMessage") {
+          events.push("long:start");
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseLong = resolve;
+          });
+          events.push("long:end");
+        } else if (message.method === "request.cancel") {
+          events.push("cancel");
+        }
+      },
+    });
+    transport.start();
+
+    input.write(
+      '{"jsonrpc":"2.0","id":1,"method":"session.partialCompactFromMessage"}\n',
+    );
+    await longStarted;
+    input.write('{"jsonrpc":"2.0","id":2,"method":"request.cancel"}\n');
+
+    await delay(20);
+    // Cancel must have run while the long request is still blocked.
+    expect(events).toEqual(["long:start", "cancel"]);
+
+    releaseLong?.();
+    await delay(20);
+    expect(events).toEqual(["long:start", "cancel", "long:end"]);
+
+    await transport.close();
+  });
+
   it("tears down the connection when an unterminated line exceeds the cap", async () => {
     // Regression for audit #14: readline imposes no max line length, so a
     // peer streaming bytes without a newline grew daemon memory unbounded.

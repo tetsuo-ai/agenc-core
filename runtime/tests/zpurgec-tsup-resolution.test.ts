@@ -36,11 +36,12 @@ describe('Z-PURGEC tsup resolution boundaries', () => {
 
   it('inlines copied-tree feature gates before unresolved import resolution', () => {
     expect(__agencTsupAliasTest.featureFlagLiteral('HISTORY_SNIP')).toBe('false')
-    expect(__agencTsupAliasTest.featureFlagLiteral('CONTEXT_COLLAPSE')).toBe('true')
+    expect(__agencTsupAliasTest.featureFlagLiteral('CONTEXT_COLLAPSE')).toBe('false')
+    expect(__agencTsupAliasTest.featureFlagLiteral('MCP_SKILLS')).toBe('true')
     expect(__agencTsupAliasTest.featureFlagLiteral('NOT_A_REAL_FLAG')).toBe('false')
     expect(
       __agencTsupAliasTest.inlineCopiedTreeFeatureCalls(
-        "const x = feature('HISTORY_SNIP') ? require('./missing.js') : null; const y = feature(\"CONTEXT_COLLAPSE\")",
+        "const x = feature('HISTORY_SNIP') ? require('./missing.js') : null; const y = feature(\"MCP_SKILLS\")",
       ),
     ).toBe("const x = false ? require('./missing.js') : null; const y = true")
     expect(

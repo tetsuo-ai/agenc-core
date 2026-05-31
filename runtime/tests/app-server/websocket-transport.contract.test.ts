@@ -145,6 +145,55 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it("dispatches request.cancel ahead of an in-flight long request", async () => {
+    // Regression for the transport-FIFO cancellation starvation: a
+    // request.cancel chained behind a long-running request could never run
+    // until that request completed, defeating cancellation. Control messages
+    // must dispatch off-chain so cancel runs while the target is still in
+    // flight, while normal requests stay FIFO (guarded by the test above).
+    const events: string[] = [];
+    let releaseLong: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const longStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const server = new AgenCWebSocketServer({
+      onMessage: async (message) => {
+        if (message.method === "session.partialCompactFromMessage") {
+          events.push("long:start");
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseLong = resolve;
+          });
+          events.push("long:end");
+        } else if (message.method === "request.cancel") {
+          events.push("cancel");
+        }
+      },
+    });
+
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.send(
+      '{"jsonrpc":"2.0","id":1,"method":"session.partialCompactFromMessage"}',
+    );
+    await longStarted;
+    client.send('{"jsonrpc":"2.0","id":2,"method":"request.cancel"}');
+
+    await delay(40);
+    // Cancel must have run while the long request is still blocked.
+    expect(events).toEqual(["long:start", "cancel"]);
+
+    releaseLong?.();
+    await delay(40);
+    expect(events).toEqual(["long:start", "cancel", "long:end"]);
+
+    client.close();
+    await nextClose(client);
+    await server.close();
+  });
+
   it("serves health probes and rejects unsafe HTTP and upgrade requests", async () => {
     const server = new AgenCWebSocketServer({
       ready: () => false,

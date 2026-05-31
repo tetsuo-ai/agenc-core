@@ -266,13 +266,13 @@ export function parseStatusPorcelain(stdout: string): {
         branch = headPart;
       }
       if (trackingPart) {
-        const trackingMatch = /([^[]+)(?: \[(ahead (\d+))?(?:, )?(behind (\d+))?\])?/.exec(
-          trackingPart,
+        const trackingMatch = /^(\S+?)(?:\s+\[(?:ahead (\d+))?(?:, )?(?:behind (\d+))?\])?$/.exec(
+          trackingPart.trim(),
         );
         if (trackingMatch) {
           upstream = trackingMatch[1]?.trim() || undefined;
-          ahead = Number(trackingMatch[3] ?? 0);
-          behind = Number(trackingMatch[5] ?? 0);
+          ahead = Number(trackingMatch[2] ?? 0);
+          behind = Number(trackingMatch[3] ?? 0);
         }
       }
       continue;

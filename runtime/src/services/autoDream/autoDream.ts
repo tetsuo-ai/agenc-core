@@ -24,6 +24,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/index.js'
 import { isAutoDreamEnabled } from './config.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import {
   getOriginalCwd,
@@ -64,26 +65,37 @@ const DEFAULTS: AutoDreamConfig = {
 }
 
 /**
- * Thresholds from tengu_onyx_plover. The enabled gate lives in config.ts
+ * Resolve scheduling thresholds from a raw settings-shaped object.
+ * Pure + exported for tests. The enabled gate lives in config.ts
  * (isAutoDreamEnabled); this returns only the scheduling knobs. Defensive
- * per-field validation since GB cache can return stale wrong-type values.
+ * per-field validation: any non-positive / non-finite / wrong-type value
+ * falls back to DEFAULTS, so an unset or malformed settings file preserves
+ * the 24h / 5-session defaults.
  */
-function getConfig(): AutoDreamConfig {
-  const raw: Partial<AutoDreamConfig> | null = null
+export function resolveAutoDreamConfig(
+  raw:
+    | { autoDreamMinHours?: unknown; autoDreamMinSessions?: unknown }
+    | null
+    | undefined,
+): AutoDreamConfig {
   return {
     minHours:
-      typeof raw?.minHours === 'number' &&
-      Number.isFinite(raw.minHours) &&
-      raw.minHours > 0
-        ? raw.minHours
+      typeof raw?.autoDreamMinHours === 'number' &&
+      Number.isFinite(raw.autoDreamMinHours) &&
+      raw.autoDreamMinHours > 0
+        ? raw.autoDreamMinHours
         : DEFAULTS.minHours,
     minSessions:
-      typeof raw?.minSessions === 'number' &&
-      Number.isFinite(raw.minSessions) &&
-      raw.minSessions > 0
-        ? raw.minSessions
+      typeof raw?.autoDreamMinSessions === 'number' &&
+      Number.isFinite(raw.autoDreamMinSessions) &&
+      raw.autoDreamMinSessions > 0
+        ? raw.autoDreamMinSessions
         : DEFAULTS.minSessions,
   }
+}
+
+function getConfig(): AutoDreamConfig {
+  return resolveAutoDreamConfig(getInitialSettings())
 }
 
 function isGateOpen(): boolean {
