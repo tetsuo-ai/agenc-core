@@ -82,6 +82,74 @@ const fallbackEventKeys = new WeakMap<SessionTranscriptEvent, string>();
 let fallbackEventKeyCounter = 0;
 
 /**
+ * Memory bounds for the TUI transcript store.
+ *
+ * The transcript store retains the full session in memory. Without bounds a
+ * long session with large tool outputs (file reads, big greps, command logs)
+ * grows the heap without limit — every event holds its full result content and
+ * `adaptTranscriptEvents` re-derives a second full copy of that content into
+ * the rendered message list. On multi-hour sessions this reaches gigabytes and
+ * OOMs the daemon.
+ *
+ * These bounds keep retention bounded while staying visually safe: the Ink
+ * renderer is already virtualized to ~300 rows, so evicting the OLDEST events
+ * is invisible on screen, and the complete, untruncated output still lives in
+ * the native terminal scrollback and the on-disk session transcript.
+ *
+ *   - `MAX_TOOL_RESULT_BYTES` caps the bytes persisted for a single
+ *     tool-result's content (the megabyte-per-tool-call driver).
+ *   - `MAX_TRANSCRIPT_EVENTS` caps how many events the store retains; older
+ *     events past this ring-buffer window are dropped together with their
+ *     dedup keys.
+ */
+const MAX_TOOL_RESULT_BYTES = 64 * 1024;
+const MAX_TRANSCRIPT_EVENTS = 4000;
+
+/**
+ * Clamp a tool-result content string to `MAX_TOOL_RESULT_BYTES`, replacing the
+ * dropped middle/tail with a `[N bytes truncated]` marker. Keeps the head of
+ * the content (the part the user most often needs) and records exactly how many
+ * bytes were removed. Strings already within the cap are returned unchanged
+ * (referentially identical) so callers can cheaply detect "no truncation".
+ */
+function clampResultText(text: string): string {
+  // Measure in UTF-8 bytes so the cap reflects real memory/heap cost rather
+  // than JS UTF-16 code-unit count.
+  const byteLength = Buffer.byteLength(text, "utf8");
+  if (byteLength <= MAX_TOOL_RESULT_BYTES) return text;
+  // Cheap, safe slice: take the first MAX_TOOL_RESULT_BYTES *characters* as an
+  // upper bound on the kept bytes (chars >= bytes only for multi-byte text, so
+  // this never exceeds the cap), then append the marker.
+  const head = text.slice(0, MAX_TOOL_RESULT_BYTES);
+  const truncated = byteLength - Buffer.byteLength(head, "utf8");
+  return `${head}\n[${truncated} bytes truncated]`;
+}
+
+/**
+ * Structure-preserving clamp of any tool-result content value. Truncates long
+ * string content (bare strings and the `.text` of structured text blocks) while
+ * leaving the value's shape, types, and non-text fields untouched so that event
+ * ordering and dedup keys (which key on `seq`/`id`, never on content) are
+ * unaffected. Returns the input unchanged when nothing needed clamping.
+ */
+function clampResultContent(content: unknown): unknown {
+  if (typeof content === "string") {
+    return clampResultText(content);
+  }
+  if (isStructuredContentBlocks(content)) {
+    let mutated = false;
+    const next = content.map((block) => {
+      const clamped = clampResultText(block.text);
+      if (clamped === block.text) return block;
+      mutated = true;
+      return { ...block, text: clamped };
+    });
+    return mutated ? next : content;
+  }
+  return content;
+}
+
+/**
  * Allow-list of `warning` event causes that are surfaced to the
  * user's chat transcript. Every other cause stays in the daemon log
  * and observability sinks only.
@@ -350,9 +418,9 @@ export function makeToolResultMessage(
   content: unknown,
   isError = false,
 ): any {
-  const resultContent = isStructuredContentBlocks(content)
-    ? content
-    : stringResult(content);
+  const resultContent = clampResultContent(
+    isStructuredContentBlocks(content) ? content : stringResult(content),
+  );
   return {
     type: "user",
     message: {
@@ -2441,6 +2509,105 @@ type TranscriptAction =
   | { readonly kind: "reset"; readonly events: readonly SessionTranscriptEvent[] }
   | { readonly kind: "append"; readonly event: SessionTranscriptEvent };
 
+/**
+ * Fields on raw transcript events that carry tool-result content. These are the
+ * per-tool-call payloads that can each be megabytes (file reads, greps, command
+ * output). Reset/replacement events (`history_cleared`/`history_replaced`) are
+ * deliberately excluded — their `messages` payload is an authoritative rollout
+ * snapshot that must round-trip verbatim, so we never rewrite it.
+ */
+function clampEventForStorage(
+  event: SessionTranscriptEvent,
+): SessionTranscriptEvent {
+  if (isTranscriptResetEvent(event)) return event;
+
+  // Only clamp events whose dedup key is content-independent (keyed on `seq`
+  // or `id`). For keyless events `eventKey` falls back to `JSON.stringify`, so
+  // rewriting content would change the key — and eviction (which recomputes the
+  // key from the stored, clamped event) could then fail to prune it. Such events
+  // never carry large tool-result content in practice, so skipping them is safe.
+  const hasStableKey =
+    ("seq" in event && typeof event.seq === "number") ||
+    ("id" in event && typeof event.id === "string");
+  if (!hasStableKey) return event;
+
+  const record = event as Record<string, unknown>;
+  let mutated = false;
+  const next: Record<string, unknown> = { ...record };
+
+  // `tool_result` events carry the content directly on `result`.
+  if ("result" in record) {
+    const clamped = clampResultContent(record.result);
+    if (clamped !== record.result) {
+      next.result = clamped;
+      mutated = true;
+    }
+  }
+
+  // Result content (and command stdout) for `*_completed`/`*_end` events lives
+  // under a `payload` object — either at the top level (event-log shape) or
+  // nested under `msg` (phase-event shape, mirrored by `unwrap`). Clamp only the
+  // known string-bearing fields, preserving the rest of the shape so dedup keys
+  // and ordering stay intact.
+  const clampPayload = (
+    payload: unknown,
+  ): Record<string, unknown> | null => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return null;
+    }
+    const payloadRecord = payload as Record<string, unknown>;
+    let payloadMutated = false;
+    const nextPayload: Record<string, unknown> = { ...payloadRecord };
+    for (const field of ["result", "content", "stdout"]) {
+      if (field in payloadRecord) {
+        const clamped = clampResultContent(payloadRecord[field]);
+        if (clamped !== payloadRecord[field]) {
+          nextPayload[field] = clamped;
+          payloadMutated = true;
+        }
+      }
+    }
+    return payloadMutated ? nextPayload : null;
+  };
+
+  const topPayload = clampPayload(record.payload);
+  if (topPayload) {
+    next.payload = topPayload;
+    mutated = true;
+  }
+
+  const msg = record.msg;
+  if (msg && typeof msg === "object" && !Array.isArray(msg)) {
+    const msgRecord = msg as Record<string, unknown>;
+    const msgPayload = clampPayload(msgRecord.payload);
+    if (msgPayload) {
+      next.msg = { ...msgRecord, payload: msgPayload };
+      mutated = true;
+    }
+  }
+
+  return mutated ? (next as SessionTranscriptEvent) : event;
+}
+
+/**
+ * Ring-buffer the events array in place: if it grew past
+ * `MAX_TRANSCRIPT_EVENTS`, drop the oldest events and remove their dedup keys
+ * from `keys`. Visually safe — the renderer is virtualized to ~300 rows, so the
+ * dropped events are off-screen, and their full content remains in scrollback
+ * and the on-disk transcript. Bounds both event count and total retained bytes.
+ */
+function evictOldestEvents(
+  events: SessionTranscriptEvent[],
+  keys: Set<string>,
+): void {
+  if (events.length <= MAX_TRANSCRIPT_EVENTS) return;
+  const dropCount = events.length - MAX_TRANSCRIPT_EVENTS;
+  const dropped = events.splice(0, dropCount);
+  for (const event of dropped) {
+    keys.delete(eventKey(event));
+  }
+}
+
 function buildTranscriptState(
   unorderedEvents: readonly SessionTranscriptEvent[],
 ): TranscriptState {
@@ -2455,15 +2622,17 @@ function buildTranscriptState(
       events.length = 0;
       maxSeq = null;
       keys.add(key);
-      events.push(event);
+      events.push(clampEventForStorage(event));
       maxSeq = maxEventSeq(maxSeq, event);
       continue;
     }
     if (keys.has(key)) continue;
     keys.add(key);
-    events.push(event);
+    events.push(clampEventForStorage(event));
     maxSeq = maxEventSeq(maxSeq, event);
   }
+
+  evictOldestEvents(events, keys);
 
   return { events, keys, maxSeq };
 }
@@ -2484,9 +2653,18 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         return buildTranscriptState([...state.events, action.event]);
       }
 
+      // Append in place to a fresh array + persistent key Set. Mutating a single
+      // Set (rather than `new Set([...state.keys, key])`) keeps per-event work
+      // O(1) instead of O(n); ring-buffer eviction prunes the oldest keys so the
+      // Set stays bounded alongside the events array.
+      const events = [...state.events, clampEventForStorage(action.event)];
+      const keys = state.keys as Set<string>;
+      keys.add(key);
+      evictOldestEvents(events, keys);
+
       return {
-        events: [...state.events, action.event],
-        keys: new Set([...state.keys, key]),
+        events,
+        keys,
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
       };
     }

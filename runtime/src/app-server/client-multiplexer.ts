@@ -48,7 +48,17 @@ export interface AgenCClientMultiplexerOptions {
   readonly sessionManager: AgenCDaemonSessionManager;
   readonly createClientId?: () => string;
   readonly maxBufferedEventsPerSession?: number;
+  readonly maxBufferedBytesPerSession?: number;
 }
+
+/**
+ * Default byte budget for events buffered while a session has no attached
+ * client. The 1000-event count cap alone does not bound memory: a handful of
+ * large payloads (e.g. tool output, transcripts) can each be many MB, so a
+ * detached session could pin hundreds of MB under the count cap. This cap
+ * evicts the oldest events once buffered bytes exceed the budget.
+ */
+const DEFAULT_MAX_BUFFERED_BYTES_PER_SESSION = 8 * 1024 * 1024;
 
 export interface AgenCClientRegistration {
   readonly clientId: string;
@@ -97,6 +107,7 @@ export class AgenCDaemonClientMultiplexer {
   readonly #sessionManager: AgenCDaemonSessionManager;
   readonly #createClientId: () => string;
   readonly #maxBufferedEventsPerSession: number;
+  readonly #maxBufferedBytesPerSession: number;
   readonly #state = new AsyncLock<MultiplexerState>({
     clients: new Map(),
     sessions: new Map(),
@@ -108,6 +119,9 @@ export class AgenCDaemonClientMultiplexer {
       options.createClientId ?? (() => `client_${randomUUID()}`);
     this.#maxBufferedEventsPerSession =
       options.maxBufferedEventsPerSession ?? 1000;
+    this.#maxBufferedBytesPerSession =
+      options.maxBufferedBytesPerSession ??
+      DEFAULT_MAX_BUFFERED_BYTES_PER_SESSION;
   }
 
   async registerClient(
@@ -270,7 +284,12 @@ export class AgenCDaemonClientMultiplexer {
       );
 
       if (activeClientIds.length === 0) {
-        bufferSessionEvent(route, event, this.#maxBufferedEventsPerSession);
+        bufferSessionEvent(
+          route,
+          event,
+          this.#maxBufferedEventsPerSession,
+          this.#maxBufferedBytesPerSession,
+        );
         return [];
       }
 
@@ -407,6 +426,7 @@ function bufferSessionEvent(
   route: MutableSessionRoute,
   event: JsonObject,
   maxBufferedEvents: number,
+  maxBufferedBytes: number,
 ): void {
   route.bufferedEvents.push(event);
   if (route.bufferedEvents.length > maxBufferedEvents) {
@@ -414,6 +434,43 @@ function bufferSessionEvent(
       0,
       route.bufferedEvents.length - maxBufferedEvents,
     );
+  }
+  evictBufferedEventsByBytes(route.bufferedEvents, maxBufferedBytes);
+}
+
+/**
+ * Approximate the serialized byte size of a buffered event. Buffered events
+ * are JSON notifications, so the UTF-8 length of their JSON encoding is a
+ * faithful proxy for the memory they pin. Falls back to 0 for values that
+ * cannot be stringified so eviction never throws.
+ */
+function bufferedEventByteSize(event: JsonObject): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(event));
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Drops the oldest buffered events in-place until the total approximate byte
+ * size is within `maxBufferedBytes`. Always retains at least the most recent
+ * event so a single oversized payload is still replayable rather than silently
+ * lost. Pairs with the count cap in {@link bufferSessionEvent}.
+ */
+function evictBufferedEventsByBytes(
+  bufferedEvents: JsonObject[],
+  maxBufferedBytes: number,
+): void {
+  if (maxBufferedBytes <= 0 || bufferedEvents.length === 0) return;
+  let total = 0;
+  for (const event of bufferedEvents) {
+    total += bufferedEventByteSize(event);
+  }
+  while (total > maxBufferedBytes && bufferedEvents.length > 1) {
+    const removed = bufferedEvents.shift();
+    if (removed === undefined) break;
+    total -= bufferedEventByteSize(removed);
   }
 }
 

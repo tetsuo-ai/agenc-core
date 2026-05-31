@@ -114,11 +114,53 @@ import {
 } from "../state/sqlite-driver.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import {
+  createSizeCappedFileLogSink,
+  type SizeCappedFileLogSink,
+} from "../utils/logger.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
+const AGENC_DAEMON_LOG_FILENAME = "daemon.log";
+
+/**
+ * Env override (megabytes) for the detached daemon's V8 old-space cap, and the
+ * default applied when unset. Without an explicit `--max-old-space-size`, V8
+ * picks a heuristic ceiling (~4GB on 64-bit hosts) and a runaway allocation
+ * crashes the whole process unpredictably. Setting a generous explicit cap
+ * keeps a leak bounded and surfaced (OOM error) instead of taking down the host.
+ */
+const AGENC_DAEMON_MAX_OLD_SPACE_MB_ENV = "AGENC_DAEMON_MAX_OLD_SPACE_MB";
+const DEFAULT_DAEMON_MAX_OLD_SPACE_MB = 4096;
+
+/**
+ * Builds the node CLI args for the detached daemon child, prepending an
+ * explicit `--max-old-space-size` (overridable via
+ * {@link AGENC_DAEMON_MAX_OLD_SPACE_MB_ENV}) ahead of the entrypoint. Exported
+ * for unit testing of the arg construction.
+ */
+export function buildAgenCDaemonChildNodeArgs(
+  entrypointPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const configured = env[AGENC_DAEMON_MAX_OLD_SPACE_MB_ENV]?.trim();
+  let maxOldSpaceMb = DEFAULT_DAEMON_MAX_OLD_SPACE_MB;
+  if (configured !== undefined && configured.length > 0) {
+    const parsed = Number(configured);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      maxOldSpaceMb = Math.floor(parsed);
+    }
+  }
+  return [
+    `--max-old-space-size=${maxOldSpaceMb}`,
+    entrypointPath,
+    "daemon",
+    "start",
+    "--foreground",
+  ];
+}
 const AGENC_DAEMON_WEBSOCKET_HOST_ENV = "AGENC_DAEMON_WEBSOCKET_HOST";
 export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
 const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
@@ -307,6 +349,75 @@ export function resolveAgenCDaemonSnapshotPath(
     resolveAgenCDaemonHome(env, userHome),
     AGENC_DAEMON_SNAPSHOT_FILENAME,
   );
+}
+
+export function resolveAgenCDaemonLogPath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  return join(resolveAgenCDaemonHome(env, userHome), AGENC_DAEMON_LOG_FILENAME);
+}
+
+/**
+ * Routes the foreground daemon's `console.*` output through a size-capped,
+ * single-backup rotating file sink so `daemon.log` cannot grow without bound.
+ * Returns a disposer that restores the original console and closes the sink.
+ *
+ * The detached daemon is spawned with `stdio: "ignore"`, so previously its log
+ * output was either discarded or captured by an external, unbounded redirect.
+ * Installing the sink in-process makes the daemon own a bounded log regardless
+ * of how it was launched. Failure to open the sink degrades to a no-op (logging
+ * must never block daemon startup).
+ */
+export function installAgenCDaemonLogSink(options: {
+  readonly path: string;
+  readonly console?: Pick<Console, "log" | "error" | "warn" | "info" | "debug">;
+}): { readonly sink: SizeCappedFileLogSink; dispose(): void } | null {
+  let sink: SizeCappedFileLogSink;
+  try {
+    sink = createSizeCappedFileLogSink({ path: options.path });
+  } catch {
+    return null;
+  }
+  const target = options.console ?? console;
+  const original = {
+    log: target.log.bind(target),
+    error: target.error.bind(target),
+    warn: target.warn.bind(target),
+    info: target.info.bind(target),
+    debug: target.debug.bind(target),
+  };
+  const format = (args: unknown[]): string =>
+    `${args
+      .map((arg) =>
+        typeof arg === "string" ? arg : safeStringifyLogArg(arg),
+      )
+      .join(" ")}\n`;
+  target.log = (...args: unknown[]) => sink.write(format(args));
+  target.info = (...args: unknown[]) => sink.write(format(args));
+  target.debug = (...args: unknown[]) => sink.write(format(args));
+  target.warn = (...args: unknown[]) => sink.write(format(args));
+  target.error = (...args: unknown[]) => sink.write(format(args));
+  return {
+    sink,
+    dispose() {
+      target.log = original.log;
+      target.error = original.error;
+      target.warn = original.warn;
+      target.info = original.info;
+      target.debug = original.debug;
+      sink.close();
+    },
+  };
+}
+
+function safeStringifyLogArg(arg: unknown): string {
+  if (arg instanceof Error) return arg.stack ?? arg.message;
+  try {
+    return JSON.stringify(arg);
+  } catch {
+    return String(arg);
+  }
 }
 
 export function formatAgenCDaemonCliHelpText(): string {
@@ -751,6 +862,19 @@ async function runAgenCDaemonForeground(
   });
   const commandExec = new AgenCCommandExecService();
   const cleanup = new AgenCCleanupRegistry();
+  // Only the spawned, detached daemon (AGENC_DAEMON_RUN=1) redirects console
+  // output into the size-capped rotating sink; a `--foreground` invocation run
+  // directly by a user keeps writing to the inherited terminal.
+  if (host.env.AGENC_DAEMON_RUN === "1") {
+    const logSink = installAgenCDaemonLogSink({
+      path: resolveAgenCDaemonLogPath(host.env, host.userHome),
+    });
+    if (logSink !== null) {
+      cleanup.register("daemon-log-sink", () => {
+        logSink.dispose();
+      });
+    }
+  }
   let shuttingDown = false;
   let runner = options.runner;
   let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
@@ -2355,10 +2479,13 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
     spawnDetachedDaemon: (env) => {
       const child = spawn(
         process.execPath,
-        [entrypointPath, "daemon", "start", "--foreground"],
+        buildAgenCDaemonChildNodeArgs(entrypointPath, env),
         {
           detached: true,
           env,
+          // stdout/stderr stay detached from this short-lived parent; the
+          // foreground daemon installs its own size-capped rotating log sink
+          // (see installAgenCDaemonLogSink) so daemon.log cannot grow unbounded.
           stdio: "ignore",
         },
       );

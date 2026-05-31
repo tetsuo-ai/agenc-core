@@ -1176,6 +1176,159 @@ function excludeFromDurableHistory(message: LLMMessage): boolean {
   return message.runtimeOnly?.excludeFromDurableHistory === true;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// In-memory tool-result retention bound (session-history-memory fix).
+//
+// Full tool-output content (build logs, large file reads, ctest output)
+// otherwise accumulates UNBOUNDED in the live in-memory session for the
+// whole session, in BOTH `state.messages` and the deep-cloned
+// `sessionState.history`, causing GB-scale heap growth / OOM.
+//
+// The outbound request the model sees is already microcompacted
+// (`state.messagesForQuery` via `microcompactMessages`), which keeps the
+// most-recent-N tool results full and replaces OLDER large tool-result
+// content with a compact marker. The durable in-memory copy is aligned
+// to that same decision here: older large tool-result content is replaced
+// with the same marker, while the most-recent-N tool results keep full
+// content (so recent context the model relies on is unchanged).
+//
+// IMPORTANT: this only mutates the LIVE in-memory structures. The disk
+// rollout (persisted response items via `rolloutStore.appendRollout`)
+// must keep FULL content for resume, so this bound is only ever applied
+// AFTER `persistNewResponseItems()` has persisted the full content, and
+// only to messages that have already been persisted.
+//
+// The constants/heuristics below are kept in lockstep with `microCompact.ts`
+// (`MICROCOMPACT_KEEP_RECENT`, `MICROCOMPACT_MIN_CHARS`,
+// `TOOL_RESULT_CLEARED_MESSAGE`, `COMPACTABLE_TOOLS`) so the durable in-memory
+// copy clears exactly the tool results microcompact already clears in the
+// OUTBOUND view — older, large, compactable-tool results outside the
+// most-recent-N window — and the model's view on the next turn never loses
+// content the in-memory copy still owed it.
+const IN_MEMORY_KEEP_RECENT_TOOL_RESULTS = 5;
+const IN_MEMORY_TOOL_RESULT_MAX_CHARS = 6_000;
+const IN_MEMORY_TOOL_RESULT_CLEARED_MARKER =
+  "[Old tool result content cleared]";
+const IN_MEMORY_MCP_TOOL_PREFIX = "mcp__";
+const IN_MEMORY_COMPACTABLE_TOOLS = new Set([
+  "Read",
+  "Bash",
+  "PowerShell",
+  "Grep",
+  "Glob",
+  "WebSearch",
+  "WebFetch",
+  "Edit",
+  "Write",
+]);
+
+function isToolResultMessage(message: LLMMessage): boolean {
+  return message.role === "tool" || message.toolCallId !== undefined;
+}
+
+function isInMemoryCompactableTool(name: string | undefined): boolean {
+  if (name === undefined) return false;
+  return (
+    IN_MEMORY_COMPACTABLE_TOOLS.has(name) ||
+    name.startsWith(IN_MEMORY_MCP_TOOL_PREFIX)
+  );
+}
+
+function toolResultContentLength(content: LLMMessage["content"]): number {
+  if (typeof content === "string") return content.length;
+  if (!Array.isArray(content)) return 0;
+  let total = 0;
+  for (const part of content) {
+    if (part && typeof part === "object" && "text" in part) {
+      const text = (part as { readonly text?: unknown }).text;
+      if (typeof text === "string") total += text.length;
+    }
+  }
+  return total;
+}
+
+/**
+ * Replace OLDER large tool-result content in `messages` (mutating in place)
+ * with a compact marker, keeping the most-recent-N tool results full so the
+ * model's recent context is unchanged.
+ *
+ * `boundUpToIndex` caps how far into `messages` clearing may reach so that
+ * in-flight / not-yet-persisted tail messages are never altered before their
+ * full content has been persisted to the durable rollout. Only messages with
+ * index < `boundUpToIndex` are eligible for clearing.
+ *
+ * Returns the number of tool-result messages whose content was cleared.
+ */
+function boundInMemoryToolResultContent(
+  messages: LLMMessage[],
+  boundUpToIndex: number,
+): number {
+  // Compactability is keyed off the assistant `toolCalls` that requested each
+  // tool, exactly like microcompact's `collectCompactableToolUseIds` — the
+  // tool-result message itself does not reliably carry `toolName`. A result is
+  // compactable when its `toolCallId` was requested by a compactable tool, or
+  // (fallback, mirroring microcompact) its own `toolName` is compactable.
+  const compactableCallIds = new Set<string>();
+  for (const message of messages) {
+    for (const call of message.toolCalls ?? []) {
+      if (isInMemoryCompactableTool(call.name)) compactableCallIds.add(call.id);
+    }
+  }
+  const isCompactableResult = (message: LLMMessage): boolean => {
+    if (
+      message.toolCallId !== undefined &&
+      compactableCallIds.has(message.toolCallId)
+    ) {
+      return true;
+    }
+    return isInMemoryCompactableTool(message.toolName);
+  };
+  // Identify indices of compactable tool-result messages so we can preserve
+  // the most-recent-N (matching microcompact's keep-recent window) full. Only
+  // compactable-tool results are eligible — mirroring microcompact — so the
+  // in-memory copy never clears a result the outbound view still keeps full.
+  const compactableResultIndices: number[] = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (
+      message !== undefined &&
+      isToolResultMessage(message) &&
+      isCompactableResult(message)
+    ) {
+      compactableResultIndices.push(i);
+    }
+  }
+  const keepFromIndex =
+    compactableResultIndices.length > IN_MEMORY_KEEP_RECENT_TOOL_RESULTS
+      ? compactableResultIndices[
+          compactableResultIndices.length -
+            IN_MEMORY_KEEP_RECENT_TOOL_RESULTS
+        ]
+      : -1;
+  let cleared = 0;
+  for (const index of compactableResultIndices) {
+    // Never clear within the most-recent-N kept window.
+    if (keepFromIndex >= 0 && index >= keepFromIndex) continue;
+    // Never clear content that has not yet been persisted to the rollout.
+    if (index >= boundUpToIndex) continue;
+    const message = messages[index];
+    if (message === undefined) continue;
+    if (
+      toolResultContentLength(message.content) <
+      IN_MEMORY_TOOL_RESULT_MAX_CHARS
+    ) {
+      continue;
+    }
+    if (message.content === IN_MEMORY_TOOL_RESULT_CLEARED_MARKER) continue;
+    messages[index] = {
+      ...message,
+      content: IN_MEMORY_TOOL_RESULT_CLEARED_MARKER,
+    };
+    cleared += 1;
+  }
+  return cleared;
+}
+
 function drainQueuedCommandsAfterTools(params: {
   readonly state: TurnState;
   readonly session: Session;
@@ -3162,6 +3315,14 @@ async function* runTurnKernelInner(
   };
   const syncSessionState = async (): Promise<void> => {
     persistNewResponseItems();
+    // Bound in-memory tool-result retention AFTER full content has been
+    // persisted to the durable rollout (above), and only across messages
+    // that have already been persisted (`persistedMessageCount`). This keeps
+    // the live `state.messages` — and the `sessionState.history` derived from
+    // it below — from growing ~linearly with turn count, while leaving the
+    // most-recent-N tool results full and the disk rollout untouched.
+    // See session-history-memory fix above.
+    boundInMemoryToolResultContent(state.messages, persistedMessageCount);
     const durableHistory = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message));

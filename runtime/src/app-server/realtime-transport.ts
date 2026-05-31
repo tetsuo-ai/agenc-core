@@ -28,6 +28,13 @@ export const AGENC_REALTIME_CALL_MULTIPART_CONTENT_TYPE =
 // Donor uses a fixed multipart boundary. AgenC generates a per-request boundary
 // for call creation so caller SDP cannot inject a multipart part boundary.
 const DEFAULT_AUDIO_SAMPLE_RATE = 24_000;
+/**
+ * Upper bound on buffered, not-yet-consumed inbound realtime events. The
+ * websocket message handler pushes into an AsyncQueue drained one event at a
+ * time by the call client; without a cap a stalled consumer lets the queue
+ * grow without limit. Generous enough that a healthy consumer never trips it.
+ */
+export const MAX_REALTIME_EVENT_QUEUE_DEPTH = 10_000;
 const DEFAULT_AUDIO_CHANNELS = 1;
 const BACKGROUND_AGENT_TOOL_NAME = "background_agent";
 const SILENCE_TOOL_NAME = "remain_silent";
@@ -209,7 +216,13 @@ export class AgenCRealtimeWebSocketTransportConnector {
       ),
       { headers },
     );
-    const events = new AsyncQueue<RealtimeEvent>();
+    // Bound the inbound event queue so a stalled consumer cannot let the
+    // websocket producer accumulate frames without limit. A consumer that
+    // falls this far behind on a realtime call is effectively dead; capping
+    // here converts an unbounded heap leak into a bounded buffer.
+    const events = new AsyncQueue<RealtimeEvent>({
+      maxDepth: MAX_REALTIME_EVENT_QUEUE_DEPTH,
+    });
     const version = request.sessionConfig.version;
     const transcriptAccumulator = new AgenCRealtimeTranscriptAccumulator();
     socket.on("message", (data, isBinary) => {
@@ -636,11 +649,36 @@ class AgenCRealtimeWebSocketWriter implements RealtimeWriter {
   }
 }
 
-class AgenCRealtimeTranscriptAccumulator {
+/**
+ * Upper bound on retained realtime transcript entries. Mirrors
+ * MAX_BUFFERED_AGENT_EVENTS in background-agent-runner.ts: a long-lived
+ * realtime call streams unbounded deltas, so the accumulator must drop the
+ * oldest entries with a head-splice rather than grow without limit.
+ */
+export const MAX_REALTIME_TRANSCRIPT_ENTRIES = 1_000;
+
+export class AgenCRealtimeTranscriptAccumulator {
   readonly #entries: MutableRealtimeTranscriptEntry[] = [];
   #lastHandoffEntryCount = 0;
   #newInputEntry = false;
   #newOutputEntry = false;
+
+  /**
+   * Drops the oldest entries in-place until `#entries` is within
+   * {@link MAX_REALTIME_TRANSCRIPT_ENTRIES}. `#lastHandoffEntryCount` is an
+   * absolute index into `#entries`, so it must be shifted by however many
+   * leading entries were removed to keep the "since last handoff" slice in
+   * `handoff_requested` pointing at the correct boundary (never negative).
+   */
+  #boundEntries(): void {
+    const overflow = this.#entries.length - MAX_REALTIME_TRANSCRIPT_ENTRIES;
+    if (overflow <= 0) return;
+    this.#entries.splice(0, overflow);
+    this.#lastHandoffEntryCount = Math.max(
+      0,
+      this.#lastHandoffEntryCount - overflow,
+    );
+  }
 
   apply(event: RealtimeEvent): RealtimeEvent {
     switch (event.type) {
@@ -655,6 +693,7 @@ class AgenCRealtimeTranscriptAccumulator {
           this.#newInputEntry,
         );
         this.#newInputEntry = false;
+        this.#boundEntries();
         return event;
       case "output_transcript_delta":
         appendTranscriptDelta(
@@ -664,6 +703,7 @@ class AgenCRealtimeTranscriptAccumulator {
           this.#newOutputEntry,
         );
         this.#newOutputEntry = false;
+        this.#boundEntries();
         return event;
       case "input_transcript_done":
         applyTranscriptDone(
@@ -673,6 +713,7 @@ class AgenCRealtimeTranscriptAccumulator {
           this.#newInputEntry,
         );
         this.#newInputEntry = false;
+        this.#boundEntries();
         return event;
       case "output_transcript_done":
         applyTranscriptDone(
@@ -682,9 +723,11 @@ class AgenCRealtimeTranscriptAccumulator {
           this.#newOutputEntry,
         );
         this.#newOutputEntry = false;
+        this.#boundEntries();
         return event;
       case "handoff_requested": {
         appendHandoffInput(this.#entries, event.handoff.inputTranscript);
+        this.#boundEntries();
         const activeTranscript = this.#entries.slice(
           this.#lastHandoffEntryCount,
         );
