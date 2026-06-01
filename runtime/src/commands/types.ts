@@ -37,6 +37,17 @@ export interface SlashCommandAppStateBridge {
   readonly setToolJSX?: (jsx: unknown) => void;
   /** Base tool list available to TUI-local command surfaces. */
   readonly tools?: readonly unknown[];
+  /**
+   * Request a clean exit + relaunch into the chosen prior session.
+   *
+   * The daemon-backed TUI captures its session immutably at boot, so the
+   * `/resume` picker cannot swap the live session inside the running Ink
+   * tree. This records the intent and asks the app to exit; the boot
+   * entrypoint then re-enters the proven attach path for `sessionId`.
+   * Absent in headless/test contexts (the picker falls back to printing
+   * the `agenc --resume <id>` instructions).
+   */
+  readonly requestResumeSession?: (sessionId: string) => void;
 }
 
 /**

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import type {
+  SessionApplyConfigParams,
   SessionSetModelParams,
   SessionSetPermissionModeParams,
 } from "./protocol/index.js";
@@ -138,5 +139,111 @@ describe("daemon session-control internal method dispatch", () => {
       error: { code: -32602 },
     });
     expect(setSessionPermissionMode).not.toHaveBeenCalled();
+  });
+
+  it("routes session.applyConfig to the agent manager", async () => {
+    const applyConfigToSession = vi.fn(
+      async (params: SessionApplyConfigParams) => ({
+        sessionId: params.sessionId,
+        applied: true,
+        summary: "profile fast applied: reasoning effort ->high",
+      }),
+    );
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { applyConfigToSession } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "apply-config",
+        method: "session.applyConfig",
+        params: { sessionId: "session_1", profile: "fast" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "apply-config",
+      result: {
+        sessionId: "session_1",
+        applied: true,
+        summary: "profile fast applied: reasoning effort ->high",
+      },
+    });
+    expect(applyConfigToSession).toHaveBeenCalledWith({
+      sessionId: "session_1",
+      profile: "fast",
+    });
+  });
+
+  it("routes session.applyConfig with reload flag", async () => {
+    const applyConfigToSession = vi.fn(
+      async (params: SessionApplyConfigParams) => ({
+        sessionId: params.sessionId,
+        applied: true,
+        summary: "config reload applied: config reloaded from disk",
+      }),
+    );
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { applyConfigToSession } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "apply-reload",
+      method: "session.applyConfig",
+      params: { sessionId: "session_1", reload: true },
+    });
+    expect(applyConfigToSession).toHaveBeenCalledWith({
+      sessionId: "session_1",
+      reload: true,
+    });
+  });
+
+  it("rejects session.applyConfig without a sessionId", async () => {
+    const applyConfigToSession = vi.fn();
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { applyConfigToSession } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-apply",
+        method: "session.applyConfig",
+        params: { profile: "fast" },
+      }),
+    ).resolves.toMatchObject({
+      id: "bad-apply",
+      error: { code: -32602 },
+    });
+    expect(applyConfigToSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects session.applyConfig with a non-boolean reload", async () => {
+    const applyConfigToSession = vi.fn();
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { applyConfigToSession } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-reload",
+        method: "session.applyConfig",
+        params: { sessionId: "session_1", reload: "yes" },
+      }),
+    ).resolves.toMatchObject({
+      id: "bad-reload",
+      error: { code: -32602 },
+    });
+    expect(applyConfigToSession).not.toHaveBeenCalled();
   });
 });

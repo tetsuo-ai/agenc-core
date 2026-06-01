@@ -17,7 +17,9 @@ import type {
   RequestId,
   SessionAttachParams,
   SessionMcpAddServerParams,
+  SessionMcpServerByNameParams,
   SessionMcpServerConfig,
+  SessionMcpServerMutationResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
@@ -26,6 +28,12 @@ import type {
   SessionSetModelResult,
   SessionSetPermissionModeParams,
   SessionSetPermissionModeResult,
+  SessionHooksStatusParams,
+  SessionHooksStatusResult,
+  SessionHooksSetDisabledParams,
+  SessionHooksSetDisabledResult,
+  SessionApplyConfigParams,
+  SessionApplyConfigResult,
   SessionSnapshotResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
@@ -103,6 +111,14 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
   setDaemonPermissionMode?(mode: string): Promise<SessionSetPermissionModeResult>;
+  getDaemonHooksStatus?(): Promise<SessionHooksStatusResult>;
+  setDaemonHooksDisabled?(
+    disabled: boolean,
+  ): Promise<SessionHooksSetDisabledResult>;
+  applyDaemonConfig?(params: {
+    profile?: string;
+    reload?: boolean;
+  }): Promise<SessionApplyConfigResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   readonly activeTurn?: {
     unsafePeek(): { readonly turnId: string } | null;
@@ -176,6 +192,36 @@ export interface AgenCDaemonTuiClient {
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionSetPermissionModeResult>;
+  request(
+    method: "session.hooks.status",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionHooksStatusResult>;
+  request(
+    method: "session.hooks.setDisabled",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionHooksSetDisabledResult>;
+  request(
+    method: "session.applyConfig",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionApplyConfigResult>;
+  request(
+    method: "session.mcp.reconnectServer",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionMcpServerMutationResult>;
+  request(
+    method: "session.mcp.enableServer",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionMcpServerMutationResult>;
+  request(
+    method: "session.mcp.disableServer",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionMcpServerMutationResult>;
   request<Method extends AgenCDaemonMethod>(
     method: Method,
     params?: JsonObject,
@@ -455,6 +501,21 @@ export function createDaemonTuiSession<
         sessionId,
         mode,
       } satisfies SessionSetPermissionModeParams),
+    getDaemonHooksStatus: async () =>
+      client.request("session.hooks.status", {
+        sessionId,
+      } satisfies SessionHooksStatusParams),
+    setDaemonHooksDisabled: async (disabled) =>
+      client.request("session.hooks.setDisabled", {
+        sessionId,
+        disabled,
+      } satisfies SessionHooksSetDisabledParams),
+    applyDaemonConfig: async (p) =>
+      client.request("session.applyConfig", {
+        sessionId,
+        ...(p.profile !== undefined ? { profile: p.profile } : {}),
+        ...(p.reload !== undefined ? { reload: p.reload } : {}),
+      } satisfies SessionApplyConfigParams),
     subscribeToEvents: (cb) => {
       eventSubscribers.add(cb);
       ensureDaemonEventsSubscribed();
@@ -474,6 +535,9 @@ type McpManagerLike = NonNullable<AgenCTuiBridgeSession["services"]["mcpManager"
   addServer?(
     config: SessionMcpServerConfig,
   ): Promise<McpServerMutationResult>;
+  reconnectServer?(name: string): Promise<McpServerMutationResult>;
+  enableServer?(name: string): Promise<McpServerMutationResult>;
+  disableServer?(name: string): Promise<McpServerMutationResult>;
 };
 
 interface MutableBridgeServices {
@@ -508,6 +572,59 @@ function createDaemonMirroredMcpManager(
         if (!local.success && !alreadyConfigured) {
           return local;
         }
+      }
+      return {
+        serverName: remote.serverName,
+        success: remote.success,
+        toolCount: remote.toolCount,
+        ...(remote.error !== undefined ? { error: remote.error } : {}),
+      };
+    },
+    reconnectServer: async (
+      name: string,
+    ): Promise<McpServerMutationResult> => {
+      const remote = await client.request("session.mcp.reconnectServer", {
+        sessionId,
+        serverName: name,
+      } satisfies SessionMcpServerByNameParams);
+      // Daemon owns the real MCP connection; best-effort sync the local
+      // manager so the client-side status projection stays consistent.
+      if (remote.success && typeof manager.reconnectServer === "function") {
+        await manager.reconnectServer(name).catch(() => undefined);
+      }
+      return {
+        serverName: remote.serverName,
+        success: remote.success,
+        toolCount: remote.toolCount,
+        ...(remote.error !== undefined ? { error: remote.error } : {}),
+      };
+    },
+    enableServer: async (
+      name: string,
+    ): Promise<McpServerMutationResult> => {
+      const remote = await client.request("session.mcp.enableServer", {
+        sessionId,
+        serverName: name,
+      } satisfies SessionMcpServerByNameParams);
+      if (remote.success && typeof manager.enableServer === "function") {
+        await manager.enableServer(name).catch(() => undefined);
+      }
+      return {
+        serverName: remote.serverName,
+        success: remote.success,
+        toolCount: remote.toolCount,
+        ...(remote.error !== undefined ? { error: remote.error } : {}),
+      };
+    },
+    disableServer: async (
+      name: string,
+    ): Promise<McpServerMutationResult> => {
+      const remote = await client.request("session.mcp.disableServer", {
+        sessionId,
+        serverName: name,
+      } satisfies SessionMcpServerByNameParams);
+      if (remote.success && typeof manager.disableServer === "function") {
+        await manager.disableServer(name).catch(() => undefined);
       }
       return {
         serverName: remote.serverName,

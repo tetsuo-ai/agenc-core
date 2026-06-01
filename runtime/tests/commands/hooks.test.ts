@@ -110,3 +110,118 @@ describe("/hooks command", () => {
     }
   });
 });
+
+function daemonStatusSnapshot() {
+  return {
+    sessionId: "session_1",
+    available: true,
+    sourcePath: "/home/agent/.agenc/config.toml",
+    disabled: false,
+    issues: [],
+    hooks: [
+      {
+        event: "PreToolUse",
+        matcher: "Read",
+        command: { type: "command", command: "printf daemon-ok" },
+        source: "config",
+        sourcePath: "/home/agent/.agenc/config.toml",
+        enabled: true,
+        index: 0,
+      },
+    ],
+    diagnostics: [],
+  };
+}
+
+function daemonCtx(
+  argsRaw: string,
+  overrides?: {
+    getDaemonHooksStatus?: () => Promise<unknown>;
+    setDaemonHooksDisabled?: (disabled: boolean) => Promise<unknown>;
+  },
+): SlashCommandContext {
+  const getDaemonHooksStatus =
+    overrides?.getDaemonHooksStatus ?? (async () => daemonStatusSnapshot());
+  return {
+    // Daemon-backed bridge session: services has no hooksRuntime, only the
+    // daemon forwarders, so /hooks must route through the RPC.
+    session: {
+      services: {},
+      getDaemonHooksStatus,
+      ...(overrides?.setDaemonHooksDisabled
+        ? { setDaemonHooksDisabled: overrides.setDaemonHooksDisabled }
+        : {}),
+    } as unknown as Session,
+    argsRaw,
+    cwd: process.cwd(),
+    home: "/tmp",
+    agencHome: "/tmp/agenc-test",
+  };
+}
+
+describe("/hooks command (daemon path)", () => {
+  it("renders the daemon's real hooks via the status RPC", async () => {
+    const result = await hooksCommand.execute(daemonCtx("list"));
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain("AgenC Hooks");
+      expect(result.text).toContain("PreToolUse");
+      expect(result.text).toContain("printf daemon-ok");
+    }
+  });
+
+  it("does not return the unavailable error when the daemon forwarder exists", async () => {
+    const result = await hooksCommand.execute(daemonCtx(""));
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).not.toContain(
+        "Hooks runtime is not available in this session.",
+      );
+    }
+  });
+
+  it("toggles hooks through the daemon setDisabled RPC", async () => {
+    const setDaemonHooksDisabled = vi.fn(async () => ({
+      sessionId: "session_1",
+      applied: true,
+      disabled: true,
+    }));
+    const result = await hooksCommand.execute(
+      daemonCtx("disable", { setDaemonHooksDisabled }),
+    );
+    expect(result.kind).toBe("text");
+    expect(setDaemonHooksDisabled).toHaveBeenCalledWith(true);
+  });
+
+  it("defers /hooks test against the daemon", async () => {
+    const result = await hooksCommand.execute(daemonCtx("test PreToolUse 0"));
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain(
+        "/hooks test is not yet available against the daemon",
+      );
+    }
+  });
+
+  it("reports unavailable when the daemon session has no hooks runtime", async () => {
+    const result = await hooksCommand.execute(
+      daemonCtx("list", {
+        getDaemonHooksStatus: async () => ({
+          sessionId: "session_1",
+          available: false,
+          sourcePath: "",
+          disabled: true,
+          issues: [],
+          hooks: [],
+          diagnostics: [],
+        }),
+      }),
+    );
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toBe(
+        "Hooks runtime is not available in this session.",
+      );
+    }
+  });
+});

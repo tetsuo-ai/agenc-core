@@ -497,6 +497,50 @@ async function handleModeSubcommand(
     }
   }
 
+  // bypassPermissions on a daemon-backed TUI: the consent gate is the
+  // client's responsibility, but daemon enforcement must actually switch.
+  // Run the consent gate locally FIRST (preserving BypassConsentRequiredError);
+  // ONLY after it passes, forward to the daemon's real registry via
+  // session.setPermissionMode so daemon-side enforcement flips to bypass.
+  if (daemonSetMode !== null && target === "bypassPermissions") {
+    const gated = transitionPermissionMode(current.mode, target, current, {
+      requireBypassConsent: true,
+      workspacePath: ctx.cwd,
+    });
+    if ("error" in gated) {
+      if (gated.error === "bypass_consent_required") {
+        return {
+          kind: "error",
+          message:
+            "Switching to bypassPermissions requires explicit consent. " +
+            "Run /permissions accept-bypass to confirm this workspace will use bypassPermissions mode.",
+        };
+      }
+      return {
+        kind: "error",
+        message: `Transition refused: ${(gated as { error: string }).error}`,
+      };
+    }
+    // Consent passed — switch the daemon's real registry.
+    try {
+      const result = await daemonSetMode(target);
+      // Keep the local shim in sync (carry consent + any context changes
+      // from the gated transition), so subsequent /permissions reads match.
+      await registry.update({ ...gated, mode: target });
+      return {
+        kind: "text",
+        text: result.applied
+          ? `Mode: ${result.previousMode} → ${result.mode}`
+          : `Mode already: ${result.mode}`,
+      };
+    } catch (err) {
+      return {
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   let transitioned: ReturnType<typeof transitionPermissionMode>;
   try {
     transitioned = transitionPermissionMode(current.mode, target, current, {

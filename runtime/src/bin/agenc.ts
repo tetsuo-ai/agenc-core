@@ -163,6 +163,7 @@ import {
   parseAgenCPermissionsCliArgs,
   runAgenCPermissionsCli,
 } from "../permissions/permission-cli.js";
+import { USER_ADDRESSABLE_PERMISSION_MODES } from "../permissions/types.js";
 import {
   formatAgenCStateCliHelpText,
   parseAgenCStateCliArgs,
@@ -199,6 +200,12 @@ type AgenCDaemonCliDeps = {
   readonly findAgentBySessionId: typeof findAgenCDaemonAgentBySessionId;
   readonly createTuiContext: typeof createAgenCDaemonOnlyTuiContext;
   readonly ensureDaemonReady: typeof defaultEnsureDaemonReady;
+  /**
+   * Relaunch into a prior session after the live TUI exits. Defaults to
+   * `resumeTUIEntry`; injectable so the `/resume` relaunch wiring can be
+   * contract-tested without spinning a real daemon attach.
+   */
+  readonly resumeTui: (args: ResumeTUIArgs) => Promise<number>;
 };
 
 const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
@@ -208,6 +215,7 @@ const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
   findAgentBySessionId: findAgenCDaemonAgentBySessionId,
   createTuiContext: createAgenCDaemonOnlyTuiContext,
   ensureDaemonReady: defaultEnsureDaemonReady,
+  resumeTui: (args: ResumeTUIArgs) => resumeTUIEntry(args),
 };
 
 let daemonCliDepsForTest: Partial<AgenCDaemonCliDeps> | null = null;
@@ -2011,6 +2019,35 @@ async function loadBootTUI(): Promise<
   return mod.bootTUI;
 }
 
+/**
+ * Read and clear the session id the in-session `/resume` picker asked to
+ * relaunch into. Loaded through a variable specifier for the same reason
+ * as `loadBootTUI`: `src/tui/**` is excluded from the main tsconfig and
+ * compiled separately, so a static `import("../tui/pending-resume.js")`
+ * would not typecheck here. Returns `null` when no resume was requested
+ * (the common case — the user just exited normally).
+ */
+async function consumePendingResumeSessionId(): Promise<string | null> {
+  const specifier = "../tui/pending-resume.js";
+  const mod = (await import(specifier)) as {
+    readonly consumePendingResumeSessionId: () => string | null;
+  };
+  return mod.consumePendingResumeSessionId();
+}
+
+/**
+ * After a live TUI exits, check whether the `/resume` picker requested a
+ * relaunch. If so, re-enter the proven `resumeTUIEntry` attach path for
+ * the chosen session (rehydrates cold rollouts + rebuilds the daemon
+ * bridge). Runs only after `waitUntilExit()` + teardown, so the prior
+ * session is cleanly detached first. Returns the exit code to surface.
+ */
+export async function exitOrResumeAfterTui(exitCode: number): Promise<number> {
+  const resumeId = await consumePendingResumeSessionId();
+  if (resumeId === null) return exitCode;
+  return daemonCliDeps().resumeTui({ resumeId });
+}
+
 async function loadProjectTrustPrompt(): Promise<
   (opts: {
     readonly workspaceRoot: string;
@@ -2281,6 +2318,12 @@ type TuiSessionShape = {
     pending: { provider: string; model: string; profile?: string } | null,
   ) => void;
   setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
+  getDaemonHooksStatus?: () => Promise<unknown>;
+  setDaemonHooksDisabled?: (disabled: boolean) => Promise<unknown>;
+  applyDaemonConfig?: (params: {
+    profile?: string;
+    reload?: boolean;
+  }) => Promise<unknown>;
   getInitialTranscriptEvents?: () => readonly unknown[];
   activeTurn?: {
     unsafePeek?: () => { readonly turnId: string } | null;
@@ -2354,7 +2397,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
 }): Promise<{ readonly session: unknown; readonly close: () => Promise<void> }> {
+  // Mutable bootstrap config for the not-yet-created daemon session. Pre-first-
+  // turn slash commands (`/model`, `/provider`, `/permissions mode`, `/plan`)
+  // stage their choice HERE so the FIRST daemon turn (created lazily in
+  // `ensureLiveSession`) consumes it. Seeded from the startup CLI flags; the
+  // forwarders below overwrite these when `liveSession === null`. See the
+  // pre-first-turn caveat fix.
+  let pendingModel = params.model;
+  let pendingProvider = params.provider;
+  let pendingProfile = params.profile;
+  let pendingPermissionMode = params.permissionMode;
   let liveSession: TuiSessionShape | null = null;
   let liveSessionPromise: Promise<TuiSessionShape | null> | null = null;
   let daemonClient: Awaited<
@@ -2408,16 +2466,21 @@ async function createDeferredDaemonPromptTuiSession(params: {
           prompt,
           env: envWithBridgeMcpServers(params.baseSession, params.env),
           cwd: params.cwd,
-          ...(params.model !== undefined ? { model: params.model } : {}),
-          ...(params.provider !== undefined ? { provider: params.provider } : {}),
-          ...(params.profile !== undefined ? { profile: params.profile } : {}),
+          ...(pendingModel !== undefined ? { model: pendingModel } : {}),
+          ...(pendingProvider !== undefined ? { provider: pendingProvider } : {}),
+          ...(pendingProfile !== undefined ? { profile: pendingProfile } : {}),
           initialContent:
             content.length === 1 && content[0]?.type === "text"
               ? content[0].text
               : content,
+          // Pre-first-turn `/permissions mode` / `/plan` stage their choice in
+          // `pendingPermissionMode`; an explicit `--yolo` argv still wins so the
+          // bootTUI-parity bypass behavior is preserved.
           ...(isYoloDeferred
             ? { permissionMode: "bypassPermissions" as const }
-            : {}),
+            : pendingPermissionMode !== undefined
+              ? { permissionMode: pendingPermissionMode }
+              : {}),
           metadata: { mode: "tui" },
         });
         startedAgentId = started.agentId;
@@ -2525,8 +2588,10 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // daemon path.
     partialCompactFromMessage: async (compactParams) => {
       if (liveSession === null) {
+        // Honest pre-first-turn signal: there is genuinely no conversation to
+        // compact, so we surface a clear message instead of faking success.
         throw new Error(
-          "Cannot compact yet: no live daemon session. Send a message first.",
+          "Nothing to compact yet — no conversation has started. Send a message first.",
         );
       }
       const live = liveSession as TuiSessionShape;
@@ -2539,19 +2604,93 @@ async function createDeferredDaemonPromptTuiSession(params: {
     },
     // `/model` and `/provider` stage their switch by calling
     // setPendingProviderSwitch; forward to liveSession so the daemon's
-    // session.setModel RPC runs the real switch machinery. No-op before a
-    // live session exists (nothing to switch yet).
+    // session.setModel RPC runs the real switch machinery. Pre-first-turn
+    // (no live session yet) persist the choice into the deferred-session
+    // bootstrap config so the FIRST created turn picks it up, and mirror it
+    // into baseSession.sessionConfiguration so `/model`'s readSessionSelection
+    // and the chrome reflect the staged switch instead of silently faking
+    // success.
     setPendingProviderSwitch: (pending) => {
       const live = liveSession as TuiSessionShape | null;
-      live?.setPendingProviderSwitch?.(pending);
+      if (live !== null) {
+        live.setPendingProviderSwitch?.(pending);
+        return;
+      }
+      if (pending === null) return;
+      if (pending.model !== undefined) pendingModel = pending.model;
+      if (pending.provider !== undefined) pendingProvider = pending.provider;
+      if (pending.profile !== undefined) pendingProfile = pending.profile;
+      const sessionConfiguration = (
+        base as {
+          sessionConfiguration?: {
+            provider?: { slug?: string };
+            collaborationMode?: { model?: string };
+          };
+        }
+      ).sessionConfiguration;
+      if (sessionConfiguration !== undefined) {
+        if (pending.provider !== undefined) {
+          sessionConfiguration.provider = {
+            ...(sessionConfiguration.provider ?? {}),
+            slug: pending.provider,
+          };
+        }
+        if (pending.model !== undefined) {
+          sessionConfiguration.collaborationMode = {
+            ...(sessionConfiguration.collaborationMode ?? {}),
+            model: pending.model,
+          };
+        }
+      }
     },
     // `/permissions mode` and `/plan` route their mode change to the
     // daemon's real registry through liveSession.setDaemonPermissionMode.
+    // Pre-first-turn (no live session yet) persist the mode into the
+    // deferred-session bootstrap config so the FIRST created turn starts in
+    // that mode, keep the client-local registry consistent, and return a
+    // synthetic SessionSetPermissionModeResult so `/permissions mode` and
+    // `/plan` report honest success instead of throwing / silently faking.
     setDaemonPermissionMode: async (mode) => {
       if (liveSession === null) {
-        throw new Error(
-          "Cannot change permission mode yet: no live daemon session. Send a message first.",
-        );
+        if (
+          !(USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
+            mode,
+          )
+        ) {
+          throw new Error(
+            `Unknown permission mode: "${mode}". Expected one of: ${USER_ADDRESSABLE_PERMISSION_MODES.join(", ")}`,
+          );
+        }
+        const registry = (
+          base as {
+            services?: {
+              permissionModeRegistry?: {
+                current?: () => { readonly mode: string };
+                update?: (next: {
+                  readonly mode: string;
+                  readonly [key: string]: unknown;
+                }) => unknown;
+              };
+            };
+          }
+        ).services?.permissionModeRegistry;
+        const previousMode = registry?.current?.().mode ?? "default";
+        // Validated above against USER_ADDRESSABLE_PERMISSION_MODES, which is a
+        // subset of the daemon prompt-agent permissionMode union.
+        pendingPermissionMode = mode as
+          | "default"
+          | "plan"
+          | "acceptEdits"
+          | "bypassPermissions";
+        if (registry?.update !== undefined && registry.current !== undefined) {
+          await registry.update({ ...registry.current(), mode });
+        }
+        return {
+          sessionId: "",
+          applied: previousMode !== mode,
+          previousMode,
+          mode,
+        };
       }
       const live = liveSession as TuiSessionShape;
       if (typeof live.setDaemonPermissionMode !== "function") {
@@ -2560,6 +2699,55 @@ async function createDeferredDaemonPromptTuiSession(params: {
         );
       }
       return live.setDaemonPermissionMode(mode);
+    },
+    // `/hooks` reads the daemon session's REAL configured-hooks runtime
+    // through liveSession.getDaemonHooksStatus. Hooks live on the daemon
+    // agent session, so there is nothing to inspect pre-first-turn.
+    getDaemonHooksStatus: async () => {
+      if (liveSession === null) {
+        throw new Error(
+          "Cannot inspect hooks yet: no live daemon session. Send a message first.",
+        );
+      }
+      const live = liveSession as TuiSessionShape;
+      if (typeof live.getDaemonHooksStatus !== "function") {
+        throw new Error(
+          "Hooks inspection is not supported by this session.",
+        );
+      }
+      return live.getDaemonHooksStatus();
+    },
+    // `/hooks enable|disable` toggles the daemon session's live hooks runtime
+    // through liveSession.setDaemonHooksDisabled.
+    setDaemonHooksDisabled: async (disabled) => {
+      if (liveSession === null) {
+        throw new Error(
+          "Cannot toggle hooks yet: no live daemon session. Send a message first.",
+        );
+      }
+      const live = liveSession as TuiSessionShape;
+      if (typeof live.setDaemonHooksDisabled !== "function") {
+        throw new Error(
+          "Hooks toggling is not supported by this session.",
+        );
+      }
+      return live.setDaemonHooksDisabled(disabled);
+    },
+    // `/config profile` and `/config reload` re-apply config to the daemon's
+    // live session through liveSession.applyDaemonConfig.
+    applyDaemonConfig: async (configParams) => {
+      if (liveSession === null) {
+        throw new Error(
+          "Cannot apply config yet: no live daemon session. Send a message first.",
+        );
+      }
+      const live = liveSession as TuiSessionShape;
+      if (typeof live.applyDaemonConfig !== "function") {
+        throw new Error(
+          "Config apply is not supported by this session.",
+        );
+      }
+      return live.applyDaemonConfig(configParams);
     },
     activeTurn: {
       unsafePeek: () =>
@@ -2658,6 +2846,15 @@ async function createDeferredDaemonPromptTuiSession(params: {
     },
   };
 }
+
+/**
+ * Test-only handle on the deferred daemon-prompt TUI session wrapper so the
+ * pre-first-turn slash-command contract (model/provider/permission-mode/
+ * compact staging into the initial bootstrap config) can be exercised without
+ * a live daemon. Not part of the public CLI surface.
+ */
+export const __createDeferredDaemonPromptTuiSessionForTest =
+  createDeferredDaemonPromptTuiSession;
 
 function isLocalSlashCommandInput(message: string): boolean {
   const trimmed = message.trimStart();
@@ -2820,13 +3017,16 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
           return 1;
         }
         transferred = true;
-        return attachAgentTuiEntry({
+        const code = await attachAgentTuiEntry({
           agentId: agent.agentId,
           clientId: `agenc-tui-${process.pid}`,
           daemonClient,
           initialComposerText: consumeEarlyInput(),
           startupImages: args.startupImages,
         });
+        // attachAgentTuiEntry has closed its client + detached the prior
+        // session; relaunch now if the /resume picker requested it.
+        return exitOrResumeAfterTui(code);
       } finally {
         if (!transferred) {
           await daemonClient.close().catch(() => {
@@ -2879,6 +3079,18 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         ...(startupCliFlags.provider !== undefined ? { provider: startupCliFlags.provider } : {}),
         ...(startupCliFlags.model !== undefined ? { model: startupCliFlags.model } : {}),
         ...(startupCliFlags.profile !== undefined ? { profile: startupCliFlags.profile } : {}),
+        // Seed the deferred bootstrap permission mode the same way the daemon
+        // createTuiContext above does: an explicit `--yolo` forces bypass,
+        // otherwise honor the startup `--permission-mode` flag. Pre-first-turn
+        // `/permissions mode` / `/plan` then overwrite this staged value.
+        ...(isYoloIdle
+          ? { permissionMode: "bypassPermissions" as const }
+          : startupCliFlags.permissionMode === "default" ||
+              startupCliFlags.permissionMode === "plan" ||
+              startupCliFlags.permissionMode === "acceptEdits" ||
+              startupCliFlags.permissionMode === "bypassPermissions"
+            ? { permissionMode: startupCliFlags.permissionMode }
+            : {}),
       });
       const boot = await loadBootTUI();
       try {
@@ -2892,12 +3104,14 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         });
         activeInkUnmount = handle.unmount;
         await handle.waitUntilExit();
-        return 0;
       } finally {
         activeInkUnmount = null;
         await deferred.close();
         await closeTuiContext();
       }
+      // Teardown is complete (prior session detached): honor a pending
+      // /resume picker selection by relaunching into that session.
+      return exitOrResumeAfterTui(0);
     }
     const objective =
       initialPrompt !== undefined && initialPrompt.length > 0
@@ -2977,7 +3191,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
           reason: "tui_startup_failed",
         });
       }
-      return exitCode;
+      // Honor a pending /resume picker selection (prior session detached).
+      return exitOrResumeAfterTui(exitCode);
     } catch (error) {
       await stopDaemonAgentBestEffort({
         deps,
@@ -3121,11 +3336,17 @@ export async function attachAgentTuiEntry(
       });
       activeInkUnmount = handle.unmount;
       await handle.waitUntilExit();
-      return 0;
     } finally {
       activeInkUnmount = null;
       await closeTuiContext();
     }
+    // Return a plain exit code here. A pending /resume picker selection is
+    // honored by the outer entrypoints (bootTUIEntry / resumeTUIEntry) once
+    // this function's finally chain has closed the daemon client and
+    // detached the prior session — see exitOrResumeAfterTui at those call
+    // sites. Doing the relaunch here would race the daemonClient.close()
+    // below and re-resume before teardown completes.
+    return 0;
   } catch (error) {
     if (
       error instanceof SessionLockedError ||
@@ -3166,11 +3387,14 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
           return 1;
         }
         transferred = true;
-        return attachAgentTuiEntry({
+        const code = await attachAgentTuiEntry({
           agentId: agent.agentId,
           clientId: `agenc-tui-${process.pid}`,
           daemonClient,
         });
+        // Chained /resume: if the user picks another session from within a
+        // resumed TUI, relaunch into it once teardown is complete.
+        return exitOrResumeAfterTui(code);
       } finally {
         if (!transferred) {
           await daemonClient.close().catch(() => {

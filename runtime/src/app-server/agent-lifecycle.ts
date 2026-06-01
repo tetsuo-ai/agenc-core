@@ -40,6 +40,8 @@ import type {
   SessionClearResult,
   SessionMcpAddServerParams,
   SessionMcpAddServerResult,
+  SessionMcpServerByNameParams,
+  SessionMcpServerMutationResult,
   SessionSnapshotParams,
   SessionSnapshotResult,
   SessionPartialCompactFromMessageParams,
@@ -50,6 +52,12 @@ import type {
   SessionSetModelResult,
   SessionSetPermissionModeParams,
   SessionSetPermissionModeResult,
+  SessionHooksStatusParams,
+  SessionHooksStatusResult,
+  SessionHooksSetDisabledParams,
+  SessionHooksSetDisabledResult,
+  SessionApplyConfigParams,
+  SessionApplyConfigResult,
   SessionSummary,
   ToolApproveParams,
   ToolCancelParams,
@@ -1317,6 +1325,102 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async reconnectMcpServerOnSession(
+    params: SessionMcpServerByNameParams,
+  ): Promise<SessionMcpServerMutationResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.mcp.reconnectServer requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.reconnectMcpServer === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.mcp.reconnectServer requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMcpReconnectServer: true },
+    );
+    const result = await this.#runner.reconnectMcpServer(agentId, {
+      sessionId: params.sessionId,
+      serverName: params.serverName,
+    });
+    return {
+      sessionId: params.sessionId,
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
+  async enableMcpServerOnSession(
+    params: SessionMcpServerByNameParams,
+  ): Promise<SessionMcpServerMutationResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.mcp.enableServer requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.enableMcpServer === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.mcp.enableServer requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMcpEnableServer: true },
+    );
+    const result = await this.#runner.enableMcpServer(agentId, {
+      sessionId: params.sessionId,
+      serverName: params.serverName,
+    });
+    return {
+      sessionId: params.sessionId,
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
+  async disableMcpServerOnSession(
+    params: SessionMcpServerByNameParams,
+  ): Promise<SessionMcpServerMutationResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.mcp.disableServer requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.disableMcpServer === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.mcp.disableServer requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMcpDisableServer: true },
+    );
+    const result = await this.#runner.disableMcpServer(agentId, {
+      sessionId: params.sessionId,
+      serverName: params.serverName,
+    });
+    return {
+      sessionId: params.sessionId,
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
   async snapshotSession(
     params: SessionSnapshotParams,
   ): Promise<SessionSnapshotResult> {
@@ -1454,6 +1558,97 @@ export class AgenCDaemonAgentManager {
       applied: result.applied,
       previousMode: result.previousMode,
       mode: result.mode,
+    };
+  }
+
+  async getSessionHooksStatus(
+    params: SessionHooksStatusParams,
+  ): Promise<SessionHooksStatusResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.hooks.status requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.getAgentHooksStatus === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.hooks.status requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowHooksStatus: true },
+    );
+    const status = await this.#runner.getAgentHooksStatus(agentId);
+    return {
+      sessionId: params.sessionId,
+      available: status.available,
+      sourcePath: status.sourcePath,
+      disabled: status.disabled,
+      issues: status.issues,
+      hooks: status.hooks,
+      diagnostics: status.diagnostics,
+    };
+  }
+
+  async setSessionHooksDisabled(
+    params: SessionHooksSetDisabledParams,
+  ): Promise<SessionHooksSetDisabledResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.hooks.setDisabled requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.setAgentHooksDisabled === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.hooks.setDisabled requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowSetHooksDisabled: true },
+    );
+    const result = await this.#runner.setAgentHooksDisabled(agentId, {
+      disabled: params.disabled,
+    });
+    return {
+      sessionId: params.sessionId,
+      applied: result.applied,
+      disabled: result.disabled,
+    };
+  }
+
+  async applyConfigToSession(
+    params: SessionApplyConfigParams,
+  ): Promise<SessionApplyConfigResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.applyConfig requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.applyAgentConfig === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.applyConfig requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowApplyConfig: true },
+    );
+    const result = await this.#runner.applyAgentConfig(agentId, {
+      sessionId: params.sessionId,
+      ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.reload !== undefined ? { reload: params.reload } : {}),
+    });
+    return {
+      sessionId: params.sessionId,
+      applied: result.applied,
+      summary: result.summary,
     };
   }
 
@@ -1627,9 +1822,15 @@ export class AgenCDaemonAgentManager {
       readonly allowPartialCompact?: boolean;
       readonly allowConversationRewind?: boolean;
       readonly allowMcpAddServer?: boolean;
+      readonly allowMcpReconnectServer?: boolean;
+      readonly allowMcpEnableServer?: boolean;
+      readonly allowMcpDisableServer?: boolean;
       readonly allowSnapshot?: boolean;
       readonly allowSetModel?: boolean;
       readonly allowSetPermissionMode?: boolean;
+      readonly allowHooksStatus?: boolean;
+      readonly allowSetHooksDisabled?: boolean;
+      readonly allowApplyConfig?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -1660,6 +1861,15 @@ export class AgenCDaemonAgentManager {
     const hasMcpAddServerRunner =
       options.allowMcpAddServer === true &&
       this.#runner?.addMcpServer !== undefined;
+    const hasMcpReconnectServerRunner =
+      options.allowMcpReconnectServer === true &&
+      this.#runner?.reconnectMcpServer !== undefined;
+    const hasMcpEnableServerRunner =
+      options.allowMcpEnableServer === true &&
+      this.#runner?.enableMcpServer !== undefined;
+    const hasMcpDisableServerRunner =
+      options.allowMcpDisableServer === true &&
+      this.#runner?.disableMcpServer !== undefined;
     const hasSnapshotRunner =
       options.allowSnapshot === true &&
       this.#runner?.snapshotAgentSession !== undefined;
@@ -1669,6 +1879,15 @@ export class AgenCDaemonAgentManager {
     const hasSetPermissionModeRunner =
       options.allowSetPermissionMode === true &&
       this.#runner?.setAgentPermissionMode !== undefined;
+    const hasHooksStatusRunner =
+      options.allowHooksStatus === true &&
+      this.#runner?.getAgentHooksStatus !== undefined;
+    const hasSetHooksDisabledRunner =
+      options.allowSetHooksDisabled === true &&
+      this.#runner?.setAgentHooksDisabled !== undefined;
+    const hasApplyConfigRunner =
+      options.allowApplyConfig === true &&
+      this.#runner?.applyAgentConfig !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
@@ -1678,9 +1897,15 @@ export class AgenCDaemonAgentManager {
       !hasPartialCompactRunner &&
       !hasConversationRewindRunner &&
       !hasMcpAddServerRunner &&
+      !hasMcpReconnectServerRunner &&
+      !hasMcpEnableServerRunner &&
+      !hasMcpDisableServerRunner &&
       !hasSnapshotRunner &&
       !hasSetModelRunner &&
-      !hasSetPermissionModeRunner
+      !hasSetPermissionModeRunner &&
+      !hasHooksStatusRunner &&
+      !hasSetHooksDisabledRunner &&
+      !hasApplyConfigRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",

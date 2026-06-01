@@ -497,6 +497,148 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
   });
 
+  it("routes session.mcp.reconnect/enable/disable through the active daemon agent runtime", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_mcp",
+      agentId: "agent_mcp",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "use MCP",
+    });
+    const reconnectMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 3,
+    }));
+    const enableMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 3,
+    }));
+    const disableMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 0,
+    }));
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        reconnectMcpServer,
+        enableMcpServer,
+        disableMcpServer,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_mcp",
+      objective: "use MCP",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_mcp"],
+      runtimeAvailable: true,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch(
+        request("reconnect-mcp", "session.mcp.reconnectServer", {
+          sessionId: "session_mcp",
+          serverName: "audit-ping",
+        }),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "reconnect-mcp",
+      result: {
+        sessionId: "session_mcp",
+        serverName: "audit-ping",
+        success: true,
+        toolCount: 3,
+      },
+    });
+    expect(reconnectMcpServer).toHaveBeenCalledWith("agent_mcp", {
+      sessionId: "session_mcp",
+      serverName: "audit-ping",
+    });
+
+    await expect(
+      connection.dispatch(
+        request("enable-mcp", "session.mcp.enableServer", {
+          sessionId: "session_mcp",
+          serverName: "audit-ping",
+        }),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "enable-mcp",
+      result: {
+        sessionId: "session_mcp",
+        serverName: "audit-ping",
+        success: true,
+        toolCount: 3,
+      },
+    });
+    expect(enableMcpServer).toHaveBeenCalledWith("agent_mcp", {
+      sessionId: "session_mcp",
+      serverName: "audit-ping",
+    });
+
+    await expect(
+      connection.dispatch(
+        request("disable-mcp", "session.mcp.disableServer", {
+          sessionId: "session_mcp",
+          serverName: "audit-ping",
+        }),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "disable-mcp",
+      result: {
+        sessionId: "session_mcp",
+        serverName: "audit-ping",
+        success: true,
+        toolCount: 0,
+      },
+    });
+    expect(disableMcpServer).toHaveBeenCalledWith("agent_mcp", {
+      sessionId: "session_mcp",
+      serverName: "audit-ping",
+    });
+  });
+
+  it("rejects session.mcp.reconnectServer when serverName is missing", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ sessionManager: sessions }),
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    const response = await connection.dispatch(
+      request("bad-reconnect", "session.mcp.reconnectServer", {
+        sessionId: "session_mcp",
+      }),
+    );
+    expect(response).toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-reconnect",
+      error: expect.objectContaining({
+        message: expect.stringContaining("serverName"),
+      }),
+    });
+  });
+
   it("preserves unrelated routes when detach targets an unowned client on another session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1", "session_2"]),

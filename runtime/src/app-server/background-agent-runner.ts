@@ -63,6 +63,7 @@ import {
 } from "../permissions/types.js";
 import { applyModelSwitch } from "../commands/model.js";
 import { applyProviderSwitch } from "../commands/provider.js";
+import { resolveProfile } from "../config/profiles.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
 import {
@@ -94,6 +95,9 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageResult,
   SessionSnapshotResult,
+  SessionHookConfigShape,
+  SessionHookValidationIssueShape,
+  SessionHookRunDiagnosticShape,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
@@ -207,6 +211,11 @@ export interface AgenCBackgroundAgentMcpAddServerParams {
   readonly config: SessionMcpServerConfig;
 }
 
+export interface AgenCBackgroundAgentMcpServerByNameParams {
+  readonly sessionId: string;
+  readonly serverName: string;
+}
+
 export interface AgenCBackgroundAgentPartialCompactParams {
   readonly sessionId: string;
   readonly messageOrdinal: number;
@@ -240,6 +249,35 @@ export interface AgenCBackgroundAgentSetPermissionModeResult {
   readonly applied: boolean;
   readonly previousMode: string;
   readonly mode: string;
+}
+
+export interface AgenCBackgroundAgentHooksStatusResult {
+  readonly available: boolean;
+  readonly sourcePath: string;
+  readonly disabled: boolean;
+  readonly issues: readonly SessionHookValidationIssueShape[];
+  readonly hooks: readonly SessionHookConfigShape[];
+  readonly diagnostics: readonly SessionHookRunDiagnosticShape[];
+}
+
+export interface AgenCBackgroundAgentSetHooksDisabledParams {
+  readonly disabled: boolean;
+}
+
+export interface AgenCBackgroundAgentSetHooksDisabledResult {
+  readonly applied: boolean;
+  readonly disabled: boolean;
+}
+
+export interface AgenCBackgroundAgentApplyConfigParams {
+  readonly sessionId: string;
+  readonly profile?: string;
+  readonly reload?: boolean;
+}
+
+export interface AgenCBackgroundAgentApplyConfigResult {
+  readonly applied: boolean;
+  readonly summary: string;
 }
 
 export interface AgenCBackgroundAgentToolDecisionParams {
@@ -286,6 +324,18 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentMcpAddServerParams,
   ): Promise<McpServerMutationResult>;
+  reconnectMcpServer?(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult>;
+  enableMcpServer?(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult>;
+  disableMcpServer?(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult>;
   partialCompactFromMessage?(
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
@@ -302,6 +352,17 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentSetPermissionModeParams,
   ): Promise<AgenCBackgroundAgentSetPermissionModeResult>;
+  getAgentHooksStatus?(
+    agentId: string,
+  ): Promise<AgenCBackgroundAgentHooksStatusResult>;
+  setAgentHooksDisabled?(
+    agentId: string,
+    params: AgenCBackgroundAgentSetHooksDisabledParams,
+  ): Promise<AgenCBackgroundAgentSetHooksDisabledResult>;
+  applyAgentConfig?(
+    agentId: string,
+    params: AgenCBackgroundAgentApplyConfigParams,
+  ): Promise<AgenCBackgroundAgentApplyConfigResult>;
   resolveToolDecision?(
     agentId: string,
     params: AgenCBackgroundAgentToolDecisionParams,
@@ -1090,6 +1151,78 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
+  async reconnectMcpServer(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const reconnectServer =
+      active.bootstrap.session.services.mcpManager.reconnectServer;
+    if (typeof reconnectServer !== "function") {
+      throw new Error(
+        "MCP reconnect is not available for this daemon session.",
+      );
+    }
+    const result = await reconnectServer(params.serverName);
+    return {
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
+  async enableMcpServer(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const enableServer =
+      active.bootstrap.session.services.mcpManager.enableServer;
+    if (typeof enableServer !== "function") {
+      throw new Error(
+        "MCP enable is not available for this daemon session.",
+      );
+    }
+    const result = await enableServer(params.serverName);
+    return {
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
+  async disableMcpServer(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpServerByNameParams,
+  ): Promise<McpServerMutationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const disableServer =
+      active.bootstrap.session.services.mcpManager.disableServer;
+    if (typeof disableServer !== "function") {
+      throw new Error(
+        "MCP disable is not available for this daemon session.",
+      );
+    }
+    const result = await disableServer(params.serverName);
+    return {
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
   async snapshotAgentSession(
     agentId: string,
     params: AgenCBackgroundAgentSnapshotSessionParams,
@@ -1305,6 +1438,255 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
     await registry.update(nextCtx);
     return { applied: true, previousMode: current.mode, mode: target };
+  }
+
+  async getAgentHooksStatus(
+    agentId: string,
+  ): Promise<AgenCBackgroundAgentHooksStatusResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    // Read the daemon session's REAL configured-hooks runtime (the one the
+    // daemon's tool evaluator consults) — bootstrap.session.services.hooksRuntime.
+    const rt = active.bootstrap.session.services?.hooksRuntime;
+    if (rt === undefined) {
+      return {
+        available: false,
+        sourcePath: "",
+        disabled: true,
+        issues: [],
+        hooks: [],
+        diagnostics: [],
+      };
+    }
+    // Spread the readonly arrays into plain arrays so they serialize cleanly
+    // over the daemon RPC transport.
+    return {
+      available: true,
+      sourcePath: rt.sourcePath(),
+      disabled: rt.isDisabled(),
+      issues: rt.issues().map((issue) => ({
+        level: issue.level,
+        message: issue.message,
+      })),
+      hooks: rt.listHooks().map((hook) => ({
+        event: hook.event,
+        ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
+        command: {
+          type: hook.command.type,
+          command: hook.command.command,
+          ...(hook.command.timeout_ms !== undefined
+            ? { timeout_ms: hook.command.timeout_ms }
+            : {}),
+          ...(hook.command.statusMessage !== undefined
+            ? { statusMessage: hook.command.statusMessage }
+            : {}),
+        },
+        source: hook.source,
+        sourcePath: hook.sourcePath,
+        enabled: hook.enabled,
+        index: hook.index,
+      })),
+      diagnostics: rt.latestDiagnostics().map((diag) => ({
+        id: diag.id,
+        event: diag.event,
+        ...(diag.matcher !== undefined ? { matcher: diag.matcher } : {}),
+        command: diag.command,
+        status: diag.status,
+        ...(diag.exitCode !== undefined ? { exitCode: diag.exitCode } : {}),
+        durationMs: diag.durationMs,
+        stdout: diag.stdout,
+        stderr: diag.stderr,
+        ...(diag.error !== undefined ? { error: diag.error } : {}),
+        startedAtUnixMs: diag.startedAtUnixMs,
+      })),
+    };
+  }
+
+  async setAgentHooksDisabled(
+    agentId: string,
+    params: AgenCBackgroundAgentSetHooksDisabledParams,
+  ): Promise<AgenCBackgroundAgentSetHooksDisabledResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    // Toggle the daemon's REAL hooks runtime — setDisabled mutates the live
+    // engine that rebuildTarget reads, the exact precedent of
+    // setAgentPermissionMode mutating the live permission registry.
+    const rt = active.bootstrap.session.services?.hooksRuntime;
+    if (rt === undefined) {
+      throw new Error(
+        "Hooks runtime is not available on the daemon session",
+      );
+    }
+    rt.setDisabled(params.disabled);
+    return { applied: true, disabled: params.disabled };
+  }
+
+  async applyAgentConfig(
+    agentId: string,
+    params: AgenCBackgroundAgentApplyConfigParams,
+  ): Promise<AgenCBackgroundAgentApplyConfigResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const session = active.bootstrap.session;
+    const sessionShim = session as unknown as {
+      services?: {
+        configStore?: {
+          current?: () => unknown;
+          reload?: () => Promise<unknown>;
+        };
+      };
+      setPendingProviderSwitch?: (spec: {
+        provider: string;
+        model: string;
+        profile?: string;
+      }) => void;
+      state?: {
+        with?: (fn: (state: unknown) => void) => Promise<void> | void;
+        unsafePeek?: () => unknown;
+      };
+    };
+    const configStore = sessionShim.services?.configStore;
+    if (configStore?.current === undefined) {
+      return {
+        applied: false,
+        summary:
+          "No config store is available on the live session; nothing applied.",
+      };
+    }
+
+    const changes: string[] = [];
+    let applied = false;
+
+    // 1. Optionally re-read disk + env into the daemon's own store so the
+    //    live session sees the latest on-disk config.
+    if (params.reload === true && typeof configStore.reload === "function") {
+      await configStore.reload();
+      changes.push("config reloaded from disk");
+      applied = true;
+    }
+
+    // 2. Resolve the target snapshot (profile overlay or plain current).
+    const base = configStore.current() as Record<string, unknown>;
+    const resolved =
+      params.profile !== undefined
+        ? (resolveProfile(
+            base as unknown as Parameters<typeof resolveProfile>[0],
+            params.profile,
+          ) as unknown as Record<string, unknown>)
+        : base;
+
+    // 3. Stage the model/provider delta through the genuine switch seam so the
+    //    turn loop's consumePendingProviderSwitch runs the real I-13/I-57
+    //    machinery. Thread the profile name so the overlay is re-resolved.
+    const targetModel =
+      typeof resolved.model === "string" ? resolved.model : undefined;
+    const targetProvider =
+      typeof resolved.model_provider === "string"
+        ? resolved.model_provider
+        : undefined;
+    const currentModel =
+      typeof base.model === "string" ? base.model : undefined;
+    const currentProvider =
+      typeof base.model_provider === "string" ? base.model_provider : undefined;
+    const stageProvider = targetProvider ?? currentProvider;
+    if (
+      targetModel !== undefined &&
+      stageProvider !== undefined &&
+      typeof sessionShim.setPendingProviderSwitch === "function"
+    ) {
+      sessionShim.setPendingProviderSwitch({
+        provider: stageProvider,
+        model: targetModel,
+        ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      });
+      if (targetModel !== currentModel) {
+        changes.push(`model ${currentModel ?? "?"}->${targetModel}`);
+      } else {
+        changes.push(`model ${targetModel}`);
+      }
+      applied = true;
+    }
+
+    // 4. Apply reasoning effort / verbosity / service tier directly onto the
+    //    live sessionConfiguration — the piece the model-switch seam cannot do
+    //    (it preserves these but never updates them). Mirrors the write shape
+    //    consumePendingProviderSwitch uses for collaborationMode.
+    const nextReasoning =
+      typeof resolved.reasoning_effort === "string"
+        ? resolved.reasoning_effort
+        : undefined;
+    const nextVerbosity =
+      typeof resolved.model_verbosity === "string"
+        ? resolved.model_verbosity
+        : undefined;
+    const nextServiceTier =
+      typeof resolved.service_tier === "string"
+        ? resolved.service_tier
+        : undefined;
+    if (
+      (nextReasoning !== undefined ||
+        nextVerbosity !== undefined ||
+        nextServiceTier !== undefined) &&
+      typeof sessionShim.state?.with === "function"
+    ) {
+      await sessionShim.state.with((state) => {
+        const cfg = (
+          state as {
+            sessionConfiguration?: {
+              collaborationMode?: { reasoningEffort?: string };
+              modelVerbosity?: string;
+              serviceTier?: string;
+            };
+          }
+        ).sessionConfiguration;
+        if (cfg === undefined) return;
+        if (nextReasoning !== undefined) {
+          cfg.collaborationMode = {
+            ...(cfg.collaborationMode ?? {}),
+            reasoningEffort: nextReasoning,
+          } as { reasoningEffort?: string };
+        }
+        if (nextVerbosity !== undefined) {
+          (cfg as { modelVerbosity?: string }).modelVerbosity = nextVerbosity;
+        }
+        if (nextServiceTier !== undefined) {
+          (cfg as { serviceTier?: string }).serviceTier = nextServiceTier;
+        }
+      });
+      if (nextReasoning !== undefined) {
+        changes.push(`reasoning effort ->${nextReasoning}`);
+      }
+      if (nextVerbosity !== undefined) {
+        changes.push(`verbosity ->${nextVerbosity}`);
+      }
+      if (nextServiceTier !== undefined) {
+        changes.push(`service tier ->${nextServiceTier}`);
+      }
+      applied = true;
+    }
+
+    // 5. Approval policy maps to a permission mode where the registry exposes a
+    //    matching mode; otherwise leave permission mode to the dedicated
+    //    permissions command. (No automatic mapping table here.)
+
+    // 6. Human-readable summary.
+    const label =
+      params.profile !== undefined
+        ? `profile ${params.profile}`
+        : params.reload === true
+          ? "config reload"
+          : "config";
+    const summary =
+      changes.length > 0
+        ? `${label} applied: ${changes.join(", ")}`
+        : `${label}: no changes to apply`;
+    return { applied, summary };
   }
 
   async resolveToolDecision(

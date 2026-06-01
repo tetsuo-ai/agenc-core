@@ -415,6 +415,94 @@ describe("AgenC TUI daemon session adapter", () => {
     });
   });
 
+  it("mirrors daemon-backed MCP reconnect/enable/disable to the runtime session", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (
+        method === "session.mcp.reconnectServer" ||
+        method === "session.mcp.enableServer" ||
+        method === "session.mcp.disableServer"
+      ) {
+        return {
+          sessionId: "session_1",
+          serverName: "audit-ping",
+          success: true,
+          toolCount: 2,
+        } as never;
+      }
+      return {} as never;
+    };
+    const localReconnect = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 2,
+    }));
+    const localEnable = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 2,
+    }));
+    const localDisable = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 2,
+    }));
+    const baseSession = createBaseSession();
+    baseSession.services.mcpManager = {
+      reconnectServer: localReconnect,
+      enableServer: localEnable,
+      disableServer: localDisable,
+    };
+
+    const session = await attachDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const manager = session.services.mcpManager as {
+      reconnectServer(name: string): Promise<unknown>;
+      enableServer(name: string): Promise<unknown>;
+      disableServer(name: string): Promise<unknown>;
+    };
+
+    const reconnectResult = await manager.reconnectServer("audit-ping");
+    const enableResult = await manager.enableServer("audit-ping");
+    const disableResult = await manager.disableServer("audit-ping");
+
+    const projected = {
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 2,
+    };
+    expect(reconnectResult).toEqual(projected);
+    expect(enableResult).toEqual(projected);
+    expect(disableResult).toEqual(projected);
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.attach",
+        params: { sessionId: "session_1", clientId: "tui_1" },
+      },
+      {
+        method: "session.mcp.reconnectServer",
+        params: { sessionId: "session_1", serverName: "audit-ping" },
+      },
+      {
+        method: "session.mcp.enableServer",
+        params: { sessionId: "session_1", serverName: "audit-ping" },
+      },
+      {
+        method: "session.mcp.disableServer",
+        params: { sessionId: "session_1", serverName: "audit-ping" },
+      },
+    ]);
+    expect(localReconnect).toHaveBeenCalledWith("audit-ping");
+    expect(localEnable).toHaveBeenCalledWith("audit-ping");
+    expect(localDisable).toHaveBeenCalledWith("audit-ping");
+  });
+
   it("exposes daemon turn activity through activeTurn for prompt busy state", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -692,6 +780,83 @@ describe("AgenC TUI daemon session adapter", () => {
           sessionId: "session_1",
           mode: "plan",
         },
+      },
+    ]);
+  });
+
+  it("forwards applyDaemonConfig to the daemon session.applyConfig RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await (session as unknown as {
+      applyDaemonConfig: (params: {
+        profile?: string;
+        reload?: boolean;
+      }) => Promise<unknown>;
+    }).applyDaemonConfig({ profile: "fast" });
+
+    await (session as unknown as {
+      applyDaemonConfig: (params: {
+        profile?: string;
+        reload?: boolean;
+      }) => Promise<unknown>;
+    }).applyDaemonConfig({ reload: true });
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.applyConfig",
+        params: { sessionId: "session_1", profile: "fast" },
+      },
+      {
+        method: "session.applyConfig",
+        params: { sessionId: "session_1", reload: true },
+      },
+    ]);
+  });
+
+  it("forwards getDaemonHooksStatus to the daemon session.hooks.status RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await (session as unknown as {
+      getDaemonHooksStatus: () => Promise<unknown>;
+    }).getDaemonHooksStatus();
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.hooks.status",
+        params: { sessionId: "session_1" },
+      },
+    ]);
+  });
+
+  it("forwards setDaemonHooksDisabled to the daemon session.hooks.setDisabled RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await (session as unknown as {
+      setDaemonHooksDisabled: (disabled: boolean) => Promise<unknown>;
+    }).setDaemonHooksDisabled(true);
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.hooks.setDisabled",
+        params: { sessionId: "session_1", disabled: true },
       },
     ]);
   });

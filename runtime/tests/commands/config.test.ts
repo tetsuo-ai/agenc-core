@@ -287,6 +287,81 @@ describe("configCommand — reload", () => {
     }
   });
 
+  it("re-applies the reloaded config to the daemon and folds in its summary", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      const store = new ConfigStore({ home: tmp });
+      const applyDaemonConfig = vi.fn(async () => ({
+        applied: true,
+        summary: "config reload applied: config reloaded from disk",
+      }));
+      const session = Object.assign(stubSession(), { applyDaemonConfig });
+      const r = await configCommand.execute(
+        stubCtx({
+          configStore: store,
+          argsRaw: "reload",
+          home: tmp,
+          session: session as unknown as Session,
+        }),
+      );
+      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
+      expect(applyDaemonConfig).toHaveBeenCalledWith({ reload: true });
+      expect(r.text).toContain("Config reloaded");
+      expect(r.text).toContain(
+        "Daemon: config reload applied: config reloaded from disk",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT call the daemon forwarder on reload for the in-process path", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      const store = new ConfigStore({ home: tmp });
+      const applyDaemonConfig = vi.fn();
+      // In-process session: no applyDaemonConfig forwarder.
+      const session = stubSession();
+      const r = await configCommand.execute(
+        stubCtx({ configStore: store, argsRaw: "reload", home: tmp, session }),
+      );
+      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
+      expect(applyDaemonConfig).not.toHaveBeenCalled();
+      expect(r.text).not.toContain("Daemon:");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an error when the daemon reload apply fails", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      const store = new ConfigStore({ home: tmp });
+      const applyDaemonConfig = vi.fn(async () => {
+        throw new Error("socket closed");
+      });
+      const session = Object.assign(stubSession(), { applyDaemonConfig });
+      const r = await configCommand.execute(
+        stubCtx({
+          configStore: store,
+          argsRaw: "reload",
+          home: tmp,
+          session: session as unknown as Session,
+        }),
+      );
+      expect(r.kind).toBe("error");
+      if (r.kind !== "error") throw new Error("expected error");
+      expect(r.message).toContain(
+        "Config reloaded client-side, but daemon apply failed",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("reports MCP refresh failure after config reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
@@ -410,6 +485,61 @@ describe("configCommand — profile", () => {
     );
     if (r.kind !== "text") throw new Error("expected text");
     expect(r.text).toMatch(/no profiles declared/);
+  });
+
+  it("re-applies the profile to the daemon when the bridge forwarder is present", async () => {
+    const store = makeStore({ profiles: { dev: { model: "grok-dev" } } });
+    const applyDaemonConfig = vi.fn(async () => ({
+      applied: true,
+      summary: "profile dev applied: model base->grok-dev",
+    }));
+    const session = Object.assign(stubSession(), { applyDaemonConfig });
+    const r = await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        argsRaw: "profile dev",
+        session: session as unknown as Session,
+      }),
+    );
+    if (r.kind !== "text") throw new Error("expected text");
+    // Daemon summary is surfaced verbatim, and the staging still happened.
+    expect(r.text).toBe("profile dev applied: model base->grok-dev");
+    expect(applyDaemonConfig).toHaveBeenCalledWith({ profile: "dev" });
+    expect(
+      (session as unknown as { pendingProviderSwitch: { profile?: string } })
+        .pendingProviderSwitch?.profile,
+    ).toBe("dev");
+  });
+
+  it("does NOT call the daemon forwarder on the in-process path", async () => {
+    const store = makeStore({ profiles: { dev: { model: "grok-dev" } } });
+    const applyDaemonConfig = vi.fn();
+    // In-process Session has no applyDaemonConfig forwarder.
+    const session = stubSession();
+    const r = await configCommand.execute(
+      stubCtx({ configStore: store, argsRaw: "profile dev", session }),
+    );
+    if (r.kind !== "text") throw new Error("expected text");
+    expect(r.text).toMatch(/staged/);
+    expect(applyDaemonConfig).not.toHaveBeenCalled();
+  });
+
+  it("returns an error when the daemon profile apply fails", async () => {
+    const store = makeStore({ profiles: { dev: { model: "grok-dev" } } });
+    const applyDaemonConfig = vi.fn(async () => {
+      throw new Error("socket closed");
+    });
+    const session = Object.assign(stubSession(), { applyDaemonConfig });
+    const r = await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        argsRaw: "profile dev",
+        session: session as unknown as Session,
+      }),
+    );
+    expect(r.kind).toBe("error");
+    if (r.kind !== "error") throw new Error("expected error");
+    expect(r.message).toContain("daemon apply failed");
   });
 });
 

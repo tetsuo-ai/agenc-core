@@ -23,9 +23,16 @@ function shortId(sessionId: string): string {
 function ResumeMenuView({
   entries,
   onDone,
+  requestResumeSession,
 }: {
   readonly entries: readonly RolloutEntry[];
   readonly onDone: () => void;
+  /**
+   * Relaunch the TUI into the chosen session. Absent in headless/test or
+   * older-dispatcher contexts — Enter then falls back to the printed
+   * `agenc --resume <id>` instructions.
+   */
+  readonly requestResumeSession?: (sessionId: string) => void;
 }): React.ReactNode {
   const [activeIndex, setActiveIndex] = React.useState(0);
   const rows =
@@ -37,10 +44,26 @@ function ResumeMenuView({
           mtimeMs: Number.NaN,
           firstUserPreview: "No resumable sessions found for this project.",
         }];
+  const canResume =
+    entries.length > 0 && typeof requestResumeSession === "function";
 
   useInput((input, key) => {
     if (key.escape || input === "q") {
       onDone();
+      return;
+    }
+    if (key.return) {
+      // Enter resumes the highlighted session by relaunching the TUI into
+      // it (see tui/pending-resume.ts). Guarded on a live bridge + a real
+      // entry; otherwise Enter is a no-op and the footer keeps showing the
+      // shell-command fallback.
+      if (canResume) {
+        const target = rows[activeIndex] ?? rows[0];
+        if (target && target.sessionId !== "none") {
+          requestResumeSession(target.sessionId);
+          onDone();
+        }
+      }
       return;
     }
     if (key.upArrow || input === "k") {
@@ -81,7 +104,9 @@ function ResumeMenuView({
         <Box flexDirection="column" gap={1}>
           <ThemedText color="agenc">Session Resume</ThemedText>
           <ThemedText color="text2" wrap="wrap">
-            Resume from a shell with agenc --resume and the selected session id.
+            {canResume
+              ? "Press enter to switch to the selected session."
+              : "Resume from a shell with agenc --resume and the selected session id."}
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
             Session: {selected?.sessionId ?? "none"}
@@ -91,11 +116,19 @@ function ResumeMenuView({
           </ThemedText>
         </Box>
       }
-      footer={[
-        { keyName: "up/down", label: "navigate" },
-        { keyName: "q", label: "close" },
-      ]}
-      hint="agenc --resume <sessionId>"
+      footer={
+        canResume
+          ? [
+              { keyName: "up/down", label: "navigate" },
+              { keyName: "enter", label: "resume" },
+              { keyName: "q", label: "close" },
+            ]
+          : [
+              { keyName: "up/down", label: "navigate" },
+              { keyName: "q", label: "close" },
+            ]
+      }
+      hint={canResume ? "enter resumes the selected session" : "agenc --resume <sessionId>"}
     />
   );
 }
@@ -106,6 +139,7 @@ export function openResumeMenu(
 ): boolean {
   const setToolJSX = ctx.appState?.setToolJSX;
   if (typeof setToolJSX !== "function") return false;
+  const requestResumeSession = ctx.appState?.requestResumeSession;
   const close = () => {
     setToolJSX({
       jsx: null,
@@ -116,7 +150,15 @@ export function openResumeMenu(
   setToolJSX({
     isLocalJSXCommand: true,
     shouldHidePromptInput: true,
-    jsx: <ResumeMenuView entries={entries} onDone={close} />,
+    jsx: (
+      <ResumeMenuView
+        entries={entries}
+        onDone={close}
+        {...(typeof requestResumeSession === "function"
+          ? { requestResumeSession }
+          : {})}
+      />
+    ),
   });
   return true;
 }

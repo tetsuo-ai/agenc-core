@@ -944,6 +944,101 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("routes session.mcp.reconnect/enable/disable to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-mcp-restored",
+      agentId: "agent-mcp-restored",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const reconnectMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 4,
+    }));
+    const enableMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 4,
+    }));
+    const disableMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 0,
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        reconnectMcpServer,
+        enableMcpServer,
+        disableMcpServer,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-mcp-restored",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-mcp-restored"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.reconnectMcpServerOnSession({
+        sessionId: "session-mcp-restored",
+        serverName: "audit-ping",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 4,
+    });
+    expect(reconnectMcpServer).toHaveBeenCalledWith("agent-mcp-restored", {
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+    });
+
+    await expect(
+      agents.enableMcpServerOnSession({
+        sessionId: "session-mcp-restored",
+        serverName: "audit-ping",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 4,
+    });
+    expect(enableMcpServer).toHaveBeenCalledWith("agent-mcp-restored", {
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+    });
+
+    await expect(
+      agents.disableMcpServerOnSession({
+        sessionId: "session-mcp-restored",
+        serverName: "audit-ping",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 0,
+    });
+    expect(disableMcpServer).toHaveBeenCalledWith("agent-mcp-restored", {
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+    });
+  });
+
   it("routes session.cancelTurn to the runner's interruptAgentTurn for an active session", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({
@@ -1090,6 +1185,197 @@ describe("AgenC background agent lifecycle", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("agent-setmode", {
       sessionId: "session-setmode",
       mode: "plan",
+    });
+  });
+
+  it("routes session.hooks.status to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-hooks",
+      agentId: "agent-hooks",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const getAgentHooksStatus = vi.fn(async () => ({
+      available: true,
+      sourcePath: "/home/agent/.agenc/config.toml",
+      disabled: false,
+      issues: [],
+      hooks: [
+        {
+          event: "PreToolUse",
+          command: { type: "command", command: "printf ok" },
+          source: "config",
+          sourcePath: "/home/agent/.agenc/config.toml",
+          enabled: true,
+          index: 0,
+        },
+      ],
+      diagnostics: [],
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        getAgentHooksStatus,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-hooks",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-hooks"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.getSessionHooksStatus({ sessionId: "session-hooks" }),
+    ).resolves.toMatchObject({
+      sessionId: "session-hooks",
+      available: true,
+      sourcePath: "/home/agent/.agenc/config.toml",
+      hooks: [{ event: "PreToolUse", index: 0 }],
+    });
+    expect(getAgentHooksStatus).toHaveBeenCalledWith("agent-hooks");
+  });
+
+  it("routes session.hooks.setDisabled to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-hooks-toggle",
+      agentId: "agent-hooks-toggle",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const setAgentHooksDisabled = vi.fn(async () => ({
+      applied: true,
+      disabled: true,
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        setAgentHooksDisabled,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-hooks-toggle",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-hooks-toggle"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.setSessionHooksDisabled({
+        sessionId: "session-hooks-toggle",
+        disabled: true,
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-hooks-toggle",
+      applied: true,
+      disabled: true,
+    });
+    expect(setAgentHooksDisabled).toHaveBeenCalledWith("agent-hooks-toggle", {
+      disabled: true,
+    });
+  });
+
+  it("routes session.applyConfig to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-applyconfig",
+      agentId: "agent-applyconfig",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const applyAgentConfig = vi.fn(async () => ({
+      applied: true,
+      summary: "profile fast applied: reasoning effort ->high",
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        applyAgentConfig,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-applyconfig",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-applyconfig"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.applyConfigToSession({
+        sessionId: "session-applyconfig",
+        profile: "fast",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-applyconfig",
+      applied: true,
+      summary: "profile fast applied: reasoning effort ->high",
+    });
+    expect(applyAgentConfig).toHaveBeenCalledWith("agent-applyconfig", {
+      sessionId: "session-applyconfig",
+      profile: "fast",
+    });
+  });
+
+  it("rejects session.applyConfig when no runner is available", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-applyconfig-norunner",
+      agentId: "agent-applyconfig-norunner",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-applyconfig-norunner",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-applyconfig-norunner"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.applyConfigToSession({
+        sessionId: "session-applyconfig-norunner",
+      }),
+    ).rejects.toMatchObject({
+      code: "BACKGROUND_RUNNER_UNAVAILABLE",
     });
   });
 

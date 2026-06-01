@@ -38,6 +38,7 @@ import { addToHistory } from "../history/history.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import { type AppState, AppStateProvider, getDefaultAppState, useAppState, useAppStateStore, useSetAppState } from "../state/AppState.js";
 import { Box, Text, useApp, useTerminalFocus, useTerminalTitle } from "../ink.js";
+import { setPendingResumeSessionId } from "../pending-resume.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { McpElicitationRequestEvent, McpElicitationResponse, McpPrimitiveSchemaDefinition, McpRequestId, RequestUserInputEvent, RequestUserInputResponse } from "../../elicitation/types.js";
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
@@ -1877,7 +1878,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             setModel,
             setAppState,
             setToolJSX,
-            tools: availableTools
+            tools: availableTools,
+            // /resume picker: record the chosen session id, then drain Ink.
+            // After waitUntilExit() the boot entrypoint relaunches into the
+            // proven attach path for this id (see tui/pending-resume.ts). We
+            // never touch props.session here — commands must not swap it in
+            // place — so the prior session is cleanly detached on exit first.
+            requestResumeSession: (sessionId: string) => {
+              setPendingResumeSessionId(sessionId);
+              exit();
+            }
           },
           commandRegistry
         }, commandRegistry);

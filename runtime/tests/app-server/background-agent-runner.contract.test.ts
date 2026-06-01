@@ -364,6 +364,204 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionUpdates[0]).toMatchObject({ mode: "plan" });
   });
 
+  it("getAgentHooksStatus maps the daemon session's real hooks runtime snapshot", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+    // Augment the fake session.services with a hooks runtime exposing the
+    // genuine ConfiguredHooksRuntime read API the runner consults.
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => false,
+          issues: () => [{ level: "warning", message: "heads up" }],
+          listHooks: () => [
+            {
+              event: "PreToolUse",
+              matcher: "Read",
+              command: {
+                type: "command",
+                command: "printf ok",
+                timeout_ms: 5000,
+              },
+              source: "config",
+              sourcePath: "/home/agent/.agenc/config.toml",
+              enabled: true,
+              index: 0,
+            },
+          ],
+          latestDiagnostics: () => [],
+          setDisabled: vi.fn(),
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    const status = await runner.getAgentHooksStatus("parent-session");
+    expect(status.available).toBe(true);
+    expect(status.sourcePath).toBe("/home/agent/.agenc/config.toml");
+    expect(status.disabled).toBe(false);
+    expect(status.issues).toEqual([{ level: "warning", message: "heads up" }]);
+    expect(status.hooks).toHaveLength(1);
+    expect(status.hooks[0]).toMatchObject({
+      event: "PreToolUse",
+      matcher: "Read",
+      index: 0,
+      command: { type: "command", command: "printf ok", timeout_ms: 5000 },
+    });
+  });
+
+  it("getAgentHooksStatus reports available:false when no hooks runtime is present", async () => {
+    const { runner } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    const status = await runner.getAgentHooksStatus("parent-session");
+    expect(status).toEqual({
+      available: false,
+      sourcePath: "",
+      disabled: true,
+      issues: [],
+      hooks: [],
+      diagnostics: [],
+    });
+  });
+
+  it("setAgentHooksDisabled toggles the daemon session's real hooks runtime", async () => {
+    const setDisabled = vi.fn();
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => false,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled,
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    const result = await runner.setAgentHooksDisabled("parent-session", {
+      disabled: true,
+    });
+    expect(result).toEqual({ applied: true, disabled: true });
+    expect(setDisabled).toHaveBeenCalledWith(true);
+  });
+
+  it("applyAgentConfig applies reasoning effort and stages a profile switch", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+
+    // Augment the fake session with the config-apply surfaces the real
+    // in-process Session exposes: a ConfigStore with a "fast" profile, a
+    // mutable sessionConfiguration, and the typed switch mutator.
+    const stateObject = {
+      sessionConfiguration: {
+        collaborationMode: { model: "base-model", reasoningEffort: "medium" },
+      },
+    };
+    const stagedSwitches: Array<{
+      provider: string;
+      model: string;
+      profile?: string;
+    }> = [];
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({
+            model: "base-model",
+            model_provider: "openai",
+            profiles: {
+              fast: {
+                model: "fast-model",
+                model_provider: "openai",
+                reasoning_effort: "high",
+              },
+            },
+          }),
+        },
+      },
+      setPendingProviderSwitch: (spec: {
+        provider: string;
+        model: string;
+        profile?: string;
+      }) => {
+        stagedSwitches.push(spec);
+      },
+      state: {
+        with: async (fn: (state: unknown) => void) => {
+          fn(stateObject);
+        },
+      },
+    });
+
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    const result = await runner.applyAgentConfig("parent-session", {
+      sessionId: "session_1",
+      profile: "fast",
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.summary).toContain("profile fast");
+    expect(result.summary).toContain("reasoning effort ->high");
+    // Model/provider delta staged through the genuine switch seam, with the
+    // profile threaded so consumePendingProviderSwitch re-resolves it.
+    expect(stagedSwitches).toEqual([
+      { provider: "openai", model: "fast-model", profile: "fast" },
+    ]);
+    // Reasoning effort written onto the live sessionConfiguration — the piece
+    // the model-switch seam alone cannot do.
+    expect(
+      stateObject.sessionConfiguration.collaborationMode.reasoningEffort,
+    ).toBe("high");
+  });
+
+  it("applyAgentConfig reloads config from disk when requested", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+    const reload = vi.fn(async () => ({}));
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({ model: "base-model", model_provider: "openai" }),
+          reload,
+        },
+      },
+      setPendingProviderSwitch: () => {},
+      state: { with: async (fn: (state: unknown) => void) => fn({}) },
+    });
+
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    const result = await runner.applyAgentConfig("parent-session", {
+      sessionId: "session_1",
+      reload: true,
+    });
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(result.applied).toBe(true);
+    expect(result.summary).toContain("config reloaded from disk");
+  });
+
   it("setAgentPermissionMode rejects internal-only modes", async () => {
     const { runner } = makeTopLevelRunner({
       conversationId: "parent-session",

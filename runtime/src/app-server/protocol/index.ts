@@ -84,6 +84,12 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.rewindConversationToMessage",
   "session.setModel",
   "session.setPermissionMode",
+  "session.hooks.status",
+  "session.hooks.setDisabled",
+  "session.applyConfig",
+  "session.mcp.reconnectServer",
+  "session.mcp.enableServer",
+  "session.mcp.disableServer",
 ] as const;
 
 export type AgenCDaemonInternalMethod =
@@ -487,6 +493,54 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     description:
       "TUI-internal request to switch the permission mode on the daemon-owned session registry.",
   },
+  "session.hooks.status": {
+    method: "session.hooks.status",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to read the daemon-owned session's configured hooks state (overview, validation, diagnostics).",
+  },
+  "session.hooks.setDisabled": {
+    method: "session.hooks.setDisabled",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to enable/disable the daemon-owned session's hooks runtime for the session.",
+  },
+  "session.applyConfig": {
+    method: "session.applyConfig",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to re-apply config (profile overlay and/or disk reload) to the daemon-owned session.",
+  },
+  "session.mcp.reconnectServer": {
+    method: "session.mcp.reconnectServer",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to reconnect an MCP server on the daemon-owned runtime session.",
+  },
+  "session.mcp.enableServer": {
+    method: "session.mcp.enableServer",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to enable an MCP server on the daemon-owned runtime session.",
+  },
+  "session.mcp.disableServer": {
+    method: "session.mcp.disableServer",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to disable an MCP server on the daemon-owned runtime session.",
+  },
 });
 
 export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
@@ -757,6 +811,11 @@ export interface SessionMcpAddServerParams extends JsonObject {
   readonly config: SessionMcpServerConfig;
 }
 
+export interface SessionMcpServerByNameParams extends JsonObject {
+  readonly sessionId: string;
+  readonly serverName: string;
+}
+
 export interface SessionPartialCompactFromMessageParams extends JsonObject {
   readonly sessionId: string;
   readonly messageOrdinal: number;
@@ -778,6 +837,64 @@ export interface SessionSetModelParams extends JsonObject {
 export interface SessionSetPermissionModeParams extends JsonObject {
   readonly sessionId: string;
   readonly mode: string;
+}
+
+export interface SessionHooksStatusParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+export interface SessionHooksSetDisabledParams extends JsonObject {
+  readonly sessionId: string;
+  readonly disabled: boolean;
+}
+
+/**
+ * JSON-serializable mirror of a single configured hook for the wire.
+ * Kept independent of `hooks/` internals so protocol stays decoupled
+ * (same approach protocol uses for its other result shapes).
+ */
+export interface SessionHookCommandShape extends JsonObject {
+  readonly type: string;
+  readonly command: string;
+  readonly timeout_ms?: number;
+  readonly statusMessage?: string;
+}
+
+export interface SessionHookConfigShape extends JsonObject {
+  readonly event: string;
+  readonly matcher?: string;
+  readonly command: SessionHookCommandShape;
+  readonly source: string;
+  readonly sourcePath: string;
+  readonly enabled: boolean;
+  readonly index: number;
+}
+
+export interface SessionHookValidationIssueShape extends JsonObject {
+  readonly level: string;
+  readonly message: string;
+}
+
+export interface SessionHookRunDiagnosticShape extends JsonObject {
+  readonly id: string;
+  readonly event: string;
+  readonly matcher?: string;
+  readonly command: string;
+  readonly status: string;
+  readonly exitCode?: number;
+  readonly durationMs: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly error?: string;
+  readonly startedAtUnixMs: number;
+}
+
+export interface SessionApplyConfigParams extends JsonObject {
+  readonly sessionId: string;
+  /** Profile to overlay onto the live session; omit for a plain reload. */
+  readonly profile?: string;
+  /** When `true`, re-read config from disk + env before applying. */
+  readonly reload?: boolean;
 }
 
 export type MessageContentBlock =
@@ -1455,6 +1572,14 @@ export interface SessionMcpAddServerResult extends JsonObject {
   readonly error?: string;
 }
 
+export interface SessionMcpServerMutationResult extends JsonObject {
+  readonly sessionId: string;
+  readonly serverName: string;
+  readonly success: boolean;
+  readonly toolCount: number;
+  readonly error?: string;
+}
+
 export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly sessionId: string;
   readonly ok: boolean;
@@ -1486,6 +1611,36 @@ export interface SessionSetPermissionModeResult extends JsonObject {
   readonly applied: boolean;
   readonly previousMode: string;
   readonly mode: string;
+}
+
+/**
+ * Flat, serializable snapshot of the daemon session's hooks runtime so the
+ * `/hooks` command can render overview/show/validate/diagnostics without
+ * further round-trips. `available:false` when the daemon session has no
+ * configured hooks runtime.
+ */
+export interface SessionHooksStatusResult extends JsonObject {
+  readonly sessionId: string;
+  readonly available: boolean;
+  readonly sourcePath: string;
+  readonly disabled: boolean;
+  readonly issues: readonly SessionHookValidationIssueShape[];
+  readonly hooks: readonly SessionHookConfigShape[];
+  readonly diagnostics: readonly SessionHookRunDiagnosticShape[];
+}
+
+export interface SessionHooksSetDisabledResult extends JsonObject {
+  readonly sessionId: string;
+  readonly applied: boolean;
+  readonly disabled: boolean;
+}
+
+export interface SessionApplyConfigResult extends JsonObject {
+  readonly sessionId: string;
+  /** `true` when any config change was applied to the live session. */
+  readonly applied: boolean;
+  /** Human-readable summary of what was re-applied, surfaced to the user. */
+  readonly summary: string;
 }
 
 export interface MessageSendResult extends JsonObject {
@@ -1667,6 +1822,12 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
   readonly "session.setModel": SessionSetModelResult;
   readonly "session.setPermissionMode": SessionSetPermissionModeResult;
+  readonly "session.hooks.status": SessionHooksStatusResult;
+  readonly "session.hooks.setDisabled": SessionHooksSetDisabledResult;
+  readonly "session.applyConfig": SessionApplyConfigResult;
+  readonly "session.mcp.reconnectServer": SessionMcpServerMutationResult;
+  readonly "session.mcp.enableServer": SessionMcpServerMutationResult;
+  readonly "session.mcp.disableServer": SessionMcpServerMutationResult;
 }
 
 export type AgenCDaemonKnownResultByMethod =

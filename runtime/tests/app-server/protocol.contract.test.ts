@@ -125,6 +125,12 @@ const expectedInternalMethods = [
   "session.rewindConversationToMessage",
   "session.setModel",
   "session.setPermissionMode",
+  "session.hooks.status",
+  "session.hooks.setDisabled",
+  "session.applyConfig",
+  "session.mcp.reconnectServer",
+  "session.mcp.enableServer",
+  "session.mcp.disableServer",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {

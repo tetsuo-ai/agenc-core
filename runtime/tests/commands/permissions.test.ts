@@ -445,6 +445,101 @@ describe("permissionsCommand — mode", () => {
     // Local registry untouched when the daemon switch fails.
     expect(registry.current().mode).toBe("default");
   });
+
+  it("'/permissions mode bypassPermissions' on a bridge session gates consent BEFORE hitting the daemon", async () => {
+    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const setDaemonPermissionMode = vi.fn(async (mode: string) => ({
+      applied: true,
+      previousMode: "default",
+      mode,
+    }));
+    const session = {
+      services: { permissionModeRegistry: registry },
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-1",
+      setDaemonPermissionMode,
+    } as unknown as Session;
+    const ctx = stubCtx({
+      registry,
+      argsRaw: "mode bypassPermissions",
+      session,
+      cwd: "/workspace/untrusted",
+    });
+    const r = await permissionsCommand.execute(ctx);
+    expect(r.kind).toBe("error");
+    if (r.kind !== "error") throw new Error("expected error");
+    expect(r.message).toMatch(/\/permissions accept-bypass/);
+    // Consent gate fires before the RPC — the daemon is never told to switch.
+    expect(setDaemonPermissionMode).not.toHaveBeenCalled();
+    expect(registry.current().mode).toBe("default");
+  });
+
+  it("'/permissions mode bypassPermissions' forwards to the daemon AFTER consent is recorded", async () => {
+    // Pre-populate consent for this workspace (equivalent to accept-bypass).
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        bypassPermissionsAcceptedIn: ["/workspace/trusted"],
+      }),
+    );
+    const setDaemonPermissionMode = vi.fn(async (mode: string) => ({
+      applied: true,
+      previousMode: "default",
+      mode,
+    }));
+    const session = {
+      services: { permissionModeRegistry: registry },
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-1",
+      setDaemonPermissionMode,
+    } as unknown as Session;
+    const ctx = stubCtx({
+      registry,
+      argsRaw: "mode bypassPermissions",
+      session,
+      cwd: "/workspace/trusted",
+    });
+    const r = await permissionsCommand.execute(ctx);
+    if (r.kind !== "text") {
+      throw new Error(
+        `expected text, got ${r.kind}: ${
+          r.kind === "error" ? r.message : ""
+        }`,
+      );
+    }
+    expect(r.text).toContain("default → bypassPermissions");
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+    // Local shim synced so subsequent /permissions reads reflect bypass.
+    expect(registry.current().mode).toBe("bypassPermissions");
+  });
+
+  it("'/permissions mode bypassPermissions' surfaces a daemon RPC failure as an error after consent", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        bypassPermissionsAcceptedIn: ["/workspace/trusted"],
+      }),
+    );
+    const setDaemonPermissionMode = vi.fn(async () => {
+      throw new Error("daemon refused");
+    });
+    const session = {
+      services: { permissionModeRegistry: registry },
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-1",
+      setDaemonPermissionMode,
+    } as unknown as Session;
+    const ctx = stubCtx({
+      registry,
+      argsRaw: "mode bypassPermissions",
+      session,
+      cwd: "/workspace/trusted",
+    });
+    const r = await permissionsCommand.execute(ctx);
+    expect(r.kind).toBe("error");
+    if (r.kind !== "error") throw new Error("expected error");
+    expect(r.message).toContain("daemon refused");
+    // Local registry untouched when the daemon switch fails.
+    expect(registry.current().mode).toBe("default");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

@@ -71,6 +71,7 @@ import {
   type SessionCancelTurnParams,
   type SessionClearParams,
   type SessionMcpAddServerParams,
+  type SessionMcpServerByNameParams,
   type SessionSnapshotParams,
   type SessionCreateParams,
   type SessionDetachParams,
@@ -79,6 +80,9 @@ import {
   type SessionRewindConversationToMessageParams,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
+  type SessionHooksStatusParams,
+  type SessionHooksSetDisabledParams,
+  type SessionApplyConfigParams,
   type SessionTerminateParams,
   type ThreadRealtimeAppendAudioParams,
   type ThreadRealtimeAppendTextParams,
@@ -139,10 +143,14 @@ export interface AgenCDaemonDispatcherOptions {
     | "clearSessionHistory"
     | "snapshotSession"
     | "addMcpServerToSession"
+    | "reconnectMcpServerOnSession"
+    | "enableMcpServerOnSession"
+    | "disableMcpServerOnSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
     | "setSessionModel"
     | "setSessionPermissionMode"
+    | "applyConfigToSession"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -150,6 +158,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "streamAgentMessage"
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
+    readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
+    readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
   };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
@@ -204,10 +214,14 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "clearSessionHistory"
     | "snapshotSession"
     | "addMcpServerToSession"
+    | "reconnectMcpServerOnSession"
+    | "enableMcpServerOnSession"
+    | "disableMcpServerOnSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
     | "setSessionModel"
     | "setSessionPermissionMode"
+    | "applyConfigToSession"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -215,6 +229,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "streamAgentMessage"
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
+    readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
+    readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
   };
   readonly #initializeAuthenticator:
     | ((
@@ -488,6 +504,36 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionMcpAddServerParams(params),
           ),
         );
+      case "session.mcp.reconnectServer":
+        return successResponse(
+          id,
+          await this.#agentManager.reconnectMcpServerOnSession(
+            validateSessionMcpServerByNameParams(
+              params,
+              "session.mcp.reconnectServer",
+            ),
+          ),
+        );
+      case "session.mcp.enableServer":
+        return successResponse(
+          id,
+          await this.#agentManager.enableMcpServerOnSession(
+            validateSessionMcpServerByNameParams(
+              params,
+              "session.mcp.enableServer",
+            ),
+          ),
+        );
+      case "session.mcp.disableServer":
+        return successResponse(
+          id,
+          await this.#agentManager.disableMcpServerOnSession(
+            validateSessionMcpServerByNameParams(
+              params,
+              "session.mcp.disableServer",
+            ),
+          ),
+        );
       case "session.partialCompactFromMessage":
         return successResponse(
           id,
@@ -515,6 +561,41 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.setSessionPermissionMode(
             validateSessionSetPermissionModeParams(params),
+          ),
+        );
+      case "session.hooks.status":
+        if (this.#agentManager.getSessionHooksStatus === undefined) {
+          return errorResponse(
+            id,
+            -32601,
+            "daemon method is not implemented yet: session.hooks.status",
+          );
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.getSessionHooksStatus(
+            validateSessionHooksStatusParams(params),
+          ),
+        );
+      case "session.hooks.setDisabled":
+        if (this.#agentManager.setSessionHooksDisabled === undefined) {
+          return errorResponse(
+            id,
+            -32601,
+            "daemon method is not implemented yet: session.hooks.setDisabled",
+          );
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.setSessionHooksDisabled(
+            validateSessionHooksSetDisabledParams(params),
+          ),
+        );
+      case "session.applyConfig":
+        return successResponse(
+          id,
+          await this.#agentManager.applyConfigToSession(
+            validateSessionApplyConfigParams(params),
           ),
         );
       case "message.send":
@@ -1435,6 +1516,19 @@ function validateSessionMcpAddServerParams(
   return validated as SessionMcpAddServerParams;
 }
 
+function validateSessionMcpServerByNameParams(
+  params: JsonObject,
+  methodName: string,
+): SessionMcpServerByNameParams {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "serverName"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredString(validated, methodName, "serverName");
+  return validated as SessionMcpServerByNameParams;
+}
+
 function validateSessionPartialCompactFromMessageParams(
   params: JsonObject,
 ): SessionPartialCompactFromMessageParams {
@@ -1519,6 +1613,49 @@ function validateSessionSetPermissionModeParams(
   validateRequiredString(validated, "session.setPermissionMode", "sessionId");
   validateRequiredString(validated, "session.setPermissionMode", "mode");
   return validated as SessionSetPermissionModeParams;
+}
+
+function validateSessionHooksStatusParams(
+  params: JsonObject,
+): SessionHooksStatusParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.hooks.status",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.hooks.status", "sessionId");
+  return validated as SessionHooksStatusParams;
+}
+
+function validateSessionHooksSetDisabledParams(
+  params: JsonObject,
+): SessionHooksSetDisabledParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.hooks.setDisabled",
+    stringFields: ["sessionId"],
+    valueFields: ["disabled"],
+  });
+  validateRequiredString(validated, "session.hooks.setDisabled", "sessionId");
+  if (typeof validated.disabled !== "boolean") {
+    throw invalidParams(
+      "session.hooks.setDisabled param 'disabled' must be a boolean",
+    );
+  }
+  return validated as SessionHooksSetDisabledParams;
+}
+
+function validateSessionApplyConfigParams(
+  params: JsonObject,
+): SessionApplyConfigParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.applyConfig",
+    stringFields: ["sessionId", "profile"],
+    valueFields: ["reload"],
+  });
+  validateRequiredString(validated, "session.applyConfig", "sessionId");
+  if (validated.reload !== undefined && typeof validated.reload !== "boolean") {
+    throw invalidParams("session.applyConfig param 'reload' must be a boolean");
+  }
+  return validated as SessionApplyConfigParams;
 }
 
 function validateMessageSendParams(params: JsonObject): MessageSendParams {

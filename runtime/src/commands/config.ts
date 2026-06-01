@@ -52,6 +52,37 @@ function findConfigStore(ctx: SlashCommandContext): ConfigStore | null {
   return services?.configStore ?? null;
 }
 
+/**
+ * Daemon-path detection (mirrors `daemonPermissionModeFn` in permissions.ts).
+ *
+ * Only the bridge/deferred TUI session exposes `applyDaemonConfig`
+ * (tui/daemon-session.ts + bin/agenc.ts forwarders); the in-process Session
+ * does not. Presence of the forwarder means a `/config profile` or
+ * `/config reload` must be re-applied to the live daemon session, not just the
+ * client-side ConfigStore.
+ */
+interface DaemonApplyConfigResult {
+  readonly applied: boolean;
+  readonly summary: string;
+}
+
+function daemonApplyConfigFn(
+  ctx: SlashCommandContext,
+):
+  | ((params: {
+      profile?: string;
+      reload?: boolean;
+    }) => Promise<DaemonApplyConfigResult>)
+  | null {
+  const fn = (ctx.session as unknown as {
+    applyDaemonConfig?: (params: {
+      profile?: string;
+      reload?: boolean;
+    }) => Promise<DaemonApplyConfigResult>;
+  }).applyDaemonConfig;
+  return typeof fn === "function" ? fn.bind(ctx.session) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Config path helpers
 // ---------------------------------------------------------------------------
@@ -133,11 +164,11 @@ function currentProfileName(session: Session): string | null {
   return pending?.profile ?? null;
 }
 
-function handleProfileSubcommand(
+async function handleProfileSubcommand(
   restArg: string,
   configStore: ConfigStore,
   ctx: SlashCommandContext,
-): SlashCommandResult {
+): Promise<SlashCommandResult> {
   const name = restArg.trim();
   const snapshot = configStore.current();
   if (name === "") {
@@ -174,6 +205,21 @@ function handleProfileSubcommand(
     model: nextModel,
     profile: name,
   });
+  // On the daemon path the staged switch above is client-only; re-apply the
+  // profile (model/provider + reasoning effort/verbosity/service tier) to the
+  // live daemon session through the bridge forwarder.
+  const applyDaemonConfig = daemonApplyConfigFn(ctx);
+  if (applyDaemonConfig !== null) {
+    try {
+      const result = await applyDaemonConfig({ profile: name });
+      return { kind: "text", text: result.summary };
+    } catch (error) {
+      return {
+        kind: "error",
+        message: `Profile staged client-side, but daemon apply failed: ${errorMessage(error)}`,
+      };
+    }
+  }
   return {
     kind: "text",
     text: `Profile switch to "${name}" staged — takes effect on next turn.`,
@@ -315,6 +361,21 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
             const before = configStore.current();
             const next = await configStore.reload();
             const changed = before.model !== next.model ? "changed" : "unchanged";
+            // Re-apply the reloaded config to the live daemon session (the
+            // client-side reload above only updates `/config show` chrome).
+            const applyDaemonConfig = daemonApplyConfigFn(ctx);
+            let daemonSuffix = "";
+            if (applyDaemonConfig !== null) {
+              try {
+                const result = await applyDaemonConfig({ reload: true });
+                daemonSuffix = `\nDaemon: ${result.summary}`;
+              } catch (error) {
+                return {
+                  kind: "error",
+                  message: `Config reloaded client-side, but daemon apply failed: ${errorMessage(error)}`,
+                };
+              }
+            }
             try {
               const mcpSuffix = await refreshMcpAfterConfigReload(
                 ctx.session,
@@ -323,7 +384,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
               const warningSuffix = formatConfigReloadWarnings(configStore);
               return {
                 kind: "text",
-                text: `Config reloaded (model ${changed}: ${before.model ?? "<unset>"} → ${next.model ?? "<unset>"})${mcpSuffix}${warningSuffix}`,
+                text: `Config reloaded (model ${changed}: ${before.model ?? "<unset>"} → ${next.model ?? "<unset>"})${mcpSuffix}${warningSuffix}${daemonSuffix}`,
               };
             } catch (error) {
               return {
@@ -333,7 +394,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
             }
           }
           case "profile":
-            return handleProfileSubcommand(rest, configStore, ctx);
+            return await handleProfileSubcommand(rest, configStore, ctx);
           case "edit":
             return openConfigInEditor(agencHomeFromCtx(ctx), env, spawner);
           case "path":
