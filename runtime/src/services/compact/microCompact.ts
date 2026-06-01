@@ -17,8 +17,18 @@ const MICROCOMPACT_MIN_CHARS = 6_000;
 const MICROCOMPACT_KEEP_RECENT = 5;
 const TOOL_RESULT_CLEARED_MESSAGE = "[Old tool result content cleared]";
 const MCP_TOOL_PREFIX = "mcp__";
+// Tool names MUST match the names the LIVE tool registry registers, not the
+// legacy/upstream-snapshot names. The whole-file reader registers as
+// "FileRead" (canonical `FILE_READ_TOOL_NAME` in
+// `src/tools/system/file-read.ts`) and the shell tool registers as
+// "exec_command" (`src/tools/system/exec-command.ts`) — NOT "Read"/"Bash".
+// Keying on the upstream names left FileRead/exec_command results unbounded
+// (the largest OOM contributors) and excluded from path-aware retention.
+// The remaining names (Grep/Glob/Edit/Write) already match the live registry.
 const COMPACTABLE_TOOLS = new Set([
+  "FileRead",
   "Read",
+  "exec_command",
   "Bash",
   "PowerShell",
   "Grep",
@@ -29,7 +39,11 @@ const COMPACTABLE_TOOLS = new Set([
   "Write",
 ]);
 
-const PATH_BEARING_READ_TOOLS = new Set(["Read"]);
+// Path-bearing readers whose result carries a `file_path` argument, so the
+// LATEST result per active path can be retained beyond the flat recent-N
+// window. "FileRead" is the live whole-file reader; "Read" is kept for the
+// upstream snapshot / parity.
+const PATH_BEARING_READ_TOOLS = new Set(["FileRead", "Read"]);
 
 let microcompactSequence = 0;
 

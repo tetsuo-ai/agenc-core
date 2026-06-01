@@ -74,13 +74,34 @@ const FILE_READ_LINE_RE = /(^|\n)\s*\d+→/;
 const GREP_FOUND_RE = /Found \d+ (file|files|match|matches|total occurrences)/;
 
 /**
- * The live daemon's `Edit`/`MultiEdit`/`Write` SUCCESS result is the bare
- * sentence `The file <path> has been updated successfully.` (no diff data — the
- * diff is rendered from the tool-use INPUT on the call row instead). Match it so
- * the redundant result body is suppressed and the diff appears exactly once.
+ * The live daemon's `Edit`/`MultiEdit`/`Write` SUCCESS result is a bare
+ * success sentence (no diff data — the diff is rendered from the tool-use
+ * INPUT on the call row instead). Suppress it so the result renders exactly
+ * once (the diff), not twice. The daemon emits several success shapes that all
+ * mean "the write applied", and the suppress predicate must cover every one or
+ * the raw sentence double-renders alongside the diff:
+ *
+ *   - single Edit / existing-file Write:
+ *       "The file <path> has been updated successfully."
+ *   - replace_all Edit (`successText(_, true)`):
+ *       "The file <path> has been updated. All occurrences were successfully
+ *        replaced."
+ *   - MultiEdit (`multiEditSuccessText`): the "...updated successfully." clause
+ *       is FOLLOWED by " N edits applied with M replacements." — so the success
+ *       phrase is mid-string, not end-anchored.
+ *   - new-file Write (`file-write.ts`):
+ *       "File created successfully at: <path>" — "successfully" is mid-string
+ *       and the line ends with a path, not "successfully.".
+ *
+ * Each regex is unanchored at the tail so the MultiEdit trailer and the Write
+ * path suffix don't defeat the match, but each still requires the specific
+ * success wording so a FAILED edit/write (which uses different wording and is
+ * routed through the error/generic path) never matches.
  */
-const EDIT_SUCCESS_RE = /\bhas been updated successfully\.?$/;
-const WRITE_SUCCESS_RE = /\bhas been (created|written) successfully\.?$/;
+const EDIT_SUCCESS_RE =
+  /\bhas been updated successfully\.|\bhas been updated\. All occurrences were successfully replaced\./;
+const WRITE_SUCCESS_RE =
+  /\bhas been (created|written) successfully\.|\bFile created successfully at:/;
 
 /**
  * Heuristic for a bare Grep match list with no `Found ...` summary line — every

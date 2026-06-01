@@ -129,6 +129,7 @@ import {
 import { notifyCommandLifecycle } from "../utils/commandLifecycle.js";
 import { wrapCommandText } from "../utils/messages.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
+import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import {
   buildInitialTurnState,
   resetIterationFields,
@@ -1210,8 +1211,20 @@ const IN_MEMORY_TOOL_RESULT_MAX_CHARS = 6_000;
 const IN_MEMORY_TOOL_RESULT_CLEARED_MARKER =
   "[Old tool result content cleared]";
 const IN_MEMORY_MCP_TOOL_PREFIX = "mcp__";
+// The shell tool registers as "exec_command" in the LIVE tool registry (see
+// `src/tools/system/exec-command.ts`), NOT "Bash". There is no exported
+// constant for it at the source, so the canonical string is pinned here.
+const IN_MEMORY_EXEC_COMMAND_TOOL_NAME = "exec_command";
+// Tool names MUST match the LIVE tool registry. The whole-file reader is
+// `FILE_READ_TOOL_NAME` ("FileRead") and the shell tool is "exec_command" —
+// these (the largest tool outputs: whole-file reads, build/test logs) were
+// previously absent, so their results were NEVER bounded in memory and the
+// OOM bound missed its biggest targets. Grep/Glob/Edit/Write already match.
+// Kept in lockstep with `microCompact.ts` `COMPACTABLE_TOOLS`.
 const IN_MEMORY_COMPACTABLE_TOOLS = new Set([
+  FILE_READ_TOOL_NAME,
   "Read",
+  IN_MEMORY_EXEC_COMMAND_TOOL_NAME,
   "Bash",
   "PowerShell",
   "Grep",
@@ -1221,6 +1234,31 @@ const IN_MEMORY_COMPACTABLE_TOOLS = new Set([
   "Edit",
   "Write",
 ]);
+
+// Path-bearing readers whose tool call carries a `file_path` argument. The
+// LATEST result per active path is retained full (model context preserved)
+// even when it falls outside the most-recent-N window — mirroring
+// microcompact's `PATH_BEARING_READ_TOOLS` path-aware retention.
+const IN_MEMORY_PATH_BEARING_READ_TOOLS = new Set([FILE_READ_TOOL_NAME, "Read"]);
+
+function inMemoryReadFilePathFromArguments(
+  argumentsJson: string | undefined,
+): string | undefined {
+  if (typeof argumentsJson !== "string" || argumentsJson.length === 0) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsJson);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const filePath = (parsed as Record<string, unknown>).file_path;
+  return typeof filePath === "string" && filePath.length > 0
+    ? filePath
+    : undefined;
+}
 
 function isToolResultMessage(message: LLMMessage): boolean {
   return message.role === "tool" || message.toolCallId !== undefined;
@@ -1269,9 +1307,16 @@ function boundInMemoryToolResultContent(
   // compactable when its `toolCallId` was requested by a compactable tool, or
   // (fallback, mirroring microcompact) its own `toolName` is compactable.
   const compactableCallIds = new Set<string>();
+  // Map every path-bearing read tool_use id → the `file_path` it read, so the
+  // LATEST read per path can be retained full even outside the recent-N window.
+  const readPathByCallId = new Map<string, string>();
   for (const message of messages) {
     for (const call of message.toolCalls ?? []) {
       if (isInMemoryCompactableTool(call.name)) compactableCallIds.add(call.id);
+      if (IN_MEMORY_PATH_BEARING_READ_TOOLS.has(call.name)) {
+        const filePath = inMemoryReadFilePathFromArguments(call.arguments);
+        if (filePath !== undefined) readPathByCallId.set(call.id, filePath);
+      }
     }
   }
   const isCompactableResult = (message: LLMMessage): boolean => {
@@ -1305,10 +1350,28 @@ function boundInMemoryToolResultContent(
             IN_MEMORY_KEEP_RECENT_TOOL_RESULTS
         ]
       : -1;
+  // Path-aware retention: for each distinct file path, keep the LATEST read
+  // result full so the active working file is never evicted by the flat
+  // recent-N window (otherwise the model re-reads it every turn — context
+  // thrash). `compactableResultIndices` is in document order, so the last
+  // index seen per path is the most-recent read of that path. Mirrors
+  // microcompact's `latestReadResultPerPath`.
+  const keepIndexByPath = new Map<string, number>();
+  for (const index of compactableResultIndices) {
+    const message = messages[index];
+    const callId = message?.toolCallId;
+    if (callId === undefined) continue;
+    const filePath = readPathByCallId.get(callId);
+    if (filePath === undefined) continue;
+    keepIndexByPath.set(filePath, index);
+  }
+  const keepIndices = new Set<number>(keepIndexByPath.values());
   let cleared = 0;
   for (const index of compactableResultIndices) {
     // Never clear within the most-recent-N kept window.
     if (keepFromIndex >= 0 && index >= keepFromIndex) continue;
+    // Never clear the most-recent read of an active file path.
+    if (keepIndices.has(index)) continue;
     // Never clear content that has not yet been persisted to the rollout.
     if (index >= boundUpToIndex) continue;
     const message = messages[index];

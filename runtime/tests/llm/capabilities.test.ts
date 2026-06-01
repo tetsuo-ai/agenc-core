@@ -73,7 +73,9 @@ describe("resolveProviderModelCapabilities", () => {
       supportsAudioOutput: false,
       supportsStructuredOutput: true,
       supportsStructuredOutputWithTools: true,
-      supportsProviderNativeWebSearch: false,
+      // gpt-5 now resolves via its REGISTERED_MODEL_CATALOG entry, which
+      // exposes native web search (supportsSearchTool: true).
+      supportsProviderNativeWebSearch: true,
       supportsExtendedThinking: true,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,

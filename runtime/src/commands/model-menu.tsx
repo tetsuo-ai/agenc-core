@@ -9,6 +9,7 @@ import {
   configuredModelForProvider,
   defaultModelForProvider,
 } from "../config/resolve-model.js";
+import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
@@ -186,6 +187,13 @@ function providerOrder(
   });
 }
 
+function isHiddenCatalogModel(provider: ProviderSlug, model: string): boolean {
+  return (
+    resolveRegisteredModelCatalogEntry({ provider, model })?.visibility ===
+      "hide"
+  );
+}
+
 function providerRows(params: {
   readonly provider: ProviderSlug;
   readonly currentProvider: ProviderSlug;
@@ -204,7 +212,13 @@ function providerRows(params: {
   candidates.add(defaultModel);
   for (const model of params.catalogModels) {
     const trimmed = model.trim();
-    if (trimmed.length > 0) candidates.add(trimmed);
+    if (trimmed.length === 0) continue;
+    // `visibility: "hide"` models (e.g. internal review models) stay resolvable
+    // via the flat catalog but must not be offered as new picker selections.
+    // The current/configured/default candidates above are added unconditionally,
+    // so a hidden model that is the active selection still renders its row.
+    if (isHiddenCatalogModel(params.provider, trimmed)) continue;
+    candidates.add(trimmed);
   }
 
   if (candidates.size === 0) {
@@ -264,13 +278,13 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     }),
   );
   const activeIndex = Math.max(0, rows.findIndex(row => row.status === "current"));
+  // Count the rows actually offered per provider (hidden models are filtered
+  // out in providerRows) so the displayed count matches the selectable list.
   const providerCounts = Object.freeze(
-    Object.fromEntries(
-      Object.entries(catalog).map(([catalogProvider, models]) => [
-        catalogProvider,
-        models.length,
-      ]),
-    ),
+    rows.reduce<Record<string, number>>((counts, row) => {
+      counts[row.provider] = (counts[row.provider] ?? 0) + 1;
+      return counts;
+    }, {}),
   );
   return {
     provider,

@@ -631,6 +631,59 @@ function isLoneReadOrSearchGroup(group: GroupAccumulator): boolean {
 }
 
 /**
+ * Select the messages of a lone-Read/Grep group that should be emitted
+ * verbatim when the group is un-collapsed.
+ *
+ * A "lone" group can still contain silently-absorbed meta-operations (Snip,
+ * ToolSearch) and their tool results: those add no counts, so
+ * `isLoneReadOrSearchGroup` treats them as invisible and stays true. If we
+ * emitted every message of such a group, those absorbed tool-use rows (and
+ * their result rows) would leak into the default transcript — exactly what
+ * absorbing them was meant to prevent. Filter them out here so an
+ * un-collapsed lone group shows ONLY the single plain Read/Grep call and its
+ * result; the absorbed rows remain hidden (still visible in verbose mode via
+ * the collapsed-group path, which this branch is not on).
+ */
+function selectLoneGroupVisibleMessages(
+  group: GroupAccumulator,
+  tools: Tools,
+): CollapsibleMessage[] {
+  // Collect the tool_use_ids of every silently-absorbed tool-use message so
+  // their paired tool_result messages can be dropped alongside them.
+  const absorbedToolUseIds = new Set<string>()
+  for (const m of group.messages) {
+    const info = getCollapsibleToolInfo(m, tools)
+    if (info?.isAbsorbedSilently) {
+      for (const id of getToolUseIdsFromMessage(m)) {
+        absorbedToolUseIds.add(id)
+      }
+    }
+  }
+  if (absorbedToolUseIds.size === 0) return group.messages
+  return group.messages.filter((m) => {
+    // Drop the absorbed tool-use rows themselves.
+    const info = getCollapsibleToolInfo(m, tools)
+    if (info?.isAbsorbedSilently) return false
+    // Drop tool_result rows that belong to an absorbed tool use.
+    if (m.type === 'user') {
+      const toolResults = m.message.content.filter(
+        (c: any): c is { type: 'tool_result'; tool_use_id: string } =>
+          c.type === 'tool_result',
+      )
+      if (
+        toolResults.length > 0 &&
+        toolResults.every((r: { tool_use_id: string }) =>
+          absorbedToolUseIds.has(r.tool_use_id),
+        )
+      ) {
+        return false
+      }
+    }
+    return true
+  })
+}
+
+/**
  * Extract file paths from read tool inputs in a message.
  * Returns an array of file paths (may have duplicates if same file is read multiple times in one grouped message).
  */
@@ -904,7 +957,10 @@ export function collapseReadSearchGroups(
       // This mirrors groupToolUses, which only groups runs of 2+ calls. Only a
       // lone read/search is un-collapsed; mixed/memory/mcp/bash/git groups and
       // multi-call read/search runs still collapse to keep the default view tidy.
-      for (const m of currentGroup.messages) {
+      // Silently-absorbed meta-ops (Snip/ToolSearch) and their results are
+      // filtered out so they stay hidden instead of leaking into the default
+      // transcript when the lone group is un-collapsed.
+      for (const m of selectLoneGroupVisibleMessages(currentGroup, tools)) {
         result.push(m)
       }
     } else {

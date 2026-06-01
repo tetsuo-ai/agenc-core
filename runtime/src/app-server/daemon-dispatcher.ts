@@ -1595,6 +1595,19 @@ function validateSessionSetModelParams(
     stringFields: ["sessionId", "model", "provider"],
   });
   validateRequiredString(validated, "session.setModel", "sessionId");
+  // GAP #13c: an empty string passes the `=== undefined` guards above but is
+  // not a usable selection — it would stage an empty model/provider and slip
+  // past the "at least one" gate. Reject empty strings explicitly so callers
+  // must supply a non-empty model or provider.
+  if (typeof validated.model === "string" && validated.model.length === 0) {
+    throw invalidParams("session.setModel model must not be empty");
+  }
+  if (
+    typeof validated.provider === "string" &&
+    validated.provider.length === 0
+  ) {
+    throw invalidParams("session.setModel provider must not be empty");
+  }
   if (validated.model === undefined && validated.provider === undefined) {
     throw invalidParams(
       "session.setModel requires at least one of model or provider",

@@ -68,4 +68,24 @@ describe("size-capped rotating file log sink", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("swallows a rotation failure instead of throwing out of write()", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-log-sink-"));
+    const path = join(dir, "daemon.log");
+    const maxBytes = 1024;
+    const sink = createSizeCappedFileLogSink({ path, maxBytes });
+
+    // Prime currentBytes > 0 so the next oversized write triggers rotation.
+    sink.write("a".repeat(900));
+
+    // Remove the directory out from under the sink. rotate() will fail to
+    // rename the (now missing) file AND fail to reopen it ("w") in the deleted
+    // directory, so the reopen throws. write() must catch that so logging can
+    // never crash the daemon.
+    await rm(dir, { recursive: true, force: true });
+
+    expect(() => sink.write("b".repeat(900))).not.toThrow();
+
+    sink.close();
+  });
 });

@@ -478,8 +478,20 @@ export function createDaemonTuiSession<
     // daemon path that field lives on the REAL session inside the daemon.
     // Forward the spec as `session.setModel` so the daemon runs the
     // genuine I-13/I-57 switch machinery; its turn loop's
-    // `consumePendingProviderSwitch` is the authority. Fire-and-forget to
-    // match the synchronous `void` signature the commands expect.
+    // `consumePendingProviderSwitch` is the authority.
+    //
+    // The mutator's signature is synchronous `void` (the commands build
+    // an optimistic "Model switched" summary inline and do not await
+    // this call), so we keep the active-session UX responsive by NOT
+    // blocking on the round-trip. But the daemon — not the optimistic
+    // client — is the authority on whether the switch was *applied*: it
+    // can REJECT a switch (history-incompatible target, or a staged turn
+    // that later refuses the pending marker). When the daemon reports
+    // `applied === false`, the optimistic success is a lie, so we surface
+    // the daemon's authoritative `summary` back to the transcript as a
+    // `provider_switch_rejected` warning (an allow-listed, user-visible
+    // cause). That way the user sees the real rejection rather than only
+    // the false "Model switched" line.
     setPendingProviderSwitch: (pending) => {
       if (pending === null) return;
       void client
@@ -490,6 +502,23 @@ export function createDaemonTuiSession<
             ? { provider: pending.provider }
             : {}),
         } satisfies SessionSetModelParams)
+        .then((result) => {
+          if (result.applied) return;
+          // Daemon rejected the switch. Override the optimistic chrome by
+          // emitting the daemon's authoritative summary; without this the
+          // user is told the model switched when it did not.
+          broadcastDaemonEvent({
+            id: `agenc-model-switch-rejected-${Date.now()}`,
+            type: "warning",
+            payload: {
+              message:
+                result.summary.length > 0
+                  ? result.summary
+                  : "Model switch rejected by the daemon.",
+              cause: "provider_switch_rejected",
+            },
+          } satisfies JsonObject);
+        })
         .catch(() => {
           // Best-effort: a disconnected daemon socket throws. The user's
           // optimistic chrome update already landed; the next snapshot /
@@ -563,15 +592,16 @@ function createDaemonMirroredMcpManager(
         sessionId,
         config,
       } satisfies SessionMcpAddServerParams);
+      // The daemon owns the REAL MCP connection; `remote` is the
+      // authoritative outcome. The local manager is only a client-side
+      // projection we best-effort keep in sync so the status surface
+      // reflects the new server. A failure of that local mirror must NOT
+      // be reported as the overall result when the daemon already added
+      // the server — doing so showed the user "failed to add server" even
+      // though the connection the daemon owns is live. Mirror locally,
+      // but always report the daemon's authoritative outcome.
       if (remote.success && typeof manager.addServer === "function") {
-        const local = await manager.addServer(config);
-        const alreadyConfigured =
-          local.success === false &&
-          typeof local.error === "string" &&
-          /already configured/i.test(local.error);
-        if (!local.success && !alreadyConfigured) {
-          return local;
-        }
+        await manager.addServer(config).catch(() => undefined);
       }
       return {
         serverName: remote.serverName,

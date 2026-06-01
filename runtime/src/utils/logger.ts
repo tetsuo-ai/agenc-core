@@ -112,10 +112,14 @@ export function createSizeCappedFileLogSink(
       const buffer =
         typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
       if (buffer.length === 0) return;
-      if (currentBytes + buffer.length > maxBytes && currentBytes > 0) {
-        rotate();
-      }
+      // rotate() reopens file descriptors via openSync and can throw on
+      // FD/disk/permission errors. Since this sink runs inside the patched
+      // console write, an escaping throw would crash the daemon, so the entire
+      // rotate-and-write path is guarded. Never let logging crash the daemon.
       try {
+        if (currentBytes + buffer.length > maxBytes && currentBytes > 0) {
+          rotate();
+        }
         writeSync(fd, buffer);
         currentBytes += buffer.length;
       } catch {

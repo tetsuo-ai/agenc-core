@@ -260,6 +260,49 @@ describe("createGitAndRepoTools", () => {
     });
   });
 
+  describe("system.gitWorktreeCreate", () => {
+    it("neutralizes an argument-injection branch (leading '-')", async () => {
+      const worktreePath = join(root, "wt-branch");
+      const tool = toolByName(tools, "system.gitWorktreeCreate");
+      const result = await tool.execute({
+        path: root,
+        worktreePath,
+        branch: "--orphan",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("branch must not begin with '-'");
+      // The injected option must never reach git, so no worktree is created.
+      await expect(stat(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("neutralizes an argument-injection ref (leading '-')", async () => {
+      const worktreePath = join(root, "wt-ref");
+      const tool = toolByName(tools, "system.gitWorktreeCreate");
+      const result = await tool.execute({
+        path: root,
+        worktreePath,
+        ref: "--lock",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("ref must not begin with '-'");
+      await expect(stat(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("creates a worktree for a safe branch", async () => {
+      const worktreePath = join(root, "wt-ok");
+      const tool = toolByName(tools, "system.gitWorktreeCreate");
+      const result = await tool.execute({
+        path: root,
+        worktreePath,
+        branch: "feature",
+      });
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content);
+      expect(payload.branch).toBe("feature");
+      expect((await stat(worktreePath)).isDirectory()).toBe(true);
+    });
+  });
+
   describe("system.repoInventory", () => {
     it("reports branch, files, directories, manifests, languages, worktrees", async () => {
       await writeFile(join(root, "package.json"), "{}\n", "utf8");

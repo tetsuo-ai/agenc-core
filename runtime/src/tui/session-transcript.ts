@@ -117,12 +117,34 @@ function clampResultText(text: string): string {
   // than JS UTF-16 code-unit count.
   const byteLength = Buffer.byteLength(text, "utf8");
   if (byteLength <= MAX_TOOL_RESULT_BYTES) return text;
-  // Cheap, safe slice: take the first MAX_TOOL_RESULT_BYTES *characters* as an
-  // upper bound on the kept bytes (chars >= bytes only for multi-byte text, so
-  // this never exceeds the cap), then append the marker.
-  const head = text.slice(0, MAX_TOOL_RESULT_BYTES);
+  // Keep the head at the BYTE cap. A char-count slice is wrong here: a JS
+  // string character can encode to up to 4 UTF-8 bytes, so slicing by
+  // MAX_TOOL_RESULT_BYTES *characters* would retain up to ~4x the byte cap for
+  // multi-byte (CJK/emoji) content — defeating the memory bound. Slice the
+  // UTF-8 byte buffer instead, backing off any trailing partial multi-byte
+  // sequence so the kept head is always valid UTF-8 at or under the cap.
+  const head = sliceUtf8Bytes(text, MAX_TOOL_RESULT_BYTES);
   const truncated = byteLength - Buffer.byteLength(head, "utf8");
   return `${head}\n[${truncated} bytes truncated]`;
+}
+
+/**
+ * Return the longest UTF-8-valid prefix of `text` whose encoded length does not
+ * exceed `maxBytes`. Slices the UTF-8 buffer at `maxBytes`, then walks back off
+ * any trailing partial multi-byte sequence so decoding never yields a U+FFFD
+ * replacement char or an over-cap result.
+ */
+function sliceUtf8Bytes(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  // A UTF-8 continuation byte matches 0b10xxxxxx (0x80–0xBF). If the byte at the
+  // cut starts mid-sequence, back up to the start of that code point so we never
+  // split a character.
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return buf.toString("utf8", 0, end);
 }
 
 /**

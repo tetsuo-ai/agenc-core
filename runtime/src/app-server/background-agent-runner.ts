@@ -61,9 +61,10 @@ import {
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import { applyModelSwitch } from "../commands/model.js";
+import { applyModelSwitch, readSessionSelection } from "../commands/model.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
+import { setActiveConfigModel } from "../bootstrap/state.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
 import {
@@ -1400,7 +1401,53 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       summary.startsWith("Model switch staged:") ||
       summary.startsWith("Provider switched ") ||
       summary.startsWith("Provider switch staged:");
+    // GAP #4: the util-layer model helpers (web-search gating/transport +
+    // auto-mode permission classifier) read the process-global
+    // activeConfigModel, which is otherwise only seeded once at startup. When
+    // the daemon stages a real model/provider switch, refresh it so those
+    // helpers reflect the live selection instead of the stale startup model.
+    if (applied) {
+      const selection = this.#resolveEffectiveConfigModel(
+        session,
+        params.model,
+        params.provider,
+      );
+      if (selection !== undefined) {
+        setActiveConfigModel(selection);
+      }
+    }
     return { applied, summary };
+  }
+
+  /**
+   * Resolve the provider/model the daemon session now points at after a
+   * switch, preferring explicit params and filling gaps from the live session
+   * selection. Returns undefined when neither source yields a usable pair so
+   * we never clobber activeConfigModel with `"unknown"` placeholders.
+   */
+  #resolveEffectiveConfigModel(
+    session: unknown,
+    paramModel?: string,
+    paramProvider?: string,
+  ): { provider: string; model: string } | undefined {
+    let current: { provider: string; model: string } | undefined;
+    try {
+      current = readSessionSelection(session as never);
+    } catch {
+      current = undefined;
+    }
+    const provider =
+      paramProvider ??
+      (current?.provider !== undefined && current.provider !== "unknown"
+        ? current.provider
+        : undefined);
+    const model =
+      paramModel ??
+      (current?.model !== undefined && current.model !== "unknown"
+        ? current.model
+        : undefined);
+    if (provider === undefined || model === undefined) return undefined;
+    return { provider, model };
   }
 
   async setAgentPermissionMode(
@@ -1563,12 +1610,36 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const changes: string[] = [];
     let applied = false;
 
+    // GAP #12: validate the requested profile against the CURRENT shared
+    // snapshot before we reload/mutate anything. resolveProfile throws
+    // UnknownProfileError for an unknown profile; doing this first keeps the
+    // operation atomic — an unknown-profile error must be a true no-op and
+    // must NOT have already advanced the shared store or fired its
+    // subscribers (which a pre-validation reload would do).
+    if (params.profile !== undefined) {
+      resolveProfile(
+        configStore.current() as unknown as Parameters<typeof resolveProfile>[0],
+        params.profile,
+      );
+    }
+
     // 1. Optionally re-read disk + env into the daemon's own store so the
     //    live session sees the latest on-disk config.
     if (params.reload === true && typeof configStore.reload === "function") {
       await configStore.reload();
       changes.push("config reloaded from disk");
       applied = true;
+      // A reload can change which profiles exist; re-validate against the
+      // fresh snapshot so a post-reload unknown profile still surfaces (the
+      // reload itself is the intended effect and is reported in `changes`).
+      if (params.profile !== undefined) {
+        resolveProfile(
+          configStore.current() as unknown as Parameters<
+            typeof resolveProfile
+          >[0],
+          params.profile,
+        );
+      }
     }
 
     // 2. Resolve the target snapshot (profile overlay or plain current).
@@ -1610,6 +1681,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       } else {
         changes.push(`model ${targetModel}`);
       }
+      // GAP #4: keep the process-global activeConfigModel (read by the
+      // util-layer web-search/transport gating + auto-mode permission
+      // classifier) in step with the staged switch instead of the stale
+      // startup model.
+      setActiveConfigModel({ provider: stageProvider, model: targetModel });
       applied = true;
     }
 

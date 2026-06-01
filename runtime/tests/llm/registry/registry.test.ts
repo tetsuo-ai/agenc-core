@@ -27,6 +27,9 @@ import {
 } from "./provider-info.js";
 
 const DONOR_MODEL_IDS = Object.freeze([
+  // gpt-5 (the openai built-in default) is registered first so the default
+  // resolves through the single-source registry rather than heuristic fallback.
+  "gpt-5",
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",

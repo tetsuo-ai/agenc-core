@@ -12,6 +12,19 @@ import {
 } from "./resolve-provider.js";
 import type { AgenCConfig, ProviderModelPair } from "./schema.js";
 import { resolveModelDisambiguated } from "./schema.js";
+import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+
+// Whether `model` belongs to the grok provider's registered catalog family.
+// This must cover the whole grok family (e.g. the lead model "grok-build-0.1",
+// "grok-4.3", and prefix/namespaced variants), not a single literal default —
+// otherwise a grok-only model can leak to a non-grok provider when
+// `model_provider` is absent. `resolveRegisteredModelCatalogEntry` performs the
+// same exact/namespaced/prefix matching the registry uses for resolution.
+function isGrokFamilyModel(model: string): boolean {
+  return (
+    resolveRegisteredModelCatalogEntry({ provider: "grok", model }) !== undefined
+  );
+}
 
 export function configuredModelForProvider(
   config: AgenCConfig,
@@ -44,7 +57,7 @@ export function configuredModelForProvider(
   if (
     !configuredProvider &&
     provider !== "grok" &&
-    configuredModel === BUILT_IN_PROVIDER_DEFAULT_MODELS.grok
+    isGrokFamilyModel(configuredModel)
   ) {
     return undefined;
   }

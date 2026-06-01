@@ -390,6 +390,16 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (args.detached === true) command.push("--detach");
       const branch = toOptionalString(args.branch);
       const ref = toOptionalString(args.ref);
+      // branch/ref are model-controlled. A value beginning with "-" is parsed by
+      // git as an option (e.g. "--lock", "--orphan", "--detach"), letting a model
+      // smuggle worktree-add options into argv, so reject those rather than
+      // passing them through.
+      if (branch?.startsWith("-")) {
+        return errorResult("branch must not begin with '-'");
+      }
+      if (ref?.startsWith("-")) {
+        return errorResult("ref must not begin with '-'");
+      }
       if (branch) {
         command.push("-b", branch);
       }

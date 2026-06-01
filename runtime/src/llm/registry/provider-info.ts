@@ -114,11 +114,10 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
 > = Object.freeze({
   // grok is fully covered by REGISTERED_MODEL_CATALOG: derived directly.
   grok: mergeDerivedProviderModels("grok"),
-  // openai is registry-derived plus the two models that still live only as
-  // bare strings. gpt-5 (the provider default) leads so it stays first; o3
-  // trails the registry entries, matching the prior literal's tail.
+  // openai is registry-derived (gpt-5, the provider default, now leads from the
+  // registry via its lowest priority) plus o3, which still lives only as a bare
+  // string and trails the registry entries, matching the prior literal's tail.
   openai: mergeDerivedProviderModels("openai", {
-    leadingExtras: ["gpt-5"],
     trailingExtras: ["o3"],
   }),
   anthropic: Object.freeze(["claude-opus-4-7"]),

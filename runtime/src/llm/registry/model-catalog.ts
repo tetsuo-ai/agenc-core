@@ -100,6 +100,34 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
     {
+      // openai built-in provider default (BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).
+      // Registered here so the default resolves through the single-source
+      // registry instead of falling back to heuristics: "gpt-5" is not a prefix
+      // of "gpt-5.5"/"gpt-5.4"/... (those are longer), so findLongestPrefix
+      // cannot recover it without an explicit entry. Lowest priority so it
+      // leads the openai catalog ordering in deriveFlatCatalog.
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      contextWindow: 272_000,
+      maxContextWindow: 272_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: true,
+      modelMessages: OPENAI_PERSONALITY_MESSAGES,
+      webSearchToolType: "text_and_image",
+      supportsReasoningSummaries: true,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      defaultReasoningLevel: "medium",
+      additionalSpeedTiers: FAST_SPEED_TIER,
+      priority: -1,
+      visibility: "list",
+    },
+    {
       provider: "openai",
       model: "gpt-5.5",
       displayName: "GPT-5.5",
@@ -398,9 +426,13 @@ export function resolveModelCatalogMetadata(input: {
  * Groups REGISTERED_MODEL_CATALOG entries by provider into the flat
  * `{ provider: string[] }` shape consumed by BUILT_IN_PROVIDER_MODEL_CATALOG
  * and the model-registry catalog. Entries with `visibility: "none"` are
- * omitted (they should not appear in any catalog listing); "hide" entries are
- * kept so they remain resolvable while being filtered from the picker
- * downstream. Order within a provider follows ascending `priority`.
+ * omitted (they should not appear in any catalog listing). `visibility: "hide"`
+ * entries are KEPT here so they remain resolvable (e.g. `/model <hidden>` and
+ * default-model resolution still work). They are NOT user-selectable: each
+ * picker is responsible for excluding "hide" models from its offered options
+ * (see `providerRows` in commands/model-menu.tsx and the visibility filters in
+ * models-manager.ts / utils/model/modelOptions.ts). Order within a provider
+ * follows ascending `priority`.
  *
  * This makes REGISTERED_MODEL_CATALOG the single source of truth: adding one
  * entry here surfaces the model in every flat-catalog consumer.

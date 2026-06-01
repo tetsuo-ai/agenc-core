@@ -18,17 +18,26 @@ describe("StaticModelsManager", () => {
       fallbackProvider: "openai",
     });
 
+    // gpt-5 (the openai built-in default) now resolves through the
+    // single-source REGISTERED_MODEL_CATALOG entry instead of heuristic
+    // fallback, so its metadata matches that registry entry (272k context,
+    // reasoning summary "none", the full openai reasoning ladder).
     const info = await manager.getModelInfo("gpt-5");
     expect(info).toMatchObject({
       slug: "gpt-5",
-      contextWindow: 1_000_000,
+      contextWindow: 272_000,
       effectiveContextWindowPercent: 95,
       defaultReasoningLevel: "medium",
-      defaultReasoningSummary: "auto",
+      defaultReasoningSummary: "none",
       truncationPolicy: "off",
       usedFallbackModelMetadata: false,
     });
-    expect(info.supportedReasoningLevels).toEqual(["low", "medium", "high"]);
+    expect(info.supportedReasoningLevels).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
   });
 
   it("lists and resolves registered bundled model catalog entries", async () => {

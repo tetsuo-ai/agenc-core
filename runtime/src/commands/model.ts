@@ -70,7 +70,7 @@ function readConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
   );
 }
 
-function readSessionSelection(session: Session): SessionSelection {
+export function readSessionSelection(session: Session): SessionSelection {
   const peekStateForApply = (session as unknown as {
     state?: { unsafePeek?: () => unknown };
   }).state?.unsafePeek;

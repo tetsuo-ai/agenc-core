@@ -338,9 +338,8 @@ describe("coverage swarm daemon session adapter", () => {
       ).addServer({ name: "fatal-local" }),
     ).resolves.toEqual({
       serverName: "fatal-local",
-      success: false,
-      toolCount: 0,
-      error: "local validation failed",
+      success: true,
+      toolCount: 2,
     });
   });
 

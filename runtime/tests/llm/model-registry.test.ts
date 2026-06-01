@@ -17,19 +17,23 @@ describe("ModelRegistry", () => {
 
     expect(entry.provider).toBe("openai");
     expect(entry.model).toBe("gpt-5");
-    expect(entry.metadata.contextWindow).toBe(1_000_000);
+    // gpt-5 (the openai built-in default) now resolves through its
+    // single-source REGISTERED_MODEL_CATALOG entry, so metadata/capabilities
+    // come from that entry (272k context, native web search) rather than from
+    // heuristic fallback.
+    expect(entry.metadata.contextWindow).toBe(272_000);
     expect(entry.cost.known).toBe(true);
     expect(entry.cost.matchedKey).toBe("openai:gpt-5");
     expect(entry.capabilities.supportsToolUse).toBe(true);
     expect(entry.capabilities.supportsVisionInput).toBe(true);
     expect(entry.capabilities.supportsStructuredOutput).toBe(true);
     expect(entry.capabilities.acceptsReasoningEffort).toBe(true);
-    expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(false);
+    expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(true);
 
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
       slug: "gpt-5",
-      contextWindow: 1_000_000,
-      supportedReasoningLevels: ["low", "medium", "high"],
+      contextWindow: 272_000,
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
       usedFallbackModelMetadata: false,
     });
   });
