@@ -46,6 +46,9 @@ import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { routerFromRegistry } from "../tools/router.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import { getPlan, getPlanFilePath } from "../utils/plans.js";
+import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
+import type { AgentId } from "../types/ids.js";
 import {
   computeUsdCost,
   DEFAULT_MODEL_COSTS,
@@ -1920,6 +1923,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       };
       ctx.signal?.addEventListener("abort", abort, { once: true });
     });
+    const input = approvalInputFromPayload(ctx.invocation.payload);
     await this.#emitOrBufferAgentEvent(agentId, {
       id: requestId,
       type: "request_permissions",
@@ -1929,7 +1933,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         turnId: ctx.turnId,
         permissions: ["tool.use"],
         ...(ctx.retryReason !== undefined ? { reason: ctx.retryReason } : {}),
-        input: approvalInputFromPayload(ctx.invocation.payload),
+        input,
+        ...planApprovalPayloadFields(ctx.toolName, agentId, input),
       },
     });
     return decision;
@@ -2689,7 +2694,7 @@ async function unavailableRealtimeTransport(): Promise<RealtimeTransportConnecti
   throw new Error("realtime transport connector is unavailable");
 }
 
-function notificationFromDaemonEvent(
+export function notificationFromDaemonEvent(
   sessionId: string,
   agentId: string,
   event: BackgroundAgentDaemonEvent,
@@ -2756,6 +2761,12 @@ function notificationFromDaemonEvent(
         ...(payload.input !== undefined ? { input: payload.input } : {}),
         ...(typeof payload.reason === "string"
           ? { reason: payload.reason }
+          : {}),
+        ...(typeof payload.planContent === "string"
+          ? { planContent: payload.planContent }
+          : {}),
+        ...(typeof payload.planFilePath === "string"
+          ? { planFilePath: payload.planFilePath }
           : {}),
       },
     };
@@ -4062,6 +4073,51 @@ function readApprovalAgentId(ctx: ApprovalCtx): string | null {
     session.conversationId.length > 0
     ? session.conversationId
     : null;
+}
+
+/**
+ * For an ExitPlanMode approval, enrich the request_permissions payload with the
+ * plan content and path so the TUI overlay can render the plan being approved.
+ * Falls back to the tool input's `plan` string when the on-disk plan is empty.
+ * Returns an empty object for any other tool.
+ *
+ * Exported (under a test-scoped name) so the enrichment can be unit-tested
+ * directly with mocked getPlan/getPlanFilePath without bootstrapping an agent.
+ */
+export function planApprovalPayloadFields(
+  toolName: string,
+  agentId: string,
+  input: JsonObject,
+): JsonObject {
+  if (toolName !== EXIT_PLAN_MODE_TOOL_NAME) return {};
+  const fields: Record<string, JsonValue> = {};
+  const agent = agentId as AgentId;
+  let planContent: string | null = null;
+  try {
+    planContent = getPlan(agent);
+  } catch {
+    planContent = null;
+  }
+  if (
+    (planContent === null || planContent.length === 0) &&
+    typeof input.plan === "string" &&
+    input.plan.length > 0
+  ) {
+    planContent = input.plan;
+  }
+  if (typeof planContent === "string" && planContent.length > 0) {
+    fields.planContent = planContent;
+  }
+  let planFilePath: string | undefined;
+  try {
+    planFilePath = getPlanFilePath(agent);
+  } catch {
+    planFilePath = undefined;
+  }
+  if (typeof planFilePath === "string" && planFilePath.length > 0) {
+    fields.planFilePath = planFilePath;
+  }
+  return fields;
 }
 
 function approvalInputFromPayload(value: unknown): JsonObject {

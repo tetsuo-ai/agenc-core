@@ -29,6 +29,7 @@ import type {
   AgentToolOutputLog,
   ElicitationRespondParams,
   ElicitationRespondResult,
+  ExitPlanApprovalPayload,
   JsonObject,
   JsonValue,
   MessageContent,
@@ -76,6 +77,10 @@ import {
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
 import { DEFAULT_UNATTENDED_ALLOWLIST } from "../permissions/unattended-policy.js";
+import {
+  recordExitPlanModeApproval,
+  type ExitPlanModeApproval,
+} from "../planning/exit-plan-approval.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   ThreadNotFoundError,
@@ -1113,6 +1118,14 @@ export class AgenCDaemonAgentManager {
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
     );
+    // Record the plan-mode approval choice BEFORE resolving the decision so the
+    // deferred ExitPlanMode tool (same daemon process) can consume it via
+    // consumeExitPlanModeApproval({ __callId: requestId }). requestId === the
+    // tool's __callId end-to-end (both are invocation.callId).
+    if (params.exitPlan !== undefined) {
+      const approval = toExitPlanModeApproval(params.exitPlan);
+      recordExitPlanModeApproval(params.requestId, approval);
+    }
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
       decision:
@@ -2724,4 +2737,30 @@ function isThreadLogReadMiss(error: unknown): boolean {
     error instanceof ThreadNotFoundError ||
     error instanceof ThreadStoreInvalidRequestError
   );
+}
+
+/**
+ * Map the wire-level ExitPlanApprovalPayload (from tool.approve) onto the
+ * planning module's ExitPlanModeApproval, omitting absent optional fields so
+ * the consuming execute() observes exactly what the UI chose.
+ */
+function toExitPlanModeApproval(
+  exitPlan: ExitPlanApprovalPayload,
+): ExitPlanModeApproval {
+  if (exitPlan.action === "revise") {
+    return {
+      action: "revise",
+      ...(exitPlan.feedback !== undefined ? { feedback: exitPlan.feedback } : {}),
+    };
+  }
+  return {
+    action: "approve",
+    ...(exitPlan.mode !== undefined ? { mode: exitPlan.mode } : {}),
+    ...(exitPlan.applyAllowedPrompts !== undefined
+      ? { applyAllowedPrompts: exitPlan.applyAllowedPrompts }
+      : {}),
+    ...(exitPlan.clearContext !== undefined
+      ? { clearContext: exitPlan.clearContext }
+      : {}),
+  };
 }

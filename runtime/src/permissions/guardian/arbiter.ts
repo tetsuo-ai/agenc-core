@@ -253,6 +253,8 @@ export interface ApprovalCtx {
   readonly proposedExecPolicyAmendment?: ExecPolicyAmendment;
   readonly proposedNetworkPolicyAmendments?: readonly NetworkPolicyAmendment[];
   readonly availableDecisions?: readonly AvailableApprovalDecision[];
+  readonly planContent?: string;
+  readonly planFilePath?: string;
 }
 
 export interface ApprovalResolver {

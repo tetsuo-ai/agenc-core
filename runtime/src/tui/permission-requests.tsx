@@ -23,6 +23,9 @@ import { Box, useInput } from "./ink.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
 import { ApprovalCard } from "./components/v2/primitives.js";
+import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
+import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
+import { setPlanApprovalChoice } from "./plan-approval-choice.js";
 import {
   classifyApprovalRisk,
   typedConfirmationWordForRisk,
@@ -289,13 +292,21 @@ export function AgenCPermissionOverlay({
   readonly isNonInteractiveSession?: boolean;
   readonly debug?: boolean;
 }) {
+  const isExitPlanMode =
+    request !== undefined &&
+    request.ctx.toolName === EXIT_PLAN_MODE_TOOL_NAME;
+
   const toolUseConfirm = useMemo(() => {
-    if (!request) return null;
+    if (!request || isExitPlanMode) return null;
     return buildToolUseConfirm(
       request,
       tools,
     ) as ProjectedToolUseConfirm | null;
-  }, [request, tools]);
+  }, [request, tools, isExitPlanMode]);
+
+  if (request !== undefined && isExitPlanMode) {
+    return <PlanApprovalContainer key={request.id} request={request} />;
+  }
 
   if (request === undefined || toolUseConfirm === null) {
     return null;
@@ -306,6 +317,60 @@ export function AgenCPermissionOverlay({
       request={request}
       toolUseConfirm={toolUseConfirm}
     />
+  );
+}
+
+function PlanApprovalContainer({
+  request,
+}: {
+  readonly request: PendingRequest;
+}) {
+  useRegisterKeybindingContext("Confirmation");
+
+  const planContent =
+    request.ctx.planContent ??
+    (typeof request.input.plan === "string" ? request.input.plan : undefined);
+  const planFilePath =
+    request.ctx.planFilePath ??
+    (typeof request.input.planFilePath === "string"
+      ? request.input.planFilePath
+      : undefined);
+
+  const onApprove = useCallback(
+    (mode: "acceptEdits" | "default") => {
+      setPlanApprovalChoice(request.id, {
+        action: "approve",
+        mode,
+        ...(mode === "acceptEdits" ? { applyAllowedPrompts: true } : {}),
+      });
+      request.resolve(APPROVED);
+    },
+    [request],
+  );
+
+  const onKeepPlanning = useCallback(() => {
+    setPlanApprovalChoice(request.id, { action: "revise" });
+    request.resolve(APPROVED);
+  }, [request]);
+
+  useKeybindings(
+    {
+      "app:interrupt": () => {
+        request.resolve(ABORT);
+      },
+    },
+    { context: "Confirmation" },
+  );
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <PlanApprovalOverlay
+        {...(planContent !== undefined ? { planContent } : {})}
+        {...(planFilePath !== undefined ? { planFilePath } : {})}
+        onApprove={onApprove}
+        onKeepPlanning={onKeepPlanning}
+      />
+    </Box>
   );
 }
 

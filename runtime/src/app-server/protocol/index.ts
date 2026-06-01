@@ -1009,10 +1009,19 @@ export interface ThreadRealtimeListVoicesResponse extends JsonObject {
   readonly voices: ThreadRealtimeVoicesList;
 }
 
+export interface ExitPlanApprovalPayload extends JsonObject {
+  readonly action: "approve" | "revise";
+  readonly mode?: "acceptEdits" | "default";
+  readonly applyAllowedPrompts?: boolean;
+  readonly clearContext?: boolean;
+  readonly feedback?: string;
+}
+
 export interface ToolApproveParams extends JsonObject {
   readonly sessionId: string;
   readonly requestId: string;
   readonly scope?: "once" | "session" | "agent";
+  readonly exitPlan?: ExitPlanApprovalPayload;
 }
 
 export interface ToolDenyParams extends JsonObject {

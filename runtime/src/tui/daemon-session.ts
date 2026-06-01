@@ -46,6 +46,8 @@ import type {
 } from "../elicitation/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
+import { takePlanApprovalChoice } from "./plan-approval-choice.js";
+import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import {
   createRealtimeTuiControls,
   type AgenCRealtimeTuiControls,
@@ -782,10 +784,22 @@ async function maybeBridgeDaemonApproval(
   // it so the user gets feedback instead of an indefinite hang.
   try {
     if (reviewDecisionIsAllow(decision)) {
+      // Fail-safe: an interactive ExitPlanMode approval should always carry a
+      // recorded choice (the overlay sets it before resolving). Only interactive
+      // approvals reach this bridge — daemon-side policy auto-approvals never do.
+      // So if the side-channel somehow dropped, default an ExitPlanMode allow to
+      // a "revise" record, which keeps the session IN plan mode rather than
+      // silently exiting it (fail-safe, not fail-open).
+      const choice =
+        takePlanApprovalChoice(payload.callId) ??
+        (toolName === EXIT_PLAN_MODE_TOOL_NAME
+          ? ({ action: "revise" } as const)
+          : undefined);
       await client.request("tool.approve", {
         sessionId,
         requestId: payload.callId,
         scope: decision.kind === "approved_for_session" ? "session" : "once",
+        ...(choice ? { exitPlan: choice } : {}),
       });
       return;
     }
@@ -920,6 +934,12 @@ function buildDaemonApprovalCtx(
     toolName,
     turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
     ...(typeof payload.reason === "string" ? { retryReason: payload.reason } : {}),
+    ...(typeof payload.planContent === "string"
+      ? { planContent: payload.planContent }
+      : {}),
+    ...(typeof payload.planFilePath === "string"
+      ? { planFilePath: payload.planFilePath }
+      : {}),
   };
 }
 
@@ -978,6 +998,12 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
           : [],
         ...(params.input !== undefined ? { input: params.input } : {}),
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+        ...(typeof params.planContent === "string"
+          ? { planContent: params.planContent }
+          : {}),
+        ...(typeof params.planFilePath === "string"
+          ? { planFilePath: params.planFilePath }
+          : {}),
       },
     };
   }

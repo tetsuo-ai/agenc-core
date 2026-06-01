@@ -1956,6 +1956,7 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   const validated = validateObjectShape(params, {
     methodName: "tool.approve",
     stringFields: ["sessionId", "requestId", "scope"],
+    objectFields: ["exitPlan"],
   });
   validateRequiredString(validated, "tool.approve", "sessionId");
   validateRequiredString(validated, "tool.approve", "requestId");
@@ -1969,7 +1970,48 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
       "tool.approve param 'scope' must be once, session, or agent",
     );
   }
+  if (validated.exitPlan !== undefined) {
+    validateExitPlanApprovalPayload(validated.exitPlan as JsonObject);
+  }
   return validated as ToolApproveParams;
+}
+
+function validateExitPlanApprovalPayload(exitPlan: JsonObject): void {
+  if (exitPlan.action !== "approve" && exitPlan.action !== "revise") {
+    throw invalidParams(
+      "tool.approve param 'exitPlan.action' must be approve or revise",
+    );
+  }
+  if (
+    exitPlan.mode !== undefined &&
+    exitPlan.mode !== "acceptEdits" &&
+    exitPlan.mode !== "default"
+  ) {
+    throw invalidParams(
+      "tool.approve param 'exitPlan.mode' must be acceptEdits or default",
+    );
+  }
+  if (
+    exitPlan.applyAllowedPrompts !== undefined &&
+    typeof exitPlan.applyAllowedPrompts !== "boolean"
+  ) {
+    throw invalidParams(
+      "tool.approve param 'exitPlan.applyAllowedPrompts' must be a boolean",
+    );
+  }
+  if (
+    exitPlan.clearContext !== undefined &&
+    typeof exitPlan.clearContext !== "boolean"
+  ) {
+    throw invalidParams(
+      "tool.approve param 'exitPlan.clearContext' must be a boolean",
+    );
+  }
+  if (exitPlan.feedback !== undefined && typeof exitPlan.feedback !== "string") {
+    throw invalidParams(
+      "tool.approve param 'exitPlan.feedback' must be a string",
+    );
+  }
 }
 
 function validateToolDenyParams(params: JsonObject): ToolDenyParams {
