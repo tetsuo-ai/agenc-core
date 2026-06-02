@@ -214,7 +214,17 @@ function lookupByKey<T>(
   if (table[model] !== undefined) return table[model];
   const sortedKeys = Object.keys(table).sort((a, b) => b.length - a.length);
   for (const key of sortedKeys) {
-    if (model.startsWith(key)) return table[key];
+    // gaphunt3 #13: require a separator boundary after a prefix match so a model
+    // id (e.g. "gpt-4.5-preview") does not collide with a shorter sibling key
+    // (e.g. "gpt-4" -> 8_192). A "." is treated as a version continuation (gpt-4
+    // vs gpt-4.1 / gpt-5 vs gpt-5.4 are distinct models), so it is NOT a valid
+    // boundary; only "-", ":", "/", "_" separate a known key from a suffix.
+    if (
+      model.startsWith(key) &&
+      (model.length === key.length || /[-:/_]/.test(model[key.length] ?? ""))
+    ) {
+      return table[key];
+    }
   }
   return undefined;
 }

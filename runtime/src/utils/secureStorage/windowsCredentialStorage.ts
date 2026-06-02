@@ -75,13 +75,18 @@ function readLegacyPasswordVault(): SecureStorageData | null {
     return null
   }
 
-  const resourceName = getLegacyResourceName().replace(/"/g, '`"')
-  const username = getUsername().replace(/"/g, '`"')
+  // gaphunt3 #29: single-quote (escapePowerShellSingleQuoted) instead of the
+  // weak `\"` double-quote escaping. PowerShell double-quoted strings still
+  // perform $var / $(...) expansion and treat backtick as an escape char, so a
+  // username/resource like 'a$(calc)' was evaluated; single-quoted literals
+  // disable all expansion (only ' needs doubling).
+  const resourceName = escapePowerShellSingleQuoted(getLegacyResourceName())
+  const username = escapePowerShellSingleQuoted(getUsername())
   const script = `
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
     try {
       $vault = New-Object Windows.Security.Credentials.PasswordVault
-      $cred = $vault.Retrieve("${resourceName}", "${username}")
+      $cred = $vault.Retrieve('${resourceName}', '${username}')
       $cred.FillPassword()
       [Console]::Out.Write($cred.Password)
     } catch {
@@ -219,13 +224,16 @@ export const windowsCredentialStorage: SecureStorage = {
     const removeDpapiResult = runPowerShell(removeDpapiScript)
 
     if (shouldUseLegacyPasswordVault()) {
-      const resourceName = getLegacyResourceName().replace(/"/g, '`"')
-      const username = getUsername().replace(/"/g, '`"')
+      // gaphunt3 #29: single-quote untrusted values so PowerShell does not
+      // expand $/$(...)/backtick (the `\"` double-quote escaping left those
+      // active, allowing injection via a crafted USER value on delete()).
+      const resourceName = escapePowerShellSingleQuoted(getLegacyResourceName())
+      const username = escapePowerShellSingleQuoted(getUsername())
       const removeLegacyScript = `
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
         try {
           $vault = New-Object Windows.Security.Credentials.PasswordVault
-          $cred = $vault.Retrieve("${resourceName}", "${username}")
+          $cred = $vault.Retrieve('${resourceName}', '${username}')
           $vault.Remove($cred)
         } catch {
           exit 0

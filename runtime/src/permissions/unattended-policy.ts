@@ -24,6 +24,14 @@ const REMOVED_DAEMON_SEARCH_ALIASES = Object.freeze({
 
 const TOOL_ALIASES = Object.freeze({
   bash: "system.bash",
+  // gaphunt3 #27: collapse the whole shell-exec tool family onto system.bash so
+  // an operator denylist of Bash/bash/system.bash also covers exec_command and
+  // desktop.bash, which run identical arbitrary shell commands. Without these
+  // aliases canonicalUnattendedToolName("exec_command") stayed literal and a
+  // "Bash" deny silently left exec_command/desktop.bash un-denied (paused or
+  // allowed) in unattended/--autonomous mode.
+  exec_command: "system.bash",
+  "desktop.bash": "system.bash",
   fileedit: "Edit",
   filewrite: "Write",
   read: "FileRead",

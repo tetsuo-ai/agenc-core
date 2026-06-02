@@ -1,7 +1,8 @@
 import { execaSync } from 'execa'
 import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrow } from '../execFileNoThrow.js'
-import { execSyncWithDefaults_DEPRECATED } from '../execFileNoThrowPortable.js'
+// gaphunt3 #28: read()/delete() no longer build shell command strings;
+// execSyncWithDefaults_DEPRECATED (shell:true) import removed accordingly.
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import {
   CREDENTIALS_SERVICE_SUFFIX,
@@ -36,9 +37,21 @@ export const macOsKeychainStorage = {
         CREDENTIALS_SERVICE_SUFFIX,
       )
       const username = getUsername()
-      const result = execSyncWithDefaults_DEPRECATED(
-        `security find-generic-password -a "${username}" -w -s "${storageServiceName}"`,
+      // gaphunt3 #28: pass args via argv with no shell (mirrors update()),
+      // instead of string-interpolating the env-derived username into a
+      // shell command — `security ... -a "${username}"` under shell:true
+      // allowed `USER='"; <cmd>; "'` to break out and execute arbitrary shell.
+      const execResult = execaSync(
+        'security',
+        ['find-generic-password', '-a', username, '-w', '-s', storageServiceName],
+        { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
       )
+      const result =
+        execResult.exitCode === 0 &&
+        typeof execResult.stdout === 'string' &&
+        execResult.stdout.trim()
+          ? execResult.stdout.trim()
+          : null
       if (result) {
         const data = jsonParse(result)
         keychainCacheState.cache = { data, cachedAt: Date.now() }
@@ -165,8 +178,13 @@ export const macOsKeychainStorage = {
         CREDENTIALS_SERVICE_SUFFIX,
       )
       const username = getUsername()
-      execSyncWithDefaults_DEPRECATED(
-        `security delete-generic-password -a "${username}" -s "${storageServiceName}"`,
+      // gaphunt3 #28: argv with no shell (mirrors update()/read()) so an
+      // attacker-influenced USER cannot inject shell metacharacters via the
+      // previous `security ... -a "${username}"` shell-interpolated command.
+      execaSync(
+        'security',
+        ['delete-generic-password', '-a', username, '-s', storageServiceName],
+        { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
       )
       return true
     } catch (_e) {

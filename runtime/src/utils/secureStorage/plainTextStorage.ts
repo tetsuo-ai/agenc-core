@@ -46,7 +46,9 @@ export const plainTextStorage = {
     try {
       const { storageDir, storagePath } = getStoragePath()
       try {
-        getFsImplementation().mkdirSync(storageDir)
+        // gaphunt3 #24: create the config dir with 0o700 so the credentials
+        // file is never exposed via a world/group-readable parent directory.
+        getFsImplementation().mkdirSync(storageDir, { mode: 0o700 })
       } catch (e: unknown) {
         const code = getErrnoCode(e)
         if (code !== 'EEXIST') {
@@ -54,9 +56,26 @@ export const plainTextStorage = {
         }
       }
 
+      // gaphunt3 #24: if the file already exists, tighten its mode to 0o600
+      // BEFORE writing — otherwise an existing world/group-readable file would
+      // stay exposed for the duration of the write (the open 'w' below reuses
+      // the existing inode's permissions and does not re-apply `mode`).
+      try {
+        chmodSync(storagePath, 0o600)
+      } catch (e: unknown) {
+        if (getErrnoCode(e) !== 'ENOENT') {
+          throw e
+        }
+      }
+
+      // gaphunt3 #24: create the file atomically with restrictive perms via
+      // openSync(path, 'w', 0o600) (the flush:true path honors `mode`), so the
+      // plaintext secrets are never created world/group-readable in the window
+      // before the post-write chmod.
       writeFileSync_DEPRECATED(storagePath, jsonStringify(data), {
         encoding: 'utf8',
-        flush: false,
+        flush: true,
+        mode: 0o600,
       })
       chmodSync(storagePath, 0o600)
       return {

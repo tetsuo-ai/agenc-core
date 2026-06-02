@@ -74,13 +74,17 @@ export interface StreamModelRequestContract {
 interface AssistantDisplayState {
   parser: AssistantVisibleTextStreamParser;
   visibleText: string;
-  emittedVisibleText: string;
+  // gaphunt3 #43: incremental sanitizer replaces per-chunk full-buffer
+  // re-sanitization. `emittedVisibleText` is no longer needed for diffing.
+  sanitizer: IncrementalSpoofSanitizer;
   warnedMatches: Set<string>;
 }
 
 interface ThinkingDisplayState {
   raw: string;
-  emittedSanitized: string;
+  // gaphunt3 #43: incremental sanitizer replaces per-chunk full-buffer
+  // re-sanitization of `raw`.
+  sanitizer: IncrementalSpoofSanitizer;
   redacted: boolean;
   kind: "thinking" | "reasoning_summary";
   index: number;
@@ -219,8 +223,196 @@ function emitThinkingSpoofWarnings(
   });
 }
 
+// gaphunt3 #43: incremental UI-spoof sanitization for the streaming hot
+// path. The previous implementation re-ran `sanitizeModelOutput` over the
+// ENTIRE accumulated buffer on every chunk, making total work O(n^2) in the
+// message length. Instead, finalize and emit only the buffer prefix that is
+// already "settled" (no in-progress spoof match can still alter it) and carry
+// the unsettled tail forward. The concatenation of every emitted slice is
+// byte-identical to a one-shot `sanitizeModelOutput(fullText, {strict:true})`.
+//
+// The matcher tables below mirror UI_SPOOF_PATTERNS in stream-parser.ts. They
+// must be kept in lockstep with that source of truth: the SETTLED-prefix
+// computation below is conservative (when in doubt it holds more text back, and
+// the final flush always passes the remaining tail through sanitizeModelOutput),
+// so a stale matcher can only cause cosmetic early/late delta splitting — never
+// a sanitization escape, since the actual removal is always performed by
+// sanitizeModelOutput on a contiguous settled segment.
+//
+// SPAN_* : `^...$` regexes matching a non-empty string that is a prefix of OR a
+//          complete match of the pattern, consuming the whole input — i.e. a
+//          match that could still GROW with future input ("open partial").
+// FULL_* : `^...` regexes matching a complete occurrence at the current
+//          position (used to skip past a finished, isolated match).
+const SPOOF_SPAN_NONLINE: ReadonlyArray<RegExp> = [
+  // [Approval Required]
+  /^\[(?:A(?:p(?:p(?:r(?:o(?:v(?:a(?:l(?: (?:R(?:e(?:q(?:u(?:i(?:r(?:e(?:d(?:\])?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?$/i,
+  // [Allow\s*/\s*Deny]
+  /^\[(?:A(?:l(?:l(?:o(?:w(?:\s*(?:\/(?:\s*(?:D(?:e(?:n(?:y(?:\])?)?)?)?)?)?)?)?)?)?)?)?)?$/i,
+  // [Yes\s*/\s*No](\s*:)?
+  /^\[(?:Y(?:e(?:s(?:\s*(?:\/(?:\s*(?:N(?:o(?:\](?:\s*(?::)?)?)?)?)?)?)?)?)?)?)?$/i,
+  // \x1B\[[0-9;]*[A-Za-z]
+  // eslint-disable-next-line no-control-regex
+  /^\x1B(?:\[[0-9;]*[A-Za-z]?)?$/,
+];
+const SPOOF_FULL_NONLINE: ReadonlyArray<RegExp> = [
+  /^\[Approval Required\]/i,
+  /^\[Allow\s*\/\s*Deny\]/i,
+  /^\[Yes\s*\/\s*No\](\s*:)?/i,
+  // eslint-disable-next-line no-control-regex
+  /^\x1B\[[0-9;]*[A-Za-z]/,
+];
+// ^\s*agenc\s*[>:]\s is multiline-anchored, so it only starts at a line start.
+// At the very buffer start the leading \s* may span newlines; after an internal
+// `\n` the leading whitespace excludes newlines ([^\S\n]) because a newline
+// there opens a fresh `^` anchor.
+const SPOOF_SPAN_AGENC_START =
+  /^\s*(?:a(?:g(?:e(?:n(?:c(?:\s*(?:[>:](?:\s)?)?)?)?)?)?)?)?$/i;
+const SPOOF_SPAN_AGENC_NL =
+  /^[^\S\n]*(?:a(?:g(?:e(?:n(?:c(?:\s*(?:[>:](?:\s)?)?)?)?)?)?)?)?$/i;
+const SPOOF_FULL_AGENC_START = /^\s*agenc\s*[>:]\s/i;
+const SPOOF_FULL_AGENC_NL = /^[^\S\n]*agenc\s*[>:]\s/i;
+
+/**
+ * gaphunt3 #43: length of the leading prefix of `buffer` that is "settled" —
+ * fully resolvable now because no spoof match can still grow into or out of the
+ * remaining tail. Everything in `[0, settledLen)` is safe to sanitize + emit;
+ * `buffer.slice(settledLen)` is carried to the next chunk.
+ *
+ * Walks left-to-right: at each position it (a) holds if an OPEN partial begins
+ * here (a match that could grow with future input), (b) skips a complete,
+ * end-isolated match, or (c) treats the char as plain and advances one. For
+ * plain text the walk advances every char and holds nothing, so the carry stays
+ * empty and total work is O(n).
+ */
+function settledSpoofPrefixLen(
+  buffer: string,
+  pendingStartsLine: boolean,
+  atBufferStart: boolean,
+): number {
+  let pos = 0;
+  let lineStart = pendingStartsLine;
+  let bufStart = atBufferStart;
+  while (pos < buffer.length) {
+    const slice = buffer.slice(pos);
+    // (a) open partial that could still grow → unsettled from here.
+    let open = false;
+    for (const span of SPOOF_SPAN_NONLINE) {
+      if (span.test(slice)) {
+        open = true;
+        break;
+      }
+    }
+    if (!open && lineStart) {
+      const span =
+        pos === 0 && bufStart ? SPOOF_SPAN_AGENC_START : SPOOF_SPAN_AGENC_NL;
+      if (span.test(slice)) open = true;
+    }
+    if (open) return pos;
+    // (b) complete, end-isolated match (the open-partial check above already
+    // caught any match that reaches the buffer end and could still grow).
+    let matchLen = -1;
+    if (lineStart) {
+      const full =
+        pos === 0 && bufStart ? SPOOF_FULL_AGENC_START : SPOOF_FULL_AGENC_NL;
+      const r = full.exec(slice);
+      if (r) matchLen = Math.max(matchLen, r[0].length);
+    }
+    for (const full of SPOOF_FULL_NONLINE) {
+      const r = full.exec(slice);
+      if (r) matchLen = Math.max(matchLen, r[0].length);
+    }
+    if (matchLen > 0) {
+      // Removed text can expose a fresh line-start in the cleaned output, so
+      // treat the next position as a line start.
+      pos += matchLen;
+      bufStart = false;
+      lineStart = true;
+      continue;
+    }
+    // (c) plain char.
+    const ch = buffer[pos] as string;
+    if (!/\s/.test(ch)) bufStart = false;
+    lineStart = ch === "\n";
+    pos += 1;
+  }
+  return buffer.length;
+}
+
+/**
+ * gaphunt3 #43: stateful, incremental UI-spoof sanitizer. `push` consumes a new
+ * delta and returns the newly-resolved sanitized text plus any spoof-pattern
+ * labels seen for the first time; `flush` drains the carry buffer at
+ * end-of-stream. The concatenation of every `push().text` followed by
+ * `flush().text` equals `sanitizeModelOutput(fullText, {strict:true}).text`.
+ */
+export class IncrementalSpoofSanitizer {
+  private carry = "";
+  private readonly seenMatches = new Set<string>();
+  // Does the carry begin at a line-start `^` anchor (buffer start, or the prior
+  // emitted output ended with "\n")? And has any non-whitespace been emitted yet
+  // (governs whether a buffer-start agenc match's leading \s* may span newlines)?
+  private pendingStartsLine = true;
+  private atBufferStart = true;
+
+  push(delta: string): { readonly text: string; readonly newMatches: string[] } {
+    if (delta.length === 0) return { text: "", newMatches: [] };
+    this.carry += delta;
+    const settledLen = settledSpoofPrefixLen(
+      this.carry,
+      this.pendingStartsLine,
+      this.atBufferStart,
+    );
+    const finalized = this.carry.slice(0, settledLen);
+    this.carry = this.carry.slice(settledLen);
+    return this.sanitizeAndRecord(finalized);
+  }
+
+  flush(): { readonly text: string; readonly newMatches: string[] } {
+    if (this.carry.length === 0) return { text: "", newMatches: [] };
+    const remaining = this.carry;
+    this.carry = "";
+    return this.sanitizeAndRecord(remaining);
+  }
+
+  private sanitizeAndRecord(
+    segment: string,
+  ): { readonly text: string; readonly newMatches: string[] } {
+    if (segment.length === 0) return { text: "", newMatches: [] };
+    const startsLine = this.pendingStartsLine;
+    // The agenc spoof pattern is multiline-anchored (`^\s*agenc...`). When this
+    // segment is NOT at a real line start, sanitizing it in isolation would let
+    // the regex's string-start `^` falsely treat a leading `agenc>` as a
+    // line-start match. Prepend a non-whitespace sentinel so the leading `^\s*`
+    // can't reach the `agenc`, then strip it back off. Sentinel is inert to
+    // every spoof pattern and keeps internal `\n`-anchored agenc matches intact.
+    const SENTINEL = "\u0000";
+    const probe = startsLine ? segment : `${SENTINEL}${segment}`;
+    const sanitized = sanitizeModelOutput(probe, { strict: true });
+    const text =
+      !startsLine && sanitized.text.startsWith(SENTINEL)
+        ? sanitized.text.slice(SENTINEL.length)
+        : sanitized.text;
+    // Line-start / buffer-start state follows the SANITIZED output: removing a
+    // bracket pattern can expose a fresh line-start agenc match in the cleaned
+    // text. An empty output preserves the prior anchor state.
+    if (text.length > 0) {
+      this.pendingStartsLine = text.endsWith("\n");
+      if (/\S/.test(text)) this.atBufferStart = false;
+    }
+    const newMatches: string[] = [];
+    for (const label of sanitized.matches) {
+      if (this.seenMatches.has(label)) continue;
+      this.seenMatches.add(label);
+      newMatches.push(label);
+    }
+    return { text, newMatches };
+  }
+}
+
 function emitSanitizedThinkingDelta(
   state: ThinkingDisplayState,
+  delta: string,
   index: number,
   session: Session,
 ): void {
@@ -228,49 +420,62 @@ function emitSanitizedThinkingDelta(
   // this path. Guard so a misbehaving provider can't accidentally surface
   // encrypted content as plaintext.
   if (state.redacted) return;
-  const sanitized = sanitizeModelOutput(state.raw, { strict: true });
-  if (sanitized.matches.length > 0) {
-    emitThinkingSpoofWarnings(state, sanitized.matches, session);
+  // gaphunt3 #43: sanitize only the new delta (plus the carry window) instead
+  // of re-scanning state.raw on every chunk.
+  const sanitized = state.sanitizer.push(delta);
+  if (sanitized.newMatches.length > 0) {
+    emitThinkingSpoofWarnings(state, sanitized.newMatches, session);
   }
-  if (!sanitized.text.startsWith(state.emittedSanitized)) {
-    // Sanitization rewrote a previously-emitted prefix (rare — happens when
-    // the spoof matcher swallows tokens that span chunk boundaries). Reset
-    // the marker so the diff below recomputes from scratch.
-    state.emittedSanitized = sanitized.text;
-    return;
-  }
-  const delta = sanitized.text.slice(state.emittedSanitized.length);
-  state.emittedSanitized = sanitized.text;
-  if (delta.length === 0) return;
+  if (sanitized.text.length === 0) return;
   session.emit({
     id: session.nextInternalSubId(),
     msg: {
       type: "assistant_thinking_delta",
-      payload: { delta, index, kind: state.kind },
+      payload: { delta: sanitized.text, index, kind: state.kind },
+    },
+  });
+}
+
+// gaphunt3 #43: drain the incremental sanitizer's carry buffer for a thinking
+// block on close. A block may end with a held-back suffix (a possible
+// cross-chunk spoof partial that never completed); the old full-buffer pass
+// surfaced it on the last delta, so emit it here before the block_stop.
+function flushSanitizedThinkingDelta(
+  state: ThinkingDisplayState,
+  session: Session,
+): void {
+  if (state.redacted) return;
+  const flushed = state.sanitizer.flush();
+  if (flushed.newMatches.length > 0) {
+    emitThinkingSpoofWarnings(state, flushed.newMatches, session);
+  }
+  if (flushed.text.length === 0) return;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "assistant_thinking_delta",
+      payload: { delta: flushed.text, index: state.index, kind: state.kind },
     },
   });
 }
 
 function emitSanitizedAssistantDelta(
   display: AssistantDisplayState,
+  delta: string,
   session: Session,
 ): void {
-  const sanitized = sanitizeModelOutput(display.visibleText, { strict: true });
-  if (sanitized.matches.length > 0) {
-    emitSpoofWarnings(display, sanitized.matches, session);
+  // gaphunt3 #43: sanitize only the new delta (plus the carry window) instead
+  // of re-scanning display.visibleText on every chunk.
+  const sanitized = display.sanitizer.push(delta);
+  if (sanitized.newMatches.length > 0) {
+    emitSpoofWarnings(display, sanitized.newMatches, session);
   }
-  if (!sanitized.text.startsWith(display.emittedVisibleText)) {
-    display.emittedVisibleText = sanitized.text;
-    return;
-  }
-  const delta = sanitized.text.slice(display.emittedVisibleText.length);
-  display.emittedVisibleText = sanitized.text;
-  if (delta.length === 0) return;
+  if (sanitized.text.length === 0) return;
   session.emit({
     id: session.nextInternalSubId(),
     msg: {
       type: "agent_message_delta",
-      payload: { delta },
+      payload: { delta: sanitized.text },
     },
   });
 }
@@ -392,7 +597,7 @@ export function emitThinkingChunkEvents(
     if (!displays.has(key)) {
       displays.set(key, {
         raw: "",
-        emittedSanitized: "",
+        sanitizer: new IncrementalSpoofSanitizer(),
         redacted,
         kind: "thinking",
         index,
@@ -415,7 +620,7 @@ export function emitThinkingChunkEvents(
     if (!state) {
       state = {
         raw: "",
-        emittedSanitized: "",
+        sanitizer: new IncrementalSpoofSanitizer(),
         redacted: false,
         kind: "thinking",
         index,
@@ -433,7 +638,7 @@ export function emitThinkingChunkEvents(
     }
     if (delta.length > 0 && !state.redacted) {
       state.raw += delta;
-      emitSanitizedThinkingDelta(state, index, session);
+      emitSanitizedThinkingDelta(state, delta, index, session);
     }
   }
   if (chunk.thinkingBlockStop) {
@@ -442,6 +647,8 @@ export function emitThinkingChunkEvents(
     const state = displays.get(key);
     if (state && !state.closed) {
       state.closed = true;
+      // gaphunt3 #43: emit any carried-back tail before the block_stop.
+      flushSanitizedThinkingDelta(state, session);
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -458,7 +665,7 @@ export function emitThinkingChunkEvents(
     if (!state) {
       state = {
         raw: "",
-        emittedSanitized: "",
+        sanitizer: new IncrementalSpoofSanitizer(),
         redacted: false,
         kind: "reasoning_summary",
         index: summaryIndex,
@@ -480,7 +687,7 @@ export function emitThinkingChunkEvents(
     }
     if (delta.length > 0) {
       state.raw += delta;
-      emitSanitizedThinkingDelta(state, summaryIndex, session);
+      emitSanitizedThinkingDelta(state, delta, summaryIndex, session);
     }
   }
 }
@@ -597,7 +804,7 @@ export async function streamModel(
   const display: AssistantDisplayState = {
     parser: new AssistantVisibleTextStreamParser(planMode),
     visibleText: "",
-    emittedVisibleText: "",
+    sanitizer: new IncrementalSpoofSanitizer(),
     warnedMatches: new Set<string>(),
   };
   const thinkingDisplays = new Map<string, ThinkingDisplayState>();
@@ -626,13 +833,20 @@ export async function streamModel(
     // sanitization pipeline as the final assistant message so raw tags
     // never reach the UI.
     if (chunk.content && chunk.content.length > 0) {
+      let visibleDelta: string;
       if (chunk.resetBuffer) {
+        // gaphunt3 #43: a reset discards the prior buffer, so the
+        // incremental sanitizer must reset too — the new visible text is a
+        // fresh stream, not a continuation of the old carry/partial state.
         display.parser = new AssistantVisibleTextStreamParser(planMode);
-        display.visibleText = display.parser.pushStr(chunk.content);
+        display.sanitizer = new IncrementalSpoofSanitizer();
+        visibleDelta = display.parser.pushStr(chunk.content);
+        display.visibleText = visibleDelta;
       } else {
-        display.visibleText += display.parser.pushStr(chunk.content);
+        visibleDelta = display.parser.pushStr(chunk.content);
+        display.visibleText += visibleDelta;
       }
-      emitSanitizedAssistantDelta(display, session);
+      emitSanitizedAssistantDelta(display, visibleDelta, session);
     }
 
     // Incremental thinking emission. Messages-API providers emit
@@ -752,6 +966,27 @@ export async function streamModel(
     if (signal) signal.removeEventListener("abort", onExternalAbort);
   }
 
+  // gaphunt3 #43: drain any carry the incremental sanitizer held back for a
+  // possible cross-chunk spoof match (e.g. the buffer ended mid-`[Allow`). At
+  // EOF that suffix can no longer complete into a match, so emit it now —
+  // matching the old full-buffer pass which surfaced trailing text on the
+  // final chunk.
+  {
+    const flushed = display.sanitizer.flush();
+    if (flushed.newMatches.length > 0) {
+      emitSpoofWarnings(display, flushed.newMatches, session);
+    }
+    if (flushed.text.length > 0) {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "agent_message_delta",
+          payload: { delta: flushed.text },
+        },
+      });
+    }
+  }
+
   let assistant = assistantMessageFromResponse(
     response,
     planMode,
@@ -805,6 +1040,10 @@ export async function streamModel(
   for (const state of thinkingDisplays.values()) {
     if (state.closed) continue;
     state.closed = true;
+    // gaphunt3 #43: drain the carry tail before the synthetic block_stop so a
+    // reasoning_summary stream (no explicit block_stop) still surfaces its
+    // final held-back text.
+    flushSanitizedThinkingDelta(state, session);
     session.emit({
       id: session.nextInternalSubId(),
       msg: {

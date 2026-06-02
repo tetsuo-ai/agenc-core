@@ -353,7 +353,109 @@ async function summarizeMessagesWithPrompt(
   signal: AbortSignal | undefined,
 ): Promise<string> {
   throwIfAborted(signal);
-  const transcript = boundTranscript(messages.map(formatForSummary).join("\n\n"));
+  const fullTranscript = messages.map(formatForSummary).join("\n\n").trim();
+  // gaphunt3 #10: when the transcript exceeds the per-call input budget, do
+  // NOT middle-truncate it (which silently dropped the whole middle of long
+  // sessions). Instead, summarize the over-limit transcript hierarchically
+  // (map-reduce): split it into ordered chunks, summarize each chunk in
+  // chronological order, then summarize the chunk-summaries. This preserves
+  // coverage of the WHOLE session rather than only its head and tail.
+  const transcript =
+    fullTranscript.length > MAX_SUMMARY_INPUT_CHARS
+      ? await reduceOversizedTranscript(
+          fullTranscript,
+          context,
+          compactPrompt,
+          signal,
+        )
+      : fullTranscript;
+  return summarizeTranscript(transcript, context, compactPrompt, signal);
+}
+
+/**
+ * Map-reduce summarization of an over-budget transcript: chunk the transcript
+ * in chronological order, summarize each chunk independently, and return the
+ * concatenated, order-preserving chunk-summaries (which the caller then
+ * summarizes once more with the real compact prompt — the "reduce" pass). If
+ * no provider is available, fall back to the chronological chunk-summaries so
+ * the whole session is still represented (no middle is dropped).
+ */
+async function reduceOversizedTranscript(
+  transcript: string,
+  context: CompactContext,
+  compactPrompt: string,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  const chunks = chunkTranscript(transcript, MAX_SUMMARY_INPUT_CHARS);
+  const chunkSummaries: string[] = [];
+  for (let i = 0; i < chunks.length; i += 1) {
+    throwIfAborted(signal);
+    const header = `Part ${i + 1} of ${chunks.length}`;
+    const summary = await summarizeTranscript(
+      chunks[i]!,
+      context,
+      compactPrompt,
+      signal,
+    );
+    chunkSummaries.push(`<${header}>\n${summary.trim()}\n</${header}>`);
+  }
+  const combined = chunkSummaries.join("\n\n");
+  // The combined chunk-summaries must themselves fit the per-call budget so the
+  // final reduce pass is a single call. If chunk-summaries are still too large
+  // (extremely long sessions), recurse so coverage is still chronological.
+  if (combined.length > MAX_SUMMARY_INPUT_CHARS && chunks.length > 1) {
+    return reduceOversizedTranscript(combined, context, compactPrompt, signal);
+  }
+  return combined;
+}
+
+/**
+ * Split a transcript into ordered chunks no larger than `maxChars`, preferring
+ * to break on the `\n\n` message separators so individual messages stay
+ * intact. Coverage is exhaustive and chronological — no span is dropped.
+ */
+function chunkTranscript(
+  transcript: string,
+  maxChars: number,
+): string[] {
+  if (transcript.length <= maxChars) return [transcript];
+  const segments = transcript.split("\n\n");
+  const chunks: string[] = [];
+  let current = "";
+  const flush = () => {
+    if (current.length > 0) {
+      chunks.push(current);
+      current = "";
+    }
+  };
+  for (const segment of segments) {
+    // A single segment larger than the budget is hard-split so nothing is lost.
+    if (segment.length > maxChars) {
+      flush();
+      for (let start = 0; start < segment.length; start += maxChars) {
+        chunks.push(segment.slice(start, start + maxChars));
+      }
+      continue;
+    }
+    const candidate = current.length === 0 ? segment : `${current}\n\n${segment}`;
+    if (candidate.length > maxChars) {
+      flush();
+      current = segment;
+    } else {
+      current = candidate;
+    }
+  }
+  flush();
+  return chunks;
+}
+
+async function summarizeTranscript(
+  transcript: string,
+  context: CompactContext,
+  compactPrompt: string,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  throwIfAborted(signal);
   const fallback = fallbackSummary(transcript);
   const provider = context.provider;
   if (!provider) return fallback;
@@ -442,13 +544,6 @@ function isToolRoleMessage(message: RuntimeMessage): boolean {
 function formatForSummary(message: RuntimeMessage): string {
   const role = message.message?.role ?? message.role ?? message.type ?? "unknown";
   return `<message role="${role}">\n${messageText(message)}\n</message>`;
-}
-
-function boundTranscript(transcript: string): string {
-  const trimmed = transcript.trim();
-  if (trimmed.length <= MAX_SUMMARY_INPUT_CHARS) return trimmed;
-  const side = Math.floor((MAX_SUMMARY_INPUT_CHARS - 100) / 2);
-  return `${trimmed.slice(0, side)}\n\n[...middle omitted during compaction...]\n\n${trimmed.slice(-side)}`;
 }
 
 function fallbackSummary(transcript: string): string {

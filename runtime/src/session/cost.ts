@@ -41,6 +41,13 @@ export interface ModelCostEntry {
    */
   readonly cachedInputIncludedInInputTokens?: boolean;
   readonly cacheCreationUsdPer1K?: number;
+  /**
+   * Per-1K rate for reasoning output tokens. Reasoning tokens are reported as
+   * a SUBSET of output tokens (OpenAI/xAI Responses convention), so when this
+   * is set computeUsdCost charges the full output rate only on the
+   * non-reasoning portion (outputTokens − reasoningOutputTokens) and bills the
+   * reasoning portion here — avoiding double-charging. (gaphunt3 #12)
+   */
   readonly reasoningOutputUsdPer1K?: number;
   readonly webSearchUsdPerRequest?: number;
   /** Free-form label for display. */
@@ -388,7 +395,17 @@ export function computeUsdCostWithResolution(
     ? Math.max(0, usage.inputTokens - usage.cachedInputTokens)
     : usage.inputTokens;
   const inputCost = (fullRateInputTokens / 1000) * entry.inputUsdPer1K;
-  const outputCost = (usage.outputTokens / 1000) * entry.outputUsdPer1K;
+  // gaphunt3 #12: reasoning tokens are reported as a SUBSET of output tokens
+  // (OpenAI/xAI Responses convention: output_tokens_details.reasoning_tokens
+  // ⊆ output_tokens). When a separate reasoning rate is defined, charge the
+  // full output rate only on the non-reasoning portion and bill the reasoning
+  // portion at reasoningOutputUsdPer1K — otherwise the reasoning tokens are
+  // double-charged (once at the output rate, once at the reasoning rate).
+  const fullRateOutputTokens =
+    entry.reasoningOutputUsdPer1K !== undefined
+      ? Math.max(0, usage.outputTokens - usage.reasoningOutputTokens)
+      : usage.outputTokens;
+  const outputCost = (fullRateOutputTokens / 1000) * entry.outputUsdPer1K;
   const cachedCost =
     entry.cachedInputUsdPer1K !== undefined
       ? (usage.cachedInputTokens / 1000) * entry.cachedInputUsdPer1K

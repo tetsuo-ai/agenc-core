@@ -85,17 +85,19 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--allow-dangerously-skip-permissions",
 ] as const);
 
+// gaphunt3 #37: only list value flags that a downstream consumer actually
+// honors. --fork/--config/--sandbox/--approval-policy had no consumer
+// anywhere (classifyCLI/readStartupCliFlags/bootstrap), so stripping them
+// here silently swallowed the flag AND its value, dropping the user's
+// intent with no behavior and no feedback. Removing them lets the flag
+// text fall through as visible prompt content instead of vanishing.
 const STARTUP_VALUE_FLAGS = Object.freeze([
   "--resume",
   "-r",
-  "--fork",
   "--provider",
   "--model",
   "--profile",
   "--permission-mode",
-  "--config",
-  "--sandbox",
-  "--approval-policy",
   "--image",
 ] as const);
 

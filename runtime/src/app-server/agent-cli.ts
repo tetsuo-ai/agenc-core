@@ -360,6 +360,13 @@ async function createReconnectableDaemonTuiClient(options: {
 }): Promise<AgenCJsonLineDaemonTuiClient> {
   const { socketPath, timeoutMs, initializeParams } = options;
   const sessionListeners = new Map<string, Set<(event: JsonObject) => void>>();
+  // gaphunt3 #2: the daemon multiplexer drops a client's session routes when
+  // its socket closes (disconnectClient detaches every session), so a stable
+  // clientId that merely re-runs `initialize` on a new socket receives no
+  // further session events. Remember the `session.attach` params for every
+  // session this client attached to, keyed by sessionId, so the reconnect path
+  // can re-register the route on the new connection.
+  const sessionAttachReplay = new Map<string, JsonObject>();
   const notificationListeners = new Set<(event: JsonObject) => void>();
   const connectionStateListeners = new Set<
     (state: AgenCDaemonTuiConnectionState) => void
@@ -428,6 +435,50 @@ async function createReconnectableDaemonTuiClient(options: {
     }
     setConnectionState(nextClient.getConnectionState());
   };
+  // gaphunt3 #2: derive the (sessionId, clientId) pairs that were attached by a
+  // successful agent.attach/session.attach and stash a replayable session.attach
+  // param object for each, so reconnect can re-register the daemon route.
+  const rememberSessionAttachments = (
+    method: "agent.attach" | "session.attach",
+    params: JsonObject,
+    result: unknown,
+  ): void => {
+    const clientId =
+      typeof params.clientId === "string" ? params.clientId : undefined;
+    if (clientId === undefined) return;
+    const sessionIds: string[] = [];
+    if (method === "session.attach") {
+      if (typeof params.sessionId === "string") sessionIds.push(params.sessionId);
+    } else if (isJsonObject(result as JsonValue | undefined)) {
+      const resultSessionIds = (result as JsonObject).sessionIds;
+      if (Array.isArray(resultSessionIds)) {
+        for (const sessionId of resultSessionIds) {
+          if (typeof sessionId === "string") sessionIds.push(sessionId);
+        }
+      }
+    }
+    for (const sessionId of sessionIds) {
+      sessionAttachReplay.set(sessionId, { sessionId, clientId });
+    }
+  };
+  // gaphunt3 #2: re-issue `session.attach` for every previously-attached
+  // session on the fresh socket so the daemon multiplexer re-registers this
+  // client and resumes routing session events. Client-local resubscription
+  // alone (subscribeInnerSession) cannot do this — the route lives daemon-side.
+  const reattachSessions = async (
+    nextClient: AgenCJsonLineDaemonTuiClient,
+  ): Promise<void> => {
+    for (const attachParams of sessionAttachReplay.values()) {
+      try {
+        await nextClient.request("session.attach", attachParams);
+      } catch {
+        // A re-attach may legitimately fail (e.g. the session was terminated
+        // while we were disconnected, or the daemon still considers the
+        // stable clientId registered). Never let one failed re-attach abort
+        // the reconnect; other sessions and live RPCs must still recover.
+      }
+    }
+  };
   const connectAndInitializeOnce =
     async (): Promise<AgenCJsonLineDaemonTuiClient> => {
       const nextClient = await connectPersistentDaemonClient(
@@ -436,6 +487,7 @@ async function createReconnectableDaemonTuiClient(options: {
       );
       try {
         await nextClient.request("initialize", initializeParams);
+        await reattachSessions(nextClient);
       } catch (error) {
         await nextClient.close().catch(() => {});
         throw error;
@@ -499,7 +551,23 @@ async function createReconnectableDaemonTuiClient(options: {
         throw new Error("Daemon request cancelled");
       }
       const current = await ensureConnected();
-      return current.request(method, params, requestOptions);
+      const result = await current.request(method, params, requestOptions);
+      // gaphunt3 #2: record the daemon-side session attachments this client
+      // established so a later reconnect can replay `session.attach` and
+      // recover event routing. Both `agent.attach` (whose result carries the
+      // attached sessionIds) and `session.attach` are the only ways the daemon
+      // multiplexer registers a route for this clientId.
+      if (method === "agent.attach" || method === "session.attach") {
+        rememberSessionAttachments(method, params, result);
+      } else if (
+        (method === "session.detach" || method === "session.terminate") &&
+        typeof params.sessionId === "string"
+      ) {
+        // gaphunt3 #2: stop replaying attaches for a session the client has
+        // intentionally left, so reconnect does not silently re-attach it.
+        sessionAttachReplay.delete(params.sessionId);
+      }
+      return result;
     },
     subscribeToNotifications: (cb) => {
       notificationListeners.add(cb);

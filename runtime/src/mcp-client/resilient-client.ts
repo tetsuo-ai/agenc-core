@@ -8,7 +8,11 @@
  */
 
 import type { Tool, ToolResult } from "./_deps/tools-types.js";
-import type { MCPServerConfig, MCPToolBridge } from "./types.js";
+import type {
+  MCPElicitationHandlers,
+  MCPServerConfig,
+  MCPToolBridge,
+} from "./types.js";
 import type {
   MCPCallObserver,
   MCPToolBridgePermissionOptions,
@@ -113,6 +117,17 @@ interface ResilientMCPBridgeOptions {
    * tool reconnect.
    */
   readonly onReconnect?: (client: unknown) => void | Promise<void>;
+  /**
+   * gaphunt3 #14: session-provided elicitation handlers, threaded into the
+   * fresh client spawned on reconnect. The initial connect registers these
+   * via `createMCPConnection(config, logger, elicitationHandlers)` in
+   * `manager.ts`; without re-supplying them here the reconnected client has no
+   * `ElicitRequest`/`ElicitationComplete` handler, so any server-initiated
+   * elicitation after a transient drop goes silently unhandled. The owning
+   * `MCPManager` must forward `this.elicitationHandlers` when constructing the
+   * bridge for this to take effect.
+   */
+  readonly elicitationHandlers?: MCPElicitationHandlers;
 }
 
 /**
@@ -187,10 +202,14 @@ export class ResilientMCPBridge implements MCPToolBridge {
           return { content: `MCP server "${this.serverName}" is reconnecting...`, isError: true };
         }
 
-        // Find the matching inner tool by suffix (strip mcp.{server}. prefix)
-        const toolSuffix = namespacedName.replace(`mcp.${this.serverName}.`, "");
-        const innerTool = this.inner.tools.find((t) =>
-          t.name === namespacedName || t.name.endsWith(`.${toolSuffix}`),
+        // gaphunt3 #38: match the inner tool by exact namespaced name only.
+        // Inner names are always the canonical `mcp.<server>.<tool>` after
+        // `createToolBridge`, so the prior `endsWith(".<suffix>")` fallback was
+        // unnecessary and ambiguous: with dotted-suffix overlaps (e.g.
+        // `mcp.s.add` vs `mcp.s.do.add`) `Array.find` short-circuits on the
+        // first predicate-true element and could dispatch the wrong tool.
+        const innerTool = this.inner.tools.find(
+          (t) => t.name === namespacedName,
         );
         if (!innerTool) {
           return { content: `Tool "${namespacedName}" not found after reconnect`, isError: true };
@@ -237,7 +256,15 @@ export class ResilientMCPBridge implements MCPToolBridge {
       const { createMCPConnection } = await import("./connection.js");
       const { createToolBridge } = await import("./tools.js");
 
-      const client = await createMCPConnection(this.config, this.logger);
+      // gaphunt3 #14: re-supply the session's elicitation handlers so the
+      // rebuilt client re-registers its ElicitRequest/ElicitationComplete
+      // handlers — otherwise server-initiated elicitation breaks silently
+      // after any reconnect.
+      const client = await createMCPConnection(
+        this.config,
+        this.logger,
+        this.options.elicitationHandlers,
+      );
       // A `dispose()` racing this reconnect already cleared `reconnectTimer`
       // and disposed `this.inner`, but it cannot see the client we just
       // spawned. Without this re-check the fresh (detached stdio child)

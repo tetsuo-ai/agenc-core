@@ -67,6 +67,9 @@ describe("continuationNudge", () => {
     expect(state.messages.at(-1)).toEqual({
       role: "user",
       content: "Continue with the task. Use the appropriate tools to proceed.",
+      // gaphunt3 #34: the nudge must stay ephemeral so a false-positive match
+      // never pollutes the durable rollout/transcript that --resume replays.
+      runtimeOnly: { excludeFromDurableHistory: true },
     });
   });
 

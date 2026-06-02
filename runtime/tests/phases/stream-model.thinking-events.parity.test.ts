@@ -170,12 +170,12 @@ describe("stream-model emits assistant_thinking_* session events from chunks", (
       displays,
     );
     emitThinkingChunkEvents(
-      { content: "", done: false, thinkingDelta: { delta: "A", index: 0 } },
+      { content: "", done: false, thinkingDelta: { delta: "Hello", index: 0 } },
       session,
       displays,
     );
     emitThinkingChunkEvents(
-      { content: "", done: false, thinkingDelta: { delta: "B", index: 0 } },
+      { content: "", done: false, thinkingDelta: { delta: "World", index: 0 } },
       session,
       displays,
     );

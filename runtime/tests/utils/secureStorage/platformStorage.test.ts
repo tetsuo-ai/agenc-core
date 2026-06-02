@@ -111,13 +111,18 @@ describe("Secure Storage Platform Implementations", () => {
       expect(script).toContain("Add-Type -AssemblyName System.Runtime.WindowsRuntime");
     });
 
-    test("escapes double quotes in username", () => {
+    test("renders a double-quote in username as a single-quoted literal", () => {
       process.env.AGENC_ENABLE_LEGACY_WINDOWS_PASSWORDVAULT = "1";
       process.env.USER = 'user"name';
       windowsCredentialStorage.read();
       const script = mockExecaSync.mock.calls[1][1][1];
-      expect(script).toContain('user`"name');
-      expect(script).not.toContain('user"name');
+      // gaphunt3 #29: untrusted values are emitted as single-quoted PowerShell
+      // literals, so the double quote is passed through verbatim (no expansion,
+      // no backtick escaping) inside Retrieve('...').
+      expect(script).toContain('user"name');
+      expect(script).toContain(`'user"name'`);
+      expect(script).not.toContain('user`"name');
+      expect(script).not.toContain('"user"name"');
     });
 
     test("read() does not touch legacy PasswordVault by default", () => {

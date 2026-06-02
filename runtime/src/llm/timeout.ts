@@ -14,6 +14,27 @@ function createAbortTimeoutError(
   return err;
 }
 
+// gaphunt3 #42: an external-signal abort (user interrupt / caller cancel) is
+// not a provider timeout. Reject with an error derived from the signal's own
+// abort reason so the real cause is preserved in logs/telemetry and is not
+// relabeled as a (retryable) LLMTimeoutError by mapLLMError (which keys off the
+// AbortError name / ABORT_ERR code). Downstream abort handling already relies on
+// the AbortSignal's own `aborted` flag, not on this error's name/code, so the
+// non-AbortError shape here is safe.
+function createExternalAbortError(
+  providerName: string,
+  externalSignal: AbortSignal,
+): Error {
+  const reason = (externalSignal as { reason?: unknown }).reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (typeof reason === "string" && reason.length > 0) {
+    return new Error(reason);
+  }
+  return new Error(`${providerName} request aborted by external signal`);
+}
+
 /**
  * Execute an async provider call with an explicit AbortController timeout.
  */
@@ -46,7 +67,10 @@ export async function withTimeout<T>(
     guardPromises.push(new Promise<never>((_, reject) => {
       abortHandler = () => {
         controller.abort();
-        reject(createAbortTimeoutError(providerName, timeoutMs ?? 0));
+        // gaphunt3 #42: preserve the external signal's real abort reason
+        // instead of fabricating a "<provider> request aborted after 0ms"
+        // timeout error.
+        reject(createExternalAbortError(providerName, externalSignal));
       };
       if (externalSignal.aborted) {
         abortHandler();

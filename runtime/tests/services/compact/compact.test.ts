@@ -103,7 +103,16 @@ describe("compact service", () => {
       .toContain("attachment");
   });
 
-  test("bounds provider summary input and strips image blocks", async () => {
+  test("map-reduce summarizes an over-budget transcript in bounded chunks and strips image blocks", async () => {
+    // gaphunt3 #10: an over-budget transcript is no longer middle-truncated
+    // into a single provider call. summarizeMessagesWithPrompt now chunks the
+    // transcript into pieces no larger than MAX_SUMMARY_INPUT_CHARS, summarizes
+    // each chunk (the "map" pass), then summarizes the chunk-summaries (the
+    // "reduce" pass). So an 80k-char transcript drives MORE THAN ONE provider
+    // call, every per-chunk call's transcript stays within the input budget,
+    // and the stripped "[image]" marker still reaches at least one chunk. This
+    // test must fail if map-reduce is reverted to single-call truncation.
+    const MAX_SUMMARY_INPUT_CHARS = 48_000;
     const seen: string[] = [];
     const provider = {
       name: "test",
@@ -132,13 +141,23 @@ describe("compact service", () => {
       ],
     });
 
-    expect(provider.chat).toHaveBeenCalledOnce();
+    // Map-reduce: the over-budget transcript yields multiple per-chunk calls
+    // plus the final reduce pass. A single-call truncation revert would call
+    // the provider exactly once and fail this assertion.
+    expect(provider.chat.mock.calls.length).toBeGreaterThan(1);
     expect(seen[0]).toContain("CRITICAL: Respond with TEXT ONLY");
     expect(seen[0]).toContain("Additional Instructions:\nkeep image notes");
     expect(seen[0]).toContain("Do NOT use Read, Bash, Grep, Glob, Edit, Write");
-    const transcript = extractTranscript(seen[0] ?? "");
-    expect(transcript.length).toBeLessThan(48_000);
-    expect(transcript).toContain("[image]");
+    const transcripts = seen.map((payload) => extractTranscript(payload));
+    // Every per-chunk provider call must stay within the per-call input budget
+    // (no chunk exceeds MAX_SUMMARY_INPUT_CHARS).
+    for (const transcript of transcripts) {
+      expect(transcript.length).toBeLessThanOrEqual(MAX_SUMMARY_INPUT_CHARS);
+    }
+    // Image blocks are still stripped to "[image]" — the marker survives into
+    // at least one chunk rather than being dropped.
+    expect(transcripts.some((transcript) => transcript.includes("[image]")))
+      .toBe(true);
     const summaryContent = result.compactionResult.summaryMessages[0]?.content;
     expect(summaryContent).toContain(
       "This session is being continued from a previous conversation",

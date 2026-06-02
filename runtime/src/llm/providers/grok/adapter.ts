@@ -145,6 +145,15 @@ function createStreamTimeoutError(providerName: string, timeoutMs: number): Erro
   return err;
 }
 
+// gaphunt3 #21: caller-abort error for the open-stream chunk loop. Shaped as an
+// AbortError so it propagates/maps the same way as a one-shot abort.
+function createStreamAbortError(providerName: string): Error {
+  const err = new Error(`${providerName} stream aborted by caller`);
+  (err as { name?: string }).name = "AbortError";
+  (err as { code?: string }).code = "ABORT_ERR";
+  return err;
+}
+
 function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
     return DEFAULT_TIMEOUT_MS;
@@ -246,23 +255,47 @@ async function nextStreamChunkWithTimeout<T>(
   iterator: AsyncIterator<T>,
   timeoutMs: number | undefined,
   providerName: string,
+  // gaphunt3 #21: the caller's AbortSignal must keep teeing the open stream;
+  // withTimeout detaches at stream-open, so the chunk loop re-supplies it here.
+  externalSignal?: AbortSignal,
 ): Promise<IteratorResult<T>> {
-  if (!timeoutMs || timeoutMs <= 0) {
+  const effectiveTimeoutMs =
+    typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : undefined;
+  if (effectiveTimeoutMs === undefined && !externalSignal) {
     return iterator.next();
   }
 
+  // gaphunt3 #21: already-aborted signals must reject before awaiting the next
+  // chunk so a mid-stream cancel cannot block on a slow iterator.next().
+  if (externalSignal?.aborted) {
+    throw createStreamAbortError(providerName);
+  }
+
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(createStreamTimeoutError(providerName, timeoutMs));
-    }, timeoutMs);
-  });
+  let abortHandler: (() => void) | undefined;
+  const guards: Promise<never>[] = [];
+  if (effectiveTimeoutMs !== undefined) {
+    guards.push(new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(createStreamTimeoutError(providerName, effectiveTimeoutMs));
+      }, effectiveTimeoutMs);
+    }));
+  }
+  if (externalSignal) {
+    guards.push(new Promise<never>((_, reject) => {
+      abortHandler = () => reject(createStreamAbortError(providerName));
+      externalSignal.addEventListener("abort", abortHandler, { once: true });
+    }));
+  }
 
   try {
-    return await Promise.race([iterator.next(), timeoutPromise]);
+    return await Promise.race([iterator.next(), ...guards]);
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
+    }
+    if (externalSignal && abortHandler) {
+      externalSignal.removeEventListener("abort", abortHandler);
     }
   }
 }
@@ -1224,6 +1257,13 @@ export class GrokProvider implements LLMProvider {
       let receivedTerminalEvent = false;
 
       while (true) {
+        // gaphunt3 #21: a caller abort mid-stream must tear the open stream
+        // down promptly. withTimeout only links options.signal until the stream
+        // opens, so re-check it here and inside nextStreamChunkWithTimeout
+        // (which rejects when the signal fires while awaiting the next chunk).
+        if (options?.signal?.aborted) {
+          throw createStreamAbortError(this.name);
+        }
         const remainingStreamMs = Number.isFinite(streamDeadlineAt)
           ? Math.max(0, streamDeadlineAt - Date.now())
           : undefined;
@@ -1240,6 +1280,7 @@ export class GrokProvider implements LLMProvider {
           streamIterator,
           remainingStreamMs,
           this.name,
+          options?.signal,
         );
         if (iterResult.done) break;
         const event = iterResult.value;

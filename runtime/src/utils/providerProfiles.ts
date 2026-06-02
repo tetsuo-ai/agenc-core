@@ -93,6 +93,30 @@ function normalizeBaseUrl(value: string): string {
   return trimValue(value).replace(/\/+$/, '')
 }
 
+// gaphunt3 #39: baseUrl was normalized (trim + strip trailing slash) but never
+// validated as a routable URL, so a typo'd or control-char-bearing value was
+// silently accepted at profile-add/edit time and only surfaced as an opaque
+// network error deep in the request path. Require a well-formed http(s) URL.
+function isValidBaseUrl(value: string): boolean {
+  if (!value) {
+    return false
+  }
+  // Reject whitespace / control characters outright. new URL() tolerates some
+  // (and silently strips others), which would yield an unroutable endpoint.
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i)
+    if (code <= 0x20 || code === 0x7f) {
+      return false
+    }
+  }
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function sanitizeProfile(profile: ProviderProfile): ProviderProfile | null {
   const id = trimValue(profile.id)
   const name = trimValue(profile.name)
@@ -112,6 +136,13 @@ function sanitizeProfile(profile: ProviderProfile): ProviderProfile | null {
   const authHeaderValue = trimOrUndefined(profile.authHeaderValue)
 
   if (!id || !name || !baseUrl || !model) {
+    return null
+  }
+
+  // gaphunt3 #39: reject malformed/non-http(s) baseUrls so a typo'd or
+  // control-char-bearing endpoint surfaces as a profile validation error
+  // instead of an opaque fetch failure once it is written to env/headers.
+  if (!isValidBaseUrl(baseUrl)) {
     return null
   }
 

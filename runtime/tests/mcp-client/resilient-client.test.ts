@@ -85,7 +85,7 @@ describe("ResilientMCPBridge", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(initialBridge.dispose).toHaveBeenCalledOnce();
-    expect(mockCreateMCPConnection).toHaveBeenCalledWith(config, logger);
+    expect(mockCreateMCPConnection).toHaveBeenCalledWith(config, logger, undefined);
     expect(mockCreateToolBridge).toHaveBeenCalledWith(
       "client2",
       "srv1",

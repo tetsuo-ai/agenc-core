@@ -110,6 +110,59 @@ function buildAnthropicStructuredOutputTool(
   };
 }
 
+/**
+ * gaphunt3 #5/#33: the system-prompt static/dynamic boundary marker. Must stay
+ * byte-equal to `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` exported by
+ * `src/prompts/system-prompt.ts` (the producer of `options.systemPrompt`).
+ * Kept local so the prompt-assembly module graph does not leak into the wire
+ * layer; the gaphunt3 regression test asserts the two never diverge.
+ */
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER = "<!-- dynamic-boundary -->";
+
+/**
+ * Build the Anthropic `system` block(s) for the option-supplied system prompt.
+ *
+ * gaphunt3 #5/#33: the assembled system prompt embeds
+ * {@link SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER} between its static
+ * (cross-turn-stable) head and its volatile tail (env timestamp, git branch,
+ * MCP servers, …). Previously the whole string was emitted as one
+ * `cache_control: ephemeral` block, so the per-turn timestamp in the tail
+ * changed the cached prefix and busted the prompt cache on every turn. We now
+ * split on the marker and place the cache breakpoint on the static head ONLY,
+ * with the volatile tail as a separate uncached block. When the marker is
+ * absent (most callers / system-role messages), behaviour is unchanged: a
+ * single block, cached iff `applyCacheControl`.
+ */
+function buildOptionSystemBlocks(
+  optionSystemPrompt: string,
+  applyCacheControl: boolean,
+): Array<Record<string, unknown>> {
+  const cacheControl = applyCacheControl
+    ? { cache_control: { type: "ephemeral" } }
+    : {};
+  const markerIndex = optionSystemPrompt.indexOf(
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+  );
+  if (markerIndex === -1) {
+    return [{ type: "text", text: optionSystemPrompt, ...cacheControl }];
+  }
+  const staticHead = optionSystemPrompt.slice(0, markerIndex).trimEnd();
+  const dynamicTail = optionSystemPrompt
+    .slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length)
+    .trimStart();
+  const blocks: Array<Record<string, unknown>> = [];
+  if (staticHead.length > 0) {
+    blocks.push({ type: "text", text: staticHead, ...cacheControl });
+  }
+  if (dynamicTail.length > 0) {
+    blocks.push({ type: "text", text: dynamicTail });
+  }
+  if (blocks.length === 0) {
+    blocks.push({ type: "text", text: "", ...cacheControl });
+  }
+  return blocks;
+}
+
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
@@ -123,13 +176,10 @@ export function buildAnthropicMessagesRequest(
   );
   const systemBlocks = [
     ...(optionSystemPrompt
-      ? [{
-        type: "text",
-        text: optionSystemPrompt,
-        ...(!systemMessageHasCacheControl
-          ? { cache_control: { type: "ephemeral" } }
-          : {}),
-      }]
+      ? buildOptionSystemBlocks(
+        optionSystemPrompt,
+        !systemMessageHasCacheControl,
+      )
       : []),
     ...systemMessages.flatMap((message) => {
       const normalized = normalizeAnthropicMessageContent(message);
@@ -247,22 +297,30 @@ export function buildAnthropicMessagesRequest(
     );
   }
   if (tools.length > 0) body.tools = toAnthropicTools(tools);
+  // gaphunt3 #1: the Messages API rejects a forced tool_choice
+  // ({type:'any'}/{type:'tool'}) when extended thinking is enabled (it only
+  // permits 'auto'/'none', returning a 400 otherwise). Mirror that constraint
+  // by omitting any forced tool_choice (falling back to auto) whenever
+  // thinking will be enabled on this request.
+  const thinkingEnabled = input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
-    if (toolChoice !== undefined) body.tool_choice = toolChoice;
+    if (toolChoice !== undefined && !thinkingEnabled) {
+      body.tool_choice = toolChoice;
+    }
   }
-  if (structuredOutputTool && input.tools.length === 0) {
+  if (structuredOutputTool && input.tools.length === 0 && !thinkingEnabled) {
     body.tool_choice = {
       type: "tool",
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  if (input.options?.reasoningEffort !== undefined) {
+  if (thinkingEnabled) {
     body.thinking = {
       type: "enabled",
       budget_tokens:
-        input.options.reasoningEffort === "high" ||
-          input.options.reasoningEffort === "xhigh"
+        input.options?.reasoningEffort === "high" ||
+          input.options?.reasoningEffort === "xhigh"
           ? 4096
           : 2048,
     };

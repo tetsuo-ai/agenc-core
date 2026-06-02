@@ -1551,6 +1551,30 @@ export class SessionStore {
     if (this.closed) return;
     this.closed = true;
     if (this.pending.length > 0) this.flushBatch(true);
+    // gaphunt3 #19: final best-effort drain of the degraded ring buffer
+    // before stopping its retry timer. If the disk recovered after an
+    // I-12/I-38 failure but the 30s retry tick has not yet fired, those
+    // buffered durable events (turn_complete, error, context_compacted,
+    // response_item) would otherwise be silently dropped on shutdown.
+    // Drain + one synchronous append; on persistent failure accept the
+    // loss (the disk is genuinely still unavailable).
+    if (this.degraded.isDegraded) {
+      const remaining = this.degraded.drain();
+      if (remaining.length > 0) {
+        try {
+          const lines = remaining.map(serializeRolloutItem).join("");
+          this.writeBytesWithFsync(lines);
+          this.fileSize += Buffer.byteLength(lines, "utf8");
+        } catch (err) {
+          this.emitDiagnostic({
+            at: Date.now(),
+            level: "error",
+            cause: "rollout_degraded",
+            message: `${(err as { code?: string }).code ?? "unknown"} during close drain — ${remaining.length} buffered events lost`,
+          });
+        }
+      }
+    }
     this.degraded.stop();
     // Write index snapshot atomically (I-24 tmp+rename for the
     // snapshot — the rollout body stays append-only with tail

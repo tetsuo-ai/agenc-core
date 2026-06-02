@@ -1189,6 +1189,16 @@ async function runAgenCDaemonForeground(
     ...webSocketListenOptions,
     ready: () => !shuttingDown,
     validateOrigin: validateAgenCDaemonWebSocketOrigin,
+    // gaphunt3 #47: mirror the Unix socket accept-auth gate, but the ws path
+    // has no peer-credential identity, so it relies solely on the
+    // cookie/initialize check.
+    acceptAuthenticator: (message) =>
+      message.method === "initialize" &&
+      cookieAuthenticator.authenticateInitializeMessage(message) !== null,
+    acceptAuthenticationTimeoutMs: options.socketAcceptAuthenticationTimeoutMs,
+    onAuthenticationFailed: async (message, context) => {
+      await context.send(daemonConnectionAuthenticationFailedResponse(message));
+    },
     onMessage: async (message, context) => {
       if (shuttingDown) {
         await context.send(daemonShuttingDownResponse(message));

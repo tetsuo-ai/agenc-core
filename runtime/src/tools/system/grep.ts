@@ -46,6 +46,15 @@ const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
 const MAX_FALLBACK_FILES = 5_000;
 const MAX_FALLBACK_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_RENDERED_CONTENT_LINE_CHARS = 500;
+// gaphunt3 #26/#30: the pure-JS fallback runs a model-controlled, backtracking
+// V8 RegExp per line. Without bounds, a catastrophic pattern (e.g. `(a+)+$`)
+// over a long line backtracks exponentially and pins the single-threaded
+// event loop, and abort is only polled between files. Clamp each line to a few
+// KB before the regex test (ripgrep's primary path is linear and immune), and
+// enforce a wall-clock deadline checked between lines so an expensive scan
+// aborts instead of hanging for the full tool timeout.
+const MAX_FALLBACK_LINE_CHARS = 4_096;
+const FALLBACK_SCAN_BUDGET_MS = 2_000;
 const RIPGREP_MATCH_SEPARATOR = "\u001f";
 const RIPGREP_CONTEXT_SEPARATOR = "\u001e";
 const FALLBACK_IGNORE_FILES = [".gitignore", ".ignore", ".rgignore"] as const;
@@ -466,6 +475,22 @@ function formatOffsetNote(offset: number): string {
 
 function formatFallbackSafetyNote(): string {
   return "(fallback scan stopped at safety limit; refine query)";
+}
+
+function formatFallbackAbortedNote(): string {
+  return "(fallback scan aborted: pattern too expensive; install ripgrep or refine query)";
+}
+
+// gaphunt3 #26/#30: bound the model-controlled regex by testing only a clamped
+// prefix of each line. A short, bounded input defuses catastrophic
+// backtracking (`(a+)+$` etc.) regardless of how long the underlying line is.
+function fallbackLineMatches(re: RegExp, line: string): boolean {
+  const probe =
+    line.length > MAX_FALLBACK_LINE_CHARS
+      ? line.slice(0, MAX_FALLBACK_LINE_CHARS)
+      : line;
+  // Re-create regex per test to avoid lastIndex carry-over.
+  return new RegExp(re.source, re.flags).test(probe);
 }
 
 function collectionLineLimit(headLimit: number, offset: number): number {
@@ -1008,6 +1033,11 @@ async function runFallbackGrep(params: {
   const isIgnored = await compileFallbackIgnoreMatcher(displayRoot);
   const fallbackCollectionLimit =
     headLimit === 0 ? 0 : collectionLineLimit(headLimit, offset);
+  // gaphunt3 #26/#30: wall-clock deadline so an expensive scan (clamping
+  // alone cannot defeat every adversarial pattern) terminates promptly
+  // instead of hanging for the full tool timeout; checked between lines.
+  const scanDeadline = Date.now() + FALLBACK_SCAN_BUDGET_MS;
+  let fallbackScanAborted = false;
 
   for await (const filePath of iterTargetFiles(target, signal)) {
     if (signal?.aborted) {
@@ -1041,9 +1071,24 @@ async function runFallbackGrep(params: {
       continue;
     }
     if (outputMode === "files_with_matches") {
-      const matched = text
-        .split(/\r?\n/)
-        .some((line) => new RegExp(re.source, re.flags).test(line));
+      // gaphunt3 #26/#30: scan line-by-line with a clamped match probe and
+      // poll abort/deadline between lines so a ReDoS pattern cannot wedge the
+      // event loop mid-file and abort is honored without waiting for EOF.
+      const fileLines = text.split(/\r?\n/);
+      let matched = false;
+      for (const fileLine of fileLines) {
+        if (signal?.aborted) {
+          return errorResult("Search aborted");
+        }
+        if (Date.now() >= scanDeadline) {
+          fallbackScanAborted = true;
+          break;
+        }
+        if (fallbackLineMatches(re, fileLine)) {
+          matched = true;
+          break;
+        }
+      }
       if (matched) {
         fileMatches.push({ rel, mtimeMs: st.mtimeMs ?? 0 });
         if (
@@ -1059,6 +1104,7 @@ async function runFallbackGrep(params: {
         }
       }
       // Reset regex state when using global flag would be needed; not used here.
+      if (fallbackScanAborted) break;
       continue;
     }
 
@@ -1066,8 +1112,18 @@ async function runFallbackGrep(params: {
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i] ?? "";
-      // Re-create regex per test to avoid lastIndex carry-over (no `g` flag, but be safe).
-      if (new RegExp(re.source, re.flags).test(line)) {
+      // gaphunt3 #26/#30: poll abort/deadline between lines so an in-flight
+      // ReDoS scan can be cancelled and a runaway pattern terminates promptly.
+      if (signal?.aborted) {
+        return errorResult("Search aborted");
+      }
+      if (Date.now() >= scanDeadline) {
+        fallbackScanAborted = true;
+        break;
+      }
+      // gaphunt3 #26/#30: match against a clamped line probe (re-created per
+      // test to avoid lastIndex carry-over) to bound backtracking cost.
+      if (fallbackLineMatches(re, line)) {
         contentLines.push(
           formatFallbackContentLine({
             rel,
@@ -1086,7 +1142,7 @@ async function runFallbackGrep(params: {
         }
       }
     }
-    if (truncated) break;
+    if (truncated || fallbackScanAborted) break;
   }
 
   if (outputMode === "files_with_matches") {
@@ -1103,22 +1159,29 @@ async function runFallbackGrep(params: {
       headLimit,
       offset,
     );
-    return fallbackSafetyCapped
-      ? textResult(`${result.content}\n${formatFallbackSafetyNote()}`)
+    // gaphunt3 #26/#30: surface when the scan was cut short by the deadline.
+    const notes = [
+      fallbackScanAborted ? formatFallbackAbortedNote() : undefined,
+      fallbackSafetyCapped ? formatFallbackSafetyNote() : undefined,
+    ].filter((note): note is string => note !== undefined);
+    return notes.length > 0
+      ? textResult([result.content, ...notes].join("\n"))
       : result;
   }
 
   const limitedContent = applyTruncation(contentLines, headLimit, offset);
+  // gaphunt3 #26/#30: notes appended after the body when the scan was cut
+  // short, so the model learns the result may be incomplete.
+  const fallbackNotes = [
+    fallbackScanAborted ? formatFallbackAbortedNote() : undefined,
+    fallbackSafetyCapped ? formatFallbackSafetyNote() : undefined,
+  ].filter((note): note is string => note !== undefined);
 
   if (limitedContent.items.length === 0) {
     const empty = offset > 0
       ? `No matches found. ${formatOffsetNote(offset)}`
       : "No matches found.";
-    return textResult(
-      fallbackSafetyCapped
-        ? `${empty}\n${formatFallbackSafetyNote()}`
-        : empty,
-    );
+    return textResult([empty, ...fallbackNotes].join("\n"));
   }
   const body = limitedContent.items.map(truncateRenderedContentLine).join("\n");
   const pagination = truncated || limitedContent.truncated
@@ -1129,11 +1192,7 @@ async function runFallbackGrep(params: {
   const rendered = pagination
     ? `${body}\n${pagination}`
     : body;
-  return textResult(
-    fallbackSafetyCapped
-      ? `${rendered}\n${formatFallbackSafetyNote()}`
-      : rendered,
-  );
+  return textResult([rendered, ...fallbackNotes].join("\n"));
 }
 
 // ────────────────────────────────────────────────────────────────────────

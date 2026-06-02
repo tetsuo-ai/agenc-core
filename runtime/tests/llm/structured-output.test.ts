@@ -70,9 +70,12 @@ describe("structured-output provider capability helpers", () => {
           type: "string",
         },
         meta: {
-          type: "object",
+          type: ["object", "null"],
           properties: {
-            confidence: { type: "number" },
+            // gaphunt3 #11: `confidence` is optional in the input (absent from
+            // meta.required), so strict mode forces it into `required` AND
+            // widens it to be nullable — preserving "may be absent" semantics.
+            confidence: { type: ["number", "null"] },
           },
           additionalProperties: false,
           required: ["confidence"],

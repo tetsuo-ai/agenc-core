@@ -831,6 +831,13 @@ export class MCPManager {
           ...(this.callObserver !== undefined
             ? { callObserver: this.callObserver }
             : {}),
+          // gaphunt3 #14: forward the session's elicitation handlers so the
+          // resilient bridge re-registers them on the fresh client it spawns
+          // during reconnect — otherwise server-initiated elicitation breaks
+          // silently after a transient drop.
+          ...(this.elicitationHandlers !== undefined
+            ? { elicitationHandlers: this.elicitationHandlers }
+            : {}),
           // On automatic reconnect the resilient bridge rebuilds only the
           // tool surface and spawns a fresh client. Rebuild the resource +
           // prompt bridges against that new client too — otherwise they keep
