@@ -115,6 +115,78 @@ describe("AgenCSessionSnapshotPolicy", () => {
     expect(runLastSnapshotAt("run-1")).toBe("2026-05-01T00:00:05.000Z");
   });
 
+  // OOM fix: a long-lived (e.g. `agenc --yolo`) session fires many tool calls;
+  // the in-memory `completed` map previously pinned the RAW result of every one
+  // forever (unbounded large-payload growth → ~4GB heap → crash). Assert it is
+  // now FIFO-capped and each retained result is truncated to a bounded preview.
+  it("bounds the in-memory completed tool-call map and truncates large results (OOM fix)", () => {
+    seedRun("run-oom", "session-oom");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:00.000Z",
+      agencHome: home,
+      maxCompletedToolCalls: 50,
+      maxInMemoryToolResultBytes: 1024,
+    });
+
+    const big = "x".repeat(64 * 1024); // 64 KB per result — the leak's payload shape
+    const total = 300;
+    for (let i = 0; i < total; i++) {
+      policy.recordSessionEvent("session-oom", {
+        method: "event.tool_request",
+        params: {
+          eventId: `evt-req-${i}`,
+          requestId: `tool-${i}`,
+          toolName: "FileRead",
+        },
+      });
+      policy.recordSessionEvent("session-oom", {
+        method: "event.session_event",
+        params: {
+          event: {
+            type: "tool_call_completed",
+            payload: { callId: `tool-${i}`, result: `${big}-${i}`, isError: false },
+          },
+        },
+      });
+    }
+
+    const completed = latestSnapshot("session-oom").toolState.completed as Record<
+      string,
+      { result?: string }
+    >;
+    const keys = Object.keys(completed);
+    // Before the fix this held all 300 entries (each pinning 64 KB).
+    expect(keys.length).toBeLessThanOrEqual(50);
+    // Oldest entries are evicted (FIFO); the newest survive.
+    expect(completed["tool-0"]).toBeUndefined();
+    expect(completed["tool-299"]).toBeDefined();
+    // Each retained result is a bounded preview, not the full 64 KB payload
+    // (the untruncated result lives in the rotated-output snapshot store).
+    for (const key of keys) {
+      expect((completed[key]?.result ?? "").length).toBeLessThan(2048);
+    }
+  });
+
+  // OOM fix: the per-session status-transition log was an unbounded push target.
+  it("bounds the status-transition log (OOM fix)", () => {
+    seedRun("run-oom-st", "session-oom-st");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:00.000Z",
+      maxStatusTransitions: 25,
+    });
+    for (let i = 0; i < 300; i++) {
+      policy.recordAgentStatusTransition({
+        sessionId: "session-oom-st",
+        agentId: "run-oom-st",
+        status: `status-${i}`, // distinct status forces a push (no dedup)
+        transitionAt: "2026-05-01T00:00:00.000Z",
+      });
+    }
+    const transitions = latestSnapshot("session-oom-st").toolState
+      .statusTransitions as unknown[];
+    expect(transitions.length).toBeLessThanOrEqual(25);
+  });
+
   it("updates agent_runs from runner-emitted terminal run statuses", () => {
     seedRun("run-complete", "session-complete");
     seedRun("run-error", "session-error");

@@ -26,6 +26,14 @@ export interface SnapshotPolicyOptions {
   readonly periodicIntervalMs?: number;
   readonly maxConversationEvents?: number;
   readonly maxTrackedSessions?: number;
+  // OOM fix: bound the in-memory per-session tool state so a single long-lived
+  // session (e.g. `agenc --yolo`) cannot grow `completed` / `statusTransitions`
+  // without limit. The authoritative, full tool result is already persisted and
+  // size-rotated to SQLite (recordInFlightToolCallCompletion); the in-memory
+  // copy only needs a bounded preview for snapshotting.
+  readonly maxCompletedToolCalls?: number;
+  readonly maxStatusTransitions?: number;
+  readonly maxInMemoryToolResultBytes?: number;
   readonly now?: () => string;
   readonly setInterval?: (
     callback: () => void,
@@ -107,12 +115,18 @@ interface SnapshotRow {
 const DEFAULT_PERIODIC_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_CONVERSATION_EVENTS = 200;
 const DEFAULT_MAX_TRACKED_SESSIONS = 1_024;
+const DEFAULT_MAX_COMPLETED_TOOL_CALLS = 200;
+const DEFAULT_MAX_STATUS_TRANSITIONS = 500;
+const DEFAULT_MAX_IN_MEMORY_TOOL_RESULT_BYTES = 4_096;
 
 export class AgenCSessionSnapshotPolicy {
   readonly #driver: StateSqliteDriver;
   readonly #periodicIntervalMs: number;
   readonly #maxConversationEvents: number;
   readonly #maxTrackedSessions: number;
+  readonly #maxCompletedToolCalls: number;
+  readonly #maxStatusTransitions: number;
+  readonly #maxInMemoryToolResultBytes: number;
   readonly #now: () => string;
   readonly #setInterval: (
     callback: () => void,
@@ -141,6 +155,19 @@ export class AgenCSessionSnapshotPolicy {
       1,
       options.maxTrackedSessions ?? DEFAULT_MAX_TRACKED_SESSIONS,
     );
+    this.#maxCompletedToolCalls = Math.max(
+      1,
+      options.maxCompletedToolCalls ?? DEFAULT_MAX_COMPLETED_TOOL_CALLS,
+    );
+    this.#maxStatusTransitions = Math.max(
+      1,
+      options.maxStatusTransitions ?? DEFAULT_MAX_STATUS_TRANSITIONS,
+    );
+    this.#maxInMemoryToolResultBytes = Math.max(
+      0,
+      options.maxInMemoryToolResultBytes ??
+        DEFAULT_MAX_IN_MEMORY_TOOL_RESULT_BYTES,
+    );
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#setInterval =
       options.setInterval ??
@@ -152,6 +179,35 @@ export class AgenCSessionSnapshotPolicy {
     this.#snapshotRetention = options.snapshotRetention;
     this.#agencHome = options.agencHome;
     this.#outputRotation = options.outputRotation;
+  }
+
+  // OOM fix: evict the oldest completed tool calls (FIFO by insertion order)
+  // once the in-memory map exceeds its cap. The full result lives in the
+  // rotated-output SQLite store, so the in-memory `completed` map is a snapshot
+  // convenience — dropping the oldest entries is safe and stops a tool-heavy
+  // long-lived session from accumulating one entry per tool call forever.
+  #boundCompletedToolCalls(state: SessionSnapshotState): void {
+    const completed = state.toolState.completed;
+    const keys = Object.keys(completed);
+    const overflow = keys.length - this.#maxCompletedToolCalls;
+    for (let i = 0; i < overflow; i++) {
+      delete completed[keys[i] as string];
+    }
+  }
+
+  // OOM fix: replace a large tool result with a bounded preview before it is
+  // pinned in the in-memory `completed` map. The untruncated result is already
+  // persisted (and size-rotated) to SQLite, so the in-memory copy only needs a
+  // preview for snapshotting. This is the change that stops a FileRead/Bash-heavy
+  // `--yolo` session from pinning MBs per completed call until the heap is gone.
+  #boundInMemoryResult(result: JsonValue | null): JsonValue | null {
+    const cap = this.#maxInMemoryToolResultBytes;
+    if (cap === 0 || typeof result !== "string" || result.length <= cap) {
+      return result;
+    }
+    return `${result.slice(0, cap)}\n…[${
+      result.length - cap
+    } more chars elided in memory; full result persisted to the snapshot store]`;
   }
 
   startPeriodic(): void {
@@ -256,6 +312,12 @@ export class AgenCSessionSnapshotPolicy {
         ? { metadataPatch: transition.metadataPatch }
         : {}),
     });
+    // OOM fix: cap the status-transition log so a long-lived session can't grow
+    // it without bound.
+    const transitions = state.toolState.statusTransitions;
+    if (transitions.length > this.#maxStatusTransitions) {
+      transitions.splice(0, transitions.length - this.#maxStatusTransitions);
+    }
     return this.#writeSnapshot(state, "agent_status");
   }
 
@@ -423,8 +485,11 @@ export class AgenCSessionSnapshotPolicy {
               }
             : {}),
           status: booleanField(payload, "isError") ? "failed" : "completed",
-          result: (payload.result as JsonValue | undefined) ?? null,
+          result: this.#boundInMemoryResult(
+            (payload.result as JsonValue | undefined) ?? null,
+          ),
         };
+        this.#boundCompletedToolCalls(state);
       }
       return this.#writeSnapshot(state, "tool_call");
     }
@@ -466,8 +531,11 @@ export class AgenCSessionSnapshotPolicy {
           ...(recoveryCategory !== undefined ? { recoveryCategory } : {}),
           recoveryAction: "poison",
           status: "poisoned",
-          result: (payload.result as JsonValue | undefined) ?? null,
+          result: this.#boundInMemoryResult(
+            (payload.result as JsonValue | undefined) ?? null,
+          ),
         };
+        this.#boundCompletedToolCalls(state);
       }
       return this.#writeSnapshot(state, "tool_call");
     }
