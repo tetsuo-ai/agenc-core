@@ -48,10 +48,6 @@ declare module "@smithy/core" {
   export const NoAuthSigner: new (...args: unknown[]) => unknown;
 }
 
-declare module "@opentelemetry/sdk-trace-base" {
-  export type BasicTracerProvider = unknown;
-}
-
 declare module "src/entrypoints/agentSdkTypes.js" {
   export type HookEvent = any;
   export type ModelUsage = Record<string, unknown>;

@@ -1,7 +1,6 @@
 import { join } from 'path'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { resolveAgencHome } from '../../config/env.js'
-import type { Tool } from '../../tools/Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getGlobalAgenCFile } from '../../utils/env.js'
 import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
@@ -15,7 +14,6 @@ import { normalizeNameForMCP } from './normalization.js'
 import {
   type ConfigScope,
   ConfigScopeSchema,
-  type McpServerConfig,
 } from './types.js'
 
 /**
@@ -30,15 +28,6 @@ export function isToolFromMcpServer(
 ): boolean {
   const info = mcpInfoFromString(toolName)
   return info?.serverName === serverName
-}
-
-/**
- * Checks if a tool belongs to any MCP server
- * @param tool The tool to check
- * @returns True if the tool is from an MCP server
- */
-export function isMcpTool(tool: Tool): boolean {
-  return tool.name?.startsWith('mcp__') || tool.isMcp === true
 }
 
 /**
@@ -191,23 +180,3 @@ export function getProjectMcpServerStatus(
   return 'pending'
 }
 
-/**
- * Extracts the MCP server base URL (without query string) for analytics logging.
- * Query strings are stripped because they can contain access tokens.
- * Trailing slashes are also removed for normalization.
- * Returns undefined for stdio/sdk servers or if URL parsing fails.
- */
-export function getLoggingSafeMcpBaseUrl(
-  config: McpServerConfig,
-): string | undefined {
-  if (!('url' in config) || typeof config.url !== 'string') {
-    return undefined
-  }
-  try {
-    const url = new URL(config.url)
-    url.search = ''
-    return url.toString().replace(/\/$/, '')
-  } catch {
-    return undefined
-  }
-}
