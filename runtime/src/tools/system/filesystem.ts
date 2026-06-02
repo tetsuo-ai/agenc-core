@@ -206,6 +206,67 @@ const workspaceReadState = new Map<string, Map<string, SessionReadSnapshot>>();
 
 const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
 
+// OOM fix: `sessionReadState` / `workspaceReadState` retain the full file
+// `content` + `rawContent` (KB–MB each) for every unique path read in a
+// session. In a long-lived `agenc --yolo` run touching thousands of files this
+// grew without bound. The read-before-write GATE only needs the tiny presence +
+// view-kind metadata, and the per-turn changed-files producer only needs
+// `rawContent` for recently-read files — so cap the retained large-field bytes
+// and strip `content`/`rawContent` from the OLDEST entries (keeping their gate
+// metadata in memory) once the budget is exceeded. The full content remains
+// reloadable from the persisted per-file local history or a fresh disk read.
+const DEFAULT_MAX_SESSION_READ_CONTENT_BYTES = 25 * 1024 * 1024;
+
+function sessionReadContentBudget(): number {
+  const raw = Number(process.env.AGENC_MAX_SESSION_READ_CONTENT_BYTES);
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_MAX_SESSION_READ_CONTENT_BYTES;
+}
+
+function sessionReadContentBytes(snapshot: SessionReadSnapshot): number {
+  return (
+    (typeof snapshot.content === "string" ? snapshot.content.length : 0) +
+    (typeof snapshot.rawContent === "string" ? snapshot.rawContent.length : 0)
+  );
+}
+
+function stripSessionReadLargeFields(
+  snapshot: SessionReadSnapshot,
+): SessionReadSnapshot {
+  if (snapshot.content === undefined && snapshot.rawContent === undefined) {
+    return snapshot;
+  }
+  const { content: _content, rawContent: _rawContent, ...metadata } = snapshot;
+  return metadata;
+}
+
+/**
+ * Bound the retained large-field bytes of an in-memory read map by stripping
+ * `content`/`rawContent` from the oldest entries (Map iteration is insertion
+ * order, so the front is oldest) while preserving each entry's gate metadata.
+ * Stripping is non-destructive to the read-before-write gate (which only reads
+ * presence + `isPartialView`) and only degrades the optional changed-files diff
+ * / range-dedup for the evicted (older) paths.
+ */
+function boundSessionReadContent(
+  fileMap: Map<string, SessionReadSnapshot>,
+): void {
+  const budget = sessionReadContentBudget();
+  let total = 0;
+  for (const snapshot of fileMap.values()) {
+    total += sessionReadContentBytes(snapshot);
+  }
+  if (total <= budget) return;
+  for (const [path, snapshot] of fileMap) {
+    if (total <= budget) break;
+    const bytes = sessionReadContentBytes(snapshot);
+    if (bytes === 0) continue;
+    fileMap.set(path, stripSessionReadLargeFields(snapshot));
+    total -= bytes;
+  }
+}
+
 /**
  * Resolve the workspace root used to key {@link workspaceReadState}. This
  * is the process-global session workspace root (env `AGENC_WORKSPACE`,
@@ -243,6 +304,7 @@ function mirrorWorkspaceRead(
     workspaceReadState.set(workspaceRoot, fileMap);
   }
   fileMap.set(canonicalPath, snapshot);
+  boundSessionReadContent(fileMap);
 }
 
 /**
@@ -431,6 +493,7 @@ function rehydrateSessionReadSnapshot(
     sessionReadState.set(sessionId, fileMap);
   }
   fileMap.set(canonicalPath, persistedSnapshot);
+  boundSessionReadContent(fileMap);
   return persistedSnapshot;
 }
 
@@ -458,6 +521,7 @@ export function recordSessionRead(
       snapshot?.viewKind ?? "full";
   }
   fileMap.set(canonicalPath, nextSnapshot);
+  boundSessionReadContent(fileMap);
   mirrorWorkspaceRead(canonicalPath, nextSnapshot);
   persistLocalFileHistorySnapshot(sessionId, canonicalPath, nextSnapshot);
 }
