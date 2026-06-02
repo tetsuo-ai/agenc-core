@@ -277,6 +277,77 @@ export function editorForEnv(env: NodeJS.ProcessEnv): string {
   return "vim";
 }
 
+/**
+ * Split a $EDITOR command line into argv tokens, honoring quotes and
+ * backslash escapes (mirrors `splitCommandLine` in bin/config-cli.ts).
+ * Editors are commonly configured with flags (e.g. `code --wait`,
+ * `emacsclient -t`), so the string must be tokenized before spawning.
+ */
+export function splitCommandLine(raw: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+
+  const push = (): void => {
+    if (current.length > 0) {
+      args.push(current);
+      current = "";
+    }
+  };
+
+  for (const char of raw.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (/\s/u.test(char)) {
+      push();
+      continue;
+    }
+    current += char;
+  }
+  if (escaped) current += "\\";
+  if (quote !== null) {
+    throw new Error("EDITOR contains an unterminated quote");
+  }
+  push();
+  return args;
+}
+
+/**
+ * Tokenize a resolved editor string into a command + args pair (mirrors
+ * `parseEditorCommand` in bin/config-cli.ts).
+ */
+export function parseEditorCommand(raw: string): {
+  readonly command: string;
+  readonly args: readonly string[];
+} {
+  const parts = splitCommandLine(raw);
+  const command = parts[0]?.trim();
+  if (command === undefined || command.length === 0) {
+    throw new Error("EDITOR resolved to an empty command");
+  }
+  return {
+    command,
+    args: parts.slice(1),
+  };
+}
+
 async function openConfigInEditor(
   home: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -289,12 +360,15 @@ async function openConfigInEditor(
       text: `Config file does not exist yet: ${path}\nCreate it with: ${editorForEnv(env)} ${path}`,
     };
   }
-  const editor = editorForEnv(env);
-  const code = await spawner(editor, [path]);
+  // gaphunt3 #15: tokenize the $EDITOR string so editors carrying arguments
+  // (e.g. "code --wait", "emacsclient -t") spawn the binary + its flags
+  // instead of trying to exec the whole string as one executable name.
+  const editor = parseEditorCommand(editorForEnv(env));
+  const code = await spawner(editor.command, [...editor.args, path]);
   if (code !== 0) {
     return {
       kind: "error",
-      message: `Editor "${editor}" exited with code ${code}. File path: ${path}`,
+      message: `Editor "${editor.command}" exited with code ${code}. File path: ${path}`,
     };
   }
   return { kind: "text", text: `Edited ${path} (run /config reload to apply)` };

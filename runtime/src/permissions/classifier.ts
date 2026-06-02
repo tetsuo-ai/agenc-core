@@ -69,8 +69,10 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "Glob",
     "LSP",
     "ToolSearch",
-    "WebFetch",
-    "WebSearch",
+    // gaphunt3 #9: WebFetch/WebSearch removed from the safe allowlist. They
+    // ingest attacker-controllable external content (the canonical indirect
+    // prompt-injection / data-exfil-via-URL vector), so auto mode must route
+    // them through the classifier instead of blanket auto-allowing them.
     // MCP resource read
     "ListMcpResources",
     "ReadMcpResource",

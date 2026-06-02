@@ -423,6 +423,17 @@ export function createDaemonTuiSession<
           streamId,
         } satisfies MessageStreamParams);
       } catch (error) {
+        // gaphunt3 #16: message.stream can reject on a transient/dropped daemon
+        // socket (the same failure cancelTurn/setPendingProviderSwitch
+        // anticipate). The queued idle inputs (pasted images, attachments,
+        // startup messages) were already drained out of `queuedInputs` above;
+        // if we don't roll them back the user's content is lost permanently
+        // with no transcript entry. Re-prepend the drained blocks so the next
+        // submit re-sends them, preserving at-least-once delivery.
+        if (queued.length > 0) {
+          queuedInputs.unshift(...queued);
+          queuedInputCount = queued.length;
+        }
         activeTurnSnapshot = null;
         throw error;
       }

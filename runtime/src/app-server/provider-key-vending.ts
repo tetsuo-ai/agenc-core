@@ -76,6 +76,17 @@ export function createAgenCDaemonRuntimeAuthBackend(
     clearVendedKeyCache: () => {
       vendedKeys.clear();
     },
+    // gaphunt3 #48: evict only the terminating session's vended-key entries so a
+    // long-lived daemon does not retain a permanent cache entry per
+    // (terminated session, provider) — non-expiring keys would otherwise leak.
+    clearVendedKeysForSession: (sessionId) => {
+      const prefix = `${sessionId}\0`;
+      for (const cacheKey of vendedKeys.keys()) {
+        if (cacheKey.startsWith(prefix)) {
+          vendedKeys.delete(cacheKey);
+        }
+      }
+    },
   };
 
   return wrapped;
@@ -89,6 +100,13 @@ export interface AgenCDaemonRuntimeAuthBackendOptions {
 export interface AgenCDaemonRuntimeAuthBackend extends AuthBackend {
   replaceBackend(next: AuthBackend): void;
   clearVendedKeyCache(): void;
+  /**
+   * Drop every cached vended key owned by `sessionId` (all providers). Invoked
+   * from the session-termination path so the cache lifecycle tracks the session
+   * lifecycle and non-expiring keys do not accumulate on a long-lived daemon.
+   */
+  // gaphunt3 #48: per-session eviction API to bound vended-key cache growth.
+  clearVendedKeysForSession(sessionId: AuthSessionId): void;
 }
 
 function isCachedKeyExpired(entry: CachedVendedKey, nowMs: number): boolean {

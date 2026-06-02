@@ -77,12 +77,30 @@ export async function autoCompactIfNeeded(
       compactionResult,
       consecutiveFailures: 0,
     };
-  } catch {
+  } catch (error) {
+    // gaphunt3 #41: a user/provider abort mid-compaction is a cancellation,
+    // not a compaction failure. Re-throw it so the cancel propagates instead
+    // of being swallowed, and do NOT increment consecutiveFailures (which
+    // would otherwise trip the 3-strike circuit breaker and disable
+    // auto-compaction for the rest of the turn on benign cancels).
+    if (isAbortError(context, error)) {
+      throw error;
+    }
     return {
       wasCompacted: false,
       consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
     };
   }
+}
+
+function isAbortError(context: CompactContext, error: unknown): boolean {
+  if (context.abortController?.signal.aborted === true) return true;
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return true;
+    const message = error.message.toLowerCase();
+    if (message.includes("abort")) return true;
+  }
+  return false;
 }
 
 export function getEffectiveContextWindowSize(

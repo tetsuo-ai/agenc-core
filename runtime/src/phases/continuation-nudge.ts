@@ -63,6 +63,10 @@ function injectNudgeMessage(state: TurnState): void {
   const nudge: LLMMessage = {
     role: "user",
     content: "Continue with the task. Use the appropriate tools to proceed.",
+    // gaphunt3 #34: the continuation nudge is a synthetic, heuristic-driven
+    // turn — keep it ephemeral/in-context only so a false-positive match never
+    // pollutes the durable rollout/transcript that --resume replays.
+    runtimeOnly: { excludeFromDurableHistory: true },
   };
   state.messages.push(nudge);
 }

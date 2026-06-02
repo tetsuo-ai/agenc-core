@@ -1504,7 +1504,20 @@ async function execCommandHook(
  *   - Regex pattern (e.g., '^Write.*', '.*', '^(Write|Edit)$')
  * @returns true if the query matches the pattern
  */
-function matchesPattern(matchQuery: string, matcher: string): boolean {
+// gaphunt3 #25: ReDoS guard for untrusted hook matcher regexes. The matcher
+// value is the attacker-controllable side (plugin/marketplace hooks.json,
+// project/agent/skill frontmatter `hooks:`) and is only validated as
+// z.string() — no regex-safety bound. Mirror the guard the newer engine
+// already applies (hooks/engine/dispatcher.ts isUnsafeMatcherRegex): reject
+// over-long matchers and nested-quantifier patterns (e.g. `^(a+)+$`) before
+// compiling them so a catastrophic-backtracking regex can't freeze the event
+// loop on a long, agent-controlled matchQuery (e.g. FileChanged basenames).
+function isUnsafeMatcherRegex(matcher: string): boolean {
+  if (matcher.length > 512) return true
+  return /\((?:[^()\\]|\\.|\([^)]*\))*[+*](?:[^()\\]|\\.)*\)[+*{]/.test(matcher)
+}
+
+export function matchesPattern(matchQuery: string, matcher: string): boolean {
   if (!matcher || matcher === '*') {
     return true
   }
@@ -1519,6 +1532,14 @@ function matchesPattern(matchQuery: string, matcher: string): boolean {
     }
     // Simple exact match
     return matchQuery === normalizeLegacyToolName(matcher)
+  }
+
+  // gaphunt3 #25: reject ReDoS-prone matchers before RegExp compilation/.test().
+  if (isUnsafeMatcherRegex(matcher)) {
+    logForDebugging(
+      `Rejected unsafe (ReDoS-prone) hook matcher pattern: ${matcher}`,
+    )
+    return false
   }
 
   // Otherwise treat as regex

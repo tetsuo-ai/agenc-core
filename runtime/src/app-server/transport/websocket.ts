@@ -32,6 +32,10 @@ export const AGENC_WEBSOCKET_DEFAULT_PATH = "/";
 export const AGENC_WEBSOCKET_HEALTH_PATH = "/healthz";
 export const AGENC_WEBSOCKET_READY_PATH = "/readyz";
 export const AGENC_WEBSOCKET_DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+// gaphunt3 #47: mirror the Unix socket accept-auth teardown window so an
+// accepted ws peer that never authenticates is reaped instead of pinning a
+// #connections slot (and its dispatcher connection object) indefinitely.
+export const AGENC_WEBSOCKET_DEFAULT_ACCEPT_AUTH_TIMEOUT_MS = 5000;
 
 export interface AgenCWebSocketListenAddress {
   readonly host: string;
@@ -60,6 +64,20 @@ export interface AgenCWebSocketServerOptions {
     origin: string | undefined,
     request: IncomingMessage,
   ) => boolean;
+  // gaphunt3 #47: when supplied, an accepted connection must produce a message
+  // that the authenticator approves within `acceptAuthenticationTimeoutMs` or
+  // the socket is terminated and its #connections entry reaped. Mirrors the
+  // Unix socket transport's accept-auth gate; when undefined, behavior is
+  // unchanged (no teardown timer is armed).
+  readonly acceptAuthenticator?: (
+    message: JsonObject,
+    context: AgenCWebSocketMessageContext,
+  ) => boolean | Promise<boolean>;
+  readonly acceptAuthenticationTimeoutMs?: number;
+  readonly onAuthenticationFailed?: (
+    message: JsonObject,
+    context: AgenCWebSocketMessageContext,
+  ) => void | Promise<void>;
   readonly onMessage: (
     message: JsonObject,
     context: AgenCWebSocketMessageContext,
@@ -76,7 +94,23 @@ interface ActiveWebSocketConnection {
   // racing as fire-and-forget promises. Each connection owns its own chain so
   // cross-connection concurrency is preserved.
   dispatchChain: Promise<void>;
+  // gaphunt3 #47: accept-auth teardown state. `accepted` is true once an
+  // authenticator-approved message is seen (or when no authenticator is
+  // configured). `authTimeout` is the armed teardown timer; it is cleared on
+  // success, failure, or socket close. `closingUnauthenticated` short-circuits
+  // any in-flight/queued messages once the connection is being torn down.
+  accepted: boolean;
+  closingUnauthenticated: boolean;
+  authTimeout: ReturnType<typeof setTimeout> | undefined;
+  // Serializes the auth decision across line-batched messages that race the
+  // dispatch chain, mirroring the Unix socket transport.
+  authResolution: Promise<void>;
 }
+
+// gaphunt3 #47: sentinel for "no auth decision in flight" on a connection.
+// Identity equality against it marks the first message that should claim the
+// auth slot (mirrors the Unix socket transport's `resolvedAuth`).
+const resolvedWebSocketAuth: Promise<void> = Promise.resolve();
 
 export class AgenCWebSocketServer {
   readonly #options: AgenCWebSocketServerOptions;
@@ -248,6 +282,12 @@ export class AgenCWebSocketServer {
       socket,
       pendingMessages: new Set(),
       dispatchChain: Promise.resolve(),
+      // gaphunt3 #47: only require auth when an authenticator is configured;
+      // otherwise the connection is accepted immediately (legacy behavior).
+      accepted: this.#options.acceptAuthenticator === undefined,
+      closingUnauthenticated: false,
+      authTimeout: undefined,
+      authResolution: resolvedWebSocketAuth,
     };
     this.#connections.set(connectionId, active);
 
@@ -266,12 +306,97 @@ export class AgenCWebSocketServer {
       this.#handleMessage(data, active, context);
     });
     socket.once("close", () => {
+      // gaphunt3 #47: cancel the teardown timer so a closed connection never
+      // leaves an armed setTimeout (or fires terminate() on a dead socket).
+      this.#clearAuthTimeout(active);
       this.#connections.delete(connectionId);
       this.#options.onConnectionClosed?.(connectionId);
     });
     socket.once("error", (error) => {
       this.#options.onError?.(asError(error), connectionId);
     });
+
+    // gaphunt3 #47: arm the accept-auth teardown timer. A peer that completes
+    // the upgrade but never sends an authenticator-approved message is reaped
+    // instead of holding a #connections slot (and dispatcher connection)
+    // indefinitely, matching the Unix socket transport's accept-auth window.
+    if (!active.accepted) {
+      active.authTimeout = armWebSocketAcceptAuthTimeout(
+        active,
+        this.#options.acceptAuthenticationTimeoutMs ??
+          AGENC_WEBSOCKET_DEFAULT_ACCEPT_AUTH_TIMEOUT_MS,
+        () => {
+          this.#connections.delete(connectionId);
+        },
+      );
+    }
+  }
+
+  #clearAuthTimeout(active: ActiveWebSocketConnection): void {
+    if (active.authTimeout !== undefined) {
+      clearTimeout(active.authTimeout);
+      active.authTimeout = undefined;
+    }
+  }
+
+  // gaphunt3 #47: resolve the accept-auth decision for one inbound message.
+  // Returns true when the message may proceed to dispatch. The first message
+  // on a not-yet-accepted connection claims the auth slot and runs the
+  // authenticator; siblings (line-batched messages) await that decision so a
+  // legitimately-authenticated connection is not rejected on its second line.
+  async #resolveAcceptance(
+    message: JsonObject,
+    active: ActiveWebSocketConnection,
+    context: AgenCWebSocketMessageContext,
+  ): Promise<boolean> {
+    if (active.accepted) {
+      return !active.closingUnauthenticated;
+    }
+    const authenticator = this.#options.acceptAuthenticator;
+    if (authenticator === undefined) {
+      active.accepted = true;
+      return true;
+    }
+    const inFlight = active.authResolution;
+    if (inFlight !== resolvedWebSocketAuth) {
+      await inFlight;
+      return active.accepted && !active.closingUnauthenticated;
+    }
+    let release: (() => void) | undefined;
+    active.authResolution = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      if (active.closingUnauthenticated) return false;
+      let authenticated = false;
+      try {
+        authenticated = (await authenticator(message, context)) === true;
+      } catch (error) {
+        this.#clearAuthTimeout(active);
+        active.closingUnauthenticated = true;
+        this.#options.onError?.(asError(error), context.connectionId);
+        this.#connections.delete(context.connectionId);
+        if (active.socket.readyState !== WebSocket.CLOSED) {
+          active.socket.terminate();
+        }
+        return false;
+      }
+      if (!authenticated) {
+        active.closingUnauthenticated = true;
+        this.#clearAuthTimeout(active);
+        try {
+          await this.#options.onAuthenticationFailed?.(message, context);
+        } finally {
+          context.close();
+        }
+        return false;
+      }
+      active.accepted = true;
+      this.#clearAuthTimeout(active);
+      return true;
+    } finally {
+      release?.();
+    }
   }
 
   #handleMessage(
@@ -294,11 +419,19 @@ export class AgenCWebSocketServer {
       // ordering dependency on normal requests (they reference a target by
       // requestId, not by arrival position), so dispatch them off-chain. The
       // promise is still tracked in pendingMessages so close() drains it.
-      const pending = Promise.resolve(
-        this.#options.onMessage(message, context),
-      ).catch((error) => {
-        this.#options.onError?.(asError(error), context.connectionId);
-      });
+      //
+      // gaphunt3 #47: a control message cannot itself satisfy the accept-auth
+      // gate (it is not an `initialize`), so on a not-yet-accepted connection
+      // it must not run — it is dropped until the connection authenticates.
+      const pending = Promise.resolve()
+        .then(async () => {
+          if (active.accepted && !active.closingUnauthenticated) {
+            await this.#options.onMessage(message, context);
+          }
+        })
+        .catch((error) => {
+          this.#options.onError?.(asError(error), context.connectionId);
+        });
       active.pendingMessages.add(pending);
       pending.finally(() => {
         active.pendingMessages.delete(pending);
@@ -306,13 +439,17 @@ export class AgenCWebSocketServer {
       return;
     }
 
-    const pending = (active.dispatchChain = active.dispatchChain.then(() =>
-      Promise.resolve(this.#options.onMessage(message, context)).catch(
-        (error) => {
-          this.#options.onError?.(asError(error), context.connectionId);
-        },
-      ),
-    ));
+    const pending = (active.dispatchChain = active.dispatchChain.then(
+      async () => {
+        // gaphunt3 #47: gate dispatch on the accept-auth decision so an
+        // accepted-but-unauthenticated connection cannot drive the dispatcher.
+        const proceed = await this.#resolveAcceptance(message, active, context);
+        if (!proceed) return;
+        await this.#options.onMessage(message, context);
+      },
+    ).catch((error) => {
+      this.#options.onError?.(asError(error), context.connectionId);
+    }));
     active.pendingMessages.add(pending);
     pending.finally(() => {
       active.pendingMessages.delete(pending);
@@ -499,6 +636,48 @@ function closeHttpServer(server: HttpServer): Promise<void> {
  */
 function isControlMessage(message: JsonObject): boolean {
   return message.method === "request.cancel";
+}
+
+/**
+ * gaphunt3 #47: a socket that can be force-closed after the accept-auth window
+ * lapses. Structural so the teardown path is unit-testable without a live ws.
+ */
+export interface WebSocketAcceptAuthTarget {
+  readonly readyState: number;
+  terminate(): void;
+}
+
+/**
+ * gaphunt3 #47: connection-local accept-auth state mutated by the teardown
+ * timer. Kept structural (a subset of ActiveWebSocketConnection) so tests can
+ * drive the reaper directly with fake timers and a mock socket.
+ */
+export interface WebSocketAcceptAuthState {
+  readonly socket: WebSocketAcceptAuthTarget;
+  closingUnauthenticated: boolean;
+  authTimeout: ReturnType<typeof setTimeout> | undefined;
+}
+
+/**
+ * gaphunt3 #47: arm the accept-auth teardown timer. When it fires (no
+ * authenticator-approved message arrived in time) it marks the connection
+ * unauthenticated, runs `onReap` (which removes the #connections entry), and
+ * terminates the socket unless it is already closed. Returns the timer handle
+ * so the caller can clear it on success/failure/close.
+ */
+export function armWebSocketAcceptAuthTimeout(
+  active: WebSocketAcceptAuthState,
+  timeoutMs: number,
+  onReap: () => void,
+): ReturnType<typeof setTimeout> {
+  return setTimeout(() => {
+    active.authTimeout = undefined;
+    active.closingUnauthenticated = true;
+    onReap();
+    if (active.socket.readyState !== WebSocket.CLOSED) {
+      active.socket.terminate();
+    }
+  }, timeoutMs);
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {

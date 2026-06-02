@@ -1396,10 +1396,10 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     expect(loadTurnInputsFn).toHaveBeenCalledTimes(2);
     expect(prompts[0]).toContain("PROJECT-ONE");
     expect(prompts[0]).toContain("MEMORY-ONE");
-    expect(prompts[0]).toContain("## alpha");
+    expect(prompts[0]).toContain('<mcp_server_instructions server="alpha"');
     expect(prompts[1]).toContain("PROJECT-TWO");
     expect(prompts[1]).toContain("MEMORY-TWO");
-    expect(prompts[1]).toContain("## beta");
+    expect(prompts[1]).toContain('<mcp_server_instructions server="beta"');
     expect(prompts[1]).not.toContain("PROJECT-ONE");
     expect(prompts[1]).not.toContain("MEMORY-ONE");
     expect(prompts[1]).not.toContain("## alpha");

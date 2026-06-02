@@ -175,15 +175,23 @@ export async function reconnectWithBackoff<T>(
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
+    // gaphunt3 #45: detach onAbort on the normal timeout path too. `{ once: true }`
+    // only auto-removes a listener AFTER abort fires; on the common (non-aborted)
+    // timeout path the listener would otherwise leak on the long-lived turn signal,
+    // accumulating one dead closure per retry across a reconnect storm.
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     if (typeof (timer as { unref?: () => void }).unref === "function") {
       (timer as { unref: () => void }).unref();
     }
     if (signal) {
-      const onAbort = () => {
-        clearTimeout(timer);
-        resolve();
-      };
       if (signal.aborted) {
         onAbort();
       } else {

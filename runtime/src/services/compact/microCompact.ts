@@ -106,9 +106,23 @@ export async function microcompactMessages(
         };
       }
       const text = messageText(message);
+      // gaphunt3 #3: mirror the content-block branch's compactable-tool gate
+      // on the standalone tool-message branch. The live pipeline stores tool
+      // results as standalone role:"tool" messages, so without this gate every
+      // large result was cleared regardless of the COMPACTABLE_TOOLS allowlist,
+      // discarding results from non-compactable tools (Task/agent/custom tools).
+      const isNonCompactableTool =
+        message.toolName !== undefined && !isCompactableTool(message.toolName);
+      const isExcludedById =
+        message.toolCallId !== undefined &&
+        compactableIds.size > 0 &&
+        !compactableIds.has(message.toolCallId) &&
+        !(message.toolName !== undefined && isCompactableTool(message.toolName));
       if (
         text.length < MICROCOMPACT_MIN_CHARS ||
         !isToolLikeMessage(message) ||
+        isNonCompactableTool ||
+        isExcludedById ||
         (message.toolCallId !== undefined && keepIds.has(message.toolCallId)) ||
         isWithinTimeWindow(message, now, clearAfterMs)
       ) {

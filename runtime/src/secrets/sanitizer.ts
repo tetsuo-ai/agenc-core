@@ -180,6 +180,25 @@ const WHITESPACE_TOKEN_PATTERN = /(\s+)/u;
 // words is treated as a seed phrase.
 const BIP39_MIN_MNEMONIC_LENGTH = 12;
 
+// gaphunt3 #18: seed phrases are commonly copy/pasted comma-separated
+// ("abandon, ability, ...") or as numbered lists ("1. abandon\n2. ability"),
+// which fuses punctuation/digits to the whitespace-delimited tokens. A raw
+// BIP39_WORDLIST.has(token) check fails for "abandon," / "1." and breaks the
+// contiguous run, leaking the whole phrase. Classify each word token after
+// stripping leading/trailing non-letters:
+//   - "seed": its letter core is a BIP39 word (counts toward the run).
+//   - "filler": no lowercase letters at all (pure punctuation/digits like
+//     "2.", "-", "|", "•") — does NOT break the run and does NOT count.
+//   - "other": a real non-seed word — breaks the run.
+type Bip39TokenKind = "seed" | "filler" | "other";
+
+function classifyBip39Token(token: string): Bip39TokenKind {
+  const core = token.replace(/^[^a-z]+/, "").replace(/[^a-z]+$/, "");
+  if (core.length > 0 && BIP39_WORDLIST.has(core)) return "seed";
+  if (!/[a-z]/.test(token)) return "filler";
+  return "other";
+}
+
 /**
  * Redacts a bare BIP39 mnemonic / seed phrase: a contiguous run of at least 12
  * lowercase words that are ALL members of the BIP39 wordlist. Requiring the full
@@ -209,30 +228,38 @@ function redactBareMnemonics(input: string): string {
       continue;
     }
     const word = parts[i];
-    if (word !== undefined && word.length > 0 && BIP39_WORDLIST.has(word)) {
-      // Extend the run over consecutive valid words.
+    // gaphunt3 #18: a run only STARTS on a token whose letter core is a BIP39
+    // word (punctuation-tolerant), so "abandon," / "1.abandon" anchor a run.
+    if (word !== undefined && word.length > 0 && classifyBip39Token(word) === "seed") {
+      // Extend the run over consecutive seed/filler words; "filler" tokens (pure
+      // punctuation/digits like list numbers) bridge the run without counting.
       let end = i;
       let count = 0;
+      // Index of the last seed token in the run, so trailing filler/separators
+      // outside the actual phrase are not blanked.
+      let lastSeedIdx = i;
       while (end < parts.length) {
         const candidate = parts[end];
         if (candidate === undefined) break;
         if (end % 2 === 0) {
-          if (candidate.length === 0 || !BIP39_WORDLIST.has(candidate)) break;
-          count += 1;
+          if (candidate.length === 0) break;
+          const kind = classifyBip39Token(candidate);
+          if (kind === "other") break;
+          if (kind === "seed") {
+            count += 1;
+            lastSeedIdx = end;
+          }
         }
         end += 1;
       }
-      // `end` now points past the last word token; trim a trailing separator.
-      let lastWordIdx = end - 1;
-      while (lastWordIdx > i && lastWordIdx % 2 === 1) lastWordIdx -= 1;
       if (count >= BIP39_MIN_MNEMONIC_LENGTH) {
-        for (let j = i; j <= lastWordIdx; j += 1) parts[j] = "";
+        for (let j = i; j <= lastSeedIdx; j += 1) parts[j] = "";
         parts[i] = REDACTED_SECRET;
         changed = true;
-        i = lastWordIdx + 1;
+        i = lastSeedIdx + 1;
         continue;
       }
-      i = lastWordIdx + 1;
+      i = lastSeedIdx + 1;
       continue;
     }
     i += 1;

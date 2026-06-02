@@ -101,7 +101,7 @@ function setCurrentWorktreeSession(
  * "/-separated segments of letters/digits/dots/underscores/dashes;
  *  max 64 chars total."
  */
-function validateWorktreeSlug(slug: string): void {
+export function validateWorktreeSlug(slug: string): void {
   if (typeof slug !== "string" || slug.length === 0) {
     throw new Error("worktree name must be a non-empty string");
   }
@@ -111,6 +111,17 @@ function validateWorktreeSlug(slug: string): void {
   for (const segment of slug.split("/")) {
     if (segment.length === 0) {
       throw new Error("worktree name has an empty segment");
+    }
+    // gaphunt3 #7: reject "." / ".." segments so the slug cannot
+    // traverse out of .agenc/worktrees via resolve(). The
+    // `^[A-Za-z0-9._-]+$` class below treats ".." as a legal segment
+    // (`.` is allowed), so this explicit guard — present in the donor
+    // `utils/worktree.ts:validateWorktreeSlug` but dropped in the port —
+    // is required to preserve the confinement check.
+    if (segment === "." || segment === "..") {
+      throw new Error(
+        `worktree name must not contain "." or ".." path segments`,
+      );
     }
     if (!/^[A-Za-z0-9._-]+$/.test(segment)) {
       throw new Error(
@@ -377,7 +388,20 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       }
 
       // Create the worktree under AgenC's internal worktree directory.
-      const worktreePath = resolve(mainRepoRoot, ".agenc", "worktrees", slug);
+      const worktreesRoot = resolve(mainRepoRoot, ".agenc", "worktrees");
+      const worktreePath = resolve(worktreesRoot, slug);
+      // gaphunt3 #7: defense-in-depth — even after slug validation,
+      // confirm the resolved path stays inside .agenc/worktrees before
+      // handing it to `git worktree add`. Blocks any future regression in
+      // validateWorktreeSlug from escaping the confinement root.
+      if (
+        worktreePath !== worktreesRoot &&
+        !worktreePath.startsWith(`${worktreesRoot}/`)
+      ) {
+        return errorResult(
+          `Refusing to create worktree: resolved path ${worktreePath} escapes ${worktreesRoot}.`,
+        );
+      }
       const branch = slug;
       const originalHeadCommit = await getCurrentHeadCommit(mainRepoRoot);
 

@@ -561,8 +561,31 @@ class Project {
   private activeDrain: Promise<void> | null = null
   private FLUSH_INTERVAL_MS = 100
   private readonly MAX_CHUNK_BYTES = 100 * 1024 * 1024
+  // gaphunt3 #17: test-only seam to simulate a persistent append failure
+  // (ENOSPC/EDQUOT/EROFS) without touching real disk. Production leaves this
+  // null and the real fsAppendFile/mkdir path runs unchanged.
+  private appendOverrideForTesting:
+    | ((filePath: string, data: string) => Promise<void>)
+    | null = null
 
   constructor() {}
+
+  /** @internal Inject a failing/stub append for drain-failure tests. */
+  setAppendOverrideForTesting(
+    fn: ((filePath: string, data: string) => Promise<void>) | null,
+  ): void {
+    this.appendOverrideForTesting = fn
+  }
+
+  /** @internal Enqueue + await a single write for testing the drain path. */
+  enqueueWriteForTesting(filePath: string, entry: Entry): Promise<void> {
+    return this.enqueueWrite(filePath, entry)
+  }
+
+  /** @internal Expose the scheduled-drain interval for fake-timer tests. */
+  getFlushIntervalForTesting(): number {
+    return this.FLUSH_INTERVAL_MS
+  }
 
   /** @internal Reset flush/queue state for testing. */
   _resetFlushState(): void {
@@ -617,16 +640,31 @@ class Project {
     this.flushTimer = setTimeout(async () => {
       this.flushTimer = null
       this.activeDrain = this.drainWriteQueue()
-      await this.activeDrain
-      this.activeDrain = null
-      // If more items arrived during drain, schedule again
-      if (this.writeQueues.size > 0) {
-        this.scheduleDrain()
+      // gaphunt3 #17: guard the awaited drain. drainWriteQueue is now
+      // failure-contained, but a defensive try/finally guarantees the timer
+      // callback can never leak an unhandled rejection, that activeDrain is
+      // always reset to null (otherwise flush() would await a stale promise
+      // forever), and that pending entries are always rescheduled.
+      try {
+        await this.activeDrain
+      } catch (e) {
+        logError(e instanceof Error ? e : new Error(String(e)))
+      } finally {
+        this.activeDrain = null
+        // If more items arrived during drain, schedule again
+        if (this.writeQueues.size > 0) {
+          this.scheduleDrain()
+        }
       }
     }, this.FLUSH_INTERVAL_MS)
   }
 
   private async appendToFile(filePath: string, data: string): Promise<void> {
+    // gaphunt3 #17: honor the test-only append seam (null in production).
+    if (this.appendOverrideForTesting) {
+      await this.appendOverrideForTesting(filePath, data)
+      return
+    }
     try {
       await fsAppendFile(filePath, data, { mode: 0o600 })
     } catch {
@@ -647,17 +685,33 @@ class Project {
       let content = ''
       const resolvers: Array<() => void> = []
 
-      for (const { entry, resolve } of batch) {
-        const line = jsonStringify(entry) + '\n'
-
-        if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
-          // Flush chunk and resolve its entries before starting a new one
+      // gaphunt3 #17: a persistent append failure (ENOSPC/EDQUOT/EROFS/EACCES)
+      // must NOT propagate out of drainWriteQueue. The batch was already
+      // spliced out of the queue, so an uncaught rejection here would (a)
+      // leave every awaiter of enqueueWrite/flush() hanging because their
+      // resolve callbacks never fire, and (b) become an unhandled rejection /
+      // wedge scheduleDrain (activeDrain stuck non-null). Contain the error:
+      // log it once and ALWAYS invoke the chunk's resolvers so callers settle.
+      const flushChunk = async (): Promise<void> => {
+        try {
           await this.appendToFile(filePath, content)
+        } catch (e) {
+          logError(e instanceof Error ? e : new Error(String(e)))
+        } finally {
           for (const r of resolvers) {
             r()
           }
           resolvers.length = 0
           content = ''
+        }
+      }
+
+      for (const { entry, resolve } of batch) {
+        const line = jsonStringify(entry) + '\n'
+
+        if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
+          // Flush chunk and resolve its entries before starting a new one
+          await flushChunk()
         }
 
         content += line
@@ -665,10 +719,7 @@ class Project {
       }
 
       if (content.length > 0) {
-        await this.appendToFile(filePath, content)
-        for (const r of resolvers) {
-          r()
-        }
+        await flushChunk()
       }
     }
 
@@ -1373,6 +1424,30 @@ class Project {
 
   getInternalSubagentEventReader(): InternalEventReader | null {
     return this.internalSubagentEventReader
+  }
+}
+
+/**
+ * gaphunt3 #17: test-only surface over a fresh, isolated Project so the
+ * write-queue drain-failure behavior can be unit-tested without the global
+ * singleton or real disk. Not used in production.
+ */
+export type TestProjectHandle = {
+  enqueueWrite(filePath: string, entry: Entry): Promise<void>
+  setAppendOverride(
+    fn: ((filePath: string, data: string) => Promise<void>) | null,
+  ): void
+  flush(): Promise<void>
+  flushIntervalMs: number
+}
+
+export function createProjectForTesting(): TestProjectHandle {
+  const p = new Project()
+  return {
+    enqueueWrite: (filePath, entry) => p.enqueueWriteForTesting(filePath, entry),
+    setAppendOverride: fn => p.setAppendOverrideForTesting(fn),
+    flush: () => p.flush(),
+    flushIntervalMs: p.getFlushIntervalForTesting(),
   }
 }
 

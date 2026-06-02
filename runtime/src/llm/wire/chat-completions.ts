@@ -301,6 +301,15 @@ export function parseChatCompletionsResponse(
     request.options,
   );
 
+  const finishReason = normalizeFinishReason(choice.finish_reason);
+  // gaphunt3 #20: a truncated/incomplete generation (finishReason 'length',
+  // 'error', or 'content_filter') leaves partial JSON in `content`, which
+  // parseStructuredOutputText would JSON.parse and throw on, failing the
+  // whole turn instead of surfacing the recoverable truncation. Only attempt
+  // structured-output parsing when the generation completed normally.
+  const generationCompleted =
+    finishReason === "stop" || finishReason === "tool_calls";
+
   return {
     content,
     toolCalls,
@@ -313,14 +322,15 @@ export function parseChatCompletionsResponse(
     }),
     model:
       typeof response.model === "string" ? response.model : model,
-    finishReason: normalizeFinishReason(choice.finish_reason),
+    finishReason,
     requestMetrics: withEndpointMarkers(
       requestMetrics,
       "/chat/completions",
       response,
     ),
     structuredOutput:
-      request.options?.structuredOutput?.enabled === false ||
+      !generationCompleted ||
+        request.options?.structuredOutput?.enabled === false ||
         !request.options?.structuredOutput?.schema ||
         content.trim().length === 0
         ? undefined

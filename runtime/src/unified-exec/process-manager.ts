@@ -265,6 +265,9 @@ interface ProcessEntry {
   resolveExit: (state: ExitState) => void;
   exitState: ExitState | null;
   hardTimeout?: NodeJS.Timeout;
+  // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
+  // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
+  detachUpstreamAbort?: () => void;
 }
 
 function makeDeferredExit(): {
@@ -559,6 +562,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private releaseProcessId(processId: number): void {
     const entry = this.processes.get(processId);
     if (entry?.hardTimeout) clearTimeout(entry.hardTimeout);
+    // gaphunt3 #44: ensure the upstream-abort listener is removed when a slot is
+    // released, even if the entry never reached complete() (idempotent).
+    entry?.detachUpstreamAbort?.();
+    if (entry) entry.detachUpstreamAbort = undefined;
     this.processes.delete(processId);
   }
 
@@ -620,18 +627,30 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const complete = (entry: ProcessEntry, state: ExitState): void => {
       if (entry.exitState !== null) return;
       entry.exitState = state;
+      // gaphunt3 #44: the process settled — drop the upstream-abort listener so
+      // it does not survive (the normal-exit path the `{ once: true }` never covered).
+      entry.detachUpstreamAbort?.();
+      entry.detachUpstreamAbort = undefined;
       entry.resolveExit(state);
     };
 
+    // gaphunt3 #44: capture the upstream-abort listener and a disposer so it can
+    // be removed when the process settles. The previous `{ once: true }` only
+    // auto-removed the listener on the abort path; on the (overwhelmingly common)
+    // normal-exit path it was never removed, leaking one dead listener per command
+    // on the long-lived session-scoped source signal.
+    let detachUpstreamAbort: (() => void) | undefined;
     if (params.signal) {
       if (params.signal.aborted) {
         abortController.abort(params.signal.reason);
       } else {
-        params.signal.addEventListener(
-          "abort",
-          () => abortController.abort(params.signal?.reason),
-          { once: true },
-        );
+        const sourceSignal = params.signal;
+        const onUpstreamAbort = (): void =>
+          abortController.abort(sourceSignal.reason);
+        sourceSignal.addEventListener("abort", onUpstreamAbort, { once: true });
+        detachUpstreamAbort = () => {
+          sourceSignal.removeEventListener("abort", onUpstreamAbort);
+        };
       }
     }
 
@@ -660,6 +679,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       const entry: ProcessEntry = {
         ...entryBase,
         stored: { kind: "pty", process: processHandle },
+        // gaphunt3 #44: thread the upstream-abort disposer onto the entry.
+        ...(detachUpstreamAbort !== undefined ? { detachUpstreamAbort } : {}),
       };
       processHandle.onData((data) =>
         notifyData("stdout", Buffer.isBuffer(data) ? data.toString("utf8") : data),
@@ -685,6 +706,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const entry: ProcessEntry = {
       ...entryBase,
       stored: { kind: "pipe", process: child },
+      // gaphunt3 #44: thread the upstream-abort disposer onto the entry.
+      ...(detachUpstreamAbort !== undefined ? { detachUpstreamAbort } : {}),
     };
     child.on("exit", (code, signal) => {
       setTimeout(() => complete(entry, { exitCode: code, signal }), 20).unref?.();

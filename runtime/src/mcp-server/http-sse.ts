@@ -24,6 +24,10 @@ const DEFAULT_HTTP_PATH = "/mcp";
 const DEFAULT_SSE_PATH = "/sse";
 const DEFAULT_LEGACY_MESSAGE_PATH = "/message";
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+// gaphunt3 #22: idle grace before a stream-less streamable-http session is
+// evicted, so a client between POSTs (no open GET stream) is not dropped while
+// a client that disconnected without a DELETE is still reaped.
+const DEFAULT_STREAMABLE_IDLE_MS = 5 * 60 * 1000;
 const SESSION_HEADER = "mcp-session-id";
 const PROTOCOL_VERSION_HEADER = "mcp-protocol-version";
 const SUPPORTED_PROTOCOL_VERSIONS = new Set(["2025-06-18", "2025-03-26"]);
@@ -36,6 +40,9 @@ export interface McpHttpSseServerTransportOptions {
   readonly maxBodyBytes?: number;
   readonly validateOrigin?: (origin: string | null) => boolean;
   readonly onError?: (error: Error) => void;
+  // gaphunt3 #22: idle grace (ms) before a stream-less streamable-http session
+  // is evicted on disconnect. 0 defers eviction to the next event-loop tick.
+  readonly streamableIdleMs?: number;
 }
 
 export interface McpHttpSseSessionSnapshot {
@@ -52,6 +59,9 @@ interface McpHttpSseSession {
   readonly postStreams: Map<string, SseStream>;
   readonly requestPostStreams: Map<string, string>;
   nextGetStreamIndex: number;
+  // gaphunt3 #22: pending idle-expiry reaper for a stream-less streamable-http
+  // session; armed on disconnect, cancelled when a stream re-attaches.
+  idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface SseStream {
@@ -90,6 +100,7 @@ export class McpHttpSseServerTransport {
     readonly maxBodyBytes: number;
     readonly validateOrigin: (origin: string | null) => boolean;
     readonly onError?: (error: Error) => void;
+    readonly streamableIdleMs: number;
   };
   readonly #sessions = new Map<string, McpHttpSseSession>();
 
@@ -103,6 +114,8 @@ export class McpHttpSseServerTransport {
       maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
       validateOrigin: options.validateOrigin ?? isLocalOrMissingOrigin,
       onError: options.onError,
+      streamableIdleMs:
+        options.streamableIdleMs ?? DEFAULT_STREAMABLE_IDLE_MS,
     };
   }
 
@@ -223,6 +236,9 @@ export class McpHttpSseServerTransport {
   closeSession(sessionId: string): boolean {
     const session = this.#sessions.get(sessionId);
     if (session === undefined) return false;
+    // gaphunt3 #22: cancel any pending idle reaper so it cannot fire after the
+    // session has already been removed.
+    this.#clearIdleTimer(session);
     for (const stream of session.getStreams.values()) {
       stream.response.end();
     }
@@ -252,6 +268,7 @@ export class McpHttpSseServerTransport {
       postStreams: new Map(),
       requestPostStreams: new Map(),
       nextGetStreamIndex: 0,
+      idleTimer: null,
     };
     this.#sessions.set(id, session);
     return session;
@@ -306,6 +323,20 @@ export class McpHttpSseServerTransport {
     }
     if (session !== null) {
       response.setHeader(SESSION_HEADER, session.id);
+      // gaphunt3 #22: a non-SSE POST (e.g. `initialize` or a plain request)
+      // leaves a streamable-http session with no open stream. Without a stream
+      // close event there is nothing to drive disconnect-based cleanup, so a
+      // client that POSTs and then walks away (never opening a GET stream, never
+      // sending the optional HTTP DELETE) would leak the session forever. Arm /
+      // reset the idle reaper on each such POST so liveness is bounded by
+      // activity rather than relying on a DELETE.
+      if (
+        session.kind === "streamable-http" &&
+        session.getStreams.size === 0 &&
+        session.postStreams.size === 0
+      ) {
+        this.#scheduleIdleEviction(session);
+      }
     }
     if (messages.length === 0) {
       response.writeHead(202);
@@ -427,6 +458,9 @@ export class McpHttpSseServerTransport {
       response,
       writeQueue: Promise.resolve(),
     };
+    // gaphunt3 #22: a (re)connecting stream means the session is live again, so
+    // cancel any pending idle reaper armed by a previous disconnect.
+    this.#clearIdleTimer(session);
     session.getStreams.set(stream.id, stream);
     response.writeHead(200, {
       "content-type": "text/event-stream",
@@ -437,9 +471,14 @@ export class McpHttpSseServerTransport {
     response.flushHeaders();
     response.on("close", () => {
       session.getStreams.delete(stream.id);
-      if (session.kind === "legacy-sse") {
-        if (session.getStreams.size === 0 && session.postStreams.size === 0) {
+      if (session.getStreams.size === 0 && session.postStreams.size === 0) {
+        if (session.kind === "legacy-sse") {
           this.#sessions.delete(session.id);
+        } else {
+          // gaphunt3 #22: a streamable-http client may disconnect without the
+          // optional HTTP DELETE; reap the now-stream-less session after an
+          // idle grace so it cannot leak forever.
+          this.#scheduleIdleEviction(session);
         }
       }
     });
@@ -455,6 +494,9 @@ export class McpHttpSseServerTransport {
       response,
       writeQueue: Promise.resolve(),
     };
+    // gaphunt3 #22: active POST work keeps the session live; cancel a pending
+    // idle reaper.
+    this.#clearIdleTimer(session);
     session.postStreams.set(stream.id, stream);
     response.writeHead(200, {
       "content-type": "text/event-stream",
@@ -465,8 +507,49 @@ export class McpHttpSseServerTransport {
     response.flushHeaders();
     response.on("close", () => {
       session.postStreams.delete(stream.id);
+      // gaphunt3 #22: if the POST stream was the last stream of a
+      // streamable-http session, arm the idle reaper as well.
+      if (
+        session.kind === "streamable-http" &&
+        session.getStreams.size === 0 &&
+        session.postStreams.size === 0
+      ) {
+        this.#scheduleIdleEviction(session);
+      }
     });
     return stream;
+  }
+
+  // gaphunt3 #22: arm an unref'd idle timer that evicts a streamable-http
+  // session that has been left with no open streams (client disconnected
+  // without the optional HTTP DELETE). A grace window avoids dropping a client
+  // that is simply between POST requests with no GET stream open.
+  #scheduleIdleEviction(session: McpHttpSseSession): void {
+    this.#clearIdleTimer(session);
+    const delay = Math.max(0, this.#options.streamableIdleMs);
+    const timer = setTimeout(() => {
+      session.idleTimer = null;
+      this.#evictIfIdle(session);
+    }, delay);
+    timer.unref?.();
+    session.idleTimer = timer;
+  }
+
+  #evictIfIdle(session: McpHttpSseSession): void {
+    if (
+      this.#sessions.get(session.id) === session &&
+      session.getStreams.size === 0 &&
+      session.postStreams.size === 0
+    ) {
+      this.#sessions.delete(session.id);
+    }
+  }
+
+  #clearIdleTimer(session: McpHttpSseSession): void {
+    if (session.idleTimer !== null) {
+      clearTimeout(session.idleTimer);
+      session.idleTimer = null;
+    }
   }
 
   #writeGetSseMessage(

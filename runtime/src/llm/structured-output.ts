@@ -131,6 +131,39 @@ function validateStructuredValue(
       return `${path} must match one of the schema enum values`;
     }
   }
+  // gaphunt3 #8: validate union combinators; without this a schema node lacking a
+  // `type` keyword (anyOf/oneOf/allOf) was treated as unconstrained and silently passed.
+  const branchSchemas = (key: string): Array<Record<string, unknown>> =>
+    Array.isArray(schema[key])
+      ? (schema[key] as unknown[]).filter((entry): entry is Record<string, unknown> =>
+          isPlainObject(entry),
+        )
+      : [];
+  const anyOf = branchSchemas("anyOf");
+  if (anyOf.length > 0) {
+    const matched = anyOf.some(
+      (branch) => validateStructuredValue(value, branch, path) === undefined,
+    );
+    if (!matched) {
+      return `${path} must match at least one schema in anyOf`;
+    }
+  }
+  const oneOf = branchSchemas("oneOf");
+  if (oneOf.length > 0) {
+    const matchCount = oneOf.filter(
+      (branch) => validateStructuredValue(value, branch, path) === undefined,
+    ).length;
+    if (matchCount !== 1) {
+      return `${path} must match exactly one schema in oneOf`;
+    }
+  }
+  const allOf = branchSchemas("allOf");
+  for (const branch of allOf) {
+    const error = validateStructuredValue(value, branch, path);
+    if (error) {
+      return error;
+    }
+  }
   if (!schemaType) {
     return undefined;
   }
@@ -220,6 +253,35 @@ function cloneJsonSchemaValue(value: unknown): unknown {
   );
 }
 
+// gaphunt3 #11: express an originally-optional field as nullable so OpenAI strict
+// mode (every key required) does not force the model to fabricate a value.
+function widenSchemaWithNull(
+  propertySchema: Record<string, unknown>,
+): Record<string, unknown> {
+  const widened: Record<string, unknown> = { ...propertySchema };
+  if (typeof widened.type === "string") {
+    widened.type = widened.type === "null" ? widened.type : [widened.type, "null"];
+    return widened;
+  }
+  if (Array.isArray(widened.type)) {
+    widened.type = widened.type.includes("null")
+      ? widened.type
+      : [...widened.type, "null"];
+    return widened;
+  }
+  for (const unionKey of ["anyOf", "oneOf"] as const) {
+    if (Array.isArray(widened[unionKey])) {
+      const branches = widened[unionKey] as unknown[];
+      const hasNull = branches.some(
+        (branch) => isPlainObject(branch) && branch.type === "null",
+      );
+      widened[unionKey] = hasNull ? branches : [...branches, { type: "null" }];
+      return widened;
+    }
+  }
+  return widened;
+}
+
 function enforceStrictSchemaValue(value: unknown): unknown {
   const cloned = cloneJsonSchemaValue(value);
   if (!isPlainObject(cloned)) {
@@ -251,6 +313,22 @@ function enforceStrictSchemaValue(value: unknown): unknown {
   }
 
   if (record.type === "object" || isPlainObject(record.properties)) {
+    // gaphunt3 #11: OpenAI strict mode requires every property in `required`, but
+    // originally-optional fields must be expressed as nullable. Widen the type of
+    // each property NOT in the author's `required` array to include "null" before
+    // forcing all keys required, preserving the schema's optionality contract.
+    const originalRequired = new Set(
+      Array.isArray(record.required)
+        ? record.required.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    );
+    if (isPlainObject(record.properties)) {
+      for (const [key, propertySchema] of Object.entries(record.properties)) {
+        if (!originalRequired.has(key) && isPlainObject(propertySchema)) {
+          record.properties[key] = widenSchemaWithNull(propertySchema);
+        }
+      }
+    }
     record.additionalProperties = false;
     record.required = isPlainObject(record.properties)
       ? Object.keys(record.properties)

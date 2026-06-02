@@ -1011,6 +1011,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.unsubscribeStatus?.();
     active.uninstallApprovalBridge?.();
     active.unsubscribeElicitationEvents?.();
+    // gaphunt3 #48: the agentId is the session/conversationId used as the
+    // vended-key cache key, so evict this session's entries on stop —
+    // otherwise non-expiring keys leak for the daemon's lifetime.
+    this.#authBackend?.clearVendedKeysForSession(agentId);
   }
 
   async #hydrateRecoveredAgentState(params: {
@@ -2025,6 +2029,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.unsubscribeElicitationEvents?.();
         active.unsubscribePhaseEvents?.();
         this.#clearAgentBudgetTimer(active);
+        // gaphunt3 #48: the agentId is the session/conversationId used as the
+        // vended-key cache key, so evict this session's entries on terminal
+        // cleanup — otherwise non-expiring keys leak for the daemon's lifetime.
+        this.#authBackend?.clearVendedKeysForSession(agentId);
         await active.bootstrap.shutdown().catch(() => {});
       });
   }

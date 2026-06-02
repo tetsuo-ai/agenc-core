@@ -55,6 +55,7 @@ import {
   allocateNickname,
   applyRoleToConfig,
   getAgentRole,
+  releaseNickname,
   requireAgentRole,
   resolveAgentRole,
   type AgentRole,
@@ -413,6 +414,14 @@ export class AgentControl {
       reservation.finalize(metadata);
     } catch (err) {
       reservation.release();
+      // gaphunt3 #46: reservation.release() rolls back the slot + reserved
+      // path but NOT the nickname. A nickname freshly allocated here (no
+      // preferredNickname) leaks into the registry's usedNicknames pool on
+      // any rollback (I-32 abort, path collision). Release it on the failure
+      // path so it returns to the pool.
+      if (opts.preferredNickname === undefined && nickname) {
+        releaseNickname(this.registry, nickname);
+      }
       if (err instanceof AgentPathExistsError) {
         emitError(this.session.eventLog, this.session.nextInternalSubId(), {
           cause: "agent_path_collision",

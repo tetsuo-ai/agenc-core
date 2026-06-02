@@ -2340,6 +2340,31 @@ export interface BuiltPrompt {
   readonly maxOutputTokens?: number;
 }
 
+// gaphunt3 #35: provider families that are known to support parallel tool
+// calls. When the model catalog omits `supportsParallelToolCalls`, we infer
+// from the provider family ONLY for these known-parallel providers and keep
+// genuinely-unknown providers serial (the prior conservative default). This
+// avoids penalizing the common multi-file-read fan-out on Anthropic/OpenAI-
+// family endpoints whose catalog entry is silent, while never flipping an
+// unknown provider to parallel.
+const KNOWN_PARALLEL_TOOL_CALL_PROVIDERS = new Set<string>([
+  "anthropic",
+  "openai",
+  "openai-compatible",
+  "azure",
+]);
+
+function inferParallelToolCallSupport(ctx: TurnContext): boolean {
+  // gaphunt3 #35: respect an explicit catalog flag when present; otherwise
+  // fall back to the provider family heuristic (false for unknown providers).
+  if (ctx.modelInfo.supportsParallelToolCalls !== undefined) {
+    return ctx.modelInfo.supportsParallelToolCalls;
+  }
+  const providerId = ctx.modelProviderId?.trim().toLowerCase();
+  if (providerId === undefined || providerId.length === 0) return false;
+  return KNOWN_PARALLEL_TOOL_CALL_PROVIDERS.has(providerId);
+}
+
 /**
  * Port of agenc runtime `build_prompt` (turn.rs:946-976). Builds the per-
  * request prompt shape. `dynamicTools[].deferLoading` filters out
@@ -2365,7 +2390,9 @@ export function buildPrompt(
   return {
     input,
     tools: visibleTools,
-    parallelToolCalls: ctx.modelInfo.supportsParallelToolCalls ?? false,
+    // gaphunt3 #35: provider-family-aware default (see
+    // inferParallelToolCallSupport) instead of a hard `?? false`.
+    parallelToolCalls: inferParallelToolCallSupport(ctx),
     baseInstructions,
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(ctx.modelInfo.maxOutputTokens !== undefined

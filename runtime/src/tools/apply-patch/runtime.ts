@@ -500,6 +500,11 @@ async function applyHunksToFiles(
       } catch {
         originalContents = "";
       }
+      // gaphunt3 #40: delete is a mutation and must honor the same
+      // read-before-write / mtime-drift gate as the update path, so the
+      // model cannot blind-delete an in-allowlist file it never observed
+      // this session.
+      await assertReadBeforeWriteGate(opts.sessionId, pathAbs, originalContents);
       await removeFile(pathAbs);
       if (opts.sessionId !== undefined) {
         dropSessionReadSnapshot(opts.sessionId, pathAbs);

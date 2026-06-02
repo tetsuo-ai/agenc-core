@@ -332,7 +332,7 @@ describe("AgenC delegate background-agent runner", () => {
       mode: "unattended",
       unattendedPolicy: {
         allowlist: ["FileRead", "Grep"],
-        denylist: ["exec_command"],
+        denylist: ["system.bash"],
       },
     });
     expect(shutdown).not.toHaveBeenCalled();

@@ -571,12 +571,18 @@ async function processItems(
       state.pending.set(itemId, { resolve, reject });
     });
     const runtimeBudgetMs = state.config.maxRuntimeSeconds * 1000;
-    const timeout = new Promise<void>((_, reject) =>
-      setTimeout(
+    // gaphunt3 #6: capture the watchdog handle so it can be cleared once the
+    // item completes; otherwise the timer stays armed for the full
+    // max_runtime_seconds budget (default 30min) after every completed row,
+    // leaking one live timer per row and pinning the event loop.
+    let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((_, reject) => {
+      runtimeTimer = setTimeout(
         () => reject(new Error(`item ${itemId} exceeded max_runtime_seconds`)),
         runtimeBudgetMs,
-      ),
-    );
+      );
+      runtimeTimer.unref?.();
+    });
     item.attemptCount += 1;
     // Mirror reference ordering: status flips to running before the worker
     // can report. Thread_id is attached after spawn returns. On capacity
@@ -622,6 +628,9 @@ async function processItems(
       state.repository?.markItemFailed(state.config.jobId, itemId, reason);
       return {};
     } finally {
+      // gaphunt3 #6: clear the per-item watchdog so it does not survive the
+      // race it lost (completion / threadFinished won).
+      if (runtimeTimer !== undefined) clearTimeout(runtimeTimer);
       state.pending.delete(itemId);
     }
   };

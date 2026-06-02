@@ -43,12 +43,12 @@ function longToolExchange(id: number): LLMMessage[] {
     {
       role: "assistant",
       content: `calling Read ${id}`,
-      toolCalls: [{ id: `toolu_${id}`, name: "Read", arguments: "{}" }],
+      toolCalls: [{ id: `toolu_${id}`, name: "FileRead", arguments: "{}" }],
     },
     {
       role: "tool",
       toolCallId: `toolu_${id}`,
-      toolName: "Read",
+      toolName: "FileRead",
       content: `tool ${id}: ${"x".repeat(7_000)}`,
     },
   ];

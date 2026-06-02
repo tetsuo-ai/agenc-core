@@ -154,7 +154,15 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
-        const isError = output.exitCode !== null && output.exitCode !== 0;
+        // gaphunt3 #4: mirror exec-command.ts so a signal-killed process
+        // (exitCode === null, no process_id) is reported as an error instead
+        // of a silent success. `process_id !== undefined` discriminates a
+        // still-alive yielded process from a terminated one.
+        const stillAlive =
+          output.exitCode === null && output.process_id !== undefined;
+        const isError =
+          (output.exitCode !== null && output.exitCode !== 0) ||
+          (output.exitCode === null && !stillAlive);
         return {
           content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,

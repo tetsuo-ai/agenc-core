@@ -401,7 +401,7 @@ describe("buildOpenAIResponsesRequest", () => {
         schema: {
           type: "object",
           properties: {
-            answer: { type: "string" },
+            answer: { type: ["string", "null"] },
           },
           additionalProperties: false,
           required: ["answer"],
