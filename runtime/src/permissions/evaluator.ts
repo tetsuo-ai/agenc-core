@@ -439,7 +439,7 @@ export async function hasPermissionsToUseToolInner(
   if (ruleBased && ruleBased.behavior === "deny") {
     return ruleBased;
   }
-  const unattendedResult = checkUnattendedPolicy(
+  const unattendedResult = await checkUnattendedPolicy(
     tool,
     input,
     context,
@@ -532,7 +532,7 @@ export async function hasPermissionsToUseToolInner(
   return toolResult as PermissionAllowDecision;
 }
 
-function checkUnattendedPolicy(
+async function checkUnattendedPolicy(
   tool: ToolLike,
   input: unknown,
   context: ToolEvaluatorContext,
@@ -541,7 +541,7 @@ function checkUnattendedPolicy(
     | PermissionDenyDecision
     | PermissionAllowDecision
     | null,
-): PermissionDecision | null {
+): Promise<PermissionDecision | null> {
   const appState = context.getAppState();
   const permissionContext = context.toolPermissionContext
     ? context.toolPermissionContext(appState)
@@ -559,6 +559,18 @@ function checkUnattendedPolicy(
     return unattendedPauseDecision(unattended.toolName, ruleBased);
   }
   if (unattended.behavior === "allow") {
+    // Allowlist membership must not auto-execute a tool whose own
+    // checkPermissions wants a human in the loop. checkRuleBasedPermissions
+    // only surfaces the narrowed ask set (requiresUserInteraction / content
+    // ask rule / safetyCheck) as `ruleBased`; a tool-level ask carrying any
+    // other decisionReason (e.g. Bash's `bash_parse_unavailable`, which
+    // explicitly refuses to silently allow unverifiable shell constructs)
+    // reaches here as ruleBased===null. Re-resolve the tool result and pause
+    // on ANY ask so the allowlist can't bypass that safeguard.
+    const toolResult = await resolveToolPermissionResult(tool, input, context);
+    if (toolResult.behavior === "ask") {
+      return unattendedPauseDecision(unattended.toolName, null);
+    }
     return unattendedAllowDecision(
       unattended.toolName,
       input,
@@ -568,6 +580,38 @@ function checkUnattendedPolicy(
     );
   }
   return unattendedPauseDecision(unattended.toolName, null);
+}
+
+/**
+ * Resolve a tool's own checkPermissions result, defaulting to passthrough
+ * on absence or recoverable throw (AbortError rethrows). Mirrors the inline
+ * step-1c invocation so the unattended allowlist can observe a tool-level
+ * ask before auto-executing.
+ */
+async function resolveToolPermissionResult(
+  tool: ToolLike,
+  input: unknown,
+  context: ToolEvaluatorContext,
+): Promise<PermissionResult> {
+  if (typeof tool.checkPermissions !== "function") {
+    return {
+      behavior: "passthrough" as const,
+      message: createPermissionRequestMessage(tool.name),
+    };
+  }
+  try {
+    const maybe = tool.checkPermissions(input, context);
+    return maybe &&
+      typeof (maybe as Promise<PermissionResult>).then === "function"
+      ? await (maybe as Promise<PermissionResult>)
+      : (maybe as PermissionResult);
+  } catch (e) {
+    if (isAbortError(e)) throw e;
+    return {
+      behavior: "passthrough" as const,
+      message: createPermissionRequestMessage(tool.name),
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -176,8 +176,16 @@ describe("classifyToolError", () => {
   test("ToolTimeoutError → 'timeout'", () => {
     expect(classifyToolError(new ToolTimeoutError("x", 30))).toBe("timeout");
   });
-  test("Error with 'aborted' → 'aborted'", () => {
-    expect(classifyToolError(new Error("aborted"))).toBe("aborted");
+  test("structural abort (AbortError name) → 'aborted'", () => {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    expect(classifyToolError(err)).toBe("aborted");
+  });
+  test("bare Error whose message merely contains 'aborted' → 'tool_threw'", () => {
+    // Substring "aborted" is NOT a reliable abort signal: a genuine
+    // tool failure must keep its real classification (and message)
+    // instead of being reclassified as a user interrupt.
+    expect(classifyToolError(new Error("aborted"))).toBe("tool_threw");
   });
   test("EACCES → permission_denied", () => {
     expect(classifyToolError(new Error("EACCES: permission denied"))).toBe(

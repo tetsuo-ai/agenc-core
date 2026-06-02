@@ -142,7 +142,12 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "meta/llama-3.1-8b-instruct",
   ]),
   minimax: Object.freeze(["MiniMax-M2.5", "MiniMax-M2.7"]),
-  github: Object.freeze(["gpt-4o", "gpt-5.4", "github:copilot"]),
+  // `gpt-5.4` is registry-owned by openai (REGISTERED_MODEL_CATALOG,
+  // visibility: "list") and surfaces under openai via deriveFlatCatalog. Listing
+  // the bare alias here too made the slug match two providers and threw
+  // AmbiguousModelError on bare-slug selection (startup abort / silent /model
+  // provider drop). github copilot proxies it under a github-qualified name.
+  github: Object.freeze(["gpt-4o", "github:copilot"]),
   "amazon-bedrock": Object.freeze([
     "amazon.nova-pro-v1:0",
     "amazon.nova-lite-v1:0",

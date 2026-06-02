@@ -12,18 +12,39 @@ import {
 } from "./resolve-provider.js";
 import type { AgenCConfig, ProviderModelPair } from "./schema.js";
 import { resolveModelDisambiguated } from "./schema.js";
-import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import {
+  REGISTERED_MODEL_CATALOG,
+  resolveRegisteredModelCatalogEntry,
+} from "../llm/registry/model-catalog.js";
 
-// Whether `model` belongs to the grok provider's registered catalog family.
-// This must cover the whole grok family (e.g. the lead model "grok-build-0.1",
-// "grok-4.3", and prefix/namespaced variants), not a single literal default —
-// otherwise a grok-only model can leak to a non-grok provider when
-// `model_provider` is absent. `resolveRegisteredModelCatalogEntry` performs the
-// same exact/namespaced/prefix matching the registry uses for resolution.
-function isGrokFamilyModel(model: string): boolean {
-  return (
-    resolveRegisteredModelCatalogEntry({ provider: "grok", model }) !== undefined
+// Whether `model` is registered (exact/namespaced/prefix match) to some
+// provider OTHER than `provider`, and not also to `provider` itself. Used to
+// reject a foreign model leaking to a provider that cannot serve it when
+// `model_provider` is absent. This generalizes the original grok-only guard:
+// a model owned exclusively by, say, openai ("gpt-5") must not be offered to
+// anthropic, just as a grok-only model must not be offered to openai. Models
+// with no registered owner (e.g. an unknown openai-compatible id) are NOT
+// treated as foreign — they fall through to the queried provider, preserving
+// the same-provider behaviour for un-catalogued ids.
+// `resolveRegisteredModelCatalogEntry` performs the same exact/namespaced/
+// prefix matching the registry uses for resolution.
+function isRegisteredToOtherProvider(
+  model: string,
+  provider: ProviderSlug,
+): boolean {
+  if (resolveRegisteredModelCatalogEntry({ provider, model }) !== undefined) {
+    // Owned by the queried provider too — not foreign.
+    return false;
+  }
+  const owningProviders = new Set(
+    REGISTERED_MODEL_CATALOG.map((entry) => entry.provider),
   );
+  for (const owner of owningProviders) {
+    if (resolveRegisteredModelCatalogEntry({ provider: owner, model }) !== undefined) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function configuredModelForProvider(
@@ -56,8 +77,7 @@ export function configuredModelForProvider(
   }
   if (
     !configuredProvider &&
-    provider !== "grok" &&
-    isGrokFamilyModel(configuredModel)
+    isRegisteredToOtherProvider(configuredModel, provider)
   ) {
     return undefined;
   }

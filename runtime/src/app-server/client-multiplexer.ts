@@ -276,14 +276,28 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     event: JsonObject,
   ): Promise<AgenCSessionBroadcastResult> {
-    const deliveries = await this.#state.with((state) => {
-      const route = getOrCreateRoute(state, sessionId);
+    const deliveries = await this.#state.with(async (state) => {
+      const existingRoute = state.sessions.get(sessionId);
 
-      const activeClientIds = [...route.clientAttachmentIds.keys()].filter(
-        (clientId) => state.clients.has(clientId),
-      );
+      const activeClientIds =
+        existingRoute === undefined
+          ? []
+          : [...existingRoute.clientAttachmentIds.keys()].filter((clientId) =>
+              state.clients.has(clientId),
+            );
 
       if (activeClientIds.length === 0) {
+        // No attached client to deliver to. Only buffer (creating a route on
+        // demand) when the session is still live: a terminated/unknown session
+        // can never gain a client to drain the buffer, and its buffer-only
+        // route is never reaped (deleteRouteIfEmpty keeps any route with
+        // buffered events), so creating one here would leak `state.sessions`
+        // unbounded on a long-lived daemon. Dropping late events for a dead
+        // session is correct — nobody can ever replay them.
+        if (existingRoute === undefined && !(await this.#isSessionLive(sessionId))) {
+          return [];
+        }
+        const route = existingRoute ?? getOrCreateRoute(state, sessionId);
         bufferSessionEvent(
           route,
           event,
@@ -315,6 +329,17 @@ export class AgenCDaemonClientMultiplexer {
       );
     }
     return this.broadcastSessionEvent(sessionId, notification);
+  }
+
+  /**
+   * Whether the session manager still owns an open session for `sessionId`.
+   * A `null` summary means the session is unknown; a `closed` status means it
+   * was terminated. In both cases no client can ever attach to drain a buffer,
+   * so the multiplexer must not create a buffer-only route for it.
+   */
+  async #isSessionLive(sessionId: string): Promise<boolean> {
+    const summary = await this.#sessionManager.getSession(sessionId);
+    return summary !== null && summary.status !== "closed";
   }
 }
 

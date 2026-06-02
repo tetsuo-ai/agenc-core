@@ -2015,7 +2015,17 @@ async function runAutoCompact(
         );
       }
       const cr = result.compactionResult;
-      if (cr) {
+      // Honor the rollout-persistence suspension invariant. Every other
+      // durable write in the turn engine is gated on this flag
+      // (session.emit at session.ts, persistTurnRolloutBaseline /
+      // persistNewResponseItems below). When a forked / background-agent
+      // turn runs on the source session under
+      // withRolloutPersistenceSuspended(), an auto-compact crossing the
+      // token threshold MUST NOT leak the fork's `compacted`
+      // replacementHistory into the source session's durable rollout —
+      // doing so makes the fork's summarized history the baseline on a
+      // later --resume and silently destroys the user's real conversation.
+      if (cr && !session.isRolloutPersistenceSuspended?.()) {
         session.rolloutStore?.appendRollout(
           {
             type: "compacted",

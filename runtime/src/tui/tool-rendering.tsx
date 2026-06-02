@@ -5,6 +5,7 @@ import React from "react";
 import { Box, Text } from "./ink.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
+import { unescapeXml } from "../utils/xml.js";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
@@ -407,10 +408,17 @@ export function BashOutputView({
   // lines, then a `[exec exit_code=...]` trailer. Parse that here so the capped
   // view works on the actual wire format, not just the tagged one.
   const plain = hasEnvelope ? null : parsePlainExecResult(content);
+  // The envelope branch's `<bash-stdout>`/`<bash-stderr>` text was escaped on
+  // produce (session-transcript.formatStructuredToolResult wraps it in
+  // `escapeXml(...)`), so it must be decoded here — matching upstream
+  // UserBashOutputMessage, which unescapes the same tags. The PLAIN branch is
+  // the raw exec trailer (never escaped), so it is used as-is.
   const stdoutRaw = plain
     ? plain.stdout
-    : (extractToolTag(content, "bash-stdout") ?? "");
-  const stderrRaw = plain ? "" : (extractToolTag(content, "bash-stderr") ?? "");
+    : unescapeXml(extractToolTag(content, "bash-stdout") ?? "");
+  const stderrRaw = plain
+    ? ""
+    : unescapeXml(extractToolTag(content, "bash-stderr") ?? "");
   // Color the output by exit-code: zero stays plain (success), non-zero
   // surfaces a compact indicator so a failed command is visually distinct.
   const exitCode = plain
@@ -498,6 +506,27 @@ function resultText(value: unknown): string {
   if (Array.isArray(value)) return value.map(resultText).join("\n");
   if (isRecord(value) && typeof value.content === "string") return value.content;
   return shortJson(value);
+}
+
+/**
+ * Build a readable error message from a FAILED structured tool result — the
+ * structured-content-block array (`[{type:'text',text:'<bash-stderr>…'}]`) a
+ * non-zero `exec_command_end` produces. Flatten with the same helper the
+ * success path uses, then, when the bash envelope is present, surface the
+ * stderr (and any stdout) unescaped rather than the raw `<bash-stdout>` tags.
+ * Falls back to the flattened (unescaped) text when no envelope is found.
+ */
+function messageFromStructuredErrorBlocks(blocks: readonly unknown[]): string {
+  const joined = resultTextForTuiTool(blocks);
+  const stderr = extractToolTag(joined, "bash-stderr");
+  const stdout = extractToolTag(joined, "bash-stdout");
+  if (stderr !== null || stdout !== null) {
+    const parts = [unescapeXml(stdout ?? ""), unescapeXml(stderr ?? "")]
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    if (parts.length > 0) return parts.join("\n");
+  }
+  return unescapeXml(joined);
 }
 
 function filePathFromInput(input: unknown): string {
@@ -842,13 +871,24 @@ export function createTuiTool(name: string): any {
       // Cross-cutting error path: format and dispatch to ToolErrorView.
       // Any tool whose result reaches this path renders with the same
       // red-bold-header style as the upstream FallbackToolUseErrorMessage.
+      //
+      // A FAILED structured tool result (e.g. a non-zero exec_command_end)
+      // arrives here as the same structured-content-block ARRAY the success
+      // path receives — `[{type:'text',text:'<bash-stderr>…</bash-stderr>'}]`.
+      // That value is neither a string nor an Error-shaped object, so without
+      // this branch it falls through to shortJson(), which JSON-stringifies and
+      // truncates it to 140 chars, burying the real error text under escaped
+      // JSON noise. Flatten it with the same helper the success path uses, then
+      // unescape so the envelope text (escaped on produce) reads cleanly.
       const message =
         typeof error === "string"
           ? error
           : error && typeof error === "object" && "message" in error &&
               typeof (error as { message: unknown }).message === "string"
             ? (error as { message: string }).message
-            : shortJson(error);
+            : Array.isArray(error)
+              ? messageFromStructuredErrorBlocks(error)
+              : shortJson(error);
       const envelope = `<tool-error-name>${name}</tool-error-name>\n<tool-error>${message}</tool-error>`;
       return <ToolErrorView content={envelope} />;
     },

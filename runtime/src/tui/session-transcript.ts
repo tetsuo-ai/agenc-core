@@ -117,6 +117,16 @@ function clampResultText(text: string): string {
   // than JS UTF-16 code-unit count.
   const byteLength = Buffer.byteLength(text, "utf8");
   if (byteLength <= MAX_TOOL_RESULT_BYTES) return text;
+  // Envelope-wrapped tool results (`<bash-stdout>…</bash-stdout>`,
+  // `<edit-diff>…</edit-diff>`, `<read-content>…`, `<grep-matches>…`) are a
+  // SINGLE block whose body is the payload. A blind head-clamp would keep the
+  // first bytes and drop the closing tag, after which the renderers'
+  // `extractToolTag` returns null and the whole output collapses to an empty
+  // state ("(No output)" / "(empty file)" / "(No changes)" / "No matches").
+  // Clamp the INNER body instead and re-wrap, so the closing tag always
+  // survives and the kept head stays visible.
+  const enveloped = clampEnvelopeBody(text);
+  if (enveloped !== null) return enveloped;
   // Keep the head at the BYTE cap. A char-count slice is wrong here: a JS
   // string character can encode to up to 4 UTF-8 bytes, so slicing by
   // MAX_TOOL_RESULT_BYTES *characters* would retain up to ~4x the byte cap for
@@ -126,6 +136,60 @@ function clampResultText(text: string): string {
   const head = sliceUtf8Bytes(text, MAX_TOOL_RESULT_BYTES);
   const truncated = byteLength - Buffer.byteLength(head, "utf8");
   return `${head}\n[${truncated} bytes truncated]`;
+}
+
+/**
+ * Tags produced by `formatStructuredToolResult` whose body is extracted by the
+ * tool renderers via `extractToolTag(content, tag)` (which needs BOTH the open
+ * and close tag present). For these, an over-cap block must keep its closing
+ * tag, so we clamp the body and re-wrap rather than head-clamping the whole
+ * block.
+ */
+const EXTRACTED_ENVELOPE_TAGS = [
+  "bash-stdout",
+  "bash-stderr",
+  "edit-diff",
+  "read-content",
+  "grep-matches",
+] as const;
+
+/**
+ * If `text` is exactly one `<tag>BODY</tag>` envelope (for a tag whose body is
+ * later extracted by the renderers), clamp BODY so the whole re-wrapped block
+ * fits within `MAX_TOOL_RESULT_BYTES`, keeping the closing tag intact. Returns
+ * the re-wrapped string, or `null` when `text` is not such an envelope (so the
+ * caller can fall back to the generic head-clamp).
+ */
+function clampEnvelopeBody(text: string): string | null {
+  for (const tag of EXTRACTED_ENVELOPE_TAGS) {
+    const open = `<${tag}>`;
+    const close = `</${tag}>`;
+    if (!text.startsWith(open) || !text.endsWith(close)) continue;
+    // Reject anything that isn't a single self-contained envelope (e.g. a
+    // closing tag appearing mid-body) so we never mis-detect concatenated text.
+    const body = text.slice(open.length, text.length - close.length);
+    if (body.includes(close)) continue;
+    // Budget for the body = cap minus the open/close tags and the truncation
+    // marker we append inside the envelope. Keep the marker matching the
+    // generic path's wording so byte accounting stays consistent.
+    const marker = (n: number) => `\n[${n} bytes truncated]`;
+    const overhead =
+      Buffer.byteLength(open, "utf8") + Buffer.byteLength(close, "utf8");
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    // Reserve room for the largest possible marker (its byte count grows with
+    // the digit count of the dropped total, which is bounded by bodyBytes).
+    const markerReserve = Buffer.byteLength(marker(bodyBytes), "utf8");
+    const bodyBudget = MAX_TOOL_RESULT_BYTES - overhead - markerReserve;
+    if (bodyBudget <= 0) {
+      // Degenerate: tags + marker alone exceed the cap. Drop the whole body but
+      // still keep a well-formed, extractable envelope.
+      return `${open}${marker(bodyBytes)}${close}`;
+    }
+    const head = sliceUtf8Bytes(body, bodyBudget);
+    const truncated = bodyBytes - Buffer.byteLength(head, "utf8");
+    return `${open}${head}${marker(truncated)}${close}`;
+  }
+  return null;
 }
 
 /**

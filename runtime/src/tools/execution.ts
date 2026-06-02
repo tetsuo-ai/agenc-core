@@ -270,6 +270,21 @@ export class ToolTimeoutError extends Error {
   }
 }
 
+/**
+ * Construct an abort rejection carrying *structural* abort signals
+ * (`name === "AbortError"` + `code === "ABORT_ERR"`), so downstream
+ * classification (`isAbortLikeError` / `classifyToolError`) recognizes
+ * a genuine abort without resorting to a free-text "aborted" substring
+ * match. The substring match alone misclassified real tool failures
+ * whose message merely contained the word "aborted" as user interrupts.
+ */
+function makeAbortError(reason: unknown): Error {
+  const err = new Error(String(reason ?? "aborted"));
+  err.name = "AbortError";
+  (err as { code?: string }).code = "ABORT_ERR";
+  return err;
+}
+
 export function resolveTimeoutMs(
   tool: Tool & Partial<ToolExecutionOverrides>,
   args: Record<string, unknown>,
@@ -345,14 +360,14 @@ export async function withTimeoutAndAbort<T>(
       if (opts.signal.aborted) {
         settled = true;
         cleanup();
-        reject(new Error(String(opts.signal.reason ?? "aborted")));
+        reject(makeAbortError(opts.signal.reason));
         return;
       }
       onAbort = () => {
         if (settled) return;
         settled = true;
         cleanup();
-        reject(new Error(String(opts.signal?.reason ?? "aborted")));
+        reject(makeAbortError(opts.signal?.reason));
       };
       opts.signal.addEventListener("abort", onAbort, { once: true });
     }
@@ -396,9 +411,9 @@ export function classifyToolError(err: unknown): ToolErrorClass {
   if (isMcpAuthError(err)) return "mcp_auth";
   if (isMcpToolCallError(err)) return "mcp_tool_call";
   if (isShellInterruptError(err)) return "shell_interrupted";
+  if (isAbortLikeError(err)) return "aborted";
   if (err instanceof Error) {
     const msg = err.message.toLowerCase();
-    if (isAbortLikeError(err) || msg.includes("aborted")) return "aborted";
     if (msg.includes("permission") || msg.includes("eacces")) {
       return "permission_denied";
     }
@@ -415,13 +430,16 @@ export function classifyToolError(err: unknown): ToolErrorClass {
 
 function isAbortLikeError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
+  // Structural signals only. A free-text "aborted" substring is NOT a
+  // reliable abort signal: a genuine tool failure (e.g. "transaction
+  // aborted by the database engine") must not be reclassified as a user
+  // interrupt and have its real message discarded. The runtime's own
+  // abort plumbing tags its rejections via makeAbortError so genuine
+  // aborts are still recognized here.
   const name = (err as { name?: string }).name;
   if (name === "AbortError") return true;
   const code = (err as { code?: string }).code;
   if (code === "ABORT_ERR") return true;
-  if (err instanceof Error && err.message.toLowerCase().includes("aborted")) {
-    return true;
-  }
   return false;
 }
 

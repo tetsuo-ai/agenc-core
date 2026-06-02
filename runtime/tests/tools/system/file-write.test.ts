@@ -423,18 +423,36 @@ describe("Write tool", () => {
     await expect(readFile(target, "utf8")).resolves.toBe("v2\n");
   });
 
-  test("headless (no __agencSessionId) calls bypass the read-before-overwrite gate", async () => {
+  test("overwrite of an existing file without a session id fails loud (only __testBypassSessionGuard bypasses)", async () => {
     const target = join(root, "headless.txt");
     await writeFile(target, "alpha\n", "utf8");
 
     const tool = createFileWriteTool({ allowedPaths: [root] });
-    const result = await tool.execute({
+
+    // Without the bypass flag AND without SESSION_ID_ARG, overwriting an
+    // existing file must REFUSE. Production callers always inject the
+    // session id; the previous silent-skip on undefined sessionId let any
+    // production path that lost the session id slip past the
+    // read-before-write safety — exactly the class of bug Edit/MultiEdit
+    // were hardened against. Failing loud is the safer default.
+    const refused = await tool.execute({
       file_path: target,
       content: "beta\n",
       // no __agencSessionId
     });
+    expect(refused.isError).toBe(true);
+    expect(String(refused.content)).toContain("session id");
+    await expect(readFile(target, "utf8")).resolves.toBe("alpha\n");
 
-    expect(result.isError).toBeUndefined();
+    // With the bypass flag, the read-before-write check is skipped and
+    // the overwrite applies — the explicit opt-out for unit tests that
+    // don't fake a full session lifecycle.
+    const allowed = await tool.execute({
+      file_path: target,
+      content: "beta\n",
+      __testBypassSessionGuard: true,
+    });
+    expect(allowed.isError).toBeUndefined();
     await expect(readFile(target, "utf8")).resolves.toBe("beta\n");
   });
 

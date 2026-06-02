@@ -102,6 +102,35 @@ const FILE_UNEXPECTEDLY_MODIFIED_MESSAGE =
 const NOTEBOOK_REDIRECT_MESSAGE =
   "Use NotebookEdit for `.ipynb` notebooks instead of Write.";
 
+/**
+ * Returned when an existing file is overwritten without a session id.
+ * Mirrors `Edit`/`MultiEdit` (file-edit.ts): the runtime injects the
+ * session id automatically, so its absence on an existing-file write
+ * means a production code path lost it. Failing loud here surfaces that
+ * class of bug instead of silently overwriting with no read-before-write
+ * or modification-drift check.
+ */
+const SESSION_ID_MISSING_ERROR =
+  "Write was invoked without a session id for an existing file. The runtime injects this automatically; if you are calling the tool from a unit test, pass __testBypassSessionGuard:true to opt out of read-before-write enforcement.";
+
+/**
+ * Test-only opt-out of the read-before-write session guard. Production
+ * callers must NEVER set this — the canonical tool surface injects
+ * SESSION_ID_ARG automatically. Tests that exercise the tool at the
+ * execute boundary without a full session lifecycle can pass
+ * `__testBypassSessionGuard:true`.
+ *
+ * Defense in depth: the flag is ONLY honored when NODE_ENV === "test",
+ * so a model that smuggles the arg key into a production dispatch cannot
+ * disable the gate — same convention as `Edit`'s guard.
+ */
+const TEST_BYPASS_SESSION_GUARD_ARG = "__testBypassSessionGuard";
+
+function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
+  if (process.env.NODE_ENV !== "test") return false;
+  return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
+}
+
 export interface FileWriteToolConfig {
   /**
    * Allowed path prefixes — all writes must canonicalize inside one
@@ -365,12 +394,23 @@ export function createFileWriteTool(
             existingContentForUi = "";
           }
         }
-      } else if (existed && existingStat !== null) {
-        try {
-          const buffer = await readFile(absolutePath);
-          existingContentForUi = normalizeNewlines(buffer.toString("utf-8"));
-        } catch {
-          existingContentForUi = "";
+      } else if (existed) {
+        // Existing file but no session id. The read-before-write and
+        // modification-drift checks above all hang off the session id,
+        // so without it there is no gate at all. Fail loud — exactly as
+        // `Edit`/`MultiEdit` do (file-edit.ts) — instead of silently
+        // overwriting and clobbering concurrent external modifications.
+        // Tests opt out explicitly via __testBypassSessionGuard:true.
+        if (!shouldBypassSessionGuard(rawArgs)) {
+          return errorResult(SESSION_ID_MISSING_ERROR);
+        }
+        if (existingStat !== null) {
+          try {
+            const buffer = await readFile(absolutePath);
+            existingContentForUi = normalizeNewlines(buffer.toString("utf-8"));
+          } catch {
+            existingContentForUi = "";
+          }
         }
       }
 

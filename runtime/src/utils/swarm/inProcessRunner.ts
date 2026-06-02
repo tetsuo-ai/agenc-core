@@ -376,47 +376,68 @@ function createInProcessCanUseTool(
       // Send request to leader's mailbox
       void sendPermissionRequestViaMailbox(request)
 
-      // Poll teammate's mailbox for the response
+      // Poll teammate's mailbox for the response.
+      // Guard against overlapping ticks: a tick whose awaited mailbox I/O
+      // exceeds the interval must not race a fresh tick over the same inbox.
+      let pollInFlight = false
+      // The interval callback is intentionally NOT async: setInterval discards
+      // the promise returned by an async callback, so any rejection inside it
+      // (e.g. a `release()` failure under lockfile contention in
+      // markMessageAsReadByIndex) would become an unhandled promise rejection.
+      // We run the async body via an IIFE that is always `.catch`-ed.
       const pollInterval = setInterval(
-        async (abortController, cleanup, resolve, identity, request) => {
+        (abortController, cleanup, resolve, identity, request) => {
           if (abortController.signal.aborted) {
             cleanup()
             resolve({ behavior: 'ask', message: SUBAGENT_REJECT_MESSAGE })
             return
           }
 
-          const allMessages = await readMailbox(
-            identity.agentName,
-            identity.teamName,
-          )
-          for (let i = 0; i < allMessages.length; i++) {
-            const msg = allMessages[i]
-            if (msg && !msg.read) {
-              const parsed = isPermissionResponse(msg.text)
-              if (parsed && parsed.request_id === request.id) {
-                await markMessageAsReadByIndex(
-                  identity.agentName,
-                  identity.teamName,
-                  i,
-                )
-                if (parsed.subtype === 'success') {
-                  processMailboxPermissionResponse({
-                    requestId: parsed.request_id,
-                    decision: 'approved',
-                    updatedInput: parsed.response?.updated_input,
-                    permissionUpdates: parsed.response?.permission_updates,
-                  })
-                } else {
-                  processMailboxPermissionResponse({
-                    requestId: parsed.request_id,
-                    decision: 'rejected',
-                    feedback: parsed.error,
-                  })
+          if (pollInFlight) return
+          pollInFlight = true
+
+          void (async () => {
+            const allMessages = await readMailbox(
+              identity.agentName,
+              identity.teamName,
+            )
+            for (let i = 0; i < allMessages.length; i++) {
+              const msg = allMessages[i]
+              if (msg && !msg.read) {
+                const parsed = isPermissionResponse(msg.text)
+                if (parsed && parsed.request_id === request.id) {
+                  await markMessageAsReadByIndex(
+                    identity.agentName,
+                    identity.teamName,
+                    i,
+                  )
+                  if (parsed.subtype === 'success') {
+                    processMailboxPermissionResponse({
+                      requestId: parsed.request_id,
+                      decision: 'approved',
+                      updatedInput: parsed.response?.updated_input,
+                      permissionUpdates: parsed.response?.permission_updates,
+                    })
+                  } else {
+                    processMailboxPermissionResponse({
+                      requestId: parsed.request_id,
+                      decision: 'rejected',
+                      feedback: parsed.error,
+                    })
+                  }
+                  return // Callback already resolves the promise
                 }
-                return // Callback already resolves the promise
               }
             }
-          }
+          })()
+            .catch(error => {
+              logForDebugging(
+                `[inProcessRunner] permission poll tick failed: ${error}`,
+              )
+            })
+            .finally(() => {
+              pollInFlight = false
+            })
         },
         PERMISSION_POLL_INTERVAL_MS,
         abortController,

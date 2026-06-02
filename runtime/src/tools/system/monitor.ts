@@ -68,6 +68,22 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
     },
     requiresApproval: true,
     recoveryCategory: "side-effecting",
+    // The tool owns its own yield/timeout semantics: execCommand is
+    // driven with yield_time_ms/timeoutMs = MONITOR_TIMEOUT_MS so the
+    // monitored process keeps running in the background and yields a
+    // process_id. Without this, the generic executor's
+    // DEFAULT_TOOL_TIMEOUT_MS (30s) timer would fire as the clamped
+    // ~30s yield resolves and abort the *shared* AbortController that is
+    // forwarded into execCommand as __abortSignal — SIGTERM/SIGKILLing
+    // the still-running monitored process and returning a
+    // ToolTimeoutError instead of the "Monitor task started" yield.
+    // `timeoutBehavior: "tool"` makes resolveTimeoutMs return null so
+    // the executor only preserves aborts (matches TaskOutput, which owns
+    // its own deadline the same way). Keep an explicit timeoutMs so the
+    // ceiling is documented even though the executor no longer enforces
+    // it.
+    timeoutBehavior: "tool",
+    timeoutMs: MONITOR_TIMEOUT_MS,
     inputSchema: {
       type: "object",
       properties: {

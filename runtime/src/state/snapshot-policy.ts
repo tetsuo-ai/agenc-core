@@ -25,6 +25,7 @@ export type SnapshotPolicyTrigger =
 export interface SnapshotPolicyOptions {
   readonly periodicIntervalMs?: number;
   readonly maxConversationEvents?: number;
+  readonly maxTrackedSessions?: number;
   readonly now?: () => string;
   readonly setInterval?: (
     callback: () => void,
@@ -79,6 +80,7 @@ export interface SnapshotPolicySessionHydration {
 
 interface SessionSnapshotState {
   readonly sessionId: string;
+  lastTouchedMs: number;
   conversation: JsonValue[];
   seenConversationKeys: Set<string>;
   toolState: {
@@ -104,11 +106,13 @@ interface SnapshotRow {
 
 const DEFAULT_PERIODIC_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_CONVERSATION_EVENTS = 200;
+const DEFAULT_MAX_TRACKED_SESSIONS = 1_024;
 
 export class AgenCSessionSnapshotPolicy {
   readonly #driver: StateSqliteDriver;
   readonly #periodicIntervalMs: number;
   readonly #maxConversationEvents: number;
+  readonly #maxTrackedSessions: number;
   readonly #now: () => string;
   readonly #setInterval: (
     callback: () => void,
@@ -122,6 +126,7 @@ export class AgenCSessionSnapshotPolicy {
   readonly #sessions = new Map<string, SessionSnapshotState>();
   #periodicTimer: SnapshotPolicyTimer | undefined;
   #lastSnapshotMs = 0;
+  #sessionTouchSeq = 0;
 
   constructor(
     driver: StateSqliteDriver,
@@ -132,6 +137,10 @@ export class AgenCSessionSnapshotPolicy {
       options.periodicIntervalMs ?? DEFAULT_PERIODIC_INTERVAL_MS;
     this.#maxConversationEvents =
       options.maxConversationEvents ?? DEFAULT_MAX_CONVERSATION_EVENTS;
+    this.#maxTrackedSessions = Math.max(
+      1,
+      options.maxTrackedSessions ?? DEFAULT_MAX_TRACKED_SESSIONS,
+    );
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#setInterval =
       options.setInterval ??
@@ -174,6 +183,10 @@ export class AgenCSessionSnapshotPolicy {
     if (agentId !== undefined) {
       this.#rememberSessionAgent(sessionId, agentId);
     }
+  }
+
+  forgetSession(sessionId: string): void {
+    this.#sessions.delete(sessionId);
   }
 
   hydrateSession(hydration: SnapshotPolicySessionHydration): void {
@@ -532,9 +545,13 @@ export class AgenCSessionSnapshotPolicy {
 
   #session(sessionId: string): SessionSnapshotState {
     const existing = this.#sessions.get(sessionId);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      existing.lastTouchedMs = this.#sessionTouchSeq++;
+      return existing;
+    }
     const created: SessionSnapshotState = {
       sessionId,
+      lastTouchedMs: this.#sessionTouchSeq++,
       conversation: [],
       seenConversationKeys: new Set(),
       toolState: {
@@ -550,7 +567,23 @@ export class AgenCSessionSnapshotPolicy {
       },
     };
     this.#sessions.set(sessionId, created);
+    this.#evictStaleSessions();
     return created;
+  }
+
+  #evictStaleSessions(): void {
+    while (this.#sessions.size > this.#maxTrackedSessions) {
+      let oldestId: string | undefined;
+      let oldestTouch = Number.POSITIVE_INFINITY;
+      for (const state of this.#sessions.values()) {
+        if (state.lastTouchedMs < oldestTouch) {
+          oldestTouch = state.lastTouchedMs;
+          oldestId = state.sessionId;
+        }
+      }
+      if (oldestId === undefined) return;
+      this.#sessions.delete(oldestId);
+    }
   }
 
   #rememberSessionAgent(sessionId: string, agentId: string): void {

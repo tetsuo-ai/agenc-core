@@ -309,11 +309,20 @@ export function createDaemonTuiSession<
   let queuedInputCount = 0;
   let unsubscribeDaemonEvents: (() => void) | null = null;
   const noteDaemonActivity = (event: unknown): void => {
-    if (
-      typeof event !== "object" ||
-      event === null ||
-      (event as { readonly type?: unknown }).type !== "background_agent_status"
-    ) {
+    if (typeof event !== "object" || event === null) {
+      return;
+    }
+    const eventType = (event as { readonly type?: unknown }).type;
+    // A daemon agent/turn error arrives as a transcript event with type
+    // "error" (see transcriptEventFromAgentStatus), not as a
+    // "background_agent_status" status update. Treat it as turn-ending so the
+    // active turn is cleared and conversation actions (/rewind, /compact) are
+    // not left permanently blocked after a failed turn.
+    if (eventType === "error") {
+      activeTurnSnapshot = null;
+      return;
+    }
+    if (eventType !== "background_agent_status") {
       return;
     }
     const payload = (event as { readonly payload?: unknown }).payload;

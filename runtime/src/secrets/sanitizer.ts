@@ -171,19 +171,30 @@ const BIP39_WORDLIST: ReadonlySet<string> = new Set(
     .split(" "),
 );
 
-// Valid BIP39 mnemonic lengths (entropy 128–256 bits → 12/15/18/21/24 words).
-const BIP39_MNEMONIC_LENGTHS: ReadonlySet<number> = new Set([12, 15, 18, 21, 24]);
-
 // Tokenizes on whitespace while preserving the exact separators, so we can scan
 // for a contiguous run of valid lowercase BIP39 words and redact only that run
 // (a bare mnemonic / seed phrase) without disturbing surrounding text.
 const WHITESPACE_TOKEN_PATTERN = /(\s+)/u;
 
+// Minimum BIP39 mnemonic length; a contiguous run of at least this many BIP39
+// words is treated as a seed phrase.
+const BIP39_MIN_MNEMONIC_LENGTH = 12;
+
 /**
- * Redacts a bare BIP39 mnemonic / seed phrase: a contiguous run of exactly
- * 12/15/18/21/24 lowercase words that are ALL members of the BIP39 wordlist.
- * Requiring the full wordlist (not a generic "N words" heuristic) and an exact
- * mnemonic length keeps ordinary prose untouched.
+ * Redacts a bare BIP39 mnemonic / seed phrase: a contiguous run of at least 12
+ * lowercase words that are ALL members of the BIP39 wordlist. Requiring the full
+ * wordlist (not a generic "N words" heuristic) keeps ordinary prose untouched,
+ * since runs of a dozen-plus consecutive wordlist words do not occur in normal
+ * text.
+ *
+ * The whole run is redacted whenever it reaches a mnemonic length, rather than
+ * only when its length is EXACTLY canonical (12/15/18/21/24): a real seed phrase
+ * frequently abuts ordinary prose, and hundreds of common English words ("gas",
+ * "note", "year", "this", ...) are themselves BIP39 words, so the contiguous run
+ * of wordlist words is often one or more words longer than a canonical mnemonic
+ * length. Anchoring to an exact length would let a complete seed phrase leak
+ * whenever a single wordlist word sits next to it; redacting the maximal run
+ * guarantees no seed word survives regardless of where the extra words sit.
  */
 function redactBareMnemonics(input: string): string {
   if (!/[a-z]/.test(input)) return input;
@@ -214,7 +225,7 @@ function redactBareMnemonics(input: string): string {
       // `end` now points past the last word token; trim a trailing separator.
       let lastWordIdx = end - 1;
       while (lastWordIdx > i && lastWordIdx % 2 === 1) lastWordIdx -= 1;
-      if (BIP39_MNEMONIC_LENGTHS.has(count)) {
+      if (count >= BIP39_MIN_MNEMONIC_LENGTH) {
         for (let j = i; j <= lastWordIdx; j += 1) parts[j] = "";
         parts[i] = REDACTED_SECRET;
         changed = true;

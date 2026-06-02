@@ -78,6 +78,7 @@ import {
 } from "../permissions/permission-audit-log.js";
 import { DEFAULT_UNATTENDED_ALLOWLIST } from "../permissions/unattended-policy.js";
 import {
+  consumeExitPlanModeApproval,
   recordExitPlanModeApproval,
   type ExitPlanModeApproval,
 } from "../planning/exit-plan-approval.js";
@@ -1134,6 +1135,13 @@ export class AgenCDaemonAgentManager {
           : APPROVED,
     });
     if (!resolved) {
+      // The request is no longer pending, so the deferred ExitPlanMode tool will
+      // never run to consume the approval recorded above. Drop it here so it does
+      // not leak permanently into the module-global approvals Map (consume's
+      // delete is the only production removal path).
+      if (params.exitPlan !== undefined) {
+        consumeExitPlanModeApproval({ __callId: params.requestId });
+      }
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
         `AgenC daemon tool request is not pending: ${params.requestId}`,
