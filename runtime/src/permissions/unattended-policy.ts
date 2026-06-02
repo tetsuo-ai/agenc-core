@@ -82,16 +82,27 @@ export function applyUnattendedPermissionPolicyToContext(
     readonly denylist?: readonly string[];
   } = {},
 ): ToolPermissionContext {
-  // Preserve bypassPermissions mode. The user explicitly opted out of
-  // approval gating with --yolo; the background-agent-runner's default
-  // unattended-policy install MUST NOT override that. Without this guard,
-  // every agent.create with --yolo set the mode to "unattended" and the
-  // evaluator's unattended branch surfaced "Permission required" overlays
-  // because tools weren't on the unattended allowlist. The unattended
-  // policy itself (allowlist/denylist) is still recorded for any subset
-  // logic that wants to consult it, but the mode stays at the user's
-  // explicit choice. See GAP-PE-PREHOOK-BYPASS-LEAK.
-  const preserveMode = context.mode === "bypassPermissions";
+  // Preserve modes the user explicitly opted into. The user chose
+  // bypassPermissions (--yolo), plan (--permission-mode plan / EnterPlanMode),
+  // or acceptEdits (--permission-mode acceptEdits / approving a plan with
+  // auto-accept); the background-agent-runner's default unattended-policy
+  // install — which runs on every startAgent/restoreAgent because the daemon
+  // always forces --autonomous — MUST NOT override those.
+  //
+  // Without this guard, every daemon session with an explicit mode had it
+  // silently rewritten to "unattended": with --yolo the evaluator's unattended
+  // branch surfaced "Permission required" overlays (GAP-PE-PREHOOK-BYPASS-LEAK);
+  // with plan mode the registry the live ExitPlanMode reads
+  // (planning.ts: registry.current().mode) saw "unattended" instead of "plan",
+  // so ExitPlanMode failed its mode guard with "You are not in plan mode" and
+  // the plan-approval mode choice (acceptEdits/default/keep-planning) never
+  // took effect — plan mode was unusable in the daemon TUI. The unattended
+  // policy itself (allowlist/denylist) is still recorded for any subset logic
+  // that wants to consult it, but the mode stays at the user's explicit choice.
+  const preserveMode =
+    context.mode === "bypassPermissions" ||
+    context.mode === "plan" ||
+    context.mode === "acceptEdits";
   return {
     ...context,
     mode: preserveMode ? context.mode : "unattended",

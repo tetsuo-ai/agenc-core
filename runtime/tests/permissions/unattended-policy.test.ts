@@ -52,6 +52,34 @@ describe("unattended permission policy", () => {
     expect(base.mode).toBe("default");
   });
 
+  // The daemon always forces --autonomous, so installUnattendedPermissionPolicy
+  // runs on every startAgent/restoreAgent. It must NOT rewrite a mode the user
+  // explicitly chose. Without preservation, plan mode was unusable in the daemon
+  // TUI (the live ExitPlanMode read "unattended" and failed its plan guard).
+  test.each(["bypassPermissions", "plan", "acceptEdits"] as const)(
+    "preserves the explicit %s mode instead of forcing unattended",
+    (mode) => {
+      const base = createEmptyToolPermissionContext({ mode });
+      const next = applyUnattendedPermissionPolicyToContext(base, {
+        allowlist: ["FileRead"],
+      });
+      // Mode is the user's explicit choice...
+      expect(next.mode).toBe(mode);
+      // ...but the unattended policy is still recorded for subset logic.
+      expect(next.unattendedPolicy).toEqual({
+        allowlist: ["FileRead"],
+        denylist: [],
+      });
+    },
+  );
+
+  test("still forces unattended for non-explicit modes (default)", () => {
+    const next = applyUnattendedPermissionPolicyToContext(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+    expect(next.mode).toBe("unattended");
+  });
+
   test("resolves deny before allow and pauses unlisted tools", () => {
     const context = applyUnattendedPermissionPolicyToContext(
       createEmptyToolPermissionContext(),
