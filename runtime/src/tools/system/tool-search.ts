@@ -139,6 +139,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
     metadata: {
       ...codingToolMetadata("system.searchTools", false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
+      virtualNoFsWrites: true,
     },
     recoveryCategory: "side-effecting",
     inputSchema: {

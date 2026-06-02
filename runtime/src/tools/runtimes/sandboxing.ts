@@ -587,6 +587,13 @@ function liveNetworkPolicyToEngine(
 
 function toolMayMutate(tool: Tool): boolean {
   if (tool.isReadOnly === true) return false;
+  // virtualNoFsWrites bypasses the indeterminate-target AND resolved-target
+  // write checks below. Safe ONLY because each opted-in tool is hand-audited to
+  // perform no arg-directed FS write — note writeTargets() treats any `*path`
+  // arg as a write target, so a future flag on a tool that honors such an arg
+  // would be a sandbox escape. Never flag a shell/code-executing or
+  // model-path-steerable tool. See ToolMetadata.virtualNoFsWrites.
+  if (tool.metadata?.virtualNoFsWrites === true) return false;
   if (tool.metadata?.mutating === true) return true;
   if (
     tool.recoveryCategory === "side-effecting" ||

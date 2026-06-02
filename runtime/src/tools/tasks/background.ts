@@ -170,6 +170,7 @@ export function createBackgroundTaskTools(
       metadata: toolMetadata("task", {
         mutating: true,
         deferred: true,
+        virtualNoFsWrites: true,
         keywords: ["task", "stop", "agent", "background"],
       }),
       concurrencyClass: TASK_CONCURRENCY,

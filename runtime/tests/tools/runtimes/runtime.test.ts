@@ -22,6 +22,7 @@ import {
   createFileMultiEditTool,
 } from "../system/file-edit.js";
 import { createFileWriteTool } from "../system/file-write.js";
+import { createPlanningTools } from "../system/planning.js";
 import { recordSessionRead } from "../system/filesystem.js";
 import { createWriteStdinTool } from "../system/write-stdin.js";
 import {
@@ -803,6 +804,143 @@ describe("tools/runtimes", () => {
         args: { input: "*** Begin Patch\nnot a hunk\n*** End Patch\n" },
       }),
     ).toThrow(/could not verify write targets/);
+  });
+
+  test("virtualNoFsWrites tools bypass the indeterminate-target denial without weakening real writers", () => {
+    const invocation = {
+      session: {} as never,
+      turn: { cwd: "/repo" } as never,
+      tracker: tracker() as never,
+      callId: "call-virtual-no-fs",
+      toolName: { name: "RuntimeProbe" },
+      payload: { kind: "function", arguments: "{}" },
+      source: "direct",
+    } as const;
+    const base = callContext("call-virtual-no-fs", EXCLUSIVE, false);
+    const attempt = (sandboxMode: "read_only" | "workspace_write") => ({
+      ...base,
+      approvalPolicy: "never" as const,
+      requestedSandboxMode: sandboxMode,
+      sandboxMode,
+      approvalResolved: false,
+      rawArgs: "{}",
+      invocation,
+    });
+
+    const virtualTool: Tool = {
+      name: "TodoWrite",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true, virtualNoFsWrites: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+
+    // (1) targetless virtual tool is allowed under workspace_write.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: virtualTool,
+        args: { todos: [] },
+      }),
+    ).not.toThrow();
+
+    // (2) same under read_only — covers the read_only write-capable branch.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("read_only"),
+        tool: virtualTool,
+        args: { todos: [] },
+      }),
+    ).not.toThrow();
+
+    // (3) REGRESSION GUARD: a real writer with no flag and no resolvable
+    // target still throws the indeterminate-write denial.
+    const realWriter: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: realWriter,
+        args: { contents: "no target arg" },
+      }),
+    ).toThrow(/could not verify write targets/);
+
+    // (3b) The shell-envelope path is untouched: a targetless
+    // exec_command/system.bash-style shell tool is still indeterminate-denied
+    // under workspace_write without a platform helper. (Even if such a tool
+    // were ever mis-flagged virtualNoFsWrites, the shell-access guard runs
+    // BEFORE toolMayMutate and denies it independently.)
+    const shellTool: Tool = {
+      name: "exec_command",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: shellTool,
+        args: { cmd: "node script.js" },
+      }),
+    ).toThrow(/without platform sandbox context|could not verify write targets/);
+
+    const flaggedShellTool: Tool = {
+      ...shellTool,
+      metadata: { mutating: true, virtualNoFsWrites: true },
+    };
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: flaggedShellTool,
+        args: { cmd: "node script.js" },
+      }),
+    ).toThrow(/without platform sandbox context|could not verify write targets/);
+
+    // (4) The resolved-writeTargets path stays intact for unflagged tools: an
+    // UNFLAGGED real writer with a resolved outside-workspace target still
+    // throws the workspace_write boundary denial. The flag never participates
+    // in this path because a flagged tool is not treated as mutating at all.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: realWriter,
+        args: { file_path: "/etc/passwd" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    // (4b) Document the flag's full semantics: a flagged virtual tool that
+    // happens to carry a path-shaped arg is NOT denied, because the audit
+    // guarantees it performs no filesystem write — the arg is not a write
+    // target. This is the deliberate consequence of treating the tool as
+    // non-mutating, and is only safe because each flagged tool was audited.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: virtualTool,
+        args: { file_path: "/etc/passwd" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("real planning tools advertise virtualNoFsWrites while file writers do not", () => {
+    const planningTools = createPlanningTools();
+    const byName = new Map(planningTools.map((tool) => [tool.name, tool] as const));
+
+    expect(byName.get("TodoWrite")?.metadata?.virtualNoFsWrites).toBe(true);
+    expect(byName.get("ExitPlanMode")?.metadata?.virtualNoFsWrites).toBe(true);
+    // EnterPlanMode is already isReadOnly — it must NOT carry the flag.
+    expect(byName.get("EnterPlanMode")?.metadata?.virtualNoFsWrites).toBeUndefined();
+
+    const writeTool = createFileWriteTool({ allowedPaths: ["/repo"] });
+    const editTool = createFileEditTool({ allowedPaths: ["/repo"] });
+    expect(writeTool.metadata?.virtualNoFsWrites).not.toBe(true);
+    expect(editTool.metadata?.virtualNoFsWrites).not.toBe(true);
   });
 
   test("actual exec_command handler is preflighted by selected runtime sandbox", async () => {

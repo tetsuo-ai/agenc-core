@@ -56,6 +56,7 @@ export function createSleepTool(): Tool {
       preferredProfiles: ["coding", "general", "operator"],
       hiddenByDefault: false,
       mutating: false,
+      virtualNoFsWrites: true,
       deferred: false,
     },
     requiresApproval: false,

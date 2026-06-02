@@ -100,13 +100,18 @@ function errorResult(message: string): ToolResult {
 
 function metadata(
   name: string,
-  opts: { readonly deferred?: boolean; readonly mutating?: boolean } = {},
+  opts: {
+    readonly deferred?: boolean;
+    readonly mutating?: boolean;
+    readonly virtualNoFsWrites?: boolean;
+  } = {},
 ): Tool["metadata"] {
   return {
     family: "planning",
     source: "builtin",
     preferredProfiles: ["coding", "general", "operator"],
     mutating: opts.mutating ?? true,
+    ...(opts.virtualNoFsWrites === true ? { virtualNoFsWrites: true } : {}),
     hiddenByDefault: false,
     deferred: opts.deferred ?? false,
     keywords: [
@@ -260,7 +265,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
     name: "TodoWrite",
     description:
       "Update the todo list for the current session. To be used proactively and often to track progress and pending tasks. Make sure that at least one task is in_progress at all times. Always provide both content (imperative) and activeForm (present continuous) for each task.",
-    metadata: metadata("TodoWrite"),
+    metadata: metadata("TodoWrite", { virtualNoFsWrites: true }),
     recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
@@ -348,7 +353,7 @@ Remember: DO NOT write or edit any files except the plan file.`,
     name: "ExitPlanMode",
     description:
       "Present the current AgenC plan for approval and exit plan mode when accepted.",
-    metadata: metadata("ExitPlanMode", { mutating: true }),
+    metadata: metadata("ExitPlanMode", { mutating: true, virtualNoFsWrites: true }),
     requiresApproval: true,
     recoveryCategory: "interactive",
     inputSchema: {

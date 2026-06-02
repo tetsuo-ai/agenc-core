@@ -44,6 +44,22 @@ export interface ToolMetadata {
   /** Whether the tool mutates project/runtime state. */
   readonly mutating?: boolean;
   /**
+   * Tool performs no *arg-directed* filesystem writes — it mutates only
+   * in-memory / runtime state, or writes to a fixed runtime-derived path the
+   * model cannot steer (e.g. ExitPlanMode persisting the plan file to a
+   * sanitized `<agenc-home>/plans/<random-slug>.md` outside the workspace).
+   * Exempts it from the FS-write sandbox (workspace_write/read_only)
+   * indeterminate-target denial in enforceRuntimeSandboxAttempt.
+   *
+   * MUST be false for anything that can write a model-controlled path or
+   * execute arbitrary code/shell. The exemption is trusted ONLY because each
+   * opted-in tool was hand-audited (see enforceRuntimeSandboxAttempt) — it is
+   * not a structural guarantee, so adding it requires reading the tool's
+   * execute() and confirming no arg-steerable write. Audit surface: grep
+   * `virtualNoFsWrites`.
+   */
+  readonly virtualNoFsWrites?: boolean;
+  /**
    * When `true`, the tool is omitted from the outgoing tools array sent
    * to the provider unless the model has explicitly discovered it via
    * `system.searchTools` in this turn. Mirrors the reference runtime's
