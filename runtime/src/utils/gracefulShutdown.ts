@@ -229,6 +229,47 @@ function forceExit(exitCode: number): never {
 }
 
 /**
+ * Install the process-global error net: log uncaught exceptions and unhandled
+ * promise rejections through the no-PII diagnostics channel instead of letting
+ * an unhandled rejection vanish silently or an uncaught exception crash the
+ * process with a raw stack. Idempotent (memoized) — safe to call from multiple
+ * entrypoints; handlers register once per process.
+ *
+ * Intentionally NON-exiting: a long-lived daemon / TUI should survive a stray
+ * async error. The TUI render loop self-heals per frame (see ink.tsx onRender),
+ * and orderly signal shutdown is owned separately (installSignalHandlers /
+ * setupGracefulShutdown).
+ *
+ * `proc` is injectable for tests so they can assert registration + handler
+ * behavior against a fake emitter without touching the real process (which
+ * would swallow vitest's own rejection detection).
+ */
+export const installGlobalErrorNet = memoize(
+  (proc: Pick<NodeJS.Process, 'on'> = process): void => {
+    // Log uncaught exceptions for container observability and analytics.
+    // Error names (e.g., "TypeError") are not sensitive - safe to log.
+    proc.on('uncaughtException', error => {
+      logForDiagnosticsNoPII('error', 'uncaught_exception', {
+        error_name: error?.name ?? 'Error',
+        error_message: String(error?.message ?? error).slice(0, 2000),
+      })
+    })
+    // Log unhandled promise rejections for container observability and analytics.
+    proc.on('unhandledRejection', reason => {
+      const errorInfo =
+        reason instanceof Error
+          ? {
+              error_name: reason.name,
+              error_message: reason.message.slice(0, 2000),
+              error_stack: reason.stack?.slice(0, 4000),
+            }
+          : { error_message: String(reason).slice(0, 2000) }
+      logForDiagnosticsNoPII('error', 'unhandled_rejection', errorInfo)
+    })
+  },
+)
+
+/**
  * Set up global signal handlers for graceful shutdown
  */
 export const setupGracefulShutdown = memoize(() => {
@@ -293,27 +334,10 @@ export const setupGracefulShutdown = memoize(() => {
     }
   }
 
-  // Log uncaught exceptions for container observability and analytics
-  // Error names (e.g., "TypeError") are not sensitive - safe to log
-  process.on('uncaughtException', error => {
-    logForDiagnosticsNoPII('error', 'uncaught_exception', {
-      error_name: error.name,
-      error_message: error.message.slice(0, 2000),
-    })
-  })
-
-  // Log unhandled promise rejections for container observability and analytics
-  process.on('unhandledRejection', reason => {
-    const errorInfo =
-      reason instanceof Error
-        ? {
-            error_name: reason.name,
-            error_message: reason.message.slice(0, 2000),
-            error_stack: reason.stack?.slice(0, 4000),
-          }
-        : { error_message: String(reason).slice(0, 2000) }
-    logForDiagnosticsNoPII('error', 'unhandled_rejection', errorInfo)
-  })
+  // Uncaught-exception + unhandled-rejection logging lives in the shared,
+  // memoized installGlobalErrorNet so the standalone entrypoint wiring and this
+  // bundled setup register the same handlers exactly once.
+  installGlobalErrorNet()
 })
 
 export function gracefulShutdownSync(
