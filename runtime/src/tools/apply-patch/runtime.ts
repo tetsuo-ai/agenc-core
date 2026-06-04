@@ -84,6 +84,29 @@ interface MutationMetadataEntry {
   readonly metadata: Record<string, unknown>;
 }
 
+// A single disk mutation the commit phase will perform. The planning phase
+// produces these without touching disk, so all validation/computation that can
+// throw happens before the first byte is written.
+type PlannedDiskOp =
+  | {
+      readonly kind: "write";
+      readonly path: string;
+      readonly content: string;
+      readonly recordRead: boolean;
+    }
+  | {
+      readonly kind: "remove";
+      readonly path: string;
+      readonly dropRead: boolean;
+    };
+
+// Pre-commit snapshot of a touched path, used to roll back an in-progress
+// commit. `existed:false` means the path was absent (rollback = delete).
+interface FileBackup {
+  readonly existed: boolean;
+  readonly content: string;
+}
+
 function hunkAffectedPath(hunk: ApplyPatchHunk): string {
   return hunk.kind === "update" && hunk.movePath !== null
     ? hunk.movePath
@@ -457,6 +480,66 @@ async function assertReadBeforeWriteGate(
   }
 }
 
+/**
+ * Snapshot a path's pre-commit state so the commit phase can roll back. A
+ * missing file (ENOENT) records `existed:false` (rollback = delete). Any other
+ * read failure (EACCES, EISDIR, …) means we cannot guarantee a safe revert, so
+ * we fail CLOSED here — before any byte is written — rather than risk an
+ * unrecoverable partial apply.
+ */
+async function captureBackup(pathAbs: string): Promise<FileBackup> {
+  try {
+    return { existed: true, content: await readFile(pathAbs, "utf8") };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { existed: false, content: "" };
+    throw new ApplyPatchRuntimeError(
+      `Cannot snapshot ${pathAbs} for rollback safety; refusing to apply patch (${
+        code ?? (error instanceof Error ? error.message : String(error))
+      })`,
+    );
+  }
+}
+
+/**
+ * Best-effort restore of every touched path to its captured pre-commit state,
+ * used only when a commit step fails partway. Each path is restored
+ * independently (delete if it did not exist, otherwise rewrite its bytes), so
+ * order does not matter and a failure to revert one path does not block the
+ * rest.
+ */
+async function restoreBackups(
+  backups: ReadonlyMap<string, FileBackup>,
+): Promise<void> {
+  for (const [pathAbs, backup] of backups) {
+    try {
+      if (backup.existed) {
+        await writeFile(pathAbs, backup.content, "utf8");
+      } else {
+        await rm(pathAbs, { force: true, recursive: false });
+      }
+    } catch {
+      // Keep restoring the rest; the surfaced error tells the model to re-read.
+    }
+  }
+}
+
+/**
+ * Apply a parsed patch atomically. Historically this looped over hunks doing
+ * per-hunk disk I/O, so a failure on hunk N (bad context, allowlist, or the
+ * read-before-write gate) left hunks 1..N-1 already mutated on disk with no
+ * rollback — and the model, seeing only the error, would retry and double-apply
+ * pure insertions. This is now a transaction:
+ *
+ *   PHASE 1 (plan): resolve paths, run the read-before-write / mtime gate, and
+ *     compute every file's final content entirely in memory. Nothing touches
+ *     disk, so any validation failure aborts with the working tree untouched.
+ *   PHASE 2 (commit): snapshot every path the commit will touch, then perform
+ *     the writes/removes. If a step fails, revert all touched paths to their
+ *     snapshots so the patch is all-or-nothing.
+ *   PHASE 3 (bookkeeping): only after every disk op succeeds, update advisory
+ *     session-read state — so a rollback never has to unwind it.
+ */
 async function applyHunksToFiles(
   hunks: readonly ApplyPatchHunk[],
   opts: ApplyPatchRuntimeOptions,
@@ -472,13 +555,42 @@ async function applyHunksToFiles(
   const modified: string[] = [];
   const deleted: string[] = [];
   const mutationMetadata: MutationMetadataEntry[] = [];
+  const plannedOps: PlannedDiskOp[] = [];
 
+  // Virtual overlay of the planned filesystem state, so a later hunk that
+  // touches a path an earlier hunk already wrote/deleted plans against that
+  // pending result instead of stale disk bytes — preserving the original
+  // sequential semantics without mutating disk during planning.
+  const overlay = new Map<
+    string,
+    { readonly deleted: boolean; readonly content: string }
+  >();
+  const planRead = async (pathAbs: string): Promise<string> => {
+    const pending = overlay.get(pathAbs);
+    if (pending !== undefined) {
+      if (pending.deleted) {
+        throw new ApplyPatchRuntimeError(
+          `Failed to read file to update ${pathAbs}`,
+        );
+      }
+      return pending.content;
+    }
+    return readFileToUpdate(pathAbs);
+  };
+
+  // PHASE 1 — plan + validate entirely in memory.
   for (const hunk of hunks) {
     const affectedPath = hunkAffectedPath(hunk);
     const pathAbs = await resolveSafePath(hunk.path, opts);
+
     if (hunk.kind === "add") {
-      await writeFileCreatingParents(pathAbs, hunk.contents);
-      await recordPostWriteRead(opts.sessionId, pathAbs, hunk.contents);
+      plannedOps.push({
+        kind: "write",
+        path: pathAbs,
+        content: hunk.contents,
+        recordRead: true,
+      });
+      overlay.set(pathAbs, { deleted: false, content: hunk.contents });
       added.push(affectedPath);
       mutationMetadata.push({
         filePath: affectedPath,
@@ -496,7 +608,7 @@ async function applyHunksToFiles(
     if (hunk.kind === "delete") {
       let originalContents = "";
       try {
-        originalContents = await readFile(pathAbs, "utf8");
+        originalContents = await planRead(pathAbs);
       } catch {
         originalContents = "";
       }
@@ -505,10 +617,8 @@ async function applyHunksToFiles(
       // model cannot blind-delete an in-allowlist file it never observed
       // this session.
       await assertReadBeforeWriteGate(opts.sessionId, pathAbs, originalContents);
-      await removeFile(pathAbs);
-      if (opts.sessionId !== undefined) {
-        dropSessionReadSnapshot(opts.sessionId, pathAbs);
-      }
+      plannedOps.push({ kind: "remove", path: pathAbs, dropRead: true });
+      overlay.set(pathAbs, { deleted: true, content: "" });
       deleted.push(affectedPath);
       mutationMetadata.push({
         filePath: affectedPath,
@@ -523,7 +633,7 @@ async function applyHunksToFiles(
       continue;
     }
 
-    const currentContents = await readFileToUpdate(pathAbs);
+    const currentContents = await planRead(pathAbs);
     await assertReadBeforeWriteGate(opts.sessionId, pathAbs, currentContents);
     const applied = await deriveNewContentsFromChunks(
       pathAbs,
@@ -534,13 +644,18 @@ async function applyHunksToFiles(
       hunk.movePath === null
         ? pathAbs
         : await resolveSafePath(hunk.movePath, opts);
-    await writeFileCreatingParents(writePathAbs, applied.newContents);
-    await recordPostWriteRead(opts.sessionId, writePathAbs, applied.newContents);
-    if (hunk.movePath !== null) {
-      await removeFile(pathAbs);
-      if (opts.sessionId !== undefined) {
-        dropSessionReadSnapshot(opts.sessionId, pathAbs);
-      }
+    plannedOps.push({
+      kind: "write",
+      path: writePathAbs,
+      content: applied.newContents,
+      recordRead: true,
+    });
+    overlay.set(writePathAbs, { deleted: false, content: applied.newContents });
+    // Only remove the source on a real move; a "move" whose destination
+    // normalizes back to the source must keep the rewritten file.
+    if (hunk.movePath !== null && writePathAbs !== pathAbs) {
+      plannedOps.push({ kind: "remove", path: pathAbs, dropRead: true });
+      overlay.set(pathAbs, { deleted: true, content: "" });
     }
     modified.push(affectedPath);
     mutationMetadata.push({
@@ -553,6 +668,42 @@ async function applyHunksToFiles(
         afterText: applied.newContents,
       }),
     });
+  }
+
+  // PHASE 2 — snapshot every touched path, then commit with rollback.
+  const backups = new Map<string, FileBackup>();
+  for (const op of plannedOps) {
+    if (!backups.has(op.path)) {
+      backups.set(op.path, await captureBackup(op.path));
+    }
+  }
+
+  for (const op of plannedOps) {
+    try {
+      if (op.kind === "write") {
+        await writeFileCreatingParents(op.path, op.content);
+      } else {
+        await removeFile(op.path);
+      }
+    } catch (error) {
+      await restoreBackups(backups);
+      throw new ApplyPatchRuntimeError(
+        `apply_patch failed while writing and was rolled back; no files were changed. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  // PHASE 3 — every disk op succeeded; update advisory session-read state.
+  for (const op of plannedOps) {
+    if (op.kind === "write") {
+      if (op.recordRead) {
+        await recordPostWriteRead(opts.sessionId, op.path, op.content);
+      }
+    } else if (op.dropRead && opts.sessionId !== undefined) {
+      dropSessionReadSnapshot(opts.sessionId, op.path);
+    }
   }
 
   return {

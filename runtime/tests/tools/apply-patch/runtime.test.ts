@@ -292,3 +292,107 @@ describe("apply-patch read-before-write gate", () => {
     await expect(readFile(path, "utf8")).resolves.toBe("changed\n");
   });
 });
+
+describe("apply-patch atomicity", () => {
+  // The core data-loss bug: a multi-file patch used to write each hunk to disk
+  // as it went, so a failure on a LATER hunk left EARLIER hunks already mutated
+  // with no rollback (and the model, seeing only the error, would retry and
+  // double-apply). The apply is now a transaction — a validation failure aborts
+  // with the working tree untouched.
+  test("a later hunk's validation failure leaves earlier files untouched", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "first.txt"), "a1\na2\n", "utf8");
+    await writeFile(join(root, "second.txt"), "b1\nb2\n", "utf8");
+
+    await expect(
+      applyPatchText(
+        wrapPatch(`*** Update File: first.txt
+@@
+-a2
++A2
+*** Update File: second.txt
+@@
+-NOPE
++x`),
+        { cwd: root, allowedPaths: [root] },
+      ),
+    ).rejects.toThrow("Failed to find expected lines");
+
+    // Before the fix first.txt would already be "a1\nA2\n".
+    await expect(readFile(join(root, "first.txt"), "utf8")).resolves.toBe(
+      "a1\na2\n",
+    );
+    await expect(readFile(join(root, "second.txt"), "utf8")).resolves.toBe(
+      "b1\nb2\n",
+    );
+  });
+
+  // An add staged before a failing hunk must not be left orphaned on disk.
+  test("a failing later hunk does not orphan an added file", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "exists.txt"), "keep\n", "utf8");
+
+    await expect(
+      applyPatchText(
+        wrapPatch(`*** Add File: new.txt
++created
+*** Update File: exists.txt
+@@
+-MISSING
++changed`),
+        { cwd: root, allowedPaths: [root] },
+      ),
+    ).rejects.toThrow("Failed to find expected lines");
+
+    // Before the fix new.txt would have been created and left behind.
+    await expect(stat(join(root, "new.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readFile(join(root, "exists.txt"), "utf8")).resolves.toBe(
+      "keep\n",
+    );
+  });
+
+  // A failure during the COMMIT phase (not just planning) must roll back the
+  // ops already written. Deleting a non-existent file fails at commit time
+  // after the add has been written; that add must be reverted.
+  test("rolls back an already-written file when a later op fails at commit", async () => {
+    const root = await tempRoot();
+
+    await expect(
+      applyPatchText(
+        wrapPatch(`*** Add File: created.txt
++hello
+*** Delete File: ghost.txt`),
+        { cwd: root, allowedPaths: [root] },
+      ),
+    ).rejects.toThrow("rolled back");
+
+    // created.txt was written during commit, then reverted when the delete of
+    // the non-existent ghost.txt failed.
+    await expect(stat(join(root, "created.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  // The happy path is unchanged: a valid multi-file patch still applies fully.
+  test("still applies a fully-valid multi-file patch", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "u.txt"), "x\ny\n", "utf8");
+
+    const result = await applyPatchText(
+      wrapPatch(`*** Add File: a.txt
++added
+*** Update File: u.txt
+@@
+-y
++Y`),
+      { cwd: root, allowedPaths: [root] },
+    );
+
+    await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("added\n");
+    await expect(readFile(join(root, "u.txt"), "utf8")).resolves.toBe("x\nY\n");
+    expect(result.affected.added).toEqual(["a.txt"]);
+    expect(result.affected.modified).toEqual(["u.txt"]);
+  });
+});

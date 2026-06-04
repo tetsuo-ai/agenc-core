@@ -37,7 +37,7 @@ const EXPECTED_SCENARIOS = [
   "012_delete_directory_fails",
   "013_rejects_invalid_hunk_header",
   "014_update_file_appends_trailing_newline",
-  "015_failure_after_partial_success_leaves_changes",
+  "015_failure_rolls_back_partial_success",
   "016_pure_addition_update_chunk",
   "017_whitespace_padded_hunk_header",
   "018_whitespace_padded_patch_markers",
@@ -56,7 +56,7 @@ const REJECTING_SCENARIOS = new Set<(typeof EXPECTED_SCENARIOS)[number]>([
   "009_requires_existing_file_for_update",
   "012_delete_directory_fails",
   "013_rejects_invalid_hunk_header",
-  "015_failure_after_partial_success_leaves_changes",
+  "015_failure_rolls_back_partial_success",
 ]);
 
 type SnapshotEntry =
