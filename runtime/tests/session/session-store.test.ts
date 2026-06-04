@@ -19,9 +19,11 @@ import {
   findProjectRootSync,
   getProjectDir,
   I4_FSYNC_RETRY_MS,
+  MAX_SESSION_INDEX_ENTRIES,
   readIndexSnapshot,
   rewriteAtomically,
   SchemaMismatchError,
+  SESSION_INDEX_EVICT_BATCH,
   SessionLock,
   SessionLockedError,
   SessionStore,
@@ -382,6 +384,83 @@ describe("session-store", () => {
     expect(store.getToolResultBytes("turn-1")).toBe(12000);
     expect(store.getTokenEstimate("turn-1")).toBe(3000);
     store.close();
+  });
+
+  // OOM regression: the four per-session monotonic indices (offsetsBySeq,
+  // toolCallTurnIds, toolResultBytesByTurn, tokenEstimateByTurn) previously grew
+  // one entry per event/tool-call for the whole session — the same unbounded
+  // growth class as the #946/#947 leaks — bloating both heap and index.json.
+  // Drive a 50k+ tool-call soak and assert every index stays capped, both
+  // in-memory and in the serialized snapshot.
+  test("bounds the per-session monotonic indices under a 50k+ tool-call soak (OOM regression)", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-index-soak",
+      sessionId: "sess-soak",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-soak",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-index-soak",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    // Enough unique completions to cross the cap and force ≥1 eviction cycle.
+    // Unique seq + callId + turnId per event so all four indices grow 1/event.
+    const total = MAX_SESSION_INDEX_ENTRIES + SESSION_INDEX_EVICT_BATCH + 100;
+    for (let i = 0; i < total; i++) {
+      store.append(
+        {
+          id: `evt-${i}`,
+          seq: i + 1,
+          msg: {
+            type: "tool_call_completed",
+            payload: { callId: `call-${i}`, result: "ok", isError: false },
+          },
+        },
+        { turnId: `turn-${i}`, toolResultBytes: 1, tokenEstimate: 1 },
+      );
+    }
+
+    // In-memory (heap) bound: the append-path indices stay capped, the oldest
+    // entries are evicted (FIFO), and the newest survive. Before the fix each
+    // held all `total` entries.
+    const live = store.getCompactionIndexSnapshot();
+    expect(live.toolResultBytesByTurn.size).toBeLessThanOrEqual(
+      MAX_SESSION_INDEX_ENTRIES,
+    );
+    expect(live.toolResultBytesByTurn.size).toBeLessThan(total);
+    expect(live.tokenEstimateByTurn?.size ?? 0).toBeLessThanOrEqual(
+      MAX_SESSION_INDEX_ENTRIES,
+    );
+    expect(live.toolCallTurnIds.size).toBeLessThanOrEqual(
+      MAX_SESSION_INDEX_ENTRIES,
+    );
+    expect(live.toolCallTurnIds.get("call-0")).toBeUndefined();
+    expect(live.toolCallTurnIds.get(`call-${total - 1}`)).toBe(
+      `turn-${total - 1}`,
+    );
+
+    store.close();
+
+    // Serialized (index.json) bound: the snapshot the audit flagged as bloated
+    // by unbounded indices stays capped for all four records, including
+    // offsetsBySeq (bounded on the flush path).
+    const snapshot = readIndexSnapshot(store.indexPath);
+    expect(snapshot).not.toBeNull();
+    expect(Object.keys(snapshot!.offsetsBySeq).length).toBeLessThanOrEqual(
+      MAX_SESSION_INDEX_ENTRIES,
+    );
+    expect(
+      Object.keys(snapshot!.toolCallTurnIds ?? {}).length,
+    ).toBeLessThanOrEqual(MAX_SESSION_INDEX_ENTRIES);
+    expect(
+      Object.keys(snapshot!.toolResultBytesByTurn ?? {}).length,
+    ).toBeLessThanOrEqual(MAX_SESSION_INDEX_ENTRIES);
+    expect(
+      Object.keys(snapshot!.tokenEstimateByTurn ?? {}).length,
+    ).toBeLessThanOrEqual(MAX_SESSION_INDEX_ENTRIES);
   });
 
   test("Session.emit forwards real tool completion bytes into the rollout index", () => {

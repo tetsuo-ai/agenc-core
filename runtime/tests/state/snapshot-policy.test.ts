@@ -167,6 +167,77 @@ describe("AgenCSessionSnapshotPolicy", () => {
     }
   });
 
+  // OOM fix: `inFlight` normally drains on tool_call_completed/poisoned, but an
+  // orphaned tool call (cancellation, crash, or a lost completion event)
+  // previously pinned an entry forever — the sibling leak to `completed`, the
+  // same unbounded-per-session class as #946/#947. Assert it is now FIFO-capped.
+  it("bounds the in-memory in-flight tool-call map for orphaned calls (OOM fix)", () => {
+    seedRun("run-oom-inflight", "session-oom-inflight");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:00.000Z",
+      agencHome: home,
+      maxInFlightToolCalls: 50,
+    });
+
+    // 300 tool requests, NONE completed → all remain "in flight" (orphaned).
+    const total = 300;
+    for (let i = 0; i < total; i++) {
+      policy.recordSessionEvent("session-oom-inflight", {
+        method: "event.tool_request",
+        params: {
+          eventId: `evt-req-${i}`,
+          requestId: `tool-${i}`,
+          toolName: "FileRead",
+        },
+      });
+    }
+
+    const inFlight = latestSnapshot("session-oom-inflight").toolState
+      .inFlight as Record<string, unknown>;
+    const keys = Object.keys(inFlight);
+    // Before the fix this held all 300 orphaned entries.
+    expect(keys.length).toBeLessThanOrEqual(50);
+    // Oldest are evicted (FIFO by insertion order); the newest survive.
+    expect(inFlight["tool-0"]).toBeUndefined();
+    expect(inFlight["tool-299"]).toBeDefined();
+  });
+
+  // The cap must not interfere with the happy-path lifecycle: a completed tool
+  // call still drains its in-flight entry, so a well-behaved session keeps
+  // `inFlight` near-empty regardless of the cap.
+  it("drains in-flight entries on completion (cap leaves the happy path intact)", () => {
+    seedRun("run-inflight-drain", "session-inflight-drain");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:00.000Z",
+      agencHome: home,
+      maxInFlightToolCalls: 50,
+    });
+
+    for (let i = 0; i < 120; i++) {
+      policy.recordSessionEvent("session-inflight-drain", {
+        method: "event.tool_request",
+        params: {
+          eventId: `evt-${i}`,
+          requestId: `tool-${i}`,
+          toolName: "FileRead",
+        },
+      });
+      policy.recordSessionEvent("session-inflight-drain", {
+        method: "event.session_event",
+        params: {
+          event: {
+            type: "tool_call_completed",
+            payload: { callId: `tool-${i}`, result: "ok", isError: false },
+          },
+        },
+      });
+    }
+
+    const inFlight = latestSnapshot("session-inflight-drain").toolState
+      .inFlight as Record<string, unknown>;
+    expect(Object.keys(inFlight).length).toBe(0);
+  });
+
   // OOM fix: the per-session status-transition log was an unbounded push target.
   it("bounds the status-transition log (OOM fix)", () => {
     seedRun("run-oom-st", "session-oom-st");

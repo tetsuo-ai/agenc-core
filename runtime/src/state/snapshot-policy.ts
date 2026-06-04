@@ -27,11 +27,16 @@ export interface SnapshotPolicyOptions {
   readonly maxConversationEvents?: number;
   readonly maxTrackedSessions?: number;
   // OOM fix: bound the in-memory per-session tool state so a single long-lived
-  // session (e.g. `agenc --yolo`) cannot grow `completed` / `statusTransitions`
-  // without limit. The authoritative, full tool result is already persisted and
-  // size-rotated to SQLite (recordInFlightToolCallCompletion); the in-memory
-  // copy only needs a bounded preview for snapshotting.
+  // session (e.g. `agenc --yolo`) cannot grow `completed` / `inFlight` /
+  // `statusTransitions` without limit. The authoritative, full tool result is
+  // already persisted and size-rotated to SQLite (recordInFlightToolCallStart /
+  // recordInFlightToolCallCompletion); the in-memory copy only needs a bounded
+  // preview for snapshotting.
   readonly maxCompletedToolCalls?: number;
+  // OOM fix: `inFlight` normally drains on tool_call_completed/poisoned, but an
+  // orphaned call (cancel / crash / lost completion event) would otherwise pin
+  // an entry forever — the sibling leak to `completed`. Cap it the same way.
+  readonly maxInFlightToolCalls?: number;
   readonly maxStatusTransitions?: number;
   readonly maxInMemoryToolResultBytes?: number;
   readonly now?: () => string;
@@ -116,6 +121,7 @@ const DEFAULT_PERIODIC_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_CONVERSATION_EVENTS = 200;
 const DEFAULT_MAX_TRACKED_SESSIONS = 1_024;
 const DEFAULT_MAX_COMPLETED_TOOL_CALLS = 200;
+const DEFAULT_MAX_IN_FLIGHT_TOOL_CALLS = 256;
 const DEFAULT_MAX_STATUS_TRANSITIONS = 500;
 const DEFAULT_MAX_IN_MEMORY_TOOL_RESULT_BYTES = 4_096;
 
@@ -125,6 +131,7 @@ export class AgenCSessionSnapshotPolicy {
   readonly #maxConversationEvents: number;
   readonly #maxTrackedSessions: number;
   readonly #maxCompletedToolCalls: number;
+  readonly #maxInFlightToolCalls: number;
   readonly #maxStatusTransitions: number;
   readonly #maxInMemoryToolResultBytes: number;
   readonly #now: () => string;
@@ -159,6 +166,10 @@ export class AgenCSessionSnapshotPolicy {
       1,
       options.maxCompletedToolCalls ?? DEFAULT_MAX_COMPLETED_TOOL_CALLS,
     );
+    this.#maxInFlightToolCalls = Math.max(
+      1,
+      options.maxInFlightToolCalls ?? DEFAULT_MAX_IN_FLIGHT_TOOL_CALLS,
+    );
     this.#maxStatusTransitions = Math.max(
       1,
       options.maxStatusTransitions ?? DEFAULT_MAX_STATUS_TRANSITIONS,
@@ -192,6 +203,24 @@ export class AgenCSessionSnapshotPolicy {
     const overflow = keys.length - this.#maxCompletedToolCalls;
     for (let i = 0; i < overflow; i++) {
       delete completed[keys[i] as string];
+    }
+  }
+
+  // OOM fix: evict the oldest still-tracked in-flight tool calls (FIFO by
+  // insertion order) once the in-memory map exceeds its cap. `inFlight` normally
+  // drains on tool_call_completed/poisoned, but an orphaned call (cancellation,
+  // crash, or a lost completion event) would otherwise pin one entry forever in
+  // a long-lived `--yolo` session — the sibling leak to `completed`, which
+  // #boundCompletedToolCalls already caps. The full in-flight record is persisted
+  // via recordInFlightToolCallStart, so dropping the oldest in-memory entry is
+  // safe; a late completion still resolves via its own payload metadata
+  // (`previous ?? {}` at every consumer).
+  #boundInFlightToolCalls(state: SessionSnapshotState): void {
+    const inFlight = state.toolState.inFlight;
+    const keys = Object.keys(inFlight);
+    const overflow = keys.length - this.#maxInFlightToolCalls;
+    for (let i = 0; i < overflow; i++) {
+      delete inFlight[keys[i] as string];
     }
   }
 
@@ -366,6 +395,7 @@ export class AgenCSessionSnapshotPolicy {
           recoveryCategory: toolRecoveryCategoryField(params, "recoveryCategory"),
           status: "running",
         };
+        this.#boundInFlightToolCalls(state);
         recordInFlightToolCallStart(this.#driver, {
           sessionId,
           agentId,
@@ -584,6 +614,7 @@ export class AgenCSessionSnapshotPolicy {
           status: "running",
           lastProgressAt: stringField(event, "acceptedAt") ?? observedAt,
         };
+        this.#boundInFlightToolCalls(state);
       }
       return this.#writeSnapshot(state, "tool_call");
     }
