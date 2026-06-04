@@ -100,6 +100,8 @@ export default class Ink {
   private backFrame: Frame;
   private lastPoolResetTime = performance.now();
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
+  // Throttle for the self-healing render error boundary (see onRenderError).
+  private lastRenderErrorLoggedAt = 0;
   private lastYogaCounters: {
     ms: number;
     visited: number;
@@ -459,6 +461,35 @@ export default class Ink {
     if (this.isUnmounted || this.isPaused) {
       return;
     }
+    // Self-healing render boundary: a single throwing frame must not crash the
+    // process (now that the global error net keeps it alive) or leave the
+    // double buffer / terminal desynced. Contain the throw, force a full
+    // repaint next frame, and keep rendering.
+    try {
+      this.renderFrame();
+    } catch (error) {
+      this.onRenderError(error);
+    }
+  }
+  onRenderError(error: unknown) {
+    // Drop this frame and force the NEXT one to do a full-damage repaint so a
+    // partially-written diff self-heals. Throttle logging so a deterministic
+    // per-frame failure can't spam the diagnostics log.
+    this.prevFrameContaminated = true;
+    const now = Date.now();
+    if (now - (this.lastRenderErrorLoggedAt ?? 0) > 1000) {
+      this.lastRenderErrorLoggedAt = now;
+      try {
+        logForDebugging(
+          `[Ink] render frame threw and was contained: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+          { level: 'error' }
+        );
+      } catch {
+        // Logging must never re-throw out of the render error handler.
+      }
+    }
+  }
+  renderFrame() {
     // Entering a render cancels any pending drain tick — this render will
     // handle the drain (and re-schedule below if needed). Prevents a
     // wheel-event-triggered render AND a drain-timer render both firing.

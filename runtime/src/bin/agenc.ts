@@ -192,6 +192,7 @@ import {
 } from "../permissions/trust/trust-sources.js";
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import { setSessionTrustAccepted } from "../bootstrap/state.js";
+import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
 
 type AgenCDaemonCliDeps = {
   readonly startPromptAgent: typeof startAgenCDaemonPromptAgent;
@@ -3671,6 +3672,12 @@ function isDirectInvocation(): boolean {
 
 if (isDirectInvocation()) {
   void (async () => {
+    // Install the process-global error net before anything runs so a stray
+    // uncaught exception / unhandled rejection on the daemon or TUI main path
+    // is logged instead of vanishing silently or crashing with a raw stack.
+    // Only on direct invocation — tests import main() and must keep vitest's
+    // own rejection detection intact.
+    installGlobalErrorNet();
     try {
       const code = await main();
       process.exit(code);

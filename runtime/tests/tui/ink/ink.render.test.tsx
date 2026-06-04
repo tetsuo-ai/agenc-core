@@ -247,6 +247,39 @@ describe('Ink instance rendering paths', () => {
     }
   })
 
+  test('contains a throwing render frame instead of crashing, and self-heals next frame', async () => {
+    const harness = await createHarness({ columns: 20, rows: 5 })
+
+    try {
+      harness.root.render(textNode('ready'))
+      await sleep(10)
+
+      const instance = harness.instance as InkInternals & {
+        onRender: () => void
+        renderer: unknown
+      }
+      // Force the next frame's renderer to throw mid-render.
+      const originalRenderer = instance.renderer
+      instance.renderer = () => {
+        throw new Error('render boom')
+      }
+      instance.prevFrameContaminated = false
+
+      // Without the self-healing boundary this propagates as an uncaught throw,
+      // which (with the global error net keeping the process alive) would leave
+      // the double buffer / terminal desynced.
+      expect(() => instance.onRender()).not.toThrow()
+      // The bad frame is dropped and the next frame is forced to full-repaint.
+      expect(instance.prevFrameContaminated).toBe(true)
+
+      // Restoring a working renderer lets rendering resume cleanly.
+      instance.renderer = originalRenderer
+      expect(() => instance.onRender()).not.toThrow()
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test('does not reassert terminal modes after unmounting', async () => {
     const harness = await createHarness({ columns: 20, rows: 5 })
 
