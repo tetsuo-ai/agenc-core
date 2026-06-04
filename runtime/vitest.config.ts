@@ -57,12 +57,28 @@ function walkTestFiles(dir: string): string[] {
   });
 }
 
-const movedDonorTestFiles = movedDonorTestRoots
-  .flatMap(walkTestFiles)
-  .map((file) => normalizeConfigPath(relative(__dirname, file)));
 const bunTestFiles = walkTestFiles(runtimeTestRoot)
   .filter((file) => readFileSync(file, 'utf8').includes('bun:test'))
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
+const movedDonorTestFiles = movedDonorTestRoots
+  .flatMap(walkTestFiles)
+  .map((file) => normalizeConfigPath(relative(__dirname, file)));
+
+function isVitestCompatibleBunTestFile(file: string): boolean {
+  const source = readFileSync(resolve(__dirname, file), 'utf8');
+  return (
+    !/\bmock\.module\b/.test(source) &&
+    !/\bmock\.restore\b/.test(source) &&
+    !/\bmock\s*\(/.test(source) &&
+    !/\bBun\./.test(source) &&
+    !/import\s*\(\s*`/.test(source) &&
+    !/\bRequestInit\s*&\s*\{\s*proxy\b/.test(source)
+  );
+}
+
+const bunOnlyTestFiles = bunTestFiles.filter(
+  (file) => !isVitestCompatibleBunTestFile(file),
+);
 
 function splitModuleId(id: string): { readonly path: string; readonly suffix: string } {
   const index = id.search(/[?#]/);
@@ -345,6 +361,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: [
+      { find: 'bun:test', replacement: resolve(__dirname, 'tests/helpers/bun-test-shim.ts') },
       { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
       { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
     ],
@@ -362,7 +379,7 @@ export default defineConfig({
       'dist',
       'tests/agenc/**/*.test.ts',
       'tests/agenc/**/*.test.tsx',
-      ...bunTestFiles,
+      ...bunOnlyTestFiles,
       // Moved donor-origin tests were previously hidden under src/agenc.
       // Keep them out of Vitest until their owning items convert them.
       ...movedDonorTestFiles,
@@ -372,6 +389,19 @@ export default defineConfig({
     testTimeout: 30000,
     deps: {
       interopDefault: true,
+    },
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx,mts,cts}'],
+      exclude: ['src/**/*.d.ts'],
+      reporter: ['text-summary', 'json-summary', 'json'],
+      reportsDirectory: 'coverage/runtime',
+      thresholds: {
+        statements: 100,
+        branches: 100,
+        functions: 100,
+        lines: 100,
+      },
     },
   },
 });

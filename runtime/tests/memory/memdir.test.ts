@@ -46,7 +46,7 @@ let oldDisableAutoMemory: string | undefined;
 beforeAll(async () => {
   memory = await import("./memdir.js");
   agencmd = await import("./agencmd.js");
-});
+}, 30_000);
 
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-prompt-"));
