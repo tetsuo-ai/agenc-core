@@ -249,7 +249,10 @@ class PowerShellParserProcess {
     const stdinFd = streamFd(child.stdin);
     const stdoutFd = streamFd(child.stdout);
     if (child.pid === undefined || stdinFd === null || stdoutFd === null) {
-      child.kill();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      if (child.pid !== undefined) child.kill();
       return {
         ok: false,
         diagnostic: `failed to spawn PowerShell parser process for ${executable}`,
@@ -303,7 +306,7 @@ class PowerShellParserProcess {
     this.child.stdin.destroy();
     this.child.stdout.destroy();
     this.child.stderr.destroy();
-    this.child.kill();
+    if (this.child.pid !== undefined) this.child.kill();
   }
 
   private readLine(timeoutMs: number): string {

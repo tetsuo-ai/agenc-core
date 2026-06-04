@@ -652,51 +652,37 @@ export function extractTag(html: string, tagName: string): string | null {
   }
 
   const escapedTag = escapeRegExp(tagName)
-
-  // Create regex pattern that handles:
-  // 1. Self-closing tags
-  // 2. Tags with attributes
-  // 3. Nested tags of the same type
-  // 4. Multiline content
-  const pattern = new RegExp(
-    `<${escapedTag}(?:\\s+[^>]*)?>` + // Opening tag with optional attributes
-      '([\\s\\S]*?)' + // Content (non-greedy match)
-      `<\\/${escapedTag}>`, // Closing tag
+  const tagPattern = new RegExp(
+    `<${escapedTag}(?:\\s+[^>]*)?\\s*\\/\\s*>|<\\/${escapedTag}\\s*>|<${escapedTag}(?:\\s+[^>]*)?>`,
     'gi',
   )
-
-  let match
   let depth = 0
-  let lastIndex = 0
-  const openingTag = new RegExp(`<${escapedTag}(?:\\s+[^>]*?)?>`, 'gi')
-  const closingTag = new RegExp(`<\\/${escapedTag}>`, 'gi')
+  let contentStart = -1
+  let match: RegExpExecArray | null
 
-  while ((match = pattern.exec(html)) !== null) {
-    // Check for nested tags
-    const content = match[1]
-    const beforeMatch = html.slice(lastIndex, match.index)
-
-    // Reset depth counter
-    depth = 0
-
-    // Count opening tags before this match
-    openingTag.lastIndex = 0
-    while (openingTag.exec(beforeMatch) !== null) {
-      depth++
+  while ((match = tagPattern.exec(html)) !== null) {
+    const token = match[0]
+    const isSelfClosing = /\/\s*>$/.test(token)
+    if (isSelfClosing) {
+      continue
     }
 
-    // Count closing tags before this match
-    closingTag.lastIndex = 0
-    while (closingTag.exec(beforeMatch) !== null) {
+    if (token.startsWith('</')) {
+      if (depth === 0) {
+        continue
+      }
       depth--
+      if (depth === 0 && contentStart >= 0) {
+        const content = html.slice(contentStart, match.index)
+        return content || null
+      }
+      continue
     }
 
-    // Only include content if we're at the correct nesting level
-    if (depth === 0 && content) {
-      return content
+    if (depth === 0) {
+      contentStart = tagPattern.lastIndex
     }
-
-    lastIndex = match.index + match[0].length
+    depth++
   }
 
   return null
