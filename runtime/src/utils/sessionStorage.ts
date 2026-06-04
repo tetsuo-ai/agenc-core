@@ -29,6 +29,7 @@ import {
 } from '../bootstrap/state.js'
 import { builtInCommandNames } from '../commands.js'
 import { COMMAND_NAME_TAG, TICK_TAG } from '../constants/xml.js'
+import * as sessionIngress from '../services/api/sessionIngress.js'
 import { REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
 import {
   type AgentId,
