@@ -85,6 +85,17 @@ import { DegradedStore } from "./degraded-store.js";
 export const I4_FSYNC_RETRY_MS = 100;
 const I83_SUSPEND_DETECTION_MS = 10_000;
 
+// OOM: bound the per-session monotonic indices (`toolResultBytesByTurn`,
+// `tokenEstimateByTurn`, `toolCallTurnIds`, `offsetsBySeq`). These are advisory
+// accumulators — the rollout JSONL is the source of truth (I-25), the live
+// compaction window is far smaller than the cap, and the only production readers
+// tolerate a missing entry — so evicting the oldest tail (FIFO by Map insertion
+// order) once a map exceeds MAX bounds both heap and the index.json snapshot
+// without affecting correctness. Siblings of the already-capped `seenEventIds`
+// dedup set; closes the same unbounded-per-session growth class as #946/#947.
+export const MAX_SESSION_INDEX_ENTRIES = 50_000;
+export const SESSION_INDEX_EVICT_BATCH = 5_000;
+
 /**
  * index.json snapshot schema. Written atomically via tmp+rename
  * (I-24) on close and on explicit `writeIndexSnapshot()` calls.
@@ -1064,10 +1075,12 @@ export class SessionStore {
     if (turnId && toolResultBytes > 0) {
       const prev = this.toolResultBytesByTurn.get(turnId) ?? 0;
       this.toolResultBytesByTurn.set(turnId, prev + toolResultBytes);
+      this.boundIndexMap(this.toolResultBytesByTurn);
     }
     if (turnId && tokenEstimate > 0) {
       const prev = this.tokenEstimateByTurn.get(turnId) ?? 0;
       this.tokenEstimateByTurn.set(turnId, prev + tokenEstimate);
+      this.boundIndexMap(this.tokenEstimateByTurn);
     }
     if (
       turnId &&
@@ -1076,6 +1089,7 @@ export class SessionStore {
       toolCompletion.callId.length > 0
     ) {
       this.toolCallTurnIds.set(toolCompletion.callId, turnId);
+      this.boundIndexMap(this.toolCallTurnIds);
     }
 
     const item: RolloutItem = { type: "event_msg", payload: event };
@@ -1189,6 +1203,7 @@ export class SessionStore {
       }
       offsetAccumulator += Buffer.byteLength(serializeRolloutItem(item), "utf8");
     }
+    this.boundIndexMap(this.offsetsBySeq);
 
     const lines = this.pending.map(serializeRolloutItem).join("");
     const toWrite = this.pending;
@@ -1582,6 +1597,29 @@ export class SessionStore {
     // as a reconstruction speedup.
     this.writeIndexSnapshot();
     this.lock.release();
+  }
+
+  /**
+   * OOM: FIFO-evict the oldest entries of a monotonic per-session index Map
+   * once it grows past {@link MAX_SESSION_INDEX_ENTRIES}. Map iteration is
+   * insertion-ordered, so `keys()` yields oldest-first; deleting a batch keeps
+   * the recent tail (the entries a `/resume` fast-seek or compaction decision
+   * actually needs) and drops cold history. See the constant for why this is
+   * safe (advisory index; rollout JSONL is authoritative).
+   */
+  private boundIndexMap<K, V>(map: Map<K, V>): void {
+    if (map.size <= MAX_SESSION_INDEX_ENTRIES) return;
+    // Evict down to a low-water mark (not just one fixed batch) so a single
+    // bulk flush — `offsetsBySeq` sets one entry per pending event — cannot
+    // leave the map above the cap, and so we don't re-trigger on the very next
+    // insert. `keys()` is insertion-ordered, so this drops the coldest history.
+    const target = MAX_SESSION_INDEX_ENTRIES - SESSION_INDEX_EVICT_BATCH;
+    let toRemove = map.size - target;
+    for (const key of map.keys()) {
+      if (toRemove <= 0) break;
+      map.delete(key);
+      toRemove -= 1;
+    }
   }
 
   /**
