@@ -22,20 +22,35 @@ export const getGlobalAgenCFile = memoize((): string => {
   }
 
   const oauthSuffix = fileSuffixForOauthConfig()
-  const configDir = process.env.AGENC_CONFIG_DIR || homedir()
+  const filename = `.agenc${oauthSuffix}.json`
 
-  // Default to .agenc.json. Fall back to .agenc.json only if the new
-  // file doesn't exist yet and the compatibility one does (same migration pattern
-  // as resolveAgenCConfigHomeDir for the config directory).
-  const newFilename = `.agenc${oauthSuffix}.json`
-  const legacyFilename = `.agenc${oauthSuffix}.json`
-  if (
-    !getFsImplementation().existsSync(join(configDir, newFilename)) &&
-    getFsImplementation().existsSync(join(configDir, legacyFilename))
-  ) {
-    return join(configDir, legacyFilename)
+  // Resolve the secrets-bearing global config from the SAME home that
+  // config.toml / auth.json use: AGENC_CONFIG_DIR (explicit per-file override)
+  // > AGENC_HOME > $HOME. Previously AGENC_HOME was ignored here, so a custom
+  // AGENC_HOME relocated config.toml + auth.json but stranded this file at
+  // $HOME/.agenc.json — silently splitting provider keys, MCP servers, and
+  // global settings across two directories.
+  const configDirOverride = process.env.AGENC_CONFIG_DIR
+  const agencHome = process.env.AGENC_HOME
+  const configDir = configDirOverride || agencHome || homedir()
+  const resolvedPath = join(configDir, filename)
+
+  // Backward-compat: an install that set AGENC_HOME before this fix wrote the
+  // file to the legacy $HOME/.agenc.json. If the unified location doesn't exist
+  // yet but that legacy file does, keep reading it so the upgrade doesn't look
+  // like the provider keys were dropped. Scoped to the AGENC_HOME case so the
+  // explicit AGENC_CONFIG_DIR path and the no-env default are unaffected.
+  if (!configDirOverride && agencHome) {
+    const legacyPath = join(homedir(), filename)
+    if (
+      legacyPath !== resolvedPath &&
+      !getFsImplementation().existsSync(resolvedPath) &&
+      getFsImplementation().existsSync(legacyPath)
+    ) {
+      return legacyPath
+    }
   }
-  return join(configDir, newFilename)
+  return resolvedPath
 })
 
 const hasInternetAccess = memoize(async (): Promise<boolean> => {

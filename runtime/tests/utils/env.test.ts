@@ -60,3 +60,49 @@ test('getGlobalAgenCFile: migrated user uses .agenc.json when both files exist',
   const { getGlobalAgenCFile } = await importFreshEnvModule()
   expect(getGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
 })
+
+// AGENC_HOME unification: the secrets-bearing global config must resolve from
+// the same home AGENC_HOME selects for config.toml/auth.json, instead of being
+// stranded at $HOME. (os.homedir() ignores $HOME under Bun, so these write the
+// file at the AGENC_HOME location to stay deterministic regardless of the real
+// home — which also exercises the resolved-path-exists branch.)
+test('getGlobalAgenCFile: AGENC_HOME is honored instead of being ignored', async () => {
+  const savedConfigDir = process.env.AGENC_CONFIG_DIR
+  const savedHome = process.env.AGENC_HOME
+  const agencHome = mkdtempSync(join(tmpdir(), 'agenc-home-'))
+  try {
+    delete process.env.AGENC_CONFIG_DIR
+    process.env.AGENC_HOME = agencHome
+    writeFileSync(join(agencHome, '.agenc.json'), '{}')
+    const { getGlobalAgenCFile } = await importFreshEnvModule()
+    // Before the fix this returned $HOME/.agenc.json (AGENC_HOME ignored),
+    // splitting provider keys away from config.toml.
+    expect(getGlobalAgenCFile()).toBe(join(agencHome, '.agenc.json'))
+  } finally {
+    rmSync(agencHome, { recursive: true, force: true })
+    if (savedConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
+    else process.env.AGENC_CONFIG_DIR = savedConfigDir
+    if (savedHome === undefined) delete process.env.AGENC_HOME
+    else process.env.AGENC_HOME = savedHome
+  }
+})
+
+test('getGlobalAgenCFile: AGENC_CONFIG_DIR takes precedence over AGENC_HOME', async () => {
+  const savedConfigDir = process.env.AGENC_CONFIG_DIR
+  const savedHome = process.env.AGENC_HOME
+  const configDir = mkdtempSync(join(tmpdir(), 'agenc-cfg-'))
+  const agencHome = mkdtempSync(join(tmpdir(), 'agenc-home-'))
+  try {
+    process.env.AGENC_CONFIG_DIR = configDir
+    process.env.AGENC_HOME = agencHome
+    const { getGlobalAgenCFile } = await importFreshEnvModule()
+    expect(getGlobalAgenCFile()).toBe(join(configDir, '.agenc.json'))
+  } finally {
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(agencHome, { recursive: true, force: true })
+    if (savedConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
+    else process.env.AGENC_CONFIG_DIR = savedConfigDir
+    if (savedHome === undefined) delete process.env.AGENC_HOME
+    else process.env.AGENC_HOME = savedHome
+  }
+})
