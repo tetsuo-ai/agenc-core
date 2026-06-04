@@ -52,6 +52,14 @@ process.stdin.on("data", chunk => {
 });
 `;
 
+async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("createLSPClient", () => {
   test("clears closed process state so a crashed server can be started again", async () => {
     let crashCount = 0;
@@ -62,11 +70,11 @@ describe("createLSPClient", () => {
     });
 
     await client.start(process.execPath, ["-e", EXITING_SERVER]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => crashCount === 1);
     expect(crashCount).toBe(1);
 
     await client.start(process.execPath, ["-e", EXITING_SERVER]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => crashCount === 2);
     expect(crashCount).toBe(2);
   });
 
@@ -79,13 +87,13 @@ describe("createLSPClient", () => {
     });
 
     await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => terminalEvents.length === 1);
     expect(terminalEvents).toEqual([
       "LSP server clean-exit exited unexpectedly with code 0",
     ]);
 
     await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => terminalEvents.length === 2);
     expect(terminalEvents).toHaveLength(2);
   });
 
@@ -98,7 +106,7 @@ describe("createLSPClient", () => {
     });
 
     await client.start(process.execPath, ["-e", CLOSE_CONNECTION_SERVER]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => terminalEvents.length === 1);
 
     expect(terminalEvents).toEqual([
       "LSP server close connection closed unexpectedly",

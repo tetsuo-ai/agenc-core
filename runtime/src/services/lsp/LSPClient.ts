@@ -96,6 +96,7 @@ export function createLSPClient(
   let startError: Error | undefined;
   let stopping = false;
   let terminalNotified = false;
+  let connectionClosePending = false;
   const notificationHandlers: Array<{
     readonly method: string;
     readonly handler: (params: unknown) => void;
@@ -126,14 +127,20 @@ export function createLSPClient(
     capabilities = undefined;
   };
 
+  const removeChildListeners = (currentChild: ChildProcess): void => {
+    currentChild.removeAllListeners("error");
+    currentChild.removeAllListeners("exit");
+    currentChild.stdin?.removeAllListeners("error");
+    currentChild.stdout?.removeAllListeners("end");
+    currentChild.stdout?.removeAllListeners("close");
+    currentChild.stderr?.removeAllListeners("data");
+  };
+
   const clearClosedRuntimeState = (opts: { readonly killChild?: boolean } = {}): void => {
     clearConnectionState();
     if (child) {
       const currentChild = child;
-      child.removeAllListeners("error");
-      child.removeAllListeners("exit");
-      child.stdin?.removeAllListeners("error");
-      child.stderr?.removeAllListeners("data");
+      removeChildListeners(currentChild);
       if (opts.killChild === true && !currentChild.killed) {
         currentChild.kill();
       }
@@ -148,6 +155,41 @@ export function createLSPClient(
     startError = undefined;
     options.onCrash?.(error);
     diagnostic(error.message);
+  };
+
+  const scheduleUnexpectedConnectionClose = (): void => {
+    if (stopping || terminalNotified || connectionClosePending) return;
+    connectionClosePending = true;
+    const closedChild = child;
+    clearConnectionState();
+    setTimeout(() => {
+      connectionClosePending = false;
+      if (stopping || terminalNotified) return;
+      if (closedChild && child === closedChild) {
+        removeChildListeners(closedChild);
+        if (!closedChild.killed) closedChild.kill();
+        child = undefined;
+      }
+      if (closedChild?.exitCode !== null && closedChild?.exitCode !== undefined) {
+        notifyUnexpectedTerminal(
+          closedChild.exitCode === 0
+            ? new Error(`LSP server ${serverName} exited unexpectedly with code 0`)
+            : new Error(
+                `LSP server ${serverName} crashed with exit code ${closedChild.exitCode}`,
+              ),
+        );
+        return;
+      }
+      if (closedChild?.signalCode) {
+        notifyUnexpectedTerminal(
+          new Error(`LSP server ${serverName} exited with signal ${closedChild.signalCode}`),
+        );
+        return;
+      }
+      notifyUnexpectedTerminal(
+        new Error(`LSP server ${serverName} connection closed unexpectedly`),
+      );
+    }, CONNECTION_CLOSE_EXIT_GRACE_MS);
   };
 
   const assertStarted = (): void => {
@@ -182,6 +224,7 @@ export function createLSPClient(
       if (connection) return;
       stopping = false;
       terminalNotified = false;
+      connectionClosePending = false;
       startFailed = false;
       startError = undefined;
 
@@ -250,6 +293,8 @@ export function createLSPClient(
         child.stdin.on("error", (error: Error) => {
           if (!stopping) diagnostic(`stdin error: ${error.message}`);
         });
+        child.stdout.once("end", scheduleUnexpectedConnectionClose);
+        child.stdout.once("close", scheduleUnexpectedConnectionClose);
 
         const reader = new StreamMessageReader(child.stdout);
         const writer = new StreamMessageWriter(child.stdin);
@@ -263,43 +308,7 @@ export function createLSPClient(
         });
 
         connection.onClose(() => {
-          if (stopping) return;
-          const closedChild = child;
-          clearConnectionState();
-          setTimeout(() => {
-            if (stopping || terminalNotified) return;
-            if (closedChild && child === closedChild) {
-              child.removeAllListeners("error");
-              child.removeAllListeners("exit");
-              child.stdin?.removeAllListeners("error");
-              child.stderr?.removeAllListeners("data");
-              if (!child.killed) child.kill();
-              child = undefined;
-            }
-            if (closedChild?.exitCode !== null && closedChild?.exitCode !== undefined) {
-              notifyUnexpectedTerminal(
-                closedChild.exitCode === 0
-                  ? new Error(
-                      `LSP server ${serverName} exited unexpectedly with code 0`,
-                    )
-                  : new Error(
-                      `LSP server ${serverName} crashed with exit code ${closedChild.exitCode}`,
-                    ),
-              );
-              return;
-            }
-            if (closedChild?.signalCode) {
-              notifyUnexpectedTerminal(
-                new Error(
-                  `LSP server ${serverName} exited with signal ${closedChild.signalCode}`,
-                ),
-              );
-              return;
-            }
-            notifyUnexpectedTerminal(
-              new Error(`LSP server ${serverName} connection closed unexpectedly`),
-            );
-          }, CONNECTION_CLOSE_EXIT_GRACE_MS);
+          scheduleUnexpectedConnectionClose();
         });
 
         connection.listen();
@@ -397,10 +406,7 @@ export function createLSPClient(
       } finally {
         disposeConnection();
         if (child) {
-          child.removeAllListeners("error");
-          child.removeAllListeners("exit");
-          child.stdin?.removeAllListeners("error");
-          child.stderr?.removeAllListeners("data");
+          removeChildListeners(child);
           if (!child.killed) child.kill();
           child = undefined;
         }
