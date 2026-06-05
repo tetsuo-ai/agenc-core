@@ -22,6 +22,7 @@ import type {
   CacheSafeParams,
   ForkedAgentResult,
 } from "../PromptSuggestion/runtime.js";
+import type { CacheSafeParams as ForkedAgentCacheSafeParams } from "../../utils/forkedAgent.js";
 import type { Message } from "../../types/message.js";
 import {
   createUserMessage as defaultCreateUserMessage,
@@ -29,6 +30,24 @@ import {
 } from "../PromptSuggestion/runtime.js";
 
 export const SUMMARY_INTERVAL_MS = 30_000;
+
+/**
+ * Adapter across the deliberate PromptSuggestion decoupling boundary. The fork
+ * machinery hands callers a concrete `CacheSafeParams` (full `ToolUseContext` +
+ * the canonical `SpeculationState`); this service intentionally types its
+ * `cacheSafeParams` against `PromptSuggestion/runtime`, which defines its own
+ * looser `ToolUseContext`/`SpeculationState` so the service never imports
+ * tui/app-state types. The runtime object is the real, richer one and is valid
+ * for the fork — the structural-subset relation just isn't statically provable
+ * (a circular SpeculationState → REPLHookContext → ToolUseContext → AppState
+ * chain). This is the single, documented boundary cast; call sites must not
+ * re-cast inline.
+ */
+export function toSummaryCacheSafeParams(
+  params: ForkedAgentCacheSafeParams,
+): CacheSafeParams {
+  return params as unknown as CacheSafeParams;
+}
 
 export interface AgentTranscript {
   readonly messages: readonly Message[];

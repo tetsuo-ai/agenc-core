@@ -6,7 +6,7 @@ import { z } from 'zod/v4';
 import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { enhanceSystemPromptWithEnvDetails, getSystemPrompt } from '../../constants/prompts.js';
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js';
-import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js';
+import { startAgentSummarization, toSummaryCacheSafeParams } from '../../services/AgentSummary/agentSummary.js';
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateAgentSummary as updateAsyncAgentSummary, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 
@@ -19,11 +19,6 @@ import { logForDebugging } from 'src/utils/debug.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { AbortError, errorMessage, toError } from '../../utils/errors.js';
 import type { CacheSafeParams } from '../../utils/forkedAgent.js';
-// The summary API types cacheSafeParams via PromptSuggestion/runtime, a
-// structurally-divergent duplicate of CacheSafeParams (its SpeculationState has
-// drifted from the canonical tui one). The runtime value is the real, richer
-// app-state object and is valid for the fork; bridge the stale type boundary.
-import type { CacheSafeParams as SummaryCacheSafeParams } from '../../services/PromptSuggestion/runtime.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
 import { getAgentModel } from '../../utils/model/agent.js';
@@ -580,15 +575,7 @@ export const AgentTool = buildTool({
       ...appState.toolPermissionContext,
       mode: selectedAgent.permissionMode ?? 'acceptEdits'
     };
-    // appState.toolPermissionContext and assembleToolPool's ToolPermissionContext
-    // are typed from two divergent permission-type modules (PermissionMode /
-    // WorkingDirectorySource duplicated in types/permissions.ts vs
-    // permissions/types.ts). The runtime object is the real permission context,
-    // valid for the pool; bridge the stale type boundary on the call.
-    const workerTools = assembleToolPool(
-      workerPermissionContext as Parameters<typeof assembleToolPool>[0],
-      appState.mcp.tools,
-    );
+    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
@@ -880,7 +867,7 @@ export const AgentTool = buildTool({
             const { stop } = startAgentSummarization({
               taskId: summaryTaskId,
               agentId: syncAgentId,
-              cacheSafeParams: params as unknown as SummaryCacheSafeParams,
+              cacheSafeParams: toSummaryCacheSafeParams(params),
               getAgentTranscript: async () => ({ messages: agentMessages }),
               updateAgentSummary: (id, summary) =>
                 updateAsyncAgentSummary(id, summary, rootSetAppState),
@@ -967,7 +954,7 @@ export const AgentTool = buildTool({
                         const { stop } = startAgentSummarization({
                           taskId: backgroundedTaskId,
                           agentId: asAgentId(backgroundedTaskId),
-                          cacheSafeParams: params as unknown as SummaryCacheSafeParams,
+                          cacheSafeParams: toSummaryCacheSafeParams(params),
                           getAgentTranscript: async () => ({ messages: agentMessages }),
                           updateAgentSummary: (id, summary) =>
                             updateAsyncAgentSummary(id, summary, rootSetAppState),

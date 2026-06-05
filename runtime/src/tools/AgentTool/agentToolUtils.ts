@@ -7,7 +7,7 @@ import {
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
 } from '../../constants/tools.js'
-import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
+import { startAgentSummarization, toSummaryCacheSafeParams } from '../../services/AgentSummary/agentSummary.js'
 import { clearDumpState } from '../../services/api/dumpPrompts.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type {
@@ -38,11 +38,6 @@ import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { AbortError, errorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-// The summary API types cacheSafeParams via PromptSuggestion/runtime, which
-// carries its own structurally-divergent duplicates of CacheSafeParams +
-// SpeculationState. The runtime value here is the real (richer) app-state
-// object and is valid for the fork; bridge the stale type boundary on the call.
-import type { CacheSafeParams as SummaryCacheSafeParams } from '../../services/PromptSuggestion/runtime.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   extractTextContent,
@@ -495,7 +490,7 @@ export async function runAsyncAgentLifecycle({
           const { stop } = startAgentSummarization({
             taskId,
             agentId: asAgentId(taskId),
-            cacheSafeParams: params as unknown as SummaryCacheSafeParams,
+            cacheSafeParams: toSummaryCacheSafeParams(params),
             getAgentTranscript: async () => ({ messages: agentMessages }),
             updateAgentSummary: (id, summary) =>
               updateAsyncAgentSummary(id, summary, rootSetAppState),

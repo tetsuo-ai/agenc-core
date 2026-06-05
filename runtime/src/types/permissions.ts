@@ -24,8 +24,16 @@ export const EXTERNAL_PERMISSION_MODES = [
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
 
 // Exhaustive mode union for typechecking. The user-addressable runtime set
-// is INTERNAL_PERMISSION_MODES below.
-export type InternalPermissionMode = ExternalPermissionMode | 'auto' | 'bubble'
+// is INTERNAL_PERMISSION_MODES below. Includes the background-agent-only
+// 'unattended' mode (documented in permissions/types.ts) so this stays the
+// single authoritative mode union — its omission previously forced a cast
+// wherever an agent's 'unattended' permissionMode met a context typed as
+// InternalPermissionMode (e.g. AgentTool → assembleToolPool).
+export type InternalPermissionMode =
+  | ExternalPermissionMode
+  | 'auto'
+  | 'bubble'
+  | 'unattended'
 export type PermissionMode = InternalPermissionMode
 
 // Runtime validation set: modes that are user-addressable (settings.json
@@ -48,8 +56,10 @@ export type PermissionBehavior = 'allow' | 'deny' | 'ask'
 // ============================================================================
 
 /**
- * Where a permission rule originated from.
- * Includes all SettingSource values plus additional rule-specific sources.
+ * Where a permission rule originated from. Includes all SettingSource values
+ * plus rule-specific sources. The single authoritative source union —
+ * permissions/types.ts re-exports it; 'command'/'session' (rule-level and
+ * session-level rules) were previously only in that copy.
  */
 export type PermissionRuleSource =
   | 'userSettings'
