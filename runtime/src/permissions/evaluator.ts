@@ -546,15 +546,32 @@ async function checkUnattendedPolicy(
   const permissionContext = context.toolPermissionContext
     ? context.toolPermissionContext(appState)
     : appState.toolPermissionContext;
-  if (permissionContext.mode !== "unattended") return null;
 
   const unattended = resolveUnattendedPermissionDecision(
     permissionContext,
     tool.name,
   );
+
+  // The operator denylist is a HARD, bypass-immune deny: an explicit
+  // operator deny (daemon `deny: ['Bash']`) must hold regardless of the
+  // session's permission mode, exactly like a tool-level deny rule. The
+  // `preserveMode` guard (unattended-policy.ts) keeps the mode at the user's
+  // explicit bypassPermissions/plan/acceptEdits choice while still recording
+  // the policy, so without consulting the denylist here a --yolo session
+  // (bypassPermissions) would sail past the mode gate and silently waive the
+  // operator's denylist. Consulting it before the mode-scoped early return
+  // closes that bypass. No denylist configured ⇒ resolve never returns "deny",
+  // so behavior is unchanged when no operator denylist is set.
   if (unattended.behavior === "deny") {
     return unattendedDenyDecision(unattended.toolName);
   }
+
+  // The allowlist / pause behaviors are the additive subset semantics that
+  // `preserveMode` intentionally keeps off under bypassPermissions/plan/
+  // acceptEdits — only the deny floor above is bypass-immune. Outside
+  // unattended mode the mode gate owns the allow/ask decision from here.
+  if (permissionContext.mode !== "unattended") return null;
+
   if (ruleBased?.behavior === "ask") {
     return unattendedPauseDecision(unattended.toolName, ruleBased);
   }
