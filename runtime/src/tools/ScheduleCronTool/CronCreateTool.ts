@@ -9,6 +9,7 @@ import {
   listAllCronTasks,
   nextCronRunMs,
 } from '../../utils/cronTasks.js'
+import { getCronScheduler } from '../../utils/cronScheduler.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
@@ -125,12 +126,17 @@ export const CronCreateTool = buildTool({
       effectiveDurable,
       getTeammateContext()?.agentId,
     )
-    // Enable the scheduler so the task fires in this session. The
-    // useScheduledTasks hook polls this flag and will start watching
-    // on the next tick. For durable: false tasks the file never changes
-    // — check() reads the session store directly — but the enable flag
-    // is still what starts the tick loop.
+    // Enable the scheduler so the task fires in this session, then start the
+    // timer-driven driver and reschedule it to the new task's next-due moment.
+    // start() is gated behind the enable flag (just set) and is idempotent;
+    // reschedule() re-arms the single sleep-until-next-due timer so this brand
+    // new task — which may be due sooner than anything already scheduled —
+    // preempts the current sleep instead of being missed. The driver never
+    // polls the model; it wakes only when a task is genuinely due.
     setScheduledTasksEnabled(true)
+    const scheduler = getCronScheduler()
+    scheduler.start()
+    void scheduler.reschedule()
     return {
       data: {
         id,
