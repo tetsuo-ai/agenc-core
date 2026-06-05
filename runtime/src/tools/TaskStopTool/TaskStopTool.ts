@@ -1,8 +1,8 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { z } from 'zod/v4'
 import type { TaskStateBase } from '../../tasks/Task.js'
+import type { TaskState } from '../../tasks/types.js'
 import { buildTool, type ToolDef } from '../Tool.js'
-import { stopTask } from '../../tasks/stopTask.js'
+import { stopTuiTask } from '../../tui/task-stop-actions.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { DESCRIPTION, TASK_STOP_TOOL_NAME } from './prompt.js'
@@ -104,25 +104,39 @@ export const TaskStopTool = buildTool({
   },
   renderToolUseMessage,
   renderToolResultMessage,
-  async call(
-    { task_id, shell_id },
-    { getAppState, setAppState, abortController },
-  ) {
+  async call({ task_id, shell_id }, { getAppState, setAppState }) {
     // Support both task_id and shell_id (deprecated KillShell compat)
     const id = task_id ?? shell_id
     if (!id) {
       throw new Error('Missing required parameter: task_id')
     }
-    const result = await stopTask(id, {
-      getAppState,
-      setAppState,
-    })
+    const task = getAppState().tasks?.[id] as TaskState | undefined
+    if (!task) {
+      throw new Error(`No task found with ID: ${id}`)
+    }
+    // Cancel through the same app-state stop dispatch the TUI uses
+    // (killTask / killAsyncAgent / requestTeammateShutdown by type). This is
+    // the correct path for tool-context tasks; the lifecycle-backed stopTask()
+    // helper is for the daemon coordinator, which owns a BackgroundTaskLifecycle.
+    const action = stopTuiTask(task, setAppState)
+    if (action === null) {
+      throw new Error(`Task ${id} is not running (status: ${task.status})`)
+    }
+    if (action === 'remote-unavailable') {
+      throw new Error(
+        `Task ${id} is a remote agent and cannot be stopped from this session`,
+      )
+    }
+    const command =
+      'command' in task && typeof task.command === 'string'
+        ? task.command
+        : task.description
     return {
       data: {
-        message: `Successfully stopped task: ${result.taskId} (${result.command})`,
-        task_id: result.taskId,
-        task_type: result.taskType,
-        command: result.command,
+        message: `Successfully stopped task: ${id} (${command})`,
+        task_id: id,
+        task_type: task.type,
+        command,
       },
     }
   },

@@ -343,6 +343,25 @@ export function updateAgentProgress(taskId: string, progress: AgentProgress, set
 }
 
 /**
+ * Update only the background-summarization summary for an agent task,
+ * preserving the rest of the progress. Counterpart to updateAgentProgress
+ * (which preserves the summary): the two write disjoint parts of `progress`
+ * so live progress updates and async summary updates don't clobber each other.
+ */
+export function updateAgentSummary(taskId: string, summary: string, setAppState: SetAppState): void {
+  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
+    if (task.status !== 'running') {
+      return task;
+    }
+    const base: AgentProgress = task.progress ?? { toolUseCount: 0, tokenCount: 0 };
+    return {
+      ...task,
+      progress: { ...base, summary }
+    };
+  });
+}
+
+/**
  * Complete an agent task with result.
  */
 export function completeAgentTask(result: AgentToolResult, setAppState: SetAppState): void {
