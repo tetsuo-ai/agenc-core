@@ -1,6 +1,4 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
-import * as React from 'react';
 import { buildTool, type ToolDef, toolMatchesName } from 'src/tools/Tool.js';
 import type { Message as MessageType, NormalizedUserMessage } from 'src/types/message.js';
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js';
@@ -10,7 +8,7 @@ import { enhanceSystemPromptWithEnvDetails, getSystemPrompt } from '../../consta
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js';
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js';
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
-import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
+import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateAgentSummary as updateAsyncAgentSummary, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 
 import { assembleToolPool } from '../../tools.js';
 import { asAgentId } from '../../types/ids.js';
@@ -21,6 +19,11 @@ import { logForDebugging } from 'src/utils/debug.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { AbortError, errorMessage, toError } from '../../utils/errors.js';
 import type { CacheSafeParams } from '../../utils/forkedAgent.js';
+// The summary API types cacheSafeParams via PromptSuggestion/runtime, a
+// structurally-divergent duplicate of CacheSafeParams (its SpeculationState has
+// drifted from the canonical tui one). The runtime value is the real, richer
+// app-state object and is valid for the fork; bridge the stale type boundary.
+import type { CacheSafeParams as SummaryCacheSafeParams } from '../../services/PromptSuggestion/runtime.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
 import { getAgentModel } from '../../utils/model/agent.js';
@@ -61,13 +64,19 @@ import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorM
 // purge. They are stubbed here as no-ops so the surrounding moved-source
 // code paths degrade silently. Real implementations land when AgenC ships
 // the equivalent backend.
-const checkRemoteAgentEligibility = async (..._args: unknown[]): Promise<{ eligible: false }> => ({ eligible: false });
+// Stub signatures match the real internal CCR API shapes the (dead, external-
+// build-eliminated) remote block below consumes, so the block still type-checks.
+const checkRemoteAgentEligibility = async (..._args: unknown[]): Promise<{ eligible: false; errors: readonly string[] }> => ({ eligible: false, errors: [] });
 const formatPreconditionError = (..._args: unknown[]): string => 'Remote agents are not available in this build.';
-const getRemoteTaskSessionUrl = (..._args: unknown[]): null => null;
-const registerRemoteAgentTask = (..._args: unknown[]): { agentTaskId: string; sessionUrl: null } => ({ agentTaskId: '', sessionUrl: null });
-const teleportToRemote = async (..._args: unknown[]): Promise<null> => null;
+const getRemoteTaskSessionUrl = (..._args: unknown[]): string => '';
+const registerRemoteAgentTask = (..._args: unknown[]): { taskId: string; sessionId: string } => ({ taskId: '', sessionId: '' });
+const teleportToRemote = async (..._args: unknown[]): Promise<{ id: string; title: string } | null> => null;
 // ---- end donor-purge stubs ----
-const proactiveModule = null;
+// Stub for the internal-only proactive module (always absent in this build).
+// Typed via an IIFE so the value isn't control-flow-narrowed to the `null`
+// literal, which would make the `?.isProactiveActive()` access below resolve
+// against `never`.
+const proactiveModule = ((): { isProactiveActive(): boolean } | null => null)();
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 // Progress display constants (for showing background hint)
@@ -107,6 +116,7 @@ const fullInputSchema = lazySchema(() => {
     mode: permissionModeSchema().optional().describe('Permission mode for spawned teammate (e.g., "plan" to require plan approval).')
   });
   return baseInputSchema().merge(multiAgentInputSchema).extend({
+    // @ts-expect-error TS2367 — "external" === 'ant' is a constant build guard kept verbatim for esbuild DCE of the internal-only remote isolation.
     isolation: ("external" === 'ant' ? z.enum(['worktree', 'remote']) : z.enum(['worktree'])).optional().describe("external" === 'ant' ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote CCR environment (always runs in background).' : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.'),
     cwd: z.string().optional().describe('Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent. Mutually exclusive with isolation: "worktree".')
   });
@@ -441,6 +451,7 @@ export const AgentTool = buildTool({
 
     // Remote isolation: delegate to CCR. Gated internal-only — the guard enables
     // dead code elimination of the entire block for external builds.
+    // @ts-expect-error TS2367 — "external" === 'ant' is a constant build guard kept verbatim for esbuild DCE of the internal-only remote block.
     if ("external" === 'ant' && effectiveIsolation === 'remote') {
       const eligibility = await checkRemoteAgentEligibility();
       if (!eligibility.eligible) {
@@ -452,7 +463,7 @@ export const AgentTool = buildTool({
         initialMessage: prompt,
         description,
         signal: toolUseContext.abortController.signal,
-        onBundleFail: msg => {
+        onBundleFail: (msg: string) => {
           bundleFailHint = msg;
         }
       });
@@ -569,7 +580,15 @@ export const AgentTool = buildTool({
       ...appState.toolPermissionContext,
       mode: selectedAgent.permissionMode ?? 'acceptEdits'
     };
-    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
+    // appState.toolPermissionContext and assembleToolPool's ToolPermissionContext
+    // are typed from two divergent permission-type modules (PermissionMode /
+    // WorkingDirectorySource duplicated in types/permissions.ts vs
+    // permissions/types.ts). The runtime object is the real permission context,
+    // valid for the pool; bridge the stale type boundary on the call.
+    const workerTools = assembleToolPool(
+      workerPermissionContext as Parameters<typeof assembleToolPool>[0],
+      appState.mcp.tools,
+    );
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
@@ -858,9 +877,14 @@ export const AgentTool = buildTool({
             agentId: syncAgentId
           },
           onCacheSafeParams: summaryTaskId && getSdkAgentProgressSummariesEnabled() ? (params: CacheSafeParams) => {
-            const {
-              stop
-            } = startAgentSummarization(summaryTaskId, syncAgentId, params, rootSetAppState);
+            const { stop } = startAgentSummarization({
+              taskId: summaryTaskId,
+              agentId: syncAgentId,
+              cacheSafeParams: params as unknown as SummaryCacheSafeParams,
+              getAgentTranscript: async () => ({ messages: agentMessages }),
+              updateAgentSummary: (id, summary) =>
+                updateAsyncAgentSummary(id, summary, rootSetAppState),
+            });
             stopForegroundSummarization = stop;
           } : undefined
         })[Symbol.asyncIterator]();
@@ -940,9 +964,14 @@ export const AgentTool = buildTool({
                         abortController: task.abortController
                       },
                       onCacheSafeParams: getSdkAgentProgressSummariesEnabled() ? (params: CacheSafeParams) => {
-                        const {
-                          stop
-                        } = startAgentSummarization(backgroundedTaskId, asAgentId(backgroundedTaskId), params, rootSetAppState);
+                        const { stop } = startAgentSummarization({
+                          taskId: backgroundedTaskId,
+                          agentId: asAgentId(backgroundedTaskId),
+                          cacheSafeParams: params as unknown as SummaryCacheSafeParams,
+                          getAgentTranscript: async () => ({ messages: agentMessages }),
+                          updateAgentSummary: (id, summary) =>
+                            updateAsyncAgentSummary(id, summary, rootSetAppState),
+                        });
                         stopBackgroundedSummarization = stop;
                       } : undefined
                     })) {
@@ -1268,6 +1297,7 @@ export const AgentTool = buildTool({
     // Only route through auto mode classifier when in auto mode
     // In all other modes, auto-approve sub-agent generation
     // Note: "external" === 'ant' guard enables dead code elimination for external builds
+    // @ts-expect-error TS2367 — constant build guard kept verbatim for DCE (see note above).
     if ("external" === 'ant' && appState.toolPermissionContext.mode === 'auto') {
       return {
         behavior: 'passthrough',

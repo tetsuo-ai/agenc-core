@@ -29,6 +29,7 @@ import {
   killAsyncAgent,
   type ProgressTracker,
   updateAgentProgress as updateAsyncAgentProgress,
+  updateAgentSummary as updateAsyncAgentSummary,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { asAgentId } from '../../types/ids.js'
@@ -37,6 +38,11 @@ import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { AbortError, errorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
+// The summary API types cacheSafeParams via PromptSuggestion/runtime, which
+// carries its own structurally-divergent duplicates of CacheSafeParams +
+// SpeculationState. The runtime value here is the real (richer) app-state
+// object and is valid for the fork; bridge the stale type boundary on the call.
+import type { CacheSafeParams as SummaryCacheSafeParams } from '../../services/PromptSuggestion/runtime.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   extractTextContent,
@@ -483,21 +489,17 @@ export async function runAsyncAgentLifecycle({
     )
     const onCacheSafeParams = enableSummarization
       ? (params: CacheSafeParams) => {
-          // LATENT BUG: startAgentSummarization was migrated to a single
-          // options-object API (StartAgentSummarizationOptions), but this call
-          // site (and AgentTool.tsx:866/948) still pass the old 4 positional
-          // args. At runtime the string taskId is received as `options`, so
-          // options.cacheSafeParams is undefined and summarization throws when
-          // enableSummarization is true. Left as-is per behavior-preservation:
-          // the correct fix needs getAgentTranscript/updateAgentSummary
-          // callbacks not in scope here and must be done across all 3 sites.
-          const { stop } = startAgentSummarization(
+          // Live transcript is the locally-accumulated agentMessages array
+          // (captured by reference, so the summarizer sees new messages as they
+          // stream); the summary is written back into the task's progress.
+          const { stop } = startAgentSummarization({
             taskId,
-            // @ts-expect-error -- incomplete API migration, see note above
-            asAgentId(taskId),
-            params,
-            rootSetAppState,
-          )
+            agentId: asAgentId(taskId),
+            cacheSafeParams: params as unknown as SummaryCacheSafeParams,
+            getAgentTranscript: async () => ({ messages: agentMessages }),
+            updateAgentSummary: (id, summary) =>
+              updateAsyncAgentSummary(id, summary, rootSetAppState),
+          })
           stopSummarization = stop
         }
       : undefined
