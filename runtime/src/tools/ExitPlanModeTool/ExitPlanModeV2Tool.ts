@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { writeFile } from 'fs/promises'
 import { z } from 'zod/v4'
@@ -210,7 +209,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     }
     return { result: true }
   },
-  async checkPermissions(input, context) {
+  async checkPermissions(input, _context) {
     // For ALL teammates, bypass the permission UI to avoid sending permission_request
     // The call() method handles the appropriate behavior:
     // - If isPlanModeRequired(): sends plan_approval_request to leader

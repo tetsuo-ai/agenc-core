@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useContext } from 'react';

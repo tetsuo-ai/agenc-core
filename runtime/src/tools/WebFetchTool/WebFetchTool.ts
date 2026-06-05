@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../Tool.js'
 import type { PermissionUpdate } from '../../types/permissions.js'

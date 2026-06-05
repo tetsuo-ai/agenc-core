@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { lstat, realpath } from 'fs/promises'
 import { dirname, join, resolve, sep } from 'path'

@@ -1,11 +1,10 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { useIsInsideModal } from '../../context/modalContext';
+import { useIsInsideModal } from '../../context/modalContext.js';
 import { Box } from '../../ink.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Divider } from './Divider';
+import { Divider } from './Divider.js';
 type PaneProps = {
   children: React.ReactNode;
   /**
@@ -32,7 +31,7 @@ type PaneProps = {
  *   <Tabs title="Sandbox:">...</Tabs>
  * </Pane>
  */
-export function Pane(t0) {
+export function Pane(t0: PaneProps) {
   const $ = _c(9);
   const {
     children,

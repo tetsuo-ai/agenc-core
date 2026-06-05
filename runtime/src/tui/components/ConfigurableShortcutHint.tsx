@@ -1,10 +1,8 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
 import type { KeybindingAction, KeybindingContextName } from '../keybindings/types.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
+import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 type Props = {
   /** The keybinding action (e.g., 'app:toggleTranscript') */
   action: KeybindingAction;
@@ -32,7 +30,7 @@ type Props = {
  *   description="expand"
  * />
  */
-export function ConfigurableShortcutHint(t0) {
+export function ConfigurableShortcutHint(t0: Props) {
   const $ = _c(5);
   const {
     action,

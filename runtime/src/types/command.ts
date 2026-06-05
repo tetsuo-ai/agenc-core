@@ -1,8 +1,7 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { UUID } from 'crypto'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
-import type { CompactionResult } from '../services/compact/compact.js'
+import type { CompactionResult } from '../services/compact/types.js'
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js'
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { EffortValue } from '../utils/effort.js'

@@ -1,7 +1,7 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   BetaContentBlock,
   BetaContentBlockParam,
+  BetaContextManagementConfig,
   BetaImageBlockParam,
   BetaJSONOutputFormat,
   BetaMessage,
@@ -14,6 +14,7 @@ import type {
   BetaToolChoiceAuto,
   BetaToolChoiceTool,
   BetaToolResultBlockParam,
+  BetaToolResultContentBlockParam,
   BetaToolUnion,
   BetaUsage,
   BetaMessageParam as MessageParam,
@@ -65,6 +66,8 @@ import {
 import { getOrCreateUserID } from '../../utils/config.js'
 import {
   CAPPED_DEFAULT_MAX_TOKENS,
+  COMPACT_MAX_OUTPUT_TOKENS,
+  getContextWindowForModel,
   getModelMaxOutputTokens,
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
@@ -99,7 +102,10 @@ import {
   extractQuotaStatusFromError,
   extractQuotaStatusFromHeaders,
 } from '../agencAiLimits.js' // branding-scan: allow existing upstream provider-limit module path
-import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
+import {
+  type ApiMicrocompactConfig,
+  getAPIContextManagement,
+} from '../compact/apiMicrocompact.js'
 import * as autoModeState from '../../utils/permissions/autoModeState.js'
 import { feature } from 'bun:bundle'
 
@@ -120,6 +126,7 @@ import {
   getLastApiCompletionTimestamp,
   getPromptCache1hAllowlist,
   getPromptCache1hEligible,
+  getSdkBetas,
   getSessionId,
   getThinkingClearLatched,
   setAfkModeHeaderLatched,
@@ -142,7 +149,7 @@ import {
   TASK_BUDGETS_BETA_HEADER,
 } from 'src/constants/betas.js'
 import type { QuerySource } from 'src/constants/querySource.js'
-import type { Notification } from 'src/context/notifications.js'
+import type { Notification } from 'src/tui/context/notifications.js'
 import { addToTotalSessionCost } from 'src/cost/tracker.js'
 import { recordUsageCacheStats } from 'src/services/api/cacheStatsTracker.js'
 import type { AgentId } from 'src/types/ids.js'
@@ -166,7 +173,11 @@ import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/agencInChrome/prompt.
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
-import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
+import {
+  type EffortLevel,
+  type EffortValue,
+  modelSupportsEffort,
+} from 'src/utils/effort.js'
 import {
   isFastModeAvailable,
   isFastModeCooldown,
@@ -596,14 +607,16 @@ function userMessageToMessageParam(
     } else {
       return {
         role: 'user',
-        content: message.message.content.map((_, i) => ({
-          ..._,
-          ...(i === message.message.content.length - 1
-            ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
-              : {}
-            : {}),
-        })),
+        content: message.message.content.map(
+          (_: BetaContentBlockParam, i: number) => ({
+            ..._,
+            ...(i === message.message.content.length - 1
+              ? enablePromptCaching
+                ? { cache_control: getCacheControl({ querySource }) }
+                : {}
+              : {}),
+          }),
+        ),
       }
     }
   }
@@ -641,17 +654,19 @@ function assistantMessageToMessageParam(
     } else {
       return {
         role: 'assistant',
-        content: message.message.content.map((_, i) => ({
-          ..._,
-          ...(i === message.message.content.length - 1 &&
-          _.type !== 'thinking' &&
-          _.type !== 'redacted_thinking' &&
-          (feature('CONNECTOR_TEXT') ? !isConnectorTextBlock(_) : true)
-            ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
-              : {}
-            : {}),
-        })),
+        content: message.message.content.map(
+          (_: BetaContentBlockParam, i: number) => ({
+            ..._,
+            ...(i === message.message.content.length - 1 &&
+            _.type !== 'thinking' &&
+            _.type !== 'redacted_thinking' &&
+            (feature('CONNECTOR_TEXT') ? !isConnectorTextBlock(_) : true)
+              ? enablePromptCaching
+                ? { cache_control: getCacheControl({ querySource }) }
+                : {}
+              : {}),
+          }),
+        ),
       }
     }
   }
@@ -827,7 +842,7 @@ async function* executeNonStreamingRequest(
    * Request ID of the failed streaming attempt this fallback is recovering
    * from. Emitted in tengu_nonstreaming_fallback_error for funnel correlation.
    */
-  originatingRequestId?: string | null,
+  _originatingRequestId?: string | null,
 ): AsyncGenerator<SystemAPIErrorMessage, BetaMessage> {
   const fallbackTimeoutMs = getNonstreamingFallbackTimeoutMs()
   const generator = withRetry(
@@ -917,7 +932,7 @@ function getPreviousRequestIdFromMessages(
 }
 
 function isMedia(
-  block: BetaContentBlockParam,
+  block: BetaContentBlockParam | BetaToolResultContentBlockParam,
 ): block is BetaImageBlockParam | BetaRequestDocumentBlock {
   return block.type === 'image' || block.type === 'document'
 }
@@ -1160,7 +1175,16 @@ async function* queryModel(
       getCachedMCConfig,
     } = await import('../compact/cachedMicrocompact.js')
     const betas = await import('src/constants/betas.js')
-    cacheEditingBetaHeader = betas.CACHE_EDITING_BETA_HEADER
+    // NOTE: CACHE_EDITING_BETA_HEADER is an internal-only constant that is not
+    // exported by the open-build betas module, so this resolves to undefined at
+    // runtime (and `cacheEditingBetaHeader` stays ''). It is only ever read when
+    // `cacheEditingHeaderLatched` is set, which requires `cachedMCEnabled`, which
+    // is always false here (isCachedMicrocompactEnabled/isModelSupportedForCacheEditing
+    // are stubbed to return false) — so the missing constant is inert. Typed as a
+    // dynamic lookup to reflect that the property may be absent.
+    cacheEditingBetaHeader =
+      (betas as unknown as Record<string, string | undefined>)
+        .CACHE_EDITING_BETA_HEADER ?? ''
     const featureEnabled = isCachedMicrocompactEnabled()
     const modelSupported = isModelSupportedForCacheEditing(options.model)
     cachedMCEnabled = featureEnabled && modelSupported
@@ -1235,8 +1259,9 @@ async function* queryModel(
       cacheWeight: 0.4,
       freshWeight: 0.6,
       maxTotalTokens: Math.min(
-        getContextWindowForModel(model, getSdkBetas()) - COMPACT_MAX_OUTPUT_TOKENS,
-        200000
+        getContextWindowForModel(resolvedModel, getSdkBetas()) -
+          COMPACT_MAX_OUTPUT_TOKENS,
+        200000,
       ),
     })
     messagesForAPI = strategyResult.selectedMessages
@@ -1483,8 +1508,16 @@ async function* queryModel(
   // Consume pending cache edits ONCE before paramsFromContext is defined.
   // paramsFromContext is called multiple times (logging, retries), so consuming
   // inside it would cause the first call to steal edits from subsequent calls.
-  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
-  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
+  // NOTE: the open-build consumePendingCacheEdits/getPinnedCacheEdits are stubs
+  // that return empty arrays; cachedMCEnabled is always false in this build, so
+  // both resolve to null/[] at runtime. The casts only retype the (unreachable)
+  // stub branch to what addCacheBreakpoints expects without changing values.
+  const consumedCacheEdits: CachedMCEditsBlock | null = cachedMCEnabled
+    ? (consumePendingCacheEdits() as unknown as CachedMCEditsBlock | null)
+    : null
+  const consumedPinnedEdits: CachedMCPinnedEdits[] = cachedMCEnabled
+    ? (getPinnedCacheEdits() as unknown as CachedMCPinnedEdits[])
+    : []
 
   // Capture the betas sent in the last API request, including the ones that
   // were dynamically added, so we can log and send it to telemetry.
@@ -1574,12 +1607,17 @@ async function* queryModel(
       }
     }
 
-    // Get API context management strategies if enabled
+    // Get API context management strategies if enabled.
+    // NOTE: the open-build getAPIContextManagement only reads
+    // clearThinking/clearToolResults/clearToolUses (and falls back to env vars);
+    // the hasThinking/isRedactThinkingActive/clearAllThinking keys passed here are
+    // from the richer upstream signature and are inert in this build. Cast through
+    // unknown to pass the argument verbatim without changing runtime behavior.
     const contextManagement = getAPIContextManagement({
       hasThinking,
       isRedactThinkingActive: betasParams.includes(REDACT_THINKING_BETA_HEADER),
       clearAllThinking: thinkingClearLatched,
-    })
+    } as unknown as ApiMicrocompactConfig)
 
     const enablePromptCaching =
       options.enablePromptCaching ?? getPromptCachingEnabled(retryContext.model)
@@ -1669,7 +1707,12 @@ async function* queryModel(
       ...(contextManagement &&
         useBetas &&
         betasParams.includes(CONTEXT_MANAGEMENT_BETA_HEADER) && {
-          context_management: contextManagement,
+          // The open-build getAPIContextManagement returns the simplified
+          // ApiMicrocompactConfig wire shape, which this build sends verbatim;
+          // the SDK models context_management as BetaContextManagementConfig.
+          // Cast through unknown to keep the value while satisfying the param type.
+          context_management:
+            contextManagement as unknown as BetaContextManagementConfig,
         }),
       ...extraBodyParams,
       ...(Object.keys(outputConfig).length > 0 && {
@@ -1691,7 +1734,13 @@ async function* queryModel(
     const logMessagesLength = queryParams.messages.length
     const logBetas = useBetas ? (queryParams.betas ?? []) : []
     const logThinkingType = queryParams.thinking?.type ?? 'disabled'
-    const logEffortValue = queryParams.output_config?.effort
+    // output_config.effort widens to include 'xhigh' (SDK), which is outside
+    // logAPIQuery's EffortLevel param; the value is only logged (discarded), so
+    // cast to the narrower union without changing the value.
+    const logEffortValue = queryParams.output_config?.effort as
+      | EffortLevel
+      | null
+      | undefined
     void options.getToolPermissionContext().then(permissionContext => {
       logAPIQuery({
         model: options.model,
@@ -1722,7 +1771,6 @@ async function* queryModel(
   let responseHeaders: globalThis.Headers | undefined = undefined
   let research: unknown = undefined
   let isFastModeRequest = isFastMode // Keep separate state as it may change if falling back
-  let isAdvisorInProgress = false
 
   try {
     queryCheckpoint('query_client_creation_start')
@@ -1815,7 +1863,6 @@ async function* queryModel(
     contentBlocks.length = 0
     usage = EMPTY_USAGE
     stopReason = null
-    isAdvisorInProgress = false
 
     // Streaming idle timeout watchdog: abort the stream if no chunks arrive
     // for STREAM_IDLE_TIMEOUT_MS. Unlike the stall detection below (which only
@@ -1940,7 +1987,6 @@ async function* queryModel(
                   input: '' as unknown as { [key: string]: unknown },
                 }
                 if ((part.content_block.name as string) === 'advisor') {
-                  isAdvisorInProgress = true
                   logForDebugging(`[AdvisorTool] Advisor tool called`)
                 }
                 break
@@ -1972,7 +2018,6 @@ async function* queryModel(
                 if (
                   (part.content_block.type as string) === 'advisor_tool_result'
                 ) {
-                  isAdvisorInProgress = false
                   logForDebugging(`[AdvisorTool] Advisor tool result received`)
                 }
                 break

@@ -1,5 +1,5 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG, WORKTREE_BRANCH_TAG, WORKTREE_PATH_TAG, WORKTREE_TAG } from '../../constants/xml.js';
+import type { SetAppState as SetSpeculationAppState } from '../../services/PromptSuggestion/runtime.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import type { AppState } from '../../tui/state/AppState.js';
 import type { SetAppState, Task, TaskStateBase } from '../Task.js';
@@ -228,7 +228,11 @@ export function enqueueAgentNotification({
   // Abort any active speculation — background task state changed, so speculated
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
-  abortSpeculation(setAppState);
+  // abortSpeculation operates on the narrower PromptSuggestionAppState slice;
+  // the full AppState is a structural superset (it carries `speculation`), so the
+  // updater is runtime-safe. The cast only reconciles the two SetAppState aliases,
+  // which differ by function-parameter contravariance, not by behavior.
+  abortSpeculation(setAppState as unknown as SetSpeculationAppState);
   const summary = status === 'completed' ? `Agent "${description}" completed` : status === 'failed' ? `Agent "${description}" failed: ${error || 'Unknown error'}` : `Agent "${description}" was stopped`;
   const outputPath = getTaskOutputPath(taskId);
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';

@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { extractHeredocs } from '../../utils/bash/heredoc.js'
 import { ParsedCommand } from '../../utils/bash/ParsedCommand.js'
 import {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { type as osType, version as osVersion, release as osRelease } from 'os'
@@ -19,7 +18,11 @@ import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import type { Tools } from '../tools/Tool.js'
-import type { Command } from '../types/command.js'
+// Use the Command type from ../commands.js (the module that produces the
+// skillToolCommands value via getSkillToolCommands), not the distinct
+// ../types/command.js Command — the two definitions diverged and only .length
+// is read here.
+import type { Command } from '../commands.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import {
   getCanonicalName,
@@ -81,17 +84,27 @@ const briefToolModule =
   feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (require('../tools/BriefTool/BriefTool.js') as typeof import('../tools/BriefTool/BriefTool.js'))
     : null
+// Donor-purge: ../tools/DiscoverSkillsTool/* and ../services/skillSearch/*
+// were deleted (DCE'd in external builds). The require paths are cast `as
+// string` so TS doesn't statically resolve the now-missing modules, matching
+// the established pattern in src/utils/attachments.ts.
 const DISCOVER_SKILLS_TOOL_NAME: string | null = feature(
   'EXPERIMENTAL_SKILL_SEARCH',
 )
   ? (
-      require('../tools/DiscoverSkillsTool/prompt.js') as typeof import('../tools/DiscoverSkillsTool/prompt.js')
+      require('../tools/DiscoverSkillsTool/prompt.js' as string) as {
+        DISCOVER_SKILLS_TOOL_NAME: string
+      }
     ).DISCOVER_SKILLS_TOOL_NAME
   : null
 // Capture the module (not .isSkillSearchEnabled directly) so spyOn() in tests
 // patches what we actually call — a captured function ref would point past the spy.
-const skillSearchFeatureCheck = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? (require('../services/skillSearch/featureCheck.js') as typeof import('../services/skillSearch/featureCheck.js'))
+const skillSearchFeatureCheck: {
+  isSkillSearchEnabled: () => boolean
+} | null = feature('EXPERIMENTAL_SKILL_SEARCH')
+  ? (require('../services/skillSearch/featureCheck.js' as string) as {
+      isSkillSearchEnabled: () => boolean
+    })
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 import type { OutputStyleConfig } from './outputStyles.js'
@@ -822,7 +835,17 @@ function getFunctionResultClearingSection(model: string): string | null {
   if (!feature('CACHED_MICROCOMPACT') || !getCachedMCConfigForFRC) {
     return null
   }
-  const config = getCachedMCConfigForFRC()
+  // The disabled-surface stub (cachedMicrocompact.ts) returns a narrowed
+  // { enabled: false; supportedModels: [] }, but the real (donor) build returns
+  // a richer config carrying systemPromptSuggestSummaries/keepRecent. Type the
+  // binding to the full shape this section reads; the early returns below keep
+  // behavior identical for the stub (enabled: false short-circuits first).
+  const config = getCachedMCConfigForFRC() as {
+    enabled: boolean
+    supportedModels?: readonly string[]
+    systemPromptSuggestSummaries?: boolean
+    keepRecent?: number
+  } | null
   if (!config) {
     // External/stub builds return null from getCachedMCConfig — abort the
     // section rather than trying to read .supportedModels off null.

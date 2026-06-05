@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import ProviderSdk, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
@@ -102,7 +101,7 @@ export async function getproviderClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
   providerOverride?: { model: string; baseURL: string; apiKey: string }
-}): Promise<provider> {
+}): Promise<ProviderSdk> {
   const containerId = process.env.AGENC_CONTAINER_ID
   const remoteSessionId = process.env.AGENC_REMOTE_SESSION_ID
   const clientApp = process.env.AGENC_AGENT_SDK_CLIENT_APP
@@ -165,7 +164,7 @@ export async function getproviderClient({
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
       providerOverride,
-    }) as unknown as provider
+    }) as unknown as ProviderSdk
   }
   // GitHub provider in native provider API mode: send requests in provider
   // format so cache_control blocks are honoured and prompt caching works.
@@ -178,7 +177,7 @@ export async function getproviderClient({
       'https://api.githubcopilot.com'
     const githubToken =
       process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
-    const nativeArgs: ConstructorParameters<typeof provider>[0] = {
+    const nativeArgs: ConstructorParameters<typeof ProviderSdk>[0] = {
       ...ARGS,
       baseURL: githubBaseUrl,
       authToken: githubToken,
@@ -205,10 +204,10 @@ export async function getproviderClient({
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
       selectedProvider: resolveShimSelectedProvider(apiProvider),
-    }) as unknown as provider
+    }) as unknown as ProviderSdk
   }
   // Determine authentication method based on available tokens
-  const clientConfig: ConstructorParameters<typeof provider>[0] = {
+  const clientConfig: ConstructorParameters<typeof ProviderSdk>[0] = {
     apiKey: isAgenCAISubscriber() ? null : apiKey || getproviderApiKey(),
     authToken: isAgenCAISubscriber()
       ? getAgenCAIOAuthTokens()?.accessToken

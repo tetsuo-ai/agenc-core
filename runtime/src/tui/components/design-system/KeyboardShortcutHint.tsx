@@ -1,7 +1,5 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import Text from '../../ink/components/Text.js';
 type Props = {
   /** The key or chord to display (e.g., "ctrl+o", "Enter", "↑/↓") */
@@ -37,7 +35,7 @@ type Props = {
  *   </Byline>
  * </Text>
  */
-export function KeyboardShortcutHint(t0) {
+export function KeyboardShortcutHint(t0: Props) {
   const $ = _c(9);
   const {
     shortcut,

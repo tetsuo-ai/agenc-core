@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { getCwd } from "../../../utils/cwd.js";

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { existsSync, readFileSync } from 'node:fs'
 import { isIP } from 'node:net'
@@ -484,7 +483,6 @@ export function normalizeGithubModelsApiModel(requestedModel: string): string {
 }
 
 const GITHUB_COPILOT_BASE_URL = 'https://api.githubcopilot.com'
-const GITHUB_MODELS_BASE_URL = 'https://models.github.ai/inference'
 
 export function getGithubEndpointType(
   baseUrl: string | undefined,

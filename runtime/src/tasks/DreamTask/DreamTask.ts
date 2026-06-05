@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // Background task entry for auto-dream (memory consolidation subagent).
 // Makes the otherwise-invisible forked agent visible in the footer pill and
 // Shift+Down dialog. The dream agent itself is unchanged — this is pure UI
@@ -6,7 +5,29 @@
 import { rollbackConsolidationLock } from '../../services/autoDream/consolidationLock.js'
 import type { SetAppState, Task, TaskStateBase } from '../Task.js'
 import { createTaskStateBase, generateTaskId } from '../Task.js'
-import { registerTask, updateTaskState } from '../../utils/task/framework.js'
+import {
+  registerTask as registerTaskBase,
+  updateTaskState as updateTaskStateBase,
+} from '../../utils/task/framework.js'
+
+// Seam: the 'dream' task type is deliberately NOT a member of the `TaskState`
+// union in tasks/types.ts (see tasks/registry.ts — the dream registry "is not
+// shipped by the live runtime"), but dream state IS stored in the same
+// AppState.tasks record and driven through the shared framework helpers. The
+// framework API is generically constrained to that union, so DreamTaskState
+// (type: 'dream') can't satisfy it directly. These thin adapters re-type the
+// helpers for the dream task without changing any runtime behavior —
+// framework already performs the equivalent internal cast when reading the
+// task back out of AppState.
+const registerTask = registerTaskBase as unknown as (
+  task: DreamTaskState,
+  setAppState: SetAppState,
+) => void
+const updateTaskState = updateTaskStateBase as (
+  taskId: string,
+  setAppState: SetAppState,
+  updater: (task: DreamTaskState) => DreamTaskState,
+) => void
 
 // Keep only the N most recent turns for live display.
 const MAX_TURNS = 30
@@ -79,7 +100,7 @@ export function addDreamTurn(
   touchedPaths: string[],
   setAppState: SetAppState,
 ): void {
-  updateTaskState<DreamTaskState>(taskId, setAppState, task => {
+  updateTaskState(taskId, setAppState, task => {
     const seen = new Set(task.filesTouched)
     const newTouched = touchedPaths.filter(p => !seen.has(p) && seen.add(p))
     // Skip the update entirely if the turn is empty AND nothing new was
@@ -110,7 +131,7 @@ export function completeDreamTask(
   // notified: true immediately — dream has no model-facing notification path
   // (it's UI-only), and eviction requires terminal + notified. The inline
   // appendSystemMessage completion note IS the user surface.
-  updateTaskState<DreamTaskState>(taskId, setAppState, task => ({
+  updateTaskState(taskId, setAppState, task => ({
     ...task,
     status: 'completed',
     endTime: Date.now(),
@@ -120,7 +141,7 @@ export function completeDreamTask(
 }
 
 export function failDreamTask(taskId: string, setAppState: SetAppState): void {
-  updateTaskState<DreamTaskState>(taskId, setAppState, task => ({
+  updateTaskState(taskId, setAppState, task => ({
     ...task,
     status: 'failed',
     endTime: Date.now(),
@@ -133,7 +154,7 @@ export const DreamTask: Task = {
   type: 'dream',
   async kill(taskId, setAppState) {
     let priorMtime: number | undefined
-    updateTaskState<DreamTaskState>(taskId, setAppState, task => {
+    updateTaskState(taskId, setAppState, task => {
       if (task.status !== 'running') return task
       task.abortController?.abort()
       priorMtime = task.priorMtime

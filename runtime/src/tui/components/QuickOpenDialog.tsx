@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import * as path from 'path';
 import * as React from 'react';

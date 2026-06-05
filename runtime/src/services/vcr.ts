@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
@@ -30,59 +29,6 @@ function shouldUseVCR(): boolean {
   }
 
   return false
-}
-
-/**
- * Generic fixture management helper
- * Handles caching, reading, writing fixtures for any data type
- */
-async function withFixture<T>(
-  input: unknown,
-  fixtureName: string,
-  f: () => Promise<T>,
-): Promise<T> {
-  if (!shouldUseVCR()) {
-    return await f()
-  }
-
-  // Create hash of input for fixture filename
-  const hash = createHash('sha1')
-    .update(jsonStringify(input))
-    .digest('hex')
-    .slice(0, 12)
-  const filename = join(
-    process.env.AGENC_TEST_FIXTURES_ROOT ?? getCwd(),
-    `fixtures/${fixtureName}-${hash}.json`,
-  )
-
-  // Fetch cached fixture
-  try {
-    const cached = jsonParse(
-      await readFile(filename, { encoding: 'utf8' }),
-    ) as T
-    return cached
-  } catch (e: unknown) {
-    const code = getErrnoCode(e)
-    if (code !== 'ENOENT') {
-      throw e
-    }
-  }
-
-  if ((env.isCI || process.env.CI) && !isEnvTruthy(process.env.VCR_RECORD)) {
-    throw new Error(
-      `Fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then commit the result.`,
-    )
-  }
-
-  // Create & write new fixture
-  const result = await f()
-
-  await mkdir(dirname(filename), { recursive: true })
-  await writeFile(filename, jsonStringify(result, null, 2), {
-    encoding: 'utf8',
-  })
-
-  return result
 }
 
 export async function withVCR(
@@ -180,7 +126,7 @@ function mapMessages(
     if (typeof _ === 'string') {
       return f(_)
     }
-    return _.map(_ => {
+    return _.map((_: any) => {
       switch (_.type) {
         case 'tool_result':
           if (typeof _.content === 'string') {
@@ -189,7 +135,7 @@ function mapMessages(
           if (Array.isArray(_.content)) {
             return {
               ..._,
-              content: _.content.map(_ => {
+              content: _.content.map((_: any) => {
                 switch (_.type) {
                   case 'text':
                     return { ..._, text: f(_.text) }
@@ -252,7 +198,7 @@ function mapAssistantMessage(
     message: {
       ...message.message,
       content: message.message.content
-        .map(_ => {
+        .map((_: any) => {
           switch (_.type) {
             case 'text':
               return {

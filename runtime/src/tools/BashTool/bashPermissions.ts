@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { z } from 'zod/v4'
 import type { ToolPermissionContext, ToolUseContext } from '../Tool.js'
@@ -59,7 +58,6 @@ import {
 } from '../../utils/permissions/shellRuleMatching.js'
 import { getPlatform } from '../../utils/platform.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 import { BashTool } from './BashTool.js'
 import { checkCommandOperatorPermissions } from './bashCommandHelpers.js'
@@ -582,92 +580,6 @@ export function stripSafeWrappers(command: string): string {
   }
 
   return stripped.trim()
-}
-
-// SECURITY: allowlist for timeout flag VALUES (signals are TERM/KILL/9,
-// durations are 5/5s/10.5). Rejects $ ( ) ` | ; & and newlines that
-// previously matched via [^ \t]+ — `timeout -k$(id) 10 ls` must NOT strip.
-const TIMEOUT_FLAG_VALUE_RE = /^[A-Za-z0-9_.+-]+$/
-
-/**
- * Parse timeout's GNU flags (long + short, fused + space-separated) and
- * return the argv index of the DURATION token, or -1 if flags are unparseable.
- * Enumerates: --foreground/--preserve-status/--verbose (no value),
- * --kill-after/--signal (value, both =fused and space-separated), -v (no
- * value), -k/-s (value, both fused and space-separated).
- *
- * Extracted from stripWrappersFromArgv to keep bashToolHasPermission under
- * Bun's feature() DCE complexity threshold — inlining this breaks
- * feature('BASH_CLASSIFIER') evaluation in classifier tests.
- */
-function skipTimeoutFlags(a: readonly string[]): number {
-  let i = 1
-  while (i < a.length) {
-    const arg = a[i]!
-    const next = a[i + 1]
-    if (
-      arg === '--foreground' ||
-      arg === '--preserve-status' ||
-      arg === '--verbose'
-    )
-      i++
-    else if (/^--(?:kill-after|signal)=[A-Za-z0-9_.+-]+$/.test(arg)) i++
-    else if (
-      (arg === '--kill-after' || arg === '--signal') &&
-      next &&
-      TIMEOUT_FLAG_VALUE_RE.test(next)
-    )
-      i += 2
-    else if (arg === '--') {
-      i++
-      break
-    } // end-of-options marker
-    else if (arg.startsWith('--')) return -1
-    else if (arg === '-v') i++
-    else if (
-      (arg === '-k' || arg === '-s') &&
-      next &&
-      TIMEOUT_FLAG_VALUE_RE.test(next)
-    )
-      i += 2
-    else if (/^-[ks][A-Za-z0-9_.+-]+$/.test(arg)) i++
-    else if (arg.startsWith('-')) return -1
-    else break
-  }
-  return i
-}
-
-/**
- * Argv-level counterpart to stripSafeWrappers. Strips the same wrapper
- * commands (timeout, time, nice, nohup) from AST-derived argv. Env vars
- * are already separated into SimpleCommand.envVars so no env-var stripping.
- *
- * KEEP IN SYNC with SAFE_WRAPPER_PATTERNS above — if you add a wrapper
- * there, add it here too.
- */
-function stripWrappersFromArgv(argv: string[]): string[] {
-  // SECURITY: Consume optional `--` after wrapper options, matching what the
-  // wrapper does. Otherwise `['nohup','--','rm','--','-/../foo']` yields `--`
-  // as baseCmd and skips path validation. See SAFE_WRAPPER_PATTERNS comment.
-  let a = argv
-  for (;;) {
-    if (a[0] === 'time' || a[0] === 'nohup') {
-      a = a.slice(a[1] === '--' ? 2 : 1)
-    } else if (a[0] === 'timeout') {
-      const i = skipTimeoutFlags(a)
-      if (i < 0 || !a[i] || !/^\d+(?:\.\d+)?[smhd]?$/.test(a[i]!)) return a
-      a = a.slice(i + 1)
-    } else if (
-      a[0] === 'nice' &&
-      a[1] === '-n' &&
-      a[2] &&
-      /^-?\d+$/.test(a[2])
-    ) {
-      a = a.slice(a[3] === '--' ? 4 : 3)
-    } else {
-      return a
-    }
-  }
 }
 
 /**

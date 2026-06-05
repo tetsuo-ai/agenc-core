@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import { randomUUID, type UUID } from 'crypto';
 import figures from 'figures';

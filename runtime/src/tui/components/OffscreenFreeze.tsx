@@ -1,9 +1,8 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useContext, useRef } from 'react';
 import { useTerminalViewport } from '../ink/hooks/use-terminal-viewport.js';
 import { Box } from '../ink.js';
-import { InVirtualListContext } from './messageActions';
+import { InVirtualListContext } from './messageActions.js';
 type Props = {
   children: React.ReactNode;
 };

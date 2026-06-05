@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Main entrypoint for AgenC Agent SDK types.
  *
@@ -39,26 +38,9 @@ import type {
   SDKSessionInfo,
   SDKUserMessage,
 } from './sdk/coreTypes.js'
-// Import types needed for function signatures
-import type {
-  AnyZodRawShape,
-  ForkSessionOptions,
-  ForkSessionResult,
-  GetSessionInfoOptions,
-  GetSessionMessagesOptions,
-  InferShape,
-  InternalOptions,
-  InternalQuery,
-  ListSessionsOptions,
-  McpSdkServerConfigWithInstance,
-  Options,
-  Query,
-  SDKSession,
-  SDKSessionOptions,
-  SdkMcpToolDefinition,
-  SessionMessage,
-  SessionMutationOptions,
-} from './sdk/runtimeTypes.js'
+// Types needed for the function signatures below are declared locally as stub
+// aliases in the "Stub re-exports" block at the bottom of this file (they are
+// not exported from ./sdk/runtimeTypes.js in this open-repo snapshot).
 
 export function tool<Schema extends AnyZodRawShape>(
   _name: string,
@@ -481,10 +463,12 @@ export type RewindFilesResult = any
 export type SDKAssistantMessage = any
 export type SDKAssistantMessageError = any
 export type SDKCompactBoundaryMessage = any
-export type SdkMcpToolDefinition = any
+export type SdkMcpToolDefinition<_Schema = any> = any
 export type SDKPartialAssistantMessage = any
 export type SDKPermissionDenial = any
 export type SDKRateLimitInfo = any
+export type SDKSession = any
+export type SDKSessionOptions = any
 export type SDKStatus = any
 export type SDKStatusMessage = any
 export type SDKSystemMessage = any

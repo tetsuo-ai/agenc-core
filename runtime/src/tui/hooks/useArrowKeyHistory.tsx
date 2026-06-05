@@ -1,14 +1,13 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import React, { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { getModeFromInput } from '../components/PromptInput/inputModes.js';
 import { useNotifications } from '../context/notifications.js';
-import { ConfigurableShortcutHint } from '../components/ConfigurableShortcutHint';
+import { ConfigurableShortcutHint } from '../components/ConfigurableShortcutHint.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT } from '../components/PromptInput/Notifications.js';
 import { getHistory } from '../history/history.js';
 import { Text } from '../ink.js';
-import type { PromptInputMode } from '../../types/textInputTypes';
-import type { HistoryEntry, PastedContent } from '../../utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PromptInputMode } from '../../types/textInputTypes.js';
+import type { HistoryEntry, PastedContent } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export type HistoryMode = PromptInputMode;
 
 // Load history entries in chunks to reduce disk reads on rapid keypresses

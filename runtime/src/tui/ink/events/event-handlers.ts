@@ -1,10 +1,22 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ClickEvent } from './click-event.js'
 import type { FocusEvent } from './focus-event.js'
 import type { KeyboardEvent } from './keyboard-event.js'
-import type { PasteEvent } from './paste-event.js'
-import type { ResizeEvent } from './resize-event.js'
+
+/**
+ * Paste event payload. Upstream references this type via the dispatcher's
+ * 'paste' mapping but never ships a declaration (the donor port dropped the
+ * `paste-event.ts` source as unreachable). The structural shape mirrors the
+ * base `Event` plus the pasted text payload.
+ */
+type PasteEvent = { readonly type: 'paste'; readonly data: string }
+
+/**
+ * Resize event payload. Like PasteEvent, the dispatcher maps a 'resize'
+ * event but the `resize-event.ts` source was dropped as unreachable. Shape
+ * mirrors the base `Event` plus the new terminal dimensions.
+ */
+type ResizeEvent = { readonly type: 'resize'; readonly columns: number; readonly rows: number }
 
 type KeyboardEventHandler = (event: KeyboardEvent) => void
 type FocusEventHandler = (event: FocusEvent) => void

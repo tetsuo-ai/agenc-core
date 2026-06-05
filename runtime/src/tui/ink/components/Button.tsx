@@ -1,7 +1,6 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { type Ref, useCallback, useEffect, useRef, useState } from 'react';
+import React, { type Ref, useEffect, useRef, useState } from 'react';
 import type { Except } from 'type-fest';
 import type { DOMElement } from '../dom.js';
 import type { ClickEvent } from '../events/click-event.js';
@@ -38,7 +37,7 @@ export type Props = Except<Styles, 'textWrap'> & {
    */
   children: ((state: ButtonState) => React.ReactNode) | React.ReactNode;
 };
-function Button(t0) {
+function Button(t0: Props) {
   const $ = _c(30);
   let autoFocus;
   let children;
@@ -74,9 +73,9 @@ function Button(t0) {
   const [isFocused, setIsFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
-  const activeTimer = useRef(null);
+  const activeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   let t2;
-  let t3;
+  let t3: React.DependencyList;
   if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = () => () => {
       if (activeTimer.current) {
@@ -93,7 +92,7 @@ function Button(t0) {
   useEffect(t2, t3);
   let t4;
   if ($[9] !== onAction) {
-    t4 = e => {
+    t4 = (e: KeyboardEvent) => {
       if (e.key === "return" || e.key === " ") {
         e.preventDefault();
         setIsActive(true);
@@ -112,7 +111,7 @@ function Button(t0) {
   const handleKeyDown = t4;
   let t5;
   if ($[11] !== onAction) {
-    t5 = _e => {
+    t5 = (_e: ClickEvent) => {
       onAction();
     };
     $[11] = onAction;
@@ -123,7 +122,7 @@ function Button(t0) {
   const handleClick = t5;
   let t6;
   if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-    t6 = _e_0 => setIsFocused(true);
+    t6 = (_e_0: FocusEvent) => setIsFocused(true);
     $[13] = t6;
   } else {
     t6 = $[13];
@@ -131,7 +130,7 @@ function Button(t0) {
   const handleFocus = t6;
   let t7;
   if ($[14] === Symbol.for("react.memo_cache_sentinel")) {
-    t7 = _e_1 => setIsFocused(false);
+    t7 = (_e_1: FocusEvent) => setIsFocused(false);
     $[14] = t7;
   } else {
     t7 = $[14];
@@ -186,7 +185,7 @@ function Button(t0) {
   }
   return t11;
 }
-function _temp(setter) {
+function _temp(setter: React.Dispatch<React.SetStateAction<boolean>>) {
   return setter(false);
 }
 export default Button;

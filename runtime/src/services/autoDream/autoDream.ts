@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 // Background memory consolidation. Fires the /dream prompt as a forked
 // subagent when time-gate passes AND enough sessions have accumulated.
@@ -22,6 +21,8 @@ import {
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
+import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
+import type { ChildToolPolicy } from '../../agents/run-agent.js'
 import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/index.js'
 import { isAutoDreamEnabled } from './config.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
@@ -113,6 +114,37 @@ function isForced(): boolean {
 }
 
 type AppendSystemMessageFn = NonNullable<ToolUseContext['appendSystemMessage']>
+
+// Bridge the memory-extraction `ChildToolPolicy` (tool, input) => decision into
+// the `CanUseToolFn` shape that runForkedAgent declares. runForkedAgent only
+// reads `behavior` / `message` / `updatedInput` from the result (see
+// turn-compat's runtimeToolFromOldTool), so this is a type-level adapter that
+// preserves the policy's allow/deny decisions verbatim — it just supplies the
+// `decisionReason` that PermissionDecision requires on deny.
+function childPolicyAsCanUseTool(policy: ChildToolPolicy): CanUseToolFn {
+  return async (tool, input) => {
+    const decision = await policy({ name: tool.name }, input)
+    if (decision.behavior === 'deny') {
+      return {
+        behavior: 'deny',
+        message: decision.message,
+        decisionReason: {
+          type: 'other',
+          reason:
+            typeof decision.metadata?.reason === 'string'
+              ? decision.metadata.reason
+              : 'child_tool_policy',
+        },
+      }
+    }
+    return {
+      behavior: 'allow',
+      ...(decision.updatedInput !== undefined
+        ? { updatedInput: decision.updatedInput }
+        : {}),
+    }
+  }
+}
 
 let runner:
   | ((
@@ -225,7 +257,9 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
       const result = await runForkedAgent({
         promptMessages: [createUserMessage({ content: prompt })],
         cacheSafeParams: createCacheSafeParams(context),
-        canUseTool: createAutoMemoryToolPolicy(memoryRoot),
+        canUseTool: childPolicyAsCanUseTool(
+          createAutoMemoryToolPolicy(memoryRoot),
+        ),
         querySource: 'auto_dream',
         forkLabel: 'auto_dream',
         skipTranscript: true,
@@ -236,13 +270,29 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
       completeDreamTask(taskId, setAppState)
       // Inline completion summary in the main transcript (same surface as
       // extractMemories's "Saved N memories" message).
-      const dreamState = context.toolUseContext.getAppState().tasks?.[taskId]
+      // AppState.tasks is typed with the built-in TaskState union, which does
+      // not include DreamTaskState — so narrowing the raw read with isDreamTask
+      // would collapse to `never`. Read as `unknown` (the guard's own input
+      // type) so it narrows correctly to DreamTaskState. registerDreamTask
+      // stores exactly this shape at runtime.
+      const dreamState: unknown =
+        context.toolUseContext.getAppState().tasks?.[taskId]
       if (
         appendSystemMessage &&
         isDreamTask(dreamState) &&
         dreamState.filesTouched.length > 0
       ) {
-        appendSystemMessage({
+        // appendSystemMessage's param is Exclude<SystemMessage,
+        // SystemLocalCommandMessage>; both donor types are currently aliased to
+        // `any` in types/message.ts, so Exclude<any, any> collapses to `never`,
+        // making the param uncallable. The runtime payload (memory-saved message
+        // + `verb`) is exactly what the renderer expects — cast the callback to
+        // its intended message shape rather than alter behavior.
+        ;(
+          appendSystemMessage as (
+            msg: ReturnType<typeof createMemorySavedMessage> & { verb: string },
+          ) => void
+        )({
           ...createMemorySavedMessage(dreamState.filesTouched),
           verb: 'Improved',
         })

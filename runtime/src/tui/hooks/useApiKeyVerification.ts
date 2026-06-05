@@ -1,8 +1,7 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getIsNonInteractiveSession } from '../../bootstrap/state'
-import { verifyApiKey } from '../../services/api/anthropic' // branding-scan: allow upstream mirror import path pending purge
+import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { verifyApiKey } from '../../services/api/anthropic.js' // branding-scan: allow upstream mirror import path pending purge
 import {
   getAnthropicApiKeyWithSource,
   getApiKeyFromApiKeyHelper,

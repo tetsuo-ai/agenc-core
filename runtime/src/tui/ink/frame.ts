@@ -1,8 +1,8 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+import type { Point, Size } from './layout/geometry.js'
+
 // branding-scan: allow terminal cursor type
-import type { Cursor } from './cursor.js'
-import type { Size } from './layout/geometry.js'
+export type Cursor = Point & { visible: boolean }
 import type { ScrollHint } from './render-node-to-output.js'
 import {
   type CharPool,

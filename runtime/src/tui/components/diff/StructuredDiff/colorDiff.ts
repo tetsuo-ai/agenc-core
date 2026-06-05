@@ -1,12 +1,11 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   ColorDiff,
   ColorFile,
   getSyntaxTheme as nativeGetSyntaxTheme,
   type SyntaxTheme,
-} from '../../../ink/native-ts/color-diff/index'
-import { isEnvDefinedFalsy } from '../../../../utils/envUtils'
+} from '../../../ink/native-ts/color-diff/index.js'
+import { isEnvDefinedFalsy } from '../../../../utils/envUtils.js'
 
 export type ColorModuleUnavailableReason = 'env'
 

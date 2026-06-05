@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ReactNode } from 'react';
@@ -6,7 +5,7 @@ import React, { useContext } from 'react';
 import Text from '../../ink/components/Text.js';
 import type { Color, Styles } from '../../ink/styles.js';
 import { getTheme, type Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { useTheme } from './ThemeProvider';
+import { useTheme } from './ThemeProvider.js';
 import { resolveThemedColor, type ThemedColor } from './resolveThemedColor.js';
 
 /** Colors uncolored ThemedText in the subtree. Precedence: explicit `color` >
@@ -67,7 +66,7 @@ export type Props = {
  * Theme-aware Text component that resolves theme color keys to raw colors.
  * This wraps the base Text component with theme resolution.
  */
-export default function ThemedText(t0) {
+export default function ThemedText(t0: Props) {
   const $ = _c(10);
   const {
     color,

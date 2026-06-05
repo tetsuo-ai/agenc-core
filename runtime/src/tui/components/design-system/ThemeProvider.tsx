@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
@@ -84,6 +83,7 @@ export function ThemeProvider({
         cleanup?.();
       };
     }
+    return undefined;
   }, [activeSetting, internal_querier]);
   const currentTheme: ThemeName = activeSetting === 'auto' ? systemTheme : activeSetting;
   const value = useMemo<ThemeContextValue>(() => ({

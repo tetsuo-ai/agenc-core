@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { createPatch } from 'diff'
@@ -430,7 +429,7 @@ export async function checkResponseForCacheBreak(
   cacheCreationTokens: number,
   messages: Message[],
   agentId?: AgentId,
-  requestId?: string | null,
+  _requestId?: string | null,
 ): Promise<void> {
   try {
     const key = getTrackingKey(querySource, agentId)

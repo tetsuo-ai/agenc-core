@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { type AppState, useAppState } from '../state/AppState.js'
 
@@ -15,5 +14,5 @@ export type ReadonlySettings = AppState['settings']
  * Use this instead of getSettings_DEPRECATED() in React components for reactive updates.
  */
 export function useSettings(): ReadonlySettings {
-  return useAppState(s => s.settings)
+  return useAppState((s: AppState) => s.settings)
 }

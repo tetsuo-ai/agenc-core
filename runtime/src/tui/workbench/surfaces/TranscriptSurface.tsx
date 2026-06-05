@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { type RefObject } from "react";
 
 import { Box, Text } from "../../ink.js";

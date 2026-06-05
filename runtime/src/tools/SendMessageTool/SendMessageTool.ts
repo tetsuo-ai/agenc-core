@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
@@ -16,7 +15,6 @@ import { generateRequestId } from '../../utils/agentId.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
-import { truncate } from '../../utils/format.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parseAddress } from '../../utils/peerAddress.js'

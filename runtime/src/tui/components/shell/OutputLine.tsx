@@ -1,16 +1,14 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { useMemo } from 'react';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Ansi, Text } from '../../ink.js';
 import { createHyperlink } from '../../../utils/hyperlink.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { renderTruncatedContent } from '../../../utils/terminal.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { MessageResponse } from '../MessageResponse';
-import { InVirtualListContext } from '../messageActions';
-import { useExpandShellOutput } from './ExpandShellOutputContext';
+import { MessageResponse } from '../MessageResponse.js';
+import { InVirtualListContext } from '../messageActions.js';
+import { useExpandShellOutput } from './ExpandShellOutputContext.js';
 export function tryFormatJson(line: string): string {
   try {
     const parsed = jsonParse(line);
@@ -46,7 +44,14 @@ const URL_IN_JSON = /https?:\/\/[^\s"'<>\\]+/g;
 export function linkifyUrlsInText(content: string): string {
   return content.replace(URL_IN_JSON, url => createHyperlink(url));
 }
-export function OutputLine(t0) {
+type OutputLineProps = {
+  content: string;
+  verbose?: boolean;
+  isError?: boolean;
+  isWarning?: boolean;
+  linkifyUrls?: boolean;
+};
+export function OutputLine(t0: OutputLineProps) {
   const $ = _c(11);
   const {
     content,

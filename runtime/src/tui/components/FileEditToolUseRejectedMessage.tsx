@@ -1,16 +1,14 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import { relative } from 'path';
-import * as React from 'react';
 import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
 import { HighlightedCode } from './markdown/HighlightedCode.js';
-import { MessageResponse } from './MessageResponse';
-import { StructuredDiffList } from './diff/StructuredDiffList';
+import { MessageResponse } from './MessageResponse.js';
+import { StructuredDiffList } from './diff/StructuredDiffList.js';
 const MAX_LINES_TO_RENDER = 10;
 type Props = {
   file_path: string;
@@ -24,7 +22,7 @@ type Props = {
   style?: 'condensed';
   verbose: boolean;
 };
-export function FileEditToolUseRejectedMessage(t0) {
+export function FileEditToolUseRejectedMessage(t0: Props) {
   const $ = _c(38);
   const {
     file_path,

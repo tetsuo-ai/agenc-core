@@ -1,12 +1,18 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { canonicalAgentRoleName } from 'src/agents/role-presentation.js'
+import type { EffortValue } from '../../utils/effort.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
-import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
+import {
+  type Command,
+  getCommand,
+  getSkillToolCommands,
+  hasCommand,
+} from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
@@ -29,8 +35,12 @@ import type {
 } from '../../services/mcp/types.js'
 import type { Tool, Tools, ToolUseContext } from '../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
-import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
+import type {
+  AdditionalWorkingDirectory,
+  InternalPermissionMode,
+} from '../../types/permissions.js'
+import type { HooksSettings } from '../../utils/settings/types.js'
 import type {
   AssistantMessage,
   Message,
@@ -444,7 +454,12 @@ export async function* runAgent({
     ) {
       toolPermissionContext = {
         ...toolPermissionContext,
-        mode: agentPermissionMode,
+        // agentPermissionMode is the permissions/types PermissionMode (which
+        // also lists the internal-only 'unattended'), while the context's mode
+        // is InternalPermissionMode. parsePermissionMode only ever yields
+        // USER_ADDRESSABLE_PERMISSION_MODES, all of which are valid
+        // InternalPermissionMode values, so this narrowing is sound.
+        mode: agentPermissionMode as InternalPermissionMode,
       }
     }
 
@@ -493,10 +508,15 @@ export async function* runAgent({
       }
     }
 
-    // Override effort level if agent defines one
-    const effortValue =
+    // Override effort level if agent defines one.
+    // NOTE: AgentDefinition.effort (loadAgentsDir's EffortValue) additionally
+    // permits 'xhigh' and 'none', which AppState.effortValue's EffortValue
+    // (utils/effort) does not model. The cast preserves the existing runtime
+    // behavior (the agent's raw effort is written through unchanged); the type
+    // gap is a latent issue tracked separately.
+    const effortValue: EffortValue | undefined =
       agentDefinition.effort !== undefined
-        ? agentDefinition.effort
+        ? (agentDefinition.effort as EffortValue)
         : state.effortValue
 
     if (
@@ -516,8 +536,19 @@ export async function* runAgent({
     ? availableTools
     : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
 
+  // toolPermissionContext is DeepImmutable, which rewrites the Map's method
+  // signatures into non-callable {} property shapes. The runtime value is a
+  // real Map, so view it as a ReadonlyMap to call .keys() (read-only, no
+  // behavior change). The DeepImmutable shape doesn't structurally overlap a
+  // Map, so route the cast through unknown.
   const additionalWorkingDirectories = Array.from(
-    appState.toolPermissionContext.additionalWorkingDirectories.keys(),
+    (
+      appState.toolPermissionContext
+        .additionalWorkingDirectories as unknown as ReadonlyMap<
+        string,
+        AdditionalWorkingDirectory
+      >
+    ).keys(),
   )
 
   const agentSystemPrompt = override?.systemPrompt
@@ -583,7 +614,10 @@ export async function* runAgent({
     registerFrontmatterHooks(
       rootSetAppState,
       agentId,
-      agentDefinition.hooks,
+      // AgentDefinition.hooks is typed with loadAgentsDir's permissive
+      // Partial<Record<string, unknown[]>> stub; the parsed value conforms to
+      // the real HooksSettings shape (validated by parseHooks at load time).
+      agentDefinition.hooks as HooksSettings,
       `agent '${agentDefinition.agentType}'`,
       true, // isAgent - converts Stop to SubagentStop
     )
@@ -633,11 +667,13 @@ export async function* runAgent({
     const loaded = await Promise.all(
       validSkills.map(async ({ skillName, skill }) => ({
         skillName,
-        skill,
-        content: await skill.getPromptForCommand('', toolUseContext),
+        // getPromptForCommand is optional on PromptCommand; prompt-type skills
+        // loaded here populate it. Preserve the existing throw-if-missing
+        // behavior with a non-null assertion rather than altering control flow.
+        content: await skill.getPromptForCommand!('', toolUseContext),
       })),
     )
-    for (const { skillName, skill, content } of loaded) {
+    for (const { skillName, content } of loaded) {
       logForDebugging(
         `[Agent: ${agentDefinition.agentType}] Preloaded skill '${skillName}'`,
       )
@@ -647,7 +683,12 @@ export async function* runAgent({
 
       initialMessages.push(
         createUserMessage({
-          content: [{ type: 'text', text: metadata }, ...content],
+          // getPromptForCommand returns unknown[] in the donor stub; the
+          // values are content blocks, so view them as ContentBlockParam[].
+          content: [
+            { type: 'text', text: metadata },
+            ...(content as ContentBlockParam[]),
+          ],
           isMeta: true,
         }),
       )

@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Selectors for deriving computed state from AppState.
  * Keep selectors pure and simple - just data extraction, no side effects.
@@ -6,7 +5,7 @@
 
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
-import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import type { LocalAgentTaskState } from '../../tasks/types.js'
 import type { AppState } from './AppStateStore.js'
 
 /**

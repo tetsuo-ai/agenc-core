@@ -1,11 +1,10 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import type { ReactNode } from 'react';
-import React from 'react';
 import { useDeclaredCursor } from '../../ink/hooks/use-declared-cursor.js';
 import { Box, Text } from '../../ink.js';
+import type { ThemedColor } from './resolveThemedColor.js';
 type ListItemProps = {
   /**
    * Whether this item is currently focused (keyboard selection).
@@ -103,7 +102,7 @@ type ListItemProps = {
  *   <Text color="claude">Custom styled content</Text>
  * </ListItem>
  */
-export function ListItem(t0) {
+export function ListItem(t0: ListItemProps) {
   const $ = _c(32);
   const {
     isFocused,
@@ -147,7 +146,7 @@ export function ListItem(t0) {
   const renderIndicator = t4;
   let t5;
   if ($[5] !== disabled || $[6] !== isFocused || $[7] !== isSelected || $[8] !== styled) {
-    const getTextColor = function getTextColor() {
+    const getTextColor = function getTextColor(): ThemedColor | undefined {
       if (disabled) {
         return "inactive";
       }
@@ -160,6 +159,7 @@ export function ListItem(t0) {
       if (isFocused) {
         return "suggestion";
       }
+      return undefined;
     };
     t5 = getTextColor();
     $[5] = disabled;

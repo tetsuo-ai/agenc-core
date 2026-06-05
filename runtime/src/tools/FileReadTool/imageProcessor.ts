@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Buffer } from 'buffer'
 import { isInBundledMode } from '../../utils/bundledMode.js'
@@ -55,7 +54,9 @@ export async function getImageProcessor(): Promise<SharpFunction> {
   if (isInBundledMode()) {
     // Try to load the native image processor first
     try {
-      // Use the native image processor module
+      // Use the native image processor module.
+      // Native optional dep: present at runtime on supported platforms, not installed as a TS dep.
+      // @ts-expect-error -- image-processor-napi is a native optional module loaded at runtime
       const imageProcessor = await import('image-processor-napi')
       if ((imageProcessor as { __stub?: boolean }).__stub) {
         throw new ImageProcessorUnavailableError()

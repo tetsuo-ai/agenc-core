@@ -1,11 +1,10 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { type Notification, useNotifications } from '../../context/notifications.js';
-import { useAppState } from '../../state/AppState.js';
+import { type AppState, useAppState } from '../../state/AppState.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
@@ -48,7 +47,7 @@ type Props = {
   isInputWrapped?: boolean;
   isNarrow?: boolean;
 };
-export function Notifications(t0) {
+export function Notifications(t0: Props) {
   const $ = _c(34);
   const {
     apiKeyStatus,
@@ -205,7 +204,7 @@ export function Notifications(t0) {
 function _temp2() {
   return setEnvHookNotifier(null);
 }
-function _temp(s) {
+function _temp(s: AppState) {
   return s.notifications;
 }
 function NotificationContent({
@@ -262,7 +261,7 @@ function NotificationContent({
 
   const isBriefOnly = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useAppState(s_1 => s_1.isBriefOnly) : false;
+  useAppState((s_1: AppState) => s_1.isBriefOnly) : false;
 
   return <>
       <IdeStatusIndicator ideSelection={ideSelection} mcpClients={mcpClients} />

@@ -1,5 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { APIError } from '@anthropic-ai/sdk'
 import type {
   BetaStopReason,
   BetaUsage as Usage,
@@ -28,14 +26,6 @@ export { EMPTY_USAGE }
 
 // Strategy used for global prompt caching
 export type GlobalCacheStrategy = 'tool_based' | 'system_prompt' | 'none'
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof APIError) {
-    const body = error.error as { error?: { message?: string } } | undefined
-    if (body?.error?.message) return body.error.message
-  }
-  return error instanceof Error ? error.message : String(error)
-}
 
 type KnownGateway =
   | 'litellm'
@@ -220,6 +210,22 @@ export function logAPIError({
 
   logError(error as Error)
 
+  // Retained in the signature for callers; no longer consumed here.
+  void model
+  void messageCount
+  void messageTokens
+  void durationMs
+  void durationMsIncludingRetries
+  void attempt
+  void requestId
+  void didFallBackToNonStreaming
+  void promptCategory
+  void headers
+  void queryTracking
+  void querySource
+  void fastMode
+  void previousRequestId
+
   // Log first error for teleported sessions (reliability tracking)
   const teleportInfo = getTeleportedSessionInfo()
   if (teleportInfo?.isTeleported && !teleportInfo.hasLoggedFirstMessage) {
@@ -292,6 +298,7 @@ function logAPISuccess({
 
   const invocation = consumeInvokingRequestId()
   void invocation
+  void model
   void preNormalizedModel
   void betas
   void messageCount

@@ -1,9 +1,19 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ReactNode } from 'react';
-import React from 'react';
-import type { Color, Styles, TextStyles } from '../styles.js';
+import type { Color, Styles } from '../styles.js';
+
+// React 19's automatic JSX runtime (jsx: "react-jsx") resolves intrinsic
+// elements via `React.JSX.IntrinsicElements`, not the global `JSX` namespace,
+// so the `ink-text` host tag must be declared here for the JSX below to
+// type-check. Mirrors the existing declaration in ../global.d.ts.
+declare module 'react' {
+  namespace JSX {
+    interface IntrinsicElements {
+      'ink-text': Record<string, unknown>;
+    }
+  }
+}
 type BaseProps = {
   /**
    * Change text color. Accepts a raw color value (rgb, hex, ansi).
@@ -113,7 +123,7 @@ const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {
 /**
  * This component can display text, and change its style to make it colorful, bold, underline, italic or strikethrough.
  */
-export default function Text(t0) {
+export default function Text(t0: Props) {
   const $ = _c(29);
   const {
     color,

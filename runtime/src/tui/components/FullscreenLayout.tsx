@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import { execFileSync } from 'node:child_process';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';

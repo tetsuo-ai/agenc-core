@@ -1,15 +1,11 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   APIConnectionError,
   APIConnectionTimeoutError,
   APIError,
 } from '@anthropic-ai/sdk'
-import type {
-  BetaMessage,
-  BetaStopReason,
-} from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type { BetaStopReason } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { AFK_MODE_BETA_HEADER } from 'src/constants/betas.js'
-import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
+import type { SDKAssistantMessageError } from '../../entrypoints/agentSdkTypes.js'
 import type {
   AssistantMessage,
   Message,
@@ -28,8 +24,8 @@ import {
 import {
   getDefaultMainLoopModelSetting,
   isNonCustomOpusModel,
-} from 'src/utils/model/model.js'
-import { getModelStrings } from 'src/utils/model/modelStrings.js'
+} from '../../utils/model/model.js'
+import { getModelStrings } from '../../utils/model/modelStrings.js'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
@@ -235,19 +231,6 @@ export function isMediaSizeError(raw: string): boolean {
   )
 }
 
-/**
- * Message-level predicate: is this assistant message a media-size rejection?
- * Parallel to isPromptTooLongMessage. Checks errorDetails (the raw API error
- * string populated by the getAssistantMessageFromError branches at ~L523/560/573)
- * rather than content text, since media errors have per-variant content strings.
- */
-function isMediaSizeErrorMessage(msg: AssistantMessage): boolean {
-  return (
-    msg.isApiErrorMessage === true &&
-    msg.errorDetails !== undefined &&
-    isMediaSizeError(msg.errorDetails)
-  )
-}
 export const CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE = 'Credit balance is too low'
 export const INVALID_API_KEY_ERROR_MESSAGE = 'Not logged in · Please run /login'
 export const INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL =
@@ -321,51 +304,13 @@ function isCCRMode(): boolean {
   return isEnvTruthy(process.env.AGENC_REMOTE)
 }
 
-/**
- * Type guard to check if a value is a valid Message response from the API
- */
-function isValidAPIMessage(value: unknown): value is BetaMessage {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'content' in value &&
-    'model' in value &&
-    'usage' in value &&
-    Array.isArray((value as BetaMessage).content) &&
-    typeof (value as BetaMessage).model === 'string' &&
-    typeof (value as BetaMessage).usage === 'object'
-  )
-}
-
-/** Lower-level error that AWS can return. */
-type AmazonError = {
-  Output?: {
-    __type?: string
-  }
-  Version?: string
-}
-
-/**
- * Given a response that doesn't look quite right, see if it contains any known error types we can extract.
- */
-function extractUnknownErrorFormat(value: unknown): string | undefined {
-  // Check if value is a valid object first
-  if (!value || typeof value !== 'object') {
-    return undefined
-  }
-
-  // Amazon Bedrock routing errors
-  if ((value as AmazonError).Output?.__type) {
-    return (value as AmazonError).Output!.__type
-  }
-
-  return undefined
-}
-
 export function getAssistantMessageFromError(
   error: unknown,
   model: string,
-  options?: {
+  // Accepted for call-site API compatibility but intentionally unused by this
+  // function's logic (see notedBugs: dead parameter). Underscored to satisfy
+  // noUnusedParameters without changing the public arity/signature.
+  _options?: {
     messages?: Message[]
     messagesForAPI?: (UserMessage | AssistantMessage)[]
   },

@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   BetaContentBlock,
   BetaWebSearchTool20250305,
@@ -129,10 +128,6 @@ function makeToolSchema(input: Input): BetaWebSearchTool20250305 {
   }
 }
 
-function isAgenCModel(model: string): boolean {
-  return /agenc/i.test(model)
-}
-
 function isProviderCodeResponsesWebSearchEnabled(): boolean {
   if (getAPIProvider() !== 'openai') {
     return false
@@ -217,13 +212,17 @@ function addProviderCodeSource(
   sourceMap: Map<string, { title: string; url: string }>,
   source: unknown,
 ): void {
-  if (typeof source?.url !== 'string' || !source.url) return
-  sourceMap.set(source.url, {
+  // Provider JSON is dynamic; narrow to an indexable record so the existing
+  // `typeof`/optional-chaining guards can read `url`/`title` without TS2339.
+  const src = source as
+    | { url?: unknown; title?: unknown }
+    | null
+    | undefined
+  if (typeof src?.url !== 'string' || !src.url) return
+  sourceMap.set(src.url, {
     title:
-      typeof source.title === 'string' && source.title
-        ? source.title
-        : source.url,
-    url: source.url,
+      typeof src.title === 'string' && src.title ? src.title : src.url,
+    url: src.url,
   })
 }
 
@@ -496,7 +495,9 @@ function shouldUseAdapterProvider(): boolean {
 
   // Auto mode: native/first-party/ProviderCode take precedence over adapter
   if (isProviderCodeResponsesWebSearchEnabled()) return false
-  const provider = getAPIProvider()
+  // Widened to string: 'vertex'/'foundry' are not in the APIProvider union
+  // (latent bug — see notedBugs), so these comparisons are always false today.
+  const provider: string = getAPIProvider()
   if (provider === 'firstParty' || provider === 'vertex' || provider === 'foundry') {
     return false
   }
@@ -513,7 +514,9 @@ function shouldUseAdapterProvider(): boolean {
  */
 function hasNativeSearchFallback(): boolean {
   if (isProviderCodeResponsesWebSearchEnabled()) return true
-  const provider = getAPIProvider()
+  // Widened to string: 'vertex'/'foundry' are not in the APIProvider union
+  // (latent bug — see notedBugs), so those comparisons are always false today.
+  const provider: string = getAPIProvider()
   return provider === 'firstParty' || provider === 'vertex' || provider === 'foundry'
 }
 
@@ -549,7 +552,9 @@ export const WebSearchTool = buildTool({
     if (getAvailableProviders().length > 0) return true
     if (isProviderCodeResponsesWebSearchEnabled()) return true
 
-    const provider = getAPIProvider()
+    // Widened to string: 'vertex'/'foundry' are not in the APIProvider union
+    // (latent bug — see notedBugs), so those branches are dead today.
+    const provider: string = getAPIProvider()
     const model = getMainLoopModel()
 
     // Enable for firstParty

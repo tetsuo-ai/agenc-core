@@ -1,7 +1,5 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 type Props = {
   /**
    * Pre-rendered ANSI lines. Each element must be exactly one terminal row
@@ -27,7 +25,7 @@ type Props = {
  * (width × lines.length) and hands the joined string straight to output.write(),
  * which already splits on '\n' and parses ANSI into the screen buffer.
  */
-export function RawAnsi(t0) {
+export function RawAnsi(t0: Props) {
   const $ = _c(6);
   const {
     lines,

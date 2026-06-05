@@ -1,7 +1,6 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useMemo } from 'react'
-import type { MCPServerConnection } from '../../services/mcp/types'
+import type { MCPServerConnection } from '../../services/mcp/types.js'
 
 export type IdeStatus = 'connected' | 'disconnected' | 'pending' | null
 

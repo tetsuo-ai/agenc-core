@@ -1,7 +1,7 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import { stat } from 'fs/promises';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
+import type { SetAppState as SetSpeculationAppState } from '../../services/PromptSuggestion/runtime.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import type { AppState } from '../../tui/state/AppState.js';
 import type { LocalShellSpawnInput, SetAppState, Task, TaskContext, TaskHandle } from '../Task.js';
@@ -16,7 +16,6 @@ import { evictTaskOutput, getTaskOutputPath } from '../../utils/task/diskOutput.
 import { registerTask, updateTaskState } from '../../utils/task/framework.js';
 import { escapeXml } from '../../utils/xml.js';
 import { backgroundAgentTask, isLocalAgentTask } from '../LocalAgentTask/LocalAgentTask.js';
-import { isMainSessionTask } from '../LocalMainSessionTask.js';
 import { type BashTaskKind, isLocalShellTask, type LocalShellTaskState } from './guards.js';
 import { killTask } from './killShellTasks.js';
 /** Prefix that identifies a LocalShellTask summary to the UI collapse transform. */
@@ -124,7 +123,11 @@ function enqueueShellNotification(taskId: string, description: string, status: '
   // Abort any active speculation — background task state changed, so speculated
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
-  abortSpeculation(setAppState);
+  // abortSpeculation operates on the narrower PromptSuggestionAppState slice;
+  // the full AppState is a structural superset (it carries `speculation`), so the
+  // updater is runtime-safe. The cast only reconciles the two SetAppState aliases,
+  // which differ by function-parameter contravariance, not by behavior.
+  abortSpeculation(setAppState as unknown as SetSpeculationAppState);
   let summary: string;
   if (feature('MONITOR_TOOL') && kind === 'monitor') {
     // Monitor is streaming-only (post-#22764) — the script exiting means

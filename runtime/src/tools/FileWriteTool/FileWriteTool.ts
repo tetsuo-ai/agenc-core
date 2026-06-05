@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { dirname } from 'path'
 import { z } from 'zod/v4'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
@@ -87,7 +86,6 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
-type FileWriteToolInput = InputSchema
 
 export const FileWriteTool = buildTool({
   name: FILE_WRITE_TOOL_NAME,
@@ -340,7 +338,11 @@ export const FileWriteTool = buildTool({
       false
     ) {
       const diff = await fetchSingleFileGitDiff(fullFilePath)
-      if (diff) gitDiff = diff
+      // `diff` is non-null inside this branch; `?? undefined` only normalizes
+      // the declared `ToolUseDiff | null` to the `ToolUseDiff | undefined`
+      // target type (the enclosing `&& false` guard makes this block dead, so
+      // control-flow narrowing of `diff` is not propagated here).
+      if (diff) gitDiff = diff ?? undefined
     }
 
     if (oldContent) {

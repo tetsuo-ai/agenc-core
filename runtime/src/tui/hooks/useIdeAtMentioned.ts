@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useRef } from 'react'
 import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item

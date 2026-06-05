@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import type { StructuredPatchHunk } from 'diff';
@@ -183,7 +182,14 @@ type RejectionDiffData = {
   firstLine: string | null;
   fileContent: string | undefined;
 };
-function EditRejectionDiff(t0) {
+function EditRejectionDiff(t0: {
+  filePath: string;
+  oldString: string;
+  newString: string;
+  replaceAll: boolean;
+  style?: 'condensed';
+  verbose: boolean;
+}) {
   const $ = _c(16);
   const {
     filePath,
@@ -236,7 +242,12 @@ function EditRejectionDiff(t0) {
   }
   return t4;
 }
-function EditRejectionBody(t0) {
+function EditRejectionBody(t0: {
+  promise: Promise<RejectionDiffData>;
+  filePath: string;
+  style?: 'condensed';
+  verbose: boolean;
+}) {
   const $ = _c(7);
   const {
     promise,

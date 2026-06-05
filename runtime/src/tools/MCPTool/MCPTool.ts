@@ -1,10 +1,11 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { Ajv } from 'ajv'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ValidationResult } from '../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionResult } from '../../types/permissions.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
+import type { MCPToolResult } from '../../utils/mcpValidation.js'
+import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
   renderToolResultMessage,
@@ -34,6 +35,12 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
+
+// The result content that actually flows through the renderer / serializer at
+// runtime is the richer MCP content shape (string or Anthropic ContentBlockParam[]),
+// not just the narrow Zod-inferred Output. Use it as the ToolDef result type so the
+// render/map signatures line up with their implementations in UI.tsx / mcpValidation.ts.
+type ResultContent = NonNullable<MCPToolResult>
 
 // Re-export MCPProgress from centralized types to break import cycles
 export type { MCPProgress } from '../../types/tools.js'
@@ -89,7 +96,7 @@ export const MCPTool = buildTool({
       message: 'MCPTool requires permission.',
     }
   },
-  async validateInput(input, context): Promise<ValidationResult> {
+  async validateInput(input, _context): Promise<ValidationResult> {
     if (this.inputJSONSchema) {
       try {
         const validate = getCompiledValidator(this.inputJSONSchema)
@@ -116,7 +123,7 @@ export const MCPTool = buildTool({
   userFacingName: () => 'mcp',
   renderToolUseProgressMessage,
   renderToolResultMessage,
-  isResultTruncated(output: Output): boolean {
+  isResultTruncated(output: ResultContent): boolean {
     if (typeof output === 'string') {
       return isOutputLineTruncated(output)
     }
@@ -132,7 +139,7 @@ export const MCPTool = buildTool({
     }
     return false
   },
-  mapToolResultToToolResultBlockParam(content, toolUseID) {
+  mapToolResultToToolResultBlockParam(content, toolUseID): ToolResultBlockParam {
     // Defensive guard: if content is undefined/null (shouldn't happen after
     // the abort path fix in client.ts), return a clear indicator rather than
     // sending undefined to the API which would cause an error.
@@ -146,7 +153,10 @@ export const MCPTool = buildTool({
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content,
+      // MCP content blocks are dynamic provider JSON (ContentBlockParam[]),
+      // a wider union than the tool_result content type accepts. At runtime
+      // MCP only emits text/image blocks, which are valid here — narrow cast.
+      content: content as ToolResultBlockParam['content'],
     }
   },
-} satisfies ToolDef<InputSchema, Output>)
+} satisfies ToolDef<InputSchema, ResultContent>)

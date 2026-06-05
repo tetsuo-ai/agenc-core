@@ -1,8 +1,6 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Ansi, Text } from '../../ink.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -65,7 +63,7 @@ type DividerProps = {
  * // With centered title
  * <Divider title="3 new messages" />
  */
-export function Divider(t0) {
+export function Divider(t0: DividerProps) {
   const $ = _c(21);
   const {
     width,
