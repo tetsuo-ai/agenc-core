@@ -1,6 +1,5 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-import {
+import ProviderSdk, {
   APIConnectionError,
   APIError,
   APIUserAbortError,
@@ -170,9 +169,9 @@ export class FallbackTriggeredError extends Error {
 }
 
 export async function* withRetry<T>(
-  getClient: () => Promise<provider>,
+  getClient: () => Promise<ProviderSdk>,
   operation: (
-    client: provider,
+    client: ProviderSdk,
     attempt: number,
     context: RetryContext,
   ) => Promise<T>,
@@ -184,7 +183,7 @@ export async function* withRetry<T>(
     thinkingConfig: options.thinkingConfig,
     ...(isFastModeEnabled() && { fastMode: options.fastMode }),
   }
-  let client: provider | null = null
+  let client: ProviderSdk | null = null
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
@@ -814,7 +813,15 @@ export function getRateLimitResetDelayMs(error: APIError): number | null {
     return Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
   }
 
-  if (provider === 'openai' || provider === 'providerCode' || provider === 'github') {
+  if (
+    provider === 'openai' ||
+    // 'providerCode' is not a member of APIProvider, so this comparison is
+    // always false at runtime today (dead branch carried over from the donor
+    // provider union). Cast preserves the existing runtime behavior while
+    // keeping the type checker satisfied — see notedBugs.
+    (provider as string) === 'providerCode' ||
+    provider === 'github'
+  ) {
     const reqHeader = error.headers?.get?.('x-ratelimit-reset-requests')
     const tokHeader = error.headers?.get?.('x-ratelimit-reset-tokens')
     const reqMs = reqHeader ? parseOpenAiDuration(reqHeader) : null

@@ -4513,7 +4513,15 @@ function parseElicitationHookOutput(
   }
 
   try {
-    const parsedRaw = hookJSONOutputSchema().parse(JSON.parse(trimmed))
+    // The Zod-inferred parse result is a strict structural subset of the SDK
+    // `HookJSONOutput` (the schema omits the `addDirectories`/`removeDirectories`
+    // PermissionUpdate variants — see types/hooks.ts drift note), so it isn't
+    // directly assignable to the guard parameters. Annotate via the in-file
+    // permissive `HookJSONOutput` alias; the guards inspect `'async' in json` at
+    // runtime regardless, so behavior is unchanged.
+    const parsedRaw: HookJSONOutput = hookJSONOutputSchema().parse(
+      JSON.parse(trimmed),
+    )
     if (isAsyncHookJSONOutput(parsedRaw)) {
       return {}
     }

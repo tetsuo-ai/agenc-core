@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
@@ -28,7 +27,7 @@ const MAX_COMMAND_DISPLAY_CHARS = 160;
 
 // Simple component to show background hint and handle ctrl+b
 // When ctrl+b is pressed, backgrounds ALL running foreground commands
-export function BackgroundHint(t0) {
+export function BackgroundHint(t0: { onBackground?: () => void } | undefined) {
   const $ = _c(9);
   let t1;
   if ($[0] !== t0) {

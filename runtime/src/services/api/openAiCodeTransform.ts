@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { APIError } from '@anthropic-ai/sdk'
 import { buildproviderUsageFromRawUsage } from './cacheMetrics.js'
 import { compressToolHistory } from './compressToolHistory.js'
@@ -332,7 +331,6 @@ function enforceStrictSchema(schema: unknown): Record<string, unknown> {
       !Array.isArray(record.properties)
     ) {
       const props = record.properties as Record<string, unknown>
-      const allKeys = Object.keys(props)
 
       const enforcedProps: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(props)) {
@@ -397,64 +395,6 @@ export function convertToolsToResponsesTools(
         strict: true,
       }
     })
-}
-
-function isStrictResponsesSchema(schema: unknown): boolean {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
-    return true
-  }
-
-  const record = schema as Record<string, unknown>
-  const type = record.type
-
-  if (type === 'object') {
-    const properties =
-      record.properties && typeof record.properties === 'object' && !Array.isArray(record.properties)
-        ? (record.properties as Record<string, unknown>)
-        : {}
-
-    const propertyKeys = Object.keys(properties)
-    const required = Array.isArray(record.required)
-      ? record.required.filter((value): value is string => typeof value === 'string')
-      : null
-
-    if (propertyKeys.length > 0) {
-      if (!required) return false
-
-      const requiredSet = new Set(required)
-      for (const key of propertyKeys) {
-        if (!requiredSet.has(key)) {
-          return false
-        }
-      }
-    }
-
-    for (const child of Object.values(properties)) {
-      if (!isStrictResponsesSchema(child)) {
-        return false
-      }
-    }
-  }
-
-  const combinators = ['anyOf', 'oneOf', 'allOf'] as const
-  for (const key of combinators) {
-    if (key in record) {
-      const value = record[key]
-      if (!Array.isArray(value) || value.some(item => !isStrictResponsesSchema(item))) {
-        return false
-      }
-    }
-  }
-
-  if ('items' in record) {
-    const items = record.items
-    if (Array.isArray(items)) {
-      return items.every(item => isStrictResponsesSchema(item))
-    }
-    return isStrictResponsesSchema(items)
-  }
-
-  return true
 }
 
 function convertToolChoice(toolChoice: unknown): unknown {
@@ -613,7 +553,11 @@ async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGe
         signal.addEventListener('abort', abortCleanup, { once: true })
       }
 
-      reader.read().then(
+      // `reader` is guaranteed defined here: the enclosing generator returns
+      // early at `if (!reader) return` before this closure can run. The
+      // non-null assertion only restores that narrowing across the closure
+      // boundary; it does not change behavior.
+      reader!.read().then(
         result => {
           clearTimeout(timeoutId)
           if (signal && abortCleanup) signal.removeEventListener('abort', abortCleanup)

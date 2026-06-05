@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";

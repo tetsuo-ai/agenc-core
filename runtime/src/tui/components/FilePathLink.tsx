@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
@@ -16,7 +15,7 @@ type Props = {
  * This helps terminals like iTerm correctly identify file paths
  * even when they appear inside parentheses or other text.
  */
-export function FilePathLink(t0) {
+export function FilePathLink(t0: Props) {
   const $ = _c(5);
   const {
     filePath,

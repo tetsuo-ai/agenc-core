@@ -1,6 +1,4 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import { z } from 'zod/v4';
 import { FallbackToolUseErrorMessage } from '../../tui/components/FallbackToolUseErrorMessage.js';
 import { FallbackToolUseRejectedMessage } from '../../tui/components/FallbackToolUseRejectedMessage.js';
@@ -161,7 +159,10 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     return this.isReadOnly?.(_input) ?? false;
   },
   isEnabled() {
-    return "external" !== 'ant';
+    // "external" is a build-time substituted USER_TYPE literal; the cast keeps
+    // the comparison (and its always-true result for external builds) intact
+    // while satisfying the disjoint-literal narrowing check.
+    return ("external" as string) !== 'ant';
   },
   isReadOnly(_input) {
     return true;
@@ -348,7 +349,11 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
   }
 } satisfies ToolDef<InputSchema, TaskOutputToolOutput>);
-function TaskOutputResultDisplay(t0) {
+function TaskOutputResultDisplay(t0: {
+  content: TaskOutputToolOutput | string;
+  verbose?: boolean;
+  theme: ThemeName;
+}) {
   const $ = _c(54);
   const {
     content,
@@ -432,7 +437,6 @@ function TaskOutputResultDisplay(t0) {
         let t5;
         if ($[15] !== task.result || $[16] !== theme) {
           t5 = task.result && <Box marginTop={1}><AgentResponseDisplay content={[{
-              type: "text",
               text: task.result
             }]} theme={theme} /></Box>;
           $[15] = task.result;

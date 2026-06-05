@@ -10,7 +10,7 @@ import { useContext } from 'react';
  * a boolean context that child components can check to modify their behavior.
  */
 const ExpandShellOutputContext = React.createContext(false);
-export function ExpandShellOutputProvider(t0) {
+export function ExpandShellOutputProvider(t0: { children: React.ReactNode }) {
   const $ = _c(2);
   const {
     children

@@ -1,6 +1,4 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
 import FullWidthRow from '../../tui/components/design-system/FullWidthRow.js';
 import { KeyboardShortcutHint } from '../../tui/components/design-system/KeyboardShortcutHint.js';
@@ -62,7 +60,7 @@ function extractCwdResetWarning(stderr: string): {
     cwdResetWarning
   };
 }
-export default function BashToolResultMessage(t0) {
+export default function BashToolResultMessage(t0: Props) {
   const $ = _c(34);
   const {
     content: t1,

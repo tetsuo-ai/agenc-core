@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';

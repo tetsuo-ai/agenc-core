@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React from "react";
 
@@ -10,6 +9,12 @@ import {
   pickToolResultDispatch,
   resultTextForTuiTool,
 } from "./tool-result-routing.js";
+
+// These views render with raw ANSI color literals ("green"/"red") that aren't
+// modeled by Text's narrower color prop type. Alias the prop type so the
+// literals can be cast in place — preserving the exact rendered output (locked
+// by the tool-rendering tests) without widening Text or disabling the file.
+type TextColor = React.ComponentProps<typeof Text>["color"];
 
 /**
  * Tag extractor mirroring upstream `extractTag` semantics — pulls
@@ -116,7 +121,10 @@ export function EditDiffView({
         {displayFile.length > 0 ? `${displayFile} ${stats}` : stats}
       </Text>
       {shown.map((change, idx) => (
-        <Text key={idx} color={change.kind === "add" ? "green" : "red"}>
+        <Text
+          key={idx}
+          color={(change.kind === "add" ? "green" : "red") as TextColor}
+        >
           {`${change.kind === "add" ? "+" : "-"} ${change.code}`}
         </Text>
       ))}
@@ -190,7 +198,7 @@ export function FileWriteView({
   // Write result envelope carries no unified diff (only the summary), so there
   // is no green/red body to render — the summary itself is the compact result.
   const summary = extractToolTag(content, "write-summary") ?? "Wrote file";
-  return <Text color="green">{summary}</Text>;
+  return <Text color={"green" as TextColor}>{summary}</Text>;
 }
 
 /**
@@ -327,7 +335,7 @@ export function ToolErrorView({
   const message = extractToolTag(content, "tool-error") ?? content;
   return (
     <Box flexDirection="column">
-      <Text bold color="red">
+      <Text bold color={"red" as TextColor}>
         {toolName.length > 0 ? `${toolName} error` : "Tool error"}
       </Text>
       <Text>{message}</Text>
@@ -461,7 +469,7 @@ export function BashOutputView({
       ) : null}
       {stderrCap
         ? stderrCap.lines.map((line, idx) => (
-            <Text key={`e${idx}`} color="red">
+            <Text key={`e${idx}`} color={"red" as TextColor}>
               {line}
             </Text>
           ))
@@ -472,7 +480,7 @@ export function BashOutputView({
         }`}</Text>
       ) : null}
       {showExitNote ? (
-        <Text color="red">{`(exit ${exitCode})`}</Text>
+        <Text color={"red" as TextColor}>{`(exit ${exitCode})`}</Text>
       ) : null}
     </Box>
   );
@@ -499,13 +507,6 @@ function shortJson(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function resultText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(resultText).join("\n");
-  if (isRecord(value) && typeof value.content === "string") return value.content;
-  return shortJson(value);
 }
 
 /**

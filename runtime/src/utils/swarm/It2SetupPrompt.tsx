@@ -1,12 +1,11 @@
-// @ts-nocheck -- react-compiler-runtime generated TSX with synthesized identifiers that lose component prop typing.
 import { c as _c } from "react-compiler-runtime";
-import React, { useCallback, useEffect, useState } from 'react';
-import { type OptionWithDescription, Select } from '../../tui/components/CustomSelect/select.js';
+import { type DependencyList, useEffect, useState } from 'react';
+import { Select } from '../../tui/components/CustomSelect/select.js';
 import { Pane } from '../../tui/components/design-system/Pane.js';
 import { Spinner } from '../../tui/components/spinner/Spinner.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- enter to proceed through setup steps
-import { Box, Text, useInput } from '../../tui/ink.js';
+import { Box, type Key, Text, useInput } from '../../tui/ink.js';
 import { useKeybinding } from '../../tui/keybindings/useKeybinding.js';
 import { detectPythonPackageManager, getPythonApiInstructions, installIt2, markIt2SetupComplete, type PythonPackageManager, setPreferTmuxOverIterm2, verifyIt2Setup } from './backends/it2Setup.js';
 type SetupStep = 'initial' | 'installing' | 'install-failed' | 'verify-api' | 'api-instructions' | 'verifying' | 'success' | 'failed';
@@ -14,18 +13,18 @@ type Props = {
   onDone: (result: 'installed' | 'use-tmux' | 'cancelled') => void;
   tmuxAvailable: boolean;
 };
-export function It2SetupPrompt(t0) {
+export function It2SetupPrompt(t0: Props) {
   const $ = _c(44);
   const {
     onDone,
     tmuxAvailable
   } = t0;
-  const [step, setStep] = useState("initial");
-  const [packageManager, setPackageManager] = useState(null);
-  const [error, setError] = useState(null);
+  const [step, setStep] = useState<SetupStep>("initial");
+  const [packageManager, setPackageManager] = useState<PythonPackageManager | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const exitState = useExitOnCtrlCDWithKeybindings();
   let t1;
-  let t2;
+  let t2: DependencyList;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = () => {
       detectPythonPackageManager().then(pm => {
@@ -66,7 +65,7 @@ export function It2SetupPrompt(t0) {
   useKeybinding("confirm:no", handleCancel, t5);
   let t6;
   if ($[6] !== onDone || $[7] !== step) {
-    t6 = (_input, key) => {
+    t6 = (_input: string, key: Key) => {
       if (step === "api-instructions" && key.return) {
         setStep("verifying");
         verifyIt2Setup().then(result => {
@@ -375,6 +374,6 @@ export function It2SetupPrompt(t0) {
   }
   return t17;
 }
-function _temp(line, i) {
+function _temp(line: string, i: number) {
   return <Text key={i}>{line}</Text>;
 }

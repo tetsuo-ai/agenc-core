@@ -1,7 +1,6 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { type PropsWithChildren } from 'react';
+import { type PropsWithChildren } from 'react';
 import Box, { type Props as BoxProps } from './Box.js';
 type Props = Omit<BoxProps, 'noSelect'> & {
   /**
@@ -34,7 +33,7 @@ type Props = Omit<BoxProps, 'noSelect'> & {
  * tracking). No-op in the main-screen scrollback render where the
  * terminal's native selection is used instead.
  */
-export function NoSelect(t0) {
+export function NoSelect(t0: PropsWithChildren<Props>) {
   const $ = _c(8);
   let boxProps;
   let children;

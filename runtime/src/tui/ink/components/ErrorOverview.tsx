@@ -1,6 +1,4 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import React from 'react';
 import Box from './Box.js';
 import Text from './Text.js';
 

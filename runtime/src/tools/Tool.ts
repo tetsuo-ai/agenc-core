@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   ToolResultBlockParam,
   ToolUseBlockParam,
@@ -46,17 +45,26 @@ import type {
   PermissionMode,
   PermissionResult,
 } from '../types/permissions.js'
-// Import tool progress types from centralized location to break import cycles
-import type {
-  AgentToolProgress,
-  BashProgress,
-  MCPProgress,
-  REPLToolProgress,
-  SkillToolProgress,
-  TaskOutputProgress,
-  ToolProgressData,
-  WebSearchProgress,
-} from '../types/tools.js'
+// Tool progress types. The donor `../types/tools.js` snapshot does not yet
+// export these concrete progress shapes (they are stubbed permissively
+// elsewhere), so they are declared here as the permissive `any`-based aliases
+// the donor code expects. Type-only; no runtime effect.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AgentToolProgress = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type BashProgress = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MCPProgress = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type REPLToolProgress = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SkillToolProgress = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TaskOutputProgress = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ToolProgressData = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WebSearchProgress = any
 import type { FileStateCache } from '../utils/fileStateCache.js'
 import type { DenialTrackingState } from '../utils/permissions/denialTracking.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
@@ -327,9 +335,9 @@ export type ToolProgress<P extends ToolProgressData> = {
 
 export function filterToolProgressMessages(
   progressMessagesForMessage: ProgressMessage[],
-): ProgressMessage<ToolProgressData>[] {
+): ProgressMessage[] {
   return progressMessagesForMessage.filter(
-    (msg): msg is ProgressMessage<ToolProgressData> =>
+    (msg: ProgressMessage): msg is ProgressMessage =>
       msg.data?.type !== 'hook_progress',
   )
 }
@@ -581,7 +589,7 @@ export type Tool<
    */
   renderToolResultMessage?(
     content: Output,
-    progressMessagesForMessage: ProgressMessage<P>[],
+    progressMessagesForMessage: ProgressMessage[],
     options: {
       style?: 'condensed'
       theme: ThemeName
@@ -639,7 +647,7 @@ export type Tool<
    * Optional. When omitted, no progress UI is shown while the tool runs.
    */
   renderToolUseProgressMessage?(
-    progressMessagesForMessage: ProgressMessage<P>[],
+    progressMessagesForMessage: ProgressMessage[],
     options: {
       tools: Tools
       verbose: boolean
@@ -663,7 +671,7 @@ export type Tool<
       theme: ThemeName
       tools: Tools
       verbose: boolean
-      progressMessagesForMessage: ProgressMessage<P>[]
+      progressMessagesForMessage: ProgressMessage[]
       isTranscriptMode?: boolean
     },
   ): React.ReactNode
@@ -675,7 +683,7 @@ export type Tool<
   renderToolUseErrorMessage?(
     result: ToolResultBlockParam['content'],
     options: {
-      progressMessagesForMessage: ProgressMessage<P>[]
+      progressMessagesForMessage: ProgressMessage[]
       tools: Tools
       verbose: boolean
       isTranscriptMode?: boolean
@@ -697,7 +705,7 @@ export type Tool<
       isResolved: boolean
       isError: boolean
       isInProgress: boolean
-      progressMessages: ProgressMessage<P>[]
+      progressMessages: ProgressMessage[]
       result?: {
         param: ToolResultBlockParam
         output: unknown

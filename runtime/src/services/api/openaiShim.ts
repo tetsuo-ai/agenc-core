@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * provider-compatible API shim for AgenC.
  *
@@ -1118,8 +1117,12 @@ async function* openaiStreamToprovider(
     },
   }
 
-  const reader = response.body?.getReader()
-  if (!reader) return
+  const maybeReader = response.body?.getReader()
+  if (!maybeReader) return
+  // Bind to a non-optional const so the narrowed type survives into the
+  // readWithTimeout closure below (TS widens guard-narrowed bindings that are
+  // captured by nested functions).
+  const reader: ReadableStreamDefaultReader<Uint8Array> = maybeReader
 
   const decoder = new TextDecoder()
   let buffer = ''
@@ -1301,7 +1304,7 @@ async function* openaiStreamToprovider(
                   // Extract Gemini signature from extra_content
                   ...((tc.extra_content?.google as any)?.thought_signature
                     ? {
-                        signature: (tc.extra_content.google as any)
+                        signature: (tc.extra_content?.google as any)
                           .thought_signature,
                       }
                     : {}),
@@ -1617,7 +1620,6 @@ class OpenAiShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
-    const githubEndpointType = getGithubEndpointType(request.baseUrl)
     const isGithubMode = isGithubModelsMode()
     const isGithubWithProviderCodeTransport = isGithubMode && request.transport === 'providerCode_responses'
 
@@ -2175,7 +2177,11 @@ class OpenAiShimMessages {
           continue
         }
 
-        throwClassifiedTransportError(error, requestUrl, failure)
+        // throwClassifiedTransportError returns `never`; the `throw` is for
+        // control-flow narrowing only (the helper always throws first, so this
+        // outer throw is never reached). Without it, the `continue` branch above
+        // leaves `response` typed as possibly-undefined after the try/catch.
+        throw throwClassifiedTransportError(error, requestUrl, failure)
       }
 
       if (response.ok) {
@@ -2231,7 +2237,10 @@ class OpenAiShimMessages {
               signal: options?.signal,
             })
           } catch (error) {
-            throwClassifiedTransportError(error, responsesUrl)
+            // `throw` is for CFA narrowing only — throwClassifiedTransportError
+            // returns `never` and always throws first, so responsesResponse is
+            // definitely assigned past this catch.
+            throw throwClassifiedTransportError(error, responsesUrl)
           }
 
           if (responsesResponse.ok) {
@@ -2398,7 +2407,7 @@ class OpenAiShimMessages {
           ...(tc.extra_content ? { extra_content: tc.extra_content } : {}),
           // Extract Gemini signature from extra_content
           ...((tc.extra_content?.google as any)?.thought_signature
-            ? { signature: (tc.extra_content.google as any).thought_signature }
+            ? { signature: (tc.extra_content?.google as any).thought_signature }
             : {}),
         })
       }

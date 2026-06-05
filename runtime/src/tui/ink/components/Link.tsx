@@ -1,8 +1,7 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+import '../global.d.ts';
 import { c as _c } from "react-compiler-runtime";
 import type { ReactNode } from 'react';
-import React from 'react';
 import { supportsHyperlinks } from '../supports-hyperlinks.js';
 import Text from './Text.js';
 export type Props = {
@@ -10,7 +9,7 @@ export type Props = {
   readonly url: string;
   readonly fallback?: ReactNode;
 };
-export default function Link(t0) {
+export default function Link(t0: Props) {
   const $ = _c(5);
   const {
     children,

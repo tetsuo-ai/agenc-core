@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import type { Dirent } from 'fs'
@@ -46,6 +45,7 @@ import {
   type FileHistorySnapshotMessage,
   type LogOption,
   type PersistedWorktreeSession,
+  type QueueOperationMessage,
   type SerializedMessage,
   sortLogs,
   type TranscriptMessage,
@@ -58,7 +58,6 @@ import type {
   SystemMessage,
   UserMessage,
 } from '../types/message.js'
-import type { QueueOperationMessage } from '../types/messageQueueTypes.js'
 import { uniq } from './array.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { updateSessionName } from './concurrentSessions.js'
@@ -73,7 +72,6 @@ import { getFsImplementation } from './fsOperations.js'
 import { getWorktreePaths } from './getWorktreePaths.js'
 import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
-import { parseJSONL } from './json.js'
 import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
@@ -1812,8 +1810,8 @@ function extractFirstPrompt(transcript: TranscriptMessage[]): string {
  * Gets the last user message that was processed (i.e., before any non-user message appears).
  * Used to determine if a session has valid user interaction.
  */
-export function getFirstMeaningfulUserMessageTextContent<T extends Message>(
-  transcript: T[],
+export function getFirstMeaningfulUserMessageTextContent(
+  transcript: Message[],
 ): string | undefined {
   for (const msg of transcript) {
     if (msg.type !== 'user' || msg.isMeta) continue
@@ -2438,7 +2436,7 @@ function recoverOrphanedParallelToolResults(
       m.type === 'user' &&
       m.parentUuid &&
       Array.isArray(m.message.content) &&
-      m.message.content.some(b => b.type === 'tool_result')
+      m.message.content.some((b: any) => b.type === 'tool_result')
     ) {
       const group = toolResultsByAsst.get(m.parentUuid)
       if (group) group.push(m)
@@ -3878,46 +3876,58 @@ export async function loadTranscriptFile(
           contextCollapseCommits.length = 0
           contextCollapseSnapshot = undefined
         }
-      } else if (entry.type === 'summary' && entry.leafUuid) {
-        summaries.set(entry.leafUuid, entry.summary)
-      } else if (entry.type === 'custom-title' && entry.sessionId) {
-        customTitles.set(entry.sessionId, entry.customTitle)
-      } else if (entry.type === 'tag' && entry.sessionId) {
-        tags.set(entry.sessionId, entry.tag)
-      } else if (entry.type === 'agent-name' && entry.sessionId) {
-        agentNames.set(entry.sessionId, entry.agentName)
-      } else if (entry.type === 'agent-color' && entry.sessionId) {
-        agentColors.set(entry.sessionId, entry.agentColor)
-      } else if (entry.type === 'agent-setting' && entry.sessionId) {
-        agentSettings.set(entry.sessionId, entry.agentSetting)
-      } else if (entry.type === 'mode' && entry.sessionId) {
-        modes.set(entry.sessionId, entry.mode)
-      } else if (entry.type === 'worktree-state' && entry.sessionId) {
-        worktreeStates.set(entry.sessionId, entry.worktreeSession)
-      } else if (entry.type === 'pr-link' && entry.sessionId) {
-        prNumbers.set(entry.sessionId, entry.prNumber)
-        prUrls.set(entry.sessionId, entry.prUrl)
-        prRepositories.set(entry.sessionId, entry.prRepository)
-      } else if (entry.type === 'file-history-snapshot') {
-        fileHistorySnapshots.set(entry.messageId, entry)
-      } else if (entry.type === 'attribution-snapshot') {
-        attributionSnapshots.set(entry.messageId, entry)
-      } else if (entry.type === 'content-replacement') {
-        // Subagent decisions key by agentId (sidechain resume); main-thread
-        // decisions key by sessionId (/resume).
-        if (entry.agentId) {
-          const existing = agentContentReplacements.get(entry.agentId) ?? []
-          agentContentReplacements.set(entry.agentId, existing)
-          existing.push(...entry.replacements)
-        } else {
-          const existing = contentReplacements.get(entry.sessionId) ?? []
-          contentReplacements.set(entry.sessionId, existing)
-          existing.push(...entry.replacements)
+      } else {
+        // `isTranscriptMessage` is a `entry is TranscriptMessage` guard, and
+        // TranscriptMessage resolves through `Message = any`, so the false
+        // branch leaves TypeScript narrowing `entry` to `never`. Re-widen to
+        // the original Entry union (runtime value is unchanged) so the
+        // metadata `type` discriminations below type-check.
+        const metaEntry: Entry = entry
+        if (metaEntry.type === 'summary' && metaEntry.leafUuid) {
+          summaries.set(metaEntry.leafUuid, metaEntry.summary)
+        } else if (metaEntry.type === 'custom-title' && metaEntry.sessionId) {
+          customTitles.set(metaEntry.sessionId, metaEntry.customTitle)
+        } else if (metaEntry.type === 'tag' && metaEntry.sessionId) {
+          tags.set(metaEntry.sessionId, metaEntry.tag)
+        } else if (metaEntry.type === 'agent-name' && metaEntry.sessionId) {
+          agentNames.set(metaEntry.sessionId, metaEntry.agentName)
+        } else if (metaEntry.type === 'agent-color' && metaEntry.sessionId) {
+          agentColors.set(metaEntry.sessionId, metaEntry.agentColor)
+        } else if (metaEntry.type === 'agent-setting' && metaEntry.sessionId) {
+          agentSettings.set(metaEntry.sessionId, metaEntry.agentSetting)
+        } else if (metaEntry.type === 'mode' && metaEntry.sessionId) {
+          modes.set(metaEntry.sessionId, metaEntry.mode)
+        } else if (
+          metaEntry.type === 'worktree-state' &&
+          metaEntry.sessionId
+        ) {
+          worktreeStates.set(metaEntry.sessionId, metaEntry.worktreeSession)
+        } else if (metaEntry.type === 'pr-link' && metaEntry.sessionId) {
+          prNumbers.set(metaEntry.sessionId, metaEntry.prNumber)
+          prUrls.set(metaEntry.sessionId, metaEntry.prUrl)
+          prRepositories.set(metaEntry.sessionId, metaEntry.prRepository)
+        } else if (metaEntry.type === 'file-history-snapshot') {
+          fileHistorySnapshots.set(metaEntry.messageId, metaEntry)
+        } else if (metaEntry.type === 'attribution-snapshot') {
+          attributionSnapshots.set(metaEntry.messageId, metaEntry)
+        } else if (metaEntry.type === 'content-replacement') {
+          // Subagent decisions key by agentId (sidechain resume); main-thread
+          // decisions key by sessionId (/resume).
+          if (metaEntry.agentId) {
+            const existing =
+              agentContentReplacements.get(metaEntry.agentId) ?? []
+            agentContentReplacements.set(metaEntry.agentId, existing)
+            existing.push(...metaEntry.replacements)
+          } else {
+            const existing = contentReplacements.get(metaEntry.sessionId) ?? []
+            contentReplacements.set(metaEntry.sessionId, existing)
+            existing.push(...metaEntry.replacements)
+          }
+        } else if (metaEntry.type === 'marble-origami-commit') {
+          contextCollapseCommits.push(metaEntry)
+        } else if (metaEntry.type === 'marble-origami-snapshot') {
+          contextCollapseSnapshot = metaEntry
         }
-      } else if (entry.type === 'marble-origami-commit') {
-        contextCollapseCommits.push(entry)
-      } else if (entry.type === 'marble-origami-snapshot') {
-        contextCollapseSnapshot = entry
       }
     })
   } catch {
@@ -4622,11 +4632,11 @@ function transformMessagesForExternalTranscript(
     if (m.type === 'assistant' && Array.isArray(m.message.content)) {
       const content = m.message.content
       const hasRepl = content.some(
-        b => b.type === 'tool_use' && b.name === REPL_TOOL_NAME,
+        (b: any) => b.type === 'tool_use' && b.name === REPL_TOOL_NAME,
       )
       const filtered = hasRepl
         ? content.filter(
-            b => !(b.type === 'tool_use' && b.name === REPL_TOOL_NAME),
+            (b: any) => !(b.type === 'tool_use' && b.name === REPL_TOOL_NAME),
           )
         : content
       if (filtered.length === 0) return []
@@ -4642,11 +4652,11 @@ function transformMessagesForExternalTranscript(
     if (m.type === 'user' && Array.isArray(m.message.content)) {
       const content = m.message.content
       const hasRepl = content.some(
-        b => b.type === 'tool_result' && replIds.has(b.tool_use_id),
+        (b: any) => b.type === 'tool_result' && replIds.has(b.tool_use_id),
       )
       const filtered = hasRepl
         ? content.filter(
-            b => !(b.type === 'tool_result' && replIds.has(b.tool_use_id)),
+            (b: any) => !(b.type === 'tool_result' && replIds.has(b.tool_use_id)),
           )
         : content
       if (filtered.length === 0) return []

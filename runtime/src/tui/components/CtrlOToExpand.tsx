@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
@@ -6,14 +5,14 @@ import React, { useContext } from 'react';
 import { Text } from '../ink.js';
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
-import { InVirtualListContext } from './messageActions';
+import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
+import { InVirtualListContext } from './messageActions.js';
 
 // Context to track if we're inside a sub agent
 // Similar to MessageResponseContext, this helps us avoid showing
 // too many "(ctrl+o to expand)" hints in sub agent output
 const SubAgentContext = React.createContext(false);
-export function SubAgentProvider(t0) {
+export function SubAgentProvider(t0: { children?: React.ReactNode }) {
   const $ = _c(2);
   const {
     children

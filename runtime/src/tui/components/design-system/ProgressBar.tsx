@@ -1,7 +1,5 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import { Text } from '../../ink.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
@@ -26,7 +24,7 @@ type Props = {
   emptyColor?: keyof Theme;
 };
 const BLOCKS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
-export function ProgressBar(t0) {
+export function ProgressBar(t0: Props) {
   const $ = _c(13);
   const {
     ratio: inputRatio,

@@ -338,4 +338,6 @@ export function getPinnedCacheEdits(): readonly never[] {
 
 export function markToolsSentToAPIState(): void {}
 
-export function pinCacheEdits(): void {}
+// Open-build no-op stub. Accepts the upstream (userMessageIndex, block) args so
+// callers type-check; the values are intentionally ignored in this build.
+export function pinCacheEdits(_userMessageIndex?: number, _block?: unknown): void {}

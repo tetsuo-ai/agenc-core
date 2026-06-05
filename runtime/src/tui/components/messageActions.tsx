@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
@@ -6,7 +5,7 @@ import type { RefObject } from 'react';
 import React, { useCallback, useMemo, useRef } from 'react';
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
-import type { NormalizedUserMessage, RenderableMessage } from '../../types/message';
+import type { NormalizedUserMessage, RenderableMessage } from '../../types/message.js';
 import { isEmptyMessageText, SYNTHETIC_MESSAGES } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const NAVIGABLE_TYPES = ['user', 'assistant', 'grouped_tool_use', 'collapsed_read_search', 'system', 'attachment'] as const;
 export type NavigableType = (typeof NAVIGABLE_TYPES)[number];
@@ -62,6 +61,10 @@ export function isNavigableMessage(msg: NavigableMessage): boolean {
       }
       return false;
   }
+  // Unreachable for any real RenderableMessage (msg.type is one of NAVIGABLE_TYPES);
+  // present only because the donor `RenderableMessage` alias is currently `any`,
+  // so TS cannot prove the switch exhaustive. Mirrors the prior falsy result.
+  return false;
 }
 type PrimaryInput = {
   label: string;
@@ -271,7 +274,10 @@ export function useMessageActions(cursor: MessageActionsState | null, setCursor:
 }
 
 // Must mount inside <KeybindingSetup>.
-export function MessageActionsKeybindings(t0) {
+export function MessageActionsKeybindings(t0: {
+  handlers: Record<string, () => void | false | Promise<void>>;
+  isActive: boolean;
+}) {
   const $ = _c(2);
   const {
     handlers,
@@ -293,7 +299,9 @@ export function MessageActionsKeybindings(t0) {
 }
 
 // borderTop-only Box matches PromptInput's ─── line for stable footer height.
-export function MessageActionsBar(t0) {
+export function MessageActionsBar(t0: {
+  cursor: MessageActionsState;
+}) {
   const $ = _c(28);
   const {
     cursor
@@ -423,7 +431,7 @@ export function copyTextOf(msg: NavigableMessage): string {
     case 'grouped_tool_use':
       return msg.results.map(toolResultText).filter(Boolean).join('\n\n');
     case 'collapsed_read_search':
-      return msg.messages.flatMap(m => m.type === 'user' ? [toolResultText(m)] : m.type === 'grouped_tool_use' ? m.results.map(toolResultText) : []).filter(Boolean).join('\n\n');
+      return msg.messages.flatMap((m: NavigableMessage) => m.type === 'user' ? [toolResultText(m)] : m.type === 'grouped_tool_use' ? m.results.map(toolResultText) : []).filter(Boolean).join('\n\n');
     case 'system':
       if ('content' in msg) return msg.content;
       if ('error' in msg) return String(msg.error);
@@ -433,11 +441,15 @@ export function copyTextOf(msg: NavigableMessage): string {
         const a = msg.attachment;
         if (a.type === 'queued_command') {
           const p = a.prompt;
-          return typeof p === 'string' ? p : p.flatMap(b => b.type === 'text' ? [b.text] : []).join('\n');
+          return typeof p === 'string' ? p : p.flatMap((b: { type: string; text?: string }) => b.type === 'text' ? [b.text] : []).join('\n');
         }
         return `[${a.type}]`;
       }
   }
+  // Unreachable for any real RenderableMessage; present only because the donor
+  // `RenderableMessage` alias is currently `any`, so TS cannot prove the switch
+  // exhaustive. Mirrors the prior empty-string fallback used by the other cases.
+  return '';
 }
 function toolResultText(r: NormalizedUserMessage): string {
   const b = r.message.content[0];
@@ -445,5 +457,5 @@ function toolResultText(r: NormalizedUserMessage): string {
   const c = b.content;
   if (typeof c === 'string') return c;
   if (!c) return '';
-  return c.flatMap(x => x.type === 'text' ? [x.text] : []).join('\n');
+  return c.flatMap((x: { type: string; text?: string }) => x.type === 'text' ? [x.text] : []).join('\n');
 }

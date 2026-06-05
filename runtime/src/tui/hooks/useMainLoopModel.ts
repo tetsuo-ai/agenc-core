@@ -1,7 +1,6 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useReducer } from 'react'
-import { useAppState } from '../state/AppState.js'
+import { type AppState, useAppState } from '../state/AppState.js'
 import {
   getDefaultMainLoopModelSetting,
   type ModelName,
@@ -12,8 +11,10 @@ import {
 // API calls. Use this over getMainLoopModel() when the component needs to
 // update upon a model config change.
 export function useMainLoopModel(): ModelName {
-  const mainLoopModel = useAppState(s => s.mainLoopModel)
-  const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
+  const mainLoopModel = useAppState((s: AppState) => s.mainLoopModel)
+  const mainLoopModelForSession = useAppState(
+    (s: AppState) => s.mainLoopModelForSession,
+  )
 
   // parseUserSpecifiedModel reads tengu_ant_model_override via
   // _CACHED_MAY_BE_STALE (in resolveAntModel). Until GB init completes,
@@ -23,7 +24,10 @@ export function useMainLoopModel(): ModelName {
   // Without this, the alias resolution is frozen until something else
   // happens to re-render the component — the API would sample one model
   // while /model (which also re-resolves) displays another.
-  const [, forceRerender] = useReducer(x => x + 1, 0)
+  // forceRerender is currently unused: the effect below is a no-op placeholder
+  // for the refresh-signal subscription described above. Keep the useReducer
+  // call to preserve the hook order/render behavior until that wiring lands.
+  useReducer(x => x + 1, 0)
   useEffect(() => () => {}, [])
 
   const model = parseUserSpecifiedModel(

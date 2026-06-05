@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React from 'react';
@@ -67,7 +66,7 @@ export function renderToolResultMessage(output: Output, _progressMessages: Progr
 type AttachmentListProps = {
   attachments: Output['attachments'];
 };
-function AttachmentList(t0) {
+function AttachmentList(t0: AttachmentListProps) {
   const $ = _c(4);
   const {
     attachments
@@ -93,6 +92,6 @@ function AttachmentList(t0) {
   }
   return t2;
 }
-function _temp(att) {
+function _temp(att: NonNullable<Output['attachments']>[number]) {
   return <Box key={att.path} flexDirection="row"><Text dimColor={true}>{figures.pointerSmall} {att.isImage ? "[image]" : "[file]"}{" "}</Text><Text>{getDisplayPath(att.path)}</Text><Text dimColor={true}> ({formatFileSize(att.size)})</Text></Box>;
 }

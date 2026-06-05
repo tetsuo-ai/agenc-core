@@ -6,4 +6,7 @@ declare module 'react-reconciler' {
 
 declare module 'react-reconciler/constants.js' {
   export const LegacyRoot: any;
+  export const ContinuousEventPriority: number;
+  export const DefaultEventPriority: number;
+  export const DiscreteEventPriority: number;
 }

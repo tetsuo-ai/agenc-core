@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 
 // Additional terminals that support OSC 8 hyperlinks but aren't detected by supports-hyperlinks.

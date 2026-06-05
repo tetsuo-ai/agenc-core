@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { useMemoryUsage } from '../hooks/useMemoryUsage.js';
@@ -9,6 +8,9 @@ export function MemoryUsageIndicator(): React.ReactNode {
   // the hook means the 10s polling interval is never set up in external builds.
   // USER_TYPE is a build-time constant, so the hook call below is either always
   // reached or dead-code-eliminated — never conditional at runtime.
+  // The swarm-128 test rewrites this exact `if (...)` line at the source level
+  // to flip the build path, so the literal comparison must stay verbatim.
+  // @ts-expect-error TS2367 — "external" !== 'ant' is a constant build-time guard.
   if ("external" !== 'ant') {
     return null;
   }

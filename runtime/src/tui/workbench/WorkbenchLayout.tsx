@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useMemo, type RefObject } from "react";
 
 import { Box, NoSelect, Text } from "../ink.js";

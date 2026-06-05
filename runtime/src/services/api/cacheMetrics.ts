@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Cross-provider cache usage normalizer for Phase 1 observability.
  *
@@ -250,7 +249,12 @@ export function resolveCacheProvider(
     return 'anthropic'
   }
   if (provider === 'gemini') return 'gemini'
-  if (provider === 'providerCode') return 'providerCode'
+  // 'providerCode' is not a member of APIProvider, so this comparison is
+  // always false at runtime today (dead branch carried over from the donor
+  // provider union — mirrors the same cast in withRetry.ts). The cast
+  // preserves the existing runtime behavior while satisfying the type
+  // checker; see notedBugs.
+  if ((provider as string) === 'providerCode') return 'providerCode'
   if (provider === 'openai') {
     const url = hints?.openAiBaseUrl ?? ''
     // Self-hosted / private-network endpoint — detect first so a vLLM

@@ -1,13 +1,11 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import stripAnsi from 'strip-ansi';
 import { Box, Text } from '../../ink.js';
 import { formatFileSize } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { MessageResponse } from '../MessageResponse';
-import { OffscreenFreeze } from '../OffscreenFreeze';
-import { ShellTimeDisplay } from './ShellTimeDisplay';
+import { MessageResponse } from '../MessageResponse.js';
+import { OffscreenFreeze } from '../OffscreenFreeze.js';
+import { ShellTimeDisplay } from './ShellTimeDisplay.js';
 type Props = {
   output: string;
   fullOutput: string;
@@ -18,7 +16,7 @@ type Props = {
   taskId?: string;
   verbose: boolean;
 };
-export function ShellProgressMessage(t0) {
+export function ShellProgressMessage(t0: Props) {
   const $ = _c(30);
   const {
     output,
@@ -146,6 +144,6 @@ export function ShellProgressMessage(t0) {
   }
   return t10;
 }
-function _temp(line) {
+function _temp(line: string) {
   return line;
 }

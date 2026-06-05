@@ -1,18 +1,16 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type DependencyList, type EffectCallback, useEffect, useRef, useState } from 'react';
 import { Box, Text } from '../../ink.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js';
 export function SandboxPromptFooterHint() {
   const $ = _c(6);
   const [recentViolationCount, setRecentViolationCount] = useState(0);
-  const timerRef = useRef(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
   const detailsShortcut = useShortcutDisplay("app:toggleTranscript", "Global", "ctrl+o");
-  let t0;
-  let t1;
+  let t0: EffectCallback;
+  let t1: DependencyList;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t0 = () => {
       if (!SandboxManager.isSandboxingEnabled()) {

@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
@@ -45,7 +44,6 @@ import {
   getLastAssistantMessage,
   isAssistantAPIErrorMessage,
 } from '../../utils/messages.js'
-import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
 import {
   buildTranscriptForClassifier,
@@ -73,7 +71,10 @@ function filterToolsForAgent({
   tools: Tools
   isBuiltIn: boolean
   isAsync?: boolean
-  permissionMode?: PermissionMode
+  // Mirror AgentDefinition's mode union (includes 'unattended'/'bubble') so the
+  // value forwarded from resolveAgentTools assigns without widening at the call
+  // site. Only compared against 'plan' below, so the wider union is inert.
+  permissionMode?: AgentDefinition['permissionMode']
 }): Tools {
   return tools.filter(tool => {
     // Allow MCP tools for all agents
@@ -281,14 +282,7 @@ export function finalizeAgentTool(
     isAsync: boolean
   },
 ): AgentToolResult {
-  const {
-    prompt,
-    resolvedAgentModel,
-    isBuiltInAgent,
-    startTime,
-    agentType,
-    isAsync,
-  } = metadata
+  const { startTime, agentType } = metadata
 
   const lastAssistantMessage = getLastAssistantMessage(agentMessages)
   if (lastAssistantMessage === undefined) {
@@ -297,17 +291,25 @@ export function finalizeAgentTool(
   if (isAssistantAPIErrorMessage(lastAssistantMessage)) {
     throw new Error(getAssistantAPIErrorMessageText(lastAssistantMessage))
   }
+  // The isApiError type guard above narrows `lastAssistantMessage` to `never`
+  // in this branch (Message/AssistantMessage are permissive `any` aliases, so
+  // subtracting the guarded intersection collapses the type). Re-broaden via a
+  // typed reference so the untyped message graph stays accessible. No runtime
+  // effect — same object, same accesses.
+  const assistantMessage: MessageType = lastAssistantMessage
   // Extract text content from the agent's response. If the final assistant
   // message is a pure tool_use block (loop exited mid-turn), fall back to
   // the most recent assistant message that has text content.
-  let content = lastAssistantMessage.message.content.filter(
-    _ => _.type === 'text',
+  let content = assistantMessage.message.content.filter(
+    (_: { type: string }) => _.type === 'text',
   )
   if (content.length === 0) {
     for (let i = agentMessages.length - 1; i >= 0; i--) {
       const m = agentMessages[i]!
       if (m.type !== 'assistant') continue
-      const textBlocks = m.message.content.filter(_ => _.type === 'text')
+      const textBlocks = m.message.content.filter(
+        (_: { type: string }) => _.type === 'text',
+      )
       if (textBlocks.length > 0) {
         content = textBlocks
         break
@@ -315,7 +317,7 @@ export function finalizeAgentTool(
     }
   }
 
-  const totalTokens = getTokenCountFromUsage(lastAssistantMessage.message.usage)
+  const totalTokens = getTokenCountFromUsage(assistantMessage.message.usage)
   const totalToolUseCount = countToolUses(agentMessages)
 
   return {
@@ -325,7 +327,7 @@ export function finalizeAgentTool(
     totalDurationMs: Date.now() - startTime,
     totalTokens,
     totalToolUseCount,
-    usage: lastAssistantMessage.message.usage,
+    usage: assistantMessage.message.usage,
   }
 }
 
@@ -335,7 +337,9 @@ export function finalizeAgentTool(
  */
 export function getLastToolUseName(message: MessageType): string | undefined {
   if (message.type !== 'assistant') return undefined
-  const block = message.message.content.findLast(b => b.type === 'tool_use')
+  const block = message.message.content.findLast(
+    (b: { type: string }) => b.type === 'tool_use',
+  )
   return block?.type === 'tool_use' ? block.name : undefined
 }
 
@@ -364,13 +368,12 @@ export async function classifyHandoffIfNeeded({
   tools,
   toolPermissionContext,
   abortSignal,
-  subagentType,
-  totalToolUseCount,
 }: {
   agentMessages: MessageType[]
   tools: Tools
   toolPermissionContext: AppState['toolPermissionContext']
   abortSignal: AbortSignal
+  // Accepted for call-site symmetry/telemetry but not consumed here.
   subagentType: string
   totalToolUseCount: number
 }): Promise<string | null> {
@@ -480,8 +483,17 @@ export async function runAsyncAgentLifecycle({
     )
     const onCacheSafeParams = enableSummarization
       ? (params: CacheSafeParams) => {
+          // LATENT BUG: startAgentSummarization was migrated to a single
+          // options-object API (StartAgentSummarizationOptions), but this call
+          // site (and AgentTool.tsx:866/948) still pass the old 4 positional
+          // args. At runtime the string taskId is received as `options`, so
+          // options.cacheSafeParams is undefined and summarization throws when
+          // enableSummarization is true. Left as-is per behavior-preservation:
+          // the correct fix needs getAgentTranscript/updateAgentSummary
+          // callbacks not in scope here and must be done across all 3 sites.
           const { stop } = startAgentSummarization(
             taskId,
+            // @ts-expect-error -- incomplete API migration, see note above
             asAgentId(taskId),
             params,
             rootSetAppState,

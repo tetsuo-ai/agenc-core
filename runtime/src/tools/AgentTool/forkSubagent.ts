@@ -1,6 +1,4 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-import type { BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { randomUUID } from 'crypto'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
@@ -9,12 +7,28 @@ import {
 } from '../../constants/xml.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type {
+  AgenCTextBlockParam,
+  AgenCThinkingBlockParam,
+  AgenCToolResultBlockParam,
+  AgenCToolUseBlockParam,
   AssistantMessage,
   Message as MessageType,
 } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { createUserMessage } from '../../utils/messages.js'
 import type { BuiltInAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+
+/**
+ * Union of the content-block param shapes that can appear in an assistant
+ * message's `content` array. `AssistantMessage` is intentionally `any` in the
+ * donor-ported message type surface, so callbacks over `content` infer `any`;
+ * annotating with this union restores type checking without changing behavior.
+ */
+type ForkContentBlock =
+  | AgenCTextBlockParam
+  | AgenCThinkingBlockParam
+  | AgenCToolUseBlockParam
+  | AgenCToolResultBlockParam
 /**
  * Fork subagent feature gate.
  *
@@ -120,8 +134,11 @@ export function buildForkedMessages(
   }
 
   // Collect all tool_use blocks from the assistant message
-  const toolUseBlocks = assistantMessage.message.content.filter(
-    (block): block is BetaToolUseBlock => block.type === 'tool_use',
+  const toolUseBlocks = (
+    assistantMessage.message.content as ForkContentBlock[]
+  ).filter(
+    (block: ForkContentBlock): block is AgenCToolUseBlockParam =>
+      block.type === 'tool_use',
   )
 
   if (toolUseBlocks.length === 0) {
@@ -139,7 +156,7 @@ export function buildForkedMessages(
   }
 
   // Build tool_result blocks for every tool_use, all with identical placeholder text
-  const toolResultBlocks = toolUseBlocks.map(block => ({
+  const toolResultBlocks = toolUseBlocks.map((block: AgenCToolUseBlockParam) => ({
     type: 'tool_result' as const,
     tool_use_id: block.id,
     content: [

@@ -1,8 +1,7 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import { InterruptedByUser } from './InterruptedByUser';
-import { MessageResponse } from './MessageResponse';
+import { InterruptedByUser } from './InterruptedByUser.js';
+import { MessageResponse } from './MessageResponse.js';
 export function FallbackToolUseRejectedMessage() {
   const $ = _c(1);
   let t0;

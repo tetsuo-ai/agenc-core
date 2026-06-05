@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { relative } from 'path'
 import type {
   CallHierarchyIncomingCall,

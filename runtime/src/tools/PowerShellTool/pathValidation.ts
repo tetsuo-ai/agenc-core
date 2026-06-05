@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * PowerShell-specific path validation for command arguments.
  *
@@ -1526,7 +1525,11 @@ function extractPathsFromCommand(cmd: ParsedCommandElement): {
  * - 'passthrough' if no path commands were found or all paths are valid
  */
 export function checkPathConstraints(
-  input: { command: string },
+  // Unused here (the PowerShell validator works off `parsed`), but kept as the
+  // first positional parameter for BashTool/pathValidation.ts signature parity —
+  // callers pass `input` positionally to both. Underscore-prefixed to satisfy
+  // noUnusedParameters without changing the function arity.
+  _input: { command: string },
   parsed: ParsedPowerShellCommand,
   toolPermissionContext: ToolPermissionContext,
   compoundCommandHasCd = false,

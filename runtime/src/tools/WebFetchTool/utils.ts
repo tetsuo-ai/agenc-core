@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import axios, { type AxiosResponse } from 'axios'
 import { LRUCache } from 'lru-cache'
 import { queryHaiku } from '../../services/api/anthropic.js'
@@ -388,12 +387,20 @@ export async function getWithPermittedRedirects(
         // Enforce the same 10MB cap as the axios path, streaming so a server
         // that omits/understates Content-Length cannot exhaust memory.
         const data = await readBodyCapped(fetchResponse)
-        // Build an AxiosResponse-like shape so downstream code stays happy
+        // Build an AxiosResponse-like shape so downstream code stays happy.
+        // Flatten the fetch Headers into a plain object. The project's lib set
+        // exposes Headers.forEach (lib.dom) but not Headers.entries (which lives
+        // in lib.dom.iterable, not included here), so iterate via forEach —
+        // behavior-identical to Object.fromEntries(headers.entries()).
+        const headers: Record<string, string> = {}
+        fetchResponse.headers.forEach((value, key) => {
+          headers[key] = value
+        })
         return {
           data,
           status: fetchResponse.status,
           statusText: fetchResponse.statusText,
-          headers: Object.fromEntries(fetchResponse.headers.entries()),
+          headers,
           config: axiosConfig,
           request: undefined,
         } as unknown as AxiosResponse<ArrayBuffer>
@@ -554,7 +561,12 @@ export async function getURLMarkdownContent(
   // This lets GC reclaim up to MAX_HTTP_CONTENT_LENGTH (10MB) before Turndown
   // builds its DOM tree (which can be 3-5x the HTML size).
   ;(response as { data: unknown }).data = null
-  const contentType = response.headers['content-type'] ?? ''
+  // axios raw response header values are strings; the indexed type widens to
+  // AxiosHeaderValue (string | string[] | number | boolean | AxiosHeaders),
+  // but a real content-type header is always a string. Narrow to string so the
+  // downstream string ops (isBinaryContentType, .includes, cache entry) typecheck.
+  const contentType =
+    (response.headers['content-type'] as string | undefined) ?? ''
 
   // Binary content: save raw bytes to disk with a proper extension so AgenC
   // can inspect the file later. We still fall through to the utf-8 decode +

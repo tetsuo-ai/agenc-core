@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /* eslint-disable custom-rules/no-top-level-side-effects */
 
@@ -12,6 +11,7 @@ import {
   createNode,
   createTextNode,
   type DOMElement,
+  type DOMNode,
   type DOMNodeAttribute,
   type ElementNames,
   insertBeforeNode,
@@ -262,22 +262,13 @@ export function resetProfileCounters(): void {
 }
 // --- END ---
 
-const reconciler = createReconciler<
-  ElementNames,
-  Props,
-  DOMElement,
-  DOMElement,
-  TextNode,
-  DOMElement,
-  unknown,
-  unknown,
-  DOMElement,
-  HostContext,
-  UpdatePayload | null,
-  NodeJS.Timeout,
-  -1,
-  null
->({
+// `react-reconciler` ships no types in this repo (see
+// src/types/react-reconciler.d.ts, where createReconciler is `any`), so the
+// HostConfig type arguments below would be erased and provide no checking —
+// and passing type arguments to an untyped call is a TS error (TS2347).
+// Each config callback is instead annotated explicitly with the concrete
+// DOMElement/TextNode types it operates on, which is the real type safety.
+const reconciler = createReconciler({
   getRootHostContext: () => ({ isInsideText: false }),
   prepareForCommit: () => {
     if (COMMIT_LOG) _prepareAt = performance.now()
@@ -285,7 +276,7 @@ const reconciler = createReconciler<
   },
   preparePortalMount: () => null,
   clearContainer: () => false,
-  resetAfterCommit(rootNode) {
+  resetAfterCommit(rootNode: DOMElement) {
     _lastCommitMs = _commitStart > 0 ? performance.now() - _commitStart : 0
     _commitStart = 0
     if (COMMIT_LOG) {
@@ -410,19 +401,19 @@ const reconciler = createReconciler<
     return createTextNode(text)
   },
   resetTextContent() {},
-  hideTextInstance(node) {
+  hideTextInstance(node: TextNode) {
     setTextNodeValue(node, '')
   },
-  unhideTextInstance(node, text) {
+  unhideTextInstance(node: TextNode, text: string) {
     setTextNodeValue(node, text)
   },
-  getPublicInstance: (instance): DOMElement => instance as DOMElement,
-  hideInstance(node) {
+  getPublicInstance: (instance: DOMElement): DOMElement => instance,
+  hideInstance(node: DOMElement) {
     node.isHidden = true
     node.yogaNode?.setDisplay(LayoutDisplay.None)
     markDirty(node)
   },
-  unhideInstance(node) {
+  unhideInstance(node: DOMElement) {
     node.isHidden = false
     node.yogaNode?.setDisplay(LayoutDisplay.Flex)
     markDirty(node)
@@ -529,7 +520,7 @@ const reconciler = createReconciler<
   commitTextUpdate(node: TextNode, _oldText: string, newText: string): void {
     setTextNodeValue(node, newText)
   },
-  removeChild(node, removeNode) {
+  removeChild(node: DOMElement, removeNode: DOMNode) {
     removeChildNode(node, removeNode)
     cleanupYogaNode(removeNode)
     if (removeNode.nodeName !== '#text') {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useEffect, useState } from 'react';
@@ -74,7 +73,7 @@ const BLURRED_TICK_INTERVAL_MS = FRAME_INTERVAL_MS * 2;
 // Own component so App.tsx doesn't re-render when the clock is created.
 // The clock value is stable (created once via useState), so the provider
 // never causes consumer re-renders on its own.
-export function ClockProvider(t0) {
+export function ClockProvider(t0: { children: React.ReactNode }) {
   const $ = _c(7);
   const {
     children

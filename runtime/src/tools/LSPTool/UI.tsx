@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
@@ -55,10 +54,18 @@ const OPERATION_LABELS: Record<Input['operation'], {
   }
 };
 
+interface LSPResultSummaryProps {
+  operation: Input['operation'];
+  resultCount: number;
+  fileCount: number;
+  content: string;
+  verbose: boolean;
+}
+
 /**
  * Reusable component for LSP result summaries with collapsed/expanded views
  */
-function LSPResultSummary(t0) {
+function LSPResultSummary(t0: LSPResultSummaryProps) {
   const $ = _c(24);
   const {
     operation,

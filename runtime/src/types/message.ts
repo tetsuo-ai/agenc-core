@@ -49,7 +49,8 @@ export type CollapsibleMessage = any;
 export type RenderableMessage = any;
 export type TombstoneMessage = any;
 export type ToolUseSummaryMessage = any;
-export type ProgressMessage = any;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export type ProgressMessage<_T = any> = any;
 export type RequestStartEvent = any;
 export type StopHookInfo = any;
 export type StreamEvent = any;

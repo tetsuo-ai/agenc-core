@@ -48,6 +48,22 @@ declare module "@smithy/core" {
   export const NoAuthSigner: new (...args: unknown[]) => unknown;
 }
 
+// Optional native audio module (cpal-backed). Listed as a tsup external and
+// loaded lazily via dynamic import in src/services/voice.ts; it is not a
+// package.json dependency, so declare its consumed surface loosely here —
+// same rationale as the optional AWS/Bedrock deps above.
+declare module "audio-capture-napi" {
+  import type { Buffer } from "node:buffer";
+
+  export function isNativeAudioAvailable(): boolean;
+  export function isNativeRecordingActive(): boolean;
+  export function stopNativeRecording(): void;
+  export function startNativeRecording(
+    onData: (data: Buffer) => void,
+    onEnd: () => void,
+  ): boolean;
+}
+
 declare module "src/entrypoints/agentSdkTypes.js" {
   export type HookEvent = any;
   export type ModelUsage = Record<string, unknown>;

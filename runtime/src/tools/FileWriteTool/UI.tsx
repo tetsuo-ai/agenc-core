@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import type { StructuredPatchHunk } from 'diff';
@@ -15,7 +14,6 @@ import { FilePathLink } from '../../tui/components/FilePathLink.js';
 import { HighlightedCode } from '../../tui/components/markdown/HighlightedCode.js';
 import { useTerminalSize } from '../../tui/hooks/useTerminalSize.js';
 import { Box, Text } from '../../tui/ink.js';
-import type { ToolProgressData } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import { getCwd } from '../../utils/cwd.js';
 import { getPatchForDisplay } from '../../utils/diff.js';
@@ -36,7 +34,11 @@ function countLines(content: string): number {
   const parts = content.split(EOL);
   return content.endsWith(EOL) ? parts.length - 1 : parts.length;
 }
-function FileWriteToolCreatedMessage(t0) {
+function FileWriteToolCreatedMessage(t0: {
+  filePath: string;
+  content: string;
+  verbose: boolean;
+}) {
   const $ = _c(25);
   const {
     filePath,
@@ -204,7 +206,12 @@ type RejectionDiffData = {
 } | {
   type: 'error';
 };
-function WriteRejectionDiff(t0) {
+function WriteRejectionDiff(t0: {
+  filePath: string;
+  content: string;
+  style?: 'condensed';
+  verbose: boolean;
+}) {
   const $ = _c(20);
   const {
     filePath,
@@ -267,7 +274,14 @@ function WriteRejectionDiff(t0) {
   }
   return t5;
 }
-function WriteRejectionBody(t0) {
+function WriteRejectionBody(t0: {
+  promise: Promise<RejectionDiffData>;
+  filePath: string;
+  firstLine: string | null;
+  createFallback: React.ReactNode;
+  style?: 'condensed';
+  verbose: boolean;
+}) {
   const $ = _c(8);
   const {
     promise,
@@ -364,7 +378,7 @@ export function renderToolResultMessage({
   structuredPatch,
   type,
   originalFile
-}: Output, _progressMessagesForMessage: ProgressMessage<ToolProgressData>[], {
+}: Output, _progressMessagesForMessage: ProgressMessage[], {
   style,
   verbose
 }: {

@@ -1,7 +1,6 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+import '../global.d.ts';
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 export type Props = {
   /**
    * Number of newlines to insert.
@@ -14,7 +13,7 @@ export type Props = {
 /**
  * Adds one or more newline (\n) characters. Must be used within <Text> components.
  */
-export default function Newline(t0) {
+export default function Newline(t0: Props) {
   const $ = _c(4);
   const {
     count: t1

@@ -1,14 +1,12 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
-import * as React from 'react';
 import { useContentWidth } from '../context/contentWidthContext.js';
-import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box, Text } from '../ink.js';
 import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { MessageResponse } from './MessageResponse';
-import { StructuredDiffList } from './diff/StructuredDiffList';
+import { MessageResponse } from './MessageResponse.js';
+import { StructuredDiffList } from './diff/StructuredDiffList.js';
 type Props = {
   filePath: string;
   structuredPatch: StructuredPatchHunk[];
@@ -18,7 +16,7 @@ type Props = {
   verbose: boolean;
   previewHint?: string;
 };
-export function FileEditToolUpdatedMessage(t0) {
+export function FileEditToolUpdatedMessage(t0: Props) {
   const $ = _c(22);
   const {
     filePath,
@@ -114,15 +112,15 @@ export function FileEditToolUpdatedMessage(t0) {
   }
   return t8;
 }
-function _temp4(acc_0, hunk_0) {
+function _temp4(acc_0: number, hunk_0: StructuredPatchHunk) {
   return acc_0 + count(hunk_0.lines, _temp3);
 }
-function _temp3(__0) {
+function _temp3(__0: string) {
   return __0.startsWith("-");
 }
-function _temp2(acc, hunk) {
+function _temp2(acc: number, hunk: StructuredPatchHunk) {
   return acc + count(hunk.lines, _temp);
 }
-function _temp(_) {
+function _temp(_: string) {
   return _.startsWith("+");
 }

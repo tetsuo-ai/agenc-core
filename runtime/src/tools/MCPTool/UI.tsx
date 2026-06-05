@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import figures from 'figures';
@@ -156,7 +155,7 @@ export function renderToolResultMessage(output: string | MCPToolResult, _progres
  * 2. If JSON is a small flat-ish object, render as aligned key: value.
  * 3. Otherwise fall through to OutputLine (pretty-print + truncate).
  */
-function MCPTextOutput(t0) {
+function MCPTextOutput(t0: { content: string; verbose: boolean }) {
   const $ = _c(18);
   const {
     content,
@@ -209,7 +208,7 @@ function MCPTextOutput(t0) {
         const maxKeyWidth = Math.max(...flat.map(_temp2));
         let t3;
         if ($[11] !== maxKeyWidth) {
-          t3 = (t4, i) => {
+          t3 = (t4: [string, string], i: number) => {
             const [key, value] = t4;
             return <Text key={i}><Text dimColor={true}>{key.padEnd(maxKeyWidth)}: </Text><Ansi>{linkifyUrlsInText(value)}</Ansi></Text>;
           };
@@ -255,11 +254,11 @@ function MCPTextOutput(t0) {
  * Parse content as a JSON object and return its entries. Null if content
  * doesn't parse, isn't an object, is too large, or has 0/too-many keys.
  */
-function _temp2(t0) {
+function _temp2(t0: [string, string]) {
   const [k_0] = t0;
   return stringWidth(k_0);
 }
-function _temp(t0) {
+function _temp(t0: [string, string]) {
   const [k, v] = t0;
   return `${k}: ${v}`;
 }

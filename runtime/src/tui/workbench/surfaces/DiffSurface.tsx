@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useEffect, useState } from "react";
 
 import { collectDiffSnapshot } from "../../../commands/diff.js";

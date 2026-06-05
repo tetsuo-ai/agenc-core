@@ -1,9 +1,8 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { useIsInsideModal, useModalScrollRef } from '../../context/modalContext';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { useIsInsideModal, useModalScrollRef } from '../../context/modalContext.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import ScrollBox from '../../ink/components/ScrollBox.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { stringWidth } from '../../ink/stringWidth.js';
@@ -65,7 +64,7 @@ const TabsContext = createContext<TabsContextValue>({
   blurHeader: () => {},
   registerOptIn: () => () => {}
 });
-export function Tabs(t0) {
+export function Tabs(t0: TabsProps) {
   const $ = _c(25);
   const {
     title,
@@ -124,7 +123,7 @@ export function Tabs(t0) {
   }
   const registerOptIn = t5;
   const optedIn = optInCount > 0;
-  const handleTabChange = offset => {
+  const handleTabChange = (offset: number) => {
     const newIndex = (selectedTabIndex + tabs.length + offset) % tabs.length;
     const newTabId = tabs[newIndex]?.[0];
     if (isControlled && onTabChange && newTabId) {
@@ -152,7 +151,7 @@ export function Tabs(t0) {
   }, t7);
   let t8;
   if ($[5] !== headerFocused || $[6] !== hidden || $[7] !== optedIn) {
-    t8 = e => {
+    t8 = (e: KeyboardEvent) => {
       if (!headerFocused || !optedIn || hidden) {
         return;
       }
@@ -242,17 +241,17 @@ export function Tabs(t0) {
     registerOptIn
   }}>{t18}</TabsContext.Provider>;
 }
-function _temp4(sum, t0) {
+function _temp4(sum: number, t0: [string, string]) {
   const [, tabTitle] = t0;
   return sum + (tabTitle ? stringWidth(tabTitle) : 0) + 2 + 1;
 }
-function _temp3(n_0) {
+function _temp3(n_0: number) {
   return n_0 - 1;
 }
-function _temp2(n) {
+function _temp2(n: number) {
   return n + 1;
 }
-function _temp(child) {
+function _temp(child: React.ReactElement<TabProps>): [string, string] {
   return [child.props.id ?? child.props.title, child.props.title];
 }
 type TabProps = {
@@ -260,7 +259,7 @@ type TabProps = {
   id?: string;
   children: React.ReactNode;
 };
-export function Tab(t0) {
+export function Tab(t0: TabProps) {
   const $ = _c(4);
   const {
     title,

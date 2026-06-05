@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
@@ -32,7 +31,7 @@ type SpanProps = {
  *
  * Memoized to prevent re-renders when parent changes but children string is the same.
  */
-export const Ansi = React.memo(function Ansi(t0) {
+export const Ansi = React.memo(function Ansi(t0: Props) {
   const $ = _c(12);
   const {
     children,
@@ -69,7 +68,7 @@ export const Ansi = React.memo(function Ansi(t0) {
       }
       let t3;
       if ($[7] !== dimColor) {
-        t3 = (span, i) => {
+        t3 = (span: Span, i: number) => {
           const hyperlink = span.props.hyperlink;
           if (dimColor) {
             span.props.dim = true;
@@ -232,8 +231,14 @@ type BaseTextStyleProps = {
   inverse?: boolean;
 };
 
+type StyledTextProps = BaseTextStyleProps & {
+  bold?: boolean;
+  dim?: boolean;
+  children?: React.ReactNode;
+};
+
 // Wrapper component that handles bold/dim mutual exclusivity for Text
-function StyledText(t0) {
+function StyledText(t0: StyledTextProps) {
   const $ = _c(14);
   let bold;
   let children;

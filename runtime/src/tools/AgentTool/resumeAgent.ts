@@ -1,10 +1,10 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
-import type { ToolUseContext } from '../Tool.js'
+import type { ToolPermissionContext, ToolUseContext } from '../Tool.js'
+import type { AdditionalWorkingDirectory } from '../../types/permissions.js'
 import { registerAsyncAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { assembleToolPool } from '../../tools.js'
 import { asAgentId } from '../../types/ids.js'
@@ -123,8 +123,19 @@ export async function resumeAgentBackground({
             a => a.agentType === appState.agent,
           )
         : undefined
+      // DeepImmutable flattens the ReadonlyMap's method signatures into
+      // non-callable {} property shapes. The runtime value is a real Map, so
+      // view it as a ReadonlyMap to call .keys() (read-only, no behavior
+      // change). The DeepImmutable shape doesn't structurally overlap a Map,
+      // so route the cast through unknown (mirrors runAgent.ts).
       const additionalWorkingDirectories = Array.from(
-        appState.toolPermissionContext.additionalWorkingDirectories.keys(),
+        (
+          appState.toolPermissionContext
+            .additionalWorkingDirectories as unknown as ReadonlyMap<
+            string,
+            AdditionalWorkingDirectory
+          >
+        ).keys(),
       )
       const defaultSystemPrompt = await getSystemPrompt(
         toolUseContext.options.tools,
@@ -155,10 +166,16 @@ export async function resumeAgentBackground({
     permissionMode,
   )
 
+  // `selectedAgent.permissionMode` is typed with the permissions/types.ts
+  // `PermissionMode` union, which carries the internal-only `"unattended"`
+  // member absent from the `InternalPermissionMode` that assembleToolPool's
+  // ToolPermissionContext requires. The runtime value is unchanged; this
+  // assertion only bridges the two near-identical mode unions (mirrors the
+  // identical construct in AgentTool.tsx).
   const workerPermissionContext = {
     ...appState.toolPermissionContext,
     mode: selectedAgent.permissionMode ?? 'acceptEdits',
-  }
+  } as ToolPermissionContext
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
     : assembleToolPool(workerPermissionContext, appState.mcp.tools)

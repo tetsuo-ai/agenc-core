@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { type Tool, type Tools } from './tools/Tool.js'
 import {
@@ -149,7 +148,11 @@ export function getAllBaseTools(): Tools {
     TodoWriteTool,
     WebSearchTool,
     TaskStopTool,
-    AskUserQuestionTool,
+    // AskUserQuestionTool is a hand-rolled tool object whose `inputSchema`/
+    // `outputSchema` use custom `safeParse` shims rather than real Zod schemas,
+    // so it is not structurally assignable to `Tool` even though it behaves as
+    // one. Narrow type-level cast only; runtime shape is unchanged.
+    AskUserQuestionTool as unknown as Tool,
     EnterPlanModeTool,
     ...(WebBrowserTool ? [WebBrowserTool] : []),
     ...(isTodoV2Enabled()
@@ -173,7 +176,11 @@ export function getAllBaseTools(): Tools {
     ...(SendUserFileTool ? [SendUserFileTool] : []),
     ...(PushNotificationTool ? [PushNotificationTool] : []),
     ...(SubscribePRTool ? [SubscribePRTool] : []),
-    ...(getPowerShellTool() ? [getPowerShellTool()] : []),
+    // The two calls are independent at the type level so TS keeps the inner
+    // result as `PowerShellTool | null`; the guard guarantees non-null at
+    // runtime, so narrow the spread element to `Tool` (type-level only — call
+    // count and behavior are unchanged).
+    ...(getPowerShellTool() ? [getPowerShellTool() as Tool] : []),
     ...(SnipTool ? [SnipTool] : []),
     ...(process.env.NODE_ENV === 'test' ? [TestingPermissionTool] : []),
     CronCreateTool,

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { z } from 'zod/v4'
 import {
@@ -83,7 +82,7 @@ export const CtxInspectTool = buildTool({
       ...(include_persistence
         ? {
             snapshot: getContextCollapseSnapshot(),
-            commits: getContextCollapseCommits(),
+            commits: [...getContextCollapseCommits()],
           }
         : {}),
     }

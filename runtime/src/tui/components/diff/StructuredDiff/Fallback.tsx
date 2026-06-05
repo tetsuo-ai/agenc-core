@@ -1,7 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import * as React from 'react';
-import { useMemo } from 'react';
 import type { ThemeName } from '../../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { stringWidth } from '../../../ink/stringWidth.js';
 import { Box, NoSelect, Text, useTheme, wrapText } from '../../../ink.js';
@@ -78,7 +77,7 @@ type Props = {
 
 // Threshold for when we show a full-line diff instead of word-level diffing
 const CHANGE_THRESHOLD = 0.4;
-export function StructuredDiffFallback(t0) {
+export function StructuredDiffFallback(t0: Props) {
   const $ = _c(10);
   const {
     patch,
@@ -119,7 +118,7 @@ export function StructuredDiffFallback(t0) {
 }
 
 // Transform lines to line objects with type information
-function _temp(node, i) {
+function _temp(node: React.ReactNode, i: number) {
   return <Box key={i}>{node}</Box>;
 }
 export function transformLinesToObjects(lines: string[]): LineObject[] {

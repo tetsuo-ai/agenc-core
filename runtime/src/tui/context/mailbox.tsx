@@ -1,13 +1,12 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { createContext, useContext, useMemo } from 'react';
+import React, { createContext, useContext } from 'react';
 import { Mailbox } from '../../utils/mailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const MailboxContext = createContext<Mailbox | undefined>(undefined);
 type Props = {
   children: React.ReactNode;
 };
-export function MailboxProvider(t0) {
+export function MailboxProvider(t0: Props) {
   const $ = _c(3);
   const {
     children
