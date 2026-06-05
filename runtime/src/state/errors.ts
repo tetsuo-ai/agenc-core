@@ -11,3 +11,16 @@ export class StateMigrationError extends StateStoreError {
     this.name = "StateMigrationError";
   }
 }
+
+export class StateSchemaMismatchError extends StateStoreError {
+  constructor(
+    public readonly appliedVersion: number,
+    public readonly knownVersion: number,
+  ) {
+    super(
+      `state schema v${appliedVersion} is newer than runtime v${knownVersion} — ` +
+        "please upgrade @tetsuo-ai/runtime",
+    );
+    this.name = "StateSchemaMismatchError";
+  }
+}

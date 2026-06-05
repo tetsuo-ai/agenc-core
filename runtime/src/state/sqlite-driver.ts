@@ -6,7 +6,7 @@ import {
   DEFAULT_SESSION_ROOT_MARKERS,
   getProjectDir,
 } from "../session/session-store.js";
-import { StateMigrationError } from "./errors.js";
+import { StateMigrationError, StateSchemaMismatchError } from "./errors.js";
 import {
   LOGS_DB_MIGRATIONS,
   STATE_DB_MIGRATIONS,
@@ -220,6 +220,23 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   const applied = new Set(
     appliedRows.map((row: { version: number }) => row.version),
   );
+
+  // Forward-version guard: an older runtime opening a DB migrated by a newer
+  // runtime must refuse rather than corrupt it. Known migrations are skipped
+  // when already applied, so without this check a higher applied version would
+  // silently slip through.
+  const maxApplied = appliedRows.reduce(
+    (max, row) => (row.version > max ? row.version : max),
+    0,
+  );
+  const maxKnown = migrations.reduce(
+    (max, migration) => (migration.version > max ? migration.version : max),
+    0,
+  );
+  if (maxApplied > maxKnown) {
+    throw new StateSchemaMismatchError(maxApplied, maxKnown);
+  }
+
   const insert = db.prepare<[number, string]>(
     "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
   );

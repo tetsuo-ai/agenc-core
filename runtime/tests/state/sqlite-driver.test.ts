@@ -1,8 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openStateDatabases } from "./sqlite-driver.js";
+import { StateSchemaMismatchError } from "./errors.js";
+import {
+  openStateDatabases,
+  resolveStateDatabasePaths,
+} from "./sqlite-driver.js";
 
 let home = "";
 let cwd = "";
@@ -98,5 +103,24 @@ describe("openStateDatabases", () => {
     } finally {
       driver.close();
     }
+  });
+
+  it("refuses to open a DB migrated by a newer runtime (forward-version guard)", () => {
+    // Create the DB with the current runtime, then seed a future migration
+    // version row as if a newer runtime had migrated it.
+    const driver = openStateDatabases({ cwd });
+    driver.close();
+
+    const paths = resolveStateDatabasePaths({ cwd });
+    const raw = new Database(paths.stateDbPath);
+    try {
+      raw
+        .prepare("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
+        .run(9999, "from_a_newer_runtime");
+    } finally {
+      raw.close();
+    }
+
+    expect(() => openStateDatabases({ cwd })).toThrow(StateSchemaMismatchError);
   });
 });
