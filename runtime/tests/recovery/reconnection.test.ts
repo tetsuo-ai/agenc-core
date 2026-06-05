@@ -7,9 +7,12 @@ import {
   RECONNECT_GIVE_UP_MS,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_MS,
+  RECONNECT_RETRY_AFTER_CEILING_MS,
   RECONNECT_SLEEP_DETECTION_THRESHOLD_MS,
   reconnectWithBackoff,
+  serverDirectedRetryAfterMs,
 } from "./reconnection.js";
+import { LLMRateLimitError } from "../llm/errors.js";
 
 function mkSession(log: EventLog): Session {
   let i = 0;
@@ -25,6 +28,52 @@ describe("computeBackoffMs", () => {
     expect(computeBackoffMs(0)).toBeLessThanOrEqual(RECONNECT_INITIAL_MS * 1.3);
     const large = computeBackoffMs(20);
     expect(large).toBeLessThanOrEqual(RECONNECT_MAX_MS * 1.3);
+  });
+
+  test("honors a server-directed Retry-After over the 2^attempt backoff", () => {
+    // attempt 0 backoff is ~1s, far below the 5s server directive — the
+    // server cooldown must win so we don't hammer during its window.
+    expect(computeBackoffMs(0, 5_000)).toBeGreaterThanOrEqual(5_000);
+  });
+
+  test("uses the larger of computed backoff and Retry-After", () => {
+    // A tiny Retry-After must not shrink the normal escalating backoff.
+    const computed = computeBackoffMs(20, 1);
+    expect(computed).toBeGreaterThanOrEqual(RECONNECT_MAX_MS * 0.7);
+  });
+
+  test("no Retry-After leaves the normal path unchanged", () => {
+    expect(computeBackoffMs(0, undefined)).toBeLessThanOrEqual(
+      RECONNECT_INITIAL_MS * 1.3,
+    );
+  });
+});
+
+describe("serverDirectedRetryAfterMs", () => {
+  test("reads retryAfterMs off an LLMRateLimitError (429)", () => {
+    const err = new LLMRateLimitError("grok", 5_000);
+    expect(serverDirectedRetryAfterMs(err)).toBe(5_000);
+  });
+
+  test("reads retryAfterMs off a wrapped (cause-chain) error", () => {
+    const wrapped = new Error("stream disconnected");
+    (wrapped as { cause?: unknown }).cause = new LLMRateLimitError(
+      "grok",
+      7_000,
+    );
+    expect(serverDirectedRetryAfterMs(wrapped)).toBe(7_000);
+  });
+
+  test("clamps a pathological Retry-After to the ceiling", () => {
+    const err = new LLMRateLimitError("grok", 60 * 60 * 1_000);
+    expect(serverDirectedRetryAfterMs(err)).toBe(
+      RECONNECT_RETRY_AFTER_CEILING_MS,
+    );
+  });
+
+  test("returns undefined when no server directive is present", () => {
+    expect(serverDirectedRetryAfterMs(new Error("ECONNRESET"))).toBeUndefined();
+    expect(serverDirectedRetryAfterMs(new LLMRateLimitError("grok"))).toBeUndefined();
   });
 });
 
@@ -170,6 +219,58 @@ describe("reconnectWithBackoff", () => {
     const out = await promise;
     expect(out.kind).toBe("ok");
     expect(calls).toBe(3);
+    randomSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  test("honors a 429 Retry-After: sleeps >= 5000ms before the next attempt", async () => {
+    vi.useFakeTimers();
+    // Pin jitter to 0 so the local attempt-0 backoff is exactly
+    // RECONNECT_INITIAL_MS (1000ms) — far below the 5000ms the provider
+    // directs. Without the fix the retry fires at ~1000ms; with the fix it
+    // must wait for the full 5000ms Retry-After window.
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const log = new EventLog();
+    const session = mkSession(log);
+    let calls = 0;
+    let resolved = false;
+
+    const promise = reconnectWithBackoff({
+      session,
+      attempt: async () => {
+        calls += 1;
+        if (calls < 2) {
+          // grok's default 429 maps to LLMRateLimitError carrying the
+          // server-directed cooldown (5s here).
+          throw new LLMRateLimitError("grok", 5_000);
+        }
+        return "recovered";
+      },
+      isTransient: () => true,
+    }).then((out) => {
+      resolved = true;
+      return out;
+    });
+
+    // Let the first attempt run and enter the backoff sleep.
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    // At 4999ms the server cooldown has NOT elapsed: the second attempt
+    // must not have fired yet. (Pre-fix this would already be the 2nd call
+    // because the sleep was only ~1000ms.)
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(calls).toBe(1);
+    expect(resolved).toBe(false);
+
+    // Crossing 5000ms total releases the sleep and the retry succeeds.
+    await vi.advanceTimersByTimeAsync(2);
+    const out = await promise;
+
+    expect(out.kind).toBe("ok");
+    if (out.kind === "ok") expect(out.value).toBe("recovered");
+    expect(calls).toBe(2);
+
     randomSpy.mockRestore();
     vi.useRealTimers();
   });
