@@ -17,7 +17,7 @@ AgenC supports multiple search backends through a provider adapter system.
 | You.com | `YOU_API_KEY` | `X-API-Key` | GET |
 | Jina | `JINA_API_KEY` | `Authorization: Bearer` | GET |
 | Bing | `BING_API_KEY` | `Ocp-Apim-Subscription-Key` | GET |
-| Mojeek | `MOJEEK_API_KEY` | `Authorization: Bearer` | GET |
+| Mojeek | `MOJEEK_API_KEY` | `Authorization: Bearer` (optional) | GET |
 | Linkup | `LINKUP_API_KEY` | `Authorization: Bearer` | POST |
 | DuckDuckGo | *(default)* | — | SDK |
 
@@ -49,12 +49,17 @@ export WEB_SEARCH_API=https://search.example.com/search
 | Mode | Behavior |
 |---|---|
 | `auto` (default) | Try all configured providers in order, fall through on failure |
+| `firecrawl` | Firecrawl only — throws on failure |
 | `tavily` | Tavily only — throws on failure |
 | `exa` | Exa only — throws on failure |
-| `custom` | Custom API only — throws on failure. **Not in the auto chain** — must be explicitly selected |
-| `firecrawl` | Firecrawl only — throws on failure |
+| `you` | You.com only — throws on failure |
+| `jina` | Jina only — throws on failure |
+| `bing` | Bing only — throws on failure |
+| `mojeek` | Mojeek only — throws on failure |
+| `linkup` | Linkup only — throws on failure |
 | `ddg` | DuckDuckGo only — throws on failure |
-| `native` | provider native / ProviderCode only |
+| `custom` | Custom API only — throws on failure. **Not in the auto chain** — must be explicitly selected |
+| `native` | Provider-native web search only (requires firstParty/Vertex/Foundry provider) |
 
 **Auto mode priority:** firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → ddg
 
@@ -82,7 +87,7 @@ POST https://api.tavily.com/search
 Authorization: Bearer tvly-your-key
 Content-Type: application/json
 
-{"query": "search terms", "max_results": 10, "include_answer": false}
+{"query": "search terms", "max_results": 15, "include_answer": false}
 ```
 
 **Response:**
@@ -111,8 +116,12 @@ POST https://api.exa.ai/search
 x-api-key: your-exa-key
 Content-Type: application/json
 
-{"query": "search terms", "numResults": 10, "type": "auto"}
+{"query": "search terms", "numResults": 15, "type": "auto"}
 ```
+
+`allowed_domains` / `blocked_domains` are passed to Exa server-side as
+`includeDomains` / `excludeDomains` (so Exa does the domain filtering, not the
+shared post-filter).
 
 **Response:**
 ```json
@@ -136,7 +145,7 @@ export YOU_API_KEY=your-you-key
 
 **Request:**
 ```
-GET https://api.ydc-index.io/v1/search?query=search+terms
+GET https://api.ydc-index.io/v1/search?query=search+terms&num_web_results=10
 X-API-Key: your-you-key
 ```
 
@@ -164,7 +173,7 @@ export JINA_API_KEY=your-jina-key
 
 **Request:**
 ```
-GET https://s.jina.ai/?q=search+terms
+GET https://s.jina.ai/?q=search+terms&count=10
 Authorization: Bearer your-jina-key
 Accept: application/json
 ```
@@ -190,7 +199,7 @@ export BING_API_KEY=your-bing-key
 
 **Request:**
 ```
-GET https://api.bing.microsoft.com/v7.0/search?q=search+terms&count=10
+GET https://api.bing.microsoft.com/v7.0/search?q=search+terms&count=15
 Ocp-Apim-Subscription-Key: your-bing-key
 ```
 
@@ -218,8 +227,9 @@ export MOJEEK_API_KEY=your-mojeek-key
 
 **Request:**
 ```
-GET https://www.mojeek.com/search?q=search+terms&fmt=json
-Authorization: Bearer your-mojeek-key
+GET https://www.mojeek.com/search?q=search+terms&fmt=json&t=10
+Accept: application/json
+Authorization: Bearer your-mojeek-key   # only sent when MOJEEK_API_KEY is set
 ```
 
 **Response:**
@@ -249,7 +259,7 @@ POST https://api.linkup.so/v1/search
 Authorization: Bearer your-linkup-key
 Content-Type: application/json
 
-{"q": "search terms", "search_type": "standard"}
+{"q": "search terms", "search_type": "standard", "depth": "standard"}
 ```
 
 **Response:**
@@ -455,7 +465,15 @@ The tool auto-detects many response formats:
 [{ "title": "...", "url": "..." }]                      // bare array
 ```
 
-Field name aliases: `title`/`headline`/`name`, `url`/`link`/`href`, `description`/`snippet`/`content`
+It probes these array-bearing keys in order: `results`, `items`, `data`, `web`,
+`organic_results`, `hits`, `entries`. A matching key may hold either an array of
+hits or an object whose values are arrays of hits (the nested-map case).
+
+Field name aliases (first non-empty string wins):
+- title: `title` / `headline` / `name` / `heading`
+- url: `url` / `link` / `href` / `uri` / `permalink`
+- description: `description` / `snippet` / `content` / `preview` / `summary` / `text` / `body`
+- source: `source` / `domain` / `displayLink` / `displayed_link` / `engine`
 
 For deeply nested responses:
 ```bash
@@ -464,7 +482,11 @@ export WEB_JSON_PATH=response.payload.results
 
 ## Retry
 
-Failed requests (network errors, 5xx) are retried once after 500ms. Client errors (4xx) are not retried. Custom requests have a default 120s timeout.
+For the **custom** provider, failed requests (network errors, 5xx) are retried once after 500ms; client errors (4xx) are not retried, and the request has a default 120s timeout (`WEB_CUSTOM_TIMEOUT_SEC`).
+
+**DuckDuckGo** has its own retry path: up to 3 attempts with exponential backoff (1s/2s/4s ±20% jitter) on transient errors (rate-limit, timeout, connection reset). A hard "anomaly in the request" block surfaces an actionable error listing the API-key env vars to configure instead.
+
+The first-party direct providers (Tavily, Exa, You.com, Jina, Bing, Mojeek, Linkup, Firecrawl) do a single request with no internal retry — in `auto` mode the chain itself falls through to the next provider on failure.
 
 ## Custom Provider Security Guardrails
 

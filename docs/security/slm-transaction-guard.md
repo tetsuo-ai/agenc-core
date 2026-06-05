@@ -2,13 +2,22 @@
 
 The AgenC runtime can run a local CourtGuard-style SLM check before executing
 Solana transaction-like tool calls. The guard is designed for prompt-injection
-defense: it inspects the normalized transaction/tool intent, asks a local
-Ollama-hosted model to classify the intent, and fails closed before the tool is
-allowed to sign or submit.
+defense: it builds a normalized, redacted "docket" of the transaction/tool
+intent and runs it through a local Ollama-hosted model, then fails closed before
+the tool is allowed to sign or submit.
 
-This is integrated at the runtime tool-dispatch layer. The current codebase
-does not reintroduce the old Solana SDK transaction scaffold, `@solana/web3.js`,
-or Anchor as runtime dependencies.
+Classification is a four-prompt court pipeline against Ollama's `/api/chat`
+endpoint (temperature 0): a defense and a prosecution argument over the docket,
+a conservative deny-by-default judge, and a final strict classifier that emits
+exactly `benign` or `adversarial`. The guard lives in
+`runtime/src/transaction-guard/` (`OllamaCourtGuard` in `ollama-courtguard.ts`,
+docket construction in `docket.ts`, intent detection in `tool-intent.ts`).
+
+This is integrated at the unified tool-execution path (`runToolUse` in
+`runtime/src/tools/execution.ts`), which calls the guard gate
+(`evaluateToolInvocationTransactionGuard`) immediately before `Tool.execute()`.
+The current codebase does not reintroduce the old Solana SDK transaction
+scaffold, `@solana/web3.js`, or Anchor as runtime dependencies.
 
 ## Enablement
 
@@ -27,8 +36,11 @@ export AGENC_TRANSACTION_GUARD_OLLAMA_URL=http://127.0.0.1:11434
 export AGENC_TRANSACTION_GUARD_TIMEOUT_MS=120000
 ```
 
-When enabled, malformed verdicts, model timeouts, and Ollama errors block the
-transaction-like action before execution.
+When enabled, malformed verdicts, model timeouts, and Ollama errors all resolve
+to an `unavailable` decision that blocks the transaction-like action before
+execution (fail-closed). Sensitive-looking fields (keys, secrets, mnemonics,
+seeds, tokens, passwords, authorization headers) are redacted before the intent
+is serialized into the docket.
 
 ## What Is Guarded
 
@@ -40,6 +52,9 @@ including shell and dynamic tool invocations that look like:
 - `spl-token transfer`, mint, burn, approve, revoke, close, or authority writes
 - `sendTransaction`, `sendRawTransaction`, `sendAndConfirmTransaction`
 - wallet signing methods such as `wallet.sign` or `signTransaction`
+
+A dynamic or MCP tool is also evaluated when its metadata declares a Solana
+`family`/keyword and `mutating: true`, even without a matching command string.
 
 Read-only lookups such as `solana balance`, `solana address`, and
 `solana config get` are not evaluated.
