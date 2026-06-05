@@ -53,6 +53,10 @@ import {
   type AgenCDaemonResponse,
   type AgenCDaemonSuccessResponse,
   type DaemonReloadResult,
+  type HealthMemoryStats,
+  type HealthSessionStats,
+  type HealthStateStats,
+  type HealthStatsResult,
   type JsonObject,
   type JsonValue,
   type SessionStatus,
@@ -219,6 +223,14 @@ export interface RunAgenCDaemonCliOptions {
   readonly snapshotPeriodicIntervalMs?: number;
   readonly socketAcceptAuthenticationTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
+  /**
+   * Overrides the `health.stats` probe used by `status`. Defaults to a JSON-RPC
+   * round-trip over the daemon's Unix socket. Injectable so unit tests can stub
+   * the daemon response without spinning up a full server.
+   */
+  readonly requestHealthStats?: (
+    host: AgenCDaemonCliHost,
+  ) => Promise<HealthStatsResult>;
 }
 
 export interface AgenCDaemonWebSocketListenOptions {
@@ -517,7 +529,7 @@ async function runAgenCDaemonAction(
     case "stop":
       return stopAgenCDaemon(host, io, options.stopTimeoutMs ?? 2000);
     case "status":
-      return statusAgenCDaemon(host, io);
+      return statusAgenCDaemon(host, io, options);
     case "reload":
       return reloadAgenCDaemon(host, io);
     case "restart": {
@@ -602,15 +614,169 @@ async function stopAgenCDaemon(
 async function statusAgenCDaemon(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
+  options: RunAgenCDaemonCliOptions = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   const pid = await readAgenCDaemonPid(pidPath);
   if (pid !== null && host.isPidRunning(pid)) {
     io.stdout.write(`AgenC daemon running (pid ${pid})\n`);
+    // Best-effort: enrich the running line with live health.stats
+    // (uptime/RSS/heap/session+state counts) pulled over the daemon socket.
+    // A pid-only fallback is preserved when the daemon is unreachable or the
+    // RPC errors, so `status` never fails on a healthy pid.
+    const requestHealthStats =
+      options.requestHealthStats ?? requestAgenCDaemonHealthStats;
+    try {
+      const stats = await requestHealthStats(host);
+      for (const line of formatAgenCDaemonHealthStatsLines(stats)) {
+        io.stdout.write(`${line}\n`);
+      }
+    } catch {
+      // Leave the pid-only line in place; the daemon is up but health.stats
+      // is unavailable (older daemon, missing cookie, socket race, timeout).
+    }
     return 0;
   }
   io.stdout.write("AgenC daemon stopped\n");
   return 1;
+}
+
+async function requestAgenCDaemonHealthStats(
+  host: AgenCDaemonCliHost,
+): Promise<HealthStatsResult> {
+  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+  const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+  const authCookie = await readAgenCDaemonCookie(cookiePath);
+  const timeoutMs = resolveAgenCDaemonRequestTimeoutMs(host.env);
+  const responses = await sendAgenCDaemonJsonLineRequests(socketPath, timeoutMs, [
+    {
+      jsonrpc: JSON_RPC_VERSION,
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+        clientName: "agenc-daemon-cli",
+        authCookie,
+        capabilities: {},
+      },
+    },
+    {
+      jsonrpc: JSON_RPC_VERSION,
+      id: 2,
+      method: "health.stats",
+      params: {},
+    },
+  ]);
+  const initializeResponse = responses[0];
+  if (initializeResponse === undefined) {
+    throw new Error("daemon did not return an initialize response");
+  }
+  assertExpectedDaemonResponse(initializeResponse, 1, "initialize");
+  if (isDaemonErrorResponse(initializeResponse)) {
+    throw new Error(initializeResponse.error.message);
+  }
+  const statsResponse = responses[1];
+  if (statsResponse === undefined) {
+    throw new Error("daemon did not return a health.stats response");
+  }
+  assertExpectedDaemonResponse(statsResponse, 2, "health.stats");
+  if (isDaemonErrorResponse(statsResponse)) {
+    throw new Error(statsResponse.error.message);
+  }
+  const result = (statsResponse as AgenCDaemonSuccessResponse<"health.stats">)
+    .result;
+  if (!isHealthStatsResult(result)) {
+    throw new Error("daemon returned a malformed health.stats result");
+  }
+  return result;
+}
+
+export function formatAgenCDaemonHealthStatsLines(
+  stats: HealthStatsResult,
+): string[] {
+  const lines = [
+    `  uptime: ${formatDaemonUptime(stats.uptimeMs)}`,
+    `  memory: rss=${formatDaemonMebibytes(stats.memory.rss)}, ` +
+      `heap=${formatDaemonMebibytes(stats.memory.heapUsed)}/` +
+      `${formatDaemonMebibytes(stats.memory.heapTotal)}`,
+    `  sessions: active=${stats.sessions.active}, ` +
+      `closed=${stats.sessions.closed}, total=${stats.sessions.total}`,
+  ];
+  if (stats.state !== undefined) {
+    lines.push(
+      `  state: agentRuns=${stats.state.agentRuns}, ` +
+        `snapshots=${stats.state.sessionStateSnapshots}, ` +
+        `inFlightToolCalls=${stats.state.inFlightToolCalls}`,
+    );
+  }
+  return lines;
+}
+
+function formatDaemonUptime(uptimeMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(uptimeMs / 1000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || days > 0) parts.push(`${hours}h`);
+  if (minutes > 0 || hours > 0 || days > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
+function formatDaemonMebibytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function isHealthStatsResult(
+  value: JsonValue | undefined,
+): value is HealthStatsResult {
+  if (!isJsonObject(value)) return false;
+  if (
+    typeof value.uptimeMs !== "number" ||
+    typeof value.now !== "string" ||
+    !isHealthSessionStats(value.sessions) ||
+    !isHealthMemoryStats(value.memory)
+  ) {
+    return false;
+  }
+  return value.state === undefined || isHealthStateStats(value.state);
+}
+
+function isHealthSessionStats(
+  value: JsonValue | undefined,
+): value is HealthSessionStats {
+  return (
+    isJsonObject(value) &&
+    typeof value.active === "number" &&
+    typeof value.closed === "number" &&
+    typeof value.total === "number"
+  );
+}
+
+function isHealthMemoryStats(
+  value: JsonValue | undefined,
+): value is HealthMemoryStats {
+  return (
+    isJsonObject(value) &&
+    typeof value.rss === "number" &&
+    typeof value.heapTotal === "number" &&
+    typeof value.heapUsed === "number"
+  );
+}
+
+function isHealthStateStats(
+  value: JsonValue | undefined,
+): value is HealthStateStats {
+  return (
+    isJsonObject(value) &&
+    typeof value.agentRuns === "number" &&
+    typeof value.sessionStateSnapshots === "number" &&
+    typeof value.inFlightToolCalls === "number"
+  );
 }
 
 async function reloadAgenCDaemon(
