@@ -33,17 +33,73 @@ export const RECONNECT_SLEEP_DETECTION_THRESHOLD_MS =
   RECONNECT_MAX_MS * 2;
 
 /**
+ * Upper bound on a server-directed Retry-After we will honor before
+ * sleeping. A rate-limited provider (429/529) reports `retryAfterMs`,
+ * which legitimately exceeds `RECONNECT_MAX_MS` (the cap on the local
+ * 2^attempt backoff). We honor the server's cooldown over the local
+ * jitter so we stop hammering during its window, but clamp here so a
+ * pathological header can't park a turn for an unbounded stretch. Five
+ * minutes mirrors the `withRetry` persistent-mode max backoff.
+ */
+export const RECONNECT_RETRY_AFTER_CEILING_MS = 5 * 60 * 1_000;
+
+/**
+ * Extract a server-directed retry delay (ms) from a transient error, if
+ * one is present. `LLMRateLimitError` (429) and the HTTP-level provider
+ * error (429/529) both expose `retryAfterMs`; the live loop may also see
+ * the error wrapped (e.g. `StreamModelError.cause`), so the immediate
+ * `cause` is consulted as a fallback. Returns `undefined` when no usable
+ * server directive is found, leaving the caller on pure 2^attempt
+ * backoff. Clamped to `RECONNECT_RETRY_AFTER_CEILING_MS`.
+ */
+export function serverDirectedRetryAfterMs(err: unknown): number | undefined {
+  const direct = readRetryAfterMs(err);
+  if (direct !== undefined) return direct;
+  if (err && typeof err === "object") {
+    return readRetryAfterMs((err as { readonly cause?: unknown }).cause);
+  }
+  return undefined;
+}
+
+function readRetryAfterMs(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const value = (err as { readonly retryAfterMs?: unknown }).retryAfterMs;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return Math.min(value, RECONNECT_RETRY_AFTER_CEILING_MS);
+}
+
+/**
  * Compute the backoff delay for a given attempt (0-indexed). Caps at
  * `RECONNECT_MAX_MS`. ±25 % jitter prevents thundering-herd retry
  * storms when many sessions reconnect at once.
+ *
+ * When the provider returned a server-directed cooldown
+ * (`retryAfterMs`, from a 429/529 Retry-After), the result is at least
+ * that long: we sleep `max(retryAfterMs, computedBackoff)` so a
+ * rate-limited provider is not hammered during its own cooldown window.
+ * `retryAfterMs` is already clamped to `RECONNECT_RETRY_AFTER_CEILING_MS`
+ * by `serverDirectedRetryAfterMs`.
  */
-export function computeBackoffMs(attempt: number): number {
+export function computeBackoffMs(
+  attempt: number,
+  retryAfterMs?: number,
+): number {
   const base = Math.min(
     RECONNECT_MAX_MS,
     RECONNECT_INITIAL_MS * Math.pow(2, attempt),
   );
   const jitter = base * RECONNECT_JITTER_FRAC * (Math.random() * 2 - 1);
-  return Math.max(RECONNECT_INITIAL_MS, Math.round(base + jitter));
+  const computed = Math.max(RECONNECT_INITIAL_MS, Math.round(base + jitter));
+  if (
+    typeof retryAfterMs === "number" &&
+    Number.isFinite(retryAfterMs) &&
+    retryAfterMs > 0
+  ) {
+    return Math.max(computed, retryAfterMs);
+  }
+  return computed;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -145,7 +201,11 @@ export async function reconnectWithBackoff<T>(
           lastError,
         };
       }
-      const delay = computeBackoffMs(reconnectAttempts);
+      // Honor a server-directed cooldown (429/529 Retry-After) when the
+      // transient error carries one: sleep at least that long so a
+      // rate-limited provider is not hammered during its own window.
+      const retryAfterMs = serverDirectedRetryAfterMs(err);
+      const delay = computeBackoffMs(reconnectAttempts, retryAfterMs);
       reconnectAttempts += 1;
       emitWarning(
         opts.session.eventLog,

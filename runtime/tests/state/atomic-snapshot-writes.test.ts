@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,6 +78,39 @@ describe("atomic session snapshot writes", () => {
 
     expect(existsSync(pending.path)).toBe(false);
     expect(snapshotCount("session-import-crash")).toBe(0);
+  });
+
+  it("quarantines a corrupt pending write instead of bricking every open", () => {
+    seedRun("run-good", "session-good");
+    const good = stageSessionSnapshotWrite(
+      driver.projectDir,
+      {
+        sessionId: "session-good",
+        snapshotAt: "2026-05-01T00:00:30.000Z",
+        conversationJson: JSON.stringify([{ role: "user", content: "ok" }]),
+        toolStateJson: JSON.stringify({ lastTrigger: "message_exchange" }),
+        mcpConnectionStateJson: JSON.stringify({ status: "connected" }),
+      },
+      { updateRunLastSnapshotAt: true, replayOnStartup: true },
+    );
+
+    // A torn/partial write: valid filename, unparseable JSON contents.
+    const corruptPath = join(good.directory, "00corrupt.json");
+    writeFileSync(corruptPath, '{"format":"agenc.session_state_snapshot_write"');
+
+    driver.close();
+    // The corrupt file must not throw out of the driver constructor.
+    driver = openStateDatabases({ cwd, agencHome: home });
+
+    // Bad file quarantined to a sidecar; good file still replayed.
+    expect(existsSync(corruptPath)).toBe(false);
+    expect(existsSync(`${corruptPath}.corrupt`)).toBe(true);
+    expect(existsSync(good.path)).toBe(false);
+    expect(latestSnapshot("session-good")).toEqual({
+      conversation: [{ role: "user", content: "ok" }],
+      toolState: { lastTrigger: "message_exchange" },
+      mcpConnectionState: { status: "connected" },
+    });
   });
 });
 

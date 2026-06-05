@@ -75,13 +75,43 @@ export function replayAtomicSessionSnapshotWrites(
     .sort();
 
   for (const path of files) {
-    const pending = readPendingSessionSnapshotWrite(directory, path);
-    if (!pending.replayOnStartup) {
+    try {
+      const pending = readPendingSessionSnapshotWrite(directory, path);
+      if (!pending.replayOnStartup) {
+        removePendingSessionSnapshotWrite(pending);
+        continue;
+      }
+      commitPendingSessionSnapshotWrite(db, pending, "idempotent");
       removePendingSessionSnapshotWrite(pending);
-      continue;
+    } catch {
+      // A torn or otherwise corrupt pending write (ENOSPC, power loss,
+      // bit-flip) must not brick every state-DB open. Quarantine the bad
+      // file to a `.corrupt` sidecar and continue replaying the rest.
+      quarantineCorruptPendingSnapshotWrite(directory, path);
     }
-    commitPendingSessionSnapshotWrite(db, pending, "idempotent");
-    removePendingSessionSnapshotWrite(pending);
+  }
+}
+
+function quarantineCorruptPendingSnapshotWrite(
+  directory: string,
+  path: string,
+): void {
+  const target = `${path}.corrupt`;
+  try {
+    renameSync(path, target);
+    fsyncDirectory(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    // If quarantine itself fails (e.g. a sidecar already exists), drop the
+    // file outright so it cannot block subsequent opens.
+    try {
+      unlinkSync(path);
+      fsyncDirectory(directory);
+    } catch (unlinkError) {
+      if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw unlinkError;
+      }
+    }
   }
 }
 

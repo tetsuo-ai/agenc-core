@@ -153,7 +153,7 @@ export class RipgrepUnavailableError extends Error {
   }
 }
 
-function getRipgrepInstallHint(platform = process.platform): string {
+export function getRipgrepInstallHint(platform = process.platform): string {
   switch (platform) {
     case 'win32':
       return 'Install ripgrep and confirm `rg --version` works in the same terminal. Windows: `winget install BurntSushi.ripgrep.MSVC` or `choco install ripgrep`.'
@@ -634,6 +634,31 @@ export function getRipgrepStatus(): {
     mode: config.mode,
     path: config.command,
     working: ripgrepStatus?.working ?? null,
+  }
+}
+
+/**
+ * Actively probe whether the resolved ripgrep is runnable, returning the
+ * boolean rather than caching it on the lazy first-use singleton. Used by
+ * `agenc doctor` to report rg status with a fix hint on a clean machine where
+ * no system rg is on PATH and no binary is bundled. Never throws.
+ */
+export async function probeRipgrepAvailable(): Promise<boolean> {
+  const config = getRipgrepConfig()
+  try {
+    if (config.argv0) {
+      // Embedded ripgrep is only reachable under a Bun-compiled binary, which
+      // always ships rg; treat it as available without spawning here.
+      return true
+    }
+    const test = await execFileNoThrow(
+      config.command,
+      [...config.args, '--version'],
+      { timeout: 5000 },
+    )
+    return test.code === 0 && test.stdout.startsWith('ripgrep ')
+  } catch {
+    return false
   }
 }
 

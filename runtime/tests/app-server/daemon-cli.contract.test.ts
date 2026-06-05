@@ -649,6 +649,128 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("status enriches the running line with health.stats over the socket", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(4555);
+    await writeAgenCDaemonPid(pidPath, 4555);
+
+    const requestHealthStats = vi.fn(async () => ({
+      uptimeMs: 90_061_000,
+      now: "2026-06-04T00:00:00.000Z",
+      sessions: { active: 2, closed: 5, total: 7 },
+      memory: {
+        rss: 268_435_456,
+        heapTotal: 134_217_728,
+        heapUsed: 67_108_864,
+        external: 0,
+        arrayBuffers: 0,
+      },
+      state: {
+        available: true,
+        readonly: true as const,
+        projectDir: "/tmp/project",
+        agentRuns: 3,
+        sessionStateSnapshots: 11,
+        inFlightToolCalls: 1,
+        logs: 0,
+      },
+    }));
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "status" },
+        { host, io, requestHealthStats },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requestHealthStats).toHaveBeenCalledTimes(1);
+    const out = io.stdoutText();
+    expect(out).toContain("AgenC daemon running (pid 4555)");
+    expect(out).toContain("uptime: 1d 1h 1m 1s");
+    expect(out).toContain("rss=256.0 MiB");
+    expect(out).toContain("heap=64.0 MiB/128.0 MiB");
+    expect(out).toContain("sessions: active=2, closed=5, total=7");
+    expect(out).toContain(
+      "state: agentRuns=3, snapshots=11, inFlightToolCalls=1",
+    );
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("status falls back to the pid-only line when health.stats is unreachable", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(4556);
+    await writeAgenCDaemonPid(pidPath, 4556);
+
+    const requestHealthStats = vi.fn(async () => {
+      throw new Error("daemon socket unreachable");
+    });
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "status" },
+        { host, io, requestHealthStats },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requestHealthStats).toHaveBeenCalledTimes(1);
+    const out = io.stdoutText();
+    expect(out).toContain("AgenC daemon running (pid 4556)");
+    expect(out).not.toContain("uptime:");
+    expect(out).not.toContain("rss=");
+    expect(io.stderrText()).toBe("");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("status reaches the live daemon's health.stats over the real socket", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const runIo = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io: runIo, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(host.pid);
+
+      const statusIo = createIo();
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "status" },
+          { host, io: statusIo },
+        ),
+      ).resolves.toBe(0);
+
+      const out = statusIo.stdoutText();
+      expect(out).toContain(`AgenC daemon running (pid ${host.pid})`);
+      expect(out).toMatch(/uptime: .*\ds/);
+      expect(out).toMatch(/memory: rss=[\d.]+ MiB/);
+      expect(out).toMatch(/sessions: active=\d+, closed=\d+, total=\d+/);
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("starts with remote auth backend before remote key vending is configured", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

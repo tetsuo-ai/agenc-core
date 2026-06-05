@@ -43,6 +43,22 @@ const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
 const TRUNCATION_NOTE =
   "(Results are truncated. Consider using a more specific path or pattern.)";
 
+/**
+ * Platform-specific hint telling the user how to install ripgrep. No binary is
+ * bundled, so when `rg` is missing from PATH the only fix is a system install;
+ * surface the exact command instead of a bare "requires ripgrep" message.
+ */
+function ripgrepInstallHint(platform: NodeJS.Platform = process.platform): string {
+  switch (platform) {
+    case "win32":
+      return "Install ripgrep and confirm `rg --version` works: `winget install BurntSushi.ripgrep.MSVC` or `choco install ripgrep`.";
+    case "darwin":
+      return "Install ripgrep and confirm `rg --version` works: `brew install ripgrep`.";
+    default:
+      return "Install ripgrep and confirm `rg --version` works: use your distro package manager, e.g. `apt install ripgrep`.";
+  }
+}
+
 const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any codebase size
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths sorted by modification time
@@ -432,7 +448,7 @@ export function createGlobTool(
       }
       if (rg.spawnError) {
         return errorResult(
-          `Glob requires ripgrep (${ripgrepCommand}) to list files with hidden and ignored-file parity`,
+          `Glob requires ripgrep (${ripgrepCommand}) to list files with hidden and ignored-file parity. ${ripgrepInstallHint()}`,
         );
       } else if (rg.exitCode !== 0 && rg.lines.length === 0) {
         const detail = rg.stderr.trim();
@@ -478,4 +494,5 @@ export function createGlobTool(
 export const __INTERNAL = {
   extractGlobBaseDirectory,
   toRelativeIfInside,
+  ripgrepInstallHint,
 };

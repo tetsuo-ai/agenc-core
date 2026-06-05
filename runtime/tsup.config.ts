@@ -490,7 +490,7 @@ export default defineConfig({
   esbuildOptions(options) {
     options.define = {
       ...(options.define ?? {}),
-      'MACRO.VERSION': JSON.stringify('99.0.0'),
+      'MACRO.VERSION': JSON.stringify(displayVersion),
       'MACRO.DISPLAY_VERSION': JSON.stringify(displayVersion),
       'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
       'MACRO.ISSUES_EXPLAINER': JSON.stringify(

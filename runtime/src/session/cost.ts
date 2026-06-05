@@ -156,6 +156,31 @@ const COST_TIER_OPUS: Readonly<ModelCostEntry> = Object.freeze({
 });
 
 /**
+ * Non-reasoning grok-4.x tier. Same illustrative input/output rates as
+ * `grok-4.20-0309-reasoning` (0.003 / 0.012 per 1K, pending confirmed xAI
+ * pricing) but WITHOUT `reasoningOutputUsdPer1K`: these models do not bill a
+ * separate reasoning-token rate, so charging the reasoning surcharge here
+ * would over-count cost and trip `dollar_cap` budgets at the wrong threshold.
+ * grok-4.3 (the grok provider default) and grok-build-0.1 both belong here.
+ */
+const COST_TIER_GROK_4X_NON_REASONING: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.003,
+  outputUsdPer1K: 0.012,
+  webSearchUsdPerRequest: 0.01,
+});
+
+/** Register a grok model under both its `xai:`-qualified and bare slug. */
+function grokCostAliases(
+  model: string,
+  entry: ModelCostEntry,
+): Record<string, ModelCostEntry> {
+  return {
+    [`xai:${model}`]: entry,
+    [model]: entry,
+  };
+}
+
+/**
  * Default model cost registry. Values are best-available public
  * pricing plus reasonable defaults for local providers (zero cost).
  *
@@ -195,6 +220,20 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       reasoningOutputUsdPer1K: 0.012,
       webSearchUsdPerRequest: 0.01,
     },
+    // Default + catalog grok variants that do NOT bill a reasoning surcharge.
+    // grok-4.3 is the grok provider default (provider-info.ts); pricing these
+    // explicitly stops the blanket grok-4* → reasoning collapse from charging
+    // them the reasoning rate and skewing dollar_cap budget enforcement.
+    ...grokCostAliases("grok-4.3", COST_TIER_GROK_4X_NON_REASONING),
+    ...grokCostAliases("grok-build-0.1", COST_TIER_GROK_4X_NON_REASONING),
+    ...grokCostAliases(
+      "grok-4.20-0309-non-reasoning",
+      COST_TIER_GROK_4X_NON_REASONING,
+    ),
+    ...grokCostAliases(
+      "grok-4.20-multi-agent-0309",
+      COST_TIER_GROK_4X_NON_REASONING,
+    ),
     ...openAiCostAliases("gpt-5.4", COST_TIER_GPT_5_4),
     ...openAiCostAliases("gpt-5.4-mini", COST_TIER_GPT_5_4_MINI),
     ...openAiCostAliases("gpt-5.4-nano", COST_TIER_GPT_5_4_NANO),
@@ -460,7 +499,22 @@ function canonicalModel(model: string): string {
     ? pathUnqualified.slice(pathUnqualified.lastIndexOf(":") + 1)
     : pathUnqualified;
   if (unqualified.startsWith("grok-4-fast")) return "grok-4-fast";
-  if (unqualified.startsWith("grok-4")) return "grok-4.20-0309-reasoning";
+  // Non-reasoning grok-4.x variants are priced explicitly below; route them to
+  // their own keys so they are NOT collapsed onto the reasoning entry (which
+  // would wrongly add the reasoning surcharge and skew dollar_cap budgets).
+  if (unqualified.startsWith("grok-4.3")) return "grok-4.3";
+  if (unqualified.startsWith("grok-4.20-0309-non-reasoning")) {
+    return "grok-4.20-0309-non-reasoning";
+  }
+  if (unqualified.startsWith("grok-4.20-multi-agent")) {
+    return "grok-4.20-multi-agent-0309";
+  }
+  // Only collapse remaining grok-4.x slugs to the reasoning entry when they are
+  // a reasoning variant; otherwise leave unmatched so unknown variants surface
+  // as unknown-cost rather than silently inheriting the reasoning surcharge.
+  if (unqualified.startsWith("grok-4") && unqualified.includes("reasoning")) {
+    return "grok-4.20-0309-reasoning";
+  }
   if (unqualified.startsWith("gpt-5.4-mini")) return "gpt-5.4-mini";
   if (unqualified.startsWith("gpt-5.4-nano")) return "gpt-5.4-nano";
   if (unqualified.startsWith("gpt-5.4")) return "gpt-5.4";

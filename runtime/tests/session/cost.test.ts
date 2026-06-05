@@ -4,6 +4,7 @@ import {
   computeUsdCostWithResolution,
   computeUsdCost,
   DEFAULT_MODEL_COSTS,
+  resolveModelCostEntry,
   formatUsdCost,
   formatTokenCount,
   formatDuration,
@@ -235,6 +236,76 @@ describe("cost helpers", () => {
         expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0);
       }
     }
+  });
+
+  test("default + catalog grok models price as known and non-reasoning ones are not charged the reasoning surcharge", () => {
+    // grok-4.3 is the grok provider default (provider-info.ts). Both it and
+    // grok-build-0.1 used to mis-resolve: grok-4.3 collapsed onto the
+    // reasoning entry (wrong reasoning surcharge) and grok-build-0.1 fell to
+    // DEFAULT_UNKNOWN_MODEL_COST. Since DEFAULT_MODEL_COSTS feeds dollar_cap
+    // enforcement, mispricing here enforces budgets at the wrong threshold.
+    const nonReasoningModels = [
+      "grok-4.3",
+      "grok-build-0.1",
+      "grok-4.20-0309-non-reasoning",
+      "grok-4.20-multi-agent-0309",
+    ];
+    for (const model of nonReasoningModels) {
+      const match = resolveModelCostEntry(
+        { model, provider: "grok" },
+        DEFAULT_MODEL_COSTS,
+      );
+      expect(match, `${model} should resolve to a known cost entry`).not.toBe(
+        null,
+      );
+      // Resolves to its OWN key — not collapsed onto grok-4.20-0309-reasoning.
+      expect(
+        match!.key,
+        `${model} should not collapse onto the reasoning entry`,
+      ).not.toBe("grok-4.20-0309-reasoning");
+      // Non-reasoning variants must NOT carry the reasoning surcharge.
+      expect(
+        match!.entry.reasoningOutputUsdPer1K,
+        `${model} should not be charged the reasoning surcharge`,
+      ).toBeUndefined();
+    }
+
+    // Concretely: grok-4.3 with reasoning tokens reported is billed at the
+    // plain output rate only (no reasoning add-on). input 10k * 0.003/1k = 0.03;
+    // output 5k * 0.012/1k = 0.06 → 0.09. If grok-4.3 collapsed onto the
+    // reasoning entry, the 2k reasoning tokens would add 2k * 0.012/1k = 0.024.
+    const usage = {
+      model: "grok-4.3",
+      provider: "grok",
+      inputTokens: 10_000,
+      outputTokens: 5_000,
+      cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 2_000,
+      webSearchRequests: 0,
+      totalTokens: 17_000,
+      turns: 1,
+    };
+    const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+    expect(resolution.known).toBe(true);
+    expect(resolution.costUsd).toBeCloseTo(0.09, 6);
+
+    // The grok provider default specifically must be a known cost.
+    const defaultModel = BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
+    expect(defaultModel).toBe("grok-4.3");
+    expect(
+      resolveModelCostEntry(
+        { model: defaultModel, provider: "grok" },
+        DEFAULT_MODEL_COSTS,
+      ),
+    ).not.toBe(null);
+
+    // The genuine reasoning variant keeps its surcharge.
+    const reasoning = resolveModelCostEntry(
+      { model: "grok-4.20-0309-reasoning", provider: "grok" },
+      DEFAULT_MODEL_COSTS,
+    );
+    expect(reasoning?.entry.reasoningOutputUsdPer1K).toBe(0.012);
   });
 
   test("computeUsdCost prices cache writes and web search requests", () => {

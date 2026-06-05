@@ -23,7 +23,7 @@ import type {
   InitializeResult,
   ServerCapabilities,
 } from "./protocol.js";
-import { subprocessEnv } from "../../utils/subprocess-env.js";
+import { subprocessEnv } from "../../utils/subprocessEnv.js";
 
 export interface LSPClient {
   readonly capabilities: ServerCapabilities | undefined;

@@ -32,7 +32,11 @@ import {
   getPackageManager,
 } from './nativeInstaller/packageManagers.js'
 import { getPlatform } from './platform.js'
-import { getRipgrepStatus } from './ripgrep.js'
+import {
+  getRipgrepInstallHint,
+  getRipgrepStatus,
+  probeRipgrepAvailable,
+} from './ripgrep.js'
 import { SandboxManager } from './sandbox/sandbox-runtime.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import { CUSTOMIZATION_SURFACES } from './settings/types.js'
@@ -533,6 +537,27 @@ export function detectLinuxGlobPatternWarnings(): Array<{
   return warnings
 }
 
+/**
+ * Build an actionable warning when ripgrep can't be started. No rg binary is
+ * bundled, so on a clean machine without system rg the `Glob` tool hard-fails
+ * and `Grep` drops to a slower pure-JS fallback. Surface the install command
+ * here (`agenc doctor` gates its exit code on warnings) instead of leaving the
+ * status line as the only signal. Pure so it can be unit-tested directly.
+ */
+export function buildRipgrepWarning(
+  status: { working: boolean; mode: 'system' | 'builtin' | 'embedded' },
+  platform: NodeJS.Platform = process.platform,
+): { issue: string; fix: string } | null {
+  if (status.working) {
+    return null
+  }
+  return {
+    issue:
+      'ripgrep (rg) could not be started — Glob will fail and Grep falls back to a slower pure-JS search',
+    fix: getRipgrepInstallHint(platform),
+  }
+}
+
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationType = await getCurrentInstallationType()
   const version =
@@ -607,15 +632,24 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     }
   }
 
-  // Get ripgrep status and configuration
+  // Get ripgrep status and configuration. The lazy first-use probe never runs
+  // in the doctor path, so actively probe here to report a truthful status (and
+  // an actionable warning) on a clean machine with no system rg.
   const ripgrepStatusRaw = getRipgrepStatus()
+  const ripgrepWorking =
+    ripgrepStatusRaw.working ?? (await probeRipgrepAvailable())
 
   // Provide simple ripgrep status info
   const ripgrepStatus = {
-    working: ripgrepStatusRaw.working ?? true, // Assume working if not yet tested
+    working: ripgrepWorking,
     mode: ripgrepStatusRaw.mode,
     systemPath:
       ripgrepStatusRaw.mode === 'system' ? ripgrepStatusRaw.path : null,
+  }
+
+  const ripgrepWarning = buildRipgrepWarning(ripgrepStatus)
+  if (ripgrepWarning) {
+    warnings.push(ripgrepWarning)
   }
 
   // Get package manager info if running from package manager

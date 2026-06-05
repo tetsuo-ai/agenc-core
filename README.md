@@ -69,6 +69,11 @@ writes, an AST-backed Bash permission layer, transactional file edits). It is
 
 - **Node.js `>= 25`** (declared in `runtime/package.json` engines).
 - **npm `11.x`** (declared via `packageManager`).
+- **ripgrep (`rg`)** on `PATH` for file search. No binary is bundled, so
+  install it from your package manager (`brew install ripgrep`,
+  `apt install ripgrep`, `winget install BurntSushi.ripgrep.MSVC`) and confirm
+  `rg --version`. Without it `Glob` fails and `Grep` drops to a slower
+  pure-JS fallback; `agenc doctor` reports the status with a fix hint.
 - **A provider** before real model calls. The default is **xAI**
   (`XAI_API_KEY`, also accepts `GROK_API_KEY`); the default model is `grok-4.3`
   (`AGENC_MODEL` overrides). Inspect setup with `agenc providers`,

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { buildRipgrepWarning } from "../../src/utils/doctorDiagnostic.js";
 import {
   formatAgenCDoctorCliHelpText,
   parseAgenCDoctorCliArgs,
@@ -62,6 +63,36 @@ describe("runAgenCDoctorCli", () => {
     } finally {
       out.mockRestore();
     }
+  });
+});
+
+describe("buildRipgrepWarning", () => {
+  it("returns null when ripgrep is working", () => {
+    expect(
+      buildRipgrepWarning({ working: true, mode: "system" }, "linux"),
+    ).toBeNull();
+  });
+
+  it("returns an actionable install warning when rg is unavailable", () => {
+    // No rg binary is bundled: when the resolved rg can't start, `agenc doctor`
+    // must surface a concrete fix command, not just a status line.
+    // (Revert-sensitive: drop the wiring and no warning is produced.)
+    const warning = buildRipgrepWarning(
+      { working: false, mode: "system" },
+      "darwin",
+    );
+    expect(warning).not.toBeNull();
+    expect(warning?.issue).toContain("ripgrep");
+    expect(warning?.fix).toContain("brew install ripgrep");
+  });
+
+  it("tailors the fix command to the platform", () => {
+    expect(
+      buildRipgrepWarning({ working: false, mode: "builtin" }, "win32")?.fix,
+    ).toContain("winget install BurntSushi.ripgrep.MSVC");
+    expect(
+      buildRipgrepWarning({ working: false, mode: "system" }, "linux")?.fix,
+    ).toContain("apt install ripgrep");
   });
 });
 
