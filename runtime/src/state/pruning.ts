@@ -1,11 +1,13 @@
 import {
   existsSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isProcessRunning } from "../utils/genericProcessUtils.js";
 import { StateThreadRepository } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
@@ -290,6 +292,13 @@ export function pruneRolloutSessions(
     if (rollout === undefined) continue;
     // Keep anything touched at/after the cutoff.
     if (rollout.newestMtimeMs >= cutoffMs) continue;
+    // Live-writer guard: never prune a session whose rollout lock is held by a
+    // live process. The daemon shares this sessions dir with separate foreground
+    // processes; the mtime cutoff already spares actively-written sessions, and
+    // this additionally protects an idle-but-open session from being removed out
+    // from under a live file descriptor. A stale lock (dead holder) does not
+    // block pruning, so a crashed session is still reclaimable.
+    if (sessionHasLiveRolloutLock(sessionDir)) continue;
 
     // Drop the SQLite mirror rows first: if the FS removal later fails the
     // mirror is already gone (it can't outlive its source), and a re-index
@@ -363,6 +372,55 @@ function describeSessionRollouts(
   return { rolloutPaths, newestMtimeMs };
 }
 
+/**
+ * True when the session directory holds a rollout lock (`rollout-*.jsonl.lock`)
+ * owned by a process that is still alive. The lock file is JSON `{ pid, ... }`
+ * (with a legacy bare-PID fallback) written by SessionLock in session-store.ts.
+ * Mirrors that reader's liveness check: a stale lock (dead holder) is ignored so
+ * a crashed session stays reclaimable; only a live holder spares the session.
+ */
+function sessionHasLiveRolloutLock(sessionDir: string): boolean {
+  let lockFiles: string[];
+  try {
+    lockFiles = readdirSync(sessionDir).filter((f) =>
+      f.endsWith(".jsonl.lock"),
+    );
+  } catch {
+    return false;
+  }
+  for (const lockFile of lockFiles) {
+    let raw: string;
+    try {
+      raw = readFileSync(join(sessionDir, lockFile), "utf8").trim();
+    } catch {
+      continue;
+    }
+    if (raw.length === 0) continue;
+    const pid = parseLockHolderPid(raw);
+    if (pid !== undefined && isProcessRunning(pid)) return true;
+  }
+  return false;
+}
+
+function parseLockHolderPid(raw: string): number | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { pid?: unknown };
+    if (
+      typeof parsed.pid === "number" &&
+      Number.isFinite(parsed.pid) &&
+      parsed.pid > 0
+    ) {
+      return parsed.pid;
+    }
+    return undefined;
+  } catch {
+    // Legacy lockfile format: a bare PID on a single line.
+    const pid = Number.parseInt(raw, 10);
+    if (Number.isFinite(pid) && pid > 0) return pid;
+    return undefined;
+  }
+}
+
 function removeSessionDirAtomically(
   sessionDir: string,
   onError: (error: unknown) => void,
@@ -390,7 +448,13 @@ function rolloutCutoffMs(
   days: number | undefined,
 ): number | undefined {
   if (days === undefined) return undefined;
-  if (!Number.isFinite(days) || days < 0) return undefined;
+  // `days <= 0` means DISABLED, not "delete everything older than now". The
+  // config validator accepts 0 (it shares the non-negative-days rule), and a
+  // user setting 0 means "off", so a zero/negative/non-finite window must never
+  // resolve to cutoff=now (which would make every non-active session eligible
+  // for deletion). This intentionally differs from the sibling cutoffIso(),
+  // whose days===0 semantics are load-bearing for the other pruning paths.
+  if (!Number.isFinite(days) || days <= 0) return undefined;
   const nowMs = Date.parse(now);
   if (!Number.isFinite(nowMs)) return undefined;
   return nowMs - days * MS_PER_DAY;

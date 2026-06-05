@@ -154,6 +154,55 @@ describe("pruneRolloutSessions", () => {
     expect(existsSync(oldPath)).toBe(true);
     expect(mirrorRowCount()).toBe(2);
   });
+
+  it("treats retention_days: 0 as disabled, not 'delete everything'", () => {
+    // The config validator accepts 0 (shared non-negative-days rule). A user
+    // setting 0 means "off"; it must NOT resolve to cutoff=now and nuke every
+    // non-active session. Guards rolloutCutoffMs's `days <= 0 → disabled`.
+    const oldPath = seedSession("thread-old", 365);
+    const sessionsDir = join(driver.projectDir, "sessions");
+    expect(mirrorRowCount()).toBe(2);
+
+    const report = pruneRolloutSessions(driver, {
+      sessionsDir,
+      retention_days: 0,
+      now: () => NOW,
+    });
+
+    expect(report.prunedSessions).toBe(0);
+    expect(report.prunedSessionIds).toEqual([]);
+    expect(existsSync(oldPath)).toBe(true);
+    expect(mirrorRowCount()).toBe(2);
+  });
+
+  it("never prunes a session whose rollout lock is held by a live process", () => {
+    // Daemon shares the sessions dir with live foreground processes. An old,
+    // non-active session that is still OPEN (lock held by a live pid) must not
+    // be removed out from under the live writer. Guards sessionHasLiveRolloutLock.
+    const lockedPath = seedSession("thread-locked", 90); // old + non-active
+    // Write the rollout lock held by THIS (live) process, matching SessionLock's
+    // `<rolloutPath>.lock` JSON shape.
+    writeFileSync(
+      `${lockedPath}.lock`,
+      JSON.stringify({
+        pid: process.pid,
+        startNs: "0",
+        acquiredAtIso: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    const sessionsDir = join(driver.projectDir, "sessions");
+
+    const report = pruneRolloutSessions(driver, {
+      sessionsDir,
+      retention_days: 30,
+      now: () => NOW,
+    });
+
+    expect(report.prunedSessions).toBe(0);
+    expect(report.prunedSessionIds).toEqual([]);
+    expect(existsSync(lockedPath)).toBe(true);
+    expect(mirrorRowCountForSource(lockedPath)).toBe(2);
+  });
 });
 
 describe("AgenCSessionSnapshotPolicy rollout sweep timer", () => {
