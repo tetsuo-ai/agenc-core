@@ -1,6 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { installGlobalErrorNet } from '../../src/utils/gracefulShutdown.js'
+import {
+  _resetErrorLogForTesting,
+  getInMemoryErrors,
+} from '../../src/utils/log.js'
 
 type Handler = (...args: unknown[]) => void
 
@@ -48,5 +52,65 @@ describe('installGlobalErrorNet', () => {
     installGlobalErrorNet(proc as never)
     expect(proc.handlers.get('uncaughtException')).toHaveLength(1)
     expect(proc.handlers.get('unhandledRejection')).toHaveLength(1)
+  })
+})
+
+// Crashes must persist to the LOCAL error-log sink even with no container diag
+// file set (the common local daemon/TUI case). Without the fix the handlers
+// only call logForDiagnosticsNoPII, which writes nothing when
+// AGENC_DIAGNOSTICS_FILE is unset — so the crash vanishes silently.
+describe('installGlobalErrorNet persists crashes to the local sink', () => {
+  let savedDiagFile: string | undefined
+  let savedDisableReporting: string | undefined
+  let savedPrivacy: string | undefined
+
+  beforeEach(() => {
+    savedDiagFile = process.env.AGENC_DIAGNOSTICS_FILE
+    savedDisableReporting = process.env.DISABLE_ERROR_REPORTING
+    savedPrivacy = process.env.AGENC_DISABLE_NONESSENTIAL_TRAFFIC
+    // Reproduce the local-user environment: no container diagnostics file,
+    // error reporting enabled (default privacy).
+    delete process.env.AGENC_DIAGNOSTICS_FILE
+    delete process.env.DISABLE_ERROR_REPORTING
+    delete process.env.AGENC_DISABLE_NONESSENTIAL_TRAFFIC
+    _resetErrorLogForTesting()
+  })
+
+  afterEach(() => {
+    if (savedDiagFile === undefined) delete process.env.AGENC_DIAGNOSTICS_FILE
+    else process.env.AGENC_DIAGNOSTICS_FILE = savedDiagFile
+    if (savedDisableReporting === undefined)
+      delete process.env.DISABLE_ERROR_REPORTING
+    else process.env.DISABLE_ERROR_REPORTING = savedDisableReporting
+    if (savedPrivacy === undefined)
+      delete process.env.AGENC_DISABLE_NONESSENTIAL_TRAFFIC
+    else process.env.AGENC_DISABLE_NONESSENTIAL_TRAFFIC = savedPrivacy
+    _resetErrorLogForTesting()
+  })
+
+  test('uncaughtException reaches the persisted error log (no diag file)', () => {
+    const proc = fakeProc()
+    installGlobalErrorNet(proc as never)
+    const uncaught = proc.handlers.get('uncaughtException')![0]!
+
+    expect(getInMemoryErrors()).toHaveLength(0)
+    uncaught(new Error('local-daemon-crash-marker'))
+
+    const errors = getInMemoryErrors()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]!.error).toContain('local-daemon-crash-marker')
+  })
+
+  test('unhandledRejection reaches the persisted error log (no diag file)', () => {
+    const proc = fakeProc()
+    installGlobalErrorNet(proc as never)
+    const rejection = proc.handlers.get('unhandledRejection')![0]!
+
+    expect(getInMemoryErrors()).toHaveLength(0)
+    rejection(new Error('local-rejection-marker'))
+
+    const errors = getInMemoryErrors()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]!.error).toContain('local-rejection-marker')
   })
 })
