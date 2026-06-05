@@ -1,8 +1,7 @@
 # AgenC Architecture
 
-A map of how `agenc` is put together. For the user-facing CLI and quick start
-see [`../README.md`](../README.md); for the dev loop see
-[`../AGENTS.md`](../AGENTS.md).
+A map of how `agenc` is put together. For the user-facing CLI, quick start, and
+development loop see [`../README.md`](../README.md).
 
 ## Process model
 

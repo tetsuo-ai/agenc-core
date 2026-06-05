@@ -1,40 +1,82 @@
 # AgenC Core
 
-AgenC Core is the implementation repository for the `agenc` coding-agent CLI.
-The current runtime is daemon-backed: the public launcher starts or attaches the
-local daemon, and the terminal UI, one-shot CLI mode, background agents, MCP
-surface, permissions, tools, and provider calls all run through the runtime
-workspace.
+> A daemon-backed, terminal-native coding agent — autonomous background agents,
+> an in-terminal editor workbench, MCP-native tools, and OS-sandboxed execution.
 
-This repo is no longer the old multi-product scaffold. The live implementation
-is concentrated in `runtime/`, with a small public launcher package in
+![status](https://img.shields.io/badge/status-pre--release-orange)
+![version](https://img.shields.io/badge/version-0.2.0-blue)
+![node](https://img.shields.io/badge/node-%E2%89%A5%2025-339933?logo=node.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
+![tests](https://img.shields.io/badge/tests-12k%2B%20vitest-brightgreen)
+
+**AgenC Core** is the implementation repository for the `agenc` CLI — an agent
+that reads your code, runs commands, and edits files from the terminal. It is
+**daemon-backed**: a local daemon owns agent/session lifecycle, command
+execution, permissions, and provider calls, while the interactive TUI, the
+one-shot `--print` CLI, and background agents are all clients of it. The live
+implementation is concentrated in `runtime/`, with a thin public launcher in
 `packages/agenc/` and daemon service templates in `packaging/`.
 
-For how the pieces fit together see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);
-for the development workflow see [`AGENTS.md`](AGENTS.md).
+For the subsystem map and how the pieces fit together, see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Packages
+## Contents
 
-| Path | Package | Purpose |
-| --- | --- | --- |
-| `packages/agenc/` | `@tetsuo-ai/agenc` | Public CLI launcher. Installs the `agenc` binary, autostarts the daemon when needed, then delegates to the runtime binary. |
-| `runtime/` | `@tetsuo-ai/runtime` | The AgenC runtime: CLI, daemon, TUI, agent/session engine, providers, MCP, permissions, sandboxing, tools, and tests. |
-| `packaging/` | n/a | Linux systemd, macOS launchd, and Windows service templates for running `agenc daemon start --foreground`. |
+- [Features](#features)
+- [Project status](#project-status)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Security](#security)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Features
+
+- **Two front-ends, one engine** — an interactive Ink/React **TUI** and a
+  headless one-shot mode (`agenc --print "…"`), both driven by the same
+  daemon-owned session engine.
+- **Background & autonomous agents** — fire-and-forget agents that run
+  independently of the foreground UI, each in its own git worktree, attachable
+  and resumable.
+- **Built-in tools** — Bash, file read/write/edit, transactional `apply_patch`,
+  web fetch/search, LSP, MCP, and recursive sub-agents — with read-before-write
+  and atomic-patch safety.
+- **MCP-native** — an outbound MCP **client** (tool/resource/prompt bridges) and
+  an MCP **server** framework, including enterprise XAA (SEP-990) auth.
+- **Layered safety** — a mode-based permission system plus an opt-in OS sandbox
+  (bubblewrap/Landlock on Linux, Seatbelt on macOS) for shell execution.
+- **In-terminal workbench** — project explorer, code preview, and an editable
+  `BUFFER` surface that prefers an embedded `nvim --embed`.
+- **Provider-neutral** — defaults to xAI (`grok-4.3`); also speaks the Anthropic
+  SDK, the OpenAI-compatible HTTP protocol, and local Ollama.
+- **Durable sessions** — append-only rollout logs + SQLite state written
+  atomically, with `--continue` / `--resume`.
+
+## Project status
+
+Pre-release (`0.2.0`, `private`). The codebase is **type-clean** (`0`
+`@ts-nocheck`, `tsc` at 0 errors) with ~12,000 passing tests, and the
+daemon / persistence / permission cores are mature (WAL SQLite, atomic rollout
+writes, an AST-backed Bash permission layer, transactional file edits). It is
+**not yet published** to a registry — build from source (below). A top-level
+`LICENSE` is being finalized ahead of the first public release.
 
 ## Requirements
 
-- Node.js `>=25.0.0` for runtime development.
-- npm `11.x` as declared by `packageManager`.
-- A configured provider or auth session before real model calls. The default
-  provider is **xAI** (`XAI_API_KEY`, also accepts `GROK_API_KEY`); the default
-  model is `grok-4.3` (`AGENC_MODEL` overrides). Use `agenc providers`,
-  `agenc login`, and `agenc config` to inspect setup.
+- **Node.js `>= 25`** (declared in `runtime/package.json` engines).
+- **npm `11.x`** (declared via `packageManager`).
+- **A provider** before real model calls. The default is **xAI**
+  (`XAI_API_KEY`, also accepts `GROK_API_KEY`); the default model is `grok-4.3`
+  (`AGENC_MODEL` overrides). Inspect setup with `agenc providers`,
+  `agenc login`, and `agenc config`.
 
-Runtime state is stored under `AGENC_HOME` when set, otherwise `~/.agenc`.
-The daemon uses the same home for its pid file, cookie, socket, config, project
-state, sessions, and logs.
+## Quick start
 
-## Quick Start
+Build from source and run the CLI:
 
 ```bash
 npm install
@@ -61,9 +103,9 @@ node runtime/bin/agenc init
 node runtime/bin/agenc config validate
 ```
 
-## CLI Surface
+## Usage
 
-Top-level runtime commands:
+### Command surface
 
 ```text
 agenc [options] [PROMPT]
@@ -72,77 +114,64 @@ agenc help [command]
 agenc init [--force]
 agenc <login|logout|whoami>
 agenc providers [--json] [--no-local-check]
-agenc config <command> [args]
+agenc config <show|get|set|unset|validate|edit|path>
 agenc plugin <command> [options]
 agenc permissions <command>
-agenc state export <agent-id>
-agenc state import
-agenc daemon start [--foreground]
-agenc daemon <stop|status|reload|restart>
-agenc agent start <objective>
-agenc agent list
-agenc agent attach <id>
-agenc agent stop <id>
-agenc agent logs <id>
+agenc state <export <agent-id>|import>
+agenc daemon <start [--foreground]|stop|status|reload|restart>
+agenc agent <start <objective>|list|attach <id>|stop <id>|logs <id>>
 agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor|xaa>
 agenc doctor [--json]
 ```
 
 `agenc doctor` diagnoses the installation and environment (version, install
-type, ripgrep status, auto-update permissions, and PATH/glob warnings with
-suggested fixes); `--json` emits the raw diagnostic. For MCP-server-specific
-checks use `agenc mcp doctor`.
-
-The `agenc mcp` subcommands cover MCP server management plus two auth helpers:
-`doctor` (diagnose MCP configuration) and `xaa` (`setup|login|show|clear` for
-Cross-App Access / Enterprise Managed Authorization, SEP-990 — the IdP-brokered
-auth flow used by enterprise-managed MCP servers).
+type, ripgrep status, auto-update permissions, PATH/glob warnings + fixes);
+`--json` emits the raw diagnostic. `agenc mcp doctor` does the MCP-specific
+checks, and `agenc mcp xaa` (`setup|login|show|clear`) drives the Cross-App
+Access / Enterprise Managed Authorization flow (SEP-990) for enterprise-managed
+MCP servers.
 
 Common flags:
 
 ```text
--p, --print
---no-tui
---continue
---resume <session-id>
---profile <name>
---provider <name>
---model <id|provider:id>
---permission-mode <mode>
---autonomous, --proactive
---dangerously-bypass-approvals-and-sandbox
---yolo
---allow-dangerously-skip-permissions
---image <file|url|data-url>
+-p, --print                                   headless one-shot mode
+--no-tui                                       run without the TUI
+--continue                                     continue the latest session
+--resume <session-id>                          resume a specific session
+--profile <name>                               use a named config profile
+--provider <name>                              override the provider
+--model <id|provider:id>                       override the model
+--permission-mode <mode>                       set the approval mode
+--autonomous, --proactive                      enable autonomous ticks
+--dangerously-bypass-approvals-and-sandbox     bypass approvals + sandbox
+--yolo                                          alias for the bypass flag
+--allow-dangerously-skip-permissions           skip approval prompts
+--image <file|url|data-url>                    attach an image
 ```
 
 Use `agenc help <command>` for command-specific help.
 
-## Daemon Runtime
+### Daemon
 
-The daemon is the local control plane. It owns agent/session lifecycle,
-JSON-RPC dispatch, command execution, provider key vending, permission requests,
+The daemon is the local control plane — it owns agent/session lifecycle,
+JSON-RPC dispatch, command execution, provider-key vending, permission requests,
 realtime methods, health checks, and background-agent attachment.
-
-Useful commands:
 
 ```bash
 node runtime/bin/agenc daemon status
-node runtime/bin/agenc daemon start
-node runtime/bin/agenc daemon start --foreground
+node runtime/bin/agenc daemon start [--foreground]
 node runtime/bin/agenc daemon reload
 node runtime/bin/agenc daemon restart
 node runtime/bin/agenc daemon stop
 ```
 
-The public launcher in `packages/agenc/` autostarts the daemon before invoking
-runtime commands unless `AGENC_DAEMON_AUTOSTART=0` is set. The default daemon
-ready timeout is controlled by `AGENC_DAEMON_READY_TIMEOUT_MS`.
+The launcher in `packages/agenc/` autostarts the daemon before invoking runtime
+commands unless `AGENC_DAEMON_AUTOSTART=0`; the launcher's daemon-ready timeout
+is `AGENC_DAEMON_READY_TIMEOUT_MS`.
 
-## Background Agents
+### Background agents
 
-Background agents are daemon-managed sessions that can run independently of the
-foreground TUI.
+Daemon-managed sessions that run independently of the foreground TUI:
 
 ```bash
 node runtime/bin/agenc agent start "fix the failing parser test"
@@ -153,108 +182,141 @@ node runtime/bin/agenc agent logs <agent-id>
 node runtime/bin/agenc agent stop <agent-id>
 ```
 
-## Workbench & Editing
+### Workbench & editing
 
-The interactive TUI includes a **workbench** — a project explorer, a read-only
-code preview surface, and an editable `BUFFER` surface for editing files without
-leaving the terminal. The BUFFER surface supports three editor providers:
+The TUI includes a **workbench** — a project explorer, a read-only code preview,
+and an editable `BUFFER` surface for editing files without leaving the terminal.
+`BUFFER` supports three editor providers:
 
-- **Embedded Neovim** (preferred): AgenC launches `nvim --embed` and owns its
-  process lifecycle, rendering, and file safety, while Neovim owns Vim
-  semantics. This is the enterprise-grade editing path.
-- **Inline fallback**: a basic built-in editor used only when Neovim is
-  unavailable. It is fallback-only and does not claim exact Vim behavior.
-- **External editor**: explicit handoff to `$VISUAL`/`$EDITOR` (e.g. `nvim`,
-  `vim`, `vi`, `nano`) for users who prefer their own editor.
+- **Embedded Neovim** (preferred) — AgenC launches `nvim --embed` and owns
+  process lifecycle, rendering, and file safety, while Neovim owns Vim semantics.
+- **Inline fallback** — a basic built-in editor used only when Neovim is
+  unavailable; fallback-only, and it does not claim exact Vim behavior.
+- **External editor** — explicit handoff to `$VISUAL`/`$EDITOR` (`nvim`, `vim`,
+  `vi`, `nano`, …).
 
-> Security note: in `auto` mode the embedded-Neovim path loads your full Neovim
-> configuration (`init.lua`) and plugins, which execute as your user. See
+> **Security note:** in `auto` mode the embedded-Neovim path loads your full
+> Neovim config (`init.lua`) and plugins, which execute as your user. See
 > [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md) for the
 > trust boundary and how to run Neovim isolated under unattended agents.
 
 The embedded-Neovim PTY lifecycle (including the "kill the TUI mid-edit and
 leave no orphaned `nvim` child" guarantee) is exercised by the
-`check:tui-workbench-buffer-neovim` scenario gate, run in CI.
+`check:tui-workbench-buffer-neovim` scenario gate.
 
-## Runtime Layout
+## Configuration
+
+Runtime state lives under `AGENC_HOME` (default `~/.agenc`) — the daemon's pid
+file, cookie, socket, config, per-project state, sessions, and logs all share
+that home. Key knobs:
+
+| Setting | What it does |
+| --- | --- |
+| `AGENC_HOME` | Root for all on-disk state (default `~/.agenc`). |
+| `XAI_API_KEY` / `GROK_API_KEY` | xAI credentials (default provider). |
+| `AGENC_MODEL` | Override the default model (`grok-4.3`). |
+| `AGENC_DAEMON_AUTOSTART=0` | Disable launcher daemon autostart. |
+| `AGENC_DAEMON_READY_TIMEOUT_MS` | Launcher daemon-ready timeout. |
+| `config.toml` (via `agenc config`) | Persisted config: providers, MCP servers, permissions, profiles. |
+
+## Architecture
+
+| Path | Package | Purpose |
+| --- | --- | --- |
+| `runtime/` | `@tetsuo-ai/runtime` | The runtime: CLI, daemon, TUI, agent/session engine, providers, MCP, permissions, sandbox, tools, tests. |
+| `packages/agenc/` | `@tetsuo-ai/agenc` | Public launcher: installs `agenc`, autostarts the daemon, delegates to the runtime. |
+| `packaging/` | — | systemd / launchd / Windows service templates for `agenc daemon start --foreground`. |
+
+Principal runtime subsystems (`runtime/src`):
 
 ```text
-runtime/
-  bin/                executable shims for built runtime entrypoints
-  scripts/            build and validation gates
-  src/
-    agents/           background-agent state, registry, worktree, status
-    app-server/       daemon dispatcher, transports, auth, lifecycle, health
-    bin/              CLI entrypoint and subcommand adapters
-    commands/         slash-command registry and command implementations
-    config/           config schema, profiles, store, migrations
-    llm/              provider-neutral model/client/request handling
-    mcp-client/       MCP client manager, tools, prompts, resources
-    mcp-server/       MCP server framework and transports
-    permissions/      trust, approval, sandbox, and permission rules
-    sandbox/          sandbox policies and launch helpers
-    session/          session store, turns, transcript, autonomous mode
-    tasks/            local task abstractions used by TUI/runtime flows
-    tools/            built-in model tools
-    tui/              Ink/React terminal UI
-  tests/              runtime-aligned Vitest suites
+bin/            CLI entrypoint + subcommand adapters
+app-server/     the daemon: dispatch, transports, auth, lifecycle, health
+session/        session store, turns, transcript, rollout, autonomous mode
+agents/         background-agent state, registry, worktree, status
+llm/            provider-neutral model/client/request handling
+services/       concrete provider wire layer, caching, cost
+tools/          built-in model tools
+permissions/    trust, approval, permission rules, sandbox policy
+sandbox/        OS sandbox launch helpers
+mcp-client/     outbound MCP client (tool/resource/prompt bridges)
+mcp-server/     MCP server framework + transports
+config/ state/  config schema/store/migrations, SQLite project state
+transaction-guard/  opt-in SLM tool-call guard (see Security)
+tui/            the Ink/React terminal UI
 ```
 
-## Development Commands
+The full subsystem map (process model, on-disk state, render stack) is in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Development
 
 From the repo root:
 
 ```bash
-npm run typecheck
-npm run build
-npm run test
-npm run validate:runtime
+npm run typecheck        # tsc --noEmit (keep at 0 errors)
+npm run build            # tsup build → runtime/dist + VERSION
+npm run test             # typecheck + full vitest suite
+npm run test:bun         # isolated Bun suite (one file per process)
+npm run validate:runtime # typecheck + build + PTY startup smoke
 ```
 
-Runtime-specific gates:
+Runtime-scoped gates (`npm --workspace=@tetsuo-ai/runtime run <name>`):
 
 ```bash
-npm --workspace=@tetsuo-ai/runtime run typecheck
-npm --workspace=@tetsuo-ai/runtime run build
-npm --workspace=@tetsuo-ai/runtime test
-npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup
-npm --workspace=@tetsuo-ai/runtime run check:tui-e2e
-npm --workspace=@tetsuo-ai/runtime run check:daemon-errors
-npm --workspace=@tetsuo-ai/runtime run check:llm-pipeline
-npm --workspace=@tetsuo-ai/runtime run check:e2e-all
+check:tui-runtime-startup   # launch agenc / agenc --yolo in real PTYs
+check:tui-e2e               # TUI scenario suite (-- --filter <name>)
+check:daemon-errors
+check:llm-pipeline
+check:e2e-all               # daemon-errors + llm-pipeline + tui-e2e
+check:unused                # knip (unused exports/files/deps)
 ```
 
 `check:tui-runtime-startup` imports the built TUI bundle and launches `agenc`
-and `agenc --yolo` in real pseudo-terminals at multiple viewport sizes. Keep it
-in the validation path for changes touching the TUI, daemon startup, package
+and `agenc --yolo` in real pseudo-terminals at several viewport sizes — keep it
+in the validation path for anything touching the TUI, daemon startup, package
 entrypoints, or built artifacts.
 
-`check:tui-e2e` runs the scenario suite under `runtime/scripts/check-tui-e2e/`.
-Use `-- --filter <name>` to run one scenario while debugging.
-
-## Security Guardrails
-
-The runtime includes an opt-in CourtGuard-style SLM transaction guard for
-Solana transaction-like tool calls. It runs at the tool-dispatch boundary before
-execution, defaults to local Ollama `gemma4:e4b`, and has an explicit DevNet
-live validation path. See `docs/security/slm-transaction-guard.md`.
-
-## Build Output
-
 `npm run build` compiles the runtime with `tsup`, writes `runtime/dist/VERSION`,
-copies runtime policy assets, and verifies package entrypoints. The generated
-`runtime/dist/` tree is build output and is not source.
+copies runtime policy assets, and verifies the package entrypoints. The
+generated `runtime/dist/` tree is build output, not source.
 
-## Service Templates
+## Security
 
-Daemon supervisor templates live under `packaging/`:
+Shell execution and file mutation flow through a mode-based permission layer; an
+opt-in OS sandbox confines shell commands at the kernel level (bubblewrap /
+Landlock on Linux, Seatbelt on macOS). Mutating tools are guarded — file edits
+enforce read-before-write + mtime-drift checks, and `apply_patch` applies
+multi-file patches transactionally (plan → commit → roll back on any failure).
 
-- `packaging/systemd/agenc-daemon.service`
-- `packaging/launchd/dev.agenc.daemon.plist`
-- `packaging/windows/agenc-daemon.xml`
+The runtime also ships an **opt-in SLM transaction guard** (CourtGuard-style)
+for Solana transaction-like tool calls: it runs at the tool-dispatch boundary
+before execution, fails closed, defaults to local Ollama (`gemma4:e4b`), and has
+an explicit DevNet live-validation path. See
+[`docs/security/slm-transaction-guard.md`](docs/security/slm-transaction-guard.md).
 
-Each runs:
+> Daemon service supervisor templates live under `packaging/`
+> (`systemd/agenc-daemon.service`, `launchd/dev.agenc.daemon.plist`,
+> `windows/agenc-daemon.xml`); each runs `agenc daemon start --foreground`.
 
-```bash
-agenc daemon start --foreground
-```
+## Contributing
+
+1. **Branch off `main`** (never commit directly to it).
+2. Make the change with a **revert-sensitive** test where a bug is involved.
+3. Verify locally — the gates are authoritative because CI
+   (`.github/workflows/ci.yml`) is manual-only:
+   - `npm run typecheck` → **0 errors** (and no new `@ts-nocheck`),
+   - `npm run test` → green,
+   - `npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime` for
+     TUI/daemon/entrypoint changes.
+4. Use **conventional commits** (`fix(runtime): …`); open a PR and squash-merge.
+   Don't bypass git hooks (`--no-verify`).
+
+A pre-commit hook is provided in `.githooks/` (build + PTY startup smoke); enable
+it with `git config core.hooksPath .githooks`.
+
+## License
+
+Pre-release. The runtime package metadata declares **MIT**
+(`runtime/package.json`); a top-level `LICENSE`/`NOTICE` is being finalized
+ahead of the first public release. Until then the repository is `private`.
