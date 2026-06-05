@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   LLMChatOptions,
+  LLMContentPart,
   LLMProvider,
   LLMMessage,
   LLMProviderTraceEvent,
@@ -310,6 +311,51 @@ function parseToolCallArguments(argumentsJson: string): Record<string, unknown> 
     // not make provider serialization fail before the validator can respond.
   }
   return {};
+}
+
+// Strips the `data:image/...;base64,` prefix from a data-URL, returning the
+// raw base64 payload. Mirrors the data-URL parsing used by the shared wire
+// helpers. Returns null for non-data-URL (e.g. remote `http(s)://`) inputs.
+function extractImageBase64FromDataUrl(url: string): string | null {
+  const match = /^data:image\/[a-z0-9.+-]+;base64,([\s\S]+)$/iu.exec(url.trim());
+  if (!match) return null;
+  const data = (match[1] ?? "").replace(/\s+/gu, "");
+  return data.length > 0 ? data : null;
+}
+
+/**
+ * Splits multimodal `LLMContentPart[]` content into the shape Ollama's chat
+ * API expects: text parts joined into `content`, and base64 image payloads
+ * collected into a separate `images` array (Ollama does NOT accept images
+ * inside `content`).
+ */
+function extractOllamaContent(parts: LLMContentPart[]): {
+  content: string;
+  images: string[];
+} {
+  const textPieces: string[] = [];
+  const images: string[] = [];
+  for (const part of parts) {
+    if (part.type === "text") {
+      textPieces.push(part.text);
+      continue;
+    }
+    if (part.type === "image_url") {
+      const url = part.image_url.url;
+      const base64 = extractImageBase64FromDataUrl(url);
+      if (base64 !== null) {
+        images.push(base64);
+        continue;
+      }
+      // Remote image URLs cannot be inlined as base64 here. The Ollama SDK
+      // only accepts base64 strings (or raw bytes) in `images`, not URLs.
+      // TODO: fetch remote image URLs and inline their base64 once a shared
+      // image-fetch convention exists; until then, surface a placeholder
+      // rather than silently dropping the reference.
+      textPieces.push(`[image: ${url}]`);
+    }
+  }
+  return { content: textPieces.join("\n"), images };
 }
 
 export class OllamaProvider implements LLMProvider {
@@ -796,8 +842,17 @@ export class OllamaProvider implements LLMProvider {
         })),
       };
     }
+    const role = msg.role === "developer" ? "system" : msg.role;
+    if (Array.isArray(msg.content)) {
+      const { content, images } = extractOllamaContent(msg.content);
+      return {
+        role,
+        content,
+        ...(images.length > 0 ? { images } : {}),
+      };
+    }
     return {
-      role: msg.role === "developer" ? "system" : msg.role,
+      role,
       content: msg.content,
     };
   }

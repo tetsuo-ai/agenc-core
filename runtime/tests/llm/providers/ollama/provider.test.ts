@@ -405,4 +405,52 @@ describe("providers/ollama entrypoint", () => {
     });
     expect(healthCheck).toHaveBeenCalledTimes(2);
   });
+
+  test("serializes image_url data-URL parts into Ollama's images[] field", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: "llava",
+      message: { role: "assistant", content: "ok" },
+      prompt_eval_count: 4,
+      eval_count: 1,
+    });
+    const provider = new OllamaProvider({
+      model: "llava",
+      host: "http://localhost:11434",
+    });
+    setClient(provider, { chat });
+
+    const base64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          {
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${base64}` },
+          },
+        ],
+      },
+    ]);
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    const [params] = chat.mock.calls[0] ?? [];
+    expect(params).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: "What is in this image?",
+          images: [base64],
+        },
+      ],
+    });
+    // The `data:image/...;base64,` prefix must be stripped — Ollama expects
+    // raw base64 in `images`, never inside `content`.
+    const [message] = (params as { messages: Array<Record<string, unknown>> })
+      .messages;
+    expect((message?.images as string[])[0]).not.toContain("data:image");
+    expect(message?.content).not.toContain("base64,");
+  });
 });
