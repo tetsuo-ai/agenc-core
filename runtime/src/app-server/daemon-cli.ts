@@ -102,6 +102,7 @@ import {
 import {
   pruneSessionStateSnapshots,
   pruneTerminalAgentRuns,
+  type RolloutRetentionPolicy,
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
@@ -1653,6 +1654,19 @@ function uniqueStateDatabasePaths(
   );
 }
 
+/**
+ * Project the rollout/session disk-retention window out of the agent retention
+ * config. Returns undefined (sweep stays DISABLED) unless `rollout_days` is set
+ * — the conservative default, since the sweep deletes user data.
+ */
+function rolloutRetentionPolicy(
+  retention: AgentRunRetentionConfig | undefined,
+): RolloutRetentionPolicy | undefined {
+  const days = retention?.rollout_days;
+  if (days === undefined) return undefined;
+  return { retention_days: days };
+}
+
 interface AgenCDaemonSnapshotPolicyRegistryOptions {
   readonly agencHome: string;
   readonly defaultCwd: string;
@@ -1726,8 +1740,10 @@ class AgenCDaemonSnapshotPolicyRegistry {
     snapshotRetention: AgentRunRetentionConfig | undefined,
   ): void {
     this.#snapshotRetention = snapshotRetention;
+    const rolloutRetention = rolloutRetentionPolicy(snapshotRetention);
     for (const entry of this.#policies.values()) {
       entry.policy.updateSnapshotRetention(snapshotRetention);
+      entry.policy.updateRolloutRetention(rolloutRetention);
     }
   }
 
@@ -1912,6 +1928,14 @@ class AgenCDaemonSnapshotPolicyRegistry {
     const policy = new AgenCSessionSnapshotPolicy(driver, {
       agencHome: this.#agencHome,
       snapshotRetention: this.#snapshotRetention,
+      // Rollout/session disk-retention sweep: opt-in via `agent.retention
+      // .rollout_days`. The sessions dir for this project sits next to its
+      // state DB (`<projectDir>/sessions`). No active-session id is threaded
+      // here — the daemon does not own a live foreground session — so the
+      // sweep relies purely on the mtime cutoff (which spares any session
+      // touched within the window, i.e. anything still in use).
+      rolloutRetention: rolloutRetentionPolicy(this.#snapshotRetention),
+      rolloutSessionsDir: join(paths.projectDir, "sessions"),
       onError: this.#onError,
     });
     const entry = { driver, policy };

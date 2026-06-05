@@ -992,10 +992,13 @@ describe("schema: closed config block validators (CF-13)", () => {
         snapshot_days: 3,
         snapshot_max_count: 1,
         snapshot_max_bytes: 1_024,
+        rollout_days: 30,
       },
     });
     expect(out?.budget?.dollar_cap).toBe(5.5);
     expect(out?.retention?.completed_days).toBe(0);
+    // rollout_days lights up the reserved rollout/session retention sweep.
+    expect(out?.retention?.rollout_days).toBe(30);
     expect(Object.isFrozen(out?.retention)).toBe(true);
   });
 

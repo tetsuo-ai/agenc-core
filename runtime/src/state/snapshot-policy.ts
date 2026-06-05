@@ -3,8 +3,10 @@ import type { ToolRecoveryCategory } from "../tools/types.js";
 import { updateAgentRunStatus } from "./agent-runs.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import {
+  pruneRolloutSessions,
   pruneSessionStateSnapshots,
   type AgentRunRetentionPolicy,
+  type RolloutRetentionPolicy,
 } from "./pruning.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import {
@@ -47,6 +49,15 @@ export interface SnapshotPolicyOptions {
   readonly clearInterval?: (timer: SnapshotPolicyTimer) => void;
   readonly onError?: (error: unknown) => void;
   readonly snapshotRetention?: AgentRunRetentionPolicy;
+  // Rollout/session disk-retention sweep config. Disabled unless
+  // `rolloutRetention.retention_days` is set AND `rolloutSessionsDir` resolves;
+  // runs on the throttled periodic timer (not a tight loop), bounded per pass.
+  readonly rolloutRetention?: RolloutRetentionPolicy;
+  // Absolute `<projectDir>/sessions` dir the sweep walks. Required for the
+  // sweep to do anything; otherwise it is a no-op (conservative default).
+  readonly rolloutSessionsDir?: string;
+  // Live session id that must never be pruned by the sweep.
+  readonly activeSessionId?: string;
   readonly agencHome?: string;
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
@@ -142,6 +153,9 @@ export class AgenCSessionSnapshotPolicy {
   readonly #clearInterval: (timer: SnapshotPolicyTimer) => void;
   readonly #onError: (error: unknown) => void;
   #snapshotRetention: AgentRunRetentionPolicy | undefined;
+  #rolloutRetention: RolloutRetentionPolicy | undefined;
+  readonly #rolloutSessionsDir: string | undefined;
+  readonly #activeSessionId: string | undefined;
   readonly #agencHome: string | undefined;
   readonly #outputRotation: ToolOutputRotationPolicy | undefined;
   readonly #sessions = new Map<string, SessionSnapshotState>();
@@ -188,6 +202,9 @@ export class AgenCSessionSnapshotPolicy {
       ((timer) => clearInterval(timer as ReturnType<typeof setInterval>));
     this.#onError = options.onError ?? (() => {});
     this.#snapshotRetention = options.snapshotRetention;
+    this.#rolloutRetention = options.rolloutRetention;
+    this.#rolloutSessionsDir = options.rolloutSessionsDir;
+    this.#activeSessionId = options.activeSessionId;
     this.#agencHome = options.agencHome;
     this.#outputRotation = options.outputRotation;
   }
@@ -261,6 +278,38 @@ export class AgenCSessionSnapshotPolicy {
     snapshotRetention: AgentRunRetentionPolicy | undefined,
   ): void {
     this.#snapshotRetention = snapshotRetention;
+  }
+
+  updateRolloutRetention(
+    rolloutRetention: RolloutRetentionPolicy | undefined,
+  ): void {
+    this.#rolloutRetention = rolloutRetention;
+  }
+
+  /**
+   * Run the rollout/session retention sweep once. Driven by the throttled
+   * periodic timer (see {@link flushPeriodic}) so it never spins in a tight
+   * loop. No-op unless a retention window AND a sessions dir are configured —
+   * the conservative default is to delete nothing.
+   */
+  sweepRolloutRetention(): void {
+    const retentionDays = this.#rolloutRetention?.retention_days;
+    if (retentionDays === undefined || this.#rolloutSessionsDir === undefined) {
+      return;
+    }
+    try {
+      pruneRolloutSessions(this.#driver, {
+        sessionsDir: this.#rolloutSessionsDir,
+        retention_days: retentionDays,
+        ...(this.#activeSessionId !== undefined
+          ? { activeSessionId: this.#activeSessionId }
+          : {}),
+        now: this.#now,
+        onError: this.#onError,
+      });
+    } catch (error) {
+      this.#onError(error);
+    }
   }
 
   trackSession(sessionId: string, agentId?: string): void {
@@ -434,9 +483,13 @@ export class AgenCSessionSnapshotPolicy {
   }
 
   flushPeriodic(): readonly SnapshotPolicySnapshotRecord[] {
-    return [...this.#sessions.values()].map((state) =>
+    const records = [...this.#sessions.values()].map((state) =>
       this.#writeSnapshot(state, "periodic"),
     );
+    // Piggy-back the disk-retention sweep on the same throttled tick so
+    // rollout/session pruning runs on a bounded timer, not a tight loop.
+    this.sweepRolloutRetention();
+    return records;
   }
 
   loadLatest(sessionId: string): SnapshotPolicySnapshotRecord | undefined {

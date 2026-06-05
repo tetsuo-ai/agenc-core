@@ -157,6 +157,13 @@ export interface AgentRunRetentionConfig {
   readonly snapshot_days?: number;
   readonly snapshot_max_count?: number;
   readonly snapshot_max_bytes?: number;
+  // Rollout/session disk retention window (days). Lights up the reserved
+  // `cleanupPeriodDays`/`history` retention intent: when set, the daemon's
+  // throttled sweep deletes session dirs + their rollout JSONL + the
+  // thread_rollout_items mirror rows once their newest rollout is older than
+  // this many days. Unset → DISABLED (no pruning; the conservative default,
+  // since this deletes user data).
+  readonly rollout_days?: number;
 }
 
 export interface AgentConfig {
@@ -1372,6 +1379,7 @@ const AGENT_RETENTION_KEYS: ReadonlySet<string> = new Set([
   "snapshot_days",
   "snapshot_max_count",
   "snapshot_max_bytes",
+  "rollout_days",
 ]);
 
 function validateAgentBudget(raw: unknown): AgentBudgetConfig | undefined {
@@ -1429,6 +1437,7 @@ function validateAgentRetention(raw: unknown): AgentRunRetentionConfig | undefin
     "completed_days",
     "failed_days",
     "snapshot_days",
+    "rollout_days",
   ] as const) {
     const value = optionalNonNegativeNumber(
       record[key],
