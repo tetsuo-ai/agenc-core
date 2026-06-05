@@ -30,7 +30,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { createGlobTool, GLOB_TOOL_NAME } from "./glob.js";
+import { __INTERNAL, createGlobTool, GLOB_TOOL_NAME } from "./glob.js";
 
 describe("Glob tool", () => {
   let root = "";
@@ -171,6 +171,25 @@ describe("Glob tool", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain("Glob requires ripgrep");
     expect(result.content).toContain("hidden and ignored-file parity");
+    // No rg binary is bundled, so the only fix is a system install — the error
+    // must name a concrete install command per platform, not just say it's
+    // required. (Revert-sensitive: drops the appended hint without the fix.)
+    expect(result.content).toContain(__INTERNAL.ripgrepInstallHint());
+    expect(result.content).toMatch(
+      /winget install BurntSushi\.ripgrep\.MSVC|brew install ripgrep|apt install ripgrep/,
+    );
+  });
+
+  test("ripgrepInstallHint names the install command for each platform", () => {
+    expect(__INTERNAL.ripgrepInstallHint("darwin")).toContain(
+      "brew install ripgrep",
+    );
+    expect(__INTERNAL.ripgrepInstallHint("win32")).toContain(
+      "winget install BurntSushi.ripgrep.MSVC",
+    );
+    expect(__INTERNAL.ripgrepInstallHint("linux")).toContain(
+      "apt install ripgrep",
+    );
   });
 
   test("empty results return polite plain text and not isError", async () => {
