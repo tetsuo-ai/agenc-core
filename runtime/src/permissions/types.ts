@@ -19,33 +19,26 @@
 // Modes
 // ─────────────────────────────────────────────────────────────────────
 
+// Single source of truth: the mode + rule-source unions live in the cycle-free
+// foundation module (types/permissions.ts) and are re-exported here so the two
+// copies can't drift again. The runtime constants below stay local.
+import type {
+  InternalPermissionMode,
+  PermissionRuleSource as PermissionRuleSourceType,
+} from "../types/permissions.js";
+
 /**
  * All permission mode variants supported by the runtime.
  *
  * User-addressable modes (settings `defaultMode`, `--permission-mode`):
- *   - "default"
- *   - "acceptEdits"
- *   - "plan"
- *   - "bypassPermissions"
- *   - "dontAsk"
- *   - "auto"
- *
+ *   "default" | "acceptEdits" | "plan" | "bypassPermissions" | "dontAsk" | "auto".
  * Internal-only:
  *   - "unattended" — background-agent mode; unattended policy decides
  *     allow/deny/pause while no client is attached.
- *   - "bubble" — reserved for nested/child permission contexts that
- *     "bubble up" denials to the parent session. Kept here for
- *     completeness; not exposed by CLI or settings today.
+ *   - "bubble" — reserved for nested/child permission contexts that "bubble up"
+ *     denials to the parent session. Kept for completeness; not exposed today.
  */
-export type PermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "plan"
-  | "bypassPermissions"
-  | "dontAsk"
-  | "auto"
-  | "unattended"
-  | "bubble";
+export type PermissionMode = InternalPermissionMode;
 
 /**
  * Modes that can be referenced by CLI flags / settings JSON. Excludes
@@ -112,15 +105,7 @@ export const PERMISSION_BEHAVIORS: readonly PermissionBehavior[] =
  * Ported exactly from AgenC's
  * `src/utils/permissions/permissions.ts :: PERMISSION_RULE_SOURCES`.
  */
-export type PermissionRuleSource =
-  | "userSettings"
-  | "projectSettings"
-  | "localSettings"
-  | "flagSettings"
-  | "policySettings"
-  | "cliArg"
-  | "command"
-  | "session";
+export type PermissionRuleSource = PermissionRuleSourceType;
 
 export const PERMISSION_RULE_SOURCES: readonly PermissionRuleSource[] =
   Object.freeze([
