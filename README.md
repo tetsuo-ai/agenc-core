@@ -10,6 +10,9 @@ This repo is no longer the old multi-product scaffold. The live implementation
 is concentrated in `runtime/`, with a small public launcher package in
 `packages/agenc/` and daemon service templates in `packaging/`.
 
+For how the pieces fit together see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);
+for the development workflow see [`AGENTS.md`](AGENTS.md).
+
 ## Packages
 
 | Path | Package | Purpose |
@@ -22,8 +25,10 @@ is concentrated in `runtime/`, with a small public launcher package in
 
 - Node.js `>=25.0.0` for runtime development.
 - npm `11.x` as declared by `packageManager`.
-- A configured provider or auth session before real model calls. Use
-  `agenc providers`, `agenc login`, and `agenc config` to inspect setup.
+- A configured provider or auth session before real model calls. The default
+  provider is **xAI** (`XAI_API_KEY`, also accepts `GROK_API_KEY`); the default
+  model is `grok-4.3` (`AGENC_MODEL` overrides). Use `agenc providers`,
+  `agenc login`, and `agenc config` to inspect setup.
 
 Runtime state is stored under `AGENC_HOME` when set, otherwise `~/.agenc`.
 The daemon uses the same home for its pid file, cookie, socket, config, project
