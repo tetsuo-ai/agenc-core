@@ -1,3 +1,12 @@
+import {
+  existsSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { join } from "node:path";
+import { StateThreadRepository } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
@@ -188,6 +197,223 @@ export function pruneSessionStateSnapshots(
       prunedSessionIds: [...prunedSessionIds].sort(),
     };
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Rollout/session retention sweep
+//
+// Rollout JSONL files and their session directories are never rotated, so
+// disk grows unbounded. This sweep deletes whole session directories whose
+// newest rollout file is older than the configured retention window, and
+// (in the same pass) drops the `thread_rollout_items` SQLite mirror rows that
+// point at the removed rollout files so the index can't outlive its source.
+//
+// CONSERVATISM (this deletes user data):
+//   - Disabled by default — `retention_days === undefined` is a no-op.
+//   - Only sessions whose newest rollout mtime is strictly older than the
+//     cutoff are eligible.
+//   - The active session is never pruned.
+//   - Each session dir is removed atomically (rename-aside, then recursive
+//     rm) so a half-deleted directory is never observable.
+//   - Bounded per sweep (`maxDeletions`) so a backlog drains gradually on a
+//     throttled timer rather than stalling the daemon.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Default ceiling on session dirs removed per sweep — drains a backlog over
+ *  successive throttled timer ticks instead of in one blocking pass. */
+export const DEFAULT_ROLLOUT_PRUNE_MAX_DELETIONS = 50;
+
+export interface RolloutRetentionPolicy {
+  /** Retention window in days. Undefined → sweep disabled (default). */
+  readonly retention_days?: number;
+}
+
+export interface RolloutPruningOptions extends RolloutRetentionPolicy {
+  /** Absolute path to `<projectDir>/sessions`. */
+  readonly sessionsDir: string;
+  /** Session id of the live session — never pruned even if past the cutoff. */
+  readonly activeSessionId?: string;
+  /** Upper bound on session dirs deleted in a single sweep. */
+  readonly maxDeletions?: number;
+  readonly now?: () => string;
+  readonly onError?: (error: unknown) => void;
+}
+
+export interface RolloutPruningReport {
+  readonly prunedSessions: number;
+  readonly prunedRolloutFiles: number;
+  readonly prunedMirrorRows: number;
+  readonly prunedSessionIds: readonly string[];
+}
+
+/**
+ * Delete session directories (rollout JSONL + index + sidecars) older than the
+ * retention window, and the `thread_rollout_items` mirror rows that mirror the
+ * removed rollout files. See the section header for the conservatism contract.
+ */
+export function pruneRolloutSessions(
+  driver: StateSqliteDriver,
+  options: RolloutPruningOptions,
+): RolloutPruningReport {
+  const cutoffMs = rolloutCutoffMs(
+    options.now?.() ?? new Date().toISOString(),
+    options.retention_days,
+  );
+  // Disabled by default: no retention window → never delete anything.
+  if (cutoffMs === undefined) return emptyRolloutReport();
+  if (!existsSync(options.sessionsDir)) return emptyRolloutReport();
+
+  const onError = options.onError ?? (() => {});
+  const maxDeletions = boundedDeletions(options.maxDeletions);
+
+  let entries: string[];
+  try {
+    entries = readdirSync(options.sessionsDir);
+  } catch (error) {
+    onError(error);
+    return emptyRolloutReport();
+  }
+
+  const threads = new StateThreadRepository(driver);
+  const prunedSessionIds: string[] = [];
+  let prunedRolloutFiles = 0;
+  let prunedMirrorRows = 0;
+
+  for (const sessionId of entries) {
+    if (prunedSessionIds.length >= maxDeletions) break;
+    // Never prune the live session, regardless of mtime.
+    if (sessionId === options.activeSessionId) continue;
+
+    const sessionDir = join(options.sessionsDir, sessionId);
+    const rollout = describeSessionRollouts(sessionDir);
+    // No rollout files → not a session dir we own; leave it untouched.
+    if (rollout === undefined) continue;
+    // Keep anything touched at/after the cutoff.
+    if (rollout.newestMtimeMs >= cutoffMs) continue;
+
+    // Drop the SQLite mirror rows first: if the FS removal later fails the
+    // mirror is already gone (it can't outlive its source), and a re-index
+    // would only re-add rows for files that still exist.
+    let removedRows = 0;
+    try {
+      for (const sourcePath of rollout.rolloutPaths) {
+        removedRows += threads.deleteRolloutItemsForSource(sourcePath);
+      }
+    } catch (error) {
+      onError(error);
+      continue;
+    }
+
+    // Atomic directory removal: rename aside so a crash mid-rm never leaves a
+    // partially-deleted session dir under its real name, then recursive rm.
+    if (!removeSessionDirAtomically(sessionDir, onError)) continue;
+
+    prunedSessionIds.push(sessionId);
+    prunedRolloutFiles += rollout.rolloutPaths.length;
+    prunedMirrorRows += removedRows;
+  }
+
+  return {
+    prunedSessions: prunedSessionIds.length,
+    prunedRolloutFiles,
+    prunedMirrorRows,
+    prunedSessionIds,
+  };
+}
+
+interface SessionRolloutSummary {
+  readonly rolloutPaths: readonly string[];
+  readonly newestMtimeMs: number;
+}
+
+function describeSessionRollouts(
+  sessionDir: string,
+): SessionRolloutSummary | undefined {
+  let stat;
+  try {
+    stat = statSync(sessionDir);
+  } catch {
+    return undefined;
+  }
+  if (!stat.isDirectory()) return undefined;
+
+  let files: string[];
+  try {
+    files = readdirSync(sessionDir).filter(
+      (f) => f.startsWith("rollout-") && f.endsWith(".jsonl"),
+    );
+  } catch {
+    return undefined;
+  }
+  if (files.length === 0) return undefined;
+
+  const rolloutPaths: string[] = [];
+  let newestMtimeMs = 0;
+  for (const file of files) {
+    const filePath = join(sessionDir, file);
+    try {
+      const fileStat = statSync(filePath);
+      rolloutPaths.push(filePath);
+      if (fileStat.mtimeMs > newestMtimeMs) newestMtimeMs = fileStat.mtimeMs;
+    } catch {
+      // Unreadable rollout — skip it; siblings still gate the decision.
+    }
+  }
+  if (rolloutPaths.length === 0) return undefined;
+  return { rolloutPaths, newestMtimeMs };
+}
+
+function removeSessionDirAtomically(
+  sessionDir: string,
+  onError: (error: unknown) => void,
+): boolean {
+  const aside = `${sessionDir}.pruning-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    renameSync(sessionDir, aside);
+  } catch (error) {
+    // EEXIST/ENOENT/EACCES — leave the dir in place; the next sweep retries.
+    onError(error);
+    return false;
+  }
+  try {
+    rmSync(aside, { recursive: true, force: true });
+  } catch (error) {
+    // The live name is already gone (rename succeeded), so retention held;
+    // only the renamed husk lingers. Report and move on.
+    onError(error);
+  }
+  return true;
+}
+
+function rolloutCutoffMs(
+  now: string,
+  days: number | undefined,
+): number | undefined {
+  if (days === undefined) return undefined;
+  if (!Number.isFinite(days) || days < 0) return undefined;
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) return undefined;
+  return nowMs - days * MS_PER_DAY;
+}
+
+function boundedDeletions(maxDeletions: number | undefined): number {
+  if (
+    maxDeletions === undefined ||
+    !Number.isFinite(maxDeletions) ||
+    maxDeletions < 1
+  ) {
+    return DEFAULT_ROLLOUT_PRUNE_MAX_DELETIONS;
+  }
+  return Math.floor(maxDeletions);
+}
+
+function emptyRolloutReport(): RolloutPruningReport {
+  return {
+    prunedSessions: 0,
+    prunedRolloutFiles: 0,
+    prunedMirrorRows: 0,
+    prunedSessionIds: [],
+  };
 }
 
 function loadCandidates(

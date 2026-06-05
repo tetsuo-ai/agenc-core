@@ -289,6 +289,34 @@ export class StateThreadRepository {
     });
   }
 
+  /**
+   * Drop every SQLite mirror row that points at `sourcePath` — the indexed
+   * rollout lines plus the backfill/receipt bookkeeping that tracks the file.
+   * Used by the retention sweep so the `thread_rollout_items` mirror cannot
+   * outlive the rollout JSONL it mirrors. Returns the count of indexed lines
+   * removed. Idempotent: deleting an already-gone source is a no-op.
+   */
+  deleteRolloutItemsForSource(sourcePath: string): number {
+    return this.driver.transaction(() => {
+      const removedItems = this.driver
+        .prepareState<[string]>(
+          "DELETE FROM thread_rollout_items WHERE source_path = ?",
+        )
+        .run(sourcePath).changes;
+      this.driver
+        .prepareState<[string]>(
+          "DELETE FROM backfill_files WHERE source_path = ?",
+        )
+        .run(sourcePath);
+      this.driver
+        .prepareState<[string]>(
+          "DELETE FROM rollout_receipts WHERE source_path = ?",
+        )
+        .run(sourcePath);
+      return removedItems;
+    });
+  }
+
   private writeBackfillReceipts(params: {
     readonly threadId: ThreadId;
     readonly sourcePath: string;
