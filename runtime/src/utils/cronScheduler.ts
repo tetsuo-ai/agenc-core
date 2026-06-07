@@ -34,8 +34,10 @@
 // task from tight-looping the model and stop a synchronized thundering herd;
 // structured telemetry is emitted on every wake/dispatch.
 
+import type { AgentId } from '../types/ids.js'
 import { getScheduledTasksEnabled } from '../bootstrap/state.js'
 import { logForDebugging } from './debug.js'
+import { enqueuePendingNotification } from './messageQueueManager.js'
 import { monotonicMs } from './monotonic.js'
 import {
   DEFAULT_CRON_JITTER_CONFIG,
@@ -150,8 +152,16 @@ export class CronScheduler {
   private running = false
   /** True while a tick (the local wake path) is executing — re-entrancy guard. */
   private tickInFlight = false
-  /** Task ids whose enqueued turn has not yet completed — overlap guard. */
-  private readonly inFlightTasks = new Set<string>()
+  /**
+   * Per-task overlap guard: monotonic-ms deadline through which a task that just
+   * fired is treated as "still in flight" so a duplicate is skipped. The lease
+   * AUTO-EXPIRES after minIntervalFloorMs so a recurring task is never
+   * permanently wedged — the TUI drains the command queue serially and does not
+   * signal turn completion back to the driver, so a lock that released ONLY via
+   * markTurnComplete() would fire each recurring task exactly once per process.
+   * markTurnComplete() still clears the lease early for callers that CAN signal.
+   */
+  private readonly inFlightUntil = new Map<string, number>()
   /** Monotonic ms of the last enqueue per task — drives the min-interval floor. */
   private readonly lastInvokedAt = new Map<string, number>()
   /**
@@ -222,12 +232,14 @@ export class CronScheduler {
   }
 
   /**
-   * Mark a task's turn complete, releasing its overlap lock. The turn-runner
-   * calls this when the enqueued prompt's turn fully finishes (success or
-   * failure) so the next occurrence may dispatch.
+   * Mark a task's turn complete, releasing its overlap lock early. Optional: the
+   * lease set on fire auto-expires after minIntervalFloorMs regardless, so a
+   * caller that cannot observe turn completion (the TUI queue path) still gets
+   * correct recurring behavior. A caller that CAN observe completion calls this
+   * to release the next occurrence sooner than the lease.
    */
   markTurnComplete(taskId: string): void {
-    this.inFlightTasks.delete(taskId)
+    this.inFlightUntil.delete(taskId)
   }
 
   /**
@@ -302,12 +314,19 @@ export class CronScheduler {
       // collapsed slots for telemetry (count-1 are the "misses").
       coalescedMisses += occurrences - 1
 
-      // Overlap guard: a previous turn for this task is still in flight → skip
-      // this occurrence entirely (do NOT start a second turn). It's already
-      // coalesced, so we simply drop it and advance next_due on the next wake.
-      if (this.inFlightTasks.has(task.id)) {
-        skippedDueToLock += 1
-        continue
+      // Overlap guard: a previous turn for this task fired within the lease
+      // window → skip this occurrence (do NOT pile a second turn onto the
+      // serial queue). It's already coalesced, so drop it and advance next_due
+      // on the next wake. The lease auto-expires (below) so recurring tasks are
+      // never permanently wedged.
+      const inFlightUntil = this.inFlightUntil.get(task.id)
+      if (inFlightUntil !== undefined) {
+        if (this.deps.monotonicNow() < inFlightUntil) {
+          skippedDueToLock += 1
+          continue
+        }
+        // Lease expired: the prior turn's overlap window has passed.
+        this.inFlightUntil.delete(task.id)
       }
 
       // Rate cap: pause the whole schedule rather than keep firing.
@@ -316,8 +335,10 @@ export class CronScheduler {
         break
       }
 
-      this.inFlightTasks.add(task.id)
-      this.lastInvokedAt.set(task.id, this.deps.monotonicNow())
+      const firedAtMono = this.deps.monotonicNow()
+      // Hold the overlap lease for one floor interval, then auto-release.
+      this.inFlightUntil.set(task.id, firedAtMono + this.opts.minIntervalFloorMs)
+      this.lastInvokedAt.set(task.id, firedAtMono)
       // Advance the effective anchor past everything we just coalesced so the
       // next reschedule resolves this task to a FUTURE slot — never the same
       // past-due instant (which would re-fire in a tight loop / busy-spin).
@@ -525,12 +546,36 @@ export class CronScheduler {
  */
 let singleton: CronScheduler | null = null
 
+/**
+ * Adapter from the driver's minimal {@link CronEnqueue} surface to the real TUI
+ * command queue. This is the production enqueue: a due task is pushed onto the
+ * serially-drained command queue (enqueuePendingNotification) as an isMeta
+ * `task-notification`, where the session's turn loop runs it. The driver itself
+ * stays decoupled from the queue module (and testable with a stub enqueue); the
+ * brand cast is localized here because CronTask.agentId is a bare string while
+ * QueuedCommand.agentId is the branded AgentId.
+ */
+export function cronEnqueueToCommandQueue(
+  command: Parameters<CronEnqueue>[0],
+): void {
+  enqueuePendingNotification({
+    value: command.value,
+    mode: command.mode,
+    isMeta: command.isMeta,
+    workload: command.workload,
+    ...(command.agentId ? { agentId: command.agentId as AgentId } : {}),
+  })
+}
+
 export function getCronScheduler(): CronScheduler {
   if (singleton === null) {
     singleton = new CronScheduler(
       {
         // Bind to the default (non-daemon) project root + session merge.
         loadTasks: () => listAllCronTasks(),
+        // Wire the real TUI command queue so a due task actually fires (the
+        // default dep is a no-op stub that would silently drop every fire).
+        enqueue: cronEnqueueToCommandQueue,
       },
       { dir: undefined },
     )

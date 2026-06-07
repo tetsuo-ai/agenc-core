@@ -5,9 +5,18 @@ import {
 } from 'src/bootstrap/state.js'
 import {
   CronScheduler,
+  cronEnqueueToCommandQueue,
   type CronEnqueue,
 } from 'src/utils/cronScheduler.js'
 import type { CronTask } from 'src/utils/cronTasks.js'
+import { enqueuePendingNotification } from 'src/utils/messageQueueManager.js'
+
+// Spy only enqueuePendingNotification; keep every other real export intact so
+// modules that transitively import the queue still load normally.
+vi.mock('src/utils/messageQueueManager.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('src/utils/messageQueueManager.js')>()),
+  enqueuePendingNotification: vi.fn(),
+}))
 
 // ---------------------------------------------------------------------------
 // Deterministic virtual-time harness.
@@ -107,6 +116,7 @@ function makeScheduler(
   clock: FakeClock,
   tasks: CronTask[],
   enqueue: CronEnqueue,
+  floorMs = 1_000,
 ): CronScheduler {
   return new CronScheduler(
     {
@@ -117,9 +127,10 @@ function makeScheduler(
       loadTasks: async () => tasks,
       enqueue,
     },
-    // Tiny floor so the floor logic stays exercised but doesn't dominate the
-    // virtual-time assertions; window cap left at the generous default.
-    { minIntervalFloorMs: 1_000, dir: undefined },
+    // Tiny floor (default) so the floor logic stays exercised but doesn't
+    // dominate the virtual-time assertions; callers raise it to exercise the
+    // overlap lease. Window cap left at the generous default.
+    { minIntervalFloorMs: floorMs, dir: undefined },
   )
 }
 
@@ -225,10 +236,15 @@ describe('CronScheduler', () => {
     sched.stop()
   })
 
-  test('re-entrancy guard: a task whose turn is in flight does NOT start a second turn', async () => {
-    // Per-minute task; fire once (turn now "in flight" — markTurnComplete NOT
-    // called), then cross another minute boundary. The second occurrence must
-    // SKIP rather than enqueue a second, overlapping turn.
+  test('recurring task auto-releases its overlap lock and fires at each cadence without markTurnComplete', async () => {
+    // must-fix: the TUI drains the command queue serially and never signals
+    // turn completion back to the driver, so the per-task overlap lock MUST
+    // auto-expire after the floor. With a permanent lock (the bug) a recurring
+    // task fires exactly once per process and is skipped forever after. Here a
+    // per-minute task is driven across four minute boundaries WITHOUT ever
+    // calling markTurnComplete; it must fire roughly once per minute. Revert the
+    // self-expiring lock back to a permanent one and this collapses to a single
+    // enqueue (the test goes red).
     const clock = new FakeClock(30 * 60_000) // 00:30:00, past-due
     const enqueue = vi.fn()
     const sched = makeScheduler(
@@ -239,21 +255,52 @@ describe('CronScheduler', () => {
 
     sched.start()
     await flush()
-    await advanceAndFlush(clock, 1_000) // first fire
-    expect(enqueue).toHaveBeenCalledTimes(1)
+    await advanceAndFlush(clock, 4 * 60_000 + 1_000)
 
-    // Advance well past several more per-minute slots WITHOUT completing the
-    // turn. Overlap guard must hold the line at one enqueue.
-    await advanceAndFlush(clock, 5 * 60_000)
-    expect(enqueue).toHaveBeenCalledTimes(1)
-    expect(sched.getLastTelemetry()?.skippedDueToLock).toBeGreaterThanOrEqual(1)
-
-    // Now complete the turn → the lock releases → the next due slot may fire.
-    sched.markTurnComplete('dddd0004')
-    await sched.reschedule()
-    await advanceAndFlush(clock, 2 * 60_000)
-    expect(enqueue).toHaveBeenCalledTimes(2)
+    // Fired repeatedly (~once per minute), not stuck after the first occurrence.
+    expect(enqueue.mock.calls.length).toBeGreaterThanOrEqual(3)
 
     sched.stop()
+  })
+})
+
+describe('cronEnqueueToCommandQueue (production wiring)', () => {
+  afterEach(() => {
+    vi.mocked(enqueuePendingNotification).mockClear()
+  })
+
+  test('forwards a due cron command onto the real command queue as an isMeta task-notification', () => {
+    // Guards must-fix #1: getCronScheduler() wires this adapter (not the no-op
+    // stub), so a due task is actually pushed onto the serially-drained queue
+    // where the session turn loop runs it. Revert the wiring → enqueue is the
+    // stub → this is never called.
+    cronEnqueueToCommandQueue({
+      value: 'do the thing',
+      mode: 'task-notification',
+      isMeta: true,
+      workload: 'cron',
+      agentId: 'agent-123',
+    })
+
+    expect(enqueuePendingNotification).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(enqueuePendingNotification).mock.calls[0]?.[0]).toEqual({
+      value: 'do the thing',
+      mode: 'task-notification',
+      isMeta: true,
+      workload: 'cron',
+      agentId: 'agent-123',
+    })
+  })
+
+  test('omits agentId when the task has none (main-thread notification)', () => {
+    cronEnqueueToCommandQueue({
+      value: 'no agent',
+      mode: 'task-notification',
+      isMeta: true,
+      workload: 'cron',
+    })
+
+    const command = vi.mocked(enqueuePendingNotification).mock.calls[0]?.[0]
+    expect(command).not.toHaveProperty('agentId')
   })
 })
