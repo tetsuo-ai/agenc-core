@@ -27,6 +27,7 @@ import type { SpinnerMode } from "./spinner/types.js";
 import { PromptInputQueuedCommands } from "./PromptInput/PromptInputQueuedCommands.js";
 import { useCommandQueue } from "../hooks/useCommandQueue.js";
 import { dequeue, enqueue, peek } from "../../utils/messageQueueManager.js";
+import { getCronScheduler } from "../../utils/cronScheduler.js";
 import { parseSlashCommand, dispatchSlashCommand } from "../../commands/dispatcher.js";
 import { buildDefaultRegistry } from "../../commands/registry.js";
 import { setGlobalCommandRegistry } from "../../commands/types.js";
@@ -2020,6 +2021,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       setQueueDrainTick(tick => tick + 1);
     });
   }, [effectiveInputBusy, permissionRequests.length, elicitation.prompt, isMessageSelectorVisible, onboarding.active, queuedCommands, submit, runQueuedBashCommand]);
+  // Start the cron scheduler on session mount so durable scheduled tasks
+  // restored from disk actually fire (CronCreate starts it when a task is made
+  // in-session, but a fresh session with pre-existing tasks needs this). start()
+  // is gated on getScheduledTasksEnabled() (a no-op until a CronCreate enables
+  // it) and idempotent; the driver wakes only when a task is genuinely due, so
+  // idle costs zero model turns. Stop the process-wide singleton on unmount.
+  useEffect(() => {
+    const scheduler = getCronScheduler();
+    scheduler.start();
+    void scheduler.reschedule();
+    return () => scheduler.stop();
+  }, []);
   const toolUseConfirmQueue = useMemo(() => buildToolUseConfirmQueue(permissionRequests, availableTools), [permissionRequests, availableTools]);
 
   // Per-turn AbortController. CancelRequestHandler reads
