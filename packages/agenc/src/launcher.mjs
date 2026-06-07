@@ -68,9 +68,35 @@ export function isDaemonCommand(argv) {
   return argv[0] === "daemon";
 }
 
+// Dev path: the `file:`-linked @tetsuo-ai/runtime resolves locally. Returns
+// null in a published install where runtime is NOT an npm dependency (it's the
+// downloaded GitHub-Releases artifact instead).
 export function resolveRuntimeBin(requireFn = requireFromLauncher) {
-  const runtimeEntry = requireFn.resolve("@tetsuo-ai/runtime");
-  return resolve(dirname(runtimeEntry), "../bin/agenc");
+  try {
+    const runtimeEntry = requireFn.resolve("@tetsuo-ai/runtime");
+    return resolve(dirname(runtimeEntry), "../bin/agenc");
+  } catch (error) {
+    if (
+      error?.code === "MODULE_NOT_FOUND" ||
+      error?.code === "ERR_MODULE_NOT_FOUND"
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+// Resolve the runtime entry for either mode: prefer the dev file:-link, else
+// ensure (download + verify + extract) the published per-platform runtime.
+export async function resolveRuntimeBinAsync({
+  requireFn = requireFromLauncher,
+  ensureFn,
+} = {}) {
+  const dev = resolveRuntimeBin(requireFn);
+  if (dev !== null) return dev;
+  const ensureRuntime =
+    ensureFn ?? (await import("../lib/runtime-manager.mjs")).ensureRuntime;
+  return ensureRuntime();
 }
 
 export async function spawnNodeScript(
@@ -184,12 +210,26 @@ export async function main(
   {
     env = process.env,
     cwd = process.cwd(),
-    runtimeBin = resolveRuntimeBin(),
+    runtimeBin,
     userHome = homedir(),
   } = {},
 ) {
+  // Resolve (and, in a published install, download + verify) the runtime before
+  // anything tries to spawn it. Sync default is avoided: it returns null when
+  // runtime isn't an npm dep, which is the normal published case.
+  let resolvedBin = runtimeBin;
   try {
-    await ensureDaemonForLaunch({ argv, env, cwd, runtimeBin, userHome });
+    resolvedBin ??= await resolveRuntimeBinAsync();
+  } catch (error) {
+    process.stderr.write(
+      `agenc: could not obtain runtime: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+    return 1;
+  }
+  try {
+    await ensureDaemonForLaunch({ argv, env, cwd, runtimeBin: resolvedBin, userHome });
   } catch (error) {
     process.stderr.write(
       `agenc: daemon autostart failed: ${
@@ -198,7 +238,7 @@ export async function main(
     );
     return 1;
   }
-  return spawnNodeScript(runtimeBin, argv, { env, cwd, stdio: "inherit" });
+  return spawnNodeScript(resolvedBin, argv, { env, cwd, stdio: "inherit" });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
