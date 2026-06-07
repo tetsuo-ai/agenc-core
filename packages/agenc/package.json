@@ -9,15 +9,24 @@
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "lib",
+    "scripts",
+    "generated"
   ],
   "scripts": {
+    "postinstall": "node ./scripts/postinstall.mjs",
+    "build:runtime-tarball": "node ./scripts/build-runtime-tarball.mjs",
+    "gen:manifest": "node ./scripts/gen-manifest.mjs",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": {
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
     "@tetsuo-ai/runtime": "file:../../runtime"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=25.0.0"
   }
 }

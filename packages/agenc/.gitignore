@@ -1,0 +1,7 @@
+# Per-platform runtime tarballs + sidecar meta (built in CI, uploaded to
+# GitHub Releases — never committed).
+release-artifacts/
+
+# The runtime manifest is generated at release time (gen-manifest.mjs) and
+# included in the npm tarball via package.json "files"; it is not source.
+generated/agenc-runtime-manifest.json
