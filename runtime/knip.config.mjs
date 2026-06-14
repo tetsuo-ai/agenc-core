@@ -585,11 +585,11 @@ const intentionalRemainingRuntimeIssueIgnores = {
     remainingRuntimeContractTypeFiles.map((file) => [file, ["types"]]),
   ),
 };
+const isProductionScan = process.argv.includes("--production");
 
 export default {
   $schema: "https://unpkg.com/knip@6/schema.json",
   entry: [
-    "src/index.ts!",
     "src/bin/agenc.ts!",
     "src/bin/tui-trust-prompt.tsx!",
     // Type-only shim for build-time `bun:bundle` feature flags.
@@ -600,14 +600,11 @@ export default {
     "scripts/**/*.mjs",
     "tests/**/*.{test,e2e,contract,parity}.ts",
     "tests/**/*.{test,e2e,contract,parity}.tsx",
-    "local-packages/*/src/**/*.{ts,tsx}",
   ],
   project: [
     "src/**/*.{ts,tsx,js,mjs,cjs}!",
     "scripts/**/*.mjs",
     "tests/**/*.{ts,tsx}",
-    "build.config.ts",
-    "local-packages/**/*.{ts,tsx,js,mjs,cjs}!",
   ],
   paths: {
     "bun:bundle": ["./src/build/feature.ts"],
@@ -632,10 +629,14 @@ export default {
     // TUI design smoke tests import these fixtures through the test resolver.
     "src/tui/components/v2/designBrowserMarkerFixture.ts",
     "src/tui/components/v2/designBrowserTextFixture.ts",
-    // Shared TUI test renderer imported from many tests, not production code.
-    "src/utils/staticRender.tsx",
-    "src/test-parity/**",
-    "tests/fixtures/**",
+    ...(isProductionScan
+      ? [
+          // Shared TUI test renderer imported from many tests, not production code.
+          "src/utils/staticRender.tsx",
+        ]
+      : []),
+    // Vitest aliases `bun:test` to this compatibility shim.
+    "tests/helpers/bun-test-shim.ts",
   ],
   ignoreIssues: {
     ...typecheckExcludedIssueIgnores,
@@ -655,24 +656,19 @@ export default {
   },
   ignoreBinaries: [
     "arecord",
-    "findstr",
-    "ip",
+    "cc",
+    "mkfifo",
     "pdftotext",
     "powershell.exe",
-    "ps",
     "rec",
     "rg",
     "secret-tool",
     "security",
-    "tasklist",
     "taskkill",
     "tmux",
     "wslpath",
   ],
   ignoreDependencies: [
-    // Path alias imports such as `src/foo.js` are resolved by esbuild/tsc, but
-    // Knip reports the bare alias root as a package dependency.
-    "src",
     // Optional private integration loaded only when the matching MCP server is
     // configured. It is not available from the public npm registry.
     "@ant/agenc-for-chrome-mcp",
