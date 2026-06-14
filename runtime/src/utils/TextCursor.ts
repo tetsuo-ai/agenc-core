@@ -14,6 +14,7 @@ import {
  * other key. Alt+Y cycles through previous kills after a yank.
  */
 const KILL_RING_MAX_SIZE = 10
+const TAB_SIZE = 8
 let killRing: string[] = []
 let killRingIndex = 0
 let lastActionWasKill = false
@@ -1135,6 +1136,8 @@ class WrappedLine {
     public readonly startOffset: number,
     public readonly isPrecededByNewline: boolean,
     public readonly endsWithNewline: boolean = false,
+    public readonly sourceEndOffset: number = startOffset + text.length,
+    private readonly sourceOffsets?: readonly number[],
   ) {}
 
   equals(other: WrappedLine): boolean {
@@ -1142,8 +1145,81 @@ class WrappedLine {
   }
 
   get length(): number {
-    return this.text.length + (this.endsWithNewline ? 1 : 0)
+    return (
+      this.sourceEndOffset -
+      this.startOffset +
+      (this.endsWithNewline ? 1 : 0)
+    )
   }
+
+  sourceOffsetAtDisplayIndex(displayIndex: number): number {
+    if (!this.sourceOffsets) {
+      return this.startOffset + displayIndex
+    }
+
+    const clampedIndex = Math.max(
+      0,
+      Math.min(displayIndex, this.sourceOffsets.length - 1),
+    )
+    return this.sourceOffsets[clampedIndex] ?? this.sourceEndOffset
+  }
+
+  displayIndexAtSourceOffset(sourceOffset: number): number {
+    if (!this.sourceOffsets) {
+      return sourceOffset - this.startOffset
+    }
+
+    const clampedOffset = Math.max(
+      this.startOffset,
+      Math.min(sourceOffset, this.sourceEndOffset),
+    )
+    const exactIndex = this.sourceOffsets.indexOf(clampedOffset)
+    if (exactIndex !== -1) return exactIndex
+
+    const nextIndex = this.sourceOffsets.findIndex(
+      offset => offset > clampedOffset,
+    )
+    return nextIndex === -1 ? this.text.length : nextIndex
+  }
+}
+
+function expandTabsWithSourceMap(text: string): {
+  readonly text: string
+  readonly sourceOffsets: readonly number[]
+} {
+  let expandedText = ''
+  const sourceOffsets = [0]
+  let column = 0
+  let sourceIndex = 0
+
+  for (const char of text) {
+    if (char === '\t') {
+      const spaces = TAB_SIZE - (column % TAB_SIZE)
+      expandedText += ' '.repeat(spaces)
+      for (let i = 1; i < spaces; i++) {
+        sourceOffsets.push(sourceIndex)
+      }
+      sourceIndex += char.length
+      sourceOffsets.push(sourceIndex)
+      column += spaces
+      continue
+    }
+
+    expandedText += char
+    const startSourceIndex = sourceIndex
+    sourceIndex += char.length
+    for (let i = 1; i <= char.length; i++) {
+      sourceOffsets.push(startSourceIndex + i)
+    }
+
+    if (char === '\n') {
+      column = 0
+    } else {
+      column += stringWidth(char)
+    }
+  }
+
+  return { text: expandedText, sourceOffsets }
 }
 
 export class MeasuredText {
@@ -1315,13 +1391,14 @@ export class MeasuredText {
   }
 
   private measureWrappedText(): WrappedLine[] {
-    const wrappedText = wrapAnsi(this.text, this.columns, {
+    const expanded = expandTabsWithSourceMap(this.text)
+    const wrappedText = wrapAnsi(expanded.text, this.columns, {
       hard: true,
       trim: false,
     })
 
     const wrappedLines: WrappedLine[] = []
-    let searchOffset = 0
+    let expandedSearchOffset = 0
     let lastNewLinePos = -1
 
     const lines = wrappedText.split('\n')
@@ -1344,6 +1421,7 @@ export class MeasuredText {
               startOffset,
               isPrecededByNewline(startOffset),
               endsWithNewline,
+              startOffset,
             ),
           )
         } else {
@@ -1355,21 +1433,34 @@ export class MeasuredText {
               startOffset,
               isPrecededByNewline(startOffset),
               false,
+              startOffset,
             ),
           )
         }
       } else {
-        // For non-blank lines, find the text in this.text
-        const startOffset = this.text.indexOf(text, searchOffset)
+        // For non-blank lines, find the rendered text in the expanded display
+        // string, then map that span back to source offsets.
+        const expandedStartOffset = expanded.text.indexOf(
+          text,
+          expandedSearchOffset,
+        )
 
-        if (startOffset === -1) {
+        if (expandedStartOffset === -1) {
           throw new Error('Failed to find wrapped line in text')
         }
 
-        searchOffset = startOffset + text.length
+        const expandedEndOffset = expandedStartOffset + text.length
+        expandedSearchOffset = expandedEndOffset
+        const lineSourceOffsets = expanded.sourceOffsets.slice(
+          expandedStartOffset,
+          expandedEndOffset + 1,
+        )
+        const startOffset = lineSourceOffsets[0] ?? this.text.length
+        const sourceEndOffset =
+          lineSourceOffsets[lineSourceOffsets.length - 1] ?? startOffset
 
         // Check if this line ends with a newline in this.text
-        const potentialNewlinePos = startOffset + text.length
+        const potentialNewlinePos = sourceEndOffset
         const endsWithNewline =
           potentialNewlinePos < this.text.length &&
           this.text[potentialNewlinePos] === '\n'
@@ -1384,6 +1475,8 @@ export class MeasuredText {
             startOffset,
             isPrecededByNewline(startOffset),
             endsWithNewline,
+            sourceEndOffset,
+            lineSourceOffsets,
           ),
         )
       }
@@ -1427,11 +1520,11 @@ export class MeasuredText {
       displayColumnWithLeading,
     )
 
-    // Calculate the actual offset
-    const offset = wrappedLine.startOffset + stringIndex
+    // Calculate the actual source offset
+    const offset = wrappedLine.sourceOffsetAtDisplayIndex(stringIndex)
 
     // For normal lines
-    const lineEnd = wrappedLine.startOffset + wrappedLine.text.length
+    const lineEnd = wrappedLine.sourceEndOffset
 
     // Don't allow going past the end of the current line into the next line
     // unless we're at the very end of the text
@@ -1459,8 +1552,9 @@ export class MeasuredText {
         offset >= currentLine.startOffset &&
         (!nextLine || offset < nextLine.startOffset)
       ) {
-        // Calculate string position within the line
-        const stringPosInLine = offset - currentLine.startOffset
+        // Convert the source offset to a rendered string position within the
+        // line; these differ when terminal tab stops expand tabs for display.
+        const stringPosInLine = currentLine.displayIndexAtSourceOffset(offset)
 
         // Handle leading whitespace for wrapped lines
         let displayColumn: number
