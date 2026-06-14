@@ -92,9 +92,9 @@ dependency, not vendored source.
   `dist/VERSION`, copies policy assets, and verifies the 4 package entrypoints.
 - **Type-check** — `tsc --noEmit`, kept at **0 errors** with **0 `@ts-nocheck`**.
 - **Tests** — ~12,000 vitest tests, plus an isolated Bun suite (one file per
-  process, the required CI job) and PTY/e2e scenario gates.
-- **CI** — `.github/workflows/ci.yml` is manual (`workflow_dispatch`); the local
-  gates are authoritative.
+  process) and PTY/e2e scenario gates.
+- **Remote CI** — disabled to avoid hosted runner spend; local gates are
+  authoritative.
 
 ## Current status
 
@@ -103,4 +103,4 @@ and the daemon/persistence/permission cores are mature (WAL SQLite, atomic
 rollout writes, an AST-backed Bash permission layer, transactional file edits).
 The original donor-port phase is complete. Known pre-GA gaps are tracked
 separately (packaging/installability, a `LICENSE`/`NOTICE`, observability
-wiring, and turning CI back on).
+wiring, and deciding whether hosted CI is worth re-enabling).

@@ -26,9 +26,9 @@ import { basename, extname } from 'path'
 // macOS, several× that on Windows). With a top-level import, any caller
 // chunk that reaches this module — including test/preload.ts via
 // StructuredDiff.tsx → colorDiff.ts — pays that cost at module-eval time
-// and carries the heap for the rest of the process. On Windows CI this
-// pushed later tests in the same shard into GC-pause territory and a
-// beforeEach/afterEach hook timeout (officialRegistry.test.ts, PR #24150).
+// and carries the heap for the rest of the process. On slow runners this
+// pushed later tests in the same shard into GC-pause territory and hook
+// timeouts.
 // Same lazy pattern the NAPI wrapper used for dlopen.
 type HLJSApi = typeof hljsNamespace
 let cachedHljs: HLJSApi | null = null

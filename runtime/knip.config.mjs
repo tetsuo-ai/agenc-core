@@ -39,7 +39,9 @@ const serviceTestContractExportFiles = [
   "src/services/MagicDocs/prompts.ts",
   "src/services/PromptSuggestion/limits.ts",
   "src/services/PromptSuggestion/speculation.ts",
+  "src/services/autoDream/autoDream.ts",
   "src/services/autoFix/autoFixConfig.ts",
+  "src/services/autoFix/autoFixHook.ts",
   "src/services/compact/cachedMicrocompact.ts",
   "src/services/compact/compact.ts",
   "src/services/compact/compactWarningState.ts",
@@ -75,6 +77,7 @@ const servicePublicContractExportFiles = [
   "src/services/api/openAiCodeOAuthShared.ts",
   "src/services/api/openaiErrorClassification.ts",
   "src/services/api/providerConfig.ts",
+  "src/services/api/sessionIngress.ts",
   "src/services/api/withRetry.ts",
   "src/services/github/deviceFlow.ts",
   "src/services/mcp/SdkControlTransport.ts",
@@ -83,7 +86,6 @@ const servicePublicContractExportFiles = [
   "src/services/mcp/config.ts",
   "src/services/mcp/doctor.ts",
   "src/services/mcp/elicitationHandler.ts",
-  "src/services/mcp/officialRegistry.ts",
   "src/services/rateLimitMessages.ts",
   "src/services/tokenEstimation.ts",
   "src/services/vcr.ts",
@@ -103,6 +105,7 @@ const toolContractExportFiles = [
   // Tool registration, schema, UI rendering, runtime, and test contract
   // surfaces. Production Knip cannot see every dynamic tool-registry consumer.
   "src/tools/AgentTool/loadAgentsDir.ts",
+  "src/tools/Tool.ts",
   "src/tools/BashTool/bashPermissions.ts",
   "src/tools/BashTool/sedEditParser.ts",
   "src/tools/BashTool/utils.ts",
@@ -118,6 +121,7 @@ const toolContractExportFiles = [
   "src/tools/TeamCreateTool/TeamCreateTool.ts",
   "src/tools/TeamDeleteTool/TeamDeleteTool.ts",
   "src/tools/WebFetchTool/utils.ts",
+  "src/tools/WebFetchTool/prompt.ts",
   "src/tools/WebSearchTool/WebSearchTool.ts",
   "src/tools/WebSearchTool/providers/custom.ts",
   "src/tools/WebSearchTool/providers/index.ts",
@@ -160,6 +164,7 @@ const intentionalToolIssueIgnores = {
   "src/tools/AgentTool/built-in/statuslineSetup.ts": ["files"],
   "src/tools/AgentTool/built-in/verificationAgent.ts": ["files"],
   "src/tools/LSPTool/schemas.ts": ["types"],
+  "src/tools/MCPTool/MCPTool.ts": ["exports", "types"],
 };
 const sessionContractExportFiles = [
   // Session persistence, rollout, startup, MCP, mailbox, plan-mode, and
@@ -186,6 +191,7 @@ const sessionContractExportFiles = [
   "src/session/run-turn.ts",
   "src/session/session-store.ts",
   "src/session/session.ts",
+  "src/session/current-session.ts",
   "src/session/startup-prewarm.ts",
   "src/session/tasks.ts",
   "src/session/turn-context.ts",
@@ -211,6 +217,7 @@ const llmContractExportFiles = [
   "src/llm/oauth/refresh-loop.ts",
   "src/llm/policy.ts",
   "src/llm/provider.ts",
+  "src/llm/provider-capabilities.ts",
   "src/llm/providers/grok/adapter-utils.ts",
   "src/llm/providers/grok/incremental.ts",
   "src/llm/providers/openai-compatible/index.ts",
@@ -224,6 +231,7 @@ const llmContractExportFiles = [
   "src/llm/structured-output.ts",
   "src/llm/token-estimation.ts",
   "src/llm/tool-turn-validator.ts",
+  "src/llm/wire/messages-anthropic.ts",
   "src/llm/wire/responses-xai.ts",
 ];
 const intentionalLlmIssueIgnores = Object.fromEntries(
@@ -396,6 +404,7 @@ const appServerContractExportFiles = [
   "src/app-server/transport/peer-credentials.ts",
   "src/app-server/transport/stdio.ts",
   "src/app-server/transport/unix-socket.ts",
+  "src/app-server/transport/websocket.ts",
 ];
 const agentContractExportFiles = [
   // Agent control, registry, role, mailbox, worktree, resume, truncation, job,
@@ -498,6 +507,7 @@ const conversationRecoveryStateShellContractExportFiles = [
   "src/state/atomic-snapshot-writes.ts",
   "src/state/backfill.ts",
   "src/state/migrations/config-migrations.ts",
+  "src/state/pruning.ts",
   "src/state/sqlite-driver.ts",
   "src/state/tool-output-rotation.ts",
 ];
@@ -529,6 +539,7 @@ const remainingRuntimeContractExportFiles = [
   "src/commands.ts",
   "src/context/personality-spec-instructions.ts",
   "src/coordinator/coordinatorMode.ts",
+  "src/cost/tracker.ts",
   "src/elicitation/mcp.ts",
   "src/elicitation/request-user-input.ts",
   "src/elicitation/respond.ts",
@@ -557,10 +568,13 @@ const remainingRuntimeContractExportFiles = [
   "src/secrets/sanitizer.ts",
   "src/skills/local-loader.ts",
   "src/thread-store/live-thread.ts",
+  "src/tools.ts",
+  "src/unified-exec/process-manager.ts",
 ];
 const remainingRuntimeContractTypeFiles = [
   "src/schemas/hooks.ts",
   "src/types/hooks.ts",
+  "src/types/tools.ts",
   "src/types/permissions.ts",
 ];
 const intentionalRemainingRuntimeIssueIgnores = {

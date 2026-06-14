@@ -110,6 +110,5 @@ function createDefaultGlobalConfig(): Record<string, unknown> {
     copyFullResponse: false,
     providerProfiles: [],
     openaiAdditionalModelOptionsCacheByProfile: {},
-    knowledgeGraphEnabled: true,
   };
 }
