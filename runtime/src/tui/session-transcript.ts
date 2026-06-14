@@ -296,6 +296,7 @@ const COLLAB_V2_TOOL_NAMES: ReadonlySet<string> = new Set([
   "spawn_agent",
   "wait_agent",
   "close_agent",
+  "assign_task",
   "send_message",
   "followup_task",
 ]);

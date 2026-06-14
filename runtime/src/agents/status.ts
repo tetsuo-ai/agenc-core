@@ -9,7 +9,7 @@
  * `not_found`.
  * Non-final: `pending_init`, `running`, `interrupted`.
  *
- * A completed turn is reusable: `followup_task` may move the same live agent
+ * A completed turn is reusable: `assign_task` may move the same live agent
  * from `completed` back to `running` for its next turn. Shutdown, errored, and
  * not_found remain irreversible.
  *
@@ -264,7 +264,7 @@ export class AgentStatusTracker {
 
   private set(status: AgentStatus): void {
     // Only irreversible states are sticky. `completed` is final for wait/list
-    // semantics, but a live agent can still accept followup_task and start a
+    // semantics, but a live agent can still accept assign_task and start a
     // later turn.
     if (IRREVERSIBLE_STATES.has(this.subject.value.status)) return;
     this.subject.next(status);
