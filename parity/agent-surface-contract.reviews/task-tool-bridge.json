@@ -1,0 +1,67 @@
+{
+  "rowId": "task-tool-bridge",
+  "contractName": "agent-surface-contract",
+  "reviewer": "manual-row-reviewer",
+  "reviewedAt": "2026-06-14T19:54:12Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "exposes spawn, send, wait, list, close, and task-board operations through the tool surface without bypassing AgentControl",
+      "forks parent context into child prompts with preserved tool-use placeholders and per-child instructions",
+      "reports partial progress, final output, and failure state in task-compatible output records",
+      "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
+      "applies role allowlists and tool policies before child tools execute",
+      "implements the v2 spawn_agent service_tier, fork_turns, depth, root registration, assign_task, wait_agent, close_agent, list_agents, and CSV agent-job semantics listed by the matrix"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "wait_agent timeout defaults, bounds, fractional rejection, and removed v1 target rejection",
+      "spawn_agent service_tier validation and role precedence over valid request overrides",
+      "spawn_agent full-history default, explicit all, clean fork override rules, and subagent descendant spawn behavior",
+      "root registration before list/send/assign/close target resolution",
+      "assign_task completed-agent trigger turns and close_agent failure-end event emission",
+      "CSV max_workers/max_concurrency aliases, sequential dispatch, zero normalization, and stop reports"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "parity/agent-surface-contract.json",
+      "runtime/src/agents/delegate.ts",
+      "runtime/src/agents/run-agent.ts",
+      "runtime/src/agents/v2/PARITY.md",
+      "runtime/src/agents/v2/index.ts",
+      "runtime/src/agents/v2/assign-task.ts",
+      "runtime/src/agents/v2/common.ts",
+      "runtime/src/agents/v2/spawn.ts",
+      "runtime/src/agents/v2/send-message.ts",
+      "runtime/src/agents/v2/followup-task.ts",
+      "runtime/src/agents/v2/message-tool.ts",
+      "runtime/src/agents/v2/wait.ts",
+      "runtime/src/agents/v2/list-agents.ts",
+      "runtime/src/agents/v2/close-agent.ts",
+      "runtime/src/bin/model-facing-tools.ts",
+      "runtime/src/agents/jobs/job-orchestrator.ts",
+      "runtime/src/state/csv-agent-jobs.ts",
+      "runtime/tests/bin/model-facing-tools.test.ts",
+      "runtime/tests/agents/jobs/job-orchestrator.test.ts",
+      "runtime/tests/agents/run-agent.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
+    ],
+    "commandResults": [
+      "PASS: 11 test files passed, 203 tests passed"
+    ],
+    "implementationEvidence": [
+      "runtime/src/agents/v2/PARITY.md documents the Rust-to-TypeScript v2 tool mapping and the canonical assign_task name with followup_task retained as a deferred compatibility alias.",
+      "spawn.ts parses fork_turns, validates model/service_tier combinations, applies role model/reasoning/service tier after request overrides, and dispatches through AgentControl/delegate paths.",
+      "common.ts, list-agents.ts, send-message.ts, assign-task.ts, and close-agent.ts register the current root thread before resolving root and child targets.",
+      "wait.ts returns the strict message/timed_out shape and enforces configured timeout minimum/default/maximum behavior.",
+      "model-facing-tools.ts exposes spawn_agents_on_csv/report_agent_job_result with max_concurrency and max_workers alias handling; job-orchestrator.ts tracks worker completion, missing reports, sequential dispatch, stop reports, and output records."
+    ]
+  }
+}

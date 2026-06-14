@@ -1,0 +1,56 @@
+{
+  "rowId": "control-registry-roles",
+  "contractName": "agent-surface-contract",
+  "reviewer": "manual-row-reviewer",
+  "reviewedAt": "2026-06-14T19:54:12Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "reserves and finalizes agent registry entries atomically before a child run can receive messages",
+      "allocates path-safe nicknames and rejects path collisions before the live agent handle is exposed",
+      "enforces the default child depth cap while preserving configured per-session overrides",
+      "maps role configuration into child model, tools, permission, prompt, service tier, and runtime limits",
+      "normalizes final and nonfinal agent statuses consistently for list and TUI consumers",
+      "allows completed live agents to transition back to running for later follow-up turns while keeping errored, shutdown, and not_found irreversible",
+      "routes child terminal notifications through inter-agent communication for live and root parents, with a no-turn not_found fallback when the child handle is missing"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "concurrent and duplicate path reservations are guarded by SpawnReservation and AgentRegistry path ownership checks",
+      "depth cap, per-call cap, and resume depth rejection are covered by AgentControl tests",
+      "role nickname candidates, default role fallback, TOML role layers, and service-tier prompt formatting are covered by role and role-definition tests",
+      "interrupt-before-finalize, completion watcher repeat notifications, root mailbox delivery, and missing child fallback are covered by AgentControl tests"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "parity/agent-surface-contract.json",
+      "runtime/src/agents/control.ts",
+      "runtime/src/agents/registry.ts",
+      "runtime/src/agents/role.ts",
+      "runtime/src/agents/role-definitions.ts",
+      "runtime/src/agents/status.ts",
+      "runtime/tests/agents/control.test.ts",
+      "runtime/tests/agents/registry.test.ts",
+      "runtime/tests/agents/role.test.ts",
+      "runtime/tests/agents/role-definitions.test.ts",
+      "runtime/tests/agents/status.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
+    ],
+    "commandResults": [
+      "PASS: 5 test files passed, 119 tests passed"
+    ],
+    "implementationEvidence": [
+      "AgentControl.spawn reserves a registry slot, reserves or allocates the path, checks cancellation, finalizes metadata, and releases the reservation on failure.",
+      "AgentRegistry exposes SpawnReservation, reserveAgentPathForReservation, finalizeSpawnReservation, releaseReservedAgentPath, registerRootThread, allocateNickname, and path depth helpers.",
+      "AgentStatusTracker separates final states from irreversible states so completed agents can resume while errored, shutdown, and not_found remain terminal.",
+      "Role loading applies built-in and TOML role layers, runtime allow/deny policy hints, nickname candidates, model, reasoning, service tier, and agent_max_depth settings."
+    ]
+  }
+}

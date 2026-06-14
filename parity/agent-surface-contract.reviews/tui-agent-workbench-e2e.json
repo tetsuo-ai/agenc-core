@@ -1,0 +1,66 @@
+{
+  "rowId": "tui-agent-workbench-e2e",
+  "contractName": "agent-surface-contract",
+  "reviewer": "manual-row-reviewer",
+  "reviewedAt": "2026-06-14T19:54:12Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "renders agent activity, transcript, progress, status, and terminal states without requiring a stale local registry entry",
+      "keeps slash-command agent menus and workbench agent surfaces mutually exclusive for input ownership",
+      "maps daemon agent lifecycle events into stable task rows and workbench rail entries",
+      "survives late daemon completion messages after the main prompt has returned",
+      "renders startup auth notices without throwing when provider credential helpers report missing keys",
+      "keeps PTY startup, prompt visibility, idle detection, and crash detection covered by E2E scenarios",
+      "preserves first-seen agent navigation order while keeping completed agents selectable"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "late daemon completion messages do not crash the TUI",
+      "slash agents menu owns input while open and hides the main prompt marker",
+      "credential lookup failures map to missing-key state instead of thrown startup notices",
+      "agent surface empty state and stale tail read failures do not crash or show wrong task content",
+      "completed agents remain selectable and rail navigation wraps without status/time resorting",
+      "collab task synchronization keeps row identity stable across running and completed statuses"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "parity/agent-surface-contract.json",
+      "runtime/src/tui/workbench/surfaces/AgentSurface.tsx",
+      "runtime/src/tui/workbench/agents/AgentsRail.tsx",
+      "runtime/src/tui/hooks/useApiKeyVerification.ts",
+      "runtime/src/tui/hooks/useTasksV2.ts",
+      "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
+      "runtime/src/tui/state/collabAgentTaskSync.ts",
+      "runtime/scripts/check-tui-e2e/scenarios/03-subagent-completion.mjs",
+      "runtime/scripts/check-tui-e2e/scenarios/23-slash-agents.mjs",
+      "runtime/tests/tui/workbench/agent-surface.test.tsx",
+      "runtime/tests/tui/workbench/agents-rail.test.tsx",
+      "runtime/tests/tui/workbench/agents.test.ts",
+      "runtime/tests/tui/components/App.local-agents.test.tsx",
+      "runtime/tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx",
+      "runtime/tests/tui/hooks/useTasksV2.test.tsx",
+      "runtime/tests/tui/startup/statusNoticeDefinitions.test.tsx",
+      "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts --reporter=dot",
+      "npm --workspace=@tetsuo-ai/runtime run build && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 03-subagent-completion && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 23-slash-agents"
+    ],
+    "commandResults": [
+      "PASS: 8 test files passed, 69 tests passed",
+      "PASS: package build and filtered TUI e2e scenarios 03-subagent-completion and 23-slash-agents"
+    ],
+    "implementationEvidence": [
+      "AgentSurface resolves stale selections to the first observed agent, renders empty state safely, gates transcript entry to locally viewable agent task types, and preserves visible tail content across transient read failures.",
+      "AgentsRail orders active/background tasks, resolves stale selections, wraps next/previous navigation, and keeps completed agents selectable without re-sorting by status or start time.",
+      "collabAgentTaskSync maps collab spawn/status/interaction and background status events into stable local task patches.",
+      "The /agents e2e scenario asserts menu input ownership, and the subagent completion e2e scenario lingers after the prompt to catch late daemon completion crashes."
+    ]
+  }
+}
