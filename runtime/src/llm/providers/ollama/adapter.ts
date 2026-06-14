@@ -315,7 +315,7 @@ function parseToolCallArguments(argumentsJson: string): Record<string, unknown> 
 
 // Strips the `data:image/...;base64,` prefix from a data-URL, returning the
 // raw base64 payload. Mirrors the data-URL parsing used by the shared wire
-// helpers. Returns null for non-data-URL (e.g. remote `http(s)://`) inputs.
+// helpers. Returns null for non-data-URL inputs.
 function extractImageBase64FromDataUrl(url: string): string | null {
   const match = /^data:image\/[a-z0-9.+-]+;base64,([\s\S]+)$/iu.exec(url.trim());
   if (!match) return null;
@@ -323,11 +323,20 @@ function extractImageBase64FromDataUrl(url: string): string | null {
   return data.length > 0 ? data : null;
 }
 
+function isHttpImageUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Splits multimodal `LLMContentPart[]` content into the shape Ollama's chat
- * API expects: text parts joined into `content`, and base64 image payloads
- * collected into a separate `images` array (Ollama does NOT accept images
- * inside `content`).
+ * API expects: text parts joined into `content`, and SDK-supported image
+ * strings collected into a separate `images` array (Ollama does NOT accept
+ * images inside `content`).
  */
 function extractOllamaContent(parts: LLMContentPart[]): {
   content: string;
@@ -347,11 +356,12 @@ function extractOllamaContent(parts: LLMContentPart[]): {
         images.push(base64);
         continue;
       }
-      // Remote image URLs cannot be inlined as base64 here. The Ollama SDK
-      // only accepts base64 strings (or raw bytes) in `images`, not URLs.
-      // TODO: fetch remote image URLs and inline their base64 once a shared
-      // image-fetch convention exists; until then, surface a placeholder
-      // rather than silently dropping the reference.
+      if (isHttpImageUrl(url)) {
+        images.push(url.trim());
+        continue;
+      }
+      // The Ollama SDK accepts base64 strings, file paths, and remote URLs.
+      // Unknown schemes are kept as visible text rather than dropped.
       textPieces.push(`[image: ${url}]`);
     }
   }

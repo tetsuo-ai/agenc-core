@@ -453,4 +453,84 @@ describe("providers/ollama entrypoint", () => {
     expect((message?.images as string[])[0]).not.toContain("data:image");
     expect(message?.content).not.toContain("base64,");
   });
+
+  test("passes remote HTTP image URLs through Ollama's images[] field", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: "llava",
+      message: { role: "assistant", content: "ok" },
+      prompt_eval_count: 4,
+      eval_count: 1,
+    });
+    const provider = new OllamaProvider({
+      model: "llava",
+      host: "http://localhost:11434",
+    });
+    setClient(provider, { chat });
+
+    const imageUrl = " https://example.test/cat.png ";
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          {
+            type: "image_url",
+            image_url: { url: imageUrl },
+          },
+        ],
+      },
+    ]);
+
+    const [params] = chat.mock.calls[0] ?? [];
+    expect(params).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: "What is in this image?",
+          images: ["https://example.test/cat.png"],
+        },
+      ],
+    });
+  });
+
+  test("keeps unsupported image URL schemes visible in Ollama text content", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: "llava",
+      message: { role: "assistant", content: "ok" },
+      prompt_eval_count: 4,
+      eval_count: 1,
+    });
+    const provider = new OllamaProvider({
+      model: "llava",
+      host: "http://localhost:11434",
+    });
+    setClient(provider, { chat });
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/cat.png" },
+          },
+        ],
+      },
+    ]);
+
+    const [params] = chat.mock.calls[0] ?? [];
+    expect(params).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: "What is in this image?\n[image: file:///tmp/cat.png]",
+        },
+      ],
+    });
+    const [message] = (params as { messages: Array<Record<string, unknown>> })
+      .messages;
+    expect(message?.images).toBeUndefined();
+  });
 });
