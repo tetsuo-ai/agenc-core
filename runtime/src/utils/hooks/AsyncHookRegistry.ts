@@ -1,11 +1,8 @@
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
-  // @ts-expect-error -- agentSdkTypes still relies on @ts-nocheck, so this re-export is not visible through the type system.
   AsyncHookJSONOutput,
   HookEvent,
-  // @ts-expect-error -- agentSdkTypes still relies on @ts-nocheck, so this re-export is not visible through the type system.
   SyncHookJSONOutput,
-} from 'src/entrypoints/agentSdkTypes.js'
+} from './agentSdkHookTypes.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { ShellCommand } from '../ShellCommand.js'
 import { invalidateSessionEnvCache } from '../sessionEnvironment.js'

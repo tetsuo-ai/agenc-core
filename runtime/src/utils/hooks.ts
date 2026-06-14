@@ -64,11 +64,10 @@ import {
   isSyncHookJSONOutput,
   type PermissionRequestResult,
 } from '../types/hooks.js'
-// The donor `agentSdkTypes.ts` carries `@ts-nocheck` and re-exports overlap
-// with its inline `= any` aliases; TypeScript's export resolver drops the
-// duplicate names from the emitted type table. Resolve type-only imports via
-// the local-aliases helper module which gives us back stable references that
-// hold `any` semantics in the rest of this file.
+// The SDK barrel re-exports generated hook types and also declares inline
+// `= any` aliases for the same names; TypeScript's export resolver drops the
+// duplicates from the emitted type table. Resolve type-only imports via the
+// local-aliases helper module, preserving the current permissive semantics.
 import type {
   HookEvent,
   HookInput,
@@ -5121,4 +5120,3 @@ export async function executeWorktreeRemoveHook(
 
   return true
 }
-
