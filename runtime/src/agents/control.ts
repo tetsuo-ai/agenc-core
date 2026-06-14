@@ -3,7 +3,7 @@
  *
  * Port of reference runtime `core/src/agent/control.rs` (1,214 LOC). Covers: full
  * lifecycle (spawn/interrupt/shutdown/resume), parent→child message
- * routing (followup_task / send_message / inter-agent communication),
+ * routing (assign_task / send_message / inter-agent communication),
  * metadata + subtree queries (list_agents / subtree descendants /
  * token totals / environment context), completion watcher, fork-mode
  * spawn helpers, and subtree genealogy bookkeeping.
@@ -19,7 +19,7 @@
  * Invariants wired:
  *   I-1  (MAX_AGENT_DEPTH=1) — spawn rejects `childDepth > cap`.
  *        Matches reference runtime's `DEFAULT_AGENT_MAX_DEPTH=1`.
- *   I-5  (bidirectional mailbox) — routing methods (followup_task /
+ *   I-5  (bidirectional mailbox) — routing methods (assign_task /
  *        append_message / IAC / interrupt) go through the child's
  *        `downInbox` with `direction: 'down'`.
  *   I-32 (parent-interrupt race) — cancellation token from the

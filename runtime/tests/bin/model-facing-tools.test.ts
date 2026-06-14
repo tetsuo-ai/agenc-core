@@ -298,6 +298,7 @@ describe("model-facing tools", () => {
         "spawn_agent",
         "wait_agent",
         "close_agent",
+        "assign_task",
         "followup_task",
         "send_message",
         "list_agents",
@@ -340,7 +341,7 @@ describe("model-facing tools", () => {
         "WebSearch",
         "Skill",
         "spawn_agent",
-        "followup_task",
+        "assign_task",
         "send_message",
         "wait_agent",
         "close_agent",
@@ -349,6 +350,7 @@ describe("model-facing tools", () => {
       ]),
     );
     expect(visibleNames).not.toContain("WebFetch");
+    expect(visibleNames).not.toContain("followup_task");
     expect(allNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("NotebookEdit");
@@ -1882,13 +1884,23 @@ describe("model-facing tools", () => {
     expect(send.isError).toBe(true);
     expect(JSON.parse(send.content).error).toContain("unknown field `interrupt`");
 
-    const followup = await byName.get("followup_task")!.execute({
+    const assign = await byName.get("assign_task")!.execute({
       target: "/root/task_1",
       message: "hello",
       items: [],
     });
-    expect(followup.isError).toBe(true);
-    expect(JSON.parse(followup.content).error).toContain("unknown field `items`");
+    expect(assign.isError).toBe(true);
+    expect(JSON.parse(assign.content).error).toContain("unknown field `items`");
+
+    const followupLegacy = await byName.get("followup_task")!.execute({
+      target: "/root/task_1",
+      message: "hello",
+      items: [],
+    });
+    expect(followupLegacy.isError).toBe(true);
+    expect(JSON.parse(followupLegacy.content).error).toContain(
+      "unknown field `items`",
+    );
   });
 
   it("rejects invalid strict spawn_agent arguments before delegation", async () => {
@@ -3223,7 +3235,7 @@ describe("model-facing tools", () => {
     });
   });
 
-  it("followup_task accepts a completed live agent and triggers the next turn", async () => {
+  it("assign_task accepts a completed live agent and triggers the next turn", async () => {
     const session = fakeSession();
     const emitted: unknown[] = [];
     (session as unknown as { emit: typeof session.emit }).emit = (event) => {
@@ -3270,12 +3282,12 @@ describe("model-facing tools", () => {
       registry: {} as never,
     });
     try {
-      const followup = createModelFacingTools({
+      const assign = createModelFacingTools({
         workspaceRoot: process.cwd(),
         getSession: () => session,
-      }).find((tool) => tool.name === "followup_task")!;
+      }).find((tool) => tool.name === "assign_task")!;
 
-      const result = await followup.execute({
+      const result = await assign.execute({
         target: "/root/task_1",
         message: "report now",
       });
@@ -3451,7 +3463,7 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("followup_task rejects the current root target from child context", async () => {
+  it("assign_task rejects the current root target from child context", async () => {
     const session = fakeSession();
     const mailboxSend = vi.fn(() => 1);
     (session as unknown as { mailbox: { hasPending: () => boolean; send: typeof mailboxSend } }).mailbox = {
@@ -3467,12 +3479,12 @@ describe("model-facing tools", () => {
     });
     _setAgentControlForTesting(session, { control, registry });
     try {
-      const followup = createModelFacingTools({
+      const assign = createModelFacingTools({
         workspaceRoot: process.cwd(),
         getSession: () => session,
-      }).find((tool) => tool.name === "followup_task")!;
+      }).find((tool) => tool.name === "assign_task")!;
 
-      const result = await followup.execute({
+      const result = await assign.execute({
         [SESSION_ID_ARG]: child.agentId,
         target: "/root",
         message: "run this",

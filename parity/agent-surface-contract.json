@@ -1,14 +1,14 @@
 {
   "contractName": "agent-surface-contract",
   "scope": "AgenC agent runtime, daemon lifecycle, task bridge, and TUI workbench parity against the Rust agent surface in codex-rs",
-  "generatedAt": "2026-05-28T01:39:00.000Z",
+  "generatedAt": "2026-06-14T17:35:39.962Z",
   "sourceRoot": "../../../codex/codex-rs",
-  "sourceCommit": "4d0c4cd058d9bc488ee2c331f085e25b7af3268d",
+  "sourceCommit": "966932124c243aab71719c269d79305844f35814",
   "targetRoot": "..",
   "sourceFiles": [
     {
       "path": "core/src/agent/control.rs",
-      "sha256": "53828c3def4a8e356789e0b59bd101ae843b9bab45c73af6e48cd6ab12394c83"
+      "sha256": "ae7ff254ba6b5192c6b897bc0c36ab50c1ba513ad3255a62170f229f39e1e387"
     },
     {
       "path": "core/src/agent/agent_resolver.rs",
@@ -28,7 +28,7 @@
     },
     {
       "path": "core/src/thread_manager.rs",
-      "sha256": "5b8a9a570cafea31d6ab8e3a802b9cb38736122c90310dc1654aea9761cf30b7"
+      "sha256": "fd59c62f870b92cdd01b6813e3535194521774aa8571bd89a515f6bc3196a399"
     },
     {
       "path": "core/src/tools/handlers/multi_agents_common.rs",
@@ -36,15 +36,15 @@
     },
     {
       "path": "core/src/tools/handlers/multi_agents_spec.rs",
-      "sha256": "dcd6a7abd9f6cec6821f9c03b3c7936cbc2845324196b3a368cc15fc08a1f5fd"
+      "sha256": "15eab88fa19d88e6892f16fa2008b028c3528370e9bcab3a362cedb1a7b7eba5"
     },
     {
       "path": "core/src/tools/handlers/multi_agents_v2/close_agent.rs",
-      "sha256": "105a877567d3d609b8ffc14f409402d8071fc7ad9442214c55104018246764f4"
+      "sha256": "d5c200224663e4bde5af59b62544be658472e27df75b658001c8f5617428a981"
     },
     {
-      "path": "core/src/tools/handlers/multi_agents_v2/followup_task.rs",
-      "sha256": "56e5d3cedb93a77b38cb0d64a0579a323af45b99b1e239018ac4ce4d2fade576"
+      "path": "core/src/tools/handlers/multi_agents_v2/assign_task.rs",
+      "sha256": "5a86135e3d196a79f07112ed15fa03b80b70cf18398daa2afe2e586553277d4d"
     },
     {
       "path": "core/src/tools/handlers/multi_agents_v2/list_agents.rs",
@@ -52,7 +52,7 @@
     },
     {
       "path": "core/src/tools/handlers/multi_agents_v2/message_tool.rs",
-      "sha256": "eb9f3c30243ae6e83d5a69a66f805f0ba64abd5e0b2298a18bfe3886aa835151"
+      "sha256": "985a6e8eb0a781385d974aad18aa03d85cc80ab70e6280a10141752fec34cdad"
     },
     {
       "path": "core/src/tools/handlers/multi_agents_v2/send_message.rs",
@@ -68,11 +68,11 @@
     },
     {
       "path": "core/src/codex_thread.rs",
-      "sha256": "de69256771379d633216a30de68303c21c3fa307608b6aefb40802fc4c6dc81e"
+      "sha256": "48b718935d3d2a3403b9ff388bce60c81c8bef28540f7cc3c1720ceb3bebf3a9"
     },
     {
       "path": "app-server/src/thread_state.rs",
-      "sha256": "5a41b07777520dcb8c7adaf48f0ee34ba8b4ea3dede417b4b4d37007f4ffef64"
+      "sha256": "7bb6dd0fb4bd7877ee6058f33553a60219ffedced780651ca69dc67a70202091"
     },
     {
       "path": "app-server/src/thread_status.rs",
@@ -88,7 +88,7 @@
     },
     {
       "path": "core/src/tools/handlers/agent_jobs_spec.rs",
-      "sha256": "94c2f5e30317f092ee61708d725e9bc42fce9d760df67f5ca5543f3b9705c763"
+      "sha256": "7a4f99c3e99ea259c9bfa6061b3719ccfa802da6f32dc7d979373397b80b33c5"
     },
     {
       "path": "core/src/tools/handlers/agent_jobs/spawn_agents_on_csv.rs",
@@ -104,7 +104,7 @@
     },
     {
       "path": "protocol/src/openai_models.rs",
-      "sha256": "622e264c2b67b2e37d27c51b5486968a4d5245f6ff3a2893919eb71bb8c060ca"
+      "sha256": "582dfda3a8235545fbf5d48ad3f8a69c7cde0027f2369ae5203a8c7a00ee71de"
     },
     {
       "path": "protocol/src/config_types.rs",
@@ -139,9 +139,13 @@
     "runtime/src/llm/types.ts",
     "runtime/src/phases/stream-model.ts",
     "runtime/src/agents/v2/PARITY.md",
+    "runtime/src/agents/v2/index.ts",
+    "runtime/src/agents/v2/assign-task.ts",
     "runtime/src/agents/v2/common.ts",
     "runtime/src/agents/v2/spawn.ts",
     "runtime/src/agents/v2/send-message.ts",
+    "runtime/src/agents/v2/followup-task.ts",
+    "runtime/src/agents/v2/message-tool.ts",
     "runtime/src/agents/v2/wait.ts",
     "runtime/src/agents/v2/list-agents.ts",
     "runtime/src/agents/v2/close-agent.ts",
@@ -343,7 +347,7 @@
         "core/src/tools/handlers/multi_agents_common.rs",
         "core/src/tools/handlers/multi_agents_spec.rs",
         "core/src/tools/handlers/multi_agents_v2/close_agent.rs",
-        "core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+        "core/src/tools/handlers/multi_agents_v2/assign_task.rs",
         "core/src/tools/handlers/multi_agents_v2/list_agents.rs",
         "core/src/tools/handlers/multi_agents_v2/message_tool.rs",
         "core/src/tools/handlers/multi_agents_v2/send_message.rs",
@@ -370,9 +374,13 @@
         "runtime/src/tools/tasks/background.ts",
         "runtime/src/tools/tasks/task-board.ts",
         "runtime/src/agents/v2/PARITY.md",
+        "runtime/src/agents/v2/index.ts",
+        "runtime/src/agents/v2/assign-task.ts",
         "runtime/src/agents/v2/common.ts",
         "runtime/src/agents/v2/spawn.ts",
         "runtime/src/agents/v2/send-message.ts",
+        "runtime/src/agents/v2/followup-task.ts",
+        "runtime/src/agents/v2/message-tool.ts",
         "runtime/src/agents/v2/wait.ts",
         "runtime/src/agents/v2/list-agents.ts",
         "runtime/src/agents/v2/close-agent.ts",
@@ -395,8 +403,8 @@
         "spawn_agent v2 accepts service_tier, validates it against the effective child model, applies role model/reasoning/service_tier after valid request overrides, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
         "spawn_agent v2 defaults omitted fork_turns to the Rust default of all, documents that schema default, and requires fork_turns none for clean-fork role/model/reasoning overrides",
         "spawn_agent v2 permits a child agent to spawn descendants under its current agent path and applies a per-call child depth allowance instead of rejecting on the session max-depth cap",
-        "followup_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state",
-        "send_message, followup_task, and close_agent v2 register the current root thread before resolving id or path targets so canonical /root maps to the active root session",
+        "assign_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state; followup_task remains a deferred compatibility alias",
+        "send_message, assign_task, followup_task, and close_agent v2 register the current root thread before resolving id or path targets so canonical /root maps to the active root session",
         "list_agents v2 registers the current root thread before listing so the root entry is present even before any child spawn has registered it",
         "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
         "wait_agent v2 validates, defaults, and describes timeout_ms from configured min, default, and max wait timeout options",
@@ -421,11 +429,11 @@
         "spawn_agent called from a depth-one child with agent_max_depth set to one spawns a grandchild under the child path and emits begin/end lifecycle events",
         "list_agents called before any child spawn on an unregistered AgentControl returns the registered /root entry instead of an empty agent list",
         "send_message called from a child to /root on an unregistered AgentControl queues an upward non-triggering inter-agent communication to the root session",
-        "followup_task called from a child to /root on an unregistered AgentControl returns the root-task rejection without enqueuing root mail",
+        "assign_task called from a child to /root on an unregistered AgentControl returns the root-task rejection without enqueuing root mail",
         "close_agent called with /root on an unregistered AgentControl returns the root-not-spawned rejection instead of an unresolved path error",
         "a child spawned with service_tier priority forwards priority into the provider request options",
         "child session tool filtering keeps v2 agent tools visible at the configured depth cap while still blocking main-thread coordination tools",
-        "followup_task sends triggerTurn true to a completed live child and still emits begin/end interaction events with the current status",
+        "assign_task sends triggerTurn true to a completed live child and still emits begin/end interaction events with the current status",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",
         "a close_agent shutdown failure still emits collab_close_end and returns a structured tool error",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
