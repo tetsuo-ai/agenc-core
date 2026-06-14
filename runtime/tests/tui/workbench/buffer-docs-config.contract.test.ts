@@ -37,7 +37,7 @@ describe("embedded Neovim BUFFER docs and config", () => {
     expect(text).toContain("check:tui-workbench-buffer-neovim");
     expect(text).toContain("check:tui-workbench-visual-smoke");
     expect(text).toContain("npm run build");
-    expect(text).toContain("run-tui-validate.mjs");
-    expect(text).toContain("node scripts/check-embedded-neovim-buffer.mjs --run-commands");
+    expect(text).toContain("check:tui-runtime-startup");
+    expect(text).toContain("node scripts/check-embedded-neovim-buffer.mjs");
   });
 });

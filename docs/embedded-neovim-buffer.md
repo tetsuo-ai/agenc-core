@@ -75,6 +75,6 @@ npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-provid
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke
 npm run build
-node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core
-node scripts/check-embedded-neovim-buffer.mjs --run-commands --require-commands --require-edge-cases --require-inventory
+npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup
+node scripts/check-embedded-neovim-buffer.mjs
 ```
