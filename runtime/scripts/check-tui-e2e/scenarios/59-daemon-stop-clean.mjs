@@ -33,6 +33,21 @@ function spawnSyncAgenc(args, timeoutMs = 15_000) {
   });
 }
 
+async function waitForStoppedStatus(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = null;
+  while (Date.now() < deadline) {
+    lastStatus = await spawnSyncAgenc(["daemon", "status"]);
+    if (lastStatus.code !== 0 || !/running/.test(lastStatus.stdout)) {
+      return lastStatus;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `daemon status still shows running after stop: ${lastStatus?.stdout ?? ""}`,
+  );
+}
+
 export const meta = {
   description: "daemon stop → status reports stopped, then start works.",
   timeoutMs: 30_000,
@@ -40,10 +55,14 @@ export const meta = {
 
 export default async function () {
   // Stop
-  await spawnSyncAgenc(["daemon", "stop"]);
-  await sleep(1_000);
+  const stopResult = await spawnSyncAgenc(["daemon", "stop"], 20_000);
+  if (stopResult.code !== 0) {
+    throw new Error(
+      `daemon stop failed (${stopResult.code}): ${stopResult.stderr}${stopResult.stdout}`,
+    );
+  }
   // Status should report stopped (exit non-zero or message)
-  const stoppedStatus = await spawnSyncAgenc(["daemon", "status"]);
+  const stoppedStatus = await waitForStoppedStatus();
   if (stoppedStatus.code === 0 && /running/.test(stoppedStatus.stdout)) {
     throw new Error(
       `daemon status shows running after stop: ${stoppedStatus.stdout}`,

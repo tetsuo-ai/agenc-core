@@ -172,6 +172,7 @@ const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
   "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
+const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -528,15 +529,24 @@ async function runAgenCDaemonAction(
     case "start":
       return startAgenCDaemon(host, io);
     case "stop":
-      return stopAgenCDaemon(host, io, options.stopTimeoutMs ?? 2000);
+      return stopAgenCDaemon(
+        host,
+        io,
+        options.stopTimeoutMs ?? DEFAULT_DAEMON_STOP_TIMEOUT_MS,
+      );
     case "status":
       return statusAgenCDaemon(host, io, options);
     case "reload":
       return reloadAgenCDaemon(host, io);
     case "restart": {
-      await stopAgenCDaemon(host, io, options.stopTimeoutMs ?? 2000, {
-        quietWhenStopped: true,
-      });
+      await stopAgenCDaemon(
+        host,
+        io,
+        options.stopTimeoutMs ?? DEFAULT_DAEMON_STOP_TIMEOUT_MS,
+        {
+          quietWhenStopped: true,
+        },
+      );
       return startAgenCDaemon(host, io);
     }
     case "run":

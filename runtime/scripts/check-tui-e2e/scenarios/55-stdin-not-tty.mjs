@@ -17,6 +17,11 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createTempHome,
+  teardownTempHome,
+  trustProjectForHome,
+} from "../harness.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..", "..");
@@ -27,35 +32,48 @@ const TIMEOUT_MS = 240_000;
 export const meta = {
   description: "Piped stdin (no TTY) routes through one-shot CLI path.",
   timeoutMs: TIMEOUT_MS + 30_000,
+  useTempHome: true,
+  slimCwd: true,
 };
 
-export default async function () {
-  const result = await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [BIN_AGENC], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+export default async function (session) {
+  const { home, wsPort } = await createTempHome();
+  await trustProjectForHome(home, session.cwd);
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [BIN_AGENC], {
+        cwd: session.cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          HOME: home,
+          AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
+        },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d.toString()));
+      child.stderr.on("data", (d) => (stderr += d.toString()));
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+      child.on("error", reject);
+      child.stdin.write("reply with the single word PIPED");
+      child.stdin.end();
+      setTimeout(() => {
+        child.kill("SIGTERM");
+        reject(new Error("piped stdin exceeded timeout"));
+      }, TIMEOUT_MS).unref();
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.on("error", reject);
-    child.stdin.write("reply with the single word PIPED");
-    child.stdin.end();
-    setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("piped stdin exceeded timeout"));
-    }, TIMEOUT_MS).unref();
-  });
-  if (result.code !== 0) {
-    throw new Error(
-      `piped stdin exited code=${result.code}; stderr: ${result.stderr.slice(0, 400)}`,
-    );
-  }
-  if (result.stdout.trim().length === 0) {
-    throw new Error(
-      `piped stdin produced no stdout; stderr: ${result.stderr.slice(0, 400)}`,
-    );
+    if (result.code !== 0) {
+      throw new Error(
+        `piped stdin exited code=${result.code}; stderr: ${result.stderr.slice(0, 400)}`,
+      );
+    }
+    if (result.stdout.trim().length === 0) {
+      throw new Error(
+        `piped stdin produced no stdout; stderr: ${result.stderr.slice(0, 400)}`,
+      );
+    }
+  } finally {
+    await teardownTempHome(home);
   }
 }

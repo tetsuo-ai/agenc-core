@@ -35,6 +35,17 @@ export default async function (session) {
     timeout: 15_000,
     label: "files/resources picker",
   });
+  await waitForFrameText(
+    session,
+    /❯ \+ PLAN\.md/u,
+    "filtered PLAN.md picker selection",
+  );
+  await waitForFrameText(
+    session,
+    /❯\s*@PL/u,
+    "composer contains filtered file query",
+  );
+  await sleep(120);
 
   session.send("\r");
   await waitForFrameText(
