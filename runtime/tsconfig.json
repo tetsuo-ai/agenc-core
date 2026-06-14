@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "jsx": "react-jsx",
     "lib": ["ES2023"],
+    "types": ["node"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -20,7 +21,6 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "baseUrl": ".",
     "paths": {
       "bun:bundle": ["./src/build/feature.ts"],
       "src/*": ["./src/*"]
