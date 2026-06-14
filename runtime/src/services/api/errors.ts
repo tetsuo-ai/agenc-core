@@ -48,6 +48,14 @@ import {
   type OpenAiCompatibilityFailureCategory,
 } from './openaiErrorClassification.js'
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
+const DEFAULT_FEEDBACK_CHANNEL =
+  'https://github.com/tetsuo-ai/agenc-core/issues'
+
+function getFeedbackChannel(): string {
+  return typeof MACRO === 'undefined'
+    ? DEFAULT_FEEDBACK_CHANNEL
+    : MACRO.FEEDBACK_CHANNEL
+}
 
 function stripOpenAiCompatibilityMetadata(message: string): string {
   return message
@@ -574,7 +582,7 @@ export function getAssistantMessageFromError(
     )
   ) {
     if (process.env.USER_TYPE === 'ant') {
-      const baseMessage = `API Error: 400 ${error.message}\n\nRun /share and post the JSON file to ${MACRO.FEEDBACK_CHANNEL}.`
+      const baseMessage = `API Error: 400 ${error.message}\n\nRun /share and post the JSON file to ${getFeedbackChannel()}.`
       const rewindInstruction = getIsNonInteractiveSession()
         ? ''
         : ' Then, use /rewind to recover the conversation.'
@@ -638,10 +646,10 @@ export function getAssistantMessageFromError(
   ) {
     // Get organization ID from config - only use OAuth account data when actively using OAuth
     const orgId = getOauthAccountInfo()?.organizationUuid
-    const baseMsg = `[internal] Your org isn't gated into the \`${model}\` model. Either run \`claude\` with \`ANTHROPIC_MODEL=${getDefaultMainLoopModelSetting()}\``
+    const baseMsg = `[internal] Your org isn't gated into the \`${model}\` model. Either run \`agenc\` with \`ANTHROPIC_MODEL=${getDefaultMainLoopModelSetting()}\``
     const msg = orgId
-      ? `${baseMsg} or share your orgId (${orgId}) in ${MACRO.FEEDBACK_CHANNEL} for help getting access.`
-      : `${baseMsg} or reach out in ${MACRO.FEEDBACK_CHANNEL} for help getting access.`
+      ? `${baseMsg} or share your orgId (${orgId}) in ${getFeedbackChannel()} for help getting access.`
+      : `${baseMsg} or reach out in ${getFeedbackChannel()} for help getting access.`
 
     return createAssistantAPIErrorMessage({
       content: msg,
