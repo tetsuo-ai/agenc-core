@@ -12,11 +12,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import {
   createMessageConnection,
+  type HandlerResult,
   type MessageConnection,
   StreamMessageReader,
   StreamMessageWriter,
   Trace,
-} from "vscode-jsonrpc/node.js";
+} from "vscode-jsonrpc/node";
 
 import type {
   InitializeParams,
@@ -103,7 +104,7 @@ export function createLSPClient(
   }> = [];
   const requestHandlers: Array<{
     readonly method: string;
-    readonly handler: (params: unknown) => unknown | Promise<unknown>;
+    readonly handler: (params: unknown) => HandlerResult<unknown, unknown>;
   }> = [];
 
   const diagnostic = (message: string): void => {
@@ -207,9 +208,16 @@ export function createLSPClient(
       connection.onNotification(method, handler);
     }
     for (const { method, handler } of requestHandlers) {
-      connection.onRequest(method, handler);
+      connection.onRequest<unknown, unknown>(method, handler);
     }
   };
+
+  function requestHandler<TParams, TResult>(
+    handler: (params: TParams) => TResult | Promise<TResult>,
+  ): (params: unknown) => HandlerResult<TResult, unknown> {
+    return (params: unknown) =>
+      handler(params as TParams) as HandlerResult<TResult, unknown>;
+  }
 
   return {
     get capabilities(): ServerCapabilities | undefined {
@@ -378,15 +386,16 @@ export function createLSPClient(
       method: string,
       handler: (params: TParams) => TResult | Promise<TResult>,
     ): void {
+      const wrapped = requestHandler(handler);
       requestHandlers.push({
         method,
-        handler: handler as (params: unknown) => unknown | Promise<unknown>,
+        handler: wrapped as (params: unknown) => HandlerResult<unknown, unknown>,
       });
       if (!connection) {
         return;
       }
       assertStarted();
-      connection.onRequest(method, handler);
+      connection.onRequest<TResult, unknown>(method, wrapped);
     },
 
     async stop(): Promise<void> {
