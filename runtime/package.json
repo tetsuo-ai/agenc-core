@@ -47,6 +47,7 @@
     "check:unused:all": "knip --config knip.config.mjs --no-progress",
     "check:unused:production": "knip --config knip.config.mjs --production --no-progress",
     "check:unused:report": "node scripts/check-unused-report.mjs",
+    "check:agent-eval-report": "node scripts/check-agent-eval-report.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage --maxWorkers=1",
     "test:coverage:tui": "vitest run tests/tui --coverage --coverage.provider=v8 --coverage.reporter=json --coverage.reporter=json-summary --coverage.reporter=text-summary --coverage.include='src/tui/**/*.{ts,tsx}' --coverage.exclude='src/**/*.d.ts' --coverage.reportsDirectory=coverage/runtime-tui",
