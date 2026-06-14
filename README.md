@@ -308,8 +308,7 @@ an explicit DevNet live-validation path. See
 
 1. **Branch off `main`** (never commit directly to it).
 2. Make the change with a **revert-sensitive** test where a bug is involved.
-3. Verify locally — the gates are authoritative because CI
-   (`.github/workflows/ci.yml`) is manual-only:
+3. Verify locally — the gates are authoritative because hosted CI is disabled:
    - `npm run typecheck` → **0 errors** (and no new `@ts-nocheck`),
    - `npm run test` → green,
    - `npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime` for

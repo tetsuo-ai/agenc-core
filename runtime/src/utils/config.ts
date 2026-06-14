@@ -615,8 +615,6 @@ export type GlobalConfig = {
   // (avoiding 11× saveGlobalConfig lock+re-read on every startup).
   migrationVersion?: number
 
-  // Knowledge Graph configuration
-  knowledgeGraphEnabled: boolean
 }
 
 /**
@@ -670,7 +668,6 @@ function createDefaultGlobalConfig(): GlobalConfig {
     flickerFreeMode: true,
     providerProfiles: [],
     openaiAdditionalModelOptionsCacheByProfile: {},
-    knowledgeGraphEnabled: true,
   }
   return config
 }
@@ -720,7 +717,6 @@ export const GLOBAL_CONFIG_KEYS = [
   'prStatusFooterEnabled',
   'remoteControlAtStartup',
   'remoteDialogSeen',
-  'knowledgeGraphEnabled',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]
@@ -822,7 +818,6 @@ export function isPathTrusted(dir: string): boolean {
 const TEST_GLOBAL_CONFIG_FOR_TESTING: GlobalConfig = {
   ...DEFAULT_GLOBAL_CONFIG,
   autoUpdates: false,
-  knowledgeGraphEnabled: true,
 }
 const TEST_PROJECT_CONFIG_FOR_TESTING: ProjectConfig = {
   ...DEFAULT_PROJECT_CONFIG,
