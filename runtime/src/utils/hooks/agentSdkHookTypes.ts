@@ -1,11 +1,11 @@
 /**
  * Stable local aliases for hook-related types pulled from the donor SDK.
  *
- * The canonical donor file `src/entrypoints/agentSdkTypes.ts` carries
- * `@ts-nocheck` and overlaps its own `export type * from './sdk/coreTypes.js'`
- * re-exports with inline `export type X = any` declarations. TypeScript's
- * export resolver drops the duplicated names from the emitted type table,
- * which surfaces as `TS2305: has no exported member` at downstream consumers.
+ * The canonical SDK barrel `src/entrypoints/agentSdkTypes.ts` overlaps its
+ * own `export type * from './sdk/coreTypes.js'` re-exports with inline
+ * `export type X = any` declarations. TypeScript's export resolver drops the
+ * duplicated names from the emitted type table, which surfaces as
+ * `TS2305: has no exported member` at downstream consumers.
  *
  * Until the donor surface is absorbed proper, expose `any`-shaped aliases
  * here so live AgenC-owned hook code can type-check without depending on the

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("bun:bundle", () => ({

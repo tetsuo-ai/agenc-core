@@ -1,4 +1,3 @@
-// @ts-nocheck — validation.ts is plain TS but transitively imports filesystem.ts which @ts-nocheck'd.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";

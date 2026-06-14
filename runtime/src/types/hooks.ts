@@ -192,15 +192,14 @@ export function isAsyncHookJSONOutput(
 
 // NOTE: A compile-time assertion `_assertSDKTypesMatch` previously lived here to
 // verify the local Zod `hookJSONOutputSchema` exactly matched the SDK
-// `HookJSONOutput` type. It was inert while this file carried `// @ts-nocheck`.
-// Once type-checking was re-enabled it failed (TS2344): the generated SDK
-// `PermissionUpdate` union (reached via the `PermissionRequest` hook output's
-// `decision.updatedPermissions`) includes `addDirectories`/`removeDirectories`
-// variants that the runtime `permissionUpdateSchema` does not, so the schema is
-// a strict subset of the SDK type. Fixing that drift requires changing the Zod
-// schema (a different file / runtime-validation change) and is out of scope for
-// this type-only cleanup, so the dead assertion is removed and the drift is
-// recorded for follow-up.
+// `HookJSONOutput` type. Once strict checking reached this file it failed
+// (TS2344): the generated SDK `PermissionUpdate` union (reached via the
+// `PermissionRequest` hook output's `decision.updatedPermissions`) includes
+// `addDirectories`/`removeDirectories` variants that the runtime
+// `permissionUpdateSchema` does not, so the schema is a strict subset of the SDK
+// type. Fixing that drift requires changing the Zod schema (a different file /
+// runtime-validation change) and is out of scope for this type-only cleanup, so
+// the dead assertion is removed and the drift is recorded for follow-up.
 
 /** Context passed to callback hooks for state access */
 export type HookCallbackContext = {
