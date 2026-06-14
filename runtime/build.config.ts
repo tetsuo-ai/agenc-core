@@ -12,6 +12,7 @@ const entry = [
   'src/bin/tui-trust-prompt.tsx',
   'src/sandbox/linux-launcher/main.ts',
   'src/tui/main.tsx',
+  'src/tui/pending-resume.ts',
 ];
 
 const runtimeRoot =
@@ -472,6 +473,14 @@ const external = [
   'sharp',
   'yaml',
   '@mendable/firecrawl-js',
+  // Keep the TUI renderer stack on one runtime React singleton. The moved-source
+  // resolver externalizes some TUI React imports; bundling the reconciler or
+  // hook helpers alongside them creates split dispatchers and invalid hook calls.
+  'react',
+  'react-compiler-runtime',
+  'react-reconciler',
+  'scheduler',
+  'usehooks-ts',
 ];
 
 export default defineConfig({
@@ -523,5 +532,6 @@ export default defineConfig({
       '.md': 'text',
       '.txt': 'text',
     };
+    options.jsx = 'automatic';
   },
 });

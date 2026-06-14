@@ -21,12 +21,17 @@
  * means a daemon protocol regression doesn't get blamed on a TUI flake.
  */
 import { connect } from "node:net";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SOCKET_PATH = path.join(homedir(), ".agenc", "daemon.sock");
 const COOKIE_PATH = path.join(homedir(), ".agenc", "daemon.cookie");
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
+const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const PROTOCOL_VERSION = "1.0.0";
 
 const COLORS = {
@@ -41,6 +46,29 @@ const color = (c, s) => (process.stdout.isTTY ? `${COLORS[c]}${s}${COLORS.reset}
 
 function readCookie() {
   return readFileSync(COOKIE_PATH, "utf8").trim();
+}
+
+function daemonStatusOk() {
+  const result = spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "status"],
+    { encoding: "utf8", timeout: 5_000 },
+  );
+  return result.status === 0 && existsSync(SOCKET_PATH);
+}
+
+function ensureDaemonReady() {
+  if (daemonStatusOk()) return true;
+  spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "start"],
+    { encoding: "utf8", timeout: 20_000 },
+  );
+  for (let i = 0; i < 60; i += 1) {
+    if (daemonStatusOk()) return true;
+    spawnSync("sleep", ["0.25"]);
+  }
+  return false;
 }
 
 /**
@@ -433,6 +461,13 @@ scenarios.push({
 
 async function main() {
   console.log(color("bold", `agenc daemon protocol-error gate (${scenarios.length} scenarios)`));
+  process.stdout.write(color("dim", "  ensuring daemon is ready ... "));
+  const daemonReady = ensureDaemonReady();
+  console.log(color("dim", daemonReady ? "ok" : "failed"));
+  if (!daemonReady) {
+    console.error(color("red", "fatal: default daemon is not reachable"));
+    process.exit(1);
+  }
   console.log("");
 
   const failed = [];
