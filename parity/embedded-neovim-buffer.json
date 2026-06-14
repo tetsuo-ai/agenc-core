@@ -1,22 +1,46 @@
 {
   "contractName": "embedded-neovim-buffer",
-  "scope": "Embedded Neovim BUFFER implementation from TODO.md",
+  "scope": "Embedded Neovim BUFFER implementation from docs/embedded-neovim-buffer.md",
   "generatedAt": "2026-05-25T06:09:59.650Z",
   "sourceRoot": "..",
-  "sourceSnapshotHash": "f0380bab91ebba576750a06caee5eee189680c7a0d82e357cf930b0917914e1f",
+  "sourceSnapshotHash": "19a7f74ccf5d0771c9877ce44f44036bb21876fb840056109348f43dcb33bff4",
   "targetRoot": "..",
+  "approvedExceptions": [
+    {
+      "id": "bufferstore-inline-vim-command-error",
+      "type": "forbidden-language",
+      "approvedBy": "maintainer-review",
+      "approvedAt": "2026-06-14T00:00:00.000Z",
+      "reason": "This is the deliberate user-facing inline fallback status for a Vim command that the inline provider does not implement.",
+      "pattern": "Unknown Vim command",
+      "files": [
+        "runtime/src/tui/workbench/buffer/BufferStore.ts"
+      ]
+    },
+    {
+      "id": "neovim-provider-input-error-parameter",
+      "type": "forbidden-language",
+      "approvedBy": "maintainer-review",
+      "approvedAt": "2026-06-14T00:00:00.000Z",
+      "reason": "This method normalizes thrown provider input errors and uses TypeScript's unknown type intentionally.",
+      "pattern": "#setInputError\\(error: unknown\\): void",
+      "files": [
+        "runtime/src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.ts"
+      ]
+    }
+  ],
   "sourceFiles": [
     {
-      "path": "TODO.md",
-      "sha256": "98914df3601009bd29409e571df73cfc9465e9bb40dd964321f2a269f5b2c4ca"
+      "path": "docs/embedded-neovim-buffer.md",
+      "sha256": "b0df3ae59915e571cb9c6a707425aa8624d0341b61c59a7c47cce4e566738652"
     },
     {
       "path": "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
-      "sha256": "99fbe56a7848335743ce6b3d5bd06567975feef0e8542ecc8a445ee2eb629aae"
+      "sha256": "2d4f0474b5357ad5adb321c518bb280699fcdd6f86bc0a699c92efb07b53910e"
     },
     {
       "path": "runtime/src/tui/workbench/buffer/BufferStore.ts",
-      "sha256": "3c83ead3f70c6a0e4c722f1623c1bcaf3713b84c35589e6591051202f48428ef"
+      "sha256": "e492bf7900d0909d6e6440c1397eab2167fce51e7d4afd30dfaeb58bd655feb2"
     },
     {
       "path": "runtime/src/tui/workbench/buffer/editing.ts",
@@ -82,6 +106,7 @@
     "runtime/src/tui/workbench/state.ts",
     "runtime/package.json",
     "scripts/check-embedded-neovim-buffer.mjs",
+    "runtime/scripts/check-tui-runtime-startup.mjs",
     "runtime/scripts/check-tui-workbench-visual-smoke.mjs",
     "runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
     "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
@@ -112,7 +137,7 @@
   "rows": [
     {
       "id": "provider-boundary",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/providers/types.ts",
       "targetFiles": [
         "runtime/src/tui/workbench/buffer/providers/BufferProviderController.ts",
@@ -146,7 +171,7 @@
     },
     {
       "id": "neovim-discovery",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
       "requiredBehaviors": [
         "discovers the configured Neovim executable before searching PATH",
@@ -173,7 +198,7 @@
     },
     {
       "id": "rpc-transport",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/neovim/NeovimRpc.ts",
       "requiredBehaviors": [
         "encodes Neovim msgpack-RPC requests and notifications, and decodes responses and errors using request ids",
@@ -200,7 +225,7 @@
     },
     {
       "id": "ui-attach-grid",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/neovim/NeovimGrid.ts",
       "targetFiles": [
         "runtime/src/tui/workbench/buffer/neovim/NeovimUi.ts",
@@ -233,7 +258,7 @@
     },
     {
       "id": "input-routing",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/neovim/NeovimInput.ts",
     "targetFiles": [
       "runtime/src/tui/keybindings/defaultBindings.ts",
@@ -280,7 +305,7 @@
     },
     {
       "id": "buffer-lifecycle",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts",
       "targetFiles": [
         "runtime/src/tui/workbench/buffer/BufferStore.ts",
@@ -329,7 +354,7 @@
     },
     {
       "id": "file-safety",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/fileSnapshot.ts",
       "targetFiles": [
         "runtime/src/tui/workbench/buffer/BufferStore.ts",
@@ -362,7 +387,7 @@
     },
     {
       "id": "lsp-bridge-notifications",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "sourceFiles": [
         "runtime/src/tui/workbench/buffer/lsp.ts",
         "runtime/src/tui/workbench/buffer/BufferStore.ts"
@@ -397,7 +422,7 @@
     },
     {
       "id": "workbench-rendering",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
       "sourceFiles": [
         "runtime/src/tui/workbench/surfaces/BufferSurface.tsx"
@@ -436,7 +461,7 @@
     },
     {
       "id": "fallback-inline",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/providers/inline/InlineBufferProvider.ts",
       "sourceFiles": [
         "runtime/src/tui/workbench/buffer/BufferStore.ts",
@@ -478,7 +503,7 @@
     },
     {
       "id": "external-editor",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/src/tui/workbench/buffer/providers/external/ExternalEditorProvider.ts",
       "sourceFiles": [
         "runtime/src/tui/workbench/buffer/externalEditor.ts"
@@ -515,7 +540,7 @@
     },
     {
       "id": "e2e-pty",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "runtime/scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
       "targetFiles": [
         "runtime/scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
@@ -553,11 +578,12 @@
     },
     {
       "id": "completion-gates",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "scripts/check-embedded-neovim-buffer.mjs",
       "targetFiles": [
         "scripts/check-embedded-neovim-buffer.mjs",
         "runtime/package.json",
+        "runtime/scripts/check-tui-runtime-startup.mjs",
         "runtime/scripts/check-tui-workbench-visual-smoke.mjs",
         "runtime/scripts/check-tui-workbench-buffer-neovim.mjs"
       ],
@@ -566,7 +592,7 @@
         "runs production unused-code analysis as a completion gate",
         "runs focused row tests, PTY validation, and visual smoke through row commands",
         "runs the runtime build and package entrypoint verification as a completion gate",
-        "runs the AgenC TUI validation gate before completion",
+        "runs the local TUI runtime startup validation gate before completion",
         "requires every row to declare executable commands and runs them during final checker execution",
         "provides a project-local implementation-contract checker wrapper for final review enforcement"
       ],
@@ -574,7 +600,7 @@
         "typecheck must pass after generated Neovim and workbench files are included",
         "unused-production analysis must pass with the new provider modules and scripts reachable",
         "build must regenerate runtime dist and verify package entrypoints",
-        "AgenC TUI validation must run from this repository path after source changes",
+        "TUI runtime startup validation must run from this repository path after source changes",
         "the project-local checker wrapper must enforce inventory, edge cases, reviews, row-command presence, and row-command execution by default"
       ],
       "tests": [
@@ -584,14 +610,14 @@
         "npm run typecheck",
         "npm run check:unused:production --workspace=@tetsuo-ai/runtime",
         "npm run build",
-        "node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full",
+        "npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup",
         "AGENC_EMBEDDED_NEOVIM_CONTRACT_ROW_REVIEW=1 node scripts/check-embedded-neovim-buffer.mjs"
       ],
       "status": "required"
     },
     {
       "id": "docs-config",
-      "source": "TODO.md",
+      "source": "docs/embedded-neovim-buffer.md",
       "target": "docs/embedded-neovim-buffer.md",
       "requiredBehaviors": [
         "documents embedded Neovim as the default BUFFER provider when a usable binary exists",
