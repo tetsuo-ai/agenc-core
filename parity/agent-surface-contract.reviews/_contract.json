@@ -1,0 +1,38 @@
+{
+  "contractName": "agent-surface-contract",
+  "reviewer": "manual-contract-reviewer",
+  "reviewedAt": "2026-06-14T19:54:12Z",
+  "verdict": "APPROVED",
+  "missingRows": [],
+  "missingInventory": [],
+  "missingCrossCutting": [],
+  "issues": [],
+  "evidence": {
+    "sourceRootScanned": "/home/tetsuo/git/codex/codex-rs",
+    "targetRootScanned": "/home/tetsuo/git/AgenC/agenc-core",
+    "rowsAudited": [
+      "control-registry-roles",
+      "run-loop-thread-mailbox",
+      "daemon-agent-lifecycle",
+      "task-tool-bridge",
+      "tui-agent-workbench-e2e"
+    ],
+    "testsExecuted": [
+      "npm run check:agent-surface-contract"
+    ],
+    "commandResults": [
+      "PASS: agent-surface-contract: ok"
+    ],
+    "reviewFiles": [
+      "parity/agent-surface-contract.reviews/control-registry-roles.json",
+      "parity/agent-surface-contract.reviews/run-loop-thread-mailbox.json",
+      "parity/agent-surface-contract.reviews/daemon-agent-lifecycle.json",
+      "parity/agent-surface-contract.reviews/task-tool-bridge.json",
+      "parity/agent-surface-contract.reviews/tui-agent-workbench-e2e.json"
+    ],
+    "matrixEvidence": [
+      "The unreviewed contract checker verified source hashes against sourceCommit 966932124c243aab71719c269d79305844f35814, required target files, required test files, non-empty behaviors/edge cases/tests/commands, and every row command.",
+      "Every row verdict has no missing behaviors, no missing edge cases, and no open issues."
+    ]
+  }
+}

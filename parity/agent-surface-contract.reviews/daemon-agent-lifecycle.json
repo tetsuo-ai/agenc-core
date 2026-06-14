@@ -1,0 +1,52 @@
+{
+  "rowId": "daemon-agent-lifecycle",
+  "contractName": "agent-surface-contract",
+  "reviewer": "manual-row-reviewer",
+  "reviewedAt": "2026-06-14T19:54:12Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "starts daemon-backed agents with durable thread id, run id, prompt, cwd, sandbox, permission mode, and model context",
+      "streams lifecycle, transcript, tool, status, and usage events to daemon clients in stable JSON-RPC shapes",
+      "keeps active-turn state and completion snapshots coherent across start, message, cancel, close, and reconnect paths",
+      "maps runtime failures to daemon protocol errors without crashing the daemon process",
+      "persists enough status and transcript data for CLI and TUI reattachment"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "invalid agent.create params fail validation before any runner starts",
+      "cancellation during active turns produces terminal state and does not reopen later chunks",
+      "completed agents remain listable and log-readable without resurrecting a live runner",
+      "daemon restart/recovered session paths preserve durable status and reject stale messages",
+      "malformed tool-call payloads are surfaced as structured errors"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "evidence": {
+    "filesRead": [
+      "parity/agent-surface-contract.json",
+      "runtime/src/app-server/agent-lifecycle.ts",
+      "runtime/src/app-server/background-agent-runner.ts",
+      "runtime/src/app-server/agent-cli.ts",
+      "runtime/tests/app-server/agent-lifecycle.contract.test.ts",
+      "runtime/tests/app-server/background-agent-runner.contract.test.ts",
+      "runtime/tests/app-server/agent-cli.contract.test.ts",
+      "runtime/tests/app-server/daemon-dispatcher.contract.test.ts"
+    ],
+    "testsExecuted": [
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
+    ],
+    "commandResults": [
+      "PASS: 4 test files passed, 136 tests passed"
+    ],
+    "implementationEvidence": [
+      "AgenCAgentLifecycleManager owns agent.create/message/stop/list/log/attach state transitions, rollback, snapshot refresh, terminal-status persistence, and recovered-agent handling.",
+      "AgenCDelegateBackgroundAgentRunner maps managed thread status and progress events into daemon agent snapshots and JSON-RPC event payloads.",
+      "agent-cli wraps JSON-RPC initialize, request.cancel, reconnect/re-attach, and transcript/list/stop commands with bounded request timeouts and connection state.",
+      "Contract tests cover persisted rollout logs, session routing, agent.create startup, stop/cleanup, malformed params, JSON-RPC dispatcher routes, reconnect, and terminal runner snapshots."
+    ]
+  }
+}
