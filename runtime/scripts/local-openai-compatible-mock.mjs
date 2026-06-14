@@ -153,29 +153,36 @@ function editArgsFromPrompt(prompt) {
     : null;
 }
 
-function nextToolCall(body, prompt, completedTools) {
-  const tools = body.tools;
+const SHELL_TOOL_NAMES = ["exec_command", "system.bash", "Bash"];
+
+function selectShellTool(tools) {
+  return selectTool(tools, SHELL_TOOL_NAMES, /bash|shell|command/i);
+}
+
+function shellToolCall(tools, command) {
+  return {
+    tool: selectShellTool(tools),
+    args: { command },
+  };
+}
+
+function nextPipelineToolCall(tools, prompt, completedTools) {
   const pipelineCommands = pipelineCommandsFromPrompt(prompt);
   if (pipelineCommands && completedTools < pipelineCommands.length) {
-    return {
-      tool: selectTool(tools, ["exec_command", "system.bash", "Bash"], /bash|shell|command/i),
-      args: { command: pipelineCommands[completedTools] },
-    };
+    return shellToolCall(tools, pipelineCommands[completedTools]);
   }
 
   if (!completedTools && /PIPELINE-TOOL-CHECK/i.test(prompt)) {
-    return {
-      tool: selectTool(tools, ["exec_command", "system.bash", "Bash"], /bash|shell|command/i),
-      args: { command: "echo PIPELINE-TOOL-CHECK" },
-    };
+    return shellToolCall(tools, "echo PIPELINE-TOOL-CHECK");
   }
   if (!completedTools && /TOKEN-CHECK/i.test(prompt)) {
-    return {
-      tool: selectTool(tools, ["exec_command", "system.bash", "Bash"], /bash|shell|command/i),
-      args: { command: "echo TOKEN-CHECK" },
-    };
+    return shellToolCall(tools, "echo TOKEN-CHECK");
   }
 
+  return null;
+}
+
+function nextEditToolCall(tools, prompt, completedTools) {
   const editArgs = editArgsFromPrompt(prompt);
   if (editArgs && completedTools === 0) {
     return { tool: selectTool(tools, ["FileRead", "Read"], /read/i), args: fileReadArgsFromPrompt(prompt) };
@@ -184,35 +191,45 @@ function nextToolCall(body, prompt, completedTools) {
     return { tool: selectTool(tools, ["Edit", "FileEdit"], /edit/i), args: editArgs };
   }
 
+  return null;
+}
+
+function nextSingleToolCall(tools, prompt, completedTools) {
+  if (completedTools) return null;
+
   const command = shellCommandFromPrompt(prompt);
-  if (command && !completedTools) {
-    return {
-      tool: selectTool(tools, ["exec_command", "system.bash", "Bash"], /bash|shell|command/i),
-      args: { command },
-    };
+  if (command) {
+    return shellToolCall(tools, command);
   }
 
   const readArgs = fileReadArgsFromPrompt(prompt);
-  if (readArgs && !completedTools) {
+  if (readArgs) {
     return { tool: selectTool(tools, ["FileRead", "Read"], /read/i), args: readArgs };
   }
 
   const grepArgs = grepArgsFromPrompt(prompt);
-  if (grepArgs && !completedTools) {
+  if (grepArgs) {
     return { tool: selectTool(tools, ["Grep"], /grep|search/i), args: grepArgs };
   }
 
   const globArgs = globArgsFromPrompt(prompt);
-  if (globArgs && !completedTools) {
+  if (globArgs) {
     return { tool: selectTool(tools, ["Glob"], /glob/i), args: globArgs };
   }
 
   const writeArgs = writeArgsFromPrompt(prompt);
-  if (writeArgs && !completedTools) {
+  if (writeArgs) {
     return { tool: selectTool(tools, ["Write", "FileWrite"], /write/i), args: writeArgs };
   }
 
   return null;
+}
+
+function nextToolCall(body, prompt, completedTools) {
+  const tools = body.tools;
+  return nextPipelineToolCall(tools, prompt, completedTools)
+    ?? nextEditToolCall(tools, prompt, completedTools)
+    ?? nextSingleToolCall(tools, prompt, completedTools);
 }
 
 function writeSse(response, chunks) {

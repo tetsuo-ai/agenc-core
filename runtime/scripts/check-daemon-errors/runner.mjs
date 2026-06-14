@@ -71,51 +71,14 @@ function ensureDaemonReady() {
   return false;
 }
 
-/**
- * Send a sequence of JSON-RPC frames over a fresh socket. Returns a map
- * of { id => response, all: [...] }. Responses can arrive out of order
- * relative to requests, so callers should look up by id, not by index.
- *
- * The expectedResponses count is the number of frames that should
- * produce a response. Frames without an id (notifications) don't
- * contribute. If null, waits for the connection to close after a
- * grace period.
- */
-async function sendFrames(frames, { timeoutMs = 5_000, expectedResponses } = {}) {
-  const expected =
-    expectedResponses ?? frames.filter((f) => f.id !== undefined).length;
-  return new Promise((resolve, reject) => {
-    const socket = connect(SOCKET_PATH);
-    const all = [];
-    const byId = new Map();
-    let buffer = "";
-    let done = false;
-
-    const settle = (value, error) => {
-      if (done) return;
-      done = true;
-      try {
-        socket.destroy();
-      } catch {
-        /* ignore */
-      }
-      if (error) reject(error);
-      else resolve(value);
-    };
-
-    const timer = setTimeout(() => {
-      // Timeout returns whatever has arrived so far rather than rejecting,
-      // so tests can assert "no response" cleanly.
-      settle({ all, byId });
-    }, timeoutMs);
-
-    socket.on("connect", () => {
-      for (const frame of frames) {
-        socket.write(JSON.stringify(frame) + "\n");
-      }
-    });
-
-    socket.on("data", (chunk) => {
+function createResponseCollector(expected, settle) {
+  const all = [];
+  const byId = new Map();
+  let buffer = "";
+  return {
+    all,
+    byId,
+    accept(chunk) {
       buffer += chunk.toString();
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -133,23 +96,62 @@ async function sendFrames(frames, { timeoutMs = 5_000, expectedResponses } = {})
           byId.set(parsed.id, parsed);
         }
         if (all.length >= expected) {
-          clearTimeout(timer);
           settle({ all, byId });
           return;
         }
       }
-    });
+    },
+  };
+}
 
-    socket.on("error", (err) => settle(undefined, err));
-    socket.on("close", () => {
-      if (all.length > 0) {
-        clearTimeout(timer);
-        settle({ all, byId });
-      } else {
-        clearTimeout(timer);
-        settle({ all, byId });
+/**
+ * Send a sequence of JSON-RPC frames over a fresh socket. Returns a map
+ * of { id => response, all: [...] }. Responses can arrive out of order
+ * relative to requests, so callers should look up by id, not by index.
+ *
+ * The expectedResponses count is the number of frames that should
+ * produce a response. Frames without an id (notifications) don't
+ * contribute. If null, waits for the connection to close after a
+ * grace period.
+ */
+async function sendFrames(frames, { timeoutMs = 5_000, expectedResponses } = {}) {
+  const expected =
+    expectedResponses ?? frames.filter((f) => f.id !== undefined).length;
+  return new Promise((resolve, reject) => {
+    const socket = connect(SOCKET_PATH);
+    let done = false;
+    let timer;
+
+    const settle = (value, error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const collector = createResponseCollector(expected, settle);
+
+    timer = setTimeout(() => {
+      // Timeout returns whatever has arrived so far rather than rejecting,
+      // so tests can assert "no response" cleanly.
+      settle({ all: collector.all, byId: collector.byId });
+    }, timeoutMs);
+
+    socket.on("connect", () => {
+      for (const frame of frames) {
+        socket.write(JSON.stringify(frame) + "\n");
       }
     });
+
+    socket.on("data", (chunk) => collector.accept(chunk));
+
+    socket.on("error", (err) => settle(undefined, err));
+    socket.on("close", () => settle({ all: collector.all, byId: collector.byId }));
   });
 }
 
@@ -191,6 +193,13 @@ function expectSuccess(byId, id) {
   if (!r) throw new Error(`no response for id=${id}`);
   if (r.error) throw new Error(`expected success for id=${id}, got error: ${JSON.stringify(r)}`);
   return r.result;
+}
+
+function expectAnyError(byId, id) {
+  const r = byId.get(id);
+  if (!r) throw new Error(`no response for id=${id}`);
+  if (!r.error) throw new Error(`expected error, got success: ${JSON.stringify(r)}`);
+  return r.error;
 }
 
 scenarios.push({
@@ -306,13 +315,7 @@ scenarios.push({
       [initialize({ authCookie: "not-the-real-cookie-1234" })],
       { timeoutMs: 2_000 },
     );
-    const r = byId.get(1);
-    if (!r) throw new Error(`no response for id=1`);
-    if (r.error) {
-      throw new Error(
-        `expected success on same-UID socket, got error: ${JSON.stringify(r)}`,
-      );
-    }
+    expectSuccess(byId, 1);
     // Cross-UID / WebSocket cookie enforcement is a separate test target
     // not exercised here. See GAP-DMN-04 for the peer-cred binding gap.
   },
@@ -356,9 +359,7 @@ scenarios.push({
       { timeoutMs: 35_000 },
     );
     expectSuccess(byId, 1);
-    const r = byId.get(2);
-    if (!r) throw new Error(`no response for id=2`);
-    if (!r.error) throw new Error(`expected error, got success: ${JSON.stringify(r)}`);
+    expectAnyError(byId, 2);
   },
 });
 
@@ -403,9 +404,7 @@ scenarios.push({
       { timeoutMs: 35_000 },
     );
     expectSuccess(byId, 1);
-    const r = byId.get(2);
-    if (!r) throw new Error(`no response for id=2`);
-    if (!r.error) throw new Error(`expected error, got success: ${JSON.stringify(r)}`);
+    expectAnyError(byId, 2);
   },
 });
 

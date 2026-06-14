@@ -9,6 +9,8 @@
 export const meta = {
   description: "Up arrow recalls previous input from history.",
   timeoutMs: 90_000,
+  useTempHome: true,
+  slimCwd: true,
 };
 
 export default async function (session) {
