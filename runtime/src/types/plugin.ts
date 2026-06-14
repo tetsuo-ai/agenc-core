@@ -72,19 +72,14 @@ export type PluginComponent =
  * error handling that can't break when error messages change.
  *
  * IMPLEMENTATION STATUS:
- * Currently used in production (2 types):
- * - generic-error: Used for various plugin loading failures
- * - plugin-not-found: Used when plugin not found in marketplace
+ * Plugin loading paths emit the specific variants where enough context is
+ * available (for example `path-not-found`, `plugin-not-found`,
+ * `hook-load-failed`, and `component-load-failed`). `generic-error` remains
+ * the fallback for failures that have not yet been classified.
  *
- * Planned for future use (10 types - see TODOs in pluginLoader.ts):
- * - path-not-found, git-auth-failed, git-timeout, network-error
- * - manifest-parse-error, manifest-validation-error
- * - marketplace-not-found, marketplace-load-failed
- * - mcp-config-invalid, hook-load-failed, component-load-failed
- *
- * These unused types support UI formatting and provide a clear roadmap for
- * improving error specificity. They can be incrementally implemented as
- * error creation sites are refactored.
+ * Less common variants are retained so plugin resolution, registration, MCP,
+ * and UI surfaces can keep improving error specificity without changing the
+ * public diagnostic shape.
  */
 export type PluginError =
   | {
