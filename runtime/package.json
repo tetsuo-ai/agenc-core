@@ -81,7 +81,7 @@
   },
   "overrides": {
     "rollup": "^4.59.0",
-    "undici": "^7.22.0"
+    "undici": "^8.4.1"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "0.3.0",
@@ -134,7 +134,7 @@
     "strip-ansi": "^7.2.0",
     "tree-kill": "^1.2.2",
     "turndown": "^7.2.4",
-    "undici": "^7.22.0",
+    "undici": "^8.4.1",
     "usehooks-ts": "^3.1.1",
     "vscode-jsonrpc": "9.0.0",
     "vscode-languageserver-types": "^3.17.5",
