@@ -136,7 +136,7 @@
     "turndown": "^7.2.4",
     "undici": "^7.22.0",
     "usehooks-ts": "^3.1.1",
-    "vscode-jsonrpc": "8.2.0",
+    "vscode-jsonrpc": "9.0.0",
     "vscode-languageserver-types": "^3.17.5",
     "wrap-ansi": "^9.0.2",
     "ws": "^8.18.0",
