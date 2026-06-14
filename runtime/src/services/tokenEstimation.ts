@@ -554,10 +554,10 @@ async function loadBedrockRuntimeModule(
     return options.loadBedrockRuntimeModule();
   }
   try {
-    // Literal specifier so tsup discovers @aws-sdk/client-bedrock-runtime
+    // Literal specifier so esbuild discovers @aws-sdk/client-bedrock-runtime
     // as an external dep at bundle time. The previous indirection
     // through importOptionalRuntimeModule(specifier) defeated static
-    // discovery because the parameter type was string — tsup could not
+    // discovery because the parameter type was string; esbuild could not
     // see what was being imported.
     return (await import(
       "@aws-sdk/client-bedrock-runtime"

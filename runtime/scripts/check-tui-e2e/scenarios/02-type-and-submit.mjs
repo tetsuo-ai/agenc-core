@@ -8,7 +8,7 @@
  * Regression catch: this is the scenario that would have caught the
  * dist/tui/daemon-session.js bundling bug fixed in d7616a4a. Submit was
  * crashing in `loadCreateDaemonTuiSession` with ERR_MODULE_NOT_FOUND because
- * tsup never bundled the dynamic-import target.
+ * the production bundle never included the dynamic-import target.
  */
 export const meta = {
   description: "Type 'hello', submit, expect streaming reply, no crash.",

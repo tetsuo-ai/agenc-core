@@ -88,7 +88,7 @@ dependency, not vendored source.
 
 ## Build, test & gates
 
-- **Build** — `tsup` (esbuild) bundles the runtime to `runtime/dist`, stamps
+- **Build** — `esbuild` bundles the runtime to `runtime/dist`, stamps
   `dist/VERSION`, copies policy assets, and verifies the 4 package entrypoints.
 - **Type-check** — `tsc --noEmit`, kept at **0 errors** with **0 `@ts-nocheck`**.
 - **Tests** — ~12,000 vitest tests, plus an isolated Bun suite (one file per

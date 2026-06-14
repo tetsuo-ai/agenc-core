@@ -525,7 +525,7 @@ function collectMarkdownFiles(dir: string, visitedDirs = new Set<string>()): str
 
 async function getSettingSourceEnabled(): Promise<SettingSourceEnabled> {
   try {
-    // Literal specifier so tsup discovers the module at bundle time.
+    // Literal specifier so esbuild discovers the module at bundle time.
     const module = (await import('../../utils/settings/constants.js')) as {
       isSettingSourceEnabled?: SettingSourceEnabled
     }
@@ -570,7 +570,7 @@ async function loadSharedMarkdownAgentFiles(
   cwd: string,
 ): Promise<MarkdownAgentFile[] | null> {
   try {
-    // Literal specifier so tsup discovers the module at bundle time.
+    // Literal specifier so esbuild discovers the module at bundle time.
     const module = (await import('../../utils/markdownConfigLoader.js')) as {
       loadMarkdownFilesForSubdir: {
         (subdir: string, cwd: string): Promise<MarkdownAgentFile[]>
@@ -738,7 +738,7 @@ async function initializeAgentMemorySnapshots(
   const memoryAgents = agents.filter(agent => agent.memory === 'user')
   if (memoryAgents.length === 0) return
   try {
-    // Literal specifier so tsup discovers the module at bundle time.
+    // Literal specifier so esbuild discovers the module at bundle time.
     const snapshots = await import('./agentMemorySnapshot.js')
     await Promise.all(
       memoryAgents.map(async agent => {

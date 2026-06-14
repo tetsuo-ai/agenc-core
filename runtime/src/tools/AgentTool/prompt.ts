@@ -31,7 +31,7 @@ function hasEmbeddedSearchTools(): boolean {
   )
 }
 
-// Literal-import specifiers so tsup discovers and bundles these modules.
+// Literal-import specifiers so esbuild discovers and bundles these modules.
 // Variable specifiers (e.g. `import(authModulePath)` where authModulePath
 // is a const string) get silently externalized by the bundler.
 async function getSubscriptionTypeSafe(): Promise<string | null> {

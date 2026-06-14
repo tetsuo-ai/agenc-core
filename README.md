@@ -260,7 +260,7 @@ From the repo root:
 
 ```bash
 npm run typecheck        # tsc --noEmit (keep at 0 errors)
-npm run build            # tsup build → runtime/dist + VERSION
+npm run build            # esbuild bundle → runtime/dist + VERSION
 npm run test             # typecheck + full vitest suite
 npm run test:bun         # isolated Bun suite (one file per process)
 npm run validate:runtime # typecheck + build + PTY startup smoke
@@ -282,7 +282,7 @@ and `agenc --yolo` in real pseudo-terminals at several viewport sizes — keep i
 in the validation path for anything touching the TUI, daemon startup, package
 entrypoints, or built artifacts.
 
-`npm run build` compiles the runtime with `tsup`, writes `runtime/dist/VERSION`,
+`npm run build` compiles the runtime with `esbuild`, writes `runtime/dist/VERSION`,
 copies runtime policy assets, and verifies the package entrypoints. The
 generated `runtime/dist/` tree is build output, not source.
 
