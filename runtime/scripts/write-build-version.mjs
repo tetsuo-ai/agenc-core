@@ -3,7 +3,7 @@
  * Write `runtime/dist/VERSION` containing { commit, buildTime, runtimeVersion }
  * so the daemon can print a startup banner that proves which build is running.
  *
- * Cut 6.2 of the AgenC runtime refactor (TODO.MD).
+ * This script also copies runtime assets that must sit beside the built chunks.
  */
 
 import { chmodSync, cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
