@@ -42,3 +42,33 @@ test('maps tool_call_incompatible category markers to model/tool guidance', () =
   expect(text).toContain('rejected tool-calling payloads')
   expect(text).toContain('/model')
 })
+
+test('internal invalid-model guidance uses the AgenC CLI name', () => {
+  const previousUserType = process.env.USER_TYPE
+  const previousAnthropicModel = process.env.ANTHROPIC_MODEL
+
+  try {
+    process.env.USER_TYPE = 'ant'
+    delete process.env.ANTHROPIC_MODEL
+
+    const message = getAssistantMessageFromError(
+      new Error('invalid model name'),
+      'internal-opus',
+    )
+    const text = getFirstText(message)
+
+    expect(text).toContain('Either run `agenc` with `ANTHROPIC_MODEL=')
+    expect(text).not.toContain('Either run `claude`')
+  } finally {
+    if (previousUserType === undefined) {
+      delete process.env.USER_TYPE
+    } else {
+      process.env.USER_TYPE = previousUserType
+    }
+    if (previousAnthropicModel === undefined) {
+      delete process.env.ANTHROPIC_MODEL
+    } else {
+      process.env.ANTHROPIC_MODEL = previousAnthropicModel
+    }
+  }
+})
