@@ -1307,7 +1307,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             toolName: { name: "FileRead" },
             payload: {
               kind: "function",
-              arguments: "{\"file_path\":\"TODO.MD\"}",
+              arguments: "{\"file_path\":\"README.md\"}",
             },
             source: "direct",
           },
@@ -1728,7 +1728,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           type: "tool_input_delta",
           payload: {
             index: 0,
-            partialJson: "{\"file_path\":\"TODO.MD\"",
+            partialJson: "{\"file_path\":\"README.md\"",
           },
         },
       ],
