@@ -10,7 +10,7 @@ declare module "@opentelemetry/sdk-metrics" {
 
 // Optional runtime dep — only needed when the user provisions Bedrock
 // for token-counting via tokenEstimation.ts. The literal-import gives
-// tsup a chance to bundle it, but the package is not in our
+// esbuild a chance to bundle it, but the package is not in our
 // dependencies list, so a real declaration would force every consumer
 // to install AWS SDK packages they don't need.
 declare module "@aws-sdk/client-bedrock-runtime" {
@@ -48,7 +48,7 @@ declare module "@smithy/core" {
   export const NoAuthSigner: new (...args: unknown[]) => unknown;
 }
 
-// Optional native audio module (cpal-backed). Listed as a tsup external and
+// Optional native audio module (cpal-backed). Listed as an esbuild external and
 // loaded lazily via dynamic import in src/services/voice.ts; it is not a
 // package.json dependency, so declare its consumed surface loosely here —
 // same rationale as the optional AWS/Bedrock deps above.

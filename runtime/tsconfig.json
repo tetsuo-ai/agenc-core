@@ -34,7 +34,7 @@
     "**/*.test.tsx",
     // Imports the live TUI renderer, which is excluded from the baseline
     // tsc gate until replacement is complete. This shipped prompt is still
-    // covered by the required tsup DTS build because tsup.config.ts lists it
+    // covered by the required esbuild bundle because build.config.ts lists it
     // as a production entrypoint.
     "src/bin/tui-trust-prompt.tsx",
     "src/memdir/**/*",

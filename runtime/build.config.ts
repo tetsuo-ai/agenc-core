@@ -1,7 +1,10 @@
-import { defineConfig } from 'tsup';
 import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+function defineConfig<T>(config: T): T {
+  return config;
+}
 
 const entry = [
   'src/index.ts',
@@ -11,7 +14,8 @@ const entry = [
   'src/tui/main.tsx',
 ];
 
-const runtimeRoot = dirname(fileURLToPath(import.meta.url));
+const runtimeRoot =
+  process.env.AGENC_RUNTIME_ROOT ?? dirname(fileURLToPath(import.meta.url));
 const yoloClassifierPromptSourceDir = resolve(
   runtimeRoot,
   'src/utils/permissions/yolo-classifier-prompts',
@@ -201,7 +205,7 @@ function readCopiedTreeFeatureFlags(): ReadonlyMap<string, boolean> {
     flags.set(match[1], match[2] === 'true');
   }
   if (flags.size === 0) {
-    throw new Error('Unable to read copied tree feature flags for tsup DCE');
+    throw new Error('Unable to read copied tree feature flags for build DCE');
   }
   return flags;
 }
@@ -406,7 +410,7 @@ const agencKnownMissingOptionalExternal = {
   },
 };
 
-export const __agencTsupAliasTest = {
+export const __agencBuildConfigTest = {
   featureFlagLiteral,
   inlineCopiedTreeFeatureCalls,
   isKnownMissingOptionalModule,

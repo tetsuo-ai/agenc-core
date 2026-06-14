@@ -4,13 +4,13 @@
  * adapters for optional npm dependencies.
  *
  * The previous implementation called `await import(packageName)` with a
- * variable specifier. tsup cannot statically discover variable
+ * variable specifier. esbuild cannot statically discover variable
  * specifiers and silently externalizes them, so the bundled artifact
  * crashed with "Cannot find module 'openai'" / "Cannot find module
  * 'ollama'" at runtime even though the deps were installed.
  *
  * The fix: a literal-import allow-list keyed by package name. New
- * optional deps must be added to LAZY_IMPORTERS explicitly so tsup sees
+ * optional deps must be added to LAZY_IMPORTERS explicitly so esbuild sees
  * the literal specifier at bundle time. Tests cover the allow-list /
  * miss path.
  */

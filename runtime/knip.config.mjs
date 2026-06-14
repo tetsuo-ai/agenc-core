@@ -596,7 +596,7 @@ export default {
     "src/build/feature.ts!",
     "src/sandbox/linux-launcher/main.ts!",
     "src/tui/main.tsx!",
-    "tsup.config.ts",
+    "build.config.ts",
     "scripts/**/*.mjs",
     "tests/**/*.{test,e2e,contract,parity}.ts",
     "tests/**/*.{test,e2e,contract,parity}.tsx",
@@ -606,7 +606,7 @@ export default {
     "src/**/*.{ts,tsx,js,mjs,cjs}!",
     "scripts/**/*.mjs",
     "tests/**/*.{ts,tsx}",
-    "tsup.config.ts",
+    "build.config.ts",
     "local-packages/**/*.{ts,tsx,js,mjs,cjs}!",
   ],
   paths: {
@@ -654,16 +654,23 @@ export default {
     ...intentionalRemainingRuntimeIssueIgnores,
   },
   ignoreBinaries: [
+    "arecord",
     "findstr",
     "ip",
+    "pdftotext",
     "powershell.exe",
     "ps",
+    "rec",
+    "rg",
     "secret-tool",
     "security",
     "tasklist",
+    "taskkill",
+    "tmux",
+    "wslpath",
   ],
   ignoreDependencies: [
-    // Path alias imports such as `src/foo.js` are resolved by tsup/tsc, but
+    // Path alias imports such as `src/foo.js` are resolved by esbuild/tsc, but
     // Knip reports the bare alias root as a package dependency.
     "src",
     // Optional private integration loaded only when the matching MCP server is

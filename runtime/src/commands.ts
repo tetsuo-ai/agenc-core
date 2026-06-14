@@ -381,7 +381,7 @@ function commandArray(value: unknown): Command[] {
 }
 
 // Loader-based command source. The previous variant accepted a string
-// modulePath and called `await import(modulePath)`, which tsup cannot
+// modulePath and called `await import(modulePath)`, which esbuild cannot
 // statically discover and silently externalizes. The replacement
 // accepts a literal-import loader so the bundler sees the specifier at
 // build time.
@@ -429,7 +429,7 @@ async function loadProductionCommandSources(
   // The workflow-commands source previously loaded
   // ./tools/WorkflowTool/createWorkflowCommand.js — that module was
   // removed during the runtime migration, so the dynamic import always
-  // failed and returned []. Dropped from the loader list now that tsup
+  // failed and returned []. Dropped from the loader list now that esbuild
   // needs literal specifiers; if the workflow source returns, add a
   // literal-import loader and a corresponding bundle entry.
   const workflowCommands: readonly Command[] = [];

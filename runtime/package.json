@@ -23,7 +23,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup --config tsup.config.ts && node scripts/write-build-version.mjs && npm run check:package-entrypoints",
+    "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints",
     "daemon": "node bin/agenc daemon start --foreground",
     "daemon:status": "node bin/agenc daemon status",
     "start": "node bin/agenc",
@@ -152,8 +152,8 @@
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.5.14",
     "@vitest/coverage-v8": "^4.1.6",
+    "esbuild": "0.28.1",
     "knip": "^6.14.1",
-    "tsup": "^8.5.1",
     "type-fest": "^4.41.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

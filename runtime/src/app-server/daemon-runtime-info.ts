@@ -9,7 +9,7 @@
  * the runtime was rebuilt while the daemon was running — the CLI
  * SIGTERM's the stale process and lets autostart spawn a fresh one.
  *
- * This exists because tsup's ESM bundler emits content-hashed chunk
+ * This exists because the ESM bundler emits content-hashed chunk
  * filenames (`run-turn-AVRTIPZE.js`). A `npm run build` deletes the
  * old chunks via `clean: true` and writes new ones with new hashes.
  * The daemon in memory still references the OLD names; any dynamic
