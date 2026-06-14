@@ -816,6 +816,44 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("allows a running daemon more than two seconds to stop by default", async () => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
+    const pid = 4301;
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    baseHost.runningPids.add(pid);
+    await writeAgenCDaemonPid(pidPath, pid);
+
+    const host: typeof baseHost = {
+      ...baseHost,
+      terminatePid: (targetPid) => {
+        baseHost.terminatedPids.push(targetPid);
+      },
+      sleep: async (ms) => {
+        now += ms;
+        if (now >= 2_500) {
+          baseHost.runningPids.delete(pid);
+        }
+      },
+    };
+
+    try {
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "stop" }, { host, io }),
+      ).resolves.toBe(0);
+      expect(host.terminatedPids).toEqual([pid]);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+      expect(io.stdoutText()).toContain(`AgenC daemon stopped (pid ${pid})`);
+      expect(io.stderrText()).toBe("");
+    } finally {
+      nowSpy.mockRestore();
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("treats stop with no daemon as already stopped", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

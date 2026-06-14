@@ -16,6 +16,8 @@ export const meta = {
   description: "Multi-line bracketed paste is accepted without crash.",
   timeoutMs: 90_000,
   args: ["--yolo"],
+  useTempHome: true,
+  slimCwd: true,
 };
 
 export default async function (session) {
