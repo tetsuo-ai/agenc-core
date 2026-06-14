@@ -141,10 +141,18 @@ function createIo(): AgenCDaemonCliIo & {
 function createHost(agencHome: string): AgenCDaemonCliHost & {
   readonly runningPids: Set<number>;
   readonly terminatedPids: number[];
+  readonly terminatedSignals: Array<{
+    readonly pid: number;
+    readonly signal: NodeJS.Signals;
+  }>;
 } {
   let nextPid = 4200;
   const runningPids = new Set<number>();
   const terminatedPids: number[] = [];
+  const terminatedSignals: Array<{
+    readonly pid: number;
+    readonly signal: NodeJS.Signals;
+  }> = [];
   return {
     env: {
       AGENC_HOME: agencHome,
@@ -156,14 +164,16 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
     pid: 4100,
     runningPids,
     terminatedPids,
+    terminatedSignals,
     spawnDetachedDaemon: () => {
       nextPid += 1;
       runningPids.add(nextPid);
       return nextPid;
     },
     isPidRunning: (pid) => runningPids.has(pid),
-    terminatePid: (pid) => {
+    terminatePid: (pid, signal = "SIGTERM") => {
       terminatedPids.push(pid);
+      terminatedSignals.push({ pid, signal });
       runningPids.delete(pid);
     },
     sleep: async () => {},
@@ -848,6 +858,51 @@ describe("AgenC daemon CLI", () => {
       await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
       expect(io.stdoutText()).toContain(`AgenC daemon stopped (pid ${pid})`);
       expect(io.stderrText()).toBe("");
+    } finally {
+      nowSpy.mockRestore();
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("force-stops a daemon that ignores graceful termination", async () => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
+    const pid = 4302;
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    baseHost.runningPids.add(pid);
+    await writeAgenCDaemonPid(pidPath, pid);
+
+    const host: typeof baseHost = {
+      ...baseHost,
+      terminatePid: (targetPid, signal = "SIGTERM") => {
+        baseHost.terminatedPids.push(targetPid);
+        baseHost.terminatedSignals.push({ pid: targetPid, signal });
+        if (signal === "SIGKILL") {
+          baseHost.runningPids.delete(targetPid);
+        }
+      },
+      sleep: async (ms) => {
+        now += ms;
+      },
+    };
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "stop" },
+          { host, io, stopTimeoutMs: 75 },
+        ),
+      ).resolves.toBe(0);
+      expect(host.terminatedSignals).toEqual([
+        { pid, signal: "SIGTERM" },
+        { pid, signal: "SIGKILL" },
+      ]);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+      expect(io.stdoutText()).toContain(`AgenC daemon stopped (pid ${pid})`);
+      expect(io.stderrText()).toContain("forcing stop");
     } finally {
       nowSpy.mockRestore();
       await rm(agencHome, { recursive: true, force: true });
