@@ -120,7 +120,7 @@
     "jsonc-parser": "3.3.1",
     "lodash-es": "^4.17.21",
     "lru-cache": "11.5.1",
-    "marked": "^15.0.12",
+    "marked": "^18.0.5",
     "node-pty": "1.1.0",
     "p-map": "7.0.4",
     "performant-array-to-tree": "^1.11.0",
