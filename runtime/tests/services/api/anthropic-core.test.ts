@@ -35,6 +35,9 @@ const harness = vi.hoisted(() => {
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
     output_tokens: 0,
+    output_tokens_details: {
+      thinking_tokens: 0,
+    },
     server_tool_use: {
       web_search_requests: 0,
       web_fetch_requests: 0,
@@ -575,6 +578,9 @@ describe('provider API core helpers', () => {
       cache_creation_input_tokens: 13,
       cache_read_input_tokens: 11,
       output_tokens: 2,
+      output_tokens_details: {
+        thinking_tokens: 1,
+      },
       server_tool_use: {
         web_search_requests: 1,
         web_fetch_requests: 4,
@@ -593,6 +599,9 @@ describe('provider API core helpers', () => {
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: null,
         output_tokens: 9,
+        output_tokens_details: {
+          thinking_tokens: 6,
+        },
         server_tool_use: {
           web_search_requests: 3,
         },
@@ -607,6 +616,9 @@ describe('provider API core helpers', () => {
       cache_creation_input_tokens: 13,
       cache_read_input_tokens: 11,
       output_tokens: 9,
+      output_tokens_details: {
+        thinking_tokens: 6,
+      },
       server_tool_use: {
         web_search_requests: 3,
         web_fetch_requests: 4,
@@ -627,6 +639,9 @@ describe('provider API core helpers', () => {
       cache_creation_input_tokens: 2,
       cache_read_input_tokens: 3,
       output_tokens: 4,
+      output_tokens_details: {
+        thinking_tokens: 1,
+      },
       server_tool_use: {
         web_search_requests: 5,
         web_fetch_requests: 6,
@@ -646,6 +661,9 @@ describe('provider API core helpers', () => {
       cache_creation_input_tokens: 20,
       cache_read_input_tokens: 30,
       output_tokens: 40,
+      output_tokens_details: {
+        thinking_tokens: 9,
+      },
       server_tool_use: {
         web_search_requests: 50,
         web_fetch_requests: 60,
@@ -665,6 +683,9 @@ describe('provider API core helpers', () => {
       cache_creation_input_tokens: 22,
       cache_read_input_tokens: 33,
       output_tokens: 44,
+      output_tokens_details: {
+        thinking_tokens: 10,
+      },
       server_tool_use: {
         web_search_requests: 55,
         web_fetch_requests: 66,

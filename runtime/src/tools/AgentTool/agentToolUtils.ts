@@ -236,6 +236,11 @@ export const agentToolResultSchema = lazySchema(() =>
     usage: z.object({
       input_tokens: z.number(),
       output_tokens: z.number(),
+      output_tokens_details: z
+        .object({
+          thinking_tokens: z.number(),
+        })
+        .nullable(),
       cache_creation_input_tokens: z.number().nullable(),
       cache_read_input_tokens: z.number().nullable(),
       server_tool_use: z
