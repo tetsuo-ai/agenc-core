@@ -18,14 +18,14 @@ import type {
 } from "../src/session/turn-context.js";
 import type { ToolRegistry } from "../src/tool-registry.js";
 
-export function mkFeatures(): ManagedFeatures {
+function mkFeatures(): ManagedFeatures {
   return {
     appsEnabledForAuth: () => false,
     useLegacyLandlock: () => false,
   };
 }
 
-export function mkConfig(): Config {
+function mkConfig(): Config {
   return {
     model: "test-model",
     cwd: "/tmp",
@@ -48,7 +48,7 @@ export function mkConfig(): Config {
   };
 }
 
-export function mkModelInfo(overrides?: Partial<ModelInfo>): ModelInfo {
+function mkModelInfo(overrides?: Partial<ModelInfo>): ModelInfo {
   return {
     slug: "test-model",
     effectiveContextWindowPercent: 100,
@@ -97,7 +97,7 @@ export function mkCtx(overrides?: Partial<TurnContext>): TurnContext {
   } as unknown as TurnContext;
 }
 
-export function mkSessionConfiguration(
+function mkSessionConfiguration(
   overrides?: Partial<SessionConfiguration>,
 ): SessionConfiguration {
   const base: SessionConfiguration = {
@@ -167,7 +167,7 @@ export function mkProvider(
   } as LLMProvider;
 }
 
-export function mkRegistry(): ToolRegistry {
+function mkRegistry(): ToolRegistry {
   return {
     tools: [],
     toLLMTools: () => [],

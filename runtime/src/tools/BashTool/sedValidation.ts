@@ -39,9 +39,8 @@ function validateFlagsAgainstAllowlist(
  * Allows: sed -n 'N' | sed -n 'N,M' with optional -E, -r, -z flags
  * Allows semicolon-separated print commands like: sed -n '1p;2p;3p'
  * File arguments are ALLOWED for this pattern
- * @internal Exported for testing
  */
-export function isLinePrintingCommand(
+function isLinePrintingCommand(
   command: string,
   expressions: string[],
 ): boolean {
@@ -123,9 +122,8 @@ export function isLinePrintingCommand(
  * - Np (print line N, where N is digits)
  * - N,Mp (print lines N through M)
  * Anything else (including w, W, e, E commands) is rejected.
- * @internal Exported for testing
  */
-export function isPrintCommand(cmd: string): boolean {
+function isPrintCommand(cmd: string): boolean {
   if (!cmd) return false
   // Single strict regex that only matches allowed print commands
   // ^(?:\d+|\d+,\d+)?p$ matches: p, 1p, 123p, 1,5p, 10,200p
@@ -302,9 +300,8 @@ export function sedCommandIsAllowedByAllowlist(
 
 /**
  * Check if a sed command has file arguments (not just stdin)
- * @internal Exported for testing
  */
-export function hasFileArgs(command: string): boolean {
+function hasFileArgs(command: string): boolean {
   const sedMatch = command.match(/^\s*sed\s+/)
   if (!sedMatch) return false
 
@@ -383,9 +380,8 @@ export function hasFileArgs(command: string): boolean {
  * @param command Full sed command
  * @returns Array of sed expressions to check for dangerous operations
  * @throws Error if parsing fails
- * @internal Exported for testing
  */
-export function extractSedExpressions(command: string): string[] {
+function extractSedExpressions(command: string): string[] {
   const expressions: string[] = []
 
   // Calculate withoutSed by trimming off the first N characters (removing 'sed ')
