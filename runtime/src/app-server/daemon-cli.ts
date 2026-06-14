@@ -129,6 +129,7 @@ const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
 const AGENC_DAEMON_LOG_FILENAME = "daemon.log";
+const AGENC_DAEMON_FORCE_STOP_GRACE_MS = 2_000;
 
 /**
  * Env override (megabytes) for the detached daemon's V8 old-space cap, and the
@@ -211,7 +212,7 @@ export interface AgenCDaemonCliHost {
   readonly pid: number;
   spawnDetachedDaemon(env: NodeJS.ProcessEnv): number;
   isPidRunning(pid: number): boolean;
-  terminatePid(pid: number): void;
+  terminatePid(pid: number, signal?: NodeJS.Signals): void;
   sleep(ms: number): Promise<void>;
 }
 
@@ -610,14 +611,25 @@ async function stopAgenCDaemon(
     return 0;
   }
 
-  host.terminatePid(pid);
+  host.terminatePid(pid, "SIGTERM");
   const stopped = await waitForPidExit(host, pid, timeoutMs);
   if (!stopped) {
-    io.stderr.write(`agenc: daemon did not stop before timeout (pid ${pid})\n`);
-    return 1;
+    io.stderr.write(
+      `agenc: daemon did not stop gracefully before timeout (pid ${pid}); forcing stop\n`,
+    );
+    host.terminatePid(pid, "SIGKILL");
+    const forceStopped = await waitForPidExit(
+      host,
+      pid,
+      AGENC_DAEMON_FORCE_STOP_GRACE_MS,
+    );
+    if (!forceStopped) {
+      io.stderr.write(`agenc: daemon did not stop before timeout (pid ${pid})\n`);
+      return 1;
+    }
   }
 
-  await removeAgenCDaemonPid(pidPath);
+  await removeAgenCDaemonPid(pidPath, pid);
   io.stdout.write(`AgenC daemon stopped (pid ${pid})\n`);
   return 0;
 }
@@ -2713,8 +2725,8 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
         return false;
       }
     },
-    terminatePid: (pid) => {
-      process.kill(pid, "SIGTERM");
+    terminatePid: (pid, signal = "SIGTERM") => {
+      process.kill(pid, signal);
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };

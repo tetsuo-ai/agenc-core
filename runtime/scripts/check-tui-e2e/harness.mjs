@@ -39,6 +39,36 @@ const require = createRequire(path.join(RUNTIME_DIR, "package.json"));
 const pty = require("node-pty");
 
 const TRUST_FILE = path.join(homedir(), ".agenc", "trusted-projects.json");
+const TEMP_HOME_DAEMON_START_ATTEMPTS = 3;
+const TEMP_HOME_DAEMON_READY_TIMEOUT_MS = 20_000;
+
+function randomTempDaemonWebSocketPort() {
+  return 17_766 + Math.floor(Math.random() * 10_000);
+}
+
+function tempDaemonEnv(home, wsPort) {
+  return {
+    ...process.env,
+    HOME: home,
+    AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
+  };
+}
+
+async function waitForTempDaemonReady(env, timeoutMs = TEMP_HOME_DAEMON_READY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = spawnSync(
+      process.execPath,
+      [BIN_AGENC, "daemon", "status"],
+      { encoding: "utf8", env, timeout: 5_000 },
+    );
+    if (status.status === 0 && /\brunning\b/.test(status.stdout)) {
+      return true;
+    }
+    await sleep(200);
+  }
+  return false;
+}
 
 /**
  * Ensure the given absolute path is in `~/.agenc/trusted-projects.json`. The
@@ -125,33 +155,43 @@ export async function createTempHome() {
       await copyFile(source, path.join(agencDir, name));
     }
   }
-  // Pre-start the daemon and wait for the Unix socket to bind. Without
-  // this, the spawned agenc CLI tries to connect before the daemon has
-  // finished binding (~5s in a fresh HOME) and dies with ENOENT.
+  // Pre-start the daemon and wait for status to report running. Without
+  // this, the spawned agenc CLI can connect before the daemon has finished
+  // writing its cookie/socket readiness markers and fail autostart.
   //
   // The daemon also binds a WebSocket on AGENC_DAEMON_WEBSOCKET_PORT
   // (default 7766) for portal/IDE clients. The user's main daemon is
   // already on 7766, so each temp HOME daemon must use a different
   // port. Random in 17766–27765 to avoid collisions with each other
   // and with anything else on the dev box.
-  const wsPort = 17_766 + Math.floor(Math.random() * 10_000);
-  const daemonEnv = {
-    ...process.env,
-    HOME: home,
-    AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
-  };
-  spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "start"],
-    { encoding: "utf8", env: daemonEnv, timeout: 30_000 },
-  );
-  const socketPath = path.join(agencDir, "daemon.sock");
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    if (existsSync(socketPath)) break;
-    await new Promise((r) => setTimeout(r, 200));
+  let lastStart = null;
+  for (let attempt = 1; attempt <= TEMP_HOME_DAEMON_START_ATTEMPTS; attempt += 1) {
+    const wsPort = randomTempDaemonWebSocketPort();
+    const daemonEnv = tempDaemonEnv(home, wsPort);
+    lastStart = spawnSync(
+      process.execPath,
+      [BIN_AGENC, "daemon", "start"],
+      { encoding: "utf8", env: daemonEnv, timeout: 30_000 },
+    );
+    if (await waitForTempDaemonReady(daemonEnv)) {
+      return { home, wsPort };
+    }
+    spawnSync(
+      process.execPath,
+      [BIN_AGENC, "daemon", "stop"],
+      { encoding: "utf8", env: daemonEnv, timeout: 10_000 },
+    );
+    await rm(path.join(agencDir, "daemon.pid"), { force: true });
+    await rm(path.join(agencDir, "daemon.sock"), { force: true });
   }
-  return { home, wsPort };
+  throw new Error(
+    [
+      "temp HOME daemon did not become ready",
+      `start status: ${lastStart?.status ?? "unknown"}`,
+      `stdout: ${lastStart?.stdout ?? ""}`,
+      `stderr: ${lastStart?.stderr ?? ""}`,
+    ].join("\n"),
+  );
 }
 
 /**
