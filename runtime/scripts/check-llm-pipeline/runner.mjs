@@ -8,31 +8,35 @@
  * delivered first, tool-call payloads have the expected structure,
  * token tracking fires, and compaction is wired correctly.
  *
- * Architecture: spawn a fresh `agenc -p '<prompt>'` (one-shot daemon
- * agent), wait for completion, then parse the rollout file the daemon
- * wrote to `~/.agenc/projects/<project>/sessions/<sid>/rollout-*.jsonl`.
+ * Architecture: start a local OpenAI-compatible mock model server,
+ * spawn a fresh `agenc -p '<prompt>'` (one-shot daemon agent) against
+ * an isolated HOME/AGENC_HOME, wait for completion, then parse the
+ * rollout file the daemon wrote to
+ * `~/.agenc/projects/<project>/sessions/<sid>/rollout-*.jsonl`.
  * The rollout is the daemon's authoritative record of every event in
  * the conversation, including tool calls with their full id/name/
- * arguments shape and the assembled message order. Pure offline
- * inspection — no PTY required.
- *
- * Why not vllm logs? VLLM's stdout only logs HTTP status (it
- * intentionally doesn't capture request bodies for privacy). The
- * daemon-side rollout has the same data the daemon sent to vllm,
- * just one layer up.
+ * arguments shape and the assembled message order.
  */
 import { mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  MOCK_MODEL,
+  buildMockProviderEnv,
+  startMockModelServer,
+} from "../local-openai-compatible-mock.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
-const PROJECTS_DIR = path.join(homedir(), ".agenc", "projects");
-const TRUST_FILE = path.join(homedir(), ".agenc", "trusted-projects.json");
+let pipelineHome = homedir();
+let agencHome = path.join(pipelineHome, ".agenc");
+let projectsDir = path.join(agencHome, "projects");
+let trustFile = path.join(agencHome, "trusted-projects.json");
 let pipelineCwd = process.cwd();
+let runnerEnv = process.env;
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -46,11 +50,26 @@ const color = (c, s) => (process.stdout.isTTY ? `${COLORS[c]}${s}${COLORS.reset}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function configurePipelineHome(home) {
+  pipelineHome = home;
+  agencHome = path.join(home, ".agenc");
+  projectsDir = path.join(agencHome, "projects");
+  trustFile = path.join(agencHome, "trusted-projects.json");
+}
+
+function buildRunnerEnv(baseUrl) {
+  return buildMockProviderEnv(baseUrl, {
+    ...process.env,
+    HOME: pipelineHome,
+    AGENC_HOME: agencHome,
+  });
+}
+
 async function ensureProjectTrusted(projectPath) {
-  await mkdir(path.dirname(TRUST_FILE), { recursive: true });
+  await mkdir(path.dirname(trustFile), { recursive: true });
   let trust = { version: 1, trustedProjects: [] };
   try {
-    const raw = await readFile(TRUST_FILE, "utf8");
+    const raw = await readFile(trustFile, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && Array.isArray(parsed.trustedProjects)) {
       trust = parsed;
@@ -79,7 +98,7 @@ async function ensureProjectTrusted(projectPath) {
     }
   }
   if (mutated) {
-    await writeFile(TRUST_FILE, JSON.stringify(trust, null, 2), "utf8");
+    await writeFile(trustFile, JSON.stringify(trust, null, 2), "utf8");
   }
 }
 
@@ -100,7 +119,7 @@ async function runOneShot(prompt, { yolo = false, timeoutMs = 120_000 } = {}) {
     args.push("-p", prompt);
     const child = spawn(process.execPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: runnerEnv,
       cwd: pipelineCwd,
     });
     let stdout = "";
@@ -125,9 +144,9 @@ async function readMostRecentRollout({ sinceMs = 30_000 } = {}) {
   let newest = null;
   let newestMtime = 0;
   // Walk projects → sessions → rollout-*.jsonl.
-  const projects = await readdir(PROJECTS_DIR);
+  const projects = await readdir(projectsDir);
   for (const proj of projects) {
-    const sessionsDir = path.join(PROJECTS_DIR, proj, "sessions");
+    const sessionsDir = path.join(projectsDir, proj, "sessions");
     let sessions;
     try {
       sessions = await readdir(sessionsDir);
@@ -163,6 +182,26 @@ async function readMostRecentRollout({ sinceMs = 30_000 } = {}) {
   const raw = await readFile(newest, "utf8");
   const lines = raw.split("\n").filter((l) => l.trim().length > 0);
   return { path: newest, items: lines.map((l) => JSON.parse(l)) };
+}
+
+async function stopPipelineDaemon() {
+  await new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN_AGENC, "daemon", "stop"], {
+      stdio: "ignore",
+      env: runnerEnv,
+      cwd: pipelineCwd,
+    });
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      resolve();
+    }, 10_000);
+    const done = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    child.on("close", done);
+    child.on("error", done);
+  });
 }
 
 /* -------------------------------------------------------------------- */
@@ -212,11 +251,7 @@ scenarios.push({
     const { items } = await readMostRecentRollout();
     const turnIdx = items.findIndex((i) => i.type === "turn_context");
     const userIdx = items.findIndex(
-      (i) =>
-        (i.type === "event_msg" &&
-          i.payload?.msg?.type === "user_message") ||
-        (i.type === "response_item" &&
-          i.payload?.role === "user"),
+      (i) => i.type === "response_item" && i.payload?.role === "user",
     );
     if (turnIdx === -1) {
       throw new Error("rollout has no turn_context entry");
@@ -399,26 +434,36 @@ scenarios.push({
 /* -------------------------------------------------------------------- */
 
 async function main() {
+  const mockServer = await startMockModelServer();
+  const isolatedHome = await mkdtemp(path.join(tmpdir(), "agenc-llm-pipeline-home-"));
+  configurePipelineHome(isolatedHome);
+  runnerEnv = buildRunnerEnv(mockServer.baseUrl);
   pipelineCwd = await preparePipelineWorkspace();
   console.log(color("bold", `agenc LLM pipeline gate (${scenarios.length} scenarios)`));
   console.log(color("dim", `  cwd: ${pipelineCwd}`));
+  console.log(color("dim", `  model: openai-compatible:${MOCK_MODEL} (${mockServer.baseUrl})`));
   console.log("");
   let passed = 0;
   const failed = [];
-  for (const sc of scenarios) {
-    process.stdout.write(`  ${color("dim", "→")} ${sc.name} … `);
-    const startedAt = Date.now();
-    try {
-      await sc.run();
-      const dur = Date.now() - startedAt;
-      passed += 1;
-      console.log(`${color("green", "PASS")} ${color("dim", `(${dur}ms)`)}`);
-    } catch (error) {
-      const dur = Date.now() - startedAt;
-      console.log(`${color("red", "FAIL")} ${color("dim", `(${dur}ms)`)}`);
-      console.log(`      ${color("red", "✗")} ${error.message}`);
-      failed.push({ name: sc.name, error });
+  try {
+    for (const sc of scenarios) {
+      process.stdout.write(`  ${color("dim", "→")} ${sc.name} … `);
+      const startedAt = Date.now();
+      try {
+        await sc.run();
+        const dur = Date.now() - startedAt;
+        passed += 1;
+        console.log(`${color("green", "PASS")} ${color("dim", `(${dur}ms)`)}`);
+      } catch (error) {
+        const dur = Date.now() - startedAt;
+        console.log(`${color("red", "FAIL")} ${color("dim", `(${dur}ms)`)}`);
+        console.log(`      ${color("red", "✗")} ${error.message}`);
+        failed.push({ name: sc.name, error });
+      }
     }
+  } finally {
+    await stopPipelineDaemon();
+    await mockServer.close();
   }
   console.log("");
   if (failed.length === 0) {

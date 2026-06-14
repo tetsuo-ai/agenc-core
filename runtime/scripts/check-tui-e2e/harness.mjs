@@ -107,7 +107,7 @@ async function ensureProjectTrusted(projectPath) {
  * fresh), permission policy, session state. Anything else should be
  * stateless across daemon spawns.
  */
-async function createTempHome() {
+export async function createTempHome() {
   const home = await mkdtemp(path.join(tmpdir(), "agenc-tui-e2e-home-"));
   const agencDir = path.join(home, ".agenc");
   await mkdir(agencDir, { recursive: true });
@@ -159,7 +159,7 @@ async function createTempHome() {
  * directory tree. Best-effort; failures are logged but don't block the
  * scenario teardown.
  */
-async function teardownTempHome(home) {
+export async function teardownTempHome(home) {
   if (!home) return;
   try {
     spawnSync(
@@ -175,6 +175,18 @@ async function teardownTempHome(home) {
   } catch {
     // best-effort
   }
+}
+
+export async function trustProjectForHome(home, projectPath) {
+  const tempTrust = path.join(home, ".agenc", "trusted-projects.json");
+  await writeFile(
+    tempTrust,
+    JSON.stringify({
+      version: 1,
+      trustedProjects: [{ path: projectPath, trustedAt: new Date().toISOString() }],
+    }, null, 2),
+    "utf8",
+  );
 }
 
 async function walkFiles(dir) {
@@ -228,6 +240,8 @@ async function readRolloutItemsForHome(home) {
 // not reply, the renderer hangs waiting on those.
 const XTVERSION_REPLY = "\x1bP>|xterm 370\x1b\\";
 const DA1_REPLY = "\x1b[?65;6;9;15;18;21;22;28c";
+const XTVERSION_QUERY = "\x1b[>0q";
+const DA1_QUERY = "\x1b[c";
 
 // Crash patterns that make a scenario fail regardless of explicit assertions.
 // Anything that looks like a Node.js uncaught exception or unresolved
@@ -545,14 +559,18 @@ export class TuiSession {
     });
     this.term.onData((data) => {
       this.buffer += data;
+      if (data.includes(XTVERSION_QUERY)) {
+        this.term.write(XTVERSION_REPLY);
+      }
+      if (data.includes(DA1_QUERY)) {
+        this.term.write(DA1_REPLY);
+      }
     });
     this.term.onExit(({ exitCode, signal }) => {
       this.exited = true;
       this.exitInfo = { exitCode, signal };
     });
     await sleep(firstPaintMs);
-    this.term.write(XTVERSION_REPLY);
-    this.term.write(DA1_REPLY);
     await sleep(postReplyMs);
   }
 

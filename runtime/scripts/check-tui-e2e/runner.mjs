@@ -10,16 +10,59 @@
  * temp-HOME isolation and enable parallel execution.
  */
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { TuiSession } from "./harness.mjs";
+import {
+  MOCK_MODEL,
+  buildMockProviderEnv,
+  startMockModelServer,
+} from "../local-openai-compatible-mock.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.join(SCRIPT_DIR, "scenarios");
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
+const DEFAULT_DAEMON_SOCKET = path.join(
+  process.env.AGENC_HOME ?? path.join(homedir(), ".agenc"),
+  "daemon.sock",
+);
 const DEFAULT_TIMEOUT_MS = 60_000;
+const PROVIDER_ENV_KEYS = [
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+  "AGENC_XAI_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_MODEL",
+  "AGENC_PROVIDER",
+  "AGENC_MODEL",
+  "OPENAI_COMPATIBLE_MODEL",
+  "OPENAI_COMPATIBLE_BASE_URL",
+  "OPENAI_COMPATIBLE_API_KEY",
+  "API_TIMEOUT_MS",
+  "AGENC_AUTH_MANAGED_KEYS_ENABLED",
+];
+
+function applyProcessEnv(nextEnv) {
+  for (const key of PROVIDER_ENV_KEYS) {
+    if (!(key in nextEnv)) delete process.env[key];
+  }
+  Object.assign(process.env, nextEnv);
+}
+
+function restoreProcessEnv(originalEnv) {
+  for (const key of PROVIDER_ENV_KEYS) {
+    if (key in originalEnv) {
+      process.env[key] = originalEnv[key];
+    } else {
+      delete process.env[key];
+    }
+  }
+}
 
 /**
  * Restart the user's daemon so each gate run starts from a clean session
@@ -29,12 +72,31 @@ const DEFAULT_TIMEOUT_MS = 60_000;
  * the daemon's session/permission state has drifted.
  */
 function restartDaemon() {
+  spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "stop"],
+    { encoding: "utf8", timeout: 15_000 },
+  );
+  let stopped = false;
+  for (let i = 0; i < 60; i += 1) {
+    if (!isDefaultDaemonAlive()) {
+      stopped = true;
+      break;
+    }
+    spawnSync("sleep", ["0.25"]);
+  }
+  if (!stopped) return false;
   const result = spawnSync(
     process.execPath,
-    [BIN_AGENC, "daemon", "restart"],
+    [BIN_AGENC, "daemon", "start"],
     { encoding: "utf8", timeout: 30_000 },
   );
-  return result.status === 0;
+  if (result.status !== 0 && !isDefaultDaemonAlive()) return false;
+  for (let i = 0; i < 60; i += 1) {
+    if (isDefaultDaemonAlive()) return true;
+    spawnSync("sleep", ["0.25"]);
+  }
+  return false;
 }
 
 /**
@@ -51,7 +113,7 @@ function isDefaultDaemonAlive() {
     [BIN_AGENC, "daemon", "status"],
     { encoding: "utf8", timeout: 5_000 },
   );
-  return result.status === 0;
+  return result.status === 0 && existsSync(DEFAULT_DAEMON_SOCKET);
 }
 
 function ensureDefaultDaemon() {
@@ -201,6 +263,9 @@ async function dumpFailureLog(scenario, result) {
 }
 
 async function main() {
+  const originalEnv = { ...process.env };
+  const mockServer = await startMockModelServer();
+  applyProcessEnv(buildMockProviderEnv(mockServer.baseUrl, process.env));
   let names = await discoverScenarios();
   // Optional filter: --filter <substr>  or  --range <lo>-<hi>
   const argv = process.argv.slice(2);
@@ -221,10 +286,15 @@ async function main() {
   }
   if (names.length === 0) {
     console.log(color("yellow", "no scenarios found under scenarios/"));
+    restoreProcessEnv(originalEnv);
+    await mockServer.close();
     return 0;
   }
   console.log(
     color("bold", `agenc TUI e2e gate (${names.length} scenarios)`),
+  );
+  console.log(
+    color("dim", `  model: openai-compatible:${MOCK_MODEL} (${mockServer.baseUrl})`),
   );
   process.stdout.write(color("dim", "  restarting daemon for clean baseline ... "));
   const restarted = restartDaemon();
@@ -234,54 +304,71 @@ async function main() {
   const failed = [];
   const skipped = [];
   let passed = 0;
-  for (const name of names) {
-    const scenario = await loadScenario(name);
-    process.stdout.write(`  ${color("dim", "→")} ${name} … `);
-    if (scenario.meta.skip) {
-      console.log(
-        `${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`,
-      );
-      skipped.push({ name, reason: scenario.meta.skip });
-      continue;
-    }
-    // Scenarios that don't isolate via temp HOME share the user's default
-    // daemon. If a prior scenario killed it (autostart hiccup, lock
-    // contention, or a temp-HOME teardown that mis-targeted the default
-    // socket), respawn before continuing. useTempHome scenarios spawn
-    // their own daemon and must not be touched here.
-    if (scenario.meta.useTempHome !== true && !ensureDefaultDaemon()) {
-      console.log(
-        `${color("red", "FAIL")} ${color("dim", "(default daemon not reachable; could not respawn)")}`,
-      );
-      failed.push({
-        name,
-        error: new Error("default daemon not reachable; respawn failed"),
-        logPath: null,
-      });
-      continue;
-    }
-    const result = await runScenario(scenario);
-    if (result.ok) {
-      passed += 1;
-      console.log(
-        `${color("green", "PASS")} ${color("dim", `(${result.durationMs}ms)`)}`,
-      );
-      if (process.env.TUI_E2E_DEBUG === "1" && result.capturedOutput) {
-        const logPath = `/tmp/tui-e2e-pass-${name.replace(/\.mjs$/, "")}.log`;
-        await writeFile(logPath, result.capturedOutput, "utf8");
-        console.log(`      ${color("dim", `debug log: ${logPath}`)}`);
+  try {
+    for (const name of names) {
+      const scenario = await loadScenario(name);
+      process.stdout.write(`  ${color("dim", "→")} ${name} … `);
+      if (scenario.meta.skip) {
+        console.log(
+          `${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`,
+        );
+        skipped.push({ name, reason: scenario.meta.skip });
+        continue;
       }
-    } else {
-      const logPath = await dumpFailureLog(scenario, result);
-      console.log(
-        `${color("red", "FAIL")} ${color("dim", `(${result.durationMs}ms)`)}`,
-      );
-      console.log(
-        `      ${color("red", "✗")} ${result.error?.message ?? String(result.error)}`,
-      );
-      console.log(`      ${color("dim", `log: ${logPath}`)}`);
-      failed.push({ name, error: result.error, logPath });
+      // Scenarios that don't isolate via temp HOME share the user's default
+      // daemon. If a prior scenario killed it (autostart hiccup, lock
+      // contention, or a temp-HOME teardown that mis-targeted the default
+      // socket), respawn before continuing. useTempHome scenarios spawn
+      // their own daemon and must not be touched here.
+      if (scenario.meta.restartDaemonBefore === true && !restartDaemon()) {
+        console.log(
+          `${color("red", "FAIL")} ${color("dim", "(default daemon not reachable after restart)")}`,
+        );
+        failed.push({
+          name,
+          error: new Error("default daemon not reachable after restart"),
+          logPath: null,
+        });
+        continue;
+      }
+      if (scenario.meta.useTempHome !== true && !ensureDefaultDaemon()) {
+        console.log(
+          `${color("red", "FAIL")} ${color("dim", "(default daemon not reachable; could not respawn)")}`,
+        );
+        failed.push({
+          name,
+          error: new Error("default daemon not reachable; respawn failed"),
+          logPath: null,
+        });
+        continue;
+      }
+      const result = await runScenario(scenario);
+      if (result.ok) {
+        passed += 1;
+        console.log(
+          `${color("green", "PASS")} ${color("dim", `(${result.durationMs}ms)`)}`,
+        );
+        if (process.env.TUI_E2E_DEBUG === "1" && result.capturedOutput) {
+          const logPath = `/tmp/tui-e2e-pass-${name.replace(/\.mjs$/, "")}.log`;
+          await writeFile(logPath, result.capturedOutput, "utf8");
+          console.log(`      ${color("dim", `debug log: ${logPath}`)}`);
+        }
+      } else {
+        const logPath = await dumpFailureLog(scenario, result);
+        console.log(
+          `${color("red", "FAIL")} ${color("dim", `(${result.durationMs}ms)`)}`,
+        );
+        console.log(
+          `      ${color("red", "✗")} ${result.error?.message ?? String(result.error)}`,
+        );
+        console.log(`      ${color("dim", `log: ${logPath}`)}`);
+        failed.push({ name, error: result.error, logPath });
+      }
     }
+  } finally {
+    restoreProcessEnv(originalEnv);
+    restartDaemon();
+    await mockServer.close();
   }
 
   console.log("");
