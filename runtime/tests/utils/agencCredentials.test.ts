@@ -1,8 +1,6 @@
-/**
- * These tests avoid static imports so Bun can mock secureStorage before
- * agencCredentials is first loaded.
- */
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+const secureStorageModulePath = '../../src/utils/secureStorage/index.js'
 
 function makeJwt(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' }))
@@ -11,13 +9,20 @@ function makeJwt(payload: Record<string, unknown>): string {
   return `${header}.${body}.signature`
 }
 
+async function importFreshAgencCredentialsModule() {
+  vi.resetModules()
+  return import('../../src/utils/agencCredentials.ts')
+}
+
 describe('agencCredentials', () => {
   const originalSimple = process.env.AGENC_SIMPLE
   const originalCodeKey = process.env.AGENC_API_KEY
   const originalFetch = globalThis.fetch
 
   afterEach(() => {
-    mock.restore()
+    vi.doUnmock(secureStorageModulePath)
+    vi.clearAllMocks()
+    vi.resetModules()
     globalThis.fetch = originalFetch
 
     if (originalSimple === undefined) {
@@ -36,10 +41,7 @@ describe('agencCredentials', () => {
   test('save returns failure in bare mode', async () => {
     process.env.AGENC_SIMPLE = '1'
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
-    const { saveAgencCredentials } = await import(
-      '../../src/utils/agencCredentials.ts?save-bare-mode'
-    )
+    const { saveAgencCredentials } = await importFreshAgencCredentialsModule()
 
     const result = saveAgencCredentials({
       accessToken: 'token',
@@ -53,7 +55,7 @@ describe('agencCredentials', () => {
   test('saveAgencCredentials refuses plaintext fallback when native secure storage is unavailable', async () => {
     delete process.env.AGENC_SIMPLE
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: (options?: { allowPlainTextFallback?: boolean }) => {
         expect(options?.allowPlainTextFallback).toBe(false)
         return {
@@ -69,10 +71,7 @@ describe('agencCredentials', () => {
       },
     }))
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
-    const { saveAgencCredentials } = await import(
-      '../../src/utils/agencCredentials.ts?save-no-plaintext-fallback'
-    )
+    const { saveAgencCredentials } = await importFreshAgencCredentialsModule()
 
     const result = saveAgencCredentials({
       accessToken: 'token',
@@ -110,7 +109,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -121,7 +120,7 @@ describe('agencCredentials', () => {
       }),
     }))
 
-    globalThis.fetch = mock(
+    globalThis.fetch = vi.fn(
       async (_input, init) => {
         const bodyText =
           typeof init?.body === 'string'
@@ -163,9 +162,8 @@ describe('agencCredentials', () => {
       },
     ) as unknown as typeof fetch
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshAgencAccessTokenIfNeeded, readAgencCredentials } =
-      await import('../../src/utils/agencCredentials.ts?refresh-success')
+      await importFreshAgencCredentialsModule()
 
     const result = await refreshAgencAccessTokenIfNeeded()
     expect(result.refreshed).toBe(true)
@@ -194,7 +192,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -206,7 +204,7 @@ describe('agencCredentials', () => {
     }))
 
     let refreshAttempts = 0
-    globalThis.fetch = mock(async () => {
+    globalThis.fetch = vi.fn(async () => {
       refreshAttempts += 1
       return new Response(
         JSON.stringify({
@@ -224,9 +222,8 @@ describe('agencCredentials', () => {
       )
     }) as unknown as typeof fetch
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshAgencAccessTokenIfNeeded, readAgencCredentials } =
-      await import('../../src/utils/agencCredentials.ts?refresh-cooldown')
+      await importFreshAgencCredentialsModule()
 
     await expect(refreshAgencAccessTokenIfNeeded()).rejects.toThrow(
       'Agenc token refresh failed (invalid_grant): refresh token expired',
@@ -269,7 +266,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -280,7 +277,7 @@ describe('agencCredentials', () => {
       }),
     }))
 
-    globalThis.fetch = mock(
+    globalThis.fetch = vi.fn(
       async (_input, init) => {
         const bodyText =
           typeof init?.body === 'string'
@@ -311,9 +308,8 @@ describe('agencCredentials', () => {
       },
     ) as unknown as typeof fetch
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshAgencAccessTokenIfNeeded, readAgencCredentials } =
-      await import('../../src/utils/agencCredentials.ts?refresh-drop-stale-api-key')
+      await importFreshAgencCredentialsModule()
 
     const result = await refreshAgencAccessTokenIfNeeded()
     expect(result.refreshed).toBe(true)
@@ -352,7 +348,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -369,7 +365,7 @@ describe('agencCredentials', () => {
       releaseRefresh = resolve
     })
 
-    globalThis.fetch = mock(async (_input, init) => {
+    globalThis.fetch = vi.fn(async (_input, init) => {
       const bodyText =
         typeof init?.body === 'string'
           ? init.body
@@ -408,10 +404,8 @@ describe('agencCredentials', () => {
       )
     }) as unknown as typeof fetch
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshAgencAccessTokenIfNeeded } = await import(
-      '../../src/utils/agencCredentials.ts?refresh-dedupe'
-    )
+    const { refreshAgencAccessTokenIfNeeded } =
+      await importFreshAgencCredentialsModule()
 
     const firstRefresh = refreshAgencAccessTokenIfNeeded()
     const secondRefresh = refreshAgencAccessTokenIfNeeded()
@@ -440,7 +434,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -451,10 +445,8 @@ describe('agencCredentials', () => {
       }),
     }))
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
-    const { readAgencCredentials, saveAgencCredentials } = await import(
-      '../../src/utils/agencCredentials.ts?preserve-profile-id'
-    )
+    const { readAgencCredentials, saveAgencCredentials } =
+      await importFreshAgencCredentialsModule()
 
     const saved = saveAgencCredentials({
       accessToken: 'access-new',
@@ -477,7 +469,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -488,11 +480,10 @@ describe('agencCredentials', () => {
       }),
     }))
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
     const {
       attachAgencProfileIdToStoredCredentials,
       readAgencCredentials,
-    } = await import('../../src/utils/agencCredentials.ts?attach-profile-id')
+    } = await importFreshAgencCredentialsModule()
 
     const result =
       attachAgencProfileIdToStoredCredentials('profile_agenc_oauth')
@@ -518,7 +509,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => {
           throw new Error(
@@ -533,10 +524,8 @@ describe('agencCredentials', () => {
       }),
     }))
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshAgencAccessTokenIfNeeded } = await import(
-      '../../src/utils/agencCredentials.ts?refresh-async-read'
-    )
+    const { refreshAgencAccessTokenIfNeeded } =
+      await importFreshAgencCredentialsModule()
 
     const result = await refreshAgencAccessTokenIfNeeded()
     expect(result.refreshed).toBe(false)
@@ -560,7 +549,7 @@ describe('agencCredentials', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => storageState,
         readAsync: async () => storageState,
@@ -572,7 +561,7 @@ describe('agencCredentials', () => {
     }))
 
     let refreshAttempts = 0
-    globalThis.fetch = mock(async () => {
+    globalThis.fetch = vi.fn(async () => {
       refreshAttempts += 1
       return new Response(
         JSON.stringify({
@@ -590,10 +579,8 @@ describe('agencCredentials', () => {
       )
     }) as unknown as typeof fetch
 
-    // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshAgencAccessTokenIfNeeded } = await import(
-      '../../src/utils/agencCredentials.ts?refresh-memory-cooldown'
-    )
+    const { refreshAgencAccessTokenIfNeeded } =
+      await importFreshAgencCredentialsModule()
 
     await expect(refreshAgencAccessTokenIfNeeded()).rejects.toThrow(
       'Agenc token refresh failed (invalid_grant): refresh token expired',
