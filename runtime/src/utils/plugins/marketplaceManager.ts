@@ -2003,19 +2003,21 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
     // Remove related plugins from enabledPlugins (format: "plugin@marketplace")
     if (settings.enabledPlugins) {
       const marketplaceSuffix = `@${name}`
-      const updatedPlugins = { ...settings.enabledPlugins }
+      const updatedPlugins: Partial<
+        NonNullable<SettingsJson['enabledPlugins']>
+      > = { ...settings.enabledPlugins }
       let removedPlugins = false
 
       for (const pluginId in updatedPlugins) {
         if (pluginId.endsWith(marketplaceSuffix)) {
-          // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
           updatedPlugins[pluginId] = undefined
           removedPlugins = true
         }
       }
 
       if (removedPlugins) {
-        updates.enabledPlugins = updatedPlugins
+        updates.enabledPlugins =
+          updatedPlugins as SettingsJson['enabledPlugins']
         needsUpdate = true
       }
     }
