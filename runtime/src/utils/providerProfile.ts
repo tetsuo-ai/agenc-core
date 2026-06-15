@@ -375,7 +375,7 @@ export function buildOpenAIProfileEnv(options: {
   }
 }
 
-export function buildCodexProfileEnv(options: {
+export function buildProviderCodeProfileEnv(options: {
   model?: string | null
   baseUrl?: string | null
   apiKey?: string | null
@@ -486,7 +486,7 @@ export function buildBankrProfileEnv(options: {
   return env
 }
 
-export function buildCodexOAuthProfileEnv(
+export function buildProviderCodeOAuthProfileEnv(
   tokens: {
     accessToken: string
     idToken?: string
@@ -521,7 +521,7 @@ export function createProfileFile(
   }
 }
 
-export function isPersistedCodexOAuthProfile(
+export function isPersistedAgencOAuthProfile(
   persisted: ProfileFile | null,
 ): boolean {
   return (
@@ -530,11 +530,11 @@ export function isPersistedCodexOAuthProfile(
   )
 }
 
-export function clearPersistedCodexOAuthProfile(
+export function clearPersistedAgencOAuthProfile(
   options?: ProfileFileLocation,
 ): string | null {
   const persisted = loadProfileFile(options)
-  if (!isPersistedCodexOAuthProfile(persisted)) {
+  if (!isPersistedAgencOAuthProfile(persisted)) {
     return null
   }
 
@@ -906,11 +906,11 @@ export async function buildLaunchEnv(options: {
     const agencKey =
       sanitizeApiKey(processEnv.AGENC_API_KEY) ||
       sanitizeApiKey(persistedEnv.AGENC_API_KEY)
-    const liveCodexCredentials = resolveProviderCodeApiCredentials(processEnv)
+    const liveProviderCodeCredentials = resolveProviderCodeApiCredentials(processEnv)
     const agencAccountId =
       processEnv.CHATGPT_ACCOUNT_ID ||
       processEnv.AGENC_ACCOUNT_ID ||
-      liveCodexCredentials.accountId ||
+      liveProviderCodeCredentials.accountId ||
       persistedEnv.CHATGPT_ACCOUNT_ID ||
       persistedEnv.AGENC_ACCOUNT_ID
     if (agencKey) {
@@ -1067,13 +1067,13 @@ export async function applySavedProfileToCurrentSession(options: {
 }): Promise<string | null> {
   const processEnv = options.processEnv ?? process.env
   const baseEnv = { ...processEnv }
-  const isCodexOAuthProfile =
+  const isAgencOAuthProfile =
     options.profileFile.profile === 'agenc' &&
     options.profileFile.env.AGENC_CREDENTIAL_SOURCE === 'oauth'
 
   delete baseEnv.AGENC_PROVIDER_PROFILE_ENV_APPLIED
   delete baseEnv.AGENC_PROVIDER_PROFILE_ENV_APPLIED_ID
-  if (isCodexOAuthProfile) {
+  if (isAgencOAuthProfile) {
     delete baseEnv.AGENC_API_KEY
     delete baseEnv.AGENC_ACCOUNT_ID
     delete baseEnv.CHATGPT_ACCOUNT_ID

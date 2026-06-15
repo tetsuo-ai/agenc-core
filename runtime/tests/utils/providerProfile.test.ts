@@ -9,14 +9,14 @@ import {
   applySavedProfileToCurrentSession,
   buildStartupEnvFromProfile,
   buildAtomicChatProfileEnv,
-  buildCodexProfileEnv,
+  buildProviderCodeProfileEnv,
   buildGeminiProfileEnv,
   buildLaunchEnv,
   buildOllamaProfileEnv,
   buildOpenAIProfileEnv,
-  clearPersistedCodexOAuthProfile,
+  clearPersistedAgencOAuthProfile,
   createProfileFile,
-  isPersistedCodexOAuthProfile,
+  isPersistedAgencOAuthProfile,
   maskSecretForDisplay,
   loadProfileFile,
   PROFILE_FILE_NAME,
@@ -47,7 +47,7 @@ async function importFreshProviderProfileModule() {
   return import(`./providerProfile.ts?ts=${nonce}`)
 }
 
-const missingCodexAuthPath = join(tmpdir(), 'agenc-missing-agenc-auth.json')
+const missingAgencAuthPath = join(tmpdir(), 'agenc-missing-agenc-auth.json')
 
 test('matching persisted ollama env is reused for ollama launch', async () => {
   const env = await buildLaunchEnv({
@@ -269,7 +269,7 @@ test('matching persisted agenc env is reused for agenc launch', async () => {
     }),
     goal: 'balanced',
     processEnv: {
-      AGENC_AUTH_JSON_PATH: missingCodexAuthPath,
+      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
     },
   })
 
@@ -289,7 +289,7 @@ test('agenc launch normalizes poisoned persisted base urls', async () => {
     }),
     goal: 'balanced',
     processEnv: {
-      AGENC_AUTH_JSON_PATH: missingCodexAuthPath,
+      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
     },
   })
 
@@ -334,7 +334,7 @@ test('agenc launch ignores placeholder agenc env keys', async () => {
     goal: 'balanced',
     processEnv: {
       AGENC_API_KEY: 'SUA_CHAVE',
-      AGENC_AUTH_JSON_PATH: missingCodexAuthPath,
+      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
     },
   })
 
@@ -386,7 +386,7 @@ test('ollama profiles never persist openai api keys', () => {
 })
 
 test('agenc profiles accept explicit agenc credentials', () => {
-  const env = buildCodexProfileEnv({
+  const env = buildProviderCodeProfileEnv({
     model: 'agencspark',
     apiKey: 'agenc-live',
     processEnv: {
@@ -404,11 +404,11 @@ test('agenc profiles accept explicit agenc credentials', () => {
 })
 
 test('agenc profiles require a chatgpt account id', () => {
-  const env = buildCodexProfileEnv({
+  const env = buildProviderCodeProfileEnv({
     model: 'agencspark',
     apiKey: 'agenc-live',
     processEnv: {
-      AGENC_AUTH_JSON_PATH: missingCodexAuthPath,
+      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
     },
   })
 
@@ -526,8 +526,8 @@ test('saveProfileFile writes a profile that loadProfileFile can read back', () =
   }
 })
 
-test('buildCodexProfileEnv tags OAuth-saved profiles so logout can remove them safely', () => {
-  const env = buildCodexProfileEnv({
+test('buildProviderCodeProfileEnv tags OAuth-saved profiles so logout can remove them safely', () => {
+  const env = buildProviderCodeProfileEnv({
     model: 'agencplan',
     apiKey: makeJwt({
       'https://api.openai.com/auth': {
@@ -551,7 +551,7 @@ test('buildCodexProfileEnv tags OAuth-saved profiles so logout can remove them s
   })
 })
 
-test('clearPersistedCodexOAuthProfile removes only persisted Agenc OAuth profiles', async () => {
+test('clearPersistedAgencOAuthProfile removes only persisted Agenc OAuth profiles', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'agenc-agenc-oauth-profile-'))
 
   try {
@@ -560,9 +560,9 @@ test('clearPersistedCodexOAuthProfile removes only persisted Agenc OAuth profile
     )
     const {
       PROFILE_FILE_NAME,
-      clearPersistedCodexOAuthProfile,
+      clearPersistedAgencOAuthProfile,
       createProfileFile,
-      isPersistedCodexOAuthProfile,
+      isPersistedAgencOAuthProfile,
       loadProfileFile,
       saveProfileFile,
     } = providerProfileModule
@@ -574,9 +574,9 @@ test('clearPersistedCodexOAuthProfile removes only persisted Agenc OAuth profile
     })
     saveProfileFile(oauthProfile, { cwd })
 
-    assert.equal(isPersistedCodexOAuthProfile(loadProfileFile({ cwd })), true)
+    assert.equal(isPersistedAgencOAuthProfile(loadProfileFile({ cwd })), true)
     assert.equal(
-      clearPersistedCodexOAuthProfile({ cwd }),
+      clearPersistedAgencOAuthProfile({ cwd }),
       join(cwd, PROFILE_FILE_NAME),
     )
     assert.equal(loadProfileFile({ cwd }), null)
@@ -589,8 +589,8 @@ test('clearPersistedCodexOAuthProfile removes only persisted Agenc OAuth profile
     })
     saveProfileFile(existingCredentialProfile, { cwd })
 
-    assert.equal(isPersistedCodexOAuthProfile(loadProfileFile({ cwd })), false)
-    assert.equal(clearPersistedCodexOAuthProfile({ cwd }), null)
+    assert.equal(isPersistedAgencOAuthProfile(loadProfileFile({ cwd })), false)
+    assert.equal(clearPersistedAgencOAuthProfile({ cwd }), null)
     assert.deepEqual(loadProfileFile({ cwd }), existingCredentialProfile)
   } finally {
     rmSync(cwd, { recursive: true, force: true })
