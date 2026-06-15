@@ -272,8 +272,6 @@ export default class Ink {
       }
     };
 
-    // @ts-ignore @types/react-reconciler@0.32.3 declares 11 args with transitionCallbacks,
-    // but react-reconciler 0.33.0 source only accepts 10 args (no transitionCallbacks)
     this.container = reconciler.createContainer(
       this.rootNode,
       LegacyRoot,
@@ -860,7 +858,6 @@ export default class Ink {
   }
   pause(): void {
     // Flush pending React updates and render before pausing.
-    // @ts-ignore flushSyncFromReconciler exists in react-reconciler 0.31 but not in @types/react-reconciler
     reconciler.flushSyncFromReconciler();
     this.onRender();
     this.isPaused = true;
@@ -1534,9 +1531,7 @@ export default class Ink {
         </TerminalWriteProvider>
       </App>;
 
-    // @ts-ignore updateContainerSync exists in react-reconciler but not in @types/react-reconciler
     reconciler.updateContainerSync(tree, this.container, null, noop);
-    // @ts-ignore flushSyncWork exists in react-reconciler but not in @types/react-reconciler
     reconciler.flushSyncWork();
     logForDebugging('[Ink:render] updateContainer complete');
   }
@@ -1602,9 +1597,7 @@ export default class Ink {
       this.drainTimer = null;
     }
 
-    // @ts-ignore updateContainerSync exists in react-reconciler but not in @types/react-reconciler
     reconciler.updateContainerSync(null, this.container, null, noop);
-    // @ts-ignore flushSyncWork exists in react-reconciler but not in @types/react-reconciler
     reconciler.flushSyncWork();
     deleteInkInstance(this.options.stdout);
 
