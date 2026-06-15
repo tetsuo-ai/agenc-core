@@ -84,6 +84,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/geminiAuth.test.ts',
   'tests/utils/git.test.ts',
   'tests/utils/githubModelsCredentials.test.ts',
+  'tests/utils/githubModelsCredentials.hydrate.test.ts',
   'tests/utils/gracefulShutdown.test.ts',
   'tests/utils/handlePromptSubmit.test.ts',
   'tests/utils/handlePromptSubmit.vimMode.test.ts',

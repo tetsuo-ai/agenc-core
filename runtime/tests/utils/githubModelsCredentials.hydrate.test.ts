@@ -1,9 +1,20 @@
-/**
- * Hydrate tests live in a separate file with no static import of
- * githubModelsCredentials so Bun's mock.module can replace secureStorage
- * before that module is first loaded.
- */
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+const secureStorageModulePath = '../../src/utils/secureStorage/index.js'
+
+async function importCredentialsModule() {
+  return import('../../src/utils/githubModelsCredentials.ts')
+}
+
+function mockSecureStorageToken(accessToken: string): void {
+  vi.doMock(secureStorageModulePath, () => ({
+    getSecureStorage: () => ({
+      read: () => ({
+        githubModels: { accessToken },
+      }),
+    }),
+  }))
+}
 
 describe('hydrateGithubModelsTokenFromSecureStorage', () => {
   const orig = {
@@ -16,7 +27,8 @@ describe('hydrateGithubModelsTokenFromSecureStorage', () => {
   }
 
   afterEach(() => {
-    mock.restore()
+    vi.doUnmock(secureStorageModulePath)
+    vi.resetModules()
     for (const [k, v] of Object.entries(orig)) {
       if (v === undefined) {
         delete process.env[k as keyof typeof orig]
@@ -32,17 +44,10 @@ describe('hydrateGithubModelsTokenFromSecureStorage', () => {
     delete process.env.GH_TOKEN
     delete process.env.AGENC_SIMPLE
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
-      getSecureStorage: () => ({
-        read: () => ({
-          githubModels: { accessToken: 'stored-secret' },
-        }),
-      }),
-    }))
+    mockSecureStorageToken('stored-secret')
 
-    const { hydrateGithubModelsTokenFromSecureStorage } = await import(
-      '../../src/utils/githubModelsCredentials.ts?hydrate=sets-token'
-    )
+    const { hydrateGithubModelsTokenFromSecureStorage } =
+      await importCredentialsModule()
     hydrateGithubModelsTokenFromSecureStorage()
     expect(process.env.GITHUB_TOKEN).toBe('stored-secret')
     expect(process.env.AGENC_GITHUB_TOKEN_HYDRATED).toBe('1')
@@ -53,17 +58,10 @@ describe('hydrateGithubModelsTokenFromSecureStorage', () => {
     process.env.GITHUB_TOKEN = 'already'
     delete process.env.AGENC_GITHUB_TOKEN_HYDRATED
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
-      getSecureStorage: () => ({
-        read: () => ({
-          githubModels: { accessToken: 'stored-secret' },
-        }),
-      }),
-    }))
+    mockSecureStorageToken('stored-secret')
 
-    const { hydrateGithubModelsTokenFromSecureStorage } = await import(
-      '../../src/utils/githubModelsCredentials.ts?hydrate=preserve-existing'
-    )
+    const { hydrateGithubModelsTokenFromSecureStorage } =
+      await importCredentialsModule()
     hydrateGithubModelsTokenFromSecureStorage()
     expect(process.env.GITHUB_TOKEN).toBe('already')
     expect(process.env.AGENC_GITHUB_TOKEN_HYDRATED).toBeUndefined()
