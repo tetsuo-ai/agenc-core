@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { fileURLToPath } from 'node:url'
 import { extractDraggedFilePaths } from '../../src/utils/dragDropPaths.ts'
 
 function escapeFinderDraggedPath(filePath: string): string {
@@ -10,7 +11,7 @@ function escapeFinderDraggedPath(filePath: string): string {
 
 describe('extractDraggedFilePaths', () => {
   // Paths that exist on any system.
-  const thisFile = import.meta.path
+  const thisFile = fileURLToPath(import.meta.url)
   const packageJson = `${process.cwd()}/package.json`
 
   // Fixtures created synchronously at describe-load time (not in

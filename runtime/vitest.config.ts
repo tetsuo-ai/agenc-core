@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
+import { createScanner, ScriptTarget, SyntaxKind } from 'typescript';
 
 const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
@@ -64,18 +65,53 @@ const movedDonorTestFiles = movedDonorTestRoots
   .flatMap(walkTestFiles)
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
 const convertedMovedDonorTestFiles = new Set([
+  'tests/constants/promptIdentity.test.ts',
+  'tests/utils/agencUiSurfaces.test.ts',
+  'tests/utils/api.test.ts',
   'tests/utils/async-lock.test.ts',
   'tests/utils/async-queue.test.ts',
   'tests/utils/async-rwlock.test.ts',
+  'tests/utils/attachments.extractors.test.ts',
   'tests/utils/behavior-subject.test.ts',
+  'tests/utils/buildConfig.test.ts',
+  'tests/utils/config.showCacheStats.test.ts',
+  'tests/utils/context.test.ts',
   'tests/utils/debug.test.ts',
+  'tests/utils/dragDropPaths.test.ts',
+  'tests/utils/file.test.ts',
+  'tests/utils/geminiAuth.test.ts',
+  'tests/utils/githubModelsCredentials.test.ts',
+  'tests/utils/gracefulShutdown.test.ts',
   'tests/utils/handlePromptSubmit.vimMode.test.ts',
+  'tests/utils/hybridContextStrategy.test.ts',
   'tests/utils/memory/memory-utils.contract.test.ts',
   'tests/utils/messageQueueManager.test.ts',
+  'tests/utils/model/agent.test.ts',
+  'tests/utils/model/model.github.test.ts',
+  'tests/utils/model/modelStrings.github.test.ts',
   'tests/utils/monotonic.test.ts',
+  'tests/utils/permissions/yoloClassifier.test.ts',
+  'tests/utils/plugins/pluginLoader.test.ts',
+  'tests/utils/projectInstructions.test.ts',
+  'tests/utils/promptShellExecution.test.ts',
+  'tests/utils/providerModels.test.ts',
   'tests/utils/providerProfile.test.ts',
   'tests/utils/providerRecommendation.test.ts',
+  'tests/utils/providerValidation.test.ts',
+  'tests/utils/requestLogging.test.ts',
+  'tests/utils/ripgrep.test.ts',
+  'tests/utils/schemaSanitizer.test.ts',
+  'tests/utils/serializationStability.test.ts',
+  'tests/utils/sessionStorage.test.ts',
+  'tests/utils/settings/allowBypassPermissionsMode.test.ts',
   'tests/utils/shell-discovery.test.ts',
+  'tests/utils/stableStringify.test.ts',
+  'tests/utils/streamingOptimizer.test.ts',
+  'tests/utils/swarm/spawnUtils.test.ts',
+  'tests/utils/thinkingTokens.test.ts',
+  'tests/utils/toolResultStorage.test.ts',
+  'tests/utils/truncate.test.ts',
+  'tests/utils/worktree.test.ts',
 ]);
 const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
   (file) => !convertedMovedDonorTestFiles.has(file),
@@ -83,14 +119,33 @@ const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
 
 function isVitestCompatibleBunTestFile(file: string): boolean {
   const source = readFileSync(resolve(__dirname, file), 'utf8');
+  const sourceWithoutComments = stripCommentsForCompatibilityScan(source);
   return (
-    !/\bmock\.module\b/.test(source) &&
-    !/\bmock\.restore\b/.test(source) &&
-    !/\bmock\s*\(/.test(source) &&
-    !/\bBun\./.test(source) &&
-    !/import\s*\(\s*`/.test(source) &&
-    !/\bRequestInit\s*&\s*\{\s*proxy\b/.test(source)
+    !/\bmock\.module\b/.test(sourceWithoutComments) &&
+    !/\bmock\.restore\b/.test(sourceWithoutComments) &&
+    !/\bmock\s*\(/.test(sourceWithoutComments) &&
+    !/\bBun\./.test(sourceWithoutComments) &&
+    !/import\s*\(\s*`/.test(sourceWithoutComments) &&
+    !/\bRequestInit\s*&\s*\{\s*proxy\b/.test(sourceWithoutComments)
   );
+}
+
+function stripCommentsForCompatibilityScan(source: string): string {
+  const chars = source.split('');
+  const scanner = createScanner(ScriptTarget.Latest, false, undefined, source);
+  let token = scanner.scan();
+
+  while (token !== SyntaxKind.EndOfFileToken) {
+    if (
+      token === SyntaxKind.SingleLineCommentTrivia ||
+      token === SyntaxKind.MultiLineCommentTrivia
+    ) {
+      chars.fill(' ', scanner.getTokenPos(), scanner.getTextPos());
+    }
+    token = scanner.scan();
+  }
+
+  return chars.join('');
 }
 
 const bunOnlyTestFiles = bunTestFiles.filter(

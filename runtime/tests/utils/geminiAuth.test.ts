@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   getGeminiProjectIdHint,
@@ -6,7 +7,7 @@ import {
   resolveGeminiCredential,
 } from '../../src/utils/geminiAuth.ts'
 
-const existingFilePath = import.meta.path
+const existingFilePath = fileURLToPath(import.meta.url)
 
 const originalEnv = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
