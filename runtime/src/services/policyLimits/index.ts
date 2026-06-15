@@ -365,11 +365,23 @@ export class PolicyLimitsService {
         };
       }
 
-      const parsed = parsePolicyLimitsResponse(await response.json());
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        return {
+          success: false,
+          error: "Invalid policy limits response format",
+          skipRetry: true,
+        };
+      }
+
+      const parsed = parsePolicyLimitsResponse(payload);
       if (parsed === null) {
         return {
           success: false,
           error: "Invalid policy limits response format",
+          skipRetry: true,
         };
       }
 

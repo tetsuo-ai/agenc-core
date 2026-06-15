@@ -187,6 +187,50 @@ describe("policy limits service", () => {
     });
   });
 
+  it("does not retry non-JSON successful responses", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response("<html>login</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    const sleep = vi.fn(async () => {});
+    const service = makeService({
+      apiKey: "direct-policy-key",
+      fetchImpl: fetchMock,
+      sleep,
+    });
+
+    await service.loadPolicyLimits();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(service.isPolicyAllowed("allow_remote_sessions")).toBe(true);
+    await expect(readFile(service.cachePath(), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("does not retry invalid successful response shapes", async () => {
+    const fetchMock = vi.fn(async () =>
+      response(200, {
+        restrictions: { allow_remote_sessions: { allowed: "no" } },
+      }),
+    );
+    const sleep = vi.fn(async () => {});
+    const service = makeService({
+      apiKey: "direct-policy-key",
+      fetchImpl: fetchMock,
+      sleep,
+    });
+
+    await service.loadPolicyLimits();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(service.isPolicyAllowed("allow_remote_sessions")).toBe(true);
+  });
+
   it("retries transient failures and reuses stale cache when the API stays down", async () => {
     const retryFetch = vi
       .fn()
