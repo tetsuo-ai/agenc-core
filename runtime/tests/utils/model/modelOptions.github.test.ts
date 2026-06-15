@@ -1,16 +1,16 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mock } from 'bun:test'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { resetModelStringsForTestingOnly } from '../../../src/bootstrap/state.ts'
 import { saveGlobalConfig } from '../../../src/utils/config.ts'
 
+const providersModulePath = '../../../src/utils/model/providers.js'
+
 async function importFreshModelOptionsModule() {
-  mock.restore()
-  mock.module('./providers.js', () => ({
+  vi.resetModules()
+  vi.doMock(providersModulePath, () => ({
     getAPIProvider: () => 'github',
   }))
-  const nonce = `${Date.now()}-${Math.random()}`
-  return import(`../../../src/utils/model/modelOptions.ts?ts=${nonce}`)
+  return import('../../../src/utils/model/modelOptions.ts')
 }
 
 const originalEnv = {
@@ -25,8 +25,18 @@ const originalEnv = {
   ANTHROPIC_CUSTOM_MODEL_OPTION: process.env.ANTHROPIC_CUSTOM_MODEL_OPTION,
 }
 
+function restoreEnv(key: keyof typeof originalEnv): void {
+  if (originalEnv[key] === undefined) {
+    delete process.env[key]
+  } else {
+    process.env[key] = originalEnv[key]
+  }
+}
+
 beforeEach(() => {
-  mock.restore()
+  vi.doUnmock(providersModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
   delete process.env.AGENC_USE_GITHUB
   delete process.env.AGENC_USE_OPENAI
   delete process.env.AGENC_USE_GEMINI
@@ -40,17 +50,12 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  mock.restore()
-  process.env.AGENC_USE_GITHUB = originalEnv.AGENC_USE_GITHUB
-  process.env.AGENC_USE_OPENAI = originalEnv.AGENC_USE_OPENAI
-  process.env.AGENC_USE_GEMINI = originalEnv.AGENC_USE_GEMINI
-  process.env.AGENC_USE_BEDROCK = originalEnv.AGENC_USE_BEDROCK
-  process.env.AGENC_USE_VERTEX = originalEnv.AGENC_USE_VERTEX
-  process.env.AGENC_USE_FOUNDRY = originalEnv.AGENC_USE_FOUNDRY
-  process.env.OPENAI_MODEL = originalEnv.OPENAI_MODEL
-  process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL
-  process.env.ANTHROPIC_CUSTOM_MODEL_OPTION =
-    originalEnv.ANTHROPIC_CUSTOM_MODEL_OPTION
+  vi.doUnmock(providersModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
+  for (const key of Object.keys(originalEnv) as Array<keyof typeof originalEnv>) {
+    restoreEnv(key)
+  }
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: [],
