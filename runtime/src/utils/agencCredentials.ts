@@ -8,6 +8,7 @@ import {
   normalizeOAuthTokenPayload,
   parseChatgptAccountId,
   decodeJwtPayload,
+  readOAuthTokenJsonResponse,
 } from '../services/api/openAiCodeOAuthShared.js'
 
 export const AGENC_STORAGE_KEY = 'agenc' as const
@@ -320,7 +321,9 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
         throw new Error(getRefreshErrorMessage(response.status, bodyText))
       }
 
-      const payload = normalizeOAuthTokenPayload(await response.json())
+      const payload = normalizeOAuthTokenPayload(
+        await readOAuthTokenJsonResponse(response, 'Agenc token refresh'),
+      )
       const accessToken = payload.accessToken
       if (!accessToken) {
         throw new Error(
