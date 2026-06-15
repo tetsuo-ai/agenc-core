@@ -10,6 +10,7 @@ import {
   arrayField,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   recordField,
   type ProviderOutput,
 } from './types.js'
@@ -42,7 +43,7 @@ export const mojeekProvider: SearchProvider = {
       throw new Error(`Mojeek search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data: unknown = await res.json()
+    const data = await readSearchProviderJson(res, 'Mojeek search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined
     const rawResults =
       record && 'response' in record

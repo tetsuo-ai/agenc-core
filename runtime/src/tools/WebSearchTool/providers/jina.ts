@@ -10,6 +10,7 @@ import {
   arrayField,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   type ProviderOutput,
 } from './types.js'
 
@@ -39,7 +40,7 @@ export const jinaProvider: SearchProvider = {
       throw new Error(`Jina search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data: unknown = await res.json()
+    const data = await readSearchProviderJson(res, 'Jina search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined
     const rawHits =
       record && 'data' in record

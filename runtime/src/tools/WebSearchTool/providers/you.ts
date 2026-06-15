@@ -10,6 +10,7 @@ import {
   arrayField,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   type ProviderOutput,
 } from './types.js'
 
@@ -36,7 +37,7 @@ export const youProvider: SearchProvider = {
       throw new Error(`You.com search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data: unknown = await res.json()
+    const data = await readSearchProviderJson(res, 'You.com search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined
     const results = record?.['results']
     const webResults = isSearchProviderJsonRecord(results)

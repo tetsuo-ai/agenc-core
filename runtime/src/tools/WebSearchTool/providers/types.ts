@@ -40,6 +40,24 @@ export interface SearchProvider {
   search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput>
 }
 
+export class SearchProviderMalformedJsonError extends Error {
+  constructor(source: string) {
+    super(`${source} returned malformed JSON response`)
+    this.name = 'SearchProviderMalformedJsonError'
+  }
+}
+
+export async function readSearchProviderJson(
+  response: Response,
+  source: string,
+): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    throw new SearchProviderMalformedJsonError(source)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Flexible response parsing helpers
 // ---------------------------------------------------------------------------

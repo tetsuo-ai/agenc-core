@@ -10,6 +10,7 @@ import {
   arrayField,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   type ProviderOutput,
 } from './types.js'
 
@@ -41,7 +42,7 @@ export const linkupProvider: SearchProvider = {
       throw new Error(`Linkup search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data: unknown = await res.json()
+    const data = await readSearchProviderJson(res, 'Linkup search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined
     const hits = normalizeHits(arrayField(record, 'results'), {
       inferSourceFromUrl: true,

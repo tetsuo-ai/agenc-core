@@ -205,6 +205,52 @@ describe('buildAuthHeadersForPreset direct assertions', () => {
 })
 
 // ---------------------------------------------------------------------------
+// customProvider.search — successful malformed JSON boundary
+// ---------------------------------------------------------------------------
+
+describe('customProvider search response parsing', () => {
+  const savedEnv: Record<string, string | undefined> = {}
+  const originalFetch = globalThis.fetch
+  const originalWarn = console.warn
+
+  beforeEach(() => {
+    for (const k of ['WEB_SEARCH_API', 'WEB_PROVIDER', 'WEB_URL_TEMPLATE']) {
+      savedEnv[k] = process.env[k]
+    }
+    console.warn = () => {}
+  })
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    globalThis.fetch = originalFetch
+    console.warn = originalWarn
+  })
+
+  test('throws controlled error for malformed successful JSON responses without retrying', async () => {
+    process.env.WEB_SEARCH_API = 'https://search.example/api'
+    delete process.env.WEB_PROVIDER
+    delete process.env.WEB_URL_TEMPLATE
+
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response('<html>not json</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })
+    }) as typeof fetch
+
+    await expect(customProvider.search({ query: 'agent security' })).rejects.toThrow(
+      'Custom search API returned malformed JSON response',
+    )
+    expect(calls).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // isPrivateHostname — SSRF guard
 // ---------------------------------------------------------------------------
 

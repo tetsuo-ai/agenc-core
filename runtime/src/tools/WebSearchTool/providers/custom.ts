@@ -32,8 +32,10 @@ import {
   applyDomainFilters,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   recordField,
   safeHostname,
+  SearchProviderMalformedJsonError,
   type ProviderOutput,
   type SearchHit,
 } from './types.js'
@@ -551,12 +553,13 @@ async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSign
         lastStatus = res.status
         throw new Error(`Custom search API returned ${res.status}: ${res.statusText}`)
       }
-      return await res.json()
+      return await readSearchProviderJson(res, 'Custom search API')
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err))
 
       // Caller-initiated abort wins — propagate without retry or rewrite.
       if (signal?.aborted) throw lastErr
+      if (lastErr instanceof SearchProviderMalformedJsonError) throw lastErr
 
       // Timeout (TimeoutError on Bun/Node, or AbortError with timeoutSignal aborted).
       if (timeoutSignal.aborted) {

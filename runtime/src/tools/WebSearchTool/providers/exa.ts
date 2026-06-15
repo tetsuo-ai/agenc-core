@@ -8,6 +8,7 @@ import {
   arrayField,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   type ProviderOutput,
 } from './types.js'
 
@@ -43,7 +44,7 @@ export const exaProvider: SearchProvider = {
     if (!res.ok) {
       throw new Error(`Exa search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
-    const data: unknown = await res.json()
+    const data = await readSearchProviderJson(res, 'Exa search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined
     const hits = normalizeHits(arrayField(record, 'results'), {
       inferSourceFromUrl: true,
