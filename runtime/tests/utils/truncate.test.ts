@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'vitest'
 import { truncate, truncateToWidth, truncatePathMiddle } from './truncate.js'
 
 describe('truncate utilities', () => {
