@@ -244,13 +244,38 @@ function normalizePathForMatch(path: string): string {
   return path.split(/[\\/]+/).join("/");
 }
 
+function findScopedRulesRoot(rulePath: string): string | null {
+  let current = dirname(rulePath);
+  while (true) {
+    if (
+      basename(current) === RULES_SUBDIR &&
+      basename(dirname(current)) === RULES_DIRNAME
+    ) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function matchBaseForRule(rulePath: string): string {
+  const rulesRoot = findScopedRulesRoot(rulePath);
+  if (rulesRoot !== null) {
+    return dirname(dirname(rulesRoot));
+  }
+
+  const ruleBase = dirname(dirname(rulePath));
+  return dirname(ruleBase);
+}
+
 export function ruleMatchesTarget(
   rulePath: string,
   frontmatter: InstructionRuleFrontmatter,
   targetPath: string,
 ): boolean {
-  const ruleBase = dirname(dirname(rulePath)); // <dir>/.agenc/rules/file.md -> <dir>/.agenc
-  const projectBase = dirname(ruleBase);
+  const projectBase = matchBaseForRule(rulePath);
   const absTarget = resolve(targetPath);
   const candidates = new Set<string>([
     normalizePathForMatch(absTarget),
