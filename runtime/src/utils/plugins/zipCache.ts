@@ -30,6 +30,7 @@
  */
 
 import { randomBytes } from 'crypto'
+import type { ZippableFile } from 'fflate'
 import {
   chmod,
   lstat,
@@ -202,7 +203,7 @@ export async function atomicWriteToZipCache(
 
 // fflate's ZippableFile tuple form: [data, opts]. Using the tuple lets us
 // store {os, attrs} so parseZipModes can recover exec bits on extraction.
-type ZipEntry = [Uint8Array, { os: number; attrs: number }]
+type ZipEntry = ZippableFile
 
 /**
  * Create a ZIP archive from a directory.
@@ -220,7 +221,6 @@ export async function createZipFromDirectory(
   const visited = new Set<string>()
   await collectFilesForZip(sourceDir, '', files, visited)
 
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { zipSync } = await import('fflate')
   const zipData = zipSync(files, { level: 6 })
   logForDebugging(

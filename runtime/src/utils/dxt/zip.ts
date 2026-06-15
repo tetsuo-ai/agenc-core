@@ -1,5 +1,6 @@
 import { isAbsolute, normalize } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
+import type { UnzipFileInfo } from 'fflate'
 import { isENOENT } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { containsPathTraversal } from '../path.js'
@@ -25,10 +26,7 @@ type ZipValidationState = {
 /**
  * File metadata from fflate filter
  */
-type ZipFileMetadata = {
-  name: string
-  originalSize?: number
-}
+type ZipFileMetadata = Pick<UnzipFileInfo, 'name' | 'originalSize'>
 
 /**
  * Result of validating a single file in a zip archive
@@ -113,7 +111,6 @@ export function validateZipFile(
 export async function unzipFile(
   zipData: Buffer,
 ): Promise<Record<string, Uint8Array>> {
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { unzipSync } = await import('fflate')
   const compressedSize = zipData.length
 
@@ -125,7 +122,6 @@ export async function unzipFile(
   }
 
   const result = unzipSync(new Uint8Array(zipData), {
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     filter: file => {
       const validationResult = validateZipFile(file, state)
       if (!validationResult.isValid) {
