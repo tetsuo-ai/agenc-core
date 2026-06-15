@@ -1,27 +1,33 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import * as fsPromises from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
 const originalEnv = { ...process.env }
 const originalArgv = [...process.argv]
+const fsPromisesModulePath = 'fs/promises'
 
 async function importFreshEnvUtils() {
-  return import(`../../src/utils/envUtils.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/envUtils.ts')
 }
 
 async function importFreshSettings() {
-  return import(`../../src/utils/settings/settings.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/settings/settings.ts')
 }
 
 async function importFreshLocalInstaller() {
-  return import(`../../src/utils/localInstaller.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/localInstaller.ts')
 }
 
 afterEach(() => {
   process.env = { ...originalEnv }
   process.argv = [...originalArgv]
-  mock.restore()
+  vi.doUnmock(fsPromisesModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
 })
 
 describe('AgenC paths', () => {
@@ -120,7 +126,7 @@ describe('AgenC paths', () => {
   })
 
   test('legacy local installs are detected when they still expose the agenc binary', async () => {
-    mock.module('fs/promises', () => ({
+    vi.doMock(fsPromisesModulePath, () => ({
       ...fsPromises,
       access: async (path: string) => {
         if (
