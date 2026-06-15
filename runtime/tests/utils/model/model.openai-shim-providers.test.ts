@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { saveGlobalConfig } from '../../../src/utils/config.ts'
 
+const providersModulePath = '../../../src/utils/model/providers.js'
+
 async function importFreshModelModule() {
-  mock.restore()
-  mock.module('./providers.js', () => ({
+  vi.resetModules()
+  vi.doMock(providersModulePath, () => ({
     getAPIProvider: () => {
       if (process.env.NVIDIA_NIM) return 'nvidia-nim'
       if (process.env.AGENC_USE_MINIMAX || process.env.MINIMAX_API_KEY) return 'minimax'
@@ -21,8 +23,7 @@ async function importFreshModelModule() {
       return 'firstParty'
     },
   }))
-  const nonce = `${Date.now()}-${Math.random()}`
-  return import(`../../../src/utils/model/model.ts?ts=${nonce}`)
+  return import('../../../src/utils/model/model.ts')
 }
 
 const SAVED_ENV = {
@@ -56,11 +57,9 @@ function restoreEnv(key: keyof typeof SAVED_ENV): void {
 }
 
 beforeEach(() => {
-  // Other test files (notably modelOptions.github.test.ts) install a
-  // persistent mock.module for './providers.js' that overrides getAPIProvider
-  // globally. Without mock.restore() here, those overrides bleed into this
-  // suite and the provider-kind branches we're testing become unreachable.
-  mock.restore()
+  vi.doUnmock(providersModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
   delete process.env.AGENC_USE_OPENAI
   delete process.env.AGENC_USE_GEMINI
   delete process.env.AGENC_USE_GITHUB
@@ -87,7 +86,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  mock.restore()
+  vi.doUnmock(providersModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
   for (const key of Object.keys(SAVED_ENV) as Array<keyof typeof SAVED_ENV>) {
     restoreEnv(key)
   }
