@@ -10,6 +10,7 @@ import {
   arrayField,
   isSearchProviderJsonRecord,
   normalizeHits,
+  readSearchProviderJson,
   recordField,
   type ProviderOutput,
 } from './types.js'
@@ -37,7 +38,7 @@ export const bingProvider: SearchProvider = {
       throw new Error(`Bing search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data: unknown = await res.json()
+    const data = await readSearchProviderJson(res, 'Bing search API')
     const record = isSearchProviderJsonRecord(data) ? data : undefined
     const hits = normalizeHits(arrayField(recordField(record, 'webPages'), 'value'))
 
