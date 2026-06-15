@@ -220,6 +220,8 @@ that home. Key knobs:
 | `AGENC_HOME` | Root for all on-disk state (default `~/.agenc`). |
 | `XAI_API_KEY` / `GROK_API_KEY` | xAI credentials (default provider). |
 | `AGENC_MODEL` | Override the default model (`grok-4.3`). |
+| `AGENC_LOCAL_VLLM_BASE_URL` | Local vLLM/OpenAI-compatible smoke endpoint (default `http://127.0.0.1:8000/v1`). |
+| `AGENC_LOCAL_VLLM_MODEL` | Optional model override for `npm run check:local-vllm`. |
 | `AGENC_DAEMON_AUTOSTART=0` | Disable launcher daemon autostart. |
 | `AGENC_DAEMON_READY_TIMEOUT_MS` | Launcher daemon-ready timeout. |
 | `config.toml` (via `agenc config`) | Persisted config: providers, MCP servers, permissions, profiles. |
@@ -264,6 +266,7 @@ npm run build            # esbuild bundle → runtime/dist + VERSION
 npm run test             # typecheck + full vitest suite
 npm run test:bun         # isolated Bun suite (one file per process)
 npm run validate:runtime # typecheck + build + PTY startup smoke
+npm run check:local-vllm # local vLLM/OpenAI-compatible /models + chat smoke
 ```
 
 Runtime-scoped gates (`npm --workspace=@tetsuo-ai/runtime run <name>`):
@@ -273,9 +276,14 @@ check:tui-runtime-startup   # launch agenc / agenc --yolo in real PTYs
 check:tui-e2e               # TUI scenario suite (-- --filter <name>)
 check:daemon-errors
 check:llm-pipeline
+check:local-vllm           # local-only OpenAI-compatible endpoint smoke
 check:e2e-all               # daemon-errors + llm-pipeline + tui-e2e
 check:unused                # knip (unused exports/files/deps)
 ```
+
+`check:local-vllm` refuses non-loopback endpoints unless `--allow-nonlocal` is
+passed explicitly. For Ollama's OpenAI-compatible local endpoint, use
+`AGENC_LOCAL_VLLM_BASE_URL=http://127.0.0.1:11434/v1`.
 
 `check:tui-runtime-startup` imports the built TUI bundle and launches `agenc`
 and `agenc --yolo` in real pseudo-terminals at several viewport sizes — keep it
