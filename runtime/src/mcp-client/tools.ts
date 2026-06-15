@@ -188,11 +188,11 @@ interface ToolBridgeOptions {
 interface MCPToolDescriptor {
   name: string;
   description?: string;
-  inputSchema?: unknown;
+  inputSchema?: JSONSchema;
 }
 
 interface MCPListToolsResponse {
-  tools?: MCPToolDescriptor[];
+  tools?: unknown;
 }
 
 interface MCPCallToolResponse {
@@ -253,6 +253,35 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function normalizeMCPToolDescriptor(raw: unknown): MCPToolDescriptor | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+
+  const name = stringValue(record.name);
+  if (!name) return null;
+
+  const description = typeof record.description === "string"
+    ? record.description
+    : undefined;
+  const inputSchema = asRecord(record.inputSchema) ?? {
+    type: "object",
+    properties: {},
+  };
+
+  return {
+    name,
+    ...(description !== undefined ? { description } : {}),
+    inputSchema,
+  };
+}
+
+function normalizeMCPToolCatalog(rawTools: unknown): MCPToolDescriptor[] {
+  if (!Array.isArray(rawTools)) return [];
+  return rawTools
+    .map(normalizeMCPToolDescriptor)
+    .filter((tool): tool is MCPToolDescriptor => tool !== null);
 }
 
 function errorResult(content: string): ToolResult {
@@ -652,9 +681,7 @@ export async function createToolBridge(
     listToolsTimeoutMs,
     () => client.listTools(),
   );
-  const rawTools = (Array.isArray(response.tools)
-    ? response.tools
-    : []) as MCPToolDescriptorLike[];
+  const rawTools = normalizeMCPToolCatalog(response.tools);
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
     ? (filterMCPToolCatalog(
         options.serverConfig,
