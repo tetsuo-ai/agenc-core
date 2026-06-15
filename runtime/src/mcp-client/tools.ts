@@ -195,12 +195,6 @@ interface MCPListToolsResponse {
   tools?: unknown;
 }
 
-interface MCPCallToolResponse {
-  content?: unknown;
-  isError?: boolean;
-  _meta?: unknown;
-}
-
 type PermissionResolution =
   | { readonly ok: true; readonly args: Record<string, unknown> }
   | { readonly ok: false; readonly result: ToolResult };
@@ -243,6 +237,17 @@ function safeStringifyArgs(args: Record<string, unknown>): string {
   }
 }
 
+function safeStringifyMCPPayload(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (value === undefined) return fallback;
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? fallback : serialized;
+  } catch {
+    return String(value);
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -282,6 +287,39 @@ function normalizeMCPToolCatalog(rawTools: unknown): MCPToolDescriptor[] {
   return rawTools
     .map(normalizeMCPToolDescriptor)
     .filter((tool): tool is MCPToolDescriptor => tool !== null);
+}
+
+function renderMCPCallContentItem(raw: unknown): string {
+  const record = asRecord(raw);
+  if (record?.type === "text") {
+    return safeStringifyMCPPayload(record.text);
+  }
+  return safeStringifyMCPPayload(raw);
+}
+
+function renderMCPCallContent(rawContent: unknown): string {
+  if (Array.isArray(rawContent)) {
+    return rawContent.map(renderMCPCallContentItem).join("\n");
+  }
+  return safeStringifyMCPPayload(rawContent);
+}
+
+function normalizeMCPCallToolResponse(raw: unknown): {
+  readonly content: string;
+  readonly isError: boolean;
+} {
+  const record = asRecord(raw);
+  if (!record) {
+    return {
+      content: renderMCPCallContent(raw),
+      isError: false,
+    };
+  }
+
+  return {
+    content: renderMCPCallContent(record.content),
+    isError: record.isError === true,
+  };
 }
 
 function errorResult(content: string): ToolResult {
@@ -769,26 +807,19 @@ export async function createToolBridge(
             toolName: mcpTool.name,
             args: callArgs,
           });
-          const result = await withRPCDeadline<MCPCallToolResponse>(
-            `MCP tool "${mcpTool.name}" callTool`,
-            callToolTimeoutMs,
-            () =>
-              client.callTool({
-                name: mcpTool.name,
-                arguments: executionArgs,
-              }),
+          const result = normalizeMCPCallToolResponse(
+            await withRPCDeadline<unknown>(
+              `MCP tool "${mcpTool.name}" callTool`,
+              callToolTimeoutMs,
+              () =>
+                client.callTool({
+                  name: mcpTool.name,
+                  arguments: executionArgs,
+                }),
+            ),
           );
 
-          // MCP tool results contain a content array
-          const rawContent = Array.isArray(result.content)
-            ? result.content
-                .map((c: { type: string; text?: string }) =>
-                  c.type === "text" ? c.text ?? "" : JSON.stringify(c),
-                )
-                .join("\n")
-            : typeof result.content === "string"
-              ? result.content
-              : JSON.stringify(result.content);
+          const rawContent = result.content;
 
           // I-76: cap result payload at 5MB.
           const bytes = Buffer.byteLength(rawContent, "utf8");
@@ -800,7 +831,7 @@ export async function createToolBridge(
             );
           }
 
-          const isError = result.isError === true;
+          const isError = result.isError;
           const durationMs = Date.now() - startedAtMs;
           observer?.onEnd?.({
             callId,
