@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
+  collectProviderCodeCompletedResponse,
   providerCodeStreamToprovider,
   convertproviderMessagesToResponsesInput,
   convertProviderCodeResponseToproviderMessage,
@@ -58,6 +59,17 @@ async function collectStreamEventTypes(responseText: string): Promise<string[]> 
     events.push(event.type)
   }
   return events
+}
+
+async function collectCompletedResponse(responseText: string): Promise<Record<string, unknown>> {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(responseText))
+      controller.close()
+    },
+  })
+
+  return collectProviderCodeCompletedResponse(new Response(stream))
 }
 
 async function importFreshProviderConfigModule() {
@@ -548,6 +560,44 @@ describe('ProviderCode request translation', () => {
     ])
   })
 
+  test('ignores malformed completed ProviderCode output entries', () => {
+    const message = convertProviderCodeResponseToproviderMessage(
+      {
+        id: 'resp_1',
+        model: 'gpt-5.4',
+        output: [
+          null,
+          'noise',
+          { type: 'message', content: [null, { type: 'output_text', text: 42 }] },
+          {
+            type: 'message',
+            content: [{ type: 'output_text', text: 'Usable text.' }],
+          },
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            call_id: 'call_1',
+            name: 'ping',
+            arguments: '{"value":"ping"}',
+          },
+        ],
+        usage: { input_tokens: 12, output_tokens: 4 },
+      },
+      'gpt-5.4',
+    )
+
+    expect(message.stop_reason).toBe('tool_use')
+    expect(message.content).toEqual([
+      { type: 'text', text: 'Usable text.' },
+      {
+        type: 'tool_use',
+        id: 'call_1',
+        name: 'ping',
+        input: { value: 'ping' },
+      },
+    ])
+  })
+
   test('strips <think> tag block from completed ProviderCode text responses', () => {
     const message = convertProviderCodeResponseToproviderMessage(
       {
@@ -835,6 +885,72 @@ describe('ProviderCode request translation', () => {
       'message_delta',
       'message_stop',
     ])
+  })
+
+  test('ignores malformed ProviderCode SSE payloads before valid stream events', async () => {
+    const responseText = [
+      'event: response.output_item.added',
+      'data: null',
+      '',
+      'event: response.output_item.added',
+      'data: []',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","item":"bad"}',
+      '',
+      'event: response.content_part.added',
+      'data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":123}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"ok"}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1}},"sequence_number":4}',
+      '',
+    ].join('\n')
+
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(responseText))
+        controller.close()
+      },
+    })
+
+    const textDeltas: string[] = []
+    for await (const event of providerCodeStreamToprovider(
+      new Response(stream),
+      'gpt-5.4',
+    )) {
+      const delta = (event as { delta?: { type?: string; text?: string } }).delta
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        textDeltas.push(delta.text)
+      }
+    }
+
+    expect(textDeltas).toEqual(['ok'])
+  })
+
+  test('collectProviderCodeCompletedResponse skips non-object SSE JSON and drains trailing events', async () => {
+    const response = await collectCompletedResponse([
+      'event: response.output_text.delta',
+      'data: null',
+      '',
+      'event: response.output_text.delta',
+      'data: []',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}',
+      '',
+    ].join('\n'))
+
+    expect(response).toEqual({
+      id: 'resp_1',
+      status: 'completed',
+      output: [],
+    })
   })
 
   test('strips <think> tag block from ProviderCode SSE text stream', async () => {

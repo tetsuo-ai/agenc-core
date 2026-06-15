@@ -77,7 +77,63 @@ type ResponsesTool = {
 
 type ResponsesSseEvent = {
   event: string
-  data: Record<string, any>
+  data: Record<string, unknown>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function recordField(
+  value: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, unknown> | undefined {
+  const field = value?.[key]
+  return isRecord(field) ? field : undefined
+}
+
+function arrayField(
+  value: Record<string, unknown> | undefined,
+  key: string,
+): readonly unknown[] {
+  const field = value?.[key]
+  return Array.isArray(field) ? field : []
+}
+
+function stringField(
+  value: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const field = value?.[key]
+  return typeof field === 'string' ? field : undefined
+}
+
+function messageField(value: Record<string, unknown> | undefined): string | undefined {
+  return stringField(value, 'message')
+}
+
+function parseProviderCodeSseChunk(chunk: string): ResponsesSseEvent | undefined {
+  const lines = chunk
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return undefined
+
+  const eventLine = lines.find(line => line.startsWith('event: '))
+  const dataLines = lines.filter(line => line.startsWith('data: '))
+  if (!eventLine || dataLines.length === 0) return undefined
+
+  const event = eventLine.slice(7).trim()
+  const rawData = dataLines.map(line => line.slice(6)).join('\n')
+  if (rawData === '[DONE]') return undefined
+
+  try {
+    const parsed = JSON.parse(rawData) as unknown
+    if (!isRecord(parsed)) return undefined
+    return { event, data: parsed }
+  } catch {
+    return undefined
+  }
 }
 
 function makeUsage(usage?: Record<string, unknown>): providerUsage {
@@ -582,47 +638,32 @@ async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGe
     buffer = chunks.pop() ?? ''
 
     for (const chunk of chunks) {
-      const lines = chunk
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
-      if (lines.length === 0) continue
-
-      const eventLine = lines.find(line => line.startsWith('event: '))
-      const dataLines = lines.filter(line => line.startsWith('data: '))
-      if (!eventLine || dataLines.length === 0) continue
-
-      const event = eventLine.slice(7).trim()
-      const rawData = dataLines.map(line => line.slice(6)).join('\n')
-      if (rawData === '[DONE]') continue
-
-      let data: Record<string, any>
-      try {
-        const parsed = JSON.parse(rawData)
-        if (!parsed || typeof parsed !== 'object') continue
-        data = parsed as Record<string, any>
-      } catch {
-        continue
-      }
-
-      yield { event, data }
+      const parsed = parseProviderCodeSseChunk(chunk)
+      if (parsed) yield parsed
     }
   }
+
+  buffer += decoder.decode()
+  const trailing = parseProviderCodeSseChunk(buffer)
+  if (trailing) yield trailing
 }
 
 function determineStopReason(
-  response: Record<string, any> | undefined,
+  response: Record<string, unknown> | undefined,
   sawToolUse: boolean,
 ): 'end_turn' | 'tool_use' | 'max_tokens' {
-  const output = Array.isArray(response?.output) ? response.output : []
+  const output = arrayField(response, 'output')
   if (
     sawToolUse ||
-    output.some((item: { type?: string }) => item?.type === 'function_call')
+    output.some(item => isRecord(item) && item.type === 'function_call')
   ) {
     return 'tool_use'
   }
 
-  const incompleteReason = response?.incomplete_details?.reason
+  const incompleteReason = stringField(
+    recordField(response, 'incomplete_details'),
+    'reason',
+  )
   if (
     typeof incompleteReason === 'string' &&
     incompleteReason.includes('max_output_tokens')
@@ -636,13 +677,15 @@ function determineStopReason(
 export async function collectProviderCodeCompletedResponse(
   response: Response,
   signal?: AbortSignal,
-): Promise<Record<string, any>> {
-  let completedResponse: Record<string, any> | undefined
+): Promise<Record<string, unknown>> {
+  let completedResponse: Record<string, unknown> | undefined
 
   for await (const event of readSseEvents(response, signal)) {
     if (event.event === 'response.failed') {
-      const msg = event.data?.response?.error?.message ??
-        event.data?.error?.message ?? 'Responses response failed'
+      const responseRecord = recordField(event.data, 'response')
+      const msg = messageField(recordField(responseRecord, 'error')) ??
+        messageField(recordField(event.data, 'error')) ??
+        'Responses response failed'
       throw APIError.generate(500, undefined, msg, new Headers())
     }
 
@@ -650,7 +693,7 @@ export async function collectProviderCodeCompletedResponse(
       event.event === 'response.completed' ||
       event.event === 'response.incomplete'
     ) {
-      completedResponse = event.data?.response
+      completedResponse = recordField(event.data, 'response')
       break
     }
   }
@@ -679,7 +722,7 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
   const thinkFilter = createThinkTagFilter()
   let nextContentBlockIndex = 0
   let sawToolUse = false
-  let finalResponse: Record<string, any> | undefined
+  let finalResponse: Record<string, unknown> | undefined
 
   const closeActiveTextBlock = async function* () {
     if (activeTextBlockIndex === null) return
@@ -729,12 +772,14 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
     const payload = event.data
 
     if (event.event === 'response.output_item.added') {
-      const item = payload.item
+      const item = recordField(payload, 'item')
       if (item?.type === 'function_call') {
         yield* closeActiveTextBlock()
         const blockIndex = nextContentBlockIndex++
-        const toolUseId = item.call_id ?? item.id ?? `call_${blockIndex}`
-        toolBlocksByItemId.set(String(item.id ?? toolUseId), {
+        const itemId = stringField(item, 'id')
+        const toolUseId =
+          stringField(item, 'call_id') ?? itemId ?? `call_${blockIndex}`
+        toolBlocksByItemId.set(itemId ?? toolUseId, {
           index: blockIndex,
           toolUseId,
         })
@@ -746,18 +791,19 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
           content_block: {
             type: 'tool_use',
             id: toolUseId,
-            name: item.name ?? 'tool',
+            name: stringField(item, 'name') ?? 'tool',
             input: {},
           },
         }
 
-        if (item.arguments) {
+        const argumentsDelta = stringField(item, 'arguments')
+        if (argumentsDelta) {
           yield {
             type: 'content_block_delta',
             index: blockIndex,
             delta: {
               type: 'input_json_delta',
-              partial_json: item.arguments,
+              partial_json: argumentsDelta,
             },
           }
         }
@@ -766,7 +812,7 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
     }
 
     if (event.event === 'response.content_part.added') {
-      if (payload.part?.type === 'output_text') {
+      if (recordField(payload, 'part')?.type === 'output_text') {
         yield* startTextBlockIfNeeded()
       }
       continue
@@ -775,7 +821,7 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
     if (event.event === 'response.output_text.delta') {
       yield* startTextBlockIfNeeded()
       if (activeTextBlockIndex !== null) {
-        const visible = thinkFilter.feed(payload.delta ?? '')
+        const visible = thinkFilter.feed(stringField(payload, 'delta') ?? '')
         if (visible) {
           yield {
             type: 'content_block_delta',
@@ -791,14 +837,14 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
     }
 
     if (event.event === 'response.function_call_arguments.delta') {
-      const toolBlock = toolBlocksByItemId.get(String(payload.item_id ?? ''))
+      const toolBlock = toolBlocksByItemId.get(stringField(payload, 'item_id') ?? '')
       if (toolBlock) {
         yield {
           type: 'content_block_delta',
           index: toolBlock.index,
           delta: {
             type: 'input_json_delta',
-            partial_json: payload.delta ?? '',
+            partial_json: stringField(payload, 'delta') ?? '',
           },
         }
       }
@@ -806,15 +852,16 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
     }
 
     if (event.event === 'response.output_item.done') {
-      const item = payload.item
+      const item = recordField(payload, 'item')
       if (item?.type === 'function_call') {
-        const toolBlock = toolBlocksByItemId.get(String(item.id ?? ''))
+        const itemId = stringField(item, 'id') ?? ''
+        const toolBlock = toolBlocksByItemId.get(itemId)
         if (toolBlock) {
           yield {
             type: 'content_block_stop',
             index: toolBlock.index,
           }
-          toolBlocksByItemId.delete(String(item.id))
+          toolBlocksByItemId.delete(itemId)
         }
       } else if (item?.type === 'message') {
         yield* closeActiveTextBlock()
@@ -826,13 +873,15 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
       event.event === 'response.completed' ||
       event.event === 'response.incomplete'
     ) {
-      finalResponse = payload.response
+      finalResponse = recordField(payload, 'response')
       break
     }
 
     if (event.event === 'response.failed') {
-      const msg = payload?.response?.error?.message ??
-        payload?.error?.message ?? 'Responses response failed'
+      const responseRecord = recordField(payload, 'response')
+      const msg = messageField(recordField(responseRecord, 'error')) ??
+        messageField(recordField(payload, 'error')) ??
+        'Responses response failed'
       throw APIError.generate(500, undefined, msg, new Headers())
     }
   }
@@ -856,56 +905,61 @@ export async function* providerCodeStreamToprovider( // branding-scan: allow exi
     // and the non-streaming response converter below. Previously this
     // block had its own inline subtraction that missed Kimi / DeepSeek
     // / Gemini raw shapes that the shared helper handles.
-    usage: makeUsage(
-      finalResponse?.usage as Record<string, unknown> | undefined,
-    ),
+    usage: makeUsage(recordField(finalResponse, 'usage')),
   }
   yield { type: 'message_stop' }
 }
 
 export function convertProviderCodeResponseToproviderMessage( // branding-scan: allow existing exported conversion name
-  data: Record<string, any>,
+  data: Record<string, unknown>,
   model: string,
 ): Record<string, unknown> {
   const content: Array<Record<string, unknown>> = []
-  const output = Array.isArray(data.output) ? data.output : []
+  const output = arrayField(data, 'output')
 
   for (const item of output) {
-    if (item?.type === 'message' && Array.isArray(item.content)) {
+    if (!isRecord(item)) continue
+    if (item.type === 'message' && Array.isArray(item.content)) {
       for (const part of item.content) {
-        if (part?.type === 'output_text') {
+        if (!isRecord(part)) continue
+        const text = stringField(part, 'text')
+        if (part?.type === 'output_text' && text !== undefined) {
           content.push({
             type: 'text',
-            text: stripThinkTags(part.text ?? ''),
+            text: stripThinkTags(text),
           })
         }
       }
       continue
     }
 
-    if (item?.type === 'function_call') {
+    if (item.type === 'function_call') {
+      const argumentsJson = stringField(item, 'arguments') ?? '{}'
       let input: unknown
       try {
-        input = JSON.parse(item.arguments ?? '{}')
+        input = JSON.parse(argumentsJson)
       } catch {
-        input = { raw: item.arguments ?? '' }
+        input = { raw: argumentsJson }
       }
       content.push({
         type: 'tool_use',
-        id: item.call_id ?? item.id ?? makeMessageId(),
-        name: item.name ?? 'tool',
+        id:
+          stringField(item, 'call_id') ??
+          stringField(item, 'id') ??
+          makeMessageId(),
+        name: stringField(item, 'name') ?? 'tool',
         input,
       })
     }
   }
   return {
-    id: data.id ?? makeMessageId(),
+    id: stringField(data, 'id') ?? makeMessageId(),
     type: 'message',
     role: 'assistant',
     content,
-    model: data.model ?? model,
+    model: stringField(data, 'model') ?? model,
     stop_reason: determineStopReason(data, content.some(item => item.type === 'tool_use')),
     stop_sequence: null,
-    usage: makeUsage(data.usage),
+    usage: makeUsage(recordField(data, 'usage')),
   }
 }
