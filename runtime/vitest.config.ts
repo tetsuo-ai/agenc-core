@@ -66,6 +66,7 @@ const movedDonorTestFiles = movedDonorTestRoots
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
 const convertedMovedDonorTestFiles = new Set([
   'tests/constants/promptIdentity.test.ts',
+  'tests/utils/agencCredentials.test.ts',
   'tests/utils/agencInstallSurfaces.test.ts',
   'tests/utils/agencPaths.test.ts',
   'tests/utils/agencUiSurfaces.test.ts',
