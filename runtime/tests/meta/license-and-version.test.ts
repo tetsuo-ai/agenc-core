@@ -51,6 +51,21 @@ describe("runtime manifest dependencies", () => {
     }
   });
 
+  test("declares optional Google auth module imported by GCP auth helpers", () => {
+    const authSource = readRepoFile("runtime/src/utils/auth.ts");
+    const geminiAuthSource = readRepoFile("runtime/src/utils/geminiAuth.ts");
+    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
+      optionalDependencies?: Record<string, string>;
+    };
+    const optionalDependencies = runtimePkg.optionalDependencies ?? {};
+
+    expect(authSource).toContain("'google-auth-library'");
+    expect(geminiAuthSource).toContain("'google-auth-library'");
+    expect(optionalDependencies["google-auth-library"]).toMatch(
+      /^\^10\.\d+\.\d+$/,
+    );
+  });
+
   test("declares ZIP archive module imported by plugin zip utilities", () => {
     const zipSource = readRepoFile("runtime/src/utils/dxt/zip.ts");
     const zipCacheSource = readRepoFile(
