@@ -100,6 +100,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/model/model.config-model.test.ts',
   'tests/utils/model/model.github.test.ts',
   'tests/utils/model/modelStrings.github.test.ts',
+  'tests/utils/model/model.openai-shim-providers.test.ts',
   'tests/utils/model/modelOptions.github.test.ts',
   'tests/utils/model/providers.test.ts',
   'tests/utils/monotonic.test.ts',
