@@ -57,6 +57,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
 export async function requestDeviceCode(options?: {
   clientId?: string
   scope?: string
@@ -100,7 +106,7 @@ export async function requestDeviceCode(options?: {
       throw new GitHubDeviceFlowError(lastError)
     }
 
-    const data = (await res.json()) as Record<string, unknown>
+    const data = asRecord(await res.json()) ?? {}
     const device_code = data.device_code
     const user_code = data.user_code
     const verification_uri = data.verification_uri
@@ -162,7 +168,7 @@ export async function pollAccessToken(
         `Token request failed: ${res.status} ${text}`,
       )
     }
-    const data = (await res.json()) as Record<string, unknown>
+    const data = asRecord(await res.json()) ?? {}
     const err = data.error as string | undefined
     if (err == null) {
       const token = data.access_token
@@ -216,18 +222,16 @@ export async function exchangeForCopilotToken(
       `Copilot token exchange failed: ${res.status} ${text}`,
     )
   }
-  const data = (await res.json()) as Record<string, unknown>
+  const data = asRecord(await res.json()) ?? {}
   const token = data.token
   const expires_at = data.expires_at
   const refresh_in = data.refresh_in
-  const endpoints = data.endpoints
+  const endpoints = asRecord(data.endpoints)
   if (
     typeof token !== 'string' ||
     typeof expires_at !== 'number' ||
     typeof refresh_in !== 'number' ||
-    !endpoints ||
-    typeof endpoints !== 'object' ||
-    typeof (endpoints as Record<string, unknown>).api !== 'string'
+    typeof endpoints?.api !== 'string'
   ) {
     throw new GitHubDeviceFlowError('Malformed Copilot token response')
   }
@@ -235,6 +239,6 @@ export async function exchangeForCopilotToken(
     token,
     expires_at,
     refresh_in,
-    endpoints: endpoints as { api: string },
+    endpoints: { api: endpoints.api },
   }
 }
