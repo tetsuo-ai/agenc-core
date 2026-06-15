@@ -1,8 +1,7 @@
-import { afterEach, expect, mock, test } from 'bun:test'
+import { afterEach, expect, test, vi } from 'vitest'
 
 async function loadProviderDiscoveryModule() {
-  // @ts-expect-error cache-busting query string for Bun module mocks
-  return import(`../../src/utils/providerDiscovery.ts?ts=${Date.now()}-${Math.random()}`)
+  return import('../../src/utils/providerDiscovery.ts')
 }
 
 const originalFetch = globalThis.fetch
@@ -12,13 +11,14 @@ const originalEnv = {
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+  vi.clearAllMocks()
   process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL
 })
 
 test('lists models from a local openai-compatible /models endpoint', async () => {
   const { listOpenAICompatibleModels } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock((input, init) => {
+  globalThis.fetch = vi.fn((input, init) => {
     const url = typeof input === 'string' ? input : input.url
     expect(url).toBe('http://localhost:1234/v1/models')
     expect(init?.headers).toEqual({ Authorization: 'Bearer local-key' })
@@ -51,7 +51,7 @@ test('lists models from a local openai-compatible /models endpoint', async () =>
 test('returns null when a local openai-compatible /models request fails', async () => {
   const { listOpenAICompatibleModels } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock(() =>
+  globalThis.fetch = vi.fn(() =>
     Promise.resolve(new Response('not available', { status: 503 })),
   ) as typeof globalThis.fetch
 
@@ -121,7 +121,7 @@ test('ollama generation readiness reports unreachable when tags endpoint is down
   const { probeOllamaGenerationReadiness } = await loadProviderDiscoveryModule()
 
   const calledUrls: string[] = []
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     calledUrls.push(url)
     return Promise.resolve(new Response('not available', { status: 503 }))
@@ -145,7 +145,7 @@ test('ollama generation readiness reports no models when server is reachable', a
   const { probeOllamaGenerationReadiness } = await loadProviderDiscoveryModule()
 
   const calledUrls: string[] = []
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     calledUrls.push(url)
     return Promise.resolve(
@@ -174,7 +174,7 @@ test('ollama generation readiness reports generation_failed when requested model
   const { probeOllamaGenerationReadiness } = await loadProviderDiscoveryModule()
 
   const calledUrls: string[] = []
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     calledUrls.push(url)
     return Promise.resolve(
@@ -207,7 +207,7 @@ test('ollama generation readiness reports generation_failed when requested model
 test('ollama generation readiness reports generation failures when chat probe fails', async () => {
   const { probeOllamaGenerationReadiness } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     if (url.endsWith('/api/tags')) {
       return Promise.resolve(
@@ -240,7 +240,7 @@ test('ollama generation readiness reports generation failures when chat probe fa
 test('ollama generation readiness reports generation_failed when chat probe returns invalid JSON', async () => {
   const { probeOllamaGenerationReadiness } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     if (url.endsWith('/api/tags')) {
       return Promise.resolve(
@@ -278,7 +278,7 @@ test('ollama generation readiness reports generation_failed when chat probe retu
 test('ollama generation readiness reports ready when chat probe succeeds', async () => {
   const { probeOllamaGenerationReadiness } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     if (url.endsWith('/api/tags')) {
       return Promise.resolve(
@@ -322,7 +322,7 @@ test('atomic chat readiness reports unreachable when /v1/models is down', async 
   const { probeAtomicChatReadiness } = await loadProviderDiscoveryModule()
 
   const calledUrls: string[] = []
-  globalThis.fetch = mock(input => {
+  globalThis.fetch = vi.fn(input => {
     const url = typeof input === 'string' ? input : input.url
     calledUrls.push(url)
     return Promise.resolve(new Response('unavailable', { status: 503 }))
@@ -338,7 +338,7 @@ test('atomic chat readiness reports unreachable when /v1/models is down', async 
 test('atomic chat readiness reports no_models when server is reachable but empty', async () => {
   const { probeAtomicChatReadiness } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock(() =>
+  globalThis.fetch = vi.fn(() =>
     Promise.resolve(
       new Response(JSON.stringify({ data: [] }), {
         status: 200,
@@ -355,7 +355,7 @@ test('atomic chat readiness reports no_models when server is reachable but empty
 test('atomic chat readiness returns loaded model ids when ready', async () => {
   const { probeAtomicChatReadiness } = await loadProviderDiscoveryModule()
 
-  globalThis.fetch = mock(() =>
+  globalThis.fetch = vi.fn(() =>
     Promise.resolve(
       new Response(
         JSON.stringify({
