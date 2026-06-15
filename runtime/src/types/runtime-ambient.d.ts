@@ -133,9 +133,27 @@ interface ObjectConstructor {
 
 type StructuredSerializeOptions = import("node:worker_threads").StructuredSerializeOptions;
 
+type BunSpawnStdio = "pipe" | "ignore" | "inherit";
+type BunSpawnOptions = {
+  argv0?: string;
+  stdout?: BunSpawnStdio;
+  stderr?: BunSpawnStdio;
+};
+type BunSpawnPipeOptions = BunSpawnOptions & { stdout: "pipe" };
+type BunSpawnPipeResult = {
+  stdout: { text(): Promise<string> };
+  exited: Promise<number>;
+};
+type BunSpawnResult = {
+  stdout: unknown;
+  exited: Promise<number>;
+};
+
 declare const Bun: {
   embeddedFiles?: readonly unknown[];
   file(path: string): unknown;
+  spawn(command: readonly string[], options: BunSpawnPipeOptions): BunSpawnPipeResult;
+  spawn(command: readonly string[], options?: BunSpawnOptions): BunSpawnResult;
   which(command: string): string | null;
   hash(input: string | ArrayBufferView | ArrayBuffer, seed?: number | bigint): bigint;
   gc(synchronous?: boolean): number;

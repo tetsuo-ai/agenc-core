@@ -680,16 +680,14 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
     if (config.argv0) {
       // Only Bun embeds ripgrep.
       // eslint-disable-next-line custom-rules/require-bun-typeof-guard
-      // @ts-expect-error -- Bun.spawn typing is not declared in the narrow Bun ambient (runtime-only).
       const proc = Bun.spawn([config.command, '--version'], {
         argv0: config.argv0,
         stderr: 'ignore',
         stdout: 'pipe',
       })
 
-      // Bun's ReadableStream has .text() at runtime, but TS types don't reflect it
       const [stdout, code] = await Promise.all([
-        (proc.stdout as unknown as Blob).text(),
+        proc.stdout.text(),
         proc.exited,
       ])
       test = {
