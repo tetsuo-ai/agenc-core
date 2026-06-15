@@ -351,6 +351,7 @@ describe("mcp-startup session-owned manager helpers", () => {
 
   it("loads project .mcp.json servers when bypass-mode startup opts in", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-project-mcp-"));
+    const serverCwd = join(cwd, "mcp-server");
     try {
       writeFileSync(
         join(cwd, ".mcp.json"),
@@ -360,6 +361,20 @@ describe("mcp-startup session-owned manager helpers", () => {
               type: "stdio",
               command: "node",
               args: ["server.js"],
+              env: { AUDIT_TOKEN: "test-token" },
+              env_vars: ["PATH", "HOME"],
+              cwd: serverCwd,
+              timeout: 1_234,
+              required: true,
+              enabled: true,
+              default_tools_approval_mode: "on-request",
+              enabled_tools: ["read"],
+              disabled_tools: ["write"],
+              tools: {
+                read: { default_permission_mode: "never" },
+              },
+              pinnedCatalogSha256: "a".repeat(64),
+              supplyChain: { catalogSha256: "b".repeat(64) },
             },
           },
         }),
@@ -381,6 +396,20 @@ describe("mcp-startup session-owned manager helpers", () => {
           transport: "stdio",
           command: "node",
           args: ["server.js"],
+          env: { AUDIT_TOKEN: "test-token" },
+          env_vars: ["PATH", "HOME"],
+          cwd: serverCwd,
+          timeout: 1_234,
+          required: true,
+          enabled: true,
+          default_tools_approval_mode: "on-request",
+          enabled_tools: ["read"],
+          disabled_tools: ["write"],
+          tools: {
+            read: { default_permission_mode: "never" },
+          },
+          pinnedCatalogSha256: "a".repeat(64),
+          supplyChain: { catalogSha256: "b".repeat(64) },
         }),
       ]);
     } finally {

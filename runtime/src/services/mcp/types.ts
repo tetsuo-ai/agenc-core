@@ -25,12 +25,47 @@ export const TransportSchema = lazySchema(() =>
 )
 export type Transport = z.infer<ReturnType<typeof TransportSchema>>
 
-export const McpStdioServerConfigSchema = lazySchema(() =>
+const PermissionDefaultModeSchema = lazySchema(() =>
+  z.enum(['untrusted', 'on-failure', 'on-request', 'never']),
+)
+
+const NonEmptyStringSchema = lazySchema(() => z.string().min(1))
+
+const PerToolConfigSchema = lazySchema(() =>
   z.object({
+    enabled: z.boolean().optional(),
+    default_permission_mode: PermissionDefaultModeSchema().optional(),
+    defaultPermissionMode: PermissionDefaultModeSchema().optional(),
+    approval_mode: z.enum(['auto', 'prompt', 'approve']).optional(),
+  }),
+)
+
+const McpToolCatalogPolicyConfigSchema = lazySchema(() =>
+  z.object({
+    enabled: z.boolean().optional(),
+    required: z.boolean().optional(),
+    timeout: z.number().int().positive().optional(),
+    default_tools_approval_mode: PermissionDefaultModeSchema().optional(),
+    enabled_tools: z.array(NonEmptyStringSchema()).optional(),
+    disabled_tools: z.array(NonEmptyStringSchema()).optional(),
+    tools: z.record(z.string(), PerToolConfigSchema()).optional(),
+    pinnedCatalogSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+    supplyChain: z
+      .object({
+        catalogSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+      })
+      .optional(),
+  }),
+)
+
+export const McpStdioServerConfigSchema = lazySchema(() =>
+  McpToolCatalogPolicyConfigSchema().extend({
     type: z.literal('stdio').optional(), // Optional for backwards compatibility
     command: z.string().min(1, 'Command cannot be empty'),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
+    env_vars: z.array(NonEmptyStringSchema()).optional(),
+    cwd: NonEmptyStringSchema().optional(),
   }),
 )
 
@@ -56,7 +91,7 @@ const McpOAuthConfigSchema = lazySchema(() =>
 )
 
 export const McpSSEServerConfigSchema = lazySchema(() =>
-  z.object({
+  McpToolCatalogPolicyConfigSchema().extend({
     type: z.literal('sse'),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
@@ -87,7 +122,7 @@ export const McpWebSocketIDEServerConfigSchema = lazySchema(() =>
 )
 
 export const McpHTTPServerConfigSchema = lazySchema(() =>
-  z.object({
+  McpToolCatalogPolicyConfigSchema().extend({
     type: z.literal('http'),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
@@ -97,7 +132,7 @@ export const McpHTTPServerConfigSchema = lazySchema(() =>
 )
 
 export const McpWebSocketServerConfigSchema = lazySchema(() =>
-  z.object({
+  McpToolCatalogPolicyConfigSchema().extend({
     type: z.literal('ws'),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
