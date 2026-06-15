@@ -17,6 +17,31 @@ export function asTrimmedString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined
 }
 
+export type OAuthTokenPayload = {
+  accessToken?: string
+  refreshToken?: string
+  idToken?: string
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+export function normalizeOAuthTokenPayload(value: unknown): OAuthTokenPayload {
+  const record = asRecord(value)
+  if (!record) return {}
+  const accessToken = asTrimmedString(record.access_token)
+  const refreshToken = asTrimmedString(record.refresh_token)
+  const idToken = asTrimmedString(record.id_token)
+  return {
+    ...(accessToken !== undefined ? { accessToken } : {}),
+    ...(refreshToken !== undefined ? { refreshToken } : {}),
+    ...(idToken !== undefined ? { idToken } : {}),
+  }
+}
+
 export function getOpenAiCodeOAuthClientId(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -127,8 +152,8 @@ export async function exchangeProviderCodeIdTokenForApiKey(
     )
   }
 
-  const payload = (await response.json()) as { access_token?: string }
-  const apiKey = asTrimmedString(payload.access_token)
+  const payload = normalizeOAuthTokenPayload(await response.json())
+  const apiKey = payload.accessToken
   if (!apiKey) {
     throw new Error(
       'ProviderCode API key exchange completed, but no API key token was returned.',
