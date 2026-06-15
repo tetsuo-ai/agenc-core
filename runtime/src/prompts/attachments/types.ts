@@ -17,6 +17,7 @@
  */
 
 import type { DiagnosticFile } from "../../services/lsp/types.js";
+import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import type { FileMentionAttachment } from "../file-mentions.js";
 
 /**
@@ -295,6 +296,20 @@ export interface PdfMentionContextAttachment {
 }
 
 /**
+ * MCP resource content resolved from a user-authored `@server:uri` mention.
+ * Resource content is remote server-controlled data and must be framed by
+ * the renderer before it reaches the model.
+ */
+export interface McpResourceAttachment {
+  readonly kind: "mcp_resource";
+  readonly server: string;
+  readonly uri: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly content: ReadResourceResult;
+}
+
+/**
  * Available skills listing for the model-facing Skill tool.
  * Source: upstream skill-tool donor `tools/SkillTool/prompt.ts` listing behavior.
  */
@@ -345,6 +360,7 @@ export type Attachment =
   | FileMentionContextAttachment
   | ImageMentionContextAttachment
   | PdfMentionContextAttachment
+  | McpResourceAttachment
   | SkillListingAttachment
   | LspDiagnosticsAttachment;
 
