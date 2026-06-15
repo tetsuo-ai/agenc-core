@@ -65,6 +65,24 @@ describe("runtime manifest dependencies", () => {
     expect(zipCacheSource).toContain("'fflate'");
     expect(dependencies.fflate).toMatch(/^\^0\.8\.\d+$/);
   });
+
+  test("does not depend on the CLI-heavy MCPB package for runtime validation", () => {
+    const dxtHelperSource = readRepoFile("runtime/src/utils/dxt/helpers.ts");
+    const mcpbHandlerSource = readRepoFile(
+      "runtime/src/utils/plugins/mcpbHandler.ts",
+    );
+    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+
+    expect(dxtHelperSource).not.toContain("@anthropic-ai/mcpb");
+    expect(mcpbHandlerSource).not.toContain("@anthropic-ai/mcpb");
+    expect(runtimePkg.dependencies?.["@anthropic-ai/mcpb"]).toBeUndefined();
+    expect(
+      runtimePkg.optionalDependencies?.["@anthropic-ai/mcpb"],
+    ).toBeUndefined();
+  });
 });
 
 describe("build-time MACRO.VERSION wiring", () => {

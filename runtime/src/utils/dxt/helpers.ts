@@ -1,21 +1,16 @@
-// @ts-expect-error -- optional peer dependency, may not be installed in all environments
-import type { McpbManifest } from '@anthropic-ai/mcpb'
 import { errorMessage } from '../errors.js'
 import { jsonParse } from '../slowOperations.js'
+import { McpbManifestSchema, type McpbManifest } from './mcpb.js'
 
 /**
  * Parses and validates a DXT manifest from a JSON object.
  *
- * Lazy-imports @anthropic-ai/mcpb: that package uses zod v3 which eagerly
- * creates 24 .bind(this) closures per schema instance (~300 instances between
- * schemas.js and schemas-loose.js). Deferring the import keeps ~700KB of bound
- * closures out of the startup heap for sessions that never touch .dxt/.mcpb.
+ * Uses the local MCPB schema subset instead of the published package's root
+ * export, which includes CLI-only dependencies that the runtime does not need.
  */
 export async function validateManifest(
   manifestJson: unknown,
 ): Promise<McpbManifest> {
-  // @ts-expect-error -- optional peer dependency, may not be installed in all environments
-  const { McpbManifestSchema } = await import('@anthropic-ai/mcpb')
   const parseResult = McpbManifestSchema.safeParse(manifestJson)
 
   if (!parseResult.success) {
