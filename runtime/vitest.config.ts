@@ -67,8 +67,15 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/async-lock.test.ts',
   'tests/utils/async-queue.test.ts',
   'tests/utils/async-rwlock.test.ts',
+  'tests/utils/behavior-subject.test.ts',
+  'tests/utils/debug.test.ts',
+  'tests/utils/handlePromptSubmit.vimMode.test.ts',
+  'tests/utils/memory/memory-utils.contract.test.ts',
+  'tests/utils/messageQueueManager.test.ts',
   'tests/utils/monotonic.test.ts',
   'tests/utils/providerProfile.test.ts',
+  'tests/utils/providerRecommendation.test.ts',
+  'tests/utils/shell-discovery.test.ts',
 ]);
 const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
   (file) => !convertedMovedDonorTestFiles.has(file),
