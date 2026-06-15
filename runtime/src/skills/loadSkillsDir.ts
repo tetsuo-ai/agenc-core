@@ -58,6 +58,7 @@ import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
 import { createSignal } from '../utils/signal.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
+import { frameUntrustedMcpSkillContent } from './untrustedMcpSkillFraming.js'
 
 export type LoadedFrom =
   | 'commands_DEPRECATED'
@@ -366,7 +367,9 @@ export function createSkillCommand({
       // Security: MCP skills are remote and untrusted — never execute inline
       // shell commands (!`…` / ```! … ```) from their markdown body.
       // ${AGENC_SKILL_DIR} is meaningless for MCP skills anyway.
-      if (loadedFrom !== 'mcp') {
+      if (loadedFrom === 'mcp') {
+        finalContent = frameUntrustedMcpSkillContent(skillName, finalContent)
+      } else {
         const { executeShellCommandsInPrompt } = await import(
           '../utils/promptShellExecution.js'
         )
