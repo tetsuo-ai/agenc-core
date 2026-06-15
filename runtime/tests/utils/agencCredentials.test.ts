@@ -283,6 +283,51 @@ describe('agencCredentials', () => {
     )
   })
 
+  test('refreshAgencAccessTokenIfNeeded rejects non-JSON success payloads predictably', async () => {
+    delete process.env.AGENC_SIMPLE
+    delete process.env.AGENC_API_KEY
+
+    const expiredToken = makeJwt({
+      exp: Math.floor((Date.now() - 60_000) / 1000),
+      chatgpt_account_id: 'acct_old',
+    })
+
+    let storageState: Record<string, unknown> = {
+      agenc: {
+        accessToken: expiredToken,
+        refreshToken: 'refresh-old',
+        accountId: 'acct_old',
+      },
+    }
+
+    vi.doMock(secureStorageModulePath, () => ({
+      getSecureStorage: () => ({
+        read: () => storageState,
+        readAsync: async () => storageState,
+        update: (next: Record<string, unknown>) => {
+          storageState = next
+          return { success: true }
+        },
+      }),
+    }))
+
+    globalThis.fetch = vi.fn(async () =>
+      new Response('<html>login</html>', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html',
+        },
+      }),
+    ) as unknown as typeof fetch
+
+    const { refreshAgencAccessTokenIfNeeded } =
+      await importFreshAgencCredentialsModule()
+
+    await expect(refreshAgencAccessTokenIfNeeded()).rejects.toThrow(
+      'Agenc token refresh returned invalid JSON.',
+    )
+  })
+
   test('refreshAgencAccessTokenIfNeeded drops a stale api key when id-token exchange fails', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY

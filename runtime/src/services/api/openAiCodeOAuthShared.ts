@@ -42,6 +42,17 @@ export function normalizeOAuthTokenPayload(value: unknown): OAuthTokenPayload {
   }
 }
 
+export async function readOAuthTokenJsonResponse(
+  response: Response,
+  operation: string,
+): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    throw new Error(`${operation} returned invalid JSON.`)
+  }
+}
+
 export function getOpenAiCodeOAuthClientId(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -152,7 +163,12 @@ export async function exchangeProviderCodeIdTokenForApiKey(
     )
   }
 
-  const payload = normalizeOAuthTokenPayload(await response.json())
+  const payload = normalizeOAuthTokenPayload(
+    await readOAuthTokenJsonResponse(
+      response,
+      'ProviderCode API key exchange',
+    ),
+  )
   const apiKey = payload.accessToken
   if (!apiKey) {
     throw new Error(

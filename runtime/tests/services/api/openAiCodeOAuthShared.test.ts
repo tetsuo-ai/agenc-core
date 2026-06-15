@@ -28,4 +28,19 @@ describe('openAiCodeOAuthShared', () => {
       'ProviderCode API key exchange completed, but no API key token was returned.',
     )
   })
+
+  test('exchangeProviderCodeIdTokenForApiKey rejects non-JSON successful responses predictably', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response('<html>login</html>', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html',
+        },
+      }),
+    ) as unknown as typeof fetch
+
+    await expect(
+      exchangeProviderCodeIdTokenForApiKey('id-token'),
+    ).rejects.toThrow('ProviderCode API key exchange returned invalid JSON.')
+  })
 })
