@@ -49,7 +49,10 @@ import {
   catalogDigestMatches,
   type MCPToolDescriptorLike,
 } from "./supply-chain.js";
-import { encodeMcpToolNameForWire } from "../llm/wire/mcp-tool-naming.js";
+import {
+  encodeMcpToolNameForWire,
+  isProviderToolNameSafe,
+} from "../llm/wire/mcp-tool-naming.js";
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -130,9 +133,38 @@ function modelFacingMcpToolDescription(
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000;
 const MCP_REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
+const MCP_RAW_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /** I-76: upper bound on a single MCP tool-call result, 5MB. */
 const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
+
+function filterProviderSafeMcpToolCatalog(
+  serverName: string,
+  tools: readonly MCPToolDescriptorLike[],
+  logger: Logger,
+): readonly MCPToolDescriptorLike[] {
+  return tools.filter((mcpTool) => {
+    if (!MCP_RAW_TOOL_NAME_PATTERN.test(mcpTool.name)) {
+      logger.warn?.(
+        `MCP server ${JSON.stringify(serverName)} skipped provider-unsafe tool ` +
+          `${JSON.stringify(mcpTool.name)}: raw tool name must match ` +
+          `/${MCP_RAW_TOOL_NAME_PATTERN.source}/`,
+      );
+      return false;
+    }
+
+    const namespacedName = `mcp.${serverName}.${mcpTool.name}`;
+    const wireName = encodeMcpToolNameForWire(namespacedName);
+    if (isProviderToolNameSafe(wireName)) return true;
+
+    logger.warn?.(
+      `MCP server ${JSON.stringify(serverName)} skipped provider-unsafe tool ` +
+        `${JSON.stringify(mcpTool.name)}: encoded function name ` +
+        `${JSON.stringify(wireName)} violates provider function-name constraints`,
+    );
+    return false;
+  });
+}
 
 /**
  * T6 gap #119: optional observer hooks for `mcp_tool_call_begin` /
@@ -740,12 +772,20 @@ export async function createToolBridge(
     }
   }
 
-  logger.info(`MCP server "${serverName}" exposes ${mcpTools.length} tools`);
+  const providerSafeMcpTools = filterProviderSafeMcpToolCatalog(
+    serverName,
+    mcpTools,
+    logger,
+  );
+
+  logger.info(
+    `MCP server "${serverName}" exposes ${providerSafeMcpTools.length} tools`,
+  );
 
   // Track disposal to prevent use-after-close
   let disposed = false;
 
-  const tools: Tool[] = mcpTools.map((mcpTool) => {
+  const tools: Tool[] = providerSafeMcpTools.map((mcpTool) => {
     const namespacedName = `mcp.${serverName}.${mcpTool.name}`;
     const defaultPermissionMode = perMcpToolApprovalMode(
       options.serverConfig,

@@ -9,6 +9,8 @@
 
 import { describe, expect, test, vi } from "vitest";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
+import type { LLMTool } from "../llm/types.js";
+import { toChatCompletionsTools } from "../llm/wire/tools.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
@@ -16,6 +18,7 @@ import type { GuardianApprovalReviewOptions } from "../permissions/guardian/revi
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { createToolBridge, type MCPCallObserver } from "./tools.js";
+import { computeMCPToolCatalogSha256 } from "./supply-chain.js";
 
 function permissionContext(): ToolEvaluatorContext {
   const toolPermissionContext = createEmptyToolPermissionContext();
@@ -94,6 +97,122 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       type: "object",
       properties: { q: { type: "string" } },
     });
+  });
+
+  test("skips MCP tools whose model-facing names violate provider constraints", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [
+            { name: "safe_tool", description: "safe" },
+            { name: "bad tool", description: "contains a space" },
+            { name: "bad.dot", description: "contains a dot" },
+            { name: "line\nbreak", description: "contains a newline" },
+            { name: "x".repeat(60), description: "too long after namespacing" },
+          ],
+        }),
+        callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        close: async () => {},
+      },
+      "srv",
+      logger,
+    );
+
+    expect(bridge.tools.map((tool) => tool.name)).toEqual([
+      "mcp.srv.safe_tool",
+    ]);
+    expect(logger.warn).toHaveBeenCalledTimes(4);
+    const warnings = logger.warn.mock.calls.map(([message]) => String(message));
+    expect(warnings.every((message) => message.includes("provider-unsafe")))
+      .toBe(true);
+    expect(warnings.some((message) => message.includes("\\n"))).toBe(true);
+    expect(warnings.some((message) => message.includes("line\nbreak")))
+      .toBe(false);
+
+    const llmTools = bridge.tools.map((tool): LLMTool => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema as Record<string, unknown>,
+      },
+    }));
+    const wireNames = toChatCompletionsTools(llmTools).map(
+      (tool) => tool.function.name,
+    );
+    expect(wireNames).toEqual(["mcp__srv__safe_tool"]);
+    expect(wireNames.every((name) => /^[a-zA-Z0-9_-]{1,64}$/.test(name)))
+      .toBe(true);
+  });
+
+  test("escapes plugin-style server names before provider exposure", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "safe_tool", description: "safe" }],
+        }),
+        callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        close: async () => {},
+      },
+      "plugin:sample:local",
+      logger,
+    );
+
+    expect(bridge.tools.map((tool) => tool.name)).toEqual([
+      "mcp.plugin:sample:local.safe_tool",
+    ]);
+    const llmTools = bridge.tools.map((tool): LLMTool => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema as Record<string, unknown>,
+      },
+    }));
+    expect(
+      toChatCompletionsTools(llmTools).map((tool) => tool.function.name),
+    ).toEqual(["mcp2__plugin_x3asample_x3alocal__safe_utool"]);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  test("checks catalog pins before dropping provider-unsafe tool names", async () => {
+    const safeOnlyPin = computeMCPToolCatalogSha256([
+      {
+        name: "safe_tool",
+        description: "safe",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ]).sha256;
+
+    await expect(
+      createToolBridge(
+        {
+          listTools: async () => ({
+            tools: [
+              { name: "safe_tool", description: "safe" },
+              { name: "bad tool", description: "poisoned" },
+            ],
+          }),
+          callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+          close: async () => {},
+        },
+        "srv",
+        undefined,
+        { serverConfig: { pinnedCatalogSha256: safeOnlyPin } },
+      ),
+    ).rejects.toThrow(/tool catalog digest mismatch/);
   });
 
   test("treats non-array MCP tool catalogs as exposing zero tools", async () => {
