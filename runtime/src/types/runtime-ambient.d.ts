@@ -139,6 +139,9 @@ declare const Bun: {
   which(command: string): string | null;
   hash(input: string | ArrayBufferView | ArrayBuffer, seed?: number | bigint): bigint;
   gc(synchronous?: boolean): number;
+  YAML: {
+    parse(input: string): unknown;
+  };
   semver: {
     order(a: string, b: string): -1 | 0 | 1;
     satisfies(version: string, range: string): boolean;
