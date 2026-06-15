@@ -126,9 +126,11 @@ class HighlightSegmenter {
         this.codes.push(token)
         this.stringPos += token.code.length
         this.tokenIdx++
+      } else if (token.type === 'control') {
+        this.stringPos += token.code.length
+        this.tokenIdx++
       } else {
         const charsNeeded = targetVisiblePos - this.visiblePos
-        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         const charsAvailable = token.value.length - this.charIdx
         const charsToTake = Math.min(charsNeeded, charsAvailable)
 
@@ -136,7 +138,6 @@ class HighlightSegmenter {
         this.visiblePos += charsToTake
         this.charIdx += charsToTake
 
-        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         if (this.charIdx >= token.value.length) {
           this.tokenIdx++
           this.charIdx = 0
