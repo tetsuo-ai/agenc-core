@@ -115,6 +115,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/providerDiscovery.test.ts',
   'tests/utils/providerModels.test.ts',
   'tests/utils/providerProfile.test.ts',
+  'tests/utils/providerProfiles.test.ts',
   'tests/utils/providerRecommendation.test.ts',
   'tests/utils/providerValidation.test.ts',
   'tests/utils/requestLogging.test.ts',
