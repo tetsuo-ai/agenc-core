@@ -42,12 +42,7 @@ function profile(profile: ProfileFile['profile'], env: ProfileFile['env']): Prof
   }
 }
 
-async function importFreshProviderProfileModule() {
-  const nonce = `${Date.now()}-${Math.random()}`
-  return import(`./providerProfile.ts?ts=${nonce}`)
-}
-
-const missingAgencAuthPath = join(tmpdir(), 'agenc-missing-agenc-auth.json')
+const missingProviderCodeAuthPath = join(tmpdir(), 'agenc-missing-provider-code-auth.json')
 
 test('matching persisted ollama env is reused for ollama launch', async () => {
   const env = await buildLaunchEnv({
@@ -142,7 +137,7 @@ test('openai launch ignores agenc shell transport hints', async () => {
     goal: 'balanced',
     processEnv: {
       OPENAI_API_KEY: 'sk-live',
-      OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       OPENAI_MODEL: 'agencplan',
     },
   })
@@ -156,7 +151,7 @@ test('openai launch ignores agenc persisted transport hints', async () => {
   const env = await buildLaunchEnv({
     profile: 'openai',
     persisted: profile('openai', {
-      OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       OPENAI_MODEL: 'agencplan',
       OPENAI_API_KEY: 'sk-persisted',
     }),
@@ -262,18 +257,18 @@ test('matching persisted agenc env is reused for agenc launch', async () => {
   const env = await buildLaunchEnv({
     profile: 'agenc',
     persisted: profile('agenc', {
-      OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       OPENAI_MODEL: 'agencspark',
       AGENC_API_KEY: 'agenc-persisted',
       CHATGPT_ACCOUNT_ID: 'acct_persisted',
     }),
     goal: 'balanced',
     processEnv: {
-      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
+      PROVIDER_CODE_AUTH_JSON_PATH: missingProviderCodeAuthPath,
     },
   })
 
-  assert.equal(env.OPENAI_BASE_URL, 'https://chatgpt.com/backend-api/agenc')
+  assert.equal(env.OPENAI_BASE_URL, DEFAULT_PROVIDER_CODE_BASE_URL)
   assert.equal(env.OPENAI_MODEL, 'agencspark')
   assert.equal(env.AGENC_API_KEY, 'agenc-persisted')
   assert.equal(env.CHATGPT_ACCOUNT_ID, 'acct_persisted')
@@ -289,11 +284,11 @@ test('agenc launch normalizes poisoned persisted base urls', async () => {
     }),
     goal: 'balanced',
     processEnv: {
-      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
+      PROVIDER_CODE_AUTH_JSON_PATH: missingProviderCodeAuthPath,
     },
   })
 
-  assert.equal(env.OPENAI_BASE_URL, 'https://chatgpt.com/backend-api/agenc')
+  assert.equal(env.OPENAI_BASE_URL, DEFAULT_PROVIDER_CODE_BASE_URL)
   assert.equal(env.OPENAI_MODEL, 'agencspark')
 })
 
@@ -315,7 +310,7 @@ test('agenc launch ignores mismatched persisted openai env', async () => {
     },
   })
 
-  assert.equal(env.OPENAI_BASE_URL, 'https://chatgpt.com/backend-api/agenc')
+  assert.equal(env.OPENAI_BASE_URL, DEFAULT_PROVIDER_CODE_BASE_URL)
   assert.equal(env.OPENAI_MODEL, 'agencplan')
   assert.equal(env.OPENAI_API_KEY, undefined)
   assert.equal(env.AGENC_API_KEY, 'agenc-live')
@@ -326,7 +321,7 @@ test('agenc launch ignores placeholder agenc env keys', async () => {
   const env = await buildLaunchEnv({
     profile: 'agenc',
     persisted: profile('agenc', {
-      OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       OPENAI_MODEL: 'agencspark',
       AGENC_API_KEY: 'agenc-persisted',
       CHATGPT_ACCOUNT_ID: 'acct_persisted',
@@ -334,7 +329,7 @@ test('agenc launch ignores placeholder agenc env keys', async () => {
     goal: 'balanced',
     processEnv: {
       AGENC_API_KEY: 'SUA_CHAVE',
-      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
+      PROVIDER_CODE_AUTH_JSON_PATH: missingProviderCodeAuthPath,
     },
   })
 
@@ -343,10 +338,10 @@ test('agenc launch ignores placeholder agenc env keys', async () => {
 })
 
 test('agenc launch prefers auth account id over stale persisted value', async () => {
-  const agencHome = mkdtempSync(join(tmpdir(), 'agenc-agenc-'))
+  const providerCodeHome = mkdtempSync(join(tmpdir(), 'agenc-provider-code-'))
   try {
     writeFileSync(
-      join(agencHome, 'auth.json'),
+      join(providerCodeHome, 'auth.json'),
       JSON.stringify({
         access_token: 'agenc-live',
         account_id: 'acct_auth',
@@ -357,19 +352,19 @@ test('agenc launch prefers auth account id over stale persisted value', async ()
     const env = await buildLaunchEnv({
       profile: 'agenc',
       persisted: profile('agenc', {
-        OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+        OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
         OPENAI_MODEL: 'agencspark',
         CHATGPT_ACCOUNT_ID: 'acct_persisted',
       }),
       goal: 'balanced',
       processEnv: {
-        AGENC_HOME: agencHome,
+        PROVIDER_CODE_HOME: providerCodeHome,
       },
     })
 
     assert.equal(env.CHATGPT_ACCOUNT_ID, 'acct_auth')
   } finally {
-    rmSync(agencHome, { recursive: true, force: true })
+    rmSync(providerCodeHome, { recursive: true, force: true })
   }
 })
 
@@ -395,7 +390,7 @@ test('agenc profiles accept explicit agenc credentials', () => {
   })
 
   assert.deepEqual(env, {
-    OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+    OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
     OPENAI_MODEL: 'agencspark',
     AGENC_CREDENTIAL_SOURCE: 'existing',
     AGENC_API_KEY: 'agenc-live',
@@ -408,7 +403,7 @@ test('agenc profiles require a chatgpt account id', () => {
     model: 'agencspark',
     apiKey: 'agenc-live',
     processEnv: {
-      AGENC_AUTH_JSON_PATH: missingAgencAuthPath,
+      PROVIDER_CODE_AUTH_JSON_PATH: missingProviderCodeAuthPath,
     },
   })
 
@@ -419,7 +414,7 @@ test('agenc launch clears openai-compatible format and custom auth env', async (
   const env = await buildLaunchEnv({
     profile: 'agenc',
     persisted: profile('agenc', {
-      OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       OPENAI_MODEL: 'agencspark',
       CHATGPT_ACCOUNT_ID: 'acct_persisted',
     }),
@@ -555,17 +550,6 @@ test('clearPersistedAgencOAuthProfile removes only persisted Agenc OAuth profile
   const cwd = mkdtempSync(join(tmpdir(), 'agenc-agenc-oauth-profile-'))
 
   try {
-    const providerProfileModule = await import(
-      `./providerProfile.ts?ts=${Date.now()}-${Math.random()}`
-    )
-    const {
-      PROFILE_FILE_NAME,
-      clearPersistedAgencOAuthProfile,
-      createProfileFile,
-      isPersistedAgencOAuthProfile,
-      loadProfileFile,
-      saveProfileFile,
-    } = providerProfileModule
     const oauthProfile = createProfileFile('agenc', {
       OPENAI_MODEL: 'agencplan',
       OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
@@ -694,7 +678,6 @@ test('buildStartupEnvFromProfile preserves explicit GitHub provider settings whe
 })
 
 test('applySavedProfileToCurrentSession can switch away from GitHub provider env', async () => {
-  const { applySavedProfileToCurrentSession } = await importFreshProviderProfileModule()
   const processEnv = {
     AGENC_USE_GITHUB: '1',
     OPENAI_MODEL: 'github:copilot',
@@ -840,7 +823,7 @@ test('openai profiles ignore agenc shell transport hints', () => {
     goal: 'balanced',
     apiKey: 'sk-live',
     processEnv: {
-      OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/agenc',
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       OPENAI_MODEL: 'agencplan',
       OPENAI_API_KEY: 'sk-live',
     },
