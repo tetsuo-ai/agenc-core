@@ -54,6 +54,7 @@ import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
 } from './systemPromptSections.js'
+import { renderMcpInstructionsSection } from '../prompts/mcp-instructions-framing.js'
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -590,26 +591,15 @@ function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
     (client): client is ConnectedMCPServer => client.type === 'connected',
   )
 
-  const clientsWithInstructions = connectedClients.filter(
-    client => client.instructions,
+  return renderMcpInstructionsSection(
+    connectedClients.flatMap(client => {
+      if (!client.instructions) return []
+      return [{
+        name: client.name,
+        instructions: client.instructions,
+      }]
+    }),
   )
-
-  if (clientsWithInstructions.length === 0) {
-    return null
-  }
-
-  const instructionBlocks = clientsWithInstructions
-    .map(client => {
-      return `## ${client.name}
-${client.instructions}`
-    })
-    .join('\n\n')
-
-  return `# MCP Server Instructions
-
-The following MCP servers have provided instructions for how to use their tools and resources:
-
-${instructionBlocks}`
 }
 
 export async function computeEnvInfo(
