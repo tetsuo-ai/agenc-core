@@ -3,7 +3,7 @@
   "scope": "Embedded Neovim BUFFER implementation from docs/embedded-neovim-buffer.md",
   "generatedAt": "2026-05-25T06:09:59.650Z",
   "sourceRoot": "..",
-  "sourceSnapshotHash": "19a7f74ccf5d0771c9877ce44f44036bb21876fb840056109348f43dcb33bff4",
+  "sourceSnapshotHash": "265fa7331cd6ab682acd875607025795f7217efc10b66d03a8e52f117bc68cc3",
   "targetRoot": "..",
   "approvedExceptions": [
     {
@@ -32,7 +32,7 @@
   "sourceFiles": [
     {
       "path": "docs/embedded-neovim-buffer.md",
-      "sha256": "b0df3ae59915e571cb9c6a707425aa8624d0341b61c59a7c47cce4e566738652"
+      "sha256": "290851d8da6ed70863f532f5bd3cfadb9ef6bd7f59d37cd18fc274636a805344"
     },
     {
       "path": "runtime/src/tui/workbench/surfaces/BufferSurface.tsx",
@@ -165,7 +165,7 @@
         "runtime/tests/tui/workbench/buffer-neovim-provider.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -192,7 +192,7 @@
         "runtime/tests/tui/workbench/buffer-neovim-discovery.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-discovery.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-neovim-discovery.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -219,7 +219,7 @@
         "runtime/tests/tui/workbench/buffer-neovim-rpc.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-rpc.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-neovim-rpc.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -252,7 +252,7 @@
         "runtime/tests/tui/workbench/buffer-surface.test.tsx"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-grid.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-neovim-grid.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
       ],
       "status": "required"
     },
@@ -299,7 +299,7 @@
         "runtime/tests/tui/workbench/buffer-surface.test.tsx"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-input.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-neovim-input.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
       ],
       "status": "required"
     },
@@ -347,7 +347,7 @@
       "runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts"
     ],
     "commands": [
-      "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-surface.test.tsx tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
+      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-surface.test.tsx tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
       "npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim"
     ],
       "status": "required"
@@ -381,7 +381,7 @@
         "runtime/tests/tui/workbench/buffer-file-safety.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-file-safety.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-file-safety.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -416,7 +416,7 @@
         "runtime/tests/tui/workbench/buffer-lsp-bridge.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-lsp-bridge.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-lsp-bridge.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -455,7 +455,7 @@
         "runtime/tests/tui/workbench/buffer-surface.test.tsx"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
       ],
       "status": "required"
     },
@@ -497,7 +497,7 @@
         "runtime/tests/tui/workbench/buffer-surface.test.tsx"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-fallback-inline.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-fallback-inline.contract.test.ts tests/tui/workbench/buffer-surface.test.tsx --reporter=dot"
       ],
       "status": "required"
     },
@@ -534,7 +534,7 @@
         "runtime/tests/tui/workbench/buffer-fallback-inline.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-external-editor-provider.contract.test.ts tests/tui/workbench/buffer-external-editor.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-fallback-inline.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-external-editor-provider.contract.test.ts tests/tui/workbench/buffer-external-editor.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-fallback-inline.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -570,7 +570,7 @@
         "runtime/tests/tui/workbench/buffer-neovim-e2e-contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-neovim-e2e-contract.test.ts --reporter=dot",
         "CI=1 NO_COLOR=1 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim",
         "CI=1 NO_COLOR=1 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke"
       ],
@@ -637,7 +637,7 @@
         "runtime/tests/tui/workbench/buffer-docs-config.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime run test -- tests/tui/workbench/buffer-docs-config.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-docs-config.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     }

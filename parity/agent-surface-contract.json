@@ -255,7 +255,7 @@
         "runtime/tests/agents/status.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -295,7 +295,7 @@
         "runtime/tests/agents/thread-rollout-truncation.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -333,7 +333,7 @@
         "runtime/tests/app-server/daemon-dispatcher.contract.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -457,7 +457,7 @@
         "runtime/tests/phases/stream-model.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -509,7 +509,7 @@
         "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts --reporter=dot",
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts --reporter=dot",
         "npm --workspace=@tetsuo-ai/runtime run build && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 03-subagent-completion && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 23-slash-agents"
       ],
       "status": "required"
