@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Command } from '../../commands.js'
 import type { Tools } from '../../tools/Tool.js'
 import { renderToString } from '../../utils/staticRender.js'
+import {
+  getDefaultMainLoopModelSetting,
+  parseUserSpecifiedModel,
+} from '../../utils/model/model.js'
 import { ContentWidthProvider } from '../context/contentWidthContext.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import { Messages } from './Messages.js'
@@ -42,6 +46,10 @@ describe('Messages welcome state', () => {
 
     expect(output).toContain('agenc.')
     expect(output).toContain('a netrunner with hands on every file')
+    expect(output).toContain(
+      parseUserSpecifiedModel(getDefaultMainLoopModelSetting()),
+    )
+    expect(output).not.toContain('default model')
     expect(output).toContain('workspace')
     expect(output).toContain('recent')
     expect(output).not.toContain('18.40')

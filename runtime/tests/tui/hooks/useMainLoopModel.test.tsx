@@ -16,7 +16,7 @@ const model = vi.hoisted(() => ({
 }))
 
 vi.mock('../state/AppState.js', () => ({
-  useAppState: (
+  useAppStateMaybeOutsideOfProvider: (
     selector: (state: {
       mainLoopModel?: string
       mainLoopModelForSession?: string
