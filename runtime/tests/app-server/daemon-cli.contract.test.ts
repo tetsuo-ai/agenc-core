@@ -495,6 +495,32 @@ describe("AgenC daemon CLI", () => {
         [AGENC_DAEMON_WEBSOCKET_PORT_ENV]: "0",
       }).port,
     ).toBe(0);
+    expect(
+      resolveAgenCDaemonWebSocketListenOptions({
+        AGENC_HOME: "/tmp/agenc-isolated-home",
+        AGENC_DAEMON_WEBSOCKET_HOST: "127.0.0.2",
+      }),
+    ).toMatchObject({
+      host: "127.0.0.2",
+      port: 0,
+    });
+    expect(() =>
+      resolveAgenCDaemonWebSocketListenOptions({
+        AGENC_HOME: "/tmp/agenc-isolated-home",
+        AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
+        AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK: "yes",
+      }),
+    ).toThrow(/must be a loopback host/);
+    expect(
+      resolveAgenCDaemonWebSocketListenOptions({
+        AGENC_HOME: "/tmp/agenc-isolated-home",
+        AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
+        AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK: "TRUE",
+      }),
+    ).toMatchObject({
+      host: "0.0.0.0",
+      port: 0,
+    });
     expect(validateAgenCDaemonWebSocketOrigin(undefined)).toBe(true);
     expect(validateAgenCDaemonWebSocketOrigin("http://127.0.0.1:4173")).toBe(
       true,
