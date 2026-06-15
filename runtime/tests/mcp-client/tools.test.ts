@@ -156,6 +156,73 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(ends[0]!.isError).toBe(false);
   });
 
+  test("normalizes malformed MCP tool call result content", async () => {
+    const observedResults: string[] = [];
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "mixed", description: "returns mixed content" }],
+        }),
+        callTool: async () => ({
+          content: [
+            null,
+            7,
+            "loose string",
+            { type: "text", text: 42 },
+            { type: "text", text: { nested: true } },
+            { type: "image", data: "abc", mimeType: "image/png" },
+            { type: "text" },
+          ],
+          isError: "true",
+        }),
+        close: async () => {},
+      },
+      "srv",
+      undefined,
+      {
+        callObserver: {
+          onEnd: (end) => {
+            observedResults.push(end.result);
+          },
+        },
+      },
+    );
+
+    const result = await bridge.tools[0]!.execute({});
+
+    expect(result).toEqual({
+      content: [
+        "null",
+        "7",
+        "loose string",
+        "42",
+        "{\"nested\":true}",
+        "{\"type\":\"image\",\"data\":\"abc\",\"mimeType\":\"image/png\"}",
+        "",
+      ].join("\n"),
+      isError: false,
+    });
+    expect(observedResults).toEqual([result.content]);
+  });
+
+  test("normalizes primitive MCP tool call responses", async () => {
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "primitive", description: "returns primitive" }],
+        }),
+        callTool: async () => "raw response",
+        close: async () => {},
+      },
+      "srv",
+    );
+
+    await expect(bridge.tools[0]!.execute({})).resolves.toEqual({
+      content: "raw response",
+      isError: false,
+    });
+  });
+
   test("applies server tool filters and approval defaults", async () => {
     const fakeClient = {
       listTools: async () => ({
