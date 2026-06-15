@@ -1,8 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 async function importFreshModule() {
-  return import(`../../src/utils/githubModelsCredentials.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/githubModelsCredentials.ts')
 }
+
+const secureStorageModulePath = '../../src/utils/secureStorage/index.js'
+const deviceFlowModulePath = '../../src/services/github/deviceFlow.js'
 
 describe('refreshGithubModelsTokenIfNeeded', () => {
   const orig = {
@@ -13,10 +17,16 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
   }
 
   beforeEach(() => {
-    mock.restore()
+    vi.doUnmock(secureStorageModulePath)
+    vi.doUnmock(deviceFlowModulePath)
+    vi.clearAllMocks()
+    vi.resetModules()
   })
 
   afterEach(() => {
+    vi.doUnmock(secureStorageModulePath)
+    vi.doUnmock(deviceFlowModulePath)
+    vi.resetModules()
     for (const [k, v] of Object.entries(orig)) {
       if (v === undefined) {
         delete process.env[k as keyof typeof orig]
@@ -40,7 +50,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       },
     }
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => store,
         update: (next: Record<string, unknown>) => {
@@ -50,7 +60,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       }),
     }))
 
-    mock.module('../../src/services/github/deviceFlow.js', () => ({
+    vi.doMock(deviceFlowModulePath, () => ({
       DEFAULT_GITHUB_DEVICE_SCOPE: 'read:user',
       exchangeForCopilotToken: async () => ({
         token: `tid=fresh;exp=${futureExp};sku=free`,
@@ -81,14 +91,14 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
     delete process.env.GH_TOKEN
 
     const futureExp = Math.floor(Date.now() / 1000) + 3600
-    const exchangeSpy = mock(async () => ({
+    const exchangeSpy = vi.fn(async () => ({
       token: `tid=unexpected;exp=${futureExp};sku=free`,
       expires_at: futureExp,
       refresh_in: 1500,
       endpoints: { api: 'https://api.githubcopilot.com' },
     }))
 
-    mock.module('../../src/utils/secureStorage/index.js', () => ({
+    vi.doMock(secureStorageModulePath, () => ({
       getSecureStorage: () => ({
         read: () => ({
           githubModels: {
@@ -100,7 +110,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
       }),
     }))
 
-    mock.module('../../src/services/github/deviceFlow.js', () => ({
+    vi.doMock(deviceFlowModulePath, () => ({
       DEFAULT_GITHUB_DEVICE_SCOPE: 'read:user',
       exchangeForCopilotToken: exchangeSpy,
     }))
