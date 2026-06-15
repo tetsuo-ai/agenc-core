@@ -119,6 +119,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/serializationStability.test.ts',
   'tests/utils/sessionStorage.test.ts',
   'tests/utils/settings/allowBypassPermissionsMode.test.ts',
+  'tests/utils/secureStorage/platformStorage.test.ts',
   'tests/utils/shell-discovery.test.ts',
   'tests/utils/stableStringify.test.ts',
   'tests/utils/streamingOptimizer.test.ts',
