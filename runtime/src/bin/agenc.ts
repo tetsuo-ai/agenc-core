@@ -81,6 +81,7 @@ import {
   buildAssembleSystemPromptOpts,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
+import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import { enableConfigs } from "../config/init.js";
@@ -1036,6 +1037,7 @@ function appendUserPromptSubmitContexts(
 ): string | readonly LLMContentPart[] {
   if (contexts.length === 0) return input;
   const contextText = formatUserPromptSubmitContexts(contexts);
+  if (contextText.length === 0) return input;
   if (typeof input === "string") {
     return input.trim().length > 0 ? `${input}\n\n${contextText}` : contextText;
   }
@@ -1053,12 +1055,13 @@ function appendUserPromptSubmitContexts(
 }
 
 function formatUserPromptSubmitContexts(contexts: readonly string[]): string {
-  return contexts
-    .map(
-      (context) =>
-        `<hook_additional_context>\n${truncateUserPromptSubmitContext(context)}\n</hook_additional_context>`,
-    )
-    .join("\n\n");
+  return renderHookAdditionalContextSection(
+    contexts.map((context) => ({
+      hookName: "UserPromptSubmit",
+      hookEvent: "UserPromptSubmit",
+      content: truncateUserPromptSubmitContext(context),
+    })),
+  ) ?? "";
 }
 
 function appendUserPromptSubmitContextsToMessage(
@@ -1066,7 +1069,8 @@ function appendUserPromptSubmitContextsToMessage(
   contexts: readonly string[],
 ): string {
   if (contexts.length === 0) return message;
-  return `${message}\n\n${formatUserPromptSubmitContexts(contexts)}`;
+  const contextText = formatUserPromptSubmitContexts(contexts);
+  return contextText.length === 0 ? message : `${message}\n\n${contextText}`;
 }
 
 function emitUserPromptSubmitHookThrown(

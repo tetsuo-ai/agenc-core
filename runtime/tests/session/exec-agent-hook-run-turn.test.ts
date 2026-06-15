@@ -945,7 +945,11 @@ describe("execAgentHook run-turn integration", () => {
     }
 
     const requestText = seenMessages[0]?.map(llmMessageText).join("\n") ?? "";
-    expect(requestText).toContain("SubagentStart hook additional context");
+    expect(requestText).toContain("# Hook Additional Context");
+    expect(requestText).toContain("untrusted command output");
+    expect(requestText).toContain(
+      '<hook_additional_context trust="untrusted" hook="SubagentStart" event="SubagentStart">',
+    );
     expect(requestText).toContain("MUST_USE_MARKER");
   });
 
