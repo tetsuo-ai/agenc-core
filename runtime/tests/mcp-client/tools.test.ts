@@ -52,6 +52,63 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     );
   });
 
+  test("normalizes malformed MCP tool descriptors before bridge construction", async () => {
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [
+            null,
+            "noise",
+            { name: 42, description: "bad name" },
+            { description: "missing name" },
+            { name: "   ", description: "blank name" },
+            {
+              name: "safe",
+              description: 123,
+              inputSchema: "not-a-schema",
+            },
+            {
+              name: "typed",
+              description: "typed schema",
+              inputSchema: { type: "object", properties: { q: { type: "string" } } },
+            },
+          ],
+        }),
+        callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        close: async () => {},
+      },
+      "srv",
+    );
+
+    expect(bridge.tools.map((tool) => tool.name)).toEqual([
+      "mcp.srv.safe",
+      "mcp.srv.typed",
+    ]);
+    expect(bridge.tools[0]?.description).toContain("MCP tool: safe");
+    expect(bridge.tools[0]?.inputSchema).toEqual({
+      type: "object",
+      properties: {},
+    });
+    expect(bridge.tools[1]?.description).toContain("typed schema");
+    expect(bridge.tools[1]?.inputSchema).toEqual({
+      type: "object",
+      properties: { q: { type: "string" } },
+    });
+  });
+
+  test("treats non-array MCP tool catalogs as exposing zero tools", async () => {
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({ tools: { name: "not-array" } }),
+        callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        close: async () => {},
+      },
+      "srv",
+    );
+
+    expect(bridge.tools).toEqual([]);
+  });
+
   test("observer.onBegin + onEnd fire around a successful call", async () => {
     const begins: Array<{ server: string; toolName: string; args: string }> = [];
     const ends: Array<{ server: string; toolName: string; isError: boolean }> = [];
