@@ -1,9 +1,40 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 const originalEnv = { ...process.env }
+const axiosModulePath = 'axios'
+const oauthModulePath = 'src/constants/oauth.js'
+const growthbookModulePath = 'src/services/analytics/growthbook.js'
+const bootstrapStateModulePath = '../../src/bootstrap/state.js'
+const authModulePath = '../../src/utils/auth.js'
+const bundledModeModulePath = '../../src/utils/bundledMode.js'
+const configModulePath = '../../src/utils/config.js'
+const debugModulePath = 'src/utils/debug.js'
+const envUtilsModulePath = '../../src/utils/envUtils.js'
+const modelModulePath = '../../src/utils/model/model.js'
+const providersModulePath = '../../src/utils/model/providers.js'
+const privacyLevelModulePath = '../../src/utils/privacyLevel.js'
+const settingsModulePath = '../../src/utils/settings/settings.js'
+const signalModulePath = '../../src/utils/signal.js'
+const mockedModulePaths = [
+  axiosModulePath,
+  oauthModulePath,
+  growthbookModulePath,
+  bootstrapStateModulePath,
+  authModulePath,
+  bundledModeModulePath,
+  configModulePath,
+  debugModulePath,
+  envUtilsModulePath,
+  modelModulePath,
+  providersModulePath,
+  privacyLevelModulePath,
+  settingsModulePath,
+  signalModulePath,
+]
 
 async function importFreshFastModeModule() {
-  return import(`../../src/utils/fastMode.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/fastMode.ts')
 }
 
 function installCommonMocks(options?: {
@@ -13,7 +44,7 @@ function installCommonMocks(options?: {
   hasProfileScope?: boolean
   axiosReject?: boolean
 }) {
-  mock.module('axios', () => ({
+  vi.doMock(axiosModulePath, () => ({
     default: {
       get: options?.axiosReject
         ? async () => {
@@ -24,12 +55,12 @@ function installCommonMocks(options?: {
     },
   }))
 
-  mock.module('src/constants/oauth.js', () => ({
+  vi.doMock(oauthModulePath, () => ({
     getOauthConfig: () => ({ BASE_API_URL: 'https://api.anthropic.com' }),
     OAUTH_BETA_HEADER: 'test-beta',
   }))
 
-  mock.module('src/services/analytics/growthbook.js', () => ({
+  vi.doMock(growthbookModulePath, () => ({
     getFeatureValue_CACHED_MAY_BE_STALE: (_name: string, defaultValue: unknown) =>
       defaultValue,
     getFeatureValue_CACHED_WITH_REFRESH: async (
@@ -38,13 +69,13 @@ function installCommonMocks(options?: {
     ) => defaultValue,
   }))
 
-  mock.module('../../src/bootstrap/state.js', () => ({
+  vi.doMock(bootstrapStateModulePath, () => ({
     getIsNonInteractiveSession: () => false,
     getKairosActive: () => false,
     preferThirdPartyAuthentication: () => false,
   }))
 
-  mock.module('../../src/utils/auth.js', () => ({
+  vi.doMock(authModulePath, () => ({
     getAnthropicApiKey: () => options?.apiKey ?? null,
     getAgenCAIOAuthTokens: () =>
       options?.oauthToken ? { accessToken: options.oauthToken } : null,
@@ -52,11 +83,11 @@ function installCommonMocks(options?: {
     hasProfileScope: () => options?.hasProfileScope ?? false,
   }))
 
-  mock.module('../../src/utils/bundledMode.js', () => ({
+  vi.doMock(bundledModeModulePath, () => ({
     isInBundledMode: () => true,
   }))
 
-  mock.module('../../src/utils/config.js', () => ({
+  vi.doMock(configModulePath, () => ({
     getGlobalConfig: () => ({
       penguinModeOrgEnabled: options?.cachedEnabled === true,
     }),
@@ -64,36 +95,36 @@ function installCommonMocks(options?: {
       updater({ penguinModeOrgEnabled: options?.cachedEnabled === true }),
   }))
 
-  mock.module('src/utils/debug.js', () => ({
+  vi.doMock(debugModulePath, () => ({
     logForDebugging: () => {},
   }))
 
-  mock.module('../../src/utils/envUtils.js', () => ({
+  vi.doMock(envUtilsModulePath, () => ({
     isEnvTruthy: (value: string | undefined) =>
       !!value && value !== '0' && value.toLowerCase() !== 'false',
   }))
 
-  mock.module('../../src/utils/model/model.js', () => ({
+  vi.doMock(modelModulePath, () => ({
     getDefaultMainLoopModelSetting: () => 'claude-sonnet-4-6',
     isOpus1mMergeEnabled: () => false,
     parseUserSpecifiedModel: (model: string) => model,
   }))
 
-  mock.module('../../src/utils/model/providers.js', () => ({
+  vi.doMock(providersModulePath, () => ({
     getAPIProvider: () => 'firstParty',
   }))
 
-  mock.module('../../src/utils/privacyLevel.js', () => ({
+  vi.doMock(privacyLevelModulePath, () => ({
     isEssentialTrafficOnly: () => false,
   }))
 
-  mock.module('../../src/utils/settings/settings.js', () => ({
+  vi.doMock(settingsModulePath, () => ({
     getInitialSettings: () => ({ fastMode: true }),
     getSettingsForSource: () => ({}),
     updateSettingsForSource: () => {},
   }))
 
-  mock.module('../../src/utils/signal.js', () => ({
+  vi.doMock(signalModulePath, () => ({
     createSignal: () => {
       const subscribe = () => () => {}
       const emit = () => {}
@@ -103,7 +134,11 @@ function installCommonMocks(options?: {
 }
 
 afterEach(() => {
-  mock.restore()
+  for (const modulePath of mockedModulePaths) {
+    vi.doUnmock(modulePath)
+  }
+  vi.clearAllMocks()
+  vi.resetModules()
   process.env = { ...originalEnv }
 })
 
