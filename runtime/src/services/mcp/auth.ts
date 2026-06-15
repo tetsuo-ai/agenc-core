@@ -353,7 +353,15 @@ async function fetchAuthServerMetadata(
       headers: { Accept: 'application/json' },
     })
     if (response.ok) {
-      return OAuthMetadataSchema.parse(await response.json())
+      let payload: unknown
+      try {
+        payload = await response.json()
+      } catch {
+        throw new Error(
+          `Configured auth server metadata returned invalid JSON from ${configuredMetadataUrl}`,
+        )
+      }
+      return OAuthMetadataSchema.parse(payload)
     }
     throw new Error(
       `HTTP ${response.status} fetching configured auth server metadata from ${configuredMetadataUrl}`,
