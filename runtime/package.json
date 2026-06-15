@@ -89,7 +89,7 @@
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "0.3.0",
-    "@anthropic-ai/sandbox-runtime": "0.0.54",
+    "@anthropic-ai/sandbox-runtime": "0.0.55",
     "@anthropic-ai/sdk": "^0.104.1",
     "@codemirror/state": "^6.6.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
