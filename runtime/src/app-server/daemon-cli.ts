@@ -8,7 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -168,6 +168,8 @@ export function buildAgenCDaemonChildNodeArgs(
   ];
 }
 const AGENC_DAEMON_WEBSOCKET_HOST_ENV = "AGENC_DAEMON_WEBSOCKET_HOST";
+const AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV =
+  "AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK";
 export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
 const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
@@ -262,6 +264,15 @@ export function resolveAgenCDaemonWebSocketListenOptions(
   const host =
     env[AGENC_DAEMON_WEBSOCKET_HOST_ENV]?.trim() ||
     AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST;
+  if (
+    !isLoopbackListenHost(host) &&
+    !allowsNonLoopbackDaemonWebSocketHost(env)
+  ) {
+    throw new Error(
+      `${AGENC_DAEMON_WEBSOCKET_HOST_ENV} must be a loopback host unless ` +
+        `${AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV}=1 is set`,
+    );
+  }
   const path =
     env[AGENC_DAEMON_WEBSOCKET_PATH_ENV]?.trim() ||
     AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH;
@@ -327,6 +338,22 @@ function isLoopbackHostname(hostname: string): boolean {
     normalized === "127.0.0.1" ||
     normalized === "::1"
   );
+}
+
+function isLoopbackListenHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  const ipFamily = isIP(normalized);
+  if (ipFamily === 4) return normalized.startsWith("127.");
+  return false;
+}
+
+function allowsNonLoopbackDaemonWebSocketHost(
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const value = env[AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV]?.trim()
+    .toLowerCase();
+  return value === "1" || value === "true";
 }
 
 export function resolveAgenCDaemonPidPath(
