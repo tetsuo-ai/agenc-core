@@ -5,6 +5,7 @@ import {
   PROVIDER_CODE_REFRESH_URL as AGENC_REFRESH_URL,
   exchangeProviderCodeIdTokenForApiKey as exchangeAgencIdTokenForApiKey,
   getOpenAiCodeOAuthClientId as getAgencOAuthClientId,
+  normalizeOAuthTokenPayload,
   parseChatgptAccountId,
   decodeJwtPayload,
 } from '../services/api/openAiCodeOAuthShared.js'
@@ -22,12 +23,6 @@ export type AgencCredentialBlob = {
   profileId?: string
   lastRefreshAt?: number
   lastRefreshFailureAt?: number
-}
-
-type AgencTokenRefreshResponse = {
-  access_token?: string
-  refresh_token?: string
-  id_token?: string
 }
 
 let inFlightAgencRefresh:
@@ -325,8 +320,8 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
         throw new Error(getRefreshErrorMessage(response.status, bodyText))
       }
 
-      const payload = (await response.json()) as AgencTokenRefreshResponse
-      const accessToken = asTrimmedString(payload.access_token)
+      const payload = normalizeOAuthTokenPayload(await response.json())
+      const accessToken = payload.accessToken
       if (!accessToken) {
         throw new Error(
           'Agenc token refresh succeeded without a new access token.',
@@ -336,11 +331,11 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
       const next: AgencCredentialBlob = {
         accessToken,
         refreshToken:
-          asTrimmedString(payload.refresh_token) ?? refreshToken,
-        idToken: asTrimmedString(payload.id_token) ?? current.idToken,
+          payload.refreshToken ?? refreshToken,
+        idToken: payload.idToken ?? current.idToken,
         accountId:
-          parseChatgptAccountId(payload.id_token) ??
-          parseChatgptAccountId(payload.access_token) ??
+          parseChatgptAccountId(payload.idToken) ??
+          parseChatgptAccountId(payload.accessToken) ??
           current.accountId,
         lastRefreshAt: Date.now(),
       }
