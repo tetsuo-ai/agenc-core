@@ -12,6 +12,10 @@ const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL";
 const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
 const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL";
 
+function invalidJsonResponse(): Response {
+  return new Response("not-json", { status: 200 });
+}
+
 describe("RemoteAuthBackend", () => {
   it("persists a long-lived token returned by the configured login flow", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
@@ -579,6 +583,71 @@ describe("RemoteAuthBackend", () => {
     await expect(sessionMismatch.vendKey("grok", "session-1")).rejects.toThrow(
       /session mismatch/,
     );
+  });
+
+  it("rejects malformed successful HTTP JSON with remote auth errors", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+
+    try {
+      const keyBackend = new RemoteAuthBackend({
+        agencHome,
+        managedKeysEnabled: true,
+        env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+        fetchImpl: vi.fn(async () => invalidJsonResponse()),
+      });
+      await expect(keyBackend.vendKey("grok", "session-1")).rejects.toThrow(
+        "RemoteAuthBackend key vending returned invalid JSON",
+      );
+
+      const loginStartBackend = new RemoteAuthBackend({
+        agencHome,
+        fetchImpl: vi.fn(async () => invalidJsonResponse()),
+      });
+      await expect(loginStartBackend.login({ sessionId: "cli" })).rejects.toThrow(
+        "RemoteAuthBackend login start returned invalid JSON",
+      );
+
+      const loginPollBackend = new RemoteAuthBackend({
+        agencHome,
+        fetchImpl: vi
+          .fn()
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ deviceCode: "device-1" }), {
+              status: 200,
+            }),
+          )
+          .mockResolvedValueOnce(invalidJsonResponse()),
+      });
+      await expect(loginPollBackend.login({ sessionId: "cli" })).rejects.toThrow(
+        "RemoteAuthBackend login poll returned invalid JSON",
+      );
+
+      const modelBackend = new RemoteAuthBackend({
+        agencHome,
+        env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+        fetchImpl: vi.fn(async () => invalidJsonResponse()),
+      });
+      await expect(
+        modelBackend.inferAgencModel({
+          provider: "agenc",
+          requestedModel: "agenc",
+          sessionId: "session-1",
+        }),
+      ).rejects.toThrow(
+        "RemoteAuthBackend hosted model routing returned invalid JSON",
+      );
+
+      const tierBackend = new RemoteAuthBackend({
+        agencHome,
+        env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+        fetchImpl: vi.fn(async () => invalidJsonResponse()),
+      });
+      await expect(tierBackend.getSubscriptionTier()).rejects.toThrow(
+        "RemoteAuthBackend subscription tier lookup returned invalid JSON",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("infers hosted AgenC model aliases through the configured model inferer", async () => {
