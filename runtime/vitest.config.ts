@@ -93,6 +93,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/gracefulShutdown.test.ts',
   'tests/utils/handlePromptSubmit.test.ts',
   'tests/utils/handlePromptSubmit.vimMode.test.ts',
+  'tests/utils/hookChains.test.ts',
   'tests/utils/hybridContextStrategy.test.ts',
   'tests/utils/memory/memory-utils.contract.test.ts',
   'tests/utils/messageQueueManager.test.ts',

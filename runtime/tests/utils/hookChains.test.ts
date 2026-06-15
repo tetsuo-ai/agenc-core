@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 type HookChainsModule = typeof import('../../src/utils/hookChains.ts')
 
+const policyLimitsModulePath = '../../src/services/policyLimits/index.js'
 const tempDirs: string[] = []
 const originalHookChainsEnabled = process.env.AGENC_ENABLE_HOOK_CHAINS
 
@@ -19,15 +20,15 @@ async function makeConfigFile(config: unknown): Promise<string> {
 async function importHookChainsModule(options?: {
   allowRemoteSessions?: boolean
 }): Promise<HookChainsModule> {
-  mock.restore()
+  vi.resetModules()
 
   const allowRemoteSessions = options?.allowRemoteSessions ?? true
 
-  mock.module('../../src/services/policyLimits/index.js', () => ({
+  vi.doMock(policyLimitsModulePath, () => ({
     isPolicyAllowed: () => allowRemoteSessions,
   }))
 
-  return import(`../../src/utils/hookChains.ts?test=${Date.now()}-${Math.random()}`)
+  return import('../../src/utils/hookChains.ts')
 }
 
 beforeEach(() => {
@@ -35,7 +36,9 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  mock.restore()
+  vi.doUnmock(policyLimitsModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
 
   if (originalHookChainsEnabled === undefined) {
     delete process.env.AGENC_ENABLE_HOOK_CHAINS
@@ -239,7 +242,7 @@ describe('dispatchHookChainsForEvent guard logic', () => {
       ],
     })
 
-    const spawn = mock(async () => ({ launched: true, agentId: 'agent-1' }))
+    const spawn = vi.fn(async () => ({ launched: true, agentId: 'agent-1' }))
 
     const first = await mod.dispatchHookChainsForEvent({
       configPathOverride: configPath,
@@ -287,7 +290,7 @@ describe('dispatchHookChainsForEvent guard logic', () => {
       ],
     })
 
-    const spawn = mock(async () => ({ launched: true, agentId: 'agent-2' }))
+    const spawn = vi.fn(async () => ({ launched: true, agentId: 'agent-2' }))
 
     const first = await mod.dispatchHookChainsForEvent({
       configPathOverride: configPath,
@@ -333,7 +336,7 @@ describe('dispatchHookChainsForEvent guard logic', () => {
       ],
     })
 
-    const spawn = mock(async () => ({ launched: true, agentId: 'agent-3' }))
+    const spawn = vi.fn(async () => ({ launched: true, agentId: 'agent-3' }))
 
     const result = await mod.dispatchHookChainsForEvent({
       configPathOverride: configPath,
@@ -411,7 +414,7 @@ describe('action dispatch skip scenarios', () => {
       ],
     })
 
-    const spawn = mock(async () => ({ launched: true, agentId: 'agent-4' }))
+    const spawn = vi.fn(async () => ({ launched: true, agentId: 'agent-4' }))
 
     const result = await mod.dispatchHookChainsForEvent({
       configPathOverride: configPath,
@@ -446,7 +449,7 @@ describe('action dispatch skip scenarios', () => {
       ],
     })
 
-    const warm = mock(async () => ({
+    const warm = vi.fn(async () => ({
       warmed: true,
       environmentId: 'env-123',
     }))
