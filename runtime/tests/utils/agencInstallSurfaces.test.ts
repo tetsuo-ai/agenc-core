@@ -1,8 +1,9 @@
-import { afterEach, expect, mock, test } from 'bun:test'
+import { afterEach, expect, test, vi } from 'vitest'
 import * as fsPromises from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
-import { sourceUrl } from '../helpers/source-path.ts'
+
+const execModulePath = '../../src/utils/execFileNoThrow.js'
 
 const originalEnv = { ...process.env }
 const originalMacro = (globalThis as Record<string, unknown>).MACRO
@@ -10,13 +11,15 @@ const originalMacro = (globalThis as Record<string, unknown>).MACRO
 afterEach(() => {
   process.env = { ...originalEnv }
   ;(globalThis as Record<string, unknown>).MACRO = originalMacro
-  mock.restore()
+  vi.doUnmock('fs/promises')
+  vi.doUnmock(execModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
 })
 
 async function importFreshInstaller() {
-  const url = sourceUrl('utils/nativeInstaller/installer.ts')
-  url.search = `ts=${Date.now()}-${Math.random()}`
-  return import(url.href)
+  vi.resetModules()
+  return import('../../src/utils/nativeInstaller/installer.ts')
 }
 
 test('cleanupNpmInstallations removes both agenc and legacy agenc local install dirs', async () => {
@@ -25,14 +28,14 @@ test('cleanupNpmInstallations removes both agenc and legacy agenc local install 
     PACKAGE_URL: '@gitlawb/agenc',
   }
 
-  mock.module('fs/promises', () => ({
+  vi.doMock('fs/promises', () => ({
     ...fsPromises,
     rm: async (path: string) => {
       removedPaths.push(path)
     },
   }))
 
-  mock.module(sourceUrl('utils/execFileNoThrow.js').href, () => ({
+  vi.doMock(execModulePath, () => ({
     execSyncWithDefaults_DEPRECATED: () => '',
     execFileNoThrow: async () => ({
       code: 1,
@@ -47,6 +50,5 @@ test('cleanupNpmInstallations removes both agenc and legacy agenc local install 
   const { cleanupNpmInstallations } = await importFreshInstaller()
   await cleanupNpmInstallations()
 
-  expect(removedPaths).toContain(join(homedir(), '.agenc', 'local'))
-  expect(removedPaths).toContain(join(homedir(), '.agenc', 'local'))
+  expect(removedPaths).toEqual([join(homedir(), '.agenc', 'local')])
 })
