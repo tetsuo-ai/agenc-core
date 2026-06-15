@@ -83,6 +83,7 @@ import {
   frameUntrustedToolResultContent,
   shouldFrameUntrustedToolResult,
 } from "../tools/untrusted-tool-result-framing.js";
+import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 
 function toolResultMessage(
   callId: string,
@@ -173,6 +174,14 @@ function appendHookAdditionalContexts(
   contexts: ReadonlyArray<string>,
 ): void {
   for (const context of contexts) {
+    const modelFacingContext =
+      renderHookAdditionalContextSection([
+        {
+          hookName: "ToolUse",
+          hookEvent: "PreToolUse/PostToolUse",
+          content: context,
+        },
+      ]) ?? context;
     emitWarningEvent(
       session.eventLog,
       session.nextInternalSubId(),
@@ -183,11 +192,11 @@ function appendHookAdditionalContexts(
       uuid: crypto.randomUUID(),
       role: "user",
       kind: "attachment",
-      content: context,
+      content: modelFacingContext,
     });
     state.messages.push({
       role: "user",
-      content: context,
+      content: modelFacingContext,
       runtimeOnly: { mergeBoundary: "user_context" },
     });
   }

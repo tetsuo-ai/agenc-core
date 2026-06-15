@@ -26,6 +26,7 @@ import isObject from 'lodash-es/isObject.js'
 import last from 'lodash-es/last.js'
 import type { AgentId } from 'src/types/ids.js'
 import { projectSnippedView } from '../services/compact/snipProjection.js'
+import { renderHookAdditionalContextSection } from '../prompts/hook-context-framing.js'
 import { renderMcpInstructionsDeltaSection } from '../prompts/mcp-instructions-framing.js'
 // Retired intro attachments render empty text for old transcripts.
 const companionIntroText = (_name: string, _species: string): string => ''
@@ -4261,11 +4262,17 @@ You have exited auto mode. The user may now want to interact more directly. You 
       if (attachment.content.length === 0) {
         return []
       }
+      const section = renderHookAdditionalContextSection(
+        attachment.content.map((content) => ({
+          hookName: attachment.hookName,
+          hookEvent: attachment.hookEvent,
+          content,
+        })),
+      )
+      if (section === null) return []
       return [
         createUserMessage({
-          content: wrapInSystemReminder(
-            `${attachment.hookName} hook additional context: ${attachment.content.join('\n')}`,
-          ),
+          content: section,
           isMeta: true,
         }),
       ]
