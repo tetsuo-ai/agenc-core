@@ -28,6 +28,16 @@ import {
 } from "./types.js";
 
 const MCP_PROGRESS_TOKEN_META_KEY = "progressToken";
+const MAX_MCP_ELICITATION_MESSAGE_BYTES = 4096;
+const MAX_MCP_ELICITATION_URL_BYTES = 4096;
+const MAX_MCP_ELICITATION_ID_BYTES = 256;
+const MAX_MCP_ELICITATION_META_BYTES = 8192;
+const MAX_MCP_ELICITATION_META_ENTRIES = 32;
+const MAX_MCP_ELICITATION_PROPERTIES = 32;
+const MAX_MCP_ELICITATION_REQUIRED_FIELDS = 32;
+const MAX_MCP_ELICITATION_KEY_BYTES = 128;
+const MAX_MCP_ELICITATION_SCHEMA_TEXT_BYTES = 1024;
+const MAX_MCP_ELICITATION_ENUM_VALUES = 64;
 const MCP_PRIMITIVE_SCHEMA_TYPES = new Set([
   "string",
   "number",
@@ -53,6 +63,99 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function assertMaxBytes(value: string, field: string, maxBytes: number): void {
+  if (byteLength(value) > maxBytes) {
+    throw new Error(
+      `MCP elicitation request ${field} exceeds ${maxBytes} bytes`,
+    );
+  }
+}
+
+function requiredBoundedString(
+  value: unknown,
+  field: string,
+  maxBytes: number,
+): string {
+  const text = requiredString(value, field);
+  assertMaxBytes(text, field, maxBytes);
+  return text;
+}
+
+function validateOptionalBoundedString(
+  value: unknown,
+  field: string,
+  maxBytes = MAX_MCP_ELICITATION_SCHEMA_TEXT_BYTES,
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    throw new Error(`MCP elicitation request requires ${field} to be a string`);
+  }
+  assertMaxBytes(value, field, maxBytes);
+}
+
+function validateOptionalStringArray(
+  value: unknown,
+  field: string,
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new Error(`MCP elicitation request requires ${field} to be an array`);
+  }
+  if (value.length > MAX_MCP_ELICITATION_ENUM_VALUES) {
+    throw new Error(
+      `MCP elicitation request ${field} exceeds ${MAX_MCP_ELICITATION_ENUM_VALUES} entries`,
+    );
+  }
+  for (const [index, item] of value.entries()) {
+    requiredBoundedString(
+      item,
+      `${field}.${index}`,
+      MAX_MCP_ELICITATION_SCHEMA_TEXT_BYTES,
+    );
+  }
+}
+
+function boundedHttpUrl(value: unknown, field: string): string {
+  const urlText = requiredBoundedString(
+    value,
+    field,
+    MAX_MCP_ELICITATION_URL_BYTES,
+  );
+  let parsed: URL;
+  try {
+    parsed = new URL(urlText);
+  } catch {
+    throw new Error(`MCP elicitation request requires ${field} to be a valid URL`);
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`MCP elicitation request requires ${field} to use http or https`);
+  }
+  return urlText;
+}
+
+function validateMetaBounds(meta: Record<string, unknown>): void {
+  const entries = Object.entries(meta);
+  if (entries.length > MAX_MCP_ELICITATION_META_ENTRIES) {
+    throw new Error(
+      `MCP elicitation request _meta exceeds ${MAX_MCP_ELICITATION_META_ENTRIES} entries`,
+    );
+  }
+  for (const [key] of entries) {
+    assertMaxBytes(key, `_meta.${key}`, MAX_MCP_ELICITATION_KEY_BYTES);
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(meta) ?? "{}";
+  } catch {
+    throw new Error("MCP elicitation request requires _meta to be JSON serializable");
+  }
+  assertMaxBytes(serialized, "_meta", MAX_MCP_ELICITATION_META_BYTES);
+}
+
 function filteredContextMeta(value: unknown): Record<string, unknown> | null {
   const record = asRecord(value);
   if (record === null) return null;
@@ -72,10 +175,12 @@ function mergeMeta(
   const direct = asRecord(rawMeta);
   const context = filteredContextMeta(contextMeta);
   if (direct === null && context === null) return undefined;
-  return {
+  const meta = {
     ...(direct ?? {}),
     ...(context ?? {}),
   };
+  validateMetaBounds(meta);
+  return meta;
 }
 
 function normalizePrimitiveSchema(
@@ -92,6 +197,8 @@ function normalizePrimitiveSchema(
   ) {
     throw new Error(`MCP elicitation request requires ${field}.type to be valid`);
   }
+  validateOptionalBoundedString(record.title, `${field}.title`);
+  validateOptionalBoundedString(record.description, `${field}.description`);
   if (record.type === "array") {
     const items = asRecord(record.items);
     if (items === null) {
@@ -112,8 +219,15 @@ function normalizePrimitiveSchema(
         `MCP elicitation request requires ${field}.items.type or ${field}.items.anyOf`,
       );
     }
+    validateOptionalStringArray(items.enum, `${field}.items.enum`);
+    validateOptionalStringArray(items.enumNames, `${field}.items.enumNames`);
     validateTitledEnum(items.anyOf, `${field}.items.anyOf`);
   } else {
+    if (record.type === "string") {
+      validateOptionalBoundedString(record.format, `${field}.format`);
+      validateOptionalStringArray(record.enum, `${field}.enum`);
+      validateOptionalStringArray(record.enumNames, `${field}.enumNames`);
+    }
     validateTitledEnum(record.oneOf, `${field}.oneOf`);
     validateTitledEnum(record.anyOf, `${field}.anyOf`);
   }
@@ -125,11 +239,26 @@ function validateTitledEnum(value: unknown, field: string): void {
   if (!Array.isArray(value)) {
     throw new Error(`MCP elicitation request requires ${field} to be an array`);
   }
+  if (value.length > MAX_MCP_ELICITATION_ENUM_VALUES) {
+    throw new Error(
+      `MCP elicitation request ${field} exceeds ${MAX_MCP_ELICITATION_ENUM_VALUES} entries`,
+    );
+  }
   for (const [index, raw] of value.entries()) {
     const option = asRecord(raw);
     if (option === null || typeof option.const !== "string") {
       throw new Error(`MCP elicitation request requires ${field}.${index}.const`);
     }
+    assertMaxBytes(
+      option.const,
+      `${field}.${index}.const`,
+      MAX_MCP_ELICITATION_SCHEMA_TEXT_BYTES,
+    );
+    validateOptionalBoundedString(option.title, `${field}.${index}.title`);
+    validateOptionalBoundedString(
+      option.description,
+      `${field}.${index}.description`,
+    );
   }
 }
 
@@ -142,8 +271,22 @@ function normalizeRequestedSchema(value: unknown): McpElicitationFormRequest["re
   if (rawProperties === null) {
     throw new Error("MCP elicitation request requires requestedSchema.properties");
   }
+  const propertyEntries = Object.entries(rawProperties);
+  if (propertyEntries.length > MAX_MCP_ELICITATION_PROPERTIES) {
+    throw new Error(
+      `MCP elicitation request requestedSchema.properties exceeds ${MAX_MCP_ELICITATION_PROPERTIES} entries`,
+    );
+  }
   const properties: Record<string, McpPrimitiveSchemaDefinition> = {};
-  for (const [key, rawSchema] of Object.entries(rawProperties)) {
+  for (const [key, rawSchema] of propertyEntries) {
+    if (key.length === 0) {
+      throw new Error("MCP elicitation request requires requestedSchema.properties keys to be non-empty");
+    }
+    assertMaxBytes(
+      key,
+      `requestedSchema.properties.${key}`,
+      MAX_MCP_ELICITATION_KEY_BYTES,
+    );
     properties[key] = normalizePrimitiveSchema(
       rawSchema,
       `requestedSchema.properties.${key}`,
@@ -158,7 +301,24 @@ function normalizeRequestedSchema(value: unknown): McpElicitationFormRequest["re
   ) {
     throw new Error("MCP elicitation request requires requestedSchema.required to be strings");
   }
-  const required = Array.isArray(record.required) ? record.required : undefined;
+  if (
+    Array.isArray(record.required) &&
+    record.required.length > MAX_MCP_ELICITATION_REQUIRED_FIELDS
+  ) {
+    throw new Error(
+      `MCP elicitation request requestedSchema.required exceeds ${MAX_MCP_ELICITATION_REQUIRED_FIELDS} entries`,
+    );
+  }
+  const required = Array.isArray(record.required)
+    ? record.required.map((item, index) => {
+        assertMaxBytes(
+          item,
+          `requestedSchema.required.${index}`,
+          MAX_MCP_ELICITATION_KEY_BYTES,
+        );
+        return item;
+      })
+    : undefined;
   return {
     type: "object",
     properties,
@@ -185,9 +345,17 @@ export function normalizeMcpElicitationRequestParams(
   if (record.mode === "url") {
     const request: McpElicitationUrlRequest = {
       mode: "url",
-      message: requiredString(record.message, "message"),
-      elicitationId: requiredString(record.elicitationId, "elicitationId"),
-      url: requiredString(record.url, "url"),
+      message: requiredBoundedString(
+        record.message,
+        "message",
+        MAX_MCP_ELICITATION_MESSAGE_BYTES,
+      ),
+      elicitationId: requiredBoundedString(
+        record.elicitationId,
+        "elicitationId",
+        MAX_MCP_ELICITATION_ID_BYTES,
+      ),
+      url: boundedHttpUrl(record.url, "url"),
       ...(meta !== undefined ? { meta } : {}),
     };
     return request;
@@ -195,7 +363,11 @@ export function normalizeMcpElicitationRequestParams(
   const requestedSchema = normalizeRequestedSchema(record.requestedSchema);
   const request: McpElicitationFormRequest = {
     mode: "form",
-    message: requiredString(record.message, "message"),
+    message: requiredBoundedString(
+      record.message,
+      "message",
+      MAX_MCP_ELICITATION_MESSAGE_BYTES,
+    ),
     requestedSchema,
     ...(meta !== undefined ? { meta } : {}),
   };

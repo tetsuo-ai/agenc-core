@@ -150,6 +150,80 @@ describe("MCP elicitation", () => {
     );
   });
 
+  it("bounds untrusted MCP elicitation prompts before they reach UI or hooks", () => {
+    expect(() =>
+      normalizeMcpElicitationRequestParams({
+        mode: "form",
+        message: "x".repeat(4097),
+        requestedSchema: { type: "object", properties: {} },
+      }),
+    ).toThrow("message exceeds 4096 bytes");
+
+    expect(() =>
+      normalizeMcpElicitationRequestParams({
+        mode: "url",
+        message: "Open link",
+        elicitationId: "el-1",
+        url: "javascript:alert(1)",
+      }),
+    ).toThrow("url to use http or https");
+
+    expect(
+      normalizeMcpElicitationRequestParams({
+        mode: "url",
+        message: "Open local link",
+        elicitationId: "el-1",
+        url: "http://127.0.0.1:3000/callback",
+      }),
+    ).toMatchObject({
+      mode: "url",
+      url: "http://127.0.0.1:3000/callback",
+    });
+
+    expect(() =>
+      normalizeMcpElicitationRequestParams({
+        mode: "form",
+        message: "Need details",
+        requestedSchema: {
+          type: "object",
+          properties: Object.fromEntries(
+            Array.from({ length: 33 }, (_, index) => [
+              `field${index}`,
+              { type: "string" },
+            ]),
+          ),
+        },
+      }),
+    ).toThrow("requestedSchema.properties exceeds 32 entries");
+
+    expect(() =>
+      normalizeMcpElicitationRequestParams({
+        mode: "form",
+        message: "Pick one",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            color: {
+              type: "string",
+              enum: Array.from({ length: 65 }, (_, index) => `c${index}`),
+            },
+          },
+        },
+      }),
+    ).toThrow("requestedSchema.properties.color.enum exceeds 64 entries");
+
+    expect(() =>
+      normalizeMcpElicitationRequestParams({
+        mode: "form",
+        message: "Need details",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: Object.fromEntries(
+          Array.from({ length: 33 }, (_, index) => [`k${index}`, index]),
+        ),
+      }),
+    ).toThrow("_meta exceeds 32 entries");
+  });
+
   it("normalizes titled enum schemas for string and array fields", () => {
     expect(
       normalizeMcpElicitationRequestParams({
