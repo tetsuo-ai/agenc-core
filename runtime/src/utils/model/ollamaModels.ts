@@ -5,7 +5,7 @@
  */
 
 import type { ModelOption } from './modelOptions.js'
-import { getOllamaApiBaseUrl } from '../providerDiscovery.js'
+import { listOllamaModels } from '../providerDiscovery.js'
 
 let cachedOllamaOptions: ModelOption[] | null = null
 let fetchPromise: Promise<ModelOption[]> | null = null
@@ -33,49 +33,18 @@ export function isOllamaProvider(): boolean {
  * Fetch models from the Ollama /api/tags endpoint.
  */
 export async function fetchOllamaModels(): Promise<ModelOption[]> {
-  const apiUrl = getOllamaApiBaseUrl()
-  if (!apiUrl) return []
-
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 5000)
-
-  try {
-    const response = await fetch(`${apiUrl}/api/tags`, {
-      method: 'GET',
-      signal: controller.signal,
-    })
-    if (!response.ok) return []
-
-    const data = (await response.json()) as {
-      models?: Array<{
-        name?: string
-        size?: number
-        details?: {
-          parameter_size?: string
-          quantization_level?: string
-          family?: string
-        }
-      }>
+  const models = await listOllamaModels()
+  return models.map(model => {
+    const paramSize = model.parameterSize ?? ''
+    const quant = model.quantizationLevel ?? ''
+    const sizeGB = model.sizeBytes ? `${(model.sizeBytes / 1e9).toFixed(1)}GB` : ''
+    const parts = [paramSize, quant, sizeGB].filter(Boolean).join(' · ')
+    return {
+      value: model.name,
+      label: model.name,
+      description: parts ? `Ollama · ${parts}` : 'Ollama model',
     }
-
-    return (data.models ?? [])
-      .filter(m => Boolean(m.name))
-      .map(m => {
-        const paramSize = m.details?.parameter_size ?? ''
-        const quant = m.details?.quantization_level ?? ''
-        const sizeGB = m.size ? `${(m.size / 1e9).toFixed(1)}GB` : ''
-        const parts = [paramSize, quant, sizeGB].filter(Boolean).join(' · ')
-        return {
-          value: m.name!,
-          label: m.name!,
-          description: parts ? `Ollama · ${parts}` : 'Ollama model',
-        }
-      })
-  } catch {
-    return []
-  } finally {
-    clearTimeout(timeout)
-  }
+  })
 }
 
 /**
