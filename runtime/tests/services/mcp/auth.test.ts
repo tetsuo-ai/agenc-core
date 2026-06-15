@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict'
-import { test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 
-import { validateOAuthCallbackParams } from './auth.js'
+const mcpAuthMocks = vi.hoisted(() => ({
+  logMCPDebug: vi.fn(),
+}))
+
+vi.mock('../../utils/log.js', () => ({
+  logMCPDebug: mcpAuthMocks.logMCPDebug,
+}))
+
+import { AgenCAuthProvider, validateOAuthCallbackParams } from './auth.js'
+import type { McpSSEServerConfig } from './types.js'
+
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.unstubAllGlobals()
+})
 
 test('OAuth callback rejects error parameters before state validation can be bypassed', () => {
   const result = validateOAuthCallbackParams(
@@ -57,5 +71,41 @@ test('OAuth callback accepts authorization codes only when state matches', () =>
       'expected-state',
     ),
     { type: 'state_mismatch' },
+  )
+})
+
+test('configured auth metadata invalid JSON is logged as a controlled discovery failure', async () => {
+  const metadataUrl =
+    'https://auth.example.test/.well-known/oauth-authorization-server'
+  const fetchMock = vi.fn(async () =>
+    new Response('<html>login</html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    }),
+  )
+  vi.stubGlobal('fetch', fetchMock)
+
+  const serverConfig: McpSSEServerConfig = {
+    type: 'sse',
+    url: 'https://mcp.example.test/sse',
+    oauth: {
+      authServerMetadataUrl: metadataUrl,
+    },
+  }
+  const provider = new AgenCAuthProvider('configured-auth', serverConfig)
+
+  await expect(provider.discoveryState()).resolves.toBeUndefined()
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    metadataUrl,
+    expect.objectContaining({
+      headers: { Accept: 'application/json' },
+    }),
+  )
+  expect(mcpAuthMocks.logMCPDebug).toHaveBeenCalledWith(
+    'configured-auth',
+    expect.stringContaining(
+      `Configured auth server metadata returned invalid JSON from ${metadataUrl}`,
+    ),
   )
 })
