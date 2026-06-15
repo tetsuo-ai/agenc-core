@@ -79,6 +79,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/debug.test.ts',
   'tests/utils/dragDropPaths.test.ts',
   'tests/utils/env.test.ts',
+  'tests/utils/execFileNoThrow.test.ts',
   'tests/utils/file.test.ts',
   'tests/utils/geminiAuth.test.ts',
   'tests/utils/git.test.ts',
