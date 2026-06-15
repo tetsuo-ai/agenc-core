@@ -81,6 +81,38 @@ describe('hybridContextStrategy', () => {
 
       expect(result.estimatedCost).toBeGreaterThanOrEqual(0)
     })
+
+    it('preserves distinct messages that do not have stable ids', () => {
+      const messages = [
+        {
+          message: {
+            role: 'user',
+            content: 'Anonymous user message',
+            created_at: 1000,
+          },
+          sender: 'user',
+        },
+        {
+          message: {
+            role: 'assistant',
+            content: 'Anonymous assistant response',
+            created_at: 2000,
+          },
+          sender: 'assistant',
+        },
+      ] as any[]
+
+      const result = applyHybridStrategy(messages, {
+        cacheWeight: 0.5,
+        freshWeight: 0.5,
+        maxTotalTokens: 10000,
+      })
+
+      expect(result.selectedMessages.map(m => m.message.content)).toEqual([
+        'Anonymous user message',
+        'Anonymous assistant response',
+      ])
+    })
   })
 
   describe('optimizeForCost', () => {
