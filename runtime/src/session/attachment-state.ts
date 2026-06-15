@@ -115,6 +115,12 @@ export interface AttachmentTrackingState {
    */
   surfacedRelevantMemoryPaths: Set<string>;
   /**
+   * Approximate bytes of learned memory content surfaced by
+   * `relevant_memories` in this session. Bounds cumulative recall context
+   * even when many distinct memory files match a long conversation.
+   */
+  surfacedRelevantMemoryBytes: number;
+  /**
    * Memory mode for this thread/session. `disabled` blocks memory recall
    * and writes; `polluted` blocks writes/consolidation but still permits
    * recall from already-trusted memory.
@@ -153,6 +159,7 @@ export function getAttachmentTrackingState(
       nestedMemoryAttachmentTriggers: new Set(),
       loadedNestedMemoryPaths: new Set(),
       surfacedRelevantMemoryPaths: new Set(),
+      surfacedRelevantMemoryBytes: 0,
       memoryMode: "enabled",
       memoryCitations: [],
     };
