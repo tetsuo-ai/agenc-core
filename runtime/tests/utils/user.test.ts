@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 const originalEnv = { ...process.env }
+const authModulePath = '../../src/utils/auth.js'
+const configModulePath = '../../src/utils/config.js'
+const cwdModulePath = '../../src/utils/cwd.js'
+const envModulePath = '../../src/utils/env.js'
+const envUtilsModulePath = '../../src/utils/envUtils.js'
+const execaModulePath = 'execa'
 
 async function importFreshUserModule() {
-  return import(`../../src/utils/user.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/user.ts')
 }
 
 function installCommonMocks(options?: {
@@ -11,13 +18,12 @@ function installCommonMocks(options?: {
   gitEmail?: string
 }) {
   // NOTE: Do NOT mock ../bootstrap/state.js here.
-  // mock.module() is process-global in bun:test and mock.restore() does NOT
-  // undo it. Mocking state.js leaks getSessionId = () => 'session-test' into
-  // every other test file that imports state.js (e.g. SDK CON-1 tests).
+  // Mocking state.js leaks getSessionId = () => 'session-test' into
+  // every other test file that imports state.js.
   // The dynamic import (importFreshUserModule) will use the real state.js,
   // which is fine — these tests only assert email, not sessionId.
 
-  mock.module('./auth.js', () => ({
+  vi.doMock(authModulePath, () => ({
     getOauthAccountInfo: () =>
       options?.oauthEmail
         ? {
@@ -30,26 +36,26 @@ function installCommonMocks(options?: {
     getSubscriptionType: () => null,
   }))
 
-  mock.module('./config.js', () => ({
+  vi.doMock(configModulePath, () => ({
     getGlobalConfig: () => ({}),
     getOrCreateUserID: () => 'device-test',
   }))
 
-  mock.module('./cwd.js', () => ({
+  vi.doMock(cwdModulePath, () => ({
     getCwd: () => 'C:\\repo',
   }))
 
-  mock.module('./env.js', () => ({
+  vi.doMock(envModulePath, () => ({
     env: { platform: 'windows' },
     getHostPlatformForAnalytics: () => 'windows',
   }))
 
-  mock.module('./envUtils.js', () => ({
+  vi.doMock(envUtilsModulePath, () => ({
     isEnvTruthy: (value: string | undefined) =>
       !!value && value !== '0' && value.toLowerCase() !== 'false',
   }))
 
-  mock.module('execa', () => ({
+  vi.doMock(execaModulePath, () => ({
     execa: async () => ({
       exitCode: options?.gitEmail ? 0 : 1,
       stdout: options?.gitEmail ?? '',
@@ -62,7 +68,14 @@ function installCommonMocks(options?: {
 }
 
 afterEach(() => {
-  mock.restore()
+  vi.doUnmock(authModulePath)
+  vi.doUnmock(configModulePath)
+  vi.doUnmock(cwdModulePath)
+  vi.doUnmock(envModulePath)
+  vi.doUnmock(envUtilsModulePath)
+  vi.doUnmock(execaModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
   process.env = { ...originalEnv }
   delete (globalThis as Record<string, unknown>).MACRO
 })

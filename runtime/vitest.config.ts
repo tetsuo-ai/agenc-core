@@ -125,6 +125,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/thinkingTokens.test.ts',
   'tests/utils/toolResultStorage.test.ts',
   'tests/utils/truncate.test.ts',
+  'tests/utils/user.test.ts',
   'tests/utils/worktree.test.ts',
 ]);
 const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
