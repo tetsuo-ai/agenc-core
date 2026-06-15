@@ -1,6 +1,6 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useReducer } from 'react'
-import { type AppState, useAppState } from '../state/AppState.js'
+import { type AppState, useAppStateMaybeOutsideOfProvider } from '../state/AppState.js'
 import {
   getDefaultMainLoopModelSetting,
   type ModelName,
@@ -11,8 +11,10 @@ import {
 // API calls. Use this over getMainLoopModel() when the component needs to
 // update upon a model config change.
 export function useMainLoopModel(): ModelName {
-  const mainLoopModel = useAppState((s: AppState) => s.mainLoopModel)
-  const mainLoopModelForSession = useAppState(
+  const mainLoopModel = useAppStateMaybeOutsideOfProvider(
+    (s: AppState) => s.mainLoopModel,
+  )
+  const mainLoopModelForSession = useAppStateMaybeOutsideOfProvider(
     (s: AppState) => s.mainLoopModelForSession,
   )
 
