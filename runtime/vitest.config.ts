@@ -92,6 +92,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/model/agent.test.ts',
   'tests/utils/model/model.github.test.ts',
   'tests/utils/model/modelStrings.github.test.ts',
+  'tests/utils/model/providers.test.ts',
   'tests/utils/monotonic.test.ts',
   'tests/utils/permissions/yoloClassifier.test.ts',
   'tests/utils/plugins/pluginLoader.test.ts',
