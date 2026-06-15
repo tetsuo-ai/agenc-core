@@ -39,6 +39,7 @@ import { changedFilesProducer } from "./changed-files.js";
 import { agentMentionsProducer } from "./agent-mentions.js";
 import { fileMentionsProducer } from "./file-mentions.js";
 import { lspDiagnosticsProducer } from "./lsp-diagnostics.js";
+import { mcpResourcesProducer } from "./mcp-resources.js";
 import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
 
@@ -157,6 +158,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   changedFilesProducer,
   lspDiagnosticsProducer,
   agentMentionsProducer,
+  mcpResourcesProducer,
   fileMentionsProducer,
   skillListingProducer,
 ];
