@@ -48,8 +48,8 @@ function loadInternalBuildComponent({
 }): MemoryUsageComponent {
   const externalSource = readFileSync(sourcePath, 'utf8')
   const internalSource = externalSource.replace(
-    `if ("external" !== 'ant') {`,
-    `if ("ant" !== 'ant') {`,
+    `if (("external" as string) !== 'ant') {`,
+    `if (("ant" as string) !== 'ant') {`,
   )
 
   if (internalSource === externalSource) {

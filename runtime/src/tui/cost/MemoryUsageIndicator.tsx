@@ -9,9 +9,8 @@ export function MemoryUsageIndicator(): React.ReactNode {
   // USER_TYPE is a build-time constant, so the hook call below is either always
   // reached or dead-code-eliminated — never conditional at runtime.
   // The swarm-128 test rewrites this exact `if (...)` line at the source level
-  // to flip the build path, so the literal comparison must stay verbatim.
-  // @ts-expect-error TS2367 — "external" !== 'ant' is a constant build-time guard.
-  if ("external" !== 'ant') {
+  // to flip the build path, so the literal comparison must stay build-constant.
+  if (("external" as string) !== 'ant') {
     return null;
   }
 
