@@ -51,6 +51,19 @@ describe("ruleMatchesTarget", () => {
     expect(ruleMatchesTarget(rulePath, fm, join(dir, "tests", "unit", "x.test.ts"))).toBe(true);
     expect(ruleMatchesTarget(rulePath, fm, join(dir, "docs", "x.md"))).toBe(false);
   });
+
+  test("matches project-relative patterns for nested rule files", () => {
+    const rulePath = join(dir, ".agenc", "rules", "frontend", "typescript.md");
+    const fm = {
+      paths: ["src"],
+      globs: ["tests/**/*.test.ts"],
+      alwaysApply: false,
+      extra: {},
+    };
+    expect(ruleMatchesTarget(rulePath, fm, join(dir, "src", "index.ts"))).toBe(true);
+    expect(ruleMatchesTarget(rulePath, fm, join(dir, "tests", "unit", "x.test.ts"))).toBe(true);
+    expect(ruleMatchesTarget(rulePath, fm, join(dir, "docs", "x.md"))).toBe(false);
+  });
 });
 
 describe("discoverInstructionRules", () => {
@@ -88,5 +101,25 @@ globs: ["src/**/*.ts"]
     expect(rules).toHaveLength(1);
     expect(rules[0]?.content).toBe("# Src");
   });
-});
 
+  test("returns matching conditional rules from nested rule directories", async () => {
+    const rulesDir = projectRulesDir(dir);
+    const nestedRulesDir = join(rulesDir, "frontend");
+    mkdirSync(nestedRulesDir, { recursive: true });
+    writeFileSync(join(nestedRulesDir, "src.md"), `---
+globs: ["src/**/*.ts"]
+---
+# Nested Src
+`);
+    const rules = await discoverInstructionRules({
+      rulesDir,
+      type: "Project",
+      boundaryDir: dir,
+      targetPath: join(dir, "src", "nested", "x.ts"),
+      includeUnconditional: false,
+      includeConditional: true,
+    });
+    expect(rules).toHaveLength(1);
+    expect(rules[0]?.content).toBe("# Nested Src");
+  });
+});
