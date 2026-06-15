@@ -1,17 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { modelSupportsThinking } from '../../src/utils/thinking.ts'
 import { resetSettingsCache } from '../../src/utils/settings/settingsCache.ts'
-
-mock.module('./model/providers.js', () => ({
-  getAPIProvider: () =>
-    process.env.AGENC_USE_OPENAI === '1' ? 'openai' : 'firstParty',
-}))
-
-const { modelSupportsThinking } = await import('../../src/utils/thinking.ts')
 
 const ENV_KEYS = [
   'AGENC_USE_OPENAI',
   'AGENC_USE_GEMINI',
   'AGENC_USE_GITHUB',
+  'AGENC_USE_MINIMAX',
   'AGENC_USE_MISTRAL',
   'AGENC_USE_BEDROCK',
   'AGENC_USE_VERTEX',

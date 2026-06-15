@@ -114,6 +114,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/stableStringify.test.ts',
   'tests/utils/streamingOptimizer.test.ts',
   'tests/utils/swarm/spawnUtils.test.ts',
+  'tests/utils/thinking.test.ts',
   'tests/utils/thinkingTokens.test.ts',
   'tests/utils/toolResultStorage.test.ts',
   'tests/utils/truncate.test.ts',
