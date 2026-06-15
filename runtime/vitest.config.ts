@@ -40,11 +40,6 @@ const relocatedTuiSourceRoots = [
   resolve(runtimeSourceRoot, 'tui/context'),
   resolve(runtimeSourceRoot, 'tui/hooks'),
 ];
-const movedDonorTestRoots = [
-  resolve(runtimeTestRoot, 'utils'),
-  resolve(runtimeTestRoot, 'constants'),
-];
-
 function normalizeConfigPath(file: string): string {
   return file.split(/[/\\]+/).join('/');
 }
@@ -61,84 +56,6 @@ function walkTestFiles(dir: string): string[] {
 const bunTestFiles = walkTestFiles(runtimeTestRoot)
   .filter((file) => readFileSync(file, 'utf8').includes('bun:test'))
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
-const movedDonorTestFiles = movedDonorTestRoots
-  .flatMap(walkTestFiles)
-  .map((file) => normalizeConfigPath(relative(__dirname, file)));
-const convertedMovedDonorTestFiles = new Set([
-  'tests/constants/promptIdentity.test.ts',
-  'tests/utils/agencCredentials.test.ts',
-  'tests/utils/agencInstallSurfaces.test.ts',
-  'tests/utils/agencPaths.test.ts',
-  'tests/utils/agencUiSurfaces.test.ts',
-  'tests/utils/api.test.ts',
-  'tests/utils/async-lock.test.ts',
-  'tests/utils/async-queue.test.ts',
-  'tests/utils/async-rwlock.test.ts',
-  'tests/utils/attachments.extractors.test.ts',
-  'tests/utils/behavior-subject.test.ts',
-  'tests/utils/buildConfig.test.ts',
-  'tests/utils/config.showCacheStats.test.ts',
-  'tests/utils/context.test.ts',
-  'tests/utils/debug.test.ts',
-  'tests/utils/dragDropPaths.test.ts',
-  'tests/utils/env.test.ts',
-  'tests/utils/execFileNoThrow.test.ts',
-  'tests/utils/effort.agenc.test.ts',
-  'tests/utils/fastMode.test.ts',
-  'tests/utils/file.test.ts',
-  'tests/utils/geminiAuth.test.ts',
-  'tests/utils/geminiCredentials.test.ts',
-  'tests/utils/git.test.ts',
-  'tests/utils/githubModelsCredentials.test.ts',
-  'tests/utils/githubModelsCredentials.hydrate.test.ts',
-  'tests/utils/githubModelsCredentials.refresh.test.ts',
-  'tests/utils/gracefulShutdown.test.ts',
-  'tests/utils/handlePromptSubmit.test.ts',
-  'tests/utils/handlePromptSubmit.vimMode.test.ts',
-  'tests/utils/hookChains.integration.test.ts',
-  'tests/utils/hookChains.test.ts',
-  'tests/utils/hybridContextStrategy.test.ts',
-  'tests/utils/memory/memory-utils.contract.test.ts',
-  'tests/utils/messageQueueManager.test.ts',
-  'tests/utils/model/agent.test.ts',
-  'tests/utils/model/model.config-model.test.ts',
-  'tests/utils/model/model.github.test.ts',
-  'tests/utils/model/modelStrings.github.test.ts',
-  'tests/utils/model/model.openai-shim-providers.test.ts',
-  'tests/utils/model/modelOptions.github.test.ts',
-  'tests/utils/model/providers.test.ts',
-  'tests/utils/monotonic.test.ts',
-  'tests/utils/permissions/yoloClassifier.test.ts',
-  'tests/utils/plugins/pluginLoader.test.ts',
-  'tests/utils/projectInstructions.test.ts',
-  'tests/utils/promptShellExecution.test.ts',
-  'tests/utils/providerDiscovery.test.ts',
-  'tests/utils/providerModels.test.ts',
-  'tests/utils/providerProfile.test.ts',
-  'tests/utils/providerProfiles.test.ts',
-  'tests/utils/providerRecommendation.test.ts',
-  'tests/utils/providerValidation.test.ts',
-  'tests/utils/requestLogging.test.ts',
-  'tests/utils/ripgrep.test.ts',
-  'tests/utils/schemaSanitizer.test.ts',
-  'tests/utils/serializationStability.test.ts',
-  'tests/utils/sessionStorage.test.ts',
-  'tests/utils/settings/allowBypassPermissionsMode.test.ts',
-  'tests/utils/secureStorage/platformStorage.test.ts',
-  'tests/utils/shell-discovery.test.ts',
-  'tests/utils/stableStringify.test.ts',
-  'tests/utils/streamingOptimizer.test.ts',
-  'tests/utils/swarm/spawnUtils.test.ts',
-  'tests/utils/thinking.test.ts',
-  'tests/utils/thinkingTokens.test.ts',
-  'tests/utils/toolResultStorage.test.ts',
-  'tests/utils/truncate.test.ts',
-  'tests/utils/user.test.ts',
-  'tests/utils/worktree.test.ts',
-]);
-const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
-  (file) => !convertedMovedDonorTestFiles.has(file),
-);
 
 function isVitestCompatibleBunTestFile(file: string): boolean {
   const source = readFileSync(resolve(__dirname, file), 'utf8');
@@ -475,9 +392,6 @@ export default defineConfig({
       'tests/agenc/**/*.test.ts',
       'tests/agenc/**/*.test.tsx',
       ...bunOnlyTestFiles,
-      // Moved donor-origin tests were previously hidden under src/agenc.
-      // Keep them out of Vitest until their owning items convert them.
-      ...unconvertedMovedDonorTestFiles,
       'tests/integration.test.ts',
       'tests/eval-replay.integration.test.ts',
     ],
