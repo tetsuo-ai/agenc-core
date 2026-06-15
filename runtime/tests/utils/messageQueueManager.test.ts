@@ -5,6 +5,7 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../bootstrap/state.js", () => ({
+  getActiveTimeCounter: () => null,
   getSessionId: () => "queue-test-session",
 }));
 
