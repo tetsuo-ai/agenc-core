@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +20,20 @@ type ImportHarnessOptions = {
 
 const tempDirs: string[] = []
 const originalHookChainsEnabled = process.env.AGENC_ENABLE_HOOK_CHAINS
+const policyLimitsModulePath = '../../src/services/policyLimits/index.js'
+const teamHelpersModulePath = '../../src/utils/swarm/teamHelpers.js'
+const teammateMailboxModulePath = '../../src/utils/teammateMailbox.js'
+const teammateModulePath = '../../src/utils/teammate.js'
+const replBridgeHandleModulePath = '../../src/bridge/replBridgeHandle.js'
+const agentToolModulePath = '../../src/tools/AgentTool/AgentTool.tsx'
+const mockedModulePaths = [
+  policyLimitsModulePath,
+  teamHelpersModulePath,
+  teammateMailboxModulePath,
+  teammateModulePath,
+  replBridgeHandleModulePath,
+  agentToolModulePath,
+] as const
 
 async function createConfigFile(config: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'agenc-hook-chains-int-'))
@@ -33,62 +47,57 @@ async function importHookChainsHarness(
   options: ImportHarnessOptions = {},
 ): Promise<{
   mod: HookChainsModule
-  writeToMailboxSpy: ReturnType<typeof mock>
-  agentToolCallSpy: ReturnType<typeof mock>
+  writeToMailboxSpy: ReturnType<typeof vi.fn>
+  agentToolCallSpy: ReturnType<typeof vi.fn>
 }> {
-  mock.restore()
+  vi.resetModules()
 
   const allowRemoteSessions = options.allowRemoteSessions ?? true
   const teamName = options.teamName ?? 'mesh-team'
   const senderName = options.senderName ?? 'mesh-lead'
   const replBridgeHandle = options.replBridgeHandle ?? null
 
-  const writeToMailboxSpy = mock(async () => {})
-  const agentToolCallSpy = mock(async () => ({
+  const writeToMailboxSpy = vi.fn(async () => {})
+  const agentToolCallSpy = vi.fn(async () => ({
     data: {
       status: 'async_launched',
       agentId: 'agent-fallback-1',
     },
   }))
 
-  mock.module('../../src/services/policyLimits/index.js', () => ({
+  vi.doMock(policyLimitsModulePath, () => ({
     isPolicyAllowed: () => allowRemoteSessions,
   }))
 
-  mock.module('../../src/utils/swarm/teamHelpers.js', () => ({
+  vi.doMock(teamHelpersModulePath, () => ({
     readTeamFileAsync: async () => options.teamFile ?? null,
   }))
 
-  mock.module('../../src/utils/teammateMailbox.js', () => ({
+  vi.doMock(teammateMailboxModulePath, () => ({
     writeToMailbox: writeToMailboxSpy,
   }))
 
-  mock.module('../../src/utils/teammate.js', () => ({
+  vi.doMock(teammateModulePath, () => ({
     getAgentName: () => senderName,
     getTeamName: () => teamName,
     getTeammateColor: () => 'blue',
-    // Keep parity with the real module's surface so later tests that
-    // run after this file (mock.module is process-global and mock.restore
-    // does not undo module mocks in Bun) do not see undefined members.
     isTeammate: () => false,
     isPlanModeRequired: () => false,
     getAgentId: () => undefined,
     getParentSessionId: () => undefined,
   }))
 
-  mock.module('../../src/bridge/replBridgeHandle.js', () => ({
+  vi.doMock(replBridgeHandleModulePath, () => ({
     getReplBridgeHandle: () => replBridgeHandle,
   }))
 
-  // Integration mock target requested in the task: fallback action can route
-  // through this mocked tool launcher from runtime callback wiring.
-  mock.module('../../src/tools/AgentTool/AgentTool.js', () => ({
+  vi.doMock(agentToolModulePath, () => ({
     AgentTool: {
       call: agentToolCallSpy,
     },
   }))
 
-  const mod = await import(`../../src/utils/hookChains.ts?integration=${Date.now()}-${Math.random()}`)
+  const mod = await import('../../src/utils/hookChains.ts')
   return { mod, writeToMailboxSpy, agentToolCallSpy }
 }
 
@@ -97,7 +106,11 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  mock.restore()
+  for (const modulePath of mockedModulePaths) {
+    vi.doUnmock(modulePath)
+  }
+  vi.clearAllMocks()
+  vi.resetModules()
 
   if (originalHookChainsEnabled === undefined) {
     delete process.env.AGENC_ENABLE_HOOK_CHAINS
@@ -139,8 +152,8 @@ describe('hookChains integration dispatch', () => {
       ],
     })
 
-    const spawnSpy = mock(async () => ({ launched: true, agentId: 'agent-e2e-1' }))
-    const notifySpy = mock(async () => ({ sent: true, recipientCount: 2 }))
+    const spawnSpy = vi.fn(async () => ({ launched: true, agentId: 'agent-e2e-1' }))
+    const notifySpy = vi.fn(async () => ({ sent: true, recipientCount: 2 }))
 
     const result = await mod.dispatchHookChainsForEvent({
       configPathOverride: configPath,
