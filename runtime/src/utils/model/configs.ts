@@ -157,6 +157,8 @@ export const AGENC_OPUS_4_6_CONFIG = {
   agenc: 'gpt-5.5',
   'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
   minimax: 'MiniMax-M2.5',
+  mistral: 'devstral-latest',
+  xai: 'grok-4.3',
 } as const satisfies ModelConfig
 
 export const AGENC_OPUS_4_7_CONFIG = {
