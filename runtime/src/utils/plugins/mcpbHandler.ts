@@ -1,8 +1,3 @@
-import type {
-  McpbManifest,
-  McpbUserConfigurationOption,
-  // @ts-expect-error -- optional peer module not present in this workspace; types are erased at runtime
-} from '@anthropic-ai/mcpb'
 import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
@@ -10,6 +5,11 @@ import { dirname, join } from 'path'
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
+import {
+  getMcpConfigForManifest,
+  type McpbManifest,
+  type McpbUserConfigurationOption,
+} from '../dxt/mcpb.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
@@ -416,10 +416,6 @@ async function generateMcpConfig(
   extractedPath: string,
   userConfig: UserConfigValues = {},
 ): Promise<McpServerConfig> {
-  // Lazy import: @anthropic-ai/mcpb barrel pulls in zod v3 schemas (~700KB of
-  // bound closures). See dxt/helpers.ts for details.
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-  const { getMcpConfigForManifest } = await import('@anthropic-ai/mcpb')
   const mcpConfig = await getMcpConfigForManifest({
     manifest,
     extensionPath: extractedPath,
