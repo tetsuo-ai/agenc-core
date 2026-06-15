@@ -63,6 +63,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+async function readGitHubDeviceFlowJson(
+  response: Response,
+  operation: string,
+): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    throw new GitHubDeviceFlowError(
+      `${operation} returned invalid JSON from GitHub`,
+    )
+  }
+}
+
 export async function requestDeviceCode(options?: {
   clientId?: string
   scope?: string
@@ -106,7 +119,9 @@ export async function requestDeviceCode(options?: {
       throw new GitHubDeviceFlowError(lastError)
     }
 
-    const data = asRecord(await res.json()) ?? {}
+    const data = asRecord(
+      await readGitHubDeviceFlowJson(res, 'Device code request'),
+    ) ?? {}
     const device_code = data.device_code
     const user_code = data.user_code
     const verification_uri = data.verification_uri
@@ -168,7 +183,9 @@ export async function pollAccessToken(
         `Token request failed: ${res.status} ${text}`,
       )
     }
-    const data = asRecord(await res.json()) ?? {}
+    const data = asRecord(
+      await readGitHubDeviceFlowJson(res, 'Token request'),
+    ) ?? {}
     const err = data.error as string | undefined
     if (err == null) {
       const token = data.access_token
@@ -222,7 +239,9 @@ export async function exchangeForCopilotToken(
       `Copilot token exchange failed: ${res.status} ${text}`,
     )
   }
-  const data = asRecord(await res.json()) ?? {}
+  const data = asRecord(
+    await readGitHubDeviceFlowJson(res, 'Copilot token exchange'),
+  ) ?? {}
   const token = data.token
   const expires_at = data.expires_at
   const refresh_in = data.refresh_in
