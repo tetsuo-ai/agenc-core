@@ -61,6 +61,22 @@ const PRIORITY_TOOL_NAMES = new Set([
   "desktop.mouse_move",
   "desktop.scroll",
 ]);
+const TRACE_REDACTED_VALUE = "[REDACTED]";
+const TRACE_SENSITIVE_KEY_PARTS = [
+  "authorization",
+  "apikey",
+  "bearer",
+  "cookie",
+  "idtoken",
+  "mnemonic",
+  "password",
+  "privatekey",
+  "refreshtoken",
+  "secret",
+  "seedphrase",
+  "signingkey",
+  "token",
+];
 
 export type ToolResolutionStrategy =
   | "all_tools_no_filter"
@@ -169,6 +185,32 @@ export function buildToolSelectionTraceContext(
   };
 }
 
+function isSensitiveTraceKey(key: string | undefined): boolean {
+  if (!key) return false;
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return TRACE_SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
+}
+
+function redactProviderTraceValue(
+  value: unknown,
+  key?: string,
+  seen: WeakSet<object> = new WeakSet(),
+): unknown {
+  if (isSensitiveTraceKey(key)) return TRACE_REDACTED_VALUE;
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => redactProviderTraceValue(item, undefined, seen));
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([entryKey, entry]) => [
+      entryKey,
+      redactProviderTraceValue(entry, entryKey, seen),
+    ]),
+  );
+}
+
 export function cloneProviderTracePayload(
   value: unknown,
 ): Record<string, unknown> | undefined {
@@ -176,7 +218,9 @@ export function cloneProviderTracePayload(
     return undefined;
   }
   try {
-    return JSON.parse(safeStringify(value)) as Record<string, unknown>;
+    return JSON.parse(
+      safeStringify(redactProviderTraceValue(value)),
+    ) as Record<string, unknown>;
   } catch {
     return undefined;
   }
@@ -229,8 +273,10 @@ export function buildProviderTraceErrorPayload(
           typeof (headers as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
             "function"
         ) {
-          payload.headers = Object.fromEntries(
-            Array.from(headers as Iterable<readonly [string, string]>),
+          payload.headers = cloneProviderTracePayload(
+            Object.fromEntries(
+              Array.from(headers as Iterable<readonly [string, string]>),
+            ),
           );
         } else if (!Array.isArray(headers)) {
           payload.headers = cloneProviderTracePayload(headers);
