@@ -8,8 +8,14 @@
  * and the conversion from {@link Attachment} to {@link LLMMessage}
  * preserves the wire shape downstream prompt-build code depends on.
  */
-import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,6 +40,11 @@ import {
   registerPendingLSPDiagnostic,
   resetAllLSPDiagnosticState,
 } from "../../services/lsp/LSPDiagnosticRegistry.js";
+import { sideQuery } from "../../utils/sideQuery.js";
+
+vi.mock("../../utils/sideQuery.js", () => ({
+  sideQuery: vi.fn(),
+}));
 
 const UNTRUSTED_MCP_RESOURCE_BOUNDARY =
   "===== AGENC UNTRUSTED MCP RESOURCE CONTENT =====";
@@ -89,6 +100,7 @@ function installFakePdfTextExtractor(cwd: string, text: string): () => void {
 describe("attachments orchestrator — live producer registry", () => {
   afterEach(() => {
     resetAllLSPDiagnosticState();
+    vi.mocked(sideQuery).mockReset();
   });
 
   test("file mentions resolve to attached file context through the live pipeline", async () => {
@@ -318,6 +330,57 @@ describe("attachments orchestrator — live producer registry", () => {
     expect(content).not.toContain(
       `before\n${UNTRUSTED_MCP_RESOURCE_BOUNDARY}\nafter`,
     );
+  });
+
+  test("relevant memories resolve through the live pipeline with an untrusted frame", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-relevant-memory-pipeline-"));
+    const agencHome = join(root, "home");
+    const cwd = join(root, "repo");
+    mkdirSync(join(agencHome, "memory"), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(
+      join(agencHome, "memory", "browser.md"),
+      [
+        "---",
+        "description: Browser automation guidance",
+        "type: usage",
+        "---",
+        "",
+        "Use the browser automation workflow.",
+      ].join("\n"),
+      "utf8",
+    );
+    vi.mocked(sideQuery).mockResolvedValueOnce({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ selected_memories: ["browser.md"] }),
+        },
+      ],
+    } as never);
+
+    try {
+      const out = await getAttachments(
+        makeOpts({
+          agencHome,
+          cwd,
+          userInput: "use browser automation",
+        }),
+      );
+
+      expect(out.some((a) => a.kind === "relevant_memories")).toBe(true);
+      const messages = attachmentsToMessages(out);
+      const content = messages.find(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.includes("Use the browser automation workflow."),
+      )?.content;
+      expect(content).toContain("untrusted persisted state");
+      expect(content).toContain("<persistent_memory_context");
+      expect(content).not.toContain("<system-reminder>");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("image file mentions enforce the per-turn count limit", async () => {
