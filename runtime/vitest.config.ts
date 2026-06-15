@@ -80,6 +80,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/dragDropPaths.test.ts',
   'tests/utils/file.test.ts',
   'tests/utils/geminiAuth.test.ts',
+  'tests/utils/git.test.ts',
   'tests/utils/githubModelsCredentials.test.ts',
   'tests/utils/gracefulShutdown.test.ts',
   'tests/utils/handlePromptSubmit.vimMode.test.ts',

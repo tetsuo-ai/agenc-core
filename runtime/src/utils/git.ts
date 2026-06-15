@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import { readFileSync, realpathSync, statSync } from 'fs'
 import { open, readFile, realpath, stat } from 'fs/promises'
+import spawn from 'cross-spawn'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { hasBinaryExtension, isBinaryContent } from '../constants/files.js'
@@ -14,6 +15,7 @@ import {
   getCachedDefaultBranch,
   getCachedHead,
   getCachedRemoteUrl,
+  getRemoteUrlForDir,
   getWorktreeCountFromFs,
   isShallowClone as isShallowCloneFs,
   resolveGitDir,
@@ -215,6 +217,209 @@ export const gitExe = memoize((): string => {
   return whichSync('git') || 'git'
 })
 
+export type GitCommandResult = {
+  readonly stdout: string
+  readonly stderr: string
+  readonly code: number
+  readonly timedOut: boolean
+  readonly stdoutTruncated: boolean
+  readonly stderrTruncated: boolean
+}
+
+export type GitCommandOptions = {
+  readonly timeoutMs?: number
+  readonly maxBufferBytes?: number
+  readonly env?: NodeJS.ProcessEnv
+}
+
+const DEFAULT_GIT_TIMEOUT_MS = 10_000
+const DEFAULT_GIT_MAX_BUFFER_BYTES = 1_000_000
+
+export class GitCommandError extends Error {
+  readonly command: string
+  readonly code: number
+  readonly stderr: string
+  readonly stdout: string
+  readonly timedOut: boolean
+
+  constructor(params: {
+    readonly command: string
+    readonly code: number
+    readonly stderr: string
+    readonly stdout: string
+    readonly timedOut: boolean
+  }) {
+    super(
+      params.stderr.trim() ||
+        `${params.command} failed with code ${params.code}`,
+    )
+    this.name = 'GitCommandError'
+    this.command = params.command
+    this.code = params.code
+    this.stderr = params.stderr
+    this.stdout = params.stdout
+    this.timedOut = params.timedOut
+  }
+}
+
+function appendBoundedOutput(params: {
+  readonly current: string
+  readonly currentBytes: number
+  readonly chunk: Buffer | string
+  readonly maxBufferBytes: number
+}): {
+  readonly value: string
+  readonly bytes: number
+  readonly truncated: boolean
+} {
+  const chunkBuffer =
+    typeof params.chunk === 'string'
+      ? Buffer.from(params.chunk, 'utf8')
+      : params.chunk
+  const remainingBytes = params.maxBufferBytes - params.currentBytes
+  if (remainingBytes <= 0) {
+    return {
+      value: params.current,
+      bytes: params.currentBytes,
+      truncated: chunkBuffer.length > 0,
+    }
+  }
+  if (chunkBuffer.length <= remainingBytes) {
+    return {
+      value: params.current + chunkBuffer.toString('utf8'),
+      bytes: params.currentBytes + chunkBuffer.length,
+      truncated: false,
+    }
+  }
+  return {
+    value:
+      params.current +
+      chunkBuffer.subarray(0, remainingBytes).toString('utf8'),
+    bytes: params.maxBufferBytes,
+    truncated: true,
+  }
+}
+
+/** Run `git <args>` in an arbitrary working directory without throwing. */
+export function runGit(
+  args: ReadonlyArray<string>,
+  cwd: string,
+  options: GitCommandOptions = {},
+): Promise<GitCommandResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS
+  const maxBufferBytes =
+    options.maxBufferBytes ?? DEFAULT_GIT_MAX_BUFFER_BYTES
+  const executable = options.env?.GIT || gitExe()
+
+  return new Promise(resolve => {
+    const child = spawn(executable, [...args], {
+      cwd,
+      env: options.env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let stdoutTruncated = false
+    let stderrTruncated = false
+    let timedOut = false
+    let settled = false
+
+    const finish = (result: GitCommandResult): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      resolve(result)
+    }
+
+    const timeout =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true
+            try {
+              child.kill('SIGTERM')
+            } catch {
+              // Process may already have exited.
+            }
+          }, timeoutMs)
+        : undefined
+    timeout?.unref?.()
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      const appended = appendBoundedOutput({
+        current: stdout,
+        currentBytes: stdoutBytes,
+        chunk,
+        maxBufferBytes,
+      })
+      stdout = appended.value
+      stdoutBytes = appended.bytes
+      stdoutTruncated ||= appended.truncated
+    })
+
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      const appended = appendBoundedOutput({
+        current: stderr,
+        currentBytes: stderrBytes,
+        chunk,
+        maxBufferBytes,
+      })
+      stderr = appended.value
+      stderrBytes = appended.bytes
+      stderrTruncated ||= appended.truncated
+    })
+
+    child.once('error', error => {
+      if (timeout) {
+        clearTimeout(timeout)
+      }
+      finish({
+        stdout,
+        stderr: stderr || error.message,
+        code: 127,
+        timedOut,
+        stdoutTruncated,
+        stderrTruncated,
+      })
+    })
+
+    child.once('close', code => {
+      if (timeout) {
+        clearTimeout(timeout)
+      }
+      finish({
+        stdout,
+        stderr,
+        code: code ?? 1,
+        timedOut,
+        stdoutTruncated,
+        stderrTruncated,
+      })
+    })
+  })
+}
+
+export async function runGitForStdout(
+  args: ReadonlyArray<string>,
+  cwd: string,
+  options: GitCommandOptions = {},
+): Promise<string> {
+  const result = await runGit(args, cwd, options)
+  if (result.code !== 0 || result.timedOut) {
+    throw new GitCommandError({
+      command: `git ${args.join(' ')}`,
+      code: result.code,
+      stderr: result.stderr,
+      stdout: result.stdout,
+      timedOut: result.timedOut,
+    })
+  }
+  return result.stdout.trim()
+}
+
 export const getIsGit = memoize(async (): Promise<boolean> => {
   const startTime = Date.now()
   logForDiagnosticsNoPII('info', 'is_git_check_started')
@@ -266,8 +471,185 @@ export const getDefaultBranch = async (): Promise<string> => {
   return getCachedDefaultBranch()
 }
 
-export const getRemoteUrl = async (): Promise<string | null> => {
+export const getRemoteUrl = async (cwd?: string): Promise<string | null> => {
+  if (cwd !== undefined) {
+    return getRemoteUrlForDir(cwd)
+  }
   return getCachedRemoteUrl()
+}
+
+export type GitRemoteUrls = Record<string, string>
+
+export function parseGitRemoteUrls(output: string): GitRemoteUrls | null {
+  const remotes = Object.create(null) as GitRemoteUrls
+  let found = false
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trim()
+    const match = /^(\S+)\s+(.+)\s+\(fetch\)$/.exec(line)
+    if (!match?.[1] || !match[2]) {
+      continue
+    }
+    remotes[match[1]] = match[2]
+    found = true
+  }
+  return found ? remotes : null
+}
+
+export async function getGitRemoteUrls(
+  cwd: string,
+): Promise<GitRemoteUrls | null> {
+  const result = await runGit(['remote', '-v'], cwd)
+  if (result.code !== 0 || result.timedOut) {
+    return null
+  }
+  return parseGitRemoteUrls(result.stdout)
+}
+
+export async function resolveRepositoryRoot(cwd: string): Promise<string | null> {
+  const result = await runGit(['rev-parse', '--show-toplevel'], cwd)
+  if (result.code !== 0 || result.timedOut) {
+    return null
+  }
+  const root = result.stdout.trim()
+  return root.length > 0 ? root : null
+}
+
+export async function currentBranchName(cwd: string): Promise<string | null> {
+  const result = await runGit(
+    ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+    cwd,
+  )
+  if (result.code !== 0 || result.timedOut) {
+    return null
+  }
+  const branch = result.stdout.trim()
+  return branch.length > 0 ? branch : null
+}
+
+export async function defaultBranchName(cwd: string): Promise<string | null> {
+  const root = await resolveRepositoryRoot(cwd)
+  if (!root) {
+    return null
+  }
+
+  const originHead = await runGit(
+    ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
+    root,
+  )
+  if (originHead.code === 0 && !originHead.timedOut) {
+    const branch = originHead.stdout.trim()
+    if (branch.startsWith('origin/')) {
+      return branch.slice('origin/'.length)
+    }
+  }
+
+  for (const candidate of ['main', 'master']) {
+    const remoteBranch = await runGit(
+      ['rev-parse', '--verify', `refs/remotes/origin/${candidate}`],
+      root,
+    )
+    if (remoteBranch.code === 0 && !remoteBranch.timedOut) {
+      return candidate
+    }
+  }
+
+  const branches = await localGitBranches(root)
+  for (const candidate of ['main', 'master']) {
+    if (branches.includes(candidate)) {
+      return candidate
+    }
+  }
+
+  return (await currentBranchName(root)) ?? null
+}
+
+export async function getHeadCommitHash(cwd: string): Promise<string | null> {
+  const result = await runGit(['rev-parse', '--verify', 'HEAD'], cwd)
+  if (result.code !== 0 || result.timedOut) {
+    return null
+  }
+  const sha = result.stdout.trim()
+  return sha.length > 0 ? sha : null
+}
+
+export async function getHasChanges(cwd: string): Promise<boolean | null> {
+  const result = await runGit(
+    ['--no-optional-locks', 'status', '--porcelain'],
+    cwd,
+  )
+  if (result.code !== 0 || result.timedOut) {
+    return null
+  }
+  return result.stdout.trim().length > 0
+}
+
+export async function localGitBranches(cwd: string): Promise<string[]> {
+  const result = await runGit(['branch', '--format=%(refname:short)'], cwd)
+  if (result.code !== 0 || result.timedOut) {
+    return []
+  }
+  const branches = result.stdout
+    .split('\n')
+    .map(branch => branch.trim())
+    .filter(branch => branch.length > 0)
+  const current = await currentBranchName(cwd)
+  if (!current || !branches.includes(current)) {
+    return branches
+  }
+  return [current, ...branches.filter(branch => branch !== current)]
+}
+
+export type RecentGitCommit = {
+  readonly sha: string
+  readonly timestamp: number
+  readonly subject: string
+}
+
+export async function recentCommits(
+  cwd: string,
+  limit: number,
+): Promise<RecentGitCommit[]> {
+  if (limit <= 0) {
+    return []
+  }
+  const result = await runGit(
+    ['log', `--max-count=${limit}`, '--format=%H%x00%ct%x00%s'],
+    cwd,
+  )
+  if (result.code !== 0 || result.timedOut) {
+    return []
+  }
+  return result.stdout
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => line.length > 0)
+    .map(line => {
+      const [sha = '', timestamp = '0', subject = ''] = line.split('\0')
+      return {
+        sha,
+        timestamp: Number.parseInt(timestamp, 10) || 0,
+        subject,
+      }
+    })
+}
+
+export type GitInfo = {
+  readonly commitHash: string | null
+  readonly branch: string | null
+  readonly repositoryUrl: string | null
+}
+
+export async function collectGitInfo(cwd: string): Promise<GitInfo | null> {
+  const root = await resolveRepositoryRoot(cwd)
+  if (!root) {
+    return null
+  }
+  const [commitHash, branch, repositoryUrl] = await Promise.all([
+    getHeadCommitHash(root),
+    currentBranchName(root),
+    getRemoteUrl(root),
+  ])
+  return { commitHash, branch, repositoryUrl }
 }
 
 /**
