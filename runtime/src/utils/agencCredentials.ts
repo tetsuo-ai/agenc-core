@@ -287,6 +287,7 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
   if (!current.refreshToken) {
     return { refreshed: false, credentials: current }
   }
+  const refreshToken = current.refreshToken
 
   if (!options?.force && !shouldRefreshAgencToken(current)) {
     return { refreshed: false, credentials: current }
@@ -304,11 +305,10 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
     const refreshAttemptedAt = Date.now()
 
     try {
-      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       const body = new URLSearchParams({
         client_id: getAgencOAuthClientId(),
         grant_type: 'refresh_token',
-        refresh_token: current.refreshToken,
+        refresh_token: refreshToken,
       })
 
       const response = await fetch(AGENC_REFRESH_URL, {
@@ -336,7 +336,7 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
       const next: AgencCredentialBlob = {
         accessToken,
         refreshToken:
-          asTrimmedString(payload.refresh_token) ?? current.refreshToken,
+          asTrimmedString(payload.refresh_token) ?? refreshToken,
         idToken: asTrimmedString(payload.id_token) ?? current.idToken,
         accountId:
           parseChatgptAccountId(payload.id_token) ??
