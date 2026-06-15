@@ -24,6 +24,8 @@ import { runCommand } from "../utils/process.js";
 const FIXTURE_PATH = sourcePath("mcp-client/test-fixtures/stdio-pid-server.cjs");
 const MCP_SERVER_NAME = "live";
 const MCP_TOOL_NAME = `mcp.${MCP_SERVER_NAME}.ping`;
+const UNTRUSTED_TOOL_RESULT_BOUNDARY =
+  "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 
 const tempDirs = new Set<string>();
 
@@ -279,10 +281,20 @@ async function expectLiveMcpEndToEnd(params: {
           expect.objectContaining({
             role: "tool",
             toolCallId: "call-live-mcp",
-            content: "pong",
+            content: expect.stringContaining(
+              `untrusted external data from ${MCP_TOOL_NAME}`,
+            ),
           }),
         ]),
       );
+      const modelFacingMcpResult = seenMessagesByCall[2]?.find(
+        (message) =>
+          message.role === "tool" && message.toolCallId === "call-live-mcp",
+      );
+      expect(modelFacingMcpResult?.content).toContain(
+        UNTRUSTED_TOOL_RESULT_BOUNDARY,
+      );
+      expect(modelFacingMcpResult?.content).toContain("pong");
     } finally {
       unsubscribe();
     }
