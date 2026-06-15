@@ -43,25 +43,40 @@ export default function sliceAnsi(
     // pass start/end in display cells (via stringWidth), so position must
     // track the same units.
     const width =
-      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-      token.type === 'ansi' ? 0 : token.fullWidth ? 2 : stringWidth(token.value)
+      token.type === 'char'
+        ? token.fullWidth
+          ? 2
+          : stringWidth(token.value)
+        : 0
 
     // Break AFTER trailing zero-width marks — a combining mark attaches to
     // the preceding base char, so "भा" (भ + ा, 1 display cell) sliced at
     // end=1 must include the ा. Breaking on position >= end BEFORE the
     // zero-width check would drop it and render भ bare. ANSI codes are
     // width 0 but must NOT be included past end (they open new style runs
-    // that leak into the undo sequence), so gate on char type too. The
-    // !include guard ensures empty slices (start===end) stay empty even
-    // when the string starts with a zero-width char (BOM, ZWJ).
+    // that leak into the undo sequence). Control tokens are also zero-width
+    // raw bytes, but they belong to the following visible range rather than
+    // the preceding slice. The !include guard ensures empty slices
+    // (start===end) stay empty even when the string starts with a zero-width
+    // char (BOM, ZWJ).
     if (end !== undefined && position >= end) {
-      if (token.type === 'ansi' || width > 0 || !include) break
+      if (token.type !== 'char' || width > 0 || !include) break
     }
 
     if (token.type === 'ansi') {
       activeCodes.push(token)
       if (include) {
         // Emit all ANSI codes during the slice
+        result += token.code
+      }
+    } else if (token.type === 'control') {
+      if (!include && position >= start) {
+        include = true
+        activeCodes = filterStartCodes(reduceAnsiCodes(activeCodes))
+        result = ansiCodesToString(activeCodes)
+      }
+
+      if (include) {
         result += token.code
       }
     } else {
@@ -78,7 +93,6 @@ export default function sliceAnsi(
       }
 
       if (include) {
-        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         result += token.value
       }
 
