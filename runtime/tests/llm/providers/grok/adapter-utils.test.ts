@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { LLMMessage, LLMTool } from "../../types.js";
 import {
+  buildProviderTraceErrorPayload,
+  cloneProviderTracePayload,
   computeReconciliationChain,
   extractTraceToolNames,
   slimTools,
@@ -8,6 +10,75 @@ import {
 } from "./adapter-utils.js";
 
 describe("grok adapter utils", () => {
+  it("redacts provider trace secrets recursively without changing public fields", () => {
+    const payload = cloneProviderTracePayload({
+      model: "grok-4-fast",
+      tools: [
+        {
+          type: "mcp",
+          server_url: "https://mcp.example.test/sse",
+          server_label: "docs",
+          authorization: "Bearer remote-mcp-token",
+          headers: {
+            "x-api-key": "remote-header-key",
+            "x-public-trace-id": "trace-123",
+            nested: {
+              refresh_token: "refresh-secret",
+            },
+          },
+        },
+      ],
+      metadata: {
+        cookie: "session=secret",
+        safe: "visible",
+      },
+    });
+
+    expect(payload).toEqual({
+      model: "grok-4-fast",
+      tools: [
+        {
+          type: "mcp",
+          server_url: "https://mcp.example.test/sse",
+          server_label: "docs",
+          authorization: "[REDACTED]",
+          headers: {
+            "x-api-key": "[REDACTED]",
+            "x-public-trace-id": "trace-123",
+            nested: {
+              refresh_token: "[REDACTED]",
+            },
+          },
+        },
+      ],
+      metadata: {
+        cookie: "[REDACTED]",
+        safe: "visible",
+      },
+    });
+  });
+
+  it("redacts provider error headers from iterable header collections", () => {
+    const error = new Error("upstream failed") as Error & {
+      headers: Headers;
+    };
+    error.headers = new Headers({
+      authorization: "Bearer provider-token",
+      "set-cookie": "sid=secret",
+      "x-request-id": "req-1",
+    });
+
+    expect(buildProviderTraceErrorPayload(error)).toMatchObject({
+      name: "Error",
+      message: "upstream failed",
+      headers: {
+        authorization: "[REDACTED]",
+        "set-cookie": "[REDACTED]",
+        "x-request-id": "req-1",
+      },
+    });
+  });
+
   it("extracts trace tool names from mixed provider tool shapes", () => {
     expect(
       extractTraceToolNames([
