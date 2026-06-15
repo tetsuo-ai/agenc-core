@@ -126,7 +126,6 @@ export async function hasImageInClipboard(): Promise<boolean> {
     // as an unhandled rejection in useClipboardImageHint's setTimeout.
     try {
       // Native optional dep: present at runtime on supported platforms, not installed as a TS dep.
-      // @ts-expect-error -- image-processor-napi is a native optional module loaded at runtime
       const { getNativeModule } = await import('image-processor-napi')
       const hasImage = getNativeModule()?.hasClipboardImage
       if (hasImage) {
@@ -157,7 +156,6 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
   ) {
     try {
       // Native optional dep: present at runtime on supported platforms, not installed as a TS dep.
-      // @ts-expect-error -- image-processor-napi is a native optional module loaded at runtime
       const { getNativeModule } = await import('image-processor-napi')
       const readClipboard = getNativeModule()?.readClipboardImage
       if (!readClipboard) {

@@ -56,16 +56,17 @@ export async function getImageProcessor(): Promise<SharpFunction> {
     try {
       // Use the native image processor module.
       // Native optional dep: present at runtime on supported platforms, not installed as a TS dep.
-      // @ts-expect-error -- image-processor-napi is a native optional module loaded at runtime
       const imageProcessor = await import('image-processor-napi')
-      if ((imageProcessor as { __stub?: boolean }).__stub) {
-        throw new ImageProcessorUnavailableError()
+      if (imageProcessor.__stub) {
+        throw new Error('native image processor is a stub')
       }
-      const sharp = imageProcessor.sharp || imageProcessor.default
+      const sharp = imageProcessor.sharp ?? imageProcessor.default
+      if (typeof sharp !== 'function') {
+        throw new Error('native image processor does not export sharp')
+      }
       imageProcessorModule = { default: sharp }
       return sharp
     } catch (e) {
-      if (e instanceof ImageProcessorUnavailableError) throw e
       // Fall back to sharp if native module is not available
       // biome-ignore lint/suspicious/noConsole: intentional warning
       console.warn(
