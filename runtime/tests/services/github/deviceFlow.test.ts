@@ -70,6 +70,18 @@ describe('requestDeviceCode', () => {
     ).rejects.toThrow(/Malformed device code response/)
   })
 
+  test('throws controlled error for non-JSON successful device code response', async () => {
+    const { requestDeviceCode } = await importFreshModule()
+
+    const fetchImpl = mock(() =>
+      Promise.resolve(new Response('<html>login</html>', { status: 200 })),
+    )
+
+    await expect(
+      requestDeviceCode({ clientId: 'test-client', fetchImpl }),
+    ).rejects.toThrow(/Device code request returned invalid JSON from GitHub/)
+  })
+
   test('uses OAuth-safe default scope', async () => {
     let capturedScope = ''
     const fetchImpl = mock((_url: RequestInfo | URL, init?: RequestInit) => {
@@ -200,6 +212,21 @@ describe('pollAccessToken', () => {
       }),
     ).rejects.toThrow(/No access_token/)
   })
+
+  test('throws controlled error for non-JSON successful access-token response', async () => {
+    const { pollAccessToken } = await importFreshModule()
+
+    const fetchImpl = mock(() =>
+      Promise.resolve(new Response('<html>login</html>', { status: 200 })),
+    )
+
+    await expect(
+      pollAccessToken('dc', {
+        clientId: 'c',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/Token request returned invalid JSON from GitHub/)
+  })
 })
 
 describe('exchangeForCopilotToken', () => {
@@ -264,5 +291,17 @@ describe('exchangeForCopilotToken', () => {
     await expect(
       exchangeForCopilotToken('oauth-token', fetchImpl),
     ).rejects.toThrow(/Malformed Copilot token response/)
+  })
+
+  test('throws controlled error for non-JSON successful Copilot token response', async () => {
+    const { exchangeForCopilotToken } = await importFreshModule()
+
+    const fetchImpl = mock(() =>
+      Promise.resolve(new Response('<html>login</html>', { status: 200 })),
+    )
+
+    await expect(
+      exchangeForCopilotToken('oauth-token', fetchImpl),
+    ).rejects.toThrow(/Copilot token exchange returned invalid JSON from GitHub/)
   })
 })
