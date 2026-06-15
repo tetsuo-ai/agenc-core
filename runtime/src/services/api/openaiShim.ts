@@ -138,6 +138,29 @@ const SENSITIVE_URL_QUERY_PARAM_NAMES = [
   'authorization',
 ]
 
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+async function readJsonObjectResponse(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    return recordValue(await response.json())
+  } catch {
+    return null
+  }
+}
+
+function malformedJsonResponseError(response: Response): APIError {
+  return APIError.generate(
+    response.status,
+    undefined,
+    `OpenAi API error ${response.status}: malformed JSON response payload`,
+    response.headers as unknown as Headers,
+  )
+}
+
 function isGithubModelsMode(): boolean {
   return isEnvTruthy(process.env.AGENC_USE_GITHUB)
 }
@@ -1571,10 +1594,11 @@ class OpenAiShimMessages {
       ) {
         const contentType = response.headers.get('content-type') ?? ''
         if (contentType.includes('application/json')) {
-          const parsed = await response.json() as Record<string, unknown>
+          const parsed = await readJsonObjectResponse(response)
+          if (parsed === null) {
+            throw malformedJsonResponseError(response)
+          }
           if (
-            parsed &&
-            typeof parsed === 'object' &&
             ('output' in parsed || 'incomplete_details' in parsed)
           ) {
             return convertProviderCodeResponseToproviderMessage(
@@ -1588,7 +1612,10 @@ class OpenAiShimMessages {
 
       const contentType = response.headers.get('content-type') ?? ''
       if (contentType.includes('application/json')) {
-        const data = await response.json()
+        const data = await readJsonObjectResponse(response)
+        if (data === null) {
+          throw malformedJsonResponseError(response)
+        }
         return self._convertNonStreamingResponse(data, request.resolvedModel)
       }
 

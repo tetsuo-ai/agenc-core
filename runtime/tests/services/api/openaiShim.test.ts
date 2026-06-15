@@ -242,6 +242,51 @@ test('uses provider-compatible responses endpoint when OPENAI_API_FORMAT=respons
   ])
 })
 
+test('throws controlled error for malformed successful chat-completions JSON payload', async () => {
+  globalThis.fetch = (async () =>
+    new Response('null', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })) as FetchType
+
+  const client = createOpenAiShimClient({ defaultHeaders: {} }) as OpenAiShimClient
+
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-4o',
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    }),
+  ).rejects.toThrow('malformed JSON response payload')
+})
+
+test('throws controlled error for malformed successful responses JSON payload', async () => {
+  process.env.OPENAI_API_FORMAT = 'responses'
+  globalThis.fetch = (async () =>
+    new Response('null', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })) as FetchType
+
+  const client = createOpenAiShimClient({ defaultHeaders: {} }) as OpenAiShimClient
+
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.4',
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    }),
+  ).rejects.toThrow('malformed JSON response payload')
+})
+
 test('strips store from strict provider-compatible responses providers', async () => {
   process.env.OPENAI_BASE_URL = 'https://api.moonshot.ai/v1'
   process.env.OPENAI_API_FORMAT = 'responses'
