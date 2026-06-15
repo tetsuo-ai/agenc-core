@@ -1,13 +1,15 @@
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 type MockStorageData = Record<string, unknown>
 
+const secureStorageModulePath = '../../src/utils/secureStorage/index.js'
 const originalEnv = { ...process.env }
 const originalArgv = [...process.argv]
 let storageState: MockStorageData = {}
 
 async function importFreshModule() {
-  mock.module('./secureStorage/index.js', () => ({
+  vi.resetModules()
+  vi.doMock(secureStorageModulePath, () => ({
     getSecureStorage: () => ({
       name: 'mock-secure-storage',
       read: () => storageState,
@@ -23,7 +25,7 @@ async function importFreshModule() {
     }),
   }))
 
-  return import(`../../src/utils/geminiCredentials.ts?ts=${Date.now()}-${Math.random()}`)
+  return import('../../src/utils/geminiCredentials.ts')
 }
 
 beforeEach(() => {
@@ -37,7 +39,9 @@ afterEach(() => {
   process.env = { ...originalEnv }
   process.argv = [...originalArgv]
   storageState = {}
-  mock.restore()
+  vi.doUnmock(secureStorageModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
 })
 
 test('saveGeminiAccessToken stores and reads back the token', async () => {
