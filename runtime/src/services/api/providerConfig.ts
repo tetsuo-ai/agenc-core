@@ -782,10 +782,13 @@ function resolveEnvOrAuthJsonProviderCodeCredentials(
     explicitAuthPathOnly?: boolean
   },
 ): ResolvedProviderCodeCredentials {
-  const envApiKey = asTrimmedString(env.PROVIDER_CODE_API_KEY)
+  const envApiKey =
+    asTrimmedString(env.PROVIDER_CODE_API_KEY) ??
+    asTrimmedString(env.AGENC_API_KEY)
   const envAccountId =
     asTrimmedString(env.PROVIDER_CODE_ACCOUNT_ID) ??
-    asTrimmedString(env.CHATGPT_ACCOUNT_ID)
+    asTrimmedString(env.CHATGPT_ACCOUNT_ID) ??
+    asTrimmedString(env.AGENC_ACCOUNT_ID)
 
   if (envApiKey) {
     return {
@@ -864,7 +867,8 @@ export function resolveProviderCodeApiCredentials(
 ): ResolvedProviderCodeCredentials {
   const envAccountId =
     asTrimmedString(env.PROVIDER_CODE_ACCOUNT_ID) ??
-    asTrimmedString(env.CHATGPT_ACCOUNT_ID)
+    asTrimmedString(env.CHATGPT_ACCOUNT_ID) ??
+    asTrimmedString(env.AGENC_ACCOUNT_ID)
   const envOrExplicitAuthJsonCredentials = resolveEnvOrAuthJsonProviderCodeCredentials(
     env,
     {

@@ -63,6 +63,12 @@ const bunTestFiles = walkTestFiles(runtimeTestRoot)
 const movedDonorTestFiles = movedDonorTestRoots
   .flatMap(walkTestFiles)
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
+const convertedMovedDonorTestFiles = new Set([
+  'tests/utils/providerProfile.test.ts',
+]);
+const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
+  (file) => !convertedMovedDonorTestFiles.has(file),
+);
 
 function isVitestCompatibleBunTestFile(file: string): boolean {
   const source = readFileSync(resolve(__dirname, file), 'utf8');
@@ -382,7 +388,7 @@ export default defineConfig({
       ...bunOnlyTestFiles,
       // Moved donor-origin tests were previously hidden under src/agenc.
       // Keep them out of Vitest until their owning items convert them.
-      ...movedDonorTestFiles,
+      ...unconvertedMovedDonorTestFiles,
       'tests/integration.test.ts',
       'tests/eval-replay.integration.test.ts',
     ],
