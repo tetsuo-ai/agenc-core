@@ -90,6 +90,7 @@ const convertedMovedDonorTestFiles = new Set([
   'tests/utils/memory/memory-utils.contract.test.ts',
   'tests/utils/messageQueueManager.test.ts',
   'tests/utils/model/agent.test.ts',
+  'tests/utils/model/model.config-model.test.ts',
   'tests/utils/model/model.github.test.ts',
   'tests/utils/model/modelStrings.github.test.ts',
   'tests/utils/model/providers.test.ts',
