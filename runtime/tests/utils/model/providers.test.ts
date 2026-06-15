@@ -1,4 +1,9 @@
 import { afterEach, expect, test } from 'bun:test'
+import {
+  getAPIProvider,
+  isGithubNativeAnthropicMode,
+  usesAnthropicAccountFlow,
+} from '../../../src/utils/model/providers.ts'
 
 const originalEnv = {
   AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
@@ -24,10 +29,6 @@ afterEach(() => {
   }
 })
 
-async function importFreshProvidersModule() {
-  return import(`../../../src/utils/model/providers.ts?ts=${Date.now()}-${Math.random()}`)
-}
-
 function clearProviderEnv(): void {
   delete process.env.AGENC_USE_GEMINI
   delete process.env.AGENC_USE_GITHUB
@@ -44,12 +45,8 @@ function clearProviderEnv(): void {
 
 test('first-party provider keeps provider account setup flow enabled', () => {
   clearProviderEnv()
-  return importFreshProvidersModule().then(
-    ({ getAPIProvider, usesAnthropicAccountFlow }) => {
-      expect(getAPIProvider()).toBe('firstParty')
-      expect(usesAnthropicAccountFlow()).toBe(true)
-    },
-  )
+  expect(getAPIProvider()).toBe('firstParty')
+  expect(usesAnthropicAccountFlow()).toBe(true)
 })
 
 test.each([
@@ -61,32 +58,27 @@ test.each([
   ['NVIDIA_NIM', 'nvidia-nim'],
 ] as const)(
   '%s disables provider account setup flow',
-  async (envKey, provider) => {
+  (envKey, provider) => {
     clearProviderEnv()
     process.env[envKey] = '1'
-    const { getAPIProvider, usesAnthropicAccountFlow } =
-      await importFreshProvidersModule()
 
     expect(getAPIProvider()).toBe(provider)
     expect(usesAnthropicAccountFlow()).toBe(false)
   },
 )
 
-test('MINIMAX_API_KEY disables provider account setup flow', async () => {
+test('MINIMAX_API_KEY disables provider account setup flow', () => {
   clearProviderEnv()
   process.env.MINIMAX_API_KEY = 'minimax-test-key'
-  const { getAPIProvider, usesAnthropicAccountFlow } =
-    await importFreshProvidersModule()
 
   expect(getAPIProvider()).toBe('minimax')
   expect(usesAnthropicAccountFlow()).toBe(false)
 })
 
-test('GEMINI takes precedence over GitHub when both are set', async () => {
+test('GEMINI takes precedence over GitHub when both are set', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GEMINI = '1'
   process.env.AGENC_USE_GITHUB = '1'
-  const { getAPIProvider } = await importFreshProvidersModule()
 
   expect(getAPIProvider()).toBe('gemini')
 })
@@ -97,122 +89,109 @@ test.each([
   ['AGENC_USE_OPENAI', 'openai'],
 ] as const)(
   '%s takes precedence over ambient MiniMax credentials',
-  async (envKey, provider) => {
+  (envKey, provider) => {
     clearProviderEnv()
     process.env.MINIMAX_API_KEY = 'ambient-minimax-key'
     process.env[envKey] = '1'
     if (envKey === 'AGENC_USE_OPENAI') {
       process.env.OPENAI_MODEL = 'gpt-4o'
     }
-    const { getAPIProvider } = await importFreshProvidersModule()
 
     expect(getAPIProvider()).toBe(provider)
   },
 )
 
-test('explicit openai flag takes precedence over stale NVIDIA_NIM', async () => {
+test('explicit openai flag takes precedence over stale NVIDIA_NIM', () => {
   clearProviderEnv()
   process.env.NVIDIA_NIM = '1'
   process.env.AGENC_USE_OPENAI = '1'
   process.env.OPENAI_MODEL = 'gpt-4o'
-  const { getAPIProvider } = await importFreshProvidersModule()
 
   expect(getAPIProvider()).toBe('openai')
 })
 
-test('explicit local openai-compatible base URLs stay on the openai provider', async () => {
+test('explicit local openai-compatible base URLs stay on the openai provider', () => {
   clearProviderEnv()
   process.env.AGENC_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
   process.env.OPENAI_MODEL = 'gpt-5.4'
 
-  const { getAPIProvider } = await importFreshProvidersModule()
   expect(getAPIProvider()).toBe('openai')
 })
 
-test('agenc aliases still resolve to the agenc provider without a non-agenc base URL', async () => {
+test('agenc aliases still resolve to the agenc provider without a non-agenc base URL', () => {
   clearProviderEnv()
   process.env.AGENC_USE_OPENAI = '1'
   process.env.OPENAI_MODEL = 'agencplan'
 
-  const { getAPIProvider } = await importFreshProvidersModule()
   expect(getAPIProvider()).toBe('agenc')
 })
 
-test('XAI_API_KEY resolves to the xai provider', async () => {
+test('XAI_API_KEY resolves to the xai provider', () => {
   clearProviderEnv()
   process.env.AGENC_USE_OPENAI = '1'
   process.env.XAI_API_KEY = 'xai-test-key'
   process.env.OPENAI_BASE_URL = 'https://api.x.ai/v1'
   process.env.OPENAI_MODEL = 'grok-4'
 
-  const { getAPIProvider } = await importFreshProvidersModule()
   expect(getAPIProvider()).toBe('xai')
 })
 
-test('official openai base URLs now keep provider detection on openai for aliases', async () => {
+test('official openai base URLs now keep provider detection on openai for aliases', () => {
   clearProviderEnv()
   process.env.AGENC_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
   process.env.OPENAI_MODEL = 'gpt-5.4'
 
-  const { getAPIProvider } = await importFreshProvidersModule()
   expect(getAPIProvider()).toBe('openai')
 })
 
 // isGithubNativeAnthropicMode
 
-test('isGithubNativeAnthropicMode: false when AGENC_USE_GITHUB is not set', async () => {
+test('isGithubNativeAnthropicMode: false when AGENC_USE_GITHUB is not set', () => {
   clearProviderEnv()
   process.env.OPENAI_MODEL = 'claude-sonnet-4-5'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode()).toBe(false)
 })
 
-test('isGithubNativeAnthropicMode: true for bare provider-native model via OPENAI_MODEL', async () => {
+test('isGithubNativeAnthropicMode: true for bare provider-native model via OPENAI_MODEL', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'claude-sonnet-4-5'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode()).toBe(true)
 })
 
-test('isGithubNativeAnthropicMode: true for github:copilot provider-native compound format', async () => {
+test('isGithubNativeAnthropicMode: true for github:copilot provider-native compound format', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'github:copilot:claude-sonnet-4'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode()).toBe(true)
 })
 
-test('isGithubNativeAnthropicMode: true when resolvedModel is provider-native', async () => {
+test('isGithubNativeAnthropicMode: true when resolvedModel is provider-native', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'github:copilot'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode('claude-haiku-4-5')).toBe(true)
 })
 
-test('isGithubNativeAnthropicMode: false for generic github:copilot alias', async () => {
+test('isGithubNativeAnthropicMode: false for generic github:copilot alias', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'github:copilot'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode()).toBe(false)
 })
 
-test('isGithubNativeAnthropicMode: false for non-AgenC model', async () => {
+test('isGithubNativeAnthropicMode: false for non-AgenC model', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'gpt-4o'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode()).toBe(false)
 })
 
-test('isGithubNativeAnthropicMode: false for github:copilot:gpt- model', async () => {
+test('isGithubNativeAnthropicMode: false for github:copilot:gpt- model', () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'github:copilot:gpt-4o'
-  const { isGithubNativeAnthropicMode } = await importFreshProvidersModule()
   expect(isGithubNativeAnthropicMode()).toBe(false)
 })
