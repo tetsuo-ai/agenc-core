@@ -4,7 +4,12 @@
  * Auth: x-api-key: <key>
  */
 import type { SearchInput, SearchProvider } from './types.js'
-import { safeHostname, type ProviderOutput } from './types.js'
+import {
+  arrayField,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  type ProviderOutput,
+} from './types.js'
 
 export const exaProvider: SearchProvider = {
   name: 'exa',
@@ -16,7 +21,7 @@ export const exaProvider: SearchProvider = {
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
 
-    const body: Record<string, any> = {
+    const body: Record<string, unknown> = {
       query: input.query,
       numResults: 15,
       type: 'auto',
@@ -38,13 +43,11 @@ export const exaProvider: SearchProvider = {
     if (!res.ok) {
       throw new Error(`Exa search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
-    const data = await res.json()
-    const hits = (data.results ?? []).map((r: any) => ({
-      title: r.title ?? '',
-      url: r.url ?? '',
-      description: r.snippet ?? r.text,
-      source: r.url ? safeHostname(r.url) : undefined,
-    }))
+    const data: unknown = await res.json()
+    const record = isSearchProviderJsonRecord(data) ? data : undefined
+    const hits = normalizeHits(arrayField(record, 'results'), {
+      inferSourceFromUrl: true,
+    })
     return {
       // Exa handles domain filtering server-side via includeDomains/excludeDomains
       hits,

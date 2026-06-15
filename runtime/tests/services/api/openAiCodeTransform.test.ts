@@ -768,6 +768,44 @@ describe('ProviderCode request translation', () => {
     ])
   })
 
+  test('ignores malformed ProviderCode web search response entries', () => {
+    const output = webSearchToolTest.makeOutputFromProviderCodeWebSearchResponse(
+      {
+        output: [
+          null,
+          'noise',
+          {
+            type: 'message',
+            content: [
+              null,
+              { type: 'text', text: 'Usable result.' },
+              {
+                type: 'text',
+                annotations: [
+                  null,
+                  { type: 'url_citation', title: 'Docs', url: 'https://docs.example.com' },
+                  { type: 'url_citation', title: 'Missing URL' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      'AgenC GitHub 2026',
+      0.07,
+    )
+
+    expect(output.results).toEqual([
+      'Usable result.',
+      {
+        tool_use_id: 'providerCode-web-search',
+        content: [
+          { title: 'Docs', url: 'https://docs.example.com' },
+        ],
+      },
+    ])
+  })
+
   test('translates ProviderCode SSE text stream into provider events', async () => {
     const responseText = [
       'event: response.output_item.added',

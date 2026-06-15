@@ -5,7 +5,13 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
-import { applyDomainFilters, safeHostname, type ProviderOutput } from './types.js'
+import {
+  applyDomainFilters,
+  arrayField,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  type ProviderOutput,
+} from './types.js'
 
 export const jinaProvider: SearchProvider = {
   name: 'jina',
@@ -33,13 +39,13 @@ export const jinaProvider: SearchProvider = {
       throw new Error(`Jina search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data = await res.json()
-    const hits = (data.data ?? data.results ?? []).map((r: any) => ({
-      title: r.title ?? '',
-      url: r.url ?? '',
-      description: r.description ?? r.snippet ?? r.content,
-      source: r.url ? safeHostname(r.url) : undefined,
-    }))
+    const data: unknown = await res.json()
+    const record = isSearchProviderJsonRecord(data) ? data : undefined
+    const rawHits =
+      record && 'data' in record
+        ? arrayField(record, 'data')
+        : arrayField(record, 'results')
+    const hits = normalizeHits(rawHits, { inferSourceFromUrl: true })
 
     return {
       hits: applyDomainFilters(hits, input),

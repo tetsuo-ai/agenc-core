@@ -28,8 +28,11 @@
 
 import type { SearchInput, SearchProvider } from './types.js'
 import {
+  arrayField,
   applyDomainFilters,
-  normalizeHit,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  recordField,
   safeHostname,
   type ProviderOutput,
   type SearchHit,
@@ -46,7 +49,7 @@ interface ProviderPreset {
   authHeader?: string
   authScheme?: string
   jsonPath?: string
-  responseAdapter?: (data: any) => SearchHit[]
+  responseAdapter?: (data: unknown) => SearchHit[]
 }
 
 const BUILT_IN_PROVIDERS: Record<string, ProviderPreset> = {
@@ -57,13 +60,10 @@ const BUILT_IN_PROVIDERS: Record<string, ProviderPreset> = {
     urlTemplate: 'https://localhost:8080/search',
     queryParam: 'q',
     jsonPath: 'results',
-    responseAdapter(data: any) {
-      return (data.results ?? []).map((r: any) => ({
-        title: r.title ?? r.url,
-        url: r.url,
-        description: r.content,
-        source: r.engine ?? r.source,
-      }))
+    responseAdapter(data: unknown) {
+      return normalizeHits(
+        arrayField(isSearchProviderJsonRecord(data) ? data : undefined, 'results'),
+      )
     },
   },
   google: {
@@ -71,26 +71,21 @@ const BUILT_IN_PROVIDERS: Record<string, ProviderPreset> = {
     queryParam: 'q',
     authHeader: 'Authorization',
     authScheme: 'Bearer',
-    responseAdapter(data: any) {
-      return (data.items ?? []).map((r: any) => ({
-        title: r.title ?? '',
-        url: r.link ?? '',
-        description: r.snippet,
-        source: r.displayLink,
-      }))
+    responseAdapter(data: unknown) {
+      return normalizeHits(
+        arrayField(isSearchProviderJsonRecord(data) ? data : undefined, 'items'),
+      )
     },
   },
   brave: {
     urlTemplate: 'https://api.search.brave.com/res/v1/web/search',
     queryParam: 'q',
     authHeader: 'X-Subscription-Token',
-    responseAdapter(data: any) {
-      return (data.web?.results ?? []).map((r: any) => ({
-        title: r.title ?? '',
-        url: r.url ?? '',
-        description: r.description,
-        source: safeHostname(r.url),
-      }))
+    responseAdapter(data: unknown) {
+      const record = isSearchProviderJsonRecord(data) ? data : undefined
+      return normalizeHits(arrayField(recordField(record, 'web'), 'results'), {
+        inferSourceFromUrl: true,
+      })
     },
   },
   serpapi: {
@@ -98,13 +93,13 @@ const BUILT_IN_PROVIDERS: Record<string, ProviderPreset> = {
     queryParam: 'q',
     authHeader: 'Authorization',
     authScheme: 'Bearer',
-    responseAdapter(data: any) {
-      return (data.organic_results ?? []).map((r: any) => ({
-        title: r.title ?? '',
-        url: r.link ?? '',
-        description: r.snippet,
-        source: r.displayed_link,
-      }))
+    responseAdapter(data: unknown) {
+      return normalizeHits(
+        arrayField(
+          isSearchProviderJsonRecord(data) ? data : undefined,
+          'organic_results',
+        ),
+      )
     },
   },
 }
@@ -366,7 +361,7 @@ function resolveConfig(): {
   queryParam: string
   method: string
   jsonPath?: string
-  responseAdapter?: (data: any) => SearchHit[]
+  responseAdapter?: (data: unknown) => SearchHit[]
   preset?: ProviderPreset
 } {
   const providerName = process.env.WEB_PROVIDER
@@ -390,7 +385,19 @@ function parseExtraParams(): Record<string, string> {
   if (!raw) return {}
   try {
     const obj = JSON.parse(raw)
-    if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj
+    if (isSearchProviderJsonRecord(obj)) {
+      const params: Record<string, string> = {}
+      for (const [key, value] of Object.entries(obj)) {
+        if (
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean'
+        ) {
+          params[key] = String(value)
+        }
+      }
+      return params
+    }
   } catch { /* ignore */ }
   return {}
 }
@@ -474,19 +481,19 @@ function buildRequest(query: string) {
 // Response parsing — flexible, handles many shapes
 // ---------------------------------------------------------------------------
 
-function walkJsonPath(obj: any, path: string): any {
+function walkJsonPath(obj: unknown, path: string): unknown {
   let current = obj
   for (const seg of path.split('.')) {
-    if (current == null || typeof current !== 'object') return undefined
+    if (!isSearchProviderJsonRecord(current)) return undefined
     current = current[seg]
   }
   return current
 }
 
-function extractFromNode(node: any): SearchHit[] {
+function extractFromNode(node: unknown): SearchHit[] {
   if (!node) return []
-  if (Array.isArray(node)) return node.map(normalizeHit).filter(Boolean) as SearchHit[]
-  if (typeof node === 'object') {
+  if (Array.isArray(node)) return normalizeHits(node)
+  if (isSearchProviderJsonRecord(node)) {
     const all: SearchHit[] = []
     for (const sub of Object.values(node)) all.push(...extractFromNode(sub))
     return all
@@ -495,19 +502,19 @@ function extractFromNode(node: any): SearchHit[] {
   return []
 }
 
-export function extractHits(raw: any, jsonPath?: string): SearchHit[] {
+export function extractHits(raw: unknown, jsonPath?: string): SearchHit[] {
   if (jsonPath) return extractFromNode(walkJsonPath(raw, jsonPath))
-  if (Array.isArray(raw)) return raw.map(normalizeHit).filter(Boolean) as SearchHit[]
-  if (!raw || typeof raw !== 'object') return []
+  if (Array.isArray(raw)) return normalizeHits(raw)
+  if (!isSearchProviderJsonRecord(raw)) return []
 
   const arrayKeys = ['results', 'items', 'data', 'web', 'organic_results', 'hits', 'entries']
   for (const key of arrayKeys) {
     const val = raw[key]
-    if (Array.isArray(val)) return val.map(normalizeHit).filter(Boolean) as SearchHit[]
-    if (val && typeof val === 'object' && !Array.isArray(val)) {
+    if (Array.isArray(val)) return normalizeHits(val)
+    if (isSearchProviderJsonRecord(val)) {
       const all: SearchHit[] = []
       for (const sub of Object.values(val)) {
-        if (Array.isArray(sub)) all.push(...(sub.map(normalizeHit).filter(Boolean) as SearchHit[]))
+        if (Array.isArray(sub)) all.push(...normalizeHits(sub))
       }
       if (all.length > 0) return all
     }
@@ -520,7 +527,7 @@ export function extractHits(raw: any, jsonPath?: string): SearchHit[] {
 // Fetch with one retry + timeout
 // ---------------------------------------------------------------------------
 
-async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSignal): Promise<any> {
+async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
   const timeoutSec = Number(process.env.WEB_CUSTOM_TIMEOUT_SEC) || DEFAULT_TIMEOUT_SECONDS
   const timeoutMs = timeoutSec * 1000
   let lastErr: Error | undefined
