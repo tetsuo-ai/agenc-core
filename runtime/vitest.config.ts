@@ -64,6 +64,10 @@ const movedDonorTestFiles = movedDonorTestRoots
   .flatMap(walkTestFiles)
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
 const convertedMovedDonorTestFiles = new Set([
+  'tests/utils/async-lock.test.ts',
+  'tests/utils/async-queue.test.ts',
+  'tests/utils/async-rwlock.test.ts',
+  'tests/utils/monotonic.test.ts',
   'tests/utils/providerProfile.test.ts',
 ]);
 const unconvertedMovedDonorTestFiles = movedDonorTestFiles.filter(
