@@ -91,6 +91,25 @@ describe("Linux sandbox launcher", () => {
         "/bin/true",
       ]),
     ).toThrow(/network must be enabled, disabled, or restricted/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs([
+        "--permission-profile",
+        JSON.stringify({
+          fileSystem: restrictedFileSystemPolicy([
+            {
+              path: {
+                kind: "special",
+                value: { kind: "project_roots", subpath: "../outside" },
+              },
+              access: "read",
+            },
+          ]),
+          network: "disabled",
+        }),
+        "--",
+        "/bin/true",
+      ]),
+    ).toThrow(/project root subpath must stay within the project root/u);
   });
 
   it("builds full-filesystem bubblewrap flags for network-isolated full-write policies", () => {

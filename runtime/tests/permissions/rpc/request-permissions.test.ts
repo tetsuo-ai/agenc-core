@@ -213,6 +213,31 @@ describe("request-permissions RPC profiles", () => {
     });
   });
 
+  it("rejects project-root subpaths that escape the cwd", () => {
+    for (const subpath of ["/etc", "../outside", "safe/../../outside"]) {
+      expect(() =>
+        normalizeRequestPermissionsArgs(
+          {
+            permissions: {
+              fileSystem: {
+                entries: [
+                  {
+                    path: {
+                      type: "special",
+                      value: { kind: "project_roots", subpath },
+                    },
+                    access: "read",
+                  },
+                ],
+              },
+            },
+          },
+          { cwd },
+        ),
+      ).toThrow(/project root|relative/);
+    }
+  });
+
   it("preserves exact unresolved special-path grants", () => {
     expect(
       intersectRequestPermissionProfiles(

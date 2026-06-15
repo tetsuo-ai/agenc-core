@@ -279,6 +279,27 @@ describe("sandbox permission profile transforms", () => {
     }
   });
 
+  it("keeps project-root special subpaths inside the cwd", () => {
+    expect(
+      resolveSpecialPath({ kind: "project_roots", subpath: "src" }, "/repo"),
+    ).toBe("/repo/src");
+    expect(
+      resolveSpecialPath({ kind: "project_roots", subpath: "/etc" }, "/repo"),
+    ).toBeNull();
+    expect(
+      resolveSpecialPath(
+        { kind: "project_roots", subpath: "../outside" },
+        "/repo",
+      ),
+    ).toBeNull();
+    expect(
+      resolveSpecialPath(
+        { kind: "project_roots", subpath: "safe/../../outside" },
+        "/repo",
+      ),
+    ).toBeNull();
+  });
+
   it("applies specific carveouts and protected metadata over broader writes", () => {
     const workspaceWrite = restrictedFileSystemPolicy([
       { path: { kind: "path", path: "/repo" }, access: "write" },

@@ -248,6 +248,23 @@ function assertSpecialPath(value: unknown): void {
   if (special.subpath !== undefined && typeof special.subpath !== "string") {
     throw new LinuxSandboxCliError("permission profile special path subpath must be a string");
   }
+  if (special.kind === "project_roots" && typeof special.subpath === "string") {
+    assertProjectRootSubpath(special.subpath);
+  }
+}
+
+function assertProjectRootSubpath(value: string): void {
+  if (path.isAbsolute(value)) {
+    throw new LinuxSandboxCliError(
+      "permission profile project root subpath must be relative",
+    );
+  }
+  const normalized = path.normalize(value);
+  if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+    throw new LinuxSandboxCliError(
+      "permission profile project root subpath must stay within the project root",
+    );
+  }
 }
 
 function normalizeCwd(value: string): string {
