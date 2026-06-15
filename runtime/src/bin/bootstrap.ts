@@ -108,19 +108,7 @@ import {
   buildBootstrapSessionServices,
   type BootstrapSessionServicesHandle,
 } from "./bootstrap-services.js";
-
-type StartupInternalEvent = {
-  readonly payload: Record<string, unknown>;
-  readonly agent_id?: string;
-};
-
-type StartupInternalEventPage = {
-  readonly data?: ReadonlyArray<{
-    readonly payload?: Record<string, unknown> | null;
-    readonly agent_id?: string;
-  }>;
-  readonly next_cursor?: string;
-};
+import { fetchStartupInternalEvents } from "./startup-internal-events.js";
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -382,49 +370,6 @@ function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
     return null;
   }
   return parsed;
-}
-
-async function fetchStartupInternalEvents(params: {
-  readonly sessionBaseUrl: string;
-  readonly headers: Record<string, string>;
-  readonly subagents?: boolean;
-}): Promise<StartupInternalEvent[] | null> {
-  const allEvents: StartupInternalEvent[] = [];
-  let cursor: string | undefined;
-
-  while (true) {
-    const url = new URL(
-      `${params.sessionBaseUrl}/worker/internal-events`,
-    );
-    if (params.subagents) {
-      url.searchParams.set("subagents", "true");
-    }
-    if (cursor) {
-      url.searchParams.set("cursor", cursor);
-    }
-
-    const response = await fetch(url, {
-      headers: params.headers,
-    });
-    if (!response.ok) {
-      return null;
-    }
-
-    const page = (await response.json()) as StartupInternalEventPage;
-    for (const event of page.data ?? []) {
-      if (event.payload) {
-        allEvents.push({
-          payload: event.payload,
-          ...(event.agent_id ? { agent_id: event.agent_id } : {}),
-        });
-      }
-    }
-
-    if (!page.next_cursor) {
-      return allEvents;
-    }
-    cursor = page.next_cursor;
-  }
 }
 
 async function writeStartupInternalEvent(params: {

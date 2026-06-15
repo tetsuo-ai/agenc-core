@@ -29,6 +29,7 @@ vi.mock("./_deps/session-ingress-auth.js", () => ({
 }));
 
 import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
+import { fetchStartupInternalEvents } from "./startup-internal-events.js";
 import { Session } from "../session/session.js";
 
 type InternalEventReader = () => Promise<
@@ -302,6 +303,65 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         /* best effort */
       });
     }
+  });
+
+  it("returns null instead of throwing for malformed successful internal-event JSON", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON");
+      },
+    });
+
+    await expect(
+      fetchStartupInternalEvents({
+        sessionBaseUrl: "https://api.example.test/v1/code/sessions/cse_session_123",
+        headers: { Authorization: "Bearer worker-jwt" },
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null for malformed internal-event page envelopes", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: { payload: { uuid: "not-an-array" } },
+      }),
+    });
+
+    await expect(
+      fetchStartupInternalEvents({
+        sessionBaseUrl: "https://api.example.test/v1/code/sessions/cse_session_123",
+        headers: { Authorization: "Bearer worker-jwt" },
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("returns null when internal-event pagination repeats a cursor", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ payload: { uuid: "first", type: "assistant" } }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ payload: { uuid: "second", type: "assistant" } }],
+          next_cursor: "cursor-1",
+        }),
+      });
+
+    await expect(
+      fetchStartupInternalEvents({
+        sessionBaseUrl: "https://api.example.test/v1/code/sessions/cse_session_123",
+        headers: { Authorization: "Bearer worker-jwt" },
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not install a fake CCR v2 writer when the worker epoch is missing", async () => {
