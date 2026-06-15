@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { getGlobalAgenCFile } from '../../src/utils/env.ts'
 
 const originalEnv = {
   AGENC_CONFIG_DIR: process.env.AGENC_CONFIG_DIR,
@@ -16,6 +17,7 @@ beforeEach(() => {
   process.env.AGENC_CONFIG_DIR = tempDir
   delete process.env.AGENC_CUSTOM_OAUTH_URL
   delete process.env.USER_TYPE
+  getGlobalAgenCFile.cache.clear?.()
 })
 
 afterEach(() => {
@@ -35,30 +37,29 @@ afterEach(() => {
   } else {
     process.env.USER_TYPE = originalEnv.USER_TYPE
   }
+  getGlobalAgenCFile.cache.clear?.()
 })
 
-async function importFreshEnvModule() {
-  return import(`../../src/utils/env.ts?ts=${Date.now()}-${Math.random()}`)
+function getFreshGlobalAgenCFile(): string {
+  getGlobalAgenCFile.cache.clear?.()
+  return getGlobalAgenCFile()
 }
 
 // getGlobalAgenCFile — three migration branches
 
-test('getGlobalAgenCFile: new install returns .agenc.json when neither file exists', async () => {
-  const { getGlobalAgenCFile } = await importFreshEnvModule()
-  expect(getGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
+test('getGlobalAgenCFile: new install returns .agenc.json when neither file exists', () => {
+  expect(getFreshGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
 })
 
-test('getGlobalAgenCFile: existing user keeps .agenc.json when only legacy file exists', async () => {
+test('getGlobalAgenCFile: existing user keeps .agenc.json when only legacy file exists', () => {
   writeFileSync(join(tempDir, '.agenc.json'), '{}')
-  const { getGlobalAgenCFile } = await importFreshEnvModule()
-  expect(getGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
+  expect(getFreshGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
 })
 
-test('getGlobalAgenCFile: migrated user uses .agenc.json when both files exist', async () => {
+test('getGlobalAgenCFile: migrated user uses .agenc.json when both files exist', () => {
   writeFileSync(join(tempDir, '.agenc.json'), '{}')
   writeFileSync(join(tempDir, '.agenc.json'), '{}')
-  const { getGlobalAgenCFile } = await importFreshEnvModule()
-  expect(getGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
+  expect(getFreshGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
 })
 
 // AGENC_HOME unification: the secrets-bearing global config must resolve from
@@ -66,7 +67,7 @@ test('getGlobalAgenCFile: migrated user uses .agenc.json when both files exist',
 // stranded at $HOME. (os.homedir() ignores $HOME under Bun, so these write the
 // file at the AGENC_HOME location to stay deterministic regardless of the real
 // home — which also exercises the resolved-path-exists branch.)
-test('getGlobalAgenCFile: AGENC_HOME is honored instead of being ignored', async () => {
+test('getGlobalAgenCFile: AGENC_HOME is honored instead of being ignored', () => {
   const savedConfigDir = process.env.AGENC_CONFIG_DIR
   const savedHome = process.env.AGENC_HOME
   const agencHome = mkdtempSync(join(tmpdir(), 'agenc-home-'))
@@ -74,10 +75,9 @@ test('getGlobalAgenCFile: AGENC_HOME is honored instead of being ignored', async
     delete process.env.AGENC_CONFIG_DIR
     process.env.AGENC_HOME = agencHome
     writeFileSync(join(agencHome, '.agenc.json'), '{}')
-    const { getGlobalAgenCFile } = await importFreshEnvModule()
     // Before the fix this returned $HOME/.agenc.json (AGENC_HOME ignored),
     // splitting provider keys away from config.toml.
-    expect(getGlobalAgenCFile()).toBe(join(agencHome, '.agenc.json'))
+    expect(getFreshGlobalAgenCFile()).toBe(join(agencHome, '.agenc.json'))
   } finally {
     rmSync(agencHome, { recursive: true, force: true })
     if (savedConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
@@ -87,7 +87,7 @@ test('getGlobalAgenCFile: AGENC_HOME is honored instead of being ignored', async
   }
 })
 
-test('getGlobalAgenCFile: AGENC_CONFIG_DIR takes precedence over AGENC_HOME', async () => {
+test('getGlobalAgenCFile: AGENC_CONFIG_DIR takes precedence over AGENC_HOME', () => {
   const savedConfigDir = process.env.AGENC_CONFIG_DIR
   const savedHome = process.env.AGENC_HOME
   const configDir = mkdtempSync(join(tmpdir(), 'agenc-cfg-'))
@@ -95,8 +95,7 @@ test('getGlobalAgenCFile: AGENC_CONFIG_DIR takes precedence over AGENC_HOME', as
   try {
     process.env.AGENC_CONFIG_DIR = configDir
     process.env.AGENC_HOME = agencHome
-    const { getGlobalAgenCFile } = await importFreshEnvModule()
-    expect(getGlobalAgenCFile()).toBe(join(configDir, '.agenc.json'))
+    expect(getFreshGlobalAgenCFile()).toBe(join(configDir, '.agenc.json'))
   } finally {
     rmSync(configDir, { recursive: true, force: true })
     rmSync(agencHome, { recursive: true, force: true })
