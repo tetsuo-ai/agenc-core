@@ -41,32 +41,66 @@ function compactDetail(value: string, maxLength = 180): string {
   return `${compact.slice(0, maxLength)}...`
 }
 
-type OllamaTagsPayload = {
-  models?: Array<{
-    name?: string
-    size?: number
-    details?: {
-      family?: string
-      families?: string[]
-      parameter_size?: string
-      quantization_level?: string
-    }
-  }>
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function arrayField(record: Record<string, unknown>, key: string): readonly unknown[] {
+  const value = record[key]
+  return Array.isArray(value) ? value : []
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value
+    : undefined
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
+function normalizeOpenAICompatibleModelIds(payload: unknown): string[] {
+  const record = asRecord(payload)
+  if (!record) return []
+  return Array.from(
+    new Set(
+      arrayField(record, 'data')
+        .map(model => nonEmptyString(asRecord(model)?.id))
+        .filter((id): id is string => id !== undefined),
+    ),
+  )
 }
 
 function normalizeOllamaModels(
-  payload: OllamaTagsPayload,
+  payload: unknown,
 ): OllamaModelDescriptor[] {
-  return (payload.models ?? [])
-    .filter(model => Boolean(model.name))
-    .map(model => ({
-      name: model.name!,
-      sizeBytes: typeof model.size === 'number' ? model.size : null,
-      family: model.details?.family ?? null,
-      families: model.details?.families ?? [],
-      parameterSize: model.details?.parameter_size ?? null,
-      quantizationLevel: model.details?.quantization_level ?? null,
-    }))
+  const record = asRecord(payload)
+  if (!record) return []
+  return arrayField(record, 'models')
+    .map((model): OllamaModelDescriptor | null => {
+      const modelRecord = asRecord(model)
+      const name = nonEmptyString(modelRecord?.name)
+      if (!modelRecord || name === undefined) return null
+      const details = asRecord(modelRecord.details)
+      return {
+        name,
+        sizeBytes: typeof modelRecord.size === 'number' ? modelRecord.size : null,
+        family: typeof details?.family === 'string' ? details.family : null,
+        families: stringArray(details?.families),
+        parameterSize: typeof details?.parameter_size === 'string'
+          ? details.parameter_size
+          : null,
+        quantizationLevel: typeof details?.quantization_level === 'string'
+          ? details.quantization_level
+          : null,
+      }
+    })
+    .filter((model): model is OllamaModelDescriptor => model !== null)
 }
 
 async function fetchOllamaModelsProbe(
@@ -90,7 +124,7 @@ async function fetchOllamaModelsProbe(
       }
     }
 
-    const payload = (await response.json().catch(() => ({}))) as OllamaTagsPayload
+    const payload: unknown = await response.json().catch(() => ({}))
     return {
       reachable: true,
       models: normalizeOllamaModels(payload),
@@ -265,17 +299,7 @@ export async function listOpenAICompatibleModels(options?: {
       return null
     }
 
-    const data = (await response.json()) as {
-      data?: Array<{ id?: string }>
-    }
-
-    return Array.from(
-      new Set(
-        (data.data ?? [])
-          .filter(model => Boolean(model.id))
-          .map(model => model.id!),
-      ),
-    )
+    return normalizeOpenAICompatibleModelIds(await response.json())
   } catch {
     return null
   } finally {
@@ -311,13 +335,7 @@ export async function listAtomicChatModels(
       return []
     }
 
-    const data = (await response.json()) as {
-      data?: Array<{ id?: string }>
-    }
-
-    return (data.data ?? [])
-      .filter(model => Boolean(model.id))
-      .map(model => model.id!)
+    return normalizeOpenAICompatibleModelIds(await response.json())
   } catch {
     return []
   } finally {

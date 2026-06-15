@@ -48,6 +48,49 @@ test('lists models from a local openai-compatible /models endpoint', async () =>
   ])
 })
 
+test('ignores malformed local openai-compatible model entries', async () => {
+  const { listOpenAICompatibleModels } = await loadProviderDiscoveryModule()
+
+  globalThis.fetch = vi.fn(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          data: [
+            null,
+            'noise',
+            { id: 42 },
+            { id: '   ' },
+            { id: 'qwen3-coder' },
+            { id: 'qwen3-coder' },
+            { id: 'llama-3.3' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ),
+  ) as typeof globalThis.fetch
+
+  await expect(
+    listOpenAICompatibleModels({ baseUrl: 'http://localhost:1234/v1' }),
+  ).resolves.toEqual(['qwen3-coder', 'llama-3.3'])
+})
+
+test('returns an empty local openai-compatible model list for malformed payloads', async () => {
+  const { listOpenAICompatibleModels } = await loadProviderDiscoveryModule()
+
+  globalThis.fetch = vi.fn(() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ data: { id: 'not-an-array' } }), {
+        status: 200,
+      }),
+    ),
+  ) as typeof globalThis.fetch
+
+  await expect(
+    listOpenAICompatibleModels({ baseUrl: 'http://localhost:1234/v1' }),
+  ).resolves.toEqual([])
+})
+
 test('returns null when a local openai-compatible /models request fails', async () => {
   const { listOpenAICompatibleModels } = await loadProviderDiscoveryModule()
 
@@ -139,6 +182,69 @@ test('ollama generation readiness reports unreachable when tags endpoint is down
   expect(calledUrls).toEqual([
     'http://localhost:11434/api/tags',
   ])
+})
+
+test('ollama model discovery ignores malformed tag entries', async () => {
+  const { listOllamaModels } = await loadProviderDiscoveryModule()
+
+  globalThis.fetch = vi.fn(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          models: [
+            null,
+            'noise',
+            { name: 42, size: 100 },
+            { name: '   ' },
+            {
+              name: 'qwen2.5-coder:7b',
+              size: 123,
+              details: {
+                family: 'qwen',
+                families: ['qwen', 7],
+                parameter_size: '7B',
+                quantization_level: 'Q4_K_M',
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    ),
+  ) as typeof globalThis.fetch
+
+  await expect(
+    listOllamaModels('http://localhost:11434'),
+  ).resolves.toEqual([
+    {
+      name: 'qwen2.5-coder:7b',
+      sizeBytes: 123,
+      family: 'qwen',
+      families: ['qwen'],
+      parameterSize: '7B',
+      quantizationLevel: 'Q4_K_M',
+    },
+  ])
+})
+
+test('ollama model discovery treats malformed tag payloads as empty', async () => {
+  const { listOllamaModels } = await loadProviderDiscoveryModule()
+
+  globalThis.fetch = vi.fn(() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ models: { name: 'not-array' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ),
+  ) as typeof globalThis.fetch
+
+  await expect(
+    listOllamaModels('http://localhost:11434'),
+  ).resolves.toEqual([])
 })
 
 test('ollama generation readiness reports no models when server is reachable', async () => {
@@ -350,6 +456,36 @@ test('atomic chat readiness reports no_models when server is reachable but empty
   await expect(
     probeAtomicChatReadiness({ baseUrl: 'http://127.0.0.1:1337' }),
   ).resolves.toEqual({ state: 'no_models' })
+})
+
+test('atomic chat readiness ignores malformed model entries', async () => {
+  const { probeAtomicChatReadiness } = await loadProviderDiscoveryModule()
+
+  globalThis.fetch = vi.fn(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          data: [
+            null,
+            { id: 99 },
+            { id: '   ' },
+            { id: 'Qwen3_5-4B_Q4_K_M' },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    ),
+  ) as typeof globalThis.fetch
+
+  await expect(
+    probeAtomicChatReadiness({ baseUrl: 'http://127.0.0.1:1337' }),
+  ).resolves.toEqual({
+    state: 'ready',
+    models: ['Qwen3_5-4B_Q4_K_M'],
+  })
 })
 
 test('atomic chat readiness returns loaded model ids when ready', async () => {
