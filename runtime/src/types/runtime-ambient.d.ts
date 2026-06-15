@@ -64,6 +64,56 @@ declare module "audio-capture-napi" {
   ): boolean;
 }
 
+// Optional native image module. The published package used in local installs is
+// a reserved stub, while bundled/native builds may provide these exports.
+declare module "image-processor-napi" {
+  import type { Buffer } from "node:buffer";
+
+  export type NativeImageProcessorInstance = {
+    metadata(): Promise<{ width: number; height: number; format: string }>;
+    resize(
+      width: number,
+      height: number,
+      options?: { fit?: string; withoutEnlargement?: boolean },
+    ): NativeImageProcessorInstance;
+    jpeg(options?: { quality?: number }): NativeImageProcessorInstance;
+    png(options?: {
+      compressionLevel?: number;
+      palette?: boolean;
+      colors?: number;
+    }): NativeImageProcessorInstance;
+    webp(options?: { quality?: number }): NativeImageProcessorInstance;
+    toBuffer(): Promise<Buffer>;
+  };
+
+  export type NativeImageProcessor = (
+    input: Buffer,
+  ) => NativeImageProcessorInstance;
+
+  export type NativeClipboardImage = {
+    png: Buffer;
+    width: number;
+    height: number;
+    originalWidth: number;
+    originalHeight: number;
+  };
+
+  export type NativeClipboardModule = {
+    hasClipboardImage?: () => boolean;
+    readClipboardImage?: (
+      maxWidth: number,
+      maxHeight: number,
+    ) => NativeClipboardImage | null;
+  };
+
+  export const __stub: boolean | undefined;
+  export const sharp: NativeImageProcessor | undefined;
+  export function getNativeModule(): NativeClipboardModule | undefined;
+
+  const defaultProcessor: NativeImageProcessor | undefined;
+  export default defaultProcessor;
+}
+
 declare module "src/entrypoints/agentSdkTypes.js" {
   export type HookEvent = any;
   export type ModelUsage = Record<string, unknown>;
