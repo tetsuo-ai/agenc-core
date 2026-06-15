@@ -118,6 +118,19 @@ function optionalString(value: unknown, field: string): string | undefined {
   return stringField(value, field);
 }
 
+function projectRootSubpath(value: unknown, field: string): string | null {
+  if (value === null) return null;
+  const raw = stringField(value, field);
+  if (path.isAbsolute(raw)) {
+    throw new Error(`${field} must be relative`);
+  }
+  const normalized = path.normalize(raw);
+  if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+    throw new Error(`${field} must stay within the project root`);
+  }
+  return raw;
+}
+
 function normalizeAbsolutePath(
   value: unknown,
   field: string,
@@ -170,7 +183,12 @@ function normalizeSpecialPath(value: unknown): FileSystemSpecialPath {
       return {
         kind: "project_roots",
         ...(record.subpath !== undefined
-          ? { subpath: optionalString(record.subpath, "fileSystem entry special subpath") ?? null }
+          ? {
+              subpath: projectRootSubpath(
+                record.subpath,
+                "fileSystem entry special subpath",
+              ),
+            }
           : {}),
       };
     case "tmpdir":

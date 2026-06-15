@@ -243,6 +243,13 @@ export function resolvePathAgainstBase(value: string, base: string): string {
     : normalizePathForPolicy(path.resolve(base, value));
 }
 
+function resolveProjectRootSubpath(subpath: string, cwd: string): string | null {
+  if (path.isAbsolute(subpath)) return null;
+  const normalizedCwd = normalizePathForPolicy(cwd);
+  const resolved = normalizePathForPolicy(path.resolve(normalizedCwd, subpath));
+  return pathStartsWith(resolved, normalizedCwd) ? resolved : null;
+}
+
 export function pathOverlaps(left: string, right: string): boolean {
   const a = normalizePathForPolicy(left);
   const b = normalizePathForPolicy(right);
@@ -280,7 +287,7 @@ export function resolveSpecialPath(
       return path.parse(normalizePathForPolicy(cwd)).root;
     case "project_roots":
       return target.subpath
-        ? resolvePathAgainstBase(target.subpath, cwd)
+        ? resolveProjectRootSubpath(target.subpath, cwd)
         : normalizePathForPolicy(cwd);
     case "tmpdir": {
       const tmpdir = process.env["TMPDIR"];
