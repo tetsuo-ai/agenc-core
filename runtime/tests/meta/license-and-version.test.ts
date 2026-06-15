@@ -33,6 +33,25 @@ describe("repository licensing", () => {
   });
 });
 
+describe("runtime manifest dependencies", () => {
+  test("declares optional AWS auth modules imported by aws.ts", () => {
+    const awsSource = readRepoFile("runtime/src/utils/aws.ts");
+    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
+      optionalDependencies?: Record<string, string>;
+    };
+    const optionalDependencies = runtimePkg.optionalDependencies ?? {};
+    const awsAuthModules = [
+      "@aws-sdk/client-sts",
+      "@aws-sdk/credential-providers",
+    ];
+
+    for (const moduleName of awsAuthModules) {
+      expect(awsSource).toContain(`'${moduleName}'`);
+      expect(optionalDependencies[moduleName]).toMatch(/^\^3\.\d+\.\d+$/);
+    }
+  });
+});
+
 describe("build-time MACRO.VERSION wiring", () => {
   // MACRO.VERSION is injected at build time via esbuild `define`.
   // We cannot exercise the bundled define from a unit test, so instead we
