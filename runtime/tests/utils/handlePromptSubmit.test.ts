@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { getCommandQueue, resetCommandQueue } from '../../src/utils/messageQueueManager.ts'
 
 describe('handlePromptSubmit', () => {
@@ -8,7 +8,6 @@ describe('handlePromptSubmit', () => {
 
   afterEach(() => {
     resetCommandQueue()
-    mock.restore()
   })
 
   it('queues prompt submissions during generation without interrupting the current turn', async () => {
