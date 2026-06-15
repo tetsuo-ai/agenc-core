@@ -5,6 +5,7 @@
 // for this 5486-line file is deferred to a dedicated typecheck-foundation
 // item.
 import { feature } from 'bun:bundle'
+import { Ajv } from 'ajv'
 import { getAPIProvider } from './model/providers.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { StreamingToolUse } from '../llm/types.js'
@@ -2684,6 +2685,135 @@ export function mergeUserContentBlocks(
   return [...a.slice(0, -1), smooshed, ...toolResults]
 }
 
+let nestedToolInputAjv: Ajv | null = null
+const nestedToolInputValidators = new WeakMap<object, (value: unknown) => boolean>()
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isJsonSchemaObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null
+}
+
+function getNestedToolInputValidator(
+  schema: object,
+): ((value: unknown) => boolean) | null {
+  const cached = nestedToolInputValidators.get(schema)
+  if (cached) {
+    return cached
+  }
+
+  try {
+    const ajv = (nestedToolInputAjv ??= new Ajv({ strict: false }))
+    const validator = ajv.compile(schema)
+    const validate = (value: unknown): boolean => validator(value) === true
+    nestedToolInputValidators.set(schema, validate)
+    return validate
+  } catch {
+    return null
+  }
+}
+
+function toolInputMatchesSchema(tool: Tool, input: unknown): boolean {
+  if (isJsonSchemaObject(tool.inputJSONSchema)) {
+    const validate = getNestedToolInputValidator(tool.inputJSONSchema)
+    if (validate) {
+      return validate(input)
+    }
+  }
+
+  const schema = tool.inputSchema as {
+    safeParse?: (value: unknown) => { success: boolean }
+    parse?: (value: unknown) => unknown
+  }
+
+  if (typeof schema.safeParse === 'function') {
+    try {
+      return schema.safeParse(input).success === true
+    } catch {
+      return false
+    }
+  }
+
+  if (typeof schema.parse === 'function') {
+    try {
+      schema.parse(input)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  return false
+}
+
+function parseJsonStructuredString(value: string): unknown {
+  let current: unknown = value
+
+  for (let depth = 0; depth < 8; depth++) {
+    if (typeof current !== 'string') {
+      break
+    }
+
+    const trimmed = current.trim()
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      break
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (
+        typeof parsed === 'string' ||
+        Array.isArray(parsed) ||
+        isRecordValue(parsed)
+      ) {
+        current = parsed
+        continue
+      }
+      break
+    } catch {
+      break
+    }
+  }
+
+  return current
+}
+
+function decodeNestedJsonStrings(value: unknown, depth = 0): unknown {
+  if (depth > 32) {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    const parsed = parseJsonStructuredString(value)
+    return parsed === value ? value : decodeNestedJsonStrings(parsed, depth + 1)
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => decodeNestedJsonStrings(item, depth + 1))
+  }
+
+  if (isRecordValue(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        decodeNestedJsonStrings(entry, depth + 1),
+      ]),
+    )
+  }
+
+  return value
+}
+
+function normalizeNestedToolInput(tool: Tool, input: unknown): unknown {
+  const decoded = decodeNestedJsonStrings(input)
+  if (decoded === input || toolInputMatchesSchema(tool, input)) {
+    return input
+  }
+  return toolInputMatchesSchema(tool, decoded) ? decoded : input
+}
+
 // Sometimes the API returns empty messages (eg. "\n\n"). We need to filter these out,
 // otherwise they will give an API error when we send them to the API next time we call query().
 export function normalizeContentFromAPI(
@@ -2705,11 +2835,12 @@ export function normalizeContentFromAPI(
           throw new Error('Tool use input must be a string or object')
         }
 
-        // With fine-grained streaming on, we are getting a stringied JSON back from the API.
+        // With fine-grained streaming on, we are getting stringified JSON back from the API.
         // The API has strange behaviour, where it returns nested stringified JSONs, and so
         // we need to recursively parse these. If the top-level value returned from the API is
         // an empty string, this should become an empty object (nested values should be empty string).
-        // Follow-up: This needs patching as recursive fields can still be stringified
+        // Nested object/array fields are decoded after tool lookup so the tool schema can
+        // prove that the decoded shape is preferable to the original string shape.
         let normalizedInput: unknown
         if (typeof contentBlock.input === 'string') {
           const parsed = safeParseJSON(contentBlock.input)
@@ -2730,9 +2861,13 @@ export function normalizeContentFromAPI(
           normalizedInput = contentBlock.input
         }
 
+        const tool = findToolByName(tools, contentBlock.name)
+        if (tool) {
+          normalizedInput = normalizeNestedToolInput(tool, normalizedInput)
+        }
+
         // Then apply tool-specific corrections
         if (typeof normalizedInput === 'object' && normalizedInput !== null) {
-          const tool = findToolByName(tools, contentBlock.name)
           if (tool) {
             try {
               normalizedInput = normalizeToolInput(

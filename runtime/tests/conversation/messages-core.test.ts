@@ -2,6 +2,9 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { createAttachmentMessage } from "../../src/utils/attachments.js";
 import { getImageTooLargeErrorMessage } from "../../src/services/api/errors.js";
+import { CanonicalFileWriteTool } from "../../src/tools/canonicalToolSurface.js";
+import { MCPTool } from "../../src/tools/MCPTool/MCPTool.js";
+import { TodoWriteTool } from "../../src/tools/TodoWriteTool/TodoWriteTool.js";
 import {
   AUTO_REJECT_MESSAGE,
   buildMessageLookups,
@@ -727,6 +730,88 @@ describe("message utility constructors and predicates", () => {
       type: "server_tool_use",
       input: { query: "docs" },
     });
+
+    const normalizedNestedApiContent = normalizeContentFromAPI(
+      [
+        {
+          type: "tool_use",
+          id: "tu_todo",
+          name: "TodoWrite",
+          input: JSON.stringify({
+            todos: JSON.stringify([
+              {
+                content: "Guard nested JSON normalization",
+                status: "pending",
+                activeForm: "Guarding nested JSON normalization",
+              },
+            ]),
+          }),
+        },
+      ] as never,
+      [TodoWriteTool] as never,
+    );
+    expect(normalizedNestedApiContent[0]).toMatchObject({
+      type: "tool_use",
+      input: {
+        todos: [
+          {
+            content: "Guard nested JSON normalization",
+            status: "pending",
+            activeForm: "Guarding nested JSON normalization",
+          },
+        ],
+      },
+    });
+
+    const normalizedWriteContent = normalizeContentFromAPI(
+      [
+        {
+          type: "tool_use",
+          id: "tu_write",
+          name: "Write",
+          input: JSON.stringify({
+            file_path: "/tmp/data.json",
+            content: JSON.stringify({ keep: true }),
+          }),
+        },
+      ] as never,
+      [CanonicalFileWriteTool] as never,
+    );
+    expect(normalizedWriteContent[0]).toMatchObject({
+      type: "tool_use",
+      input: {
+        file_path: "/tmp/data.json",
+        content: "{\"keep\":true}",
+      },
+    });
+
+    const mcpArrayTool = Object.assign(Object.create(MCPTool), {
+      name: "mcp__demo__list",
+      inputJSONSchema: {
+        type: "object",
+        properties: {
+          items: { type: "array", items: { type: "string" } },
+        },
+        required: ["items"],
+        additionalProperties: false,
+      },
+    });
+    const normalizedSchemaOnlyContent = normalizeContentFromAPI(
+      [
+        {
+          type: "tool_use",
+          id: "tu_mcp",
+          name: "mcp__demo__list",
+          input: JSON.stringify({ items: JSON.stringify(["alpha", "beta"]) }),
+        },
+      ] as never,
+      [mcpArrayTool] as never,
+    );
+    expect(normalizedSchemaOnlyContent[0]).toMatchObject({
+      type: "tool_use",
+      input: { items: ["alpha", "beta"] },
+    });
+
     expect(() =>
       normalizeContentFromAPI(
         [{ type: "tool_use", id: "bad", name: "Bash", input: 3 }] as never,
