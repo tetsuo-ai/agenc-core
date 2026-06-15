@@ -67,6 +67,7 @@ const movedDonorTestFiles = movedDonorTestRoots
 const convertedMovedDonorTestFiles = new Set([
   'tests/constants/promptIdentity.test.ts',
   'tests/utils/agencInstallSurfaces.test.ts',
+  'tests/utils/agencPaths.test.ts',
   'tests/utils/agencUiSurfaces.test.ts',
   'tests/utils/api.test.ts',
   'tests/utils/async-lock.test.ts',
