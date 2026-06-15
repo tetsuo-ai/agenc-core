@@ -222,6 +222,85 @@ describe("providers/ollama entrypoint", () => {
     ]);
   });
 
+  test("ignores malformed native SDK chat response fields", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: 42,
+      message: {
+        role: "assistant",
+        content: 123,
+        tool_calls: { function: { name: "system.echo" } },
+      },
+      prompt_eval_count: "8",
+      eval_count: -1,
+    });
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { chat });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "echo hi" }],
+      { model: "request-model" },
+    );
+
+    expect(response).toMatchObject({
+      content: "",
+      finishReason: "stop",
+      model: "request-model",
+      toolCalls: [],
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      },
+    });
+  });
+
+  test("ignores malformed native SDK tool-call entries while preserving valid ones", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: "llama3.3",
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          null,
+          "noise",
+          { function: null },
+          { function: { name: "   ", arguments: { text: "missing name" } } },
+          { function: { name: "system.echo", arguments: { text: "hi" } } },
+          {
+            function: {
+              name: "system.search",
+              arguments: '{"query":"typed string args"}',
+            },
+          },
+        ],
+      },
+      prompt_eval_count: 8,
+      eval_count: 2,
+    });
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { chat });
+
+    const response = await provider.chat([{ role: "user", content: "echo hi" }]);
+
+    expect(response.finishReason).toBe("tool_calls");
+    expect(response.toolCalls).toEqual([
+      {
+        id: expect.any(String),
+        name: "system.echo",
+        arguments: '{"text":"hi"}',
+      },
+      {
+        id: expect.any(String),
+        name: "system.search",
+        arguments: '{"query":"typed string args"}',
+      },
+    ]);
+  });
+
   test("streams native SDK chat chunks through the provider callback", async () => {
     const chat = vi.fn().mockResolvedValue(
       streamChunks([
@@ -267,6 +346,72 @@ describe("providers/ollama entrypoint", () => {
       messages: [{ role: "user", content: "hello" }],
     });
     expect(chat.mock.calls[0]).toHaveLength(1);
+  });
+
+  test("ignores malformed native SDK stream chunks while preserving valid deltas", async () => {
+    const chat = vi.fn().mockResolvedValue(
+      streamChunks([
+        null,
+        {
+          model: 42,
+          message: {
+            role: "assistant",
+            content: 99,
+            tool_calls: { function: { name: "system.echo" } },
+          },
+          prompt_eval_count: "bad",
+          eval_count: -1,
+        },
+        {
+          model: "llama3.3",
+          message: {
+            role: "assistant",
+            content: "ok",
+            tool_calls: [
+              { function: { name: "system.echo", arguments: { text: "hi" } } },
+              { function: { name: "", arguments: { text: "bad" } } },
+            ],
+          },
+          prompt_eval_count: 4,
+          eval_count: 2,
+        },
+        {
+          message: {
+            role: "assistant",
+            content: "",
+          },
+        },
+      ]),
+    );
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { chat, list: vi.fn().mockResolvedValue({ models: [] }) });
+    const chunks: Array<{ content: string; done: boolean }> = [];
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      (chunk) => chunks.push({ content: chunk.content, done: chunk.done }),
+    );
+
+    expect(response.content).toBe("ok");
+    expect(response.model).toBe("llama3.3");
+    expect(response.usage).toEqual({
+      promptTokens: 4,
+      completionTokens: 2,
+      totalTokens: 6,
+    });
+    expect(response.toolCalls).toEqual([
+      {
+        id: expect.any(String),
+        name: "system.echo",
+        arguments: '{"text":"hi"}',
+      },
+    ]);
+    expect(chunks).toEqual([
+      { content: "ok", done: false },
+      { content: "", done: true },
+    ]);
   });
 
   test("keeps health monitoring active through slow stream consumption", async () => {

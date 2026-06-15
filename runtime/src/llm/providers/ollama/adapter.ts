@@ -185,6 +185,64 @@ function cloneProviderTracePayload(
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function readNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function readNonNegativeNumberOrZero(value: unknown): number {
+  return readNonNegativeNumber(value) ?? 0;
+}
+
+function serializeOllamaToolArguments(value: unknown): string | null {
+  if (value === undefined) return "{}";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "{}";
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (isRecord(parsed)) return trimmed;
+    } catch {
+      // Fall through to the validator path below; non-JSON strings should not
+      // become executable tool arguments.
+    }
+  }
+  try {
+    return safeStringify(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeOllamaToolCall(raw: unknown): LLMToolCall | null {
+  if (!isRecord(raw) || !isRecord(raw.function)) return null;
+  const serializedArguments = serializeOllamaToolArguments(
+    raw.function.arguments,
+  );
+  if (serializedArguments === null) return null;
+  return validateToolCall({
+    id: randomUUID(),
+    name: readString(raw.function.name),
+    arguments: serializedArguments,
+  });
+}
+
+function normalizeOllamaToolCalls(raw: unknown): LLMToolCall[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(normalizeOllamaToolCall)
+    .filter((toolCall): toolCall is LLMToolCall => toolCall !== null);
+}
+
 function buildProviderTraceErrorPayload(error: unknown): Record<string, unknown> {
   if (error instanceof Error) {
     const payload: Record<string, unknown> = {
@@ -529,32 +587,30 @@ export class OllamaProvider implements LLMProvider {
             abortOllamaStream(stream));
 
           try {
-            for await (const chunk of abortableAsyncIterable(
+            for await (const rawChunk of abortableAsyncIterable(
               stream as AsyncIterable<any>,
               signal,
             )) {
-              if (chunk.message?.content) {
-                content += chunk.message.content;
-                onChunk({ content: chunk.message.content, done: false });
+              const chunk = isRecord(rawChunk) ? rawChunk : {};
+              const message = isRecord(chunk.message) ? chunk.message : {};
+              const chunkContent = readString(message.content);
+
+              if (chunkContent) {
+                content += chunkContent;
+                onChunk({ content: chunkContent, done: false });
               }
 
-              // Accumulate tool calls
-              if (chunk.message?.tool_calls) {
-                for (const tc of chunk.message.tool_calls) {
-                  const validated = validateToolCall({
-                    id: randomUUID(),
-                    name: tc.function?.name ?? "",
-                    arguments: JSON.stringify(tc.function?.arguments ?? {}),
-                  });
-                  if (validated) {
-                    toolCalls.push(validated);
-                  }
-                }
-              }
+              toolCalls = [
+                ...toolCalls,
+                ...normalizeOllamaToolCalls(message.tool_calls),
+              ];
 
-              if (chunk.model) model = chunk.model;
-              if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-              if (chunk.eval_count) completionTokens = chunk.eval_count;
+              const chunkModel = readString(chunk.model);
+              if (chunkModel) model = chunkModel;
+              promptTokens =
+                readNonNegativeNumber(chunk.prompt_eval_count) ?? promptTokens;
+              completionTokens =
+                readNonNegativeNumber(chunk.eval_count) ?? completionTokens;
             }
           } finally {
             cleanupStreamAbort();
@@ -867,35 +923,29 @@ export class OllamaProvider implements LLMProvider {
     };
   }
 
-  private parseResponse(response: any, options?: LLMChatOptions): LLMResponse {
-    const message = response.message ?? {};
-    const content = message.content ?? "";
+  private parseResponse(response: unknown, options?: LLMChatOptions): LLMResponse {
+    const record = isRecord(response) ? response : {};
+    const message = isRecord(record.message) ? record.message : {};
+    const content = readString(message.content);
+    const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
 
-    const toolCalls: LLMToolCall[] = (message.tool_calls ?? [])
-      .map((tc: any) =>
-        validateToolCall({
-          id: randomUUID(),
-          name: tc.function?.name ?? "",
-          arguments: JSON.stringify(tc.function?.arguments ?? {}),
-        }),
-      )
-      .filter(
-        (toolCall: LLMToolCall | null): toolCall is LLMToolCall =>
-          toolCall !== null,
-      );
-
+    const promptTokens = readNonNegativeNumberOrZero(record.prompt_eval_count);
+    const completionTokens = readNonNegativeNumberOrZero(record.eval_count);
     const usage: LLMUsage = {
-      promptTokens: response.prompt_eval_count ?? 0,
-      completionTokens: response.eval_count ?? 0,
-      totalTokens:
-        (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0),
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
     };
 
     return {
       content,
       toolCalls,
       usage,
-      model: response.model ?? options?.model?.trim() ?? this.config.model,
+      model:
+        readString(record.model) ||
+        options?.model?.trim() ||
+        this.config.model ||
+        DEFAULT_MODEL,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ...this.buildUnsupportedDiagnostics(options),
     };
