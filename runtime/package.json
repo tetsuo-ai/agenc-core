@@ -76,6 +76,7 @@
     "@aws-sdk/credential-providers": "^3.1068.0",
     "@mendable/firecrawl-js": "^4.25.4",
     "cheerio": "^1.2.0",
+    "google-auth-library": "^10.7.0",
     "image-processor-napi": "^0.0.1",
     "ollama": "^0.6.3",
     "openai": "^6.27.0",

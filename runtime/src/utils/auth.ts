@@ -873,7 +873,7 @@ const GCP_CREDENTIALS_CHECK_TIMEOUT_MS = 5_000
 export async function checkGcpCredentialsValid(): Promise<boolean> {
   try {
     // Dynamically import to avoid loading google-auth-library unnecessarily
-    const { GoogleAuth } = (await import('google-auth-library' as string)) as any
+    const { GoogleAuth } = await import('google-auth-library')
     const auth = new GoogleAuth({
       scopes: ['https://www.googleapis.com/auth/cloud-platform'],
     })

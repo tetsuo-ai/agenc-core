@@ -109,7 +109,6 @@ function normalizeAccessToken(
 }
 
 async function createDefaultGoogleAuth(): Promise<GoogleAuthLike> {
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { GoogleAuth } = await import('google-auth-library')
   return new GoogleAuth({
     scopes: [GEMINI_ADC_SCOPE],
