@@ -1894,16 +1894,23 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
             ? `${endpoint}${endpoint.includes("?") ? "&" : "?"}q=${encodeURIComponent(query)}`
             : `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
         const response = await fetchWithTimeout(searchUrl);
-        const raw = (await response.json()) as Record<string, unknown>;
-        const related = Array.isArray(raw.RelatedTopics) ? raw.RelatedTopics : [];
+        const raw = recordValue(await response.json().catch(() => undefined)) ?? {};
+        const related = arrayValue(raw.RelatedTopics);
         const results = filterWebSearchResults(related
           .flatMap((entry): Array<Record<string, unknown>> => {
-            if (entry && typeof entry === "object" && Array.isArray((entry as Record<string, unknown>).Topics)) {
-              return (entry as { Topics: Array<Record<string, unknown>> }).Topics;
+            const record = recordValue(entry);
+            if (!record) {
+              return [];
             }
-            return entry && typeof entry === "object"
-              ? [entry as Record<string, unknown>]
-              : [];
+            const topics = arrayValue(record.Topics)
+              .flatMap((topic): Array<Record<string, unknown>> => {
+                const topicRecord = recordValue(topic);
+                return topicRecord ? [topicRecord] : [];
+              });
+            if (topics.length > 0) {
+              return topics;
+            }
+            return [record];
           })
           .map((entry) => ({
             title: stringValue(entry.Text)?.split(" - ")[0] ?? stringValue(entry.Result) ?? "",

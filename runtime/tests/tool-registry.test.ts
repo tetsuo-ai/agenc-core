@@ -358,6 +358,102 @@ describe("tool-registry dynamic and deferred catalog", () => {
     }
   });
 
+  test("model-facing WebSearch handles malformed successful response payloads", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response("null", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    try {
+      const registry = buildToolRegistry({
+        workspaceRoot: "/tmp",
+        modelFacingTools: createModelFacingTools({
+          workspaceRoot: "/tmp",
+          getSession: () => null,
+          env: {
+            AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/api",
+          } as NodeJS.ProcessEnv,
+        }),
+      });
+
+      const result = await registry.dispatch({
+        id: "web-search-null",
+        name: "WebSearch",
+        arguments: JSON.stringify({ query: "agenc" }),
+      });
+
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed).toMatchObject({
+        query: "agenc",
+        source: "https://search.example/api",
+        results: [],
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("model-facing WebSearch skips malformed grouped RelatedTopics entries", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          Heading: "Search heading",
+          AbstractText: "Search abstract",
+          RelatedTopics: [
+            {
+              Topics: [
+                null,
+                {
+                  Text: "Example title - Example snippet",
+                  FirstURL: "https://example.com/result",
+                },
+              ],
+            },
+            null,
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    try {
+      const registry = buildToolRegistry({
+        workspaceRoot: "/tmp",
+        modelFacingTools: createModelFacingTools({
+          workspaceRoot: "/tmp",
+          getSession: () => null,
+          env: {
+            AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/api",
+          } as NodeJS.ProcessEnv,
+        }),
+      });
+
+      const result = await registry.dispatch({
+        id: "web-search-grouped",
+        name: "WebSearch",
+        arguments: JSON.stringify({ query: "agenc" }),
+      });
+
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed).toMatchObject({
+        answer: "Search abstract",
+        heading: "Search heading",
+        results: [
+          {
+            title: "Example title",
+            url: "https://example.com/result",
+            snippet: "Example title - Example snippet",
+          },
+        ],
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   test("apply_patch is deferred but dispatch accepts raw patch strings", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-registry-apply-patch-"));
     const registry = buildToolRegistry({ workspaceRoot: root });
