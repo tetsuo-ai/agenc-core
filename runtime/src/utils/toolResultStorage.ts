@@ -460,6 +460,84 @@ type CandidatePartition = {
   fresh: ToolResultCandidate[]
 }
 
+type UnknownRecord = Record<string, unknown>
+
+type ToolResultBlockRecord = UnknownRecord & {
+  type: 'tool_result'
+  tool_use_id: string
+  content: NonNullable<ToolResultBlockParam['content']>
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null
+}
+
+function userContentBlocks(message: Message): readonly unknown[] | undefined {
+  if (!isRecord(message) || message.type !== 'user') return undefined
+  const envelope = message.message
+  if (!isRecord(envelope) || !Array.isArray(envelope.content)) {
+    return undefined
+  }
+  return envelope.content
+}
+
+function assistantContentBlocks(message: Message): readonly unknown[] | undefined {
+  if (!isRecord(message) || message.type !== 'assistant') return undefined
+  const envelope = message.message
+  if (!isRecord(envelope) || !Array.isArray(envelope.content)) {
+    return undefined
+  }
+  return envelope.content
+}
+
+function assistantMessageId(message: Message): string | undefined {
+  if (!isRecord(message) || message.type !== 'assistant') return undefined
+  const envelope = message.message
+  if (!isRecord(envelope) || typeof envelope.id !== 'string') return undefined
+  return envelope.id
+}
+
+function isToolResultContentBlock(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== 'string') return false
+  return value.type !== 'text' || typeof value.text === 'string'
+}
+
+function isToolResultContent(
+  value: unknown,
+): value is NonNullable<ToolResultBlockParam['content']> {
+  if (typeof value === 'string') return true
+  return Array.isArray(value) && value.every(isToolResultContentBlock)
+}
+
+function asToolResultBlock(block: unknown): ToolResultBlockRecord | undefined {
+  if (
+    !isRecord(block) ||
+    block.type !== 'tool_result' ||
+    typeof block.tool_use_id !== 'string' ||
+    block.content === undefined ||
+    block.content === null ||
+    block.content === '' ||
+    !isToolResultContent(block.content)
+  ) {
+    return undefined
+  }
+  return block as ToolResultBlockRecord
+}
+
+function asToolUseBlock(
+  block: unknown,
+): { readonly id: string; readonly name: string } | undefined {
+  if (
+    !isRecord(block) ||
+    block.type !== 'tool_use' ||
+    typeof block.id !== 'string' ||
+    typeof block.name !== 'string'
+  ) {
+    return undefined
+  }
+  return { id: block.id, name: block.name }
+}
+
 function isContentAlreadyCompacted(
   content: ToolResultBlockParam['content'],
 ): boolean {
@@ -501,12 +579,12 @@ function contentSize(
 function buildToolNameMap(messages: Message[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const message of messages) {
-    if (message.type !== 'assistant') continue
-    const content = message.message.content
-    if (!Array.isArray(content)) continue
+    const content = assistantContentBlocks(message)
+    if (!content) continue
     for (const block of content) {
-      if (block.type === 'tool_use') {
-        map.set(block.id, block.name)
+      const toolUse = asToolUseBlock(block)
+      if (toolUse) {
+        map.set(toolUse.id, toolUse.name)
       }
     }
   }
@@ -520,18 +598,18 @@ function buildToolNameMap(messages: Message[]): Map<string, string> {
  * Returns [] for messages with no eligible blocks.
  */
 function collectCandidatesFromMessage(message: Message): ToolResultCandidate[] {
-  if (message.type !== 'user' || !Array.isArray(message.message.content)) {
-    return []
-  }
-  return message.message.content.flatMap((block: any) => {
-    if (block.type !== 'tool_result' || !block.content) return []
-    if (isContentAlreadyCompacted(block.content)) return []
-    if (hasImageBlock(block.content)) return []
+  const content = userContentBlocks(message)
+  if (!content) return []
+  return content.flatMap(block => {
+    const toolResult = asToolResultBlock(block)
+    if (!toolResult) return []
+    if (isContentAlreadyCompacted(toolResult.content)) return []
+    if (hasImageBlock(toolResult.content)) return []
     return [
       {
-        toolUseId: block.tool_use_id,
-        content: block.content,
-        size: contentSize(block.content),
+        toolUseId: toolResult.tool_use_id,
+        content: toolResult.content,
+        size: contentSize(toolResult.content),
       },
     ]
   })
@@ -587,12 +665,13 @@ function collectCandidatesByMessage(
   // message — so the budget must see them as one group too.
   const seenAsstIds = new Set<string>()
   for (const message of messages) {
-    if (message.type === 'user') {
+    if (isRecord(message) && message.type === 'user') {
       current.push(...collectCandidatesFromMessage(message))
-    } else if (message.type === 'assistant') {
-      if (!seenAsstIds.has(message.message.id)) {
+    } else if (isRecord(message) && message.type === 'assistant') {
+      const id = assistantMessageId(message)
+      if (id !== undefined && !seenAsstIds.has(id)) {
         flush()
-        seenAsstIds.add(message.message.id)
+        seenAsstIds.add(id)
       }
     }
     // progress / attachment / system are filtered or merged by
@@ -667,28 +746,29 @@ function replaceToolResultContents(
 ): Message[] {
   let changed = false
   const nextMessages = messages.map(message => {
-    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
-      return message
-    }
-    const content = message.message.content
-    const needsReplace = content.some(
-      (b: any) =>
-        b.type === 'tool_result' &&
-        replacementMap.has(b.tool_use_id) &&
-        b.content !== replacementMap.get(b.tool_use_id),
-    )
+    const content = userContentBlocks(message)
+    if (!content) return message
+    const needsReplace = content.some(block => {
+      const toolResult = asToolResultBlock(block)
+      return (
+        toolResult !== undefined &&
+        replacementMap.has(toolResult.tool_use_id) &&
+        toolResult.content !== replacementMap.get(toolResult.tool_use_id)
+      )
+    })
     if (!needsReplace) return message
     changed = true
     return {
       ...message,
       message: {
         ...message.message,
-        content: content.map((block: any) => {
-          if (block.type !== 'tool_result') return block
-          const replacement = replacementMap.get(block.tool_use_id)
-          return replacement === undefined || block.content === replacement
+        content: content.map(block => {
+          const toolResult = asToolResultBlock(block)
+          if (!toolResult) return block
+          const replacement = replacementMap.get(toolResult.tool_use_id)
+          return replacement === undefined || toolResult.content === replacement
             ? block
-            : { ...block, content: replacement }
+            : { ...toolResult, content: replacement }
         }),
       },
       // Drop the original tool payload once the model-facing content has been

@@ -1,7 +1,10 @@
 import { expect, test } from 'bun:test'
 
 import { createUserMessage } from '../../src/utils/messages.ts'
-import { applyToolResultReplacementsToMessages } from '../../src/utils/toolResultStorage.ts'
+import {
+  applyToolResultReplacementsToMessages,
+  reconstructContentReplacementState,
+} from '../../src/utils/toolResultStorage.ts'
 
 test('applyToolResultReplacementsToMessages replaces matching tool results and preserves unrelated messages', () => {
   const unrelated = createUserMessage({ content: 'keep me' })
@@ -56,4 +59,80 @@ test('applyToolResultReplacementsToMessages is idempotent when messages are alre
   )
 
   expect(next).toBe(messages)
+})
+
+test('applyToolResultReplacementsToMessages ignores malformed transcript blocks', () => {
+  const validToolResult = {
+    type: 'tool_result',
+    tool_use_id: 'tool-1',
+    content: 'very large tool output',
+    is_error: false,
+  }
+  const message = createUserMessage({
+    content: 'placeholder',
+  })
+  ;(message.message as { content: unknown }).content = [
+    null,
+    'loose text block',
+    { type: 'tool_result', tool_use_id: 123, content: 'bad id' },
+    { type: 'tool_result', tool_use_id: 'bad-content', content: { raw: true } },
+    { type: 'tool_result', tool_use_id: 'bad-text', content: [{ type: 'text' }] },
+    validToolResult,
+  ]
+  const replacement =
+    '<persisted-output>\nOutput too large. Preview\n</persisted-output>'
+
+  const next = applyToolResultReplacementsToMessages(
+    [message],
+    new Map([
+      ['tool-1', replacement],
+      ['bad-content', 'must not be read'],
+      ['bad-text', 'must not be read'],
+    ]),
+  )
+
+  const blocks = next[0]!.message.content as unknown[]
+  expect(next[0]).not.toBe(message)
+  expect(blocks.slice(0, 5)).toEqual([
+    null,
+    'loose text block',
+    { type: 'tool_result', tool_use_id: 123, content: 'bad id' },
+    { type: 'tool_result', tool_use_id: 'bad-content', content: { raw: true } },
+    { type: 'tool_result', tool_use_id: 'bad-text', content: [{ type: 'text' }] },
+  ])
+  expect((blocks[5] as { content: unknown }).content).toBe(replacement)
+  expect(next[0]!.toolUseResult).toBeUndefined()
+})
+
+test('reconstructContentReplacementState ignores malformed tool result candidates', () => {
+  const message = createUserMessage({
+    content: 'placeholder',
+  })
+  ;(message.message as { content: unknown }).content = [
+    { type: 'tool_result', tool_use_id: 'bad-content', content: 42 },
+    { type: 'tool_result', tool_use_id: 'bad-text', content: [{ type: 'text' }] },
+    { type: 'tool_result', tool_use_id: 'tool-1', content: 'large output' },
+  ]
+
+  const state = reconstructContentReplacementState(
+    [message],
+    [
+      {
+        kind: 'tool-result',
+        toolUseId: 'tool-1',
+        replacement: '<persisted-output>\nPreview\n</persisted-output>',
+      },
+      {
+        kind: 'tool-result',
+        toolUseId: 'bad-content',
+        replacement: 'must not be restored',
+      },
+    ],
+  )
+
+  expect(state.seenIds.has('tool-1')).toBe(true)
+  expect(state.seenIds.has('bad-content')).toBe(false)
+  expect(state.seenIds.has('bad-text')).toBe(false)
+  expect(state.replacements.get('tool-1')).toContain('Preview')
+  expect(state.replacements.has('bad-content')).toBe(false)
 })
