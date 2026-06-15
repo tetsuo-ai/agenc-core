@@ -2,12 +2,15 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { ProviderProfile } from '../../src/utils/config.ts'
 
+const configModulePath = '../../src/utils/config.js'
+
 async function importFreshProvidersModule() {
-  return import(`../../src/utils/model/providers.ts?ts=${Date.now()}-${Math.random()}`)
+  vi.resetModules()
+  return import('../../src/utils/model/providers.ts')
 }
 
 const originalEnv = { ...process.env }
@@ -83,14 +86,17 @@ afterEach(() => {
     }
   }
 
-  mock.restore()
+  vi.doUnmock(configModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
   mockConfigState = createMockConfigState()
   process.chdir(originalCwd)
 })
 
 async function importFreshProviderProfileModules() {
-  mock.restore()
-  mock.module('../../src/utils/config.js', () => ({
+  vi.doUnmock(configModulePath)
+  vi.resetModules()
+  vi.doMock(configModulePath, () => ({
     getGlobalConfig: () => mockConfigState,
     saveGlobalConfig: (
       updater: (current: MockConfigState) => MockConfigState,
@@ -98,9 +104,8 @@ async function importFreshProviderProfileModules() {
       mockConfigState = updater(mockConfigState)
     },
   }))
-  const nonce = `${Date.now()}-${Math.random()}`
-  const providers = await import(`../../src/utils/model/providers.ts?ts=${nonce}`)
-  const providerProfiles = await import(`../../src/utils/providerProfiles.ts?ts=${nonce}`)
+  const providers = await import('../../src/utils/model/providers.ts')
+  const providerProfiles = await import('../../src/utils/providerProfiles.ts')
 
   return {
     ...providers,
