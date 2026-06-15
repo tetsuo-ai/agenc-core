@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
+  isProviderToolNameSafe,
 } from "./mcp-tool-naming.js";
 
 describe("MCP tool-name wire encoding", () => {
@@ -42,13 +43,21 @@ describe("MCP tool-name wire encoding", () => {
     expect(encodeMcpToolNameForWire("mcp.server")).toBe("mcp.server");
   });
 
-  test("passes through when server name contains __ (decode would be ambiguous)", () => {
-    // Defensive pass-through: encoding `mcp.serv__er.foo` to
-    // `mcp__serv____er__foo` would decode as server=`serv`, tool=`__er__foo`,
-    // which is wrong. MCP server-name conventions don't produce `__`,
-    // so this branch is mostly a safety net.
+  test("escapes server names that would be ambiguous in the legacy form", () => {
     expect(encodeMcpToolNameForWire("mcp.serv__er.foo")).toBe(
+      "mcp2__serv_u_uer__foo",
+    );
+    expect(decodeMcpToolNameFromWire("mcp2__serv_u_uer__foo")).toBe(
       "mcp.serv__er.foo",
+    );
+  });
+
+  test("escapes plugin-style server names while preserving canonical decode", () => {
+    const wire = encodeMcpToolNameForWire("mcp.plugin:sample:local.ping");
+    expect(wire).toBe("mcp2__plugin_x3asample_x3alocal__ping");
+    expect(isProviderToolNameSafe(wire)).toBe(true);
+    expect(decodeMcpToolNameFromWire(wire)).toBe(
+      "mcp.plugin:sample:local.ping",
     );
   });
 
@@ -94,6 +103,8 @@ describe("MCP tool-name wire encoding", () => {
       "mcp.context7.resolve-library-id",
       "mcp.design_tooling.get_design_context",
       "mcp.server.do__stuff", // tool name with __
+      "mcp.serv__er.foo",
+      "mcp.plugin:sample:local.ping",
       "FileEdit",
       "exec_command",
       "TodoWrite",
@@ -114,11 +125,14 @@ describe("MCP tool-name wire encoding", () => {
       "mcp.github.create_issue",
       "mcp.context7.resolve-library-id",
       "mcp.design_tooling.get_design_context",
+      "mcp.plugin:sample:local.ping",
+      "mcp.serv__er.foo",
     ];
     for (const internal of cases) {
       const wire = encodeMcpToolNameForWire(internal);
       expect(wire).toMatch(strictRegex);
       expect(wire.length).toBeLessThanOrEqual(64);
+      expect(isProviderToolNameSafe(wire)).toBe(true);
     }
   });
 });
