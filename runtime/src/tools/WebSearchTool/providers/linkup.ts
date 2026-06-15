@@ -5,7 +5,13 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
-import { applyDomainFilters, safeHostname, type ProviderOutput } from './types.js'
+import {
+  applyDomainFilters,
+  arrayField,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  type ProviderOutput,
+} from './types.js'
 
 export const linkupProvider: SearchProvider = {
   name: 'linkup',
@@ -35,13 +41,11 @@ export const linkupProvider: SearchProvider = {
       throw new Error(`Linkup search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data = await res.json()
-    const hits = (data.results ?? []).map((r: any) => ({
-      title: r.name ?? r.title ?? '',
-      url: r.url ?? '',
-      description: r.snippet ?? r.description ?? r.content,
-      source: r.url ? safeHostname(r.url) : undefined,
-    }))
+    const data: unknown = await res.json()
+    const record = isSearchProviderJsonRecord(data) ? data : undefined
+    const hits = normalizeHits(arrayField(record, 'results'), {
+      inferSourceFromUrl: true,
+    })
 
     return {
       hits: applyDomainFilters(hits, input),

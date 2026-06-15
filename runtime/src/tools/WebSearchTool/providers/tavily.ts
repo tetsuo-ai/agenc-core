@@ -5,7 +5,13 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
-import { applyDomainFilters, safeHostname, type ProviderOutput } from './types.js'
+import {
+  applyDomainFilters,
+  arrayField,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  type ProviderOutput,
+} from './types.js'
 
 export const tavilyProvider: SearchProvider = {
   name: 'tavily',
@@ -35,14 +41,11 @@ export const tavilyProvider: SearchProvider = {
       throw new Error(`Tavily search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data = await res.json()
-
-    const hits = (data.results ?? []).map((r: any) => ({
-      title: r.title ?? '',
-      url: r.url ?? '',
-      description: r.content ?? r.snippet,
-      source: r.url ? safeHostname(r.url) : undefined,
-    }))
+    const data: unknown = await res.json()
+    const record = isSearchProviderJsonRecord(data) ? data : undefined
+    const hits = normalizeHits(arrayField(record, 'results'), {
+      inferSourceFromUrl: true,
+    })
 
     return {
       hits: applyDomainFilters(hits, input),

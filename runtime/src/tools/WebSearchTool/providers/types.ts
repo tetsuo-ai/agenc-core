@@ -48,30 +48,85 @@ const TITLE_KEYS = ['title', 'headline', 'name', 'heading'] as const
 const URL_KEYS = ['url', 'link', 'href', 'uri', 'permalink'] as const
 const DESC_KEYS = [
   'description', 'snippet', 'content', 'preview', 'summary', 'text', 'body',
+  'desc',
 ] as const
 const SOURCE_KEYS = [
-  'source', 'domain', 'displayLink', 'displayed_link', 'engine',
+  'source', 'domain', 'displayLink', 'displayUrl', 'displayed_link', 'engine',
 ] as const
 
-function firstMatch(obj: any, keys: readonly string[]): string | undefined {
+export type SearchProviderJsonRecord = Record<string, unknown>
+
+export function isSearchProviderJsonRecord(
+  value: unknown,
+): value is SearchProviderJsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function recordField(
+  obj: SearchProviderJsonRecord | null | undefined,
+  key: string,
+): SearchProviderJsonRecord | undefined {
+  const value = obj?.[key]
+  return isSearchProviderJsonRecord(value) ? value : undefined
+}
+
+export function arrayField(
+  obj: SearchProviderJsonRecord | null | undefined,
+  key: string,
+): readonly unknown[] {
+  const value = obj?.[key]
+  return Array.isArray(value) ? value : []
+}
+
+function firstMatch(
+  obj: SearchProviderJsonRecord,
+  keys: readonly string[],
+): string | undefined {
   for (const k of keys) {
-    if (typeof obj?.[k] === 'string' && obj[k]) return obj[k]
+    const value = obj[k]
+    if (typeof value === 'string' && value) return value
   }
   return undefined
 }
 
 /** Extract a SearchHit from any object shape using well-known field aliases. */
-export function normalizeHit(raw: any): SearchHit | null {
-  if (!raw || typeof raw !== 'object') return null
+export function normalizeHit(raw: unknown): SearchHit | null {
+  if (!isSearchProviderJsonRecord(raw)) return null
   const title = firstMatch(raw, TITLE_KEYS)
   const url = firstMatch(raw, URL_KEYS)
   if (!title && !url) return null
   const hit: SearchHit = { title: title ?? url!, url: url ?? title! }
-  const desc = firstMatch(raw, DESC_KEYS)
+  const desc =
+    firstMatch(raw, DESC_KEYS) ??
+    (
+      Array.isArray(raw['snippets']) &&
+      typeof raw['snippets'][0] === 'string' &&
+      raw['snippets'][0]
+        ? raw['snippets'][0]
+        : undefined
+    )
   const source = firstMatch(raw, SOURCE_KEYS)
   if (desc) hit.description = desc
   if (source) hit.source = source
   return hit
+}
+
+export function normalizeHits(
+  raw: unknown,
+  options: { readonly inferSourceFromUrl?: boolean } = {},
+): SearchHit[] {
+  if (!Array.isArray(raw)) return []
+  const hits: SearchHit[] = []
+  for (const item of raw) {
+    const hit = normalizeHit(item)
+    if (!hit) continue
+    if (options.inferSourceFromUrl && !hit.source) {
+      const host = safeHostname(hit.url)
+      if (host) hit.source = host
+    }
+    hits.push(hit)
+  }
+  return hits
 }
 
 // ---------------------------------------------------------------------------
@@ -116,4 +171,3 @@ export function applyDomainFilters(
   }
   return out
 }
-

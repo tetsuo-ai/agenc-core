@@ -89,6 +89,30 @@ describe('normalizeHit', () => {
     expect(hit?.source).toBe('example.com')
   })
 
+  test('extracts provider-specific source and description aliases', () => {
+    const hit = normalizeHit({
+      name: 'Bing result',
+      url: 'https://example.com',
+      displayUrl: 'example.com/page',
+      desc: 'Mojeek-style description',
+    })
+    expect(hit).toEqual({
+      title: 'Bing result',
+      url: 'https://example.com',
+      description: 'Mojeek-style description',
+      source: 'example.com/page',
+    })
+  })
+
+  test('uses first snippets entry for You.com-style descriptions', () => {
+    const hit = normalizeHit({
+      title: 'Result',
+      url: 'https://example.com',
+      snippets: ['first snippet', 'second snippet'],
+    })
+    expect(hit?.description).toBe('first snippet')
+  })
+
   test('returns null for empty object', () => {
     expect(normalizeHit({})).toBeNull()
   })

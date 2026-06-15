@@ -5,7 +5,14 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
-import { applyDomainFilters, safeHostname, type ProviderOutput } from './types.js'
+import {
+  applyDomainFilters,
+  arrayField,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  recordField,
+  type ProviderOutput,
+} from './types.js'
 
 export const mojeekProvider: SearchProvider = {
   name: 'mojeek',
@@ -35,15 +42,13 @@ export const mojeekProvider: SearchProvider = {
       throw new Error(`Mojeek search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data = await res.json()
-    const rawResults = data?.response?.results ?? data?.results ?? []
-
-    const hits = rawResults.map((r: any) => ({
-      title: r.title ?? '',
-      url: r.url ?? '',
-      description: r.snippet ?? r.desc,
-      source: r.url ? safeHostname(r.url) : undefined,
-    }))
+    const data: unknown = await res.json()
+    const record = isSearchProviderJsonRecord(data) ? data : undefined
+    const rawResults =
+      record && 'response' in record
+        ? arrayField(recordField(record, 'response'), 'results')
+        : arrayField(record, 'results')
+    const hits = normalizeHits(rawResults, { inferSourceFromUrl: true })
 
     return {
       hits: applyDomainFilters(hits, input),

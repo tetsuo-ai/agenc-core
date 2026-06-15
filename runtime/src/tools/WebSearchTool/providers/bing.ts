@@ -5,7 +5,14 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
-import { applyDomainFilters, type ProviderOutput } from './types.js'
+import {
+  applyDomainFilters,
+  arrayField,
+  isSearchProviderJsonRecord,
+  normalizeHits,
+  recordField,
+  type ProviderOutput,
+} from './types.js'
 
 export const bingProvider: SearchProvider = {
   name: 'bing',
@@ -30,13 +37,9 @@ export const bingProvider: SearchProvider = {
       throw new Error(`Bing search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
 
-    const data = await res.json()
-    const hits = (data.webPages?.value ?? []).map((r: any) => ({
-      title: r.name ?? '',
-      url: r.url ?? '',
-      description: r.snippet,
-      source: r.displayUrl,
-    }))
+    const data: unknown = await res.json()
+    const record = isSearchProviderJsonRecord(data) ? data : undefined
+    const hits = normalizeHits(arrayField(recordField(record, 'webPages'), 'value'))
 
     return {
       hits: applyDomainFilters(hits, input),

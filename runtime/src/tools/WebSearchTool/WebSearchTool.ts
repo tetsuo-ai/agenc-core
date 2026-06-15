@@ -212,12 +212,7 @@ function addProviderCodeSource(
   sourceMap: Map<string, { title: string; url: string }>,
   source: unknown,
 ): void {
-  // Provider JSON is dynamic; narrow to an indexable record so the existing
-  // `typeof`/optional-chaining guards can read `url`/`title` without TS2339.
-  const src = source as
-    | { url?: unknown; title?: unknown }
-    | null
-    | undefined
+  const src = asProviderCodeRecord(source)
   if (typeof src?.url !== 'string' || !src.url) return
   sourceMap.set(src.url, {
     title:
@@ -226,31 +221,62 @@ function addProviderCodeSource(
   })
 }
 
-function getProviderCodeSources(item: Record<string, any>): unknown[] {
-  if (Array.isArray(item.action?.sources)) {
-    return item.action.sources
+function asProviderCodeRecord(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function providerCodeArrayField(
+  item: Record<string, unknown> | undefined,
+  field: string,
+): unknown[] {
+  const value = item?.[field]
+  return Array.isArray(value) ? value : []
+}
+
+function providerCodeMessage(value: unknown): string | undefined {
+  const record = asProviderCodeRecord(value)
+  const message = record?.message
+  return typeof message === 'string' && message ? message : undefined
+}
+
+function getProviderCodeSources(item: Record<string, unknown>): unknown[] {
+  const action = asProviderCodeRecord(item.action)
+  const actionSources = providerCodeArrayField(action, 'sources')
+  if (actionSources.length > 0) {
+    return actionSources
   }
-  if (Array.isArray(item.sources)) {
-    return item.sources
+  const sources = providerCodeArrayField(item, 'sources')
+  if (sources.length > 0) {
+    return sources
   }
-  if (Array.isArray(item.result?.sources)) {
-    return item.result.sources
+  const resultSources = providerCodeArrayField(
+    asProviderCodeRecord(item.result),
+    'sources',
+  )
+  if (resultSources.length > 0) {
+    return resultSources
   }
   return []
 }
 
-function extractProviderCodeWebSearchFailure(item: Record<string, any>): string | undefined {
+function extractProviderCodeWebSearchFailure(
+  item: Record<string, unknown>,
+): string | undefined {
   // ProviderCode web_search_call items can carry a status field. When the tool
   // call fails (rate limit, upstream error, model-side guardrail), the
   // parser should surface a meaningful error rather than the generic
   // "No results found." fallback. Shape observed across recent payloads:
   //   { type: 'web_search_call', status: 'failed', error: { message?: string } }
   //   { type: 'web_search_call', status: 'failed', action: { error?: { message?: string } } }
-  if (item?.status !== 'failed') return undefined
+  if (item.status !== 'failed') return undefined
+  const action = asProviderCodeRecord(item.action)
   const reason =
-    (typeof item.error?.message === 'string' && item.error.message) ||
-    (typeof item.action?.error?.message === 'string' &&
-      item.action.error.message) ||
+    providerCodeMessage(item.error) ||
+    providerCodeMessage(action?.error) ||
     (typeof item.error === 'string' && item.error) ||
     undefined
   return reason ? `Web search failed: ${reason}` : 'Web search failed.'
@@ -265,7 +291,9 @@ function makeOutputFromProviderCodeWebSearchResponse(
   const sourceMap = new Map<string, { title: string; url: string }>()
   const output = Array.isArray(response.output) ? response.output : []
 
-  for (const item of output) {
+  for (const rawItem of output) {
+    const item = asProviderCodeRecord(rawItem)
+    if (!item) continue
     if (item?.type === 'web_search_call') {
       const failure = extractProviderCodeWebSearchFailure(item)
       if (failure) {
@@ -277,11 +305,14 @@ function makeOutputFromProviderCodeWebSearchResponse(
       continue
     }
 
-    if (item?.type !== 'message' || !Array.isArray(item.content)) {
+    const content = providerCodeArrayField(item, 'content')
+    if (item.type !== 'message' || content.length === 0) {
       continue
     }
 
-    for (const part of item.content) {
+    for (const rawPart of content) {
+      const part = asProviderCodeRecord(rawPart)
+      if (!part) continue
       if (part?.type === 'output_text' || part?.type === 'text') {
         pushProviderCodeTextResult(results, part.text)
       }
@@ -290,10 +321,8 @@ function makeOutputFromProviderCodeWebSearchResponse(
         addProviderCodeSource(sourceMap, source)
       }
 
-      const annotations = Array.isArray(part?.annotations)
-        ? part.annotations
-        : []
-      for (const annotation of annotations) {
+      for (const rawAnnotation of providerCodeArrayField(part, 'annotations')) {
+        const annotation = asProviderCodeRecord(rawAnnotation)
         if (annotation?.type !== 'url_citation') continue
         addProviderCodeSource(sourceMap, annotation)
       }

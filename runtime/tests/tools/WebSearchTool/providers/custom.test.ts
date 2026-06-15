@@ -80,12 +80,40 @@ describe('extractHits', () => {
     expect(hits).toHaveLength(1)
   })
 
+  test('ignores malformed values inside provider result arrays', () => {
+    const data = {
+      results: [
+        null,
+        'plain text',
+        42,
+        { title: 'Valid', url: 'https://ex.com' },
+        { title: '', url: '' },
+      ],
+    }
+    expect(extractHits(data)).toEqual([
+      { title: 'Valid', url: 'https://ex.com' },
+    ])
+  })
+
   test('extracts from organic_results (SerpAPI-style)', () => {
     const data = {
       organic_results: [{ title: 'T', link: 'https://ex.com' }],
     }
     const hits = extractHits(data)
     expect(hits).toHaveLength(1)
+  })
+
+  test('does not recursively parse primitive nested map values', () => {
+    const data = {
+      web: {
+        count: 3,
+        metadata: { status: 'ok' },
+        results: [{ title: 'T', url: 'https://ex.com' }],
+      },
+    }
+    expect(extractHits(data)).toEqual([
+      { title: 'T', url: 'https://ex.com' },
+    ])
   })
 })
 
