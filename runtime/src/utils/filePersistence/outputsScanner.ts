@@ -8,6 +8,7 @@
  */
 
 import * as fs from 'fs/promises'
+import type { Dirent } from 'node:fs'
 import * as path from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
 // Donor teleport environments module was removed in the upstream-backend
@@ -15,6 +16,11 @@ import { logForDebugging } from 'src/utils/debug.js'
 // independent of any future remote-environment module.
 type EnvironmentKind = 'byoc' | 'agenc_cloud'
 import type { TurnStartTime } from './types.js'
+
+type RecursiveDirent = Omit<Dirent<string>, 'parentPath'> & {
+  readonly parentPath?: string
+  readonly path?: string
+}
 
 /** Shared debug logger for file persistence modules */
 export function logDebug(message: string): void {
@@ -33,17 +39,19 @@ export function getEnvironmentKind(): EnvironmentKind | null {
   return null
 }
 
-function hasParentPath(
-  entry: object,
-): entry is { parentPath: string; name: string } {
+function hasParentPath(entry: RecursiveDirent): entry is RecursiveDirent & {
+  readonly parentPath: string
+} {
   return 'parentPath' in entry && typeof entry.parentPath === 'string'
 }
 
-function hasPath(entry: object): entry is { path: string; name: string } {
+function hasPath(entry: RecursiveDirent): entry is RecursiveDirent & {
+  readonly path: string
+} {
   return 'path' in entry && typeof entry.path === 'string'
 }
 
-function getEntryParentPath(entry: object, fallback: string): string {
+function getEntryParentPath(entry: RecursiveDirent, fallback: string): string {
   if (hasParentPath(entry)) {
     return entry.parentPath
   }
@@ -67,13 +75,12 @@ export async function findModifiedFiles(
   outputsDir: string,
 ): Promise<string[]> {
   // Use recursive flag to get all entries in one call
-  let entries: Awaited<ReturnType<typeof fs.readdir>>
+  let entries: RecursiveDirent[]
   try {
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-    entries = await fs.readdir(outputsDir, {
+    entries = (await fs.readdir(outputsDir, {
       withFileTypes: true,
       recursive: true,
-    })
+    })) as RecursiveDirent[]
   } catch {
     // Directory doesn't exist or is not accessible
     return []
@@ -88,7 +95,6 @@ export async function findModifiedFiles(
     if (entry.isFile()) {
       // entry.parentPath is available in Node 20+, fallback to entry.path for older versions
       const parentPath = getEntryParentPath(entry, outputsDir)
-      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       filePaths.push(path.join(parentPath, entry.name))
     }
   }
