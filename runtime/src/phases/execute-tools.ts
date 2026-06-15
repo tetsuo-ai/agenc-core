@@ -79,15 +79,22 @@ import {
   generateToolUseSummary,
   type ToolUseSummaryToolInfo,
 } from "../services/toolUseSummary/toolUseSummaryGenerator.js";
+import {
+  frameUntrustedToolResultContent,
+  shouldFrameUntrustedToolResult,
+} from "../tools/untrusted-tool-result-framing.js";
 
 function toolResultMessage(
   callId: string,
+  toolName: string,
   result: ToolDispatchResult,
+  frameAsUntrusted: boolean,
 ): LLMMessage {
   const message: LLMMessage = {
     role: "tool",
     toolCallId: callId,
-    content: toolResultContent(result),
+    toolName,
+    content: modelFacingToolResultContent(toolName, result, frameAsUntrusted),
   };
   const failureKind = recoverableFailureKind(result.metadata);
   if (failureKind !== null) {
@@ -134,17 +141,29 @@ function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
   return parts.length > 0 ? parts : result.content;
 }
 
+function modelFacingToolResultContent(
+  toolName: string,
+  result: ToolDispatchResult,
+  frameAsUntrusted: boolean,
+): LLMMessage["content"] {
+  const content = toolResultContent(result);
+  return frameAsUntrusted
+    ? frameUntrustedToolResultContent(toolName, content)
+    : content;
+}
+
 function toolResultUserRecord(
   callId: string,
   toolName: string,
   result: ToolDispatchResult,
+  frameAsUntrusted: boolean,
 ): UserMessage {
   return {
     uuid: crypto.randomUUID(),
     role: "user",
     toolCallId: callId,
     toolName,
-    content: toolResultContent(result),
+    content: modelFacingToolResultContent(toolName, result, frameAsUntrusted),
   };
 }
 
@@ -493,6 +512,13 @@ function recordCompletedToolCall(
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
 ): CompletedToolResultRecord {
+  const registryTool = session.services.registry.tools.find(
+    (tool) => tool.name === toolCall.name,
+  );
+  const frameAsUntrusted = shouldFrameUntrustedToolResult(
+    toolCall.name,
+    registryTool,
+  );
   markLoadedToolNamesDiscovered(
     toolCall.name,
     result,
@@ -529,9 +555,11 @@ function recordCompletedToolCall(
   };
   state.completedToolResults.push(completed);
   state.toolResults.push(
-    toolResultUserRecord(toolCall.id, toolCall.name, result),
+    toolResultUserRecord(toolCall.id, toolCall.name, result, frameAsUntrusted),
   );
-  state.messages.push(toolResultMessage(toolCall.id, result));
+  state.messages.push(
+    toolResultMessage(toolCall.id, toolCall.name, result, frameAsUntrusted),
+  );
   return completed;
 }
 
