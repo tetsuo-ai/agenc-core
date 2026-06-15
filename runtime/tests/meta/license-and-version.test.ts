@@ -50,6 +50,21 @@ describe("runtime manifest dependencies", () => {
       expect(optionalDependencies[moduleName]).toMatch(/^\^3\.\d+\.\d+$/);
     }
   });
+
+  test("declares ZIP archive module imported by plugin zip utilities", () => {
+    const zipSource = readRepoFile("runtime/src/utils/dxt/zip.ts");
+    const zipCacheSource = readRepoFile(
+      "runtime/src/utils/plugins/zipCache.ts",
+    );
+    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
+      dependencies?: Record<string, string>;
+    };
+    const dependencies = runtimePkg.dependencies ?? {};
+
+    expect(zipSource).toContain("'fflate'");
+    expect(zipCacheSource).toContain("'fflate'");
+    expect(dependencies.fflate).toMatch(/^\^0\.8\.\d+$/);
+  });
 });
 
 describe("build-time MACRO.VERSION wiring", () => {

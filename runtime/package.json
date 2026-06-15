@@ -112,6 +112,7 @@
     "emoji-regex": "^10.6.0",
     "env-paths": "^4.0.0",
     "execa": "9.6.1",
+    "fflate": "^0.8.3",
     "figures": "6.1.0",
     "fuse.js": "^7.1.0",
     "get-east-asian-width": "^1.5.0",
