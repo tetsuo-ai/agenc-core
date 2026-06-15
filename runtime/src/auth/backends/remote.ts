@@ -357,7 +357,10 @@ function createHttpRemoteAuthKeyVendor(
         `RemoteAuthBackend key vending failed with HTTP ${response.status}`,
       );
     }
-    return parseRemoteAuthVendKeyResponse(await response.json(), request);
+    return parseRemoteAuthVendKeyResponse(
+      await readRemoteAuthJsonResponse(response, "key vending"),
+      request,
+    );
   };
 }
 
@@ -390,7 +393,7 @@ function createHttpRemoteAuthLoginFlow(
       );
     }
     const started = parseRemoteAuthLoginStartResponse(
-      await startResponse.json(),
+      await readRemoteAuthJsonResponse(startResponse, "login start"),
     );
     if ("token" in started) return started;
     await notifyRemoteAuthDeviceCode(options.onDeviceCode, started);
@@ -488,7 +491,9 @@ function createHttpRemoteAuthModelInferer(
         `RemoteAuthBackend hosted model routing failed with HTTP ${response.status}`,
       );
     }
-    return parseRemoteAuthModelInferenceResponse(await response.json());
+    return parseRemoteAuthModelInferenceResponse(
+      await readRemoteAuthJsonResponse(response, "hosted model routing"),
+    );
   };
 }
 
@@ -517,7 +522,9 @@ function createHttpRemoteAuthSubscriptionTierResolver(
         `RemoteAuthBackend subscription tier lookup failed with HTTP ${response.status}`,
       );
     }
-    return parseRemoteAuthSubscriptionTierResponse(await response.json());
+    return parseRemoteAuthSubscriptionTierResponse(
+      await readRemoteAuthJsonResponse(response, "subscription tier lookup"),
+    );
   };
 }
 
@@ -658,7 +665,21 @@ async function readRemoteAuthPollResponse(response: Response): Promise<unknown> 
   try {
     return await response.json();
   } catch {
+    if (response.ok) {
+      throw new Error("RemoteAuthBackend login poll returned invalid JSON");
+    }
     return undefined;
+  }
+}
+
+async function readRemoteAuthJsonResponse(
+  response: Response,
+  operation: string,
+): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`RemoteAuthBackend ${operation} returned invalid JSON`);
   }
 }
 
