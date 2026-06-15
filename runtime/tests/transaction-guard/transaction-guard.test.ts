@@ -57,6 +57,8 @@ const policy: TransactionGuardPolicy = {
   maxDocketBytes: 48 * 1024,
 };
 
+const originalFetch = globalThis.fetch;
+
 function decision(verdict: TransactionGuardDecision["verdict"]): TransactionGuardDecision {
   return {
     allowed: verdict === "benign",
@@ -522,6 +524,38 @@ describe("transaction guard config and docket", () => {
     expect(docket).toContain('"lamports": "10"');
     expect(docket).toContain("[truncated]");
     expect(Buffer.byteLength(docket, "utf8")).toBeLessThanOrEqual(32 * 1024 + 20);
+  });
+});
+
+describe("OllamaCourtGuard", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("fails closed predictably for malformed Ollama response payloads", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response("null", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const guard = new OllamaCourtGuard(policy);
+    const result = await guard.evaluate({
+      source: "tool-dispatch",
+      kind: "solana_tool_invocation",
+      toolName: "exec_command",
+      command: DEVNET_TRANSFER,
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      verdict: "unavailable",
+      code: TRANSACTION_GUARD_UNAVAILABLE,
+      reason: "Ollama guard returned an empty response",
+    });
   });
 });
 

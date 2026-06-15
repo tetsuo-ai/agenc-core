@@ -21,6 +21,28 @@ interface OllamaGenerateResponse {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function normalizeOllamaGenerateResponse(
+  value: unknown,
+): OllamaGenerateResponse {
+  const record = asRecord(value);
+  if (record === null) return {};
+  const messageRecord = asRecord(record.message);
+  return {
+    ...(typeof record.response === "string"
+      ? { response: record.response }
+      : {}),
+    ...(typeof messageRecord?.content === "string"
+      ? { message: { content: messageRecord.content } }
+      : {}),
+  };
+}
+
 // gaphunt3 #23: Untrusted, attacker-influenced content (the docket and the
 // intermediate defense/prosecution/judge model outputs) is interpolated into
 // triple-backtick-fenced prompt regions. JSON.stringify does not escape the
@@ -149,7 +171,7 @@ export class OllamaCourtGuard implements TransactionGuard {
       if (!response.ok) {
         throw new Error(`Ollama guard request failed with HTTP ${response.status}`);
       }
-      const payload = (await response.json()) as OllamaGenerateResponse;
+      const payload = normalizeOllamaGenerateResponse(await response.json());
       const text =
         typeof payload.message?.content === "string"
           ? payload.message.content
