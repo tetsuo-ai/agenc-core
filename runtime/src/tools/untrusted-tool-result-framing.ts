@@ -37,12 +37,20 @@ function isTextPart(
   return part.type === "text";
 }
 
+function isCanonicalMcpToolName(toolName: string): boolean {
+  if (!toolName.startsWith("mcp.")) return false;
+  const rest = toolName.slice("mcp.".length);
+  const separator = rest.indexOf(".");
+  return separator > 0 && separator < rest.length - 1;
+}
+
 export function shouldFrameUntrustedToolResult(
   toolName: string,
   tool?: Pick<Tool, "metadata" | "name">,
 ): boolean {
   if (WEB_TOOL_NAMES.has(toolName)) return true;
   if (toolName.startsWith("mcp__")) return true;
+  if (isCanonicalMcpToolName(toolName)) return true;
   const family = tool?.metadata?.family;
   const source = tool?.metadata?.source;
   return family === "web" || family === "mcp" || source === "mcp";
