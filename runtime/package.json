@@ -72,6 +72,8 @@
   },
   "optionalDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1049.0",
+    "@aws-sdk/client-sts": "^3.1068.0",
+    "@aws-sdk/credential-providers": "^3.1068.0",
     "@mendable/firecrawl-js": "^4.25.4",
     "cheerio": "^1.2.0",
     "image-processor-napi": "^0.0.1",
