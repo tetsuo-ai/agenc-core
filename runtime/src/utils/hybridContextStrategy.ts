@@ -222,8 +222,7 @@ export function applyHybridStrategy(
   const cfg = { ...DEFAULT_CONFIG, ...config }
   
   // Preserve message chains (tool_use/tool_result pairs)
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-  const { chains, orphans } = getMessageChain(messages)
+  const { chains } = getMessageChain(messages)
   
   // Always preserve the conversation tail (last N messages)
   const tailMessages = messages.slice(-MIN_TAILMessages)
@@ -246,11 +245,21 @@ export function applyHybridStrategy(
   ]
 
   const seenUuids = new Set<string>()
+  const seenAnonymousMessages = new WeakSet<Message>()
   const selectedMessages: Message[] = []
   for (const msg of allSelected) {
-    const uuid = msg.uuid ?? msg.message?.id ?? ''
-    if (!seenUuids.has(uuid)) {
+    const uuid = msg.uuid ?? msg.message?.id
+    if (uuid && uuid.length > 0) {
+      if (seenUuids.has(uuid)) {
+        continue
+      }
       seenUuids.add(uuid)
+      selectedMessages.push(msg)
+      continue
+    }
+
+    if (!seenAnonymousMessages.has(msg)) {
+      seenAnonymousMessages.add(msg)
       selectedMessages.push(msg)
     }
   }
