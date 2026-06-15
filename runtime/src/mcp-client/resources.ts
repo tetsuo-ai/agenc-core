@@ -82,27 +82,12 @@ export async function createResourceBridge(
     async listResources(): Promise<ReadonlyArray<MCPResourceDescriptor>> {
       if (disposed) return [];
       try {
-        const response = await withDeadline<{
-          resources?: Array<{
-            uri: string;
-            name?: string;
-            description?: string;
-            mimeType?: string;
-          }>;
-        }>(
+        const response = await withDeadline<unknown>(
           `MCP server "${serverName}" listResources`,
           rpcTimeoutMs,
           () => client.listResources({}),
         );
-        const raw = Array.isArray(response.resources) ? response.resources : [];
-        return raw.map((r) => ({
-          serverName,
-          uri: r.uri,
-          namespacedName: `mcp.${serverName}.${r.uri}`,
-          ...(r.name !== undefined ? { name: r.name } : {}),
-          ...(r.description !== undefined ? { description: r.description } : {}),
-          ...(r.mimeType !== undefined ? { mimeType: r.mimeType } : {}),
-        }));
+        return normalizeResourceCatalog(response, serverName);
       } catch (err) {
         logger.warn?.(
           `MCP server "${serverName}" listResources failed:`,
@@ -117,21 +102,12 @@ export async function createResourceBridge(
           `MCP resource bridge for "${serverName}" has been disposed`,
         );
       }
-      const response = await withDeadline<{
-        contents?: Array<{
-          uri: string;
-          mimeType?: string;
-          text?: string;
-          blob?: string;
-        }>;
-      }>(
+      const response = await withDeadline<unknown>(
         `MCP server "${serverName}" readResource`,
         rpcTimeoutMs,
         () => client.readResource({ uri }),
       );
-      const first = Array.isArray(response.contents)
-        ? response.contents[0]
-        : undefined;
+      const first = firstResourceContent(response);
       if (!first) {
         return {
           uri,
@@ -140,58 +116,63 @@ export async function createResourceBridge(
         };
       }
 
-      if (typeof first.text === "string") {
-        const bytes = Buffer.byteLength(first.text, "utf8");
+      const contentUri = stringField(first, "uri") ?? uri;
+      const mimeType = stringField(first, "mimeType");
+      const text = stringField(first, "text");
+      const blob = stringField(first, "blob");
+
+      if (text !== undefined) {
+        const bytes = Buffer.byteLength(text, "utf8");
         if (bytes > MAX_RESOURCE_BYTES) {
-          const sliced = truncateUtf8(first.text, MAX_RESOURCE_BYTES);
+          const sliced = truncateUtf8(text, MAX_RESOURCE_BYTES);
           logger.warn?.(
             `MCP resource "${uri}" exceeded I-76 cap (${bytes}B > ${MAX_RESOURCE_BYTES}B); truncated`,
           );
           return {
-            uri: first.uri,
-            ...(first.mimeType !== undefined ? { mimeType: first.mimeType } : {}),
+            uri: contentUri,
+            ...(mimeType !== undefined ? { mimeType } : {}),
             text: sliced,
             truncated: true,
             bytesReturned: Buffer.byteLength(sliced, "utf8"),
           };
         }
         return {
-          uri: first.uri,
-          ...(first.mimeType !== undefined ? { mimeType: first.mimeType } : {}),
-          text: first.text,
+          uri: contentUri,
+          ...(mimeType !== undefined ? { mimeType } : {}),
+          text,
           truncated: false,
           bytesReturned: bytes,
         };
       }
-      if (typeof first.blob === "string") {
+      if (blob !== undefined) {
         // Base64 — decode length approximately via 3/4 ratio.
-        const blobBytes = Math.floor((first.blob.length * 3) / 4);
+        const blobBytes = Math.floor((blob.length * 3) / 4);
         if (blobBytes > MAX_RESOURCE_BYTES) {
           const maxBase64 = Math.floor((MAX_RESOURCE_BYTES * 4) / 3);
-          const sliced = first.blob.slice(0, maxBase64);
+          const sliced = blob.slice(0, maxBase64);
           logger.warn?.(
             `MCP blob resource "${uri}" exceeded I-76 cap (~${blobBytes}B > ${MAX_RESOURCE_BYTES}B); truncated`,
           );
           return {
-            uri: first.uri,
-            ...(first.mimeType !== undefined ? { mimeType: first.mimeType } : {}),
+            uri: contentUri,
+            ...(mimeType !== undefined ? { mimeType } : {}),
             blob: sliced,
             truncated: true,
             bytesReturned: Math.floor((sliced.length * 3) / 4),
           };
         }
         return {
-          uri: first.uri,
-          ...(first.mimeType !== undefined ? { mimeType: first.mimeType } : {}),
-          blob: first.blob,
+          uri: contentUri,
+          ...(mimeType !== undefined ? { mimeType } : {}),
+          blob,
           truncated: false,
           bytesReturned: blobBytes,
         };
       }
 
       return {
-        uri: first.uri,
-        ...(first.mimeType !== undefined ? { mimeType: first.mimeType } : {}),
+        uri: contentUri,
+        ...(mimeType !== undefined ? { mimeType } : {}),
         truncated: false,
         bytesReturned: 0,
       };
@@ -205,6 +186,73 @@ export async function createResourceBridge(
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function stringField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function arrayField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): readonly unknown[] {
+  const value = record?.[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeResourceCatalog(
+  response: unknown,
+  serverName: string,
+): MCPResourceDescriptor[] {
+  return arrayField(asRecord(response), "resources")
+    .map((raw) => normalizeResourceDescriptor(raw, serverName))
+    .filter((resource): resource is MCPResourceDescriptor => resource !== null);
+}
+
+function normalizeResourceDescriptor(
+  raw: unknown,
+  serverName: string,
+): MCPResourceDescriptor | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+
+  const uri = nonEmptyString(record.uri);
+  if (!uri) return null;
+
+  const name = stringField(record, "name");
+  const description = stringField(record, "description");
+  const mimeType = stringField(record, "mimeType");
+
+  return {
+    serverName,
+    uri,
+    namespacedName: `mcp.${serverName}.${uri}`,
+    ...(name !== undefined ? { name } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(mimeType !== undefined ? { mimeType } : {}),
+  };
+}
+
+function firstResourceContent(response: unknown): Record<string, unknown> | undefined {
+  return arrayField(asRecord(response), "contents")
+    .map(asRecord)
+    .find((record) => record !== undefined);
+}
 
 function withDeadline<T>(
   operation: string,

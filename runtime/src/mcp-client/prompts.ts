@@ -58,6 +58,8 @@ interface CreatePromptBridgeOpts {
   readonly rpcTimeoutMs?: number;
 }
 
+type PromptRole = MCPPromptRenderedMessage["role"];
+
 export async function createPromptBridge(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any,
@@ -73,40 +75,12 @@ export async function createPromptBridge(
     async listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
       if (disposed) return [];
       try {
-        const response = await withDeadline<{
-          prompts?: Array<{
-            name: string;
-            description?: string;
-            arguments?: Array<{
-              name: string;
-              description?: string;
-              required?: boolean;
-            }>;
-          }>;
-        }>(
+        const response = await withDeadline<unknown>(
           `MCP server "${serverName}" listPrompts`,
           rpcTimeoutMs,
           () => client.listPrompts({}),
         );
-        const raw = Array.isArray(response.prompts) ? response.prompts : [];
-        return raw.map((p) => {
-          const args = Array.isArray(p.arguments)
-            ? p.arguments.map((a) => ({
-                name: a.name,
-                ...(a.description !== undefined
-                  ? { description: a.description }
-                  : {}),
-                ...(a.required !== undefined ? { required: a.required } : {}),
-              }))
-            : undefined;
-          return {
-            serverName,
-            name: p.name,
-            namespacedName: `mcp.${serverName}.${p.name}`,
-            ...(p.description !== undefined ? { description: p.description } : {}),
-            ...(args !== undefined ? { arguments: args } : {}),
-          } satisfies MCPPromptDescriptor;
-        });
+        return normalizePromptCatalog(response, serverName);
       } catch (err) {
         logger.warn?.(
           `MCP server "${serverName}" listPrompts failed:`,
@@ -124,13 +98,7 @@ export async function createPromptBridge(
           `MCP prompt bridge for "${serverName}" has been disposed`,
         );
       }
-      const response = await withDeadline<{
-        description?: string;
-        messages?: Array<{
-          role: "user" | "assistant" | "system";
-          content?: unknown;
-        }>;
-      }>(
+      const response = await withDeadline<unknown>(
         `MCP server "${serverName}" getPrompt("${name}")`,
         rpcTimeoutMs,
         () =>
@@ -139,13 +107,14 @@ export async function createPromptBridge(
             ...(args !== undefined ? { arguments: args } : {}),
           }),
       );
-      const messages: MCPPromptRenderedMessage[] = (
-        Array.isArray(response.messages) ? response.messages : []
-      ).map((m) => projectPromptMessage(m.role, m.content));
+      const record = asRecord(response);
+      const messages: MCPPromptRenderedMessage[] = arrayField(record, "messages")
+        .map(projectPromptMessage)
+        .filter((message): message is MCPPromptRenderedMessage => message !== null);
       return {
         promptName: name,
-        ...(response.description !== undefined
-          ? { description: response.description }
+        ...(typeof record?.description === "string"
+          ? { description: record.description }
           : {}),
         messages,
       };
@@ -160,10 +129,92 @@ export async function createPromptBridge(
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function arrayField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): readonly unknown[] {
+  const value = record?.[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizePromptCatalog(
+  response: unknown,
+  serverName: string,
+): MCPPromptDescriptor[] {
+  return arrayField(asRecord(response), "prompts")
+    .map((raw) => normalizePromptDescriptor(raw, serverName))
+    .filter((prompt): prompt is MCPPromptDescriptor => prompt !== null);
+}
+
+function normalizePromptDescriptor(
+  raw: unknown,
+  serverName: string,
+): MCPPromptDescriptor | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+
+  const name = nonEmptyString(record.name);
+  if (!name) return null;
+
+  const args = arrayField(record, "arguments")
+    .map(normalizePromptArgument)
+    .filter((arg): arg is MCPPromptArgumentSpec => arg !== null);
+
+  return {
+    serverName,
+    name,
+    namespacedName: `mcp.${serverName}.${name}`,
+    ...(typeof record.description === "string"
+      ? { description: record.description }
+      : {}),
+    ...(args.length > 0 ? { arguments: args } : {}),
+  };
+}
+
+function normalizePromptArgument(raw: unknown): MCPPromptArgumentSpec | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+
+  const name = nonEmptyString(record.name);
+  if (!name) return null;
+
+  return {
+    name,
+    ...(typeof record.description === "string"
+      ? { description: record.description }
+      : {}),
+    ...(typeof record.required === "boolean" ? { required: record.required } : {}),
+  };
+}
+
+function promptRole(value: unknown): PromptRole | undefined {
+  return value === "user" || value === "assistant" || value === "system"
+    ? value
+    : undefined;
+}
+
 function projectPromptMessage(
-  role: "user" | "assistant" | "system",
-  content: unknown,
-): MCPPromptRenderedMessage {
+  raw: unknown,
+): MCPPromptRenderedMessage | null {
+  const message = asRecord(raw);
+  if (!message) return null;
+
+  const role = promptRole(message.role);
+  if (!role) return null;
+
+  const content = message.content;
   // MCP prompt content can be an object `{type:'text', text:'...'}` or
   // an array of such blocks. Flatten to a single text field when
   // possible; otherwise return rawContent for the caller.
