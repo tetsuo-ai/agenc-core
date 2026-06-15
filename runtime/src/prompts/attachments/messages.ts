@@ -22,6 +22,7 @@
 
 import type { LLMMessage } from "../../llm/types.js";
 import { renderFileMentionAttachmentsBlock } from "../file-mentions.js";
+import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.js";
 import type { Attachment } from "./types.js";
 
 /**
@@ -188,9 +189,11 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "mcp_instructions_delta": {
       const parts: string[] = [];
       if (attachment.addedBlocks.length > 0) {
-        parts.push(
-          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${attachment.addedBlocks.join("\n\n")}`,
+        const section = renderMcpInstructionsDeltaSection(
+          attachment.addedNames,
+          attachment.addedBlocks,
         );
+        if (section !== null) parts.push(section);
       }
       if (attachment.removedNames.length > 0) {
         parts.push(

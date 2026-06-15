@@ -26,6 +26,7 @@ import isObject from 'lodash-es/isObject.js'
 import last from 'lodash-es/last.js'
 import type { AgentId } from 'src/types/ids.js'
 import { projectSnippedView } from '../services/compact/snipProjection.js'
+import { renderMcpInstructionsDeltaSection } from '../prompts/mcp-instructions-framing.js'
 // Retired intro attachments render empty text for old transcripts.
 const companionIntroText = (_name: string, _species: string): string => ''
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
@@ -4358,9 +4359,11 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'mcp_instructions_delta': {
       const parts: string[] = []
       if (attachment.addedBlocks.length > 0) {
-        parts.push(
-          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${attachment.addedBlocks.join('\n\n')}`,
+        const section = renderMcpInstructionsDeltaSection(
+          attachment.addedNames,
+          attachment.addedBlocks,
         )
+        if (section !== null) parts.push(section)
       }
       if (attachment.removedNames.length > 0) {
         parts.push(

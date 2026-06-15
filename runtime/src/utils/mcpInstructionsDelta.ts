@@ -8,7 +8,7 @@ import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 export type McpInstructionsDelta = {
   /** Server names — for stateless-scan reconstruction. */
   addedNames: string[]
-  /** Rendered "## {name}\n{instructions}" blocks for addedNames. */
+  /** Raw server instruction blocks for addedNames. Renderers apply framing. */
   addedBlocks: string[]
   removedNames: string[]
 }
