@@ -1,13 +1,21 @@
-import { afterEach, expect, mock, test } from 'bun:test'
+import { afterEach, expect, test, vi } from 'vitest'
+
+const providersModulePath = '../../src/utils/model/providers.js'
+const modelSupportOverridesModulePath =
+  '../../src/utils/model/modelSupportOverrides.js'
 
 afterEach(() => {
-  mock.restore()
+  vi.doUnmock(providersModulePath)
+  vi.doUnmock(modelSupportOverridesModulePath)
+  vi.clearAllMocks()
+  vi.resetModules()
 })
 
 async function importFreshEffortModule(options: {
   provider: 'agenc' | 'openai'
 }) {
-  mock.module('../../src/utils/model/providers.js', () => ({
+  vi.resetModules()
+  vi.doMock(providersModulePath, () => ({
     getAPIProvider: () => options.provider,
     getAPIProviderForStatsig: () => options.provider,
     isFirstPartyAnthropicBaseUrl: () => options.provider === 'agenc',
@@ -16,11 +24,11 @@ async function importFreshEffortModule(options: {
     isGithubNativeproviderMode: () => false,
     usesAnthropicAccountFlow: () => false,
   }))
-  mock.module('../../src/utils/model/modelSupportOverrides.js', () => ({
+  vi.doMock(modelSupportOverridesModulePath, () => ({
     get3PModelCapabilityOverride: () => undefined,
   }))
 
-  return import(`../../src/utils/effort.ts?ts=${Date.now()}-${Math.random()}`)
+  return import('../../src/utils/effort.ts')
 }
 
 test('gpt-5.4 on the ChatGPT Agenc backend supports effort selection', async () => {
