@@ -262,12 +262,10 @@ export function resetProfileCounters(): void {
 }
 // --- END ---
 
-// `react-reconciler` ships no types in this repo (see
-// src/types/react-reconciler.d.ts, where createReconciler is `any`), so the
-// HostConfig type arguments below would be erased and provide no checking —
-// and passing type arguments to an untyped call is a TS error (TS2347).
-// Each config callback is instead annotated explicitly with the concrete
-// DOMElement/TextNode types it operates on, which is the real type safety.
+// `react-reconciler` ships no types in this repo. The local ambient
+// declaration only models the reconciler instance methods AgenC consumes, so
+// each host-config callback remains annotated explicitly with the concrete
+// DOMElement/TextNode types it operates on.
 const reconciler = createReconciler({
   getRootHostContext: () => ({ isInsideText: false }),
   prepareForCommit: () => {

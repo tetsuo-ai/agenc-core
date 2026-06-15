@@ -79,9 +79,13 @@ export function renderToScreen(
       noop,
     )
   }
+  const currentContainer = container
+  if (!currentContainer) {
+    throw new Error('Expected reusable Ink render container to be initialized')
+  }
 
   const t0 = performance.now()
-  reconciler.updateContainerSync(el, container, null, noop)
+  reconciler.updateContainerSync(el, currentContainer, null, noop)
   reconciler.flushSyncWork()
   const t1 = performance.now()
 
@@ -116,7 +120,7 @@ export function renderToScreen(
   const t3 = performance.now()
 
   // Unmount so next call gets a fresh tree. Leaves root/container/pools.
-  reconciler.updateContainerSync(null, container, null, noop)
+  reconciler.updateContainerSync(null, currentContainer, null, noop)
   reconciler.flushSyncWork()
 
   timing.reconcile += t1 - t0
