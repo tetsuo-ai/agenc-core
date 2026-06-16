@@ -1,10 +1,12 @@
 import Fuse from 'fuse.js'
 import { basename } from 'path'
+import stripAnsi from 'strip-ansi'
 import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js'
 import { generateFileSuggestions } from './fileSuggestions.js'
 import type { ServerResource } from '../../services/mcp/types.js'
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { sanitizeSystemReminderContent } from '../../prompts/attachments/system-reminder-sanitizer.js'
 import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { Theme } from '../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
 
@@ -68,12 +70,30 @@ function createSuggestionFromSource(source: SuggestionSource): SuggestionItem {
 
 const MAX_UNIFIED_SUGGESTIONS = 15
 
+function sanitizeSuggestionText(value: string): string {
+  return sanitizeSystemReminderContent(stripAnsi(value)).replace(/\s+/gu, ' ').trim()
+}
+
+function sanitizeSuggestionIdentifier(value: string): string | null {
+  const sanitized = sanitizeSuggestionText(value)
+  return sanitized.length > 0 && sanitized === value ? sanitized : null
+}
+
+function firstSanitizedText(...values: Array<string | undefined>): string {
+  for (const value of values) {
+    if (value === undefined) continue
+    const sanitized = sanitizeSuggestionText(value)
+    if (sanitized.length > 0) return sanitized
+  }
+  return ''
+}
+
 // Round-2 M-NEW8: pass the full description through. The footer renderer
 // truncates inline for non-selected rows and expands the full text on a
 // second line for the selected row, so trimming here would hide the rest
 // of an agent's whenToUse / MCP-resource description behind /help.
 function normalizeDescription(description: string): string {
-  return description.replace(/\s+/g, ' ').trim()
+  return sanitizeSuggestionText(description)
 }
 
 function generateAgentSuggestions(
@@ -86,13 +106,18 @@ function generateAgentSuggestions(
   }
 
   try {
-    const agentSources: AgentSuggestionSource[] = agents.map(agent => ({
-      type: 'agent' as const,
-      displayText: `${agent.agentType} (agent)`,
-      description: normalizeDescription(agent.whenToUse),
-      agentType: agent.agentType,
-      color: getAgentColor(agent.agentType),
-    }))
+    const agentSources: AgentSuggestionSource[] = agents.flatMap(agent => {
+      const agentType = sanitizeSuggestionIdentifier(agent.agentType)
+      if (agentType === null) return []
+
+      return [{
+        type: 'agent' as const,
+        displayText: `${agentType} (agent)`,
+        description: normalizeDescription(agent.whenToUse),
+        agentType,
+        color: getAgentColor(agentType),
+      }]
+    })
 
     if (!query) {
       return agentSources
@@ -138,16 +163,24 @@ export async function generateUnifiedSuggestions(
 
   const mcpSources: McpResourceSuggestionSource[] = Object.values(mcpResources)
     .flat()
-    .map(resource => ({
-      type: 'mcp_resource' as const,
-      displayText: `${resource.server}:${resource.uri}`,
-      description: normalizeDescription(
-        resource.description || resource.name || resource.uri,
-      ),
-      server: resource.server,
-      uri: resource.uri,
-      name: resource.name || resource.uri,
-    }))
+    .flatMap(resource => {
+      const server = sanitizeSuggestionIdentifier(resource.server)
+      const uri = sanitizeSuggestionIdentifier(resource.uri)
+      if (server === null || uri === null) return []
+
+      return [{
+        type: 'mcp_resource' as const,
+        displayText: `${server}:${uri}`,
+        description: firstSanitizedText(
+          resource.description,
+          resource.name,
+          uri,
+        ),
+        server,
+        uri,
+        name: firstSanitizedText(resource.name, uri),
+      }]
+    })
 
   if (!query) {
     const allSources = [...fileSources, ...mcpSources, ...agentSources]
