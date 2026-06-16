@@ -10,6 +10,7 @@ import {
 } from '../Tool.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { sanitizeSystemReminderContent } from '../../prompts/attachments/system-reminder-sanitizer.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
@@ -421,7 +422,10 @@ export const ToolSearchTool = buildTool({
         content.pending_mcp_servers &&
         content.pending_mcp_servers.length > 0
       ) {
-        text += `. Some MCP servers are still connecting: ${content.pending_mcp_servers.join(', ')}. Their tools will become available shortly — try searching again.`
+        const pendingServers = content.pending_mcp_servers.map(
+          sanitizeSystemReminderContent,
+        )
+        text += `. Some MCP servers are still connecting: ${pendingServers.join(', ')}. Their tools will become available shortly — try searching again.`
       }
       return {
         type: 'tool_result',
