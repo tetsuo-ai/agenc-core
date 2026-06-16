@@ -781,6 +781,100 @@ describe("plugin registration", () => {
     });
   });
 
+  test("normalizes manifest command keys and aliases into dispatchable identifiers", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        commands: {
+          "Deploy Now!": {
+            source: "./commands/Admin Tools/Review Now.md",
+          },
+          "123 Inline!": {
+            content: [
+              "---",
+              "aliases: Safe+Alias!, sample:Already+Safe!, other:unsafe",
+              "---",
+              "Inline command.",
+            ].join("\n"),
+          },
+        },
+      });
+      await writeFileAt(
+        join(pluginRoot, "commands", "Admin Tools", "Review Now.md"),
+        "Review now.",
+      );
+
+      const result = await loadPlugins(options);
+      const commands = await loadPluginCommands({ plugins: result.enabled });
+      const inline = commands.find((command) =>
+        command.name === "sample:cmd_123_inline"
+      );
+
+      expect(commands.map((command) => command.name).sort()).toEqual([
+        "sample:cmd_123_inline",
+        "sample:deploy_now",
+      ]);
+      expect(commands.every((command) =>
+        /^[a-z][a-z0-9_:-]*$/u.test(command.name)
+      )).toBe(true);
+      expect(inline?.aliases).toEqual([
+        "sample:safe_alias",
+        "sample:already_safe",
+      ]);
+      expect(findCommand("sample:safe_alias", commands)).toBe(inline);
+      expect(findCommand("other:unsafe", commands)).toBeUndefined();
+    });
+  });
+
+  test("normalizes discovered command paths and skill directories into dispatchable identifiers", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+      });
+      await rm(join(pluginRoot, "commands", "deploy.md"), { force: true });
+      await rm(join(pluginRoot, "skills", "inspector"), {
+        recursive: true,
+        force: true,
+      });
+      await writeFileAt(
+        join(pluginRoot, "commands", "Admin Tools", "Review Now!.md"),
+        [
+          "---",
+          "name: sample:Pretty Name!",
+          "aliases: Run+Review!, sample:Review+Alias!, foreign:Review+Alias!",
+          "---",
+          "Review now.",
+        ].join("\n"),
+      );
+      await writeFileAt(
+        join(pluginRoot, "skills", "Ops Tools", "TriAge Now!", "SKILL.md"),
+        "Triage skill.",
+      );
+
+      const result = await loadPlugins(options);
+      const commands = await loadPluginCommands({ plugins: result.enabled });
+      const skills = await loadPluginSkills({ plugins: result.enabled });
+      const review = commands.find((command) =>
+        command.name === "sample:admin_tools:review_now"
+      );
+
+      expect(commands.map((command) => command.name)).toEqual([
+        "sample:admin_tools:review_now",
+      ]);
+      expect(review?.userFacingName?.()).toBe("sample:pretty_name");
+      expect(review?.aliases).toEqual([
+        "sample:run_review",
+        "sample:review_alias",
+      ]);
+      expect(skills.map((skill) => skill.name)).toEqual([
+        "sample:ops_tools:triage_now",
+      ]);
+      expect([...commands, ...skills].every((command) =>
+        /^[a-z][a-z0-9_:-]*$/u.test(command.name)
+      )).toBe(true);
+    });
+  });
+
   test("plugin frontmatter names and aliases cannot create unscoped command identifiers", async () => {
     await withTempPlugin(async ({ pluginRoot, options }) => {
       await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
