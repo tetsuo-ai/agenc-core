@@ -3,6 +3,7 @@ import { type Command, formatDescriptionWithSource } from '../../../commands.js'
 import { compareHelpWorkflowCommands, helpWorkflowTitleForCommand } from '../../../commands/help-groups.js';
 import { Box, Text } from '../../ink.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { sanitizeSuggestionMetadataText } from '../../../utils/suggestions/sanitizeSuggestionMetadataText.js';
 import { Select } from '../CustomSelect/select.js';
 import { useTabHeaderFocus } from '../design-system/Tabs.js';
 import { calculateCommandVisibleOptionCount } from './layout.js';
@@ -38,7 +39,11 @@ export function Commands(t0: Props) {
       t2 = (cmd_0: Command) => ({
         label: `/${cmd_0.name}`,
         value: cmd_0.name,
-        description: truncate(`${helpWorkflowTitleForCommand(cmd_0)} - ${formatDescriptionWithSource(cmd_0)}`, maxWidth, true)
+        description: truncate(
+          sanitizeSuggestionMetadataText(`${helpWorkflowTitleForCommand(cmd_0)} - ${formatDescriptionWithSource(cmd_0)}`),
+          maxWidth,
+          true
+        )
       });
       $[3] = maxWidth;
       $[4] = t2;
