@@ -28,6 +28,7 @@ import type { AgentId } from 'src/types/ids.js'
 import { projectSnippedView } from '../services/compact/snipProjection.js'
 import { renderHookAdditionalContextSection } from '../prompts/hook-context-framing.js'
 import { renderMcpInstructionsDeltaSection } from '../prompts/mcp-instructions-framing.js'
+import { sanitizeSystemReminderContent } from '../prompts/attachments/system-reminder-sanitizer.js'
 import {
   formatAgentListingType,
   sanitizeAgentListingLine,
@@ -3809,13 +3810,16 @@ Read the team config to discover your teammates' names. Check the task list peri
         }),
       ])
     }
-    case 'edited_text_file':
+    case 'edited_text_file': {
+      const editedFilename = sanitizeSystemReminderContent(attachment.filename)
+      const editedSnippet = sanitizeSystemReminderContent(attachment.snippet)
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `Note: ${attachment.filename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${attachment.snippet}`,
+          content: `Note: ${editedFilename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${editedSnippet}`,
           isMeta: true,
         }),
       ])
+    }
     case 'file': {
       return wrapMessagesInSystemReminder([
         createToolUseMessage(CanonicalFileReadTool.name, {
