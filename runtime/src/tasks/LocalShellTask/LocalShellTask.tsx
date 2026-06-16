@@ -1,6 +1,5 @@
 import { feature } from 'bun:bundle';
 import { stat } from 'fs/promises';
-import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
 import type { SetAppState as SetSpeculationAppState } from '../../services/PromptSuggestion/runtime.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import type { AppState } from '../../tui/state/AppState.js';
@@ -14,8 +13,8 @@ import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import type { ShellCommand } from '../../utils/ShellCommand.js';
 import { evictTaskOutput, getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { registerTask, updateTaskState } from '../../utils/task/framework.js';
-import { escapeXml } from '../../utils/xml.js';
 import { backgroundAgentTask, isLocalAgentTask } from '../LocalAgentTask/LocalAgentTask.js';
+import { buildTaskNotificationXml } from '../taskNotificationXml.js';
 import { type BashTaskKind, isLocalShellTask, type LocalShellTaskState } from './guards.js';
 import { killTask } from './killShellTasks.js';
 /** Prefix that identifies a LocalShellTask summary to the UI collapse transform. */
@@ -70,17 +69,17 @@ function startStallWatchdog(taskId: string, description: string, kind: BashTaskK
         // overlapping tick's callback sees cancelled=true and bails.
         cancelled = true;
         clearInterval(timer);
-        const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
         const summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" appears to be waiting for interactive input`;
         // No <status> tag — print.ts treats <status> as a terminal
         // signal and an unknown value falls through to 'completed',
         // falsely closing the task for SDK consumers. Statusless
         // notifications are skipped by the SDK emitter (progress ping).
-        const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
-<${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
-<${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>
-</${TASK_NOTIFICATION_TAG}>
+        const message = `${buildTaskNotificationXml({
+          taskId,
+          toolUseId,
+          outputPath,
+          summary,
+        })}
 Last output:
 ${content.trimEnd()}
 
@@ -159,13 +158,13 @@ function enqueueShellNotification(taskId: string, description: string, status: '
     }
   }
   const outputPath = getTaskOutputPath(taskId);
-  const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
-  const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
-<${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
-<${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>
-</${TASK_NOTIFICATION_TAG}>`;
+  const message = buildTaskNotificationXml({
+    taskId,
+    toolUseId,
+    outputPath,
+    status,
+    summary,
+  });
   enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
