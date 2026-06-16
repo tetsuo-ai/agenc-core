@@ -1,4 +1,5 @@
 import type { McpServerConfig } from "../../config/schema.js";
+import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
 import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
 import {
   resolvePluginMcpSandboxedServer,
@@ -165,7 +166,7 @@ function addPluginScopeToServers(
 ): Readonly<Record<string, McpServerConfig>> {
   const scoped: Record<string, McpServerConfig> = {};
   for (const [name, server] of Object.entries(servers)) {
-    const scopedName = `plugin:${plugin.name}:${name}`;
+    const scopedName = pluginScopedServerIdentifier(plugin.name, name);
     const resolved = resolvePluginMcpEnvironmentWithIssues(plugin, server, options);
     if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
     const sandboxed = resolvePluginMcpSandboxedServer(

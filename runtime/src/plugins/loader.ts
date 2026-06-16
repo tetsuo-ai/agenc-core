@@ -12,6 +12,7 @@ import type {
   PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
+import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
   findPluginManifestPath,
   loadPluginManifest,
@@ -485,7 +486,7 @@ export async function loadPluginMcpServers(
   const servers: Record<string, McpServerConfig> = {};
   for (const plugin of result.enabled) {
     for (const [serverName, server] of Object.entries(plugin.mcpServers)) {
-      servers[`plugin:${plugin.name}:${serverName}`] = server;
+      servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
     }
   }
   return servers;
@@ -498,7 +499,7 @@ export async function loadPluginLspServers(
   const servers: Record<string, LspServerConfigInput> = {};
   for (const plugin of result.enabled) {
     for (const [serverName, server] of Object.entries(plugin.lspServers)) {
-      servers[`plugin:${plugin.name}:${serverName}`] = server;
+      servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
     }
   }
   return servers;

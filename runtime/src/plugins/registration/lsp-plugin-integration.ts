@@ -1,6 +1,7 @@
 import type { LspServerConfigInput } from "../../config/schema.js";
-import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
 import { getPluginDataDir } from "../directories.js";
+import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
+import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
 import {
   loadRuntimePlugins,
   resolvePluginServerTemplate,
@@ -142,7 +143,7 @@ function addPluginScopeToLspServers(
   for (const [name, server] of Object.entries(servers)) {
     const resolved = resolvePluginLspEnvironmentWithIssues(plugin, server, options);
     if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
-    scoped[`plugin:${plugin.name}:${name}`] = resolved.server;
+    scoped[pluginScopedServerIdentifier(plugin.name, name)] = resolved.server;
   }
   return scoped;
 }

@@ -9,6 +9,7 @@ import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, isENOENT } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
+import { pluginScopedServerIdentifier } from '../../plugins/identifier-normalization.js'
 import { jsonParse } from '../slowOperations.js'
 import {
   isMcpbSource,
@@ -347,7 +348,7 @@ export function addPluginScopeToServers(
 
   for (const [name, config] of Object.entries(servers)) {
     // Add plugin prefix to server name to avoid conflicts
-    const scopedName = `plugin:${pluginName}:${name}`
+    const scopedName = pluginScopedServerIdentifier(pluginName, name)
     const scoped: ScopedMcpServerConfig = {
       ...config,
       scope: 'dynamic', // Use dynamic scope for plugin servers
