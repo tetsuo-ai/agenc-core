@@ -1,10 +1,10 @@
 import figures from 'figures'
 import memoize from 'lodash-es/memoize.js'
 import { getOutputStyleDirStyles } from '../outputStyles/loadOutputStylesDir.js'
+import { loadPluginOutputStyles } from '../plugins/registration/load-plugin-output-styles.js'
 import type { OutputStyle } from '../utils/config.js'
 import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { loadPluginOutputStyles } from '../utils/plugins/loadPluginOutputStyles.js'
 import type { SettingSource } from '../utils/settings/constants.js'
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
 
@@ -160,12 +160,15 @@ export const getAllOutputStyles = memoize(async function getAllOutputStyles(
 
   for (const styles of styleGroups) {
     for (const style of styles) {
+      const keepCodingInstructions = 'keepCodingInstructions' in style
+        ? style.keepCodingInstructions
+        : undefined
       allStyles[style.name] = {
         name: style.name,
         description: style.description,
         prompt: style.prompt,
         source: style.source,
-        keepCodingInstructions: style.keepCodingInstructions,
+        ...(keepCodingInstructions !== undefined ? { keepCodingInstructions } : {}),
         forceForPlugin: style.forceForPlugin,
       }
     }
