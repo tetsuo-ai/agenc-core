@@ -9,6 +9,7 @@ import {
   hasSkipDangerousModePermissionPrompt,
 } from '../../utils/settings/settings.js'
 import { getEnterpriseMcpFilePath } from './config.js'
+import { validateMcpHeaders } from './headerValidation.js'
 import { mcpInfoFromString } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import {
@@ -120,7 +121,7 @@ export function parseHeaders(headerArray: string[]): Record<string, string> {
     headers[key] = value
   }
 
-  return headers
+  return validateMcpHeaders(headers, 'MCP CLI headers')
 }
 
 export function getProjectMcpServerStatus(
@@ -179,4 +180,3 @@ export function getProjectMcpServerStatus(
 
   return 'pending'
 }
-
