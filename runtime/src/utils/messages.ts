@@ -4215,8 +4215,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'critical_system_reminder': {
+      const content = sanitizeSystemReminderContent(attachment.content)
       return wrapMessagesInSystemReminder([
-        createUserMessage({ content: attachment.content, isMeta: true }),
+        createUserMessage({ content, isMeta: true }),
       ])
     }
     case 'mcp_resource': {
