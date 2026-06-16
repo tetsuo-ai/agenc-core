@@ -14,7 +14,6 @@ import {
   clearPluginHookCache,
   pruneRemovedPluginHooks,
 } from './loadPluginHooks.js'
-import { clearPluginOutputStyleCache } from './loadPluginOutputStyles.js'
 import { clearPluginCache, getPluginCachePath } from './pluginLoader.js'
 import { clearPluginOptionsCache } from './pluginOptionsStorage.js'
 import { isPluginZipCacheEnabled } from './zipCache.js'
@@ -35,7 +34,6 @@ export function clearAllPluginCaches(): void {
   // resetStateForTests before reaching here).
   pruneRemovedPluginHooks().catch(e => logError(e))
   clearPluginOptionsCache()
-  clearPluginOutputStyleCache()
   clearAllOutputStylesCache()
 }
 
