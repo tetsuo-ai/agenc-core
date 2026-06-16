@@ -1,3 +1,5 @@
+import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
+
 export interface McpServerInstructionsInput {
   readonly name: string;
   readonly instructions: string;
@@ -9,7 +11,7 @@ export interface McpServerInstructionsInput {
  * so keep them from forging extra attributes or markup.
  */
 function escapeMcpInstructionsAttribute(value: string): string {
-  return value
+  return sanitizeSystemReminderContent(value)
     .replace(/&/g, "&amp;")
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
@@ -21,7 +23,7 @@ function escapeMcpInstructionsAttribute(value: string): string {
  * of its wrapper and forge a privileged delimiter.
  */
 function escapeMcpInstructionsBody(value: string): string {
-  return value.replace(
+  return sanitizeSystemReminderContent(value).replace(
     /<\/mcp_server_instructions>/gi,
     "<\\/mcp_server_instructions>",
   );
