@@ -21,6 +21,10 @@
  */
 
 import type { LLMMessage } from "../../llm/types.js";
+import {
+  formatAgentListingType,
+  sanitizeAgentListingLine,
+} from "../../tools/AgentTool/agentListingMetadata.js";
 import { renderFileMentionAttachmentsBlock } from "../file-mentions.js";
 import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.js";
 import type { Attachment } from "./types.js";
@@ -166,11 +170,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         const header = attachment.isInitial
           ? "Available agent types for the spawn_agent tool:"
           : "New agent types are now available for the spawn_agent tool:";
-        parts.push(`${header}\n${attachment.addedLines.join("\n")}`);
+        parts.push(
+          `${header}\n${attachment.addedLines.map(sanitizeAgentListingLine).join("\n")}`,
+        );
       }
       if (attachment.removedTypes.length > 0) {
         parts.push(
-          `The following agent types are no longer available:\n${attachment.removedTypes.map((t) => `- ${t}`).join("\n")}`,
+          `The following agent types are no longer available:\n${attachment.removedTypes.map((t) => `- ${formatAgentListingType(t)}`).join("\n")}`,
         );
       }
       if (parts.length === 0) return null;

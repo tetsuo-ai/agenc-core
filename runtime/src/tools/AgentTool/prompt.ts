@@ -1,6 +1,10 @@
 import { FILE_READ_TOOL_NAME } from '../system/file-read.js'
 import { GLOB_TOOL_NAME } from '../system/glob.js'
 import { AGENT_TOOL_NAME } from './constants.js'
+import {
+  formatAgentListingDetails,
+  formatAgentListingType,
+} from './agentListingMetadata.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 
 const SEND_MESSAGE_TOOL_NAME = 'SendMessage'
@@ -100,7 +104,12 @@ function getToolsDescription(agent: AgentDefinition): string {
 
 export function formatAgentLine(agent: AgentDefinition): string {
   const toolsDescription = getToolsDescription(agent)
-  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription})`
+  const details = formatAgentListingDetails({
+    description: agent.whenToUse,
+    source: agent.source,
+    toolsDescription,
+  })
+  return `- ${formatAgentListingType(agent.agentType)}: ${details}`
 }
 
 export function shouldInjectAgentListInMessages(): boolean {

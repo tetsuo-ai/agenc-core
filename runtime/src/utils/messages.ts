@@ -28,6 +28,10 @@ import type { AgentId } from 'src/types/ids.js'
 import { projectSnippedView } from '../services/compact/snipProjection.js'
 import { renderHookAdditionalContextSection } from '../prompts/hook-context-framing.js'
 import { renderMcpInstructionsDeltaSection } from '../prompts/mcp-instructions-framing.js'
+import {
+  formatAgentListingType,
+  sanitizeAgentListingLine,
+} from '../tools/AgentTool/agentListingMetadata.js'
 // Retired intro attachments render empty text for old transcripts.
 const companionIntroText = (_name: string, _species: string): string => ''
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
@@ -4381,11 +4385,13 @@ You have exited auto mode. The user may now want to interact more directly. You 
         const header = attachment.isInitial
           ? 'Available agent types for the Agent tool:'
           : 'New agent types are now available for the Agent tool:'
-        parts.push(`${header}\n${attachment.addedLines.join('\n')}`)
+        parts.push(
+          `${header}\n${attachment.addedLines.map(sanitizeAgentListingLine).join('\n')}`,
+        )
       }
       if (attachment.removedTypes.length > 0) {
         parts.push(
-          `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${t}`).join('\n')}`,
+          `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${formatAgentListingType(t)}`).join('\n')}`,
         )
       }
       if (attachment.isInitial && attachment.showConcurrencyNote) {

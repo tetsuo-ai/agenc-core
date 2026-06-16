@@ -34,6 +34,10 @@
  */
 
 import type { AttachmentProducer } from "./orchestrator.js";
+import {
+  formatAgentListingDetails,
+  formatAgentListingType,
+} from "../../tools/AgentTool/agentListingMetadata.js";
 
 interface SessionLikeForAgentListing {
   readonly agentDefinitions?: {
@@ -43,8 +47,9 @@ interface SessionLikeForAgentListing {
 
 interface AgentDefinitionLike {
   readonly agentType: string;
-  readonly whenToUse?: string;
-  readonly tools?: readonly string[];
+  readonly whenToUse?: unknown;
+  readonly tools?: unknown;
+  readonly source?: unknown;
 }
 
 function isAgentDefinitionLike(value: unknown): value is AgentDefinitionLike {
@@ -61,12 +66,16 @@ function readActiveAgents(sessionKey: object): readonly AgentDefinitionLike[] {
 }
 
 function formatAgentLine(agent: AgentDefinitionLike): string {
-  const description = agent.whenToUse ?? "";
-  const tools =
-    agent.tools && agent.tools.length > 0
-      ? ` (Tools: ${agent.tools.join(", ")})`
-      : "";
-  return `${agent.agentType}: ${description}${tools}`;
+  const tools = Array.isArray(agent.tools)
+    ? agent.tools.filter((tool): tool is string => typeof tool === "string")
+    : [];
+  const details = formatAgentListingDetails({
+    description: typeof agent.whenToUse === "string" ? agent.whenToUse : "",
+    source: agent.source,
+    ...(tools.length > 0 ? { toolsDescription: tools.join(", ") } : {}),
+  });
+  const type = formatAgentListingType(agent.agentType);
+  return details.length > 0 ? `${type}: ${details}` : `${type}:`;
 }
 
 export const agentListingDeltaProducer: AttachmentProducer = async (
