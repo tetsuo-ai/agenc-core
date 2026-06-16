@@ -292,25 +292,29 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
             type: "text",
             text: renderPdfMentionHeader(attachment.pdfs),
           },
-          ...attachment.pdfs.map((pdf) => ({
-            type: "document" as const,
-            source: {
-              type: "base64" as const,
-              media_type: pdf.mediaType,
-              data: pdf.data,
-            },
-            title: pdf.path,
-            filename: pdf.filename,
-            ...(pdf.fallbackText !== undefined
-              ? {
-                  fallbackText: pdf.fallbackText,
-                  fallbackTextTruncated: pdf.fallbackTextTruncated ?? false,
-                }
-              : {}),
-            ...(pdf.fallbackTextError !== undefined
-              ? { fallbackTextError: pdf.fallbackTextError }
-              : {}),
-          })),
+          ...attachment.pdfs.map((pdf) => {
+            const path = sanitizeSystemReminderContent(pdf.path);
+            const filename = sanitizeSystemReminderContent(pdf.filename);
+            return {
+              type: "document" as const,
+              source: {
+                type: "base64" as const,
+                media_type: pdf.mediaType,
+                data: pdf.data,
+              },
+              title: path,
+              filename,
+              ...(pdf.fallbackText !== undefined
+                ? {
+                    fallbackText: pdf.fallbackText,
+                    fallbackTextTruncated: pdf.fallbackTextTruncated ?? false,
+                  }
+                : {}),
+              ...(pdf.fallbackTextError !== undefined
+                ? { fallbackTextError: pdf.fallbackTextError }
+                : {}),
+            };
+          }),
         ],
         runtimeOnly: { mergeBoundary: "user_context" },
       };
@@ -396,10 +400,11 @@ function renderImageMentionHeader(
   }[],
 ): string {
   const rows = images
-    .map(
-      (image) =>
-        `<image path="${escapeAttribute(image.path)}" media_type="${escapeAttribute(image.mediaType)}" />`,
-    )
+    .map((image) => {
+      const path = sanitizeSystemReminderContent(image.path);
+      const mediaType = sanitizeSystemReminderContent(image.mediaType);
+      return `<image path="${escapeAttribute(path)}" media_type="${escapeAttribute(mediaType)}" />`;
+    })
     .join("\n");
   return `<attached_images>\n${rows}\n</attached_images>`;
 }
@@ -412,10 +417,11 @@ function renderPdfMentionHeader(
   }[],
 ): string {
   const rows = pdfs
-    .map(
-      (pdf) =>
-        `<pdf path="${escapeAttribute(pdf.path)}" media_type="${escapeAttribute(pdf.mediaType)}" bytes="${pdf.bytes}" />`,
-    )
+    .map((pdf) => {
+      const path = sanitizeSystemReminderContent(pdf.path);
+      const mediaType = sanitizeSystemReminderContent(pdf.mediaType);
+      return `<pdf path="${escapeAttribute(path)}" media_type="${escapeAttribute(mediaType)}" bytes="${pdf.bytes}" />`;
+    })
     .join("\n");
   return `<attached_pdfs>\n${rows}\n</attached_pdfs>`;
 }
