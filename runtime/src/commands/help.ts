@@ -23,6 +23,7 @@ import {
   OTHER_COMMANDS_TITLE,
   helpWorkflowTitleForCommand,
 } from "./help-groups.js";
+import { sanitizeSuggestionMetadataText } from "../utils/suggestions/sanitizeSuggestionMetadataText.js";
 
 export interface HelpCommand {
   readonly name: string;
@@ -154,6 +155,10 @@ function formatCommandNames(command: HelpCommand): string {
 }
 
 function formatDescription(command: HelpCommand): string {
+  return sanitizeSuggestionMetadataText(formatRawDescription(command));
+}
+
+function formatRawDescription(command: HelpCommand): string {
   const description = command.description ?? "";
   if (command.type !== "prompt") return description;
   if (command.kind === "workflow") return `${description} (workflow)`;
