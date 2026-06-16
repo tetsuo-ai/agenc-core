@@ -101,8 +101,9 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       );
     }
     case "critical_system_reminder": {
+      const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        `<system-reminder>\n${attachment.content}\n</system-reminder>`,
+        `<system-reminder>\n${content}\n</system-reminder>`,
       );
     }
     case "output_style": {
