@@ -213,7 +213,7 @@ export function getMcpServerSignature(config: McpServerConfig): string | null {
  * manually-configured server or an earlier-loaded plugin server.
  * Manual wins over plugin; between plugins, first-loaded wins.
  *
- * Plugin servers are namespaced `plugin:name:server` so they never key-collide
+ * Plugin servers use normalized scoped identifiers so they never key-collide
  * with manual servers in the merge — this content-based check catches the case
  * where both actually launch the same underlying process/connection.
  */
@@ -222,7 +222,11 @@ export function dedupPluginMcpServers(
   manualServers: Record<string, ScopedMcpServerConfig>,
 ): {
   servers: Record<string, ScopedMcpServerConfig>
-  suppressed: Array<{ name: string; duplicateOf: string }>
+  suppressed: Array<{
+    name: string
+    duplicateOf: string
+    config: ScopedMcpServerConfig
+  }>
 } {
   // Map signature -> server name so we can report which server a dup matches
   const manualSigs = new Map<string, string>()
@@ -232,7 +236,11 @@ export function dedupPluginMcpServers(
   }
 
   const servers: Record<string, ScopedMcpServerConfig> = {}
-  const suppressed: Array<{ name: string; duplicateOf: string }> = []
+  const suppressed: Array<{
+    name: string
+    duplicateOf: string
+    config: ScopedMcpServerConfig
+  }> = []
   const seenPluginSigs = new Map<string, string>()
   for (const [name, config] of Object.entries(pluginServers)) {
     const sig = getMcpServerSignature(config)
@@ -245,7 +253,7 @@ export function dedupPluginMcpServers(
       logForDebugging(
         `Suppressing plugin MCP server "${name}": duplicates manually-configured "${manualDup}"`,
       )
-      suppressed.push({ name, duplicateOf: manualDup })
+      suppressed.push({ name, duplicateOf: manualDup, config })
       continue
     }
     const pluginDup = seenPluginSigs.get(sig)
@@ -253,13 +261,60 @@ export function dedupPluginMcpServers(
       logForDebugging(
         `Suppressing plugin MCP server "${name}": duplicates earlier plugin server "${pluginDup}"`,
       )
-      suppressed.push({ name, duplicateOf: pluginDup })
+      suppressed.push({ name, duplicateOf: pluginDup, config })
       continue
     }
     seenPluginSigs.set(sig, name)
     servers[name] = config
   }
   return { servers, suppressed }
+}
+
+export function pluginMcpDuplicateSuppressionError(
+  suppression: {
+    readonly name: string
+    readonly duplicateOf: string
+    readonly config: ScopedMcpServerConfig
+  },
+): PluginError | null {
+  const pluginServer = suppression.config.pluginServer
+  if (pluginServer !== undefined) {
+    return {
+      type: 'mcp-server-suppressed-duplicate',
+      source: suppression.name,
+      plugin: pluginServer.pluginName,
+      serverName: pluginServer.serverName,
+      duplicateOf: suppression.duplicateOf,
+    }
+  }
+
+  const sandbox = (
+    suppression.config as {
+      readonly pluginSandbox?: {
+        readonly pluginName: string
+        readonly serverName: string
+      }
+    }
+  ).pluginSandbox
+  if (sandbox !== undefined) {
+    return {
+      type: 'mcp-server-suppressed-duplicate',
+      source: suppression.name,
+      plugin: sandbox.pluginName,
+      serverName: sandbox.serverName,
+      duplicateOf: suppression.duplicateOf,
+    }
+  }
+
+  const parts = suppression.name.split(':')
+  if (parts[0] !== 'plugin' || parts.length < 3) return null
+  return {
+    type: 'mcp-server-suppressed-duplicate',
+    source: suppression.name,
+    plugin: parts[1]!,
+    serverName: parts.slice(2).join(':'),
+    duplicateOf: suppression.duplicateOf,
+  }
 }
 
 /**
@@ -1109,9 +1164,9 @@ export async function getAgenCCodeMcpConfigs(
   }
 
   // Dedup plugin servers against manually-configured ones (and each other).
-  // Plugin server keys are namespaced `plugin:x:y` so they never collide with
-  // manual keys in the merge below — this content-based filter catches the case
-  // where both would launch the same underlying process/connection.
+  // Plugin server keys use normalized plugin-scoped identifiers so they never
+  // collide with manual keys in the merge below — this content-based filter
+  // catches the case where both would launch the same underlying connection.
   // Only servers that will actually connect are valid dedup targets — a
   // disabled manual server mustn't suppress a plugin server, or neither runs
   // (manual is skipped by name at connection time; plugin was removed here).
@@ -1154,17 +1209,9 @@ export async function getAgenCCodeMcpConfigs(
   Object.assign(dedupedPluginServers, disabledPluginServers)
   // Surface suppressions in /plugin UI. Pushed AFTER the logError loop above
   // so these don't go to the error log — they're informational, not errors.
-  for (const { name, duplicateOf } of suppressed) {
-    // name is "plugin:${pluginName}:${serverName}" from addPluginScopeToServers
-    const parts = name.split(':')
-    if (parts[0] !== 'plugin' || parts.length < 3) continue
-    mcpErrors.push({
-      type: 'mcp-server-suppressed-duplicate',
-      source: name,
-      plugin: parts[1]!,
-      serverName: parts.slice(2).join(':'),
-      duplicateOf,
-    })
+  for (const suppression of suppressed) {
+    const error = pluginMcpDuplicateSuppressionError(suppression)
+    if (error !== null) mcpErrors.push(error)
   }
 
   // Merge in order of precedence: plugin < user < project < local
