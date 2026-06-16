@@ -3453,13 +3453,17 @@ function getPlanModeInstructions(attachment: {
   planFilePath: string
   planExists: boolean
 }): UserMessage[] {
+  const safeAttachment = {
+    ...attachment,
+    planFilePath: sanitizeSystemReminderContent(attachment.planFilePath),
+  }
   if (attachment.isSubAgent) {
-    return getPlanModeV2SubAgentInstructions(attachment)
+    return getPlanModeV2SubAgentInstructions(safeAttachment)
   }
   if (attachment.reminderType === 'sparse') {
-    return getPlanModeV2SparseInstructions(attachment)
+    return getPlanModeV2SparseInstructions(safeAttachment)
   }
-  return getPlanModeV2Instructions(attachment)
+  return getPlanModeV2Instructions(safeAttachment)
 }
 
 // --
@@ -4157,9 +4161,12 @@ Read the team config to discover your teammates' names. Check the task list peri
       return getPlanModeInstructions(attachment)
     }
     case 'plan_mode_reentry': {
+      const safePlanFilePath = sanitizeSystemReminderContent(
+        attachment.planFilePath,
+      )
       const content = `## Re-entering Plan Mode
 
-You are returning to plan mode after having previously exited it. A plan file exists at ${attachment.planFilePath} from your previous planning session.
+You are returning to plan mode after having previously exited it. A plan file exists at ${safePlanFilePath} from your previous planning session.
 
 **Before proceeding with any new planning, you should:**
 1. Read the existing plan file to understand what was previously planned
@@ -4176,8 +4183,11 @@ Treat this as a fresh planning session. Do not assume the existing plan is relev
       ])
     }
     case 'plan_mode_exit': {
+      const safePlanFilePath = sanitizeSystemReminderContent(
+        attachment.planFilePath,
+      )
       const planReference = attachment.planExists
-        ? ` The plan file is located at ${attachment.planFilePath} if you need to reference it.`
+        ? ` The plan file is located at ${safePlanFilePath} if you need to reference it.`
         : ''
       const content = `## Exited Plan Mode
 
