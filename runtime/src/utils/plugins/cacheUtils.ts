@@ -2,6 +2,7 @@ import { readdir, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { clearCommandsCache } from '../../commands.js'
 import { clearAllOutputStylesCache } from '../../constants/outputStyles.js'
+import { clearPluginRegistrationCaches } from '../../plugins/registration/manager.js'
 import { clearAgentDefinitionsCache } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { clearPromptCache } from '../../tools/SkillTool/prompt.js'
 import { resetSentSkillNames } from '../attachments.js'
@@ -9,8 +10,6 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { getErrnoCode } from '../errors.js'
 import { logError } from '../log.js'
 import { loadInstalledPluginsFromDisk } from './installedPluginsManager.js'
-import { clearPluginAgentCache } from './loadPluginAgents.js'
-import { clearPluginCommandCache } from './loadPluginCommands.js'
 import {
   clearPluginHookCache,
   pruneRemovedPluginHooks,
@@ -25,8 +24,7 @@ const CLEANUP_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 export function clearAllPluginCaches(): void {
   clearPluginCache()
-  clearPluginCommandCache()
-  clearPluginAgentCache()
+  clearPluginRegistrationCaches()
   clearPluginHookCache()
   // Prune hooks from plugins no longer in the enabled set so uninstalled/
   // disabled plugins stop firing immediately (gh-36995). Prune-only: hooks
