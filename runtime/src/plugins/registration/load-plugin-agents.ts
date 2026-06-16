@@ -24,6 +24,7 @@ import {
   namespaceFromPath,
   parseBoolean,
   pathIsDirectory,
+  pluginScopedIdentifier,
   readMarkdownFile,
   runtimeIdentityKey,
   splitList,
@@ -133,8 +134,15 @@ function isAutoMemoryEnabled(): boolean {
 function agentName(plugin: LoadedPlugin, file: ParsedMarkdownFile): string {
   const frontmatterName = coerceString(file.frontmatter.name);
   const baseName = frontmatterName ?? markdownStem(file.filePath);
-  return [plugin.name, ...namespaceFromPath(file.filePath, file.baseDir), baseName]
-    .join(":");
+  const baseParts = baseName.split(":").filter((part) => part.length > 0);
+  return pluginScopedIdentifier(
+    plugin.name,
+    [
+      ...namespaceFromPath(file.filePath, file.baseDir),
+      ...(baseParts.length > 0 ? baseParts : ["agent"]),
+    ],
+    "agent",
+  );
 }
 
 function createPluginAgent(

@@ -999,6 +999,62 @@ describe("plugin registration", () => {
     });
   });
 
+  test("normalizes plugin agent identifiers before memory paths use them", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+      });
+      await rm(join(pluginRoot, "agents", "review.md"), { force: true });
+      await writeFileAt(
+        join(pluginRoot, "agents", "Ops Tools", "123 Review!.md"),
+        [
+          "---",
+          "name: 123/../Escape Agent!",
+          "description: Review risky metadata",
+          "memory: local",
+          "---",
+          "Use memory safely.",
+        ].join("\n"),
+      );
+      await writeFileAt(
+        join(pluginRoot, "agents", "safe.md"),
+        [
+          "---",
+          "name: admin:review",
+          "description: Namespaced reviewer",
+          "---",
+          "Review safely.",
+        ].join("\n"),
+      );
+
+      const result = await loadPlugins(options);
+      const agents = await loadPluginAgents({
+        cwd: root,
+        agencHome: options.agencHome,
+        plugins: result.enabled,
+      });
+      const unsafe = agents.find((agent) =>
+        agent.agentType === "sample:ops_tools:cmd_123_escape_agent"
+      );
+
+      expect(agents.map((agent) => agent.agentType).sort()).toEqual([
+        "sample:admin:review",
+        "sample:ops_tools:cmd_123_escape_agent",
+      ]);
+      expect(agents.every((agent) =>
+        /^[a-z][a-z0-9_:-]*$/u.test(agent.agentType)
+      )).toBe(true);
+      expect(agents.map((agent) => agent.agentType)).not.toContain(
+        "sample:ops tools:123/../Escape Agent!",
+      );
+
+      const memoryPrompt = unsafe?.getSystemPrompt();
+      expect(memoryPrompt).toContain("Memory directory:");
+      expect(memoryPrompt).toContain("sample-ops_tools-cmd_123_escape_agent");
+      expect(memoryPrompt).not.toContain("123/../Escape Agent!");
+    });
+  });
+
   test("plugin agents with memory keep memory access tools when tools are restricted", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       await writeFileAt(
