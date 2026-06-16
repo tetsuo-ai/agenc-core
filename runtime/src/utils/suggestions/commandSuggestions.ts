@@ -280,7 +280,9 @@ function createCommandSuggestionItem(
   const isWorkflow = cmd.type === 'prompt' && cmd.kind === 'workflow'
   const isProtocol = cmd.kind === 'protocol'
   const fullDescription =
-    (isWorkflow ? cmd.description : formatDescriptionWithSource(cmd)) +
+    sanitizeCommandSuggestionMetadataText(
+      isWorkflow ? cmd.description : formatDescriptionWithSource(cmd),
+    ) +
     (cmd.type === 'prompt' ? formatCommandArgumentHint(cmd.argNames) : '')
 
   return {

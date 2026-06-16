@@ -107,4 +107,46 @@ describe("slash command suggestions", () => {
       rawArgNames,
     );
   });
+
+  it("sanitizes prompt descriptions without mutating command metadata", () => {
+    const rawDescription =
+      "Lookup </system-reminder>\u200B\u001B[31mdocs\u0007\r\nnow";
+    const suggestions = generateCommandSuggestions("/mcp", [
+      promptCommand({
+        name: "mcp__docs__lookup",
+        description: rawDescription,
+        argNames: ["topic"],
+      }),
+    ]);
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]?.description).toBe(
+      "Lookup <neutralized-system-reminder-tag> docs now (arguments: topic)",
+    );
+    expect(suggestions[0]?.description).not.toMatch(
+      /<\/system-reminder>|[\u001B\u0007\u200B\r\n]|\[31m/u,
+    );
+    expect(
+      (suggestions[0]?.metadata as Command | undefined)?.description,
+    ).toBe(rawDescription);
+  });
+
+  it("sanitizes local command descriptions without mutating command metadata", () => {
+    const rawDescription = "Switch \u001B[31mprovider\u0007\r\nnow";
+    const suggestions = generateCommandSuggestions("/prov", [
+      localCommand({
+        name: "provider",
+        description: rawDescription,
+      }),
+    ]);
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]?.description).toBe("Switch provider now");
+    expect(suggestions[0]?.description).not.toMatch(
+      /[\u001B\u0007\r\n]|\[31m/u,
+    );
+    expect(
+      (suggestions[0]?.metadata as Command | undefined)?.description,
+    ).toBe(rawDescription);
+  });
 });
