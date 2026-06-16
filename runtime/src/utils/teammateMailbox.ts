@@ -10,7 +10,6 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
 import { PermissionModeSchema } from '../entrypoints/sdk/coreSchemas.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import type { Message } from '../types/message.js'
@@ -27,6 +26,7 @@ import type { BackendType } from './swarm/backends/types.js'
 import { TEAM_LEAD_NAME } from './swarm/constants.js'
 import { sanitizePathComponent } from './tasks.js'
 import { getAgentName, getTeammateColor, getTeamName } from './teammate.js'
+import { formatTeammateMessageForModel } from './teammateMessageFraming.js'
 
 // Lock options: retry with backoff so concurrent callers (multiple AgenCs
 // in a swarm) wait for the lock instead of failing immediately. The sync
@@ -380,11 +380,7 @@ export function formatTeammateMessages(
   }>,
 ): string {
   return messages
-    .map(m => {
-      const colorAttr = m.color ? ` color="${m.color}"` : ''
-      const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
-      return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${m.text}\n</${TEAMMATE_MESSAGE_TAG}>`
-    })
+    .map(m => formatTeammateMessageForModel(m))
     .join('\n\n')
 }
 

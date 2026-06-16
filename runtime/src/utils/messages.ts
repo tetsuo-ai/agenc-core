@@ -173,12 +173,7 @@ import {
 } from './planModeV2.js'
 import { escapeRegExp } from './stringUtils.js'
 import { isTodoV2Enabled } from './tasks.js'
-
-// Lazy import to avoid circular dependency (teammateMailbox -> teammate -> ... -> messages)
-function getTeammateMailbox(): typeof import('./teammateMailbox.js') {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require('./teammateMailbox.js')
-}
+import { formatTeammateMessages } from './teammateMailbox.js'
 
 import {
   isToolReferenceBlock,
@@ -3775,27 +3770,33 @@ export function normalizeAttachmentForAPI(
     if (attachment.type === 'teammate_mailbox') {
       return [
         createUserMessage({
-          content: getTeammateMailbox().formatTeammateMessages(
-            attachment.messages,
-          ),
+          content: formatTeammateMessages(attachment.messages),
           isMeta: true,
         }),
       ]
     }
     if (attachment.type === 'team_context') {
+      const teamName = sanitizeSystemReminderContent(attachment.teamName)
+      const agentName = sanitizeSystemReminderContent(attachment.agentName)
+      const teamConfigPath = sanitizeSystemReminderContent(
+        attachment.teamConfigPath,
+      )
+      const taskListPath = sanitizeSystemReminderContent(
+        attachment.taskListPath,
+      )
       return [
         createUserMessage({
           content: `<system-reminder>
 # Team Coordination
 
-You are a teammate in team "${attachment.teamName}".
+You are a teammate in team "${teamName}".
 
 **Your Identity:**
-- Name: ${attachment.agentName}
+- Name: ${agentName}
 
 **Team Resources:**
-- Team config: ${attachment.teamConfigPath}
-- Task list: ${attachment.taskListPath}
+- Team config: ${teamConfigPath}
+- Task list: ${taskListPath}
 
 **Team Leader:** The team lead's name is "team-lead". Send updates and completion notifications to them.
 

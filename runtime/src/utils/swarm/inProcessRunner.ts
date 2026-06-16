@@ -12,7 +12,6 @@
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { getSystemPrompt } from '../../constants/prompts.js'
-import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import {
   processMailboxPermissionResponse,
@@ -58,6 +57,7 @@ import {
   createAssistantAPIErrorMessage,
   createUserMessage,
 } from '../messages.js'
+import { formatTeammateMessageForModel } from '../teammateMessageFraming.js'
 import { evictTaskOutput } from '../task/diskOutput.js'
 import { evictTerminalTask } from '../task/framework.js'
 import { tokenCountWithEstimation } from '../tokens.js'
@@ -475,9 +475,12 @@ function formatAsTeammateMessage(
   color?: string,
   summary?: string,
 ): string {
-  const colorAttr = color ? ` color="${color}"` : ''
-  const summaryAttr = summary ? ` summary="${summary}"` : ''
-  return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${from}"${colorAttr}${summaryAttr}>\n${content}\n</${TEAMMATE_MESSAGE_TAG}>`
+  return formatTeammateMessageForModel({
+    from,
+    text: content,
+    color,
+    summary,
+  })
 }
 
 /**
