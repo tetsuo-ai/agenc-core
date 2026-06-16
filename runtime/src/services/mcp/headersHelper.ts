@@ -11,6 +11,7 @@ import type {
   McpWebSocketServerConfig,
   ScopedMcpServerConfig,
 } from './types.js'
+import { validateMcpHeaders } from './headerValidation.js'
 /**
  * Check if the MCP server config comes from project settings (projectSettings or localSettings)
  * This is important for security checks
@@ -98,11 +99,16 @@ async function getMcpHeadersFromHelper(
       }
     }
 
+    const validatedHeaders = validateMcpHeaders(
+      headers as Record<string, string>,
+      `headersHelper for MCP server '${serverName}'`,
+    )
+
     logMCPDebug(
       serverName,
-      `Successfully retrieved ${Object.keys(headers).length} headers from headersHelper`,
+      `Successfully retrieved ${Object.keys(validatedHeaders).length} headers from headersHelper`,
     )
-    return headers as Record<string, string>
+    return validatedHeaders
   } catch (error) {
     logMCPError(
       serverName,
@@ -127,12 +133,18 @@ export async function getMcpServerHeaders(
   serverName: string,
   config: McpSSEServerConfig | McpHTTPServerConfig | McpWebSocketServerConfig,
 ): Promise<Record<string, string>> {
-  const staticHeaders = config.headers || {}
+  const staticHeaders = validateMcpHeaders(
+    config.headers || {},
+    `static headers for MCP server '${serverName}'`,
+  )
   const dynamicHeaders =
     (await getMcpHeadersFromHelper(serverName, config)) || {}
   // Dynamic headers override static headers if both are present
-  return {
-    ...staticHeaders,
-    ...dynamicHeaders,
-  }
+  return validateMcpHeaders(
+    {
+      ...staticHeaders,
+      ...dynamicHeaders,
+    },
+    `combined headers for MCP server '${serverName}'`,
+  )
 }
