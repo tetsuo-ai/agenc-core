@@ -10,6 +10,7 @@ import {
   markdownStem,
   parseBoolean,
   pathIsDirectory,
+  pluginScopedIdentifier,
   readMarkdownFile,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
@@ -37,7 +38,11 @@ async function loadStyleFile(
   const file = await readMarkdownFile(filePath, baseDir);
   if (!file) return null;
   const baseName = coerceString(file.frontmatter.name) ?? markdownStem(filePath);
-  const name = `${plugin.name}:${baseName}`;
+  const name = pluginScopedIdentifier(
+    plugin.name,
+    baseName.split(":").filter((part) => part.length > 0),
+    "output_style",
+  );
   const description =
     coerceString(file.frontmatter.description) ??
     descriptionFromMarkdown(file.markdown) ??
