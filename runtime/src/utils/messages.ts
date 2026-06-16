@@ -3779,7 +3779,10 @@ Read the team config to discover your teammates' names. Check the task list peri
   if (feature('EXPERIMENTAL_SKILL_SEARCH')) {
     if (attachment.type === 'skill_discovery') {
       if (attachment.skills.length === 0) return []
-      const lines = attachment.skills.map(s => `- ${s.name}: ${s.description}`)
+      const lines = attachment.skills.map(
+        s =>
+          `- ${sanitizeSystemReminderContent(s.name)}: ${sanitizeSystemReminderContent(s.description)}`,
+      )
       return wrapMessagesInSystemReminder([
         createUserMessage({
           content:
@@ -3976,9 +3979,10 @@ Read the team config to discover your teammates' names. Check the task list peri
       if (!attachment.content) {
         return []
       }
+      const content = sanitizeSystemReminderContent(attachment.content)
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `The following skills are available for use with the Skill tool:\n\n${attachment.content}`,
+          content: `The following skills are available for use with the Skill tool:\n\n${content}`,
           isMeta: true,
         }),
       ])

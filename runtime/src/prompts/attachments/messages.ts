@@ -314,9 +314,10 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       return userContextMessage(wrapSystemReminder(body));
     }
     case "skill_listing": {
+      const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
         wrapSystemReminder(
-          `The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.\n\n${attachment.content}`,
+          `The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.\n\n${content}`,
         ),
       );
     }
