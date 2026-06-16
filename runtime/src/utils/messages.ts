@@ -4130,9 +4130,10 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ]
     }
     case 'agent_mention': {
+      const agentType = sanitizeSystemReminderContent(attachment.agentType)
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `The user has expressed a desire to invoke the agent "${attachment.agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
+          content: `The user has expressed a desire to invoke the agent "${agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
           isMeta: true,
         }),
       ])

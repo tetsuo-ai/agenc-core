@@ -243,9 +243,10 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       };
     }
     case "agent_mention": {
+      const agentType = sanitizeSystemReminderContent(attachment.agentType);
       return userContextMessage(
         wrapSystemReminder(
-          `The user has expressed a desire to invoke the agent "${attachment.agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
+          `The user has expressed a desire to invoke the agent "${agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
         ),
       );
     }
