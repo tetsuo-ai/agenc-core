@@ -353,6 +353,10 @@ export function addPluginScopeToServers(
       ...config,
       scope: 'dynamic', // Use dynamic scope for plugin servers
       pluginSource,
+      pluginServer: {
+        pluginName,
+        serverName: name,
+      },
     }
     scopedServers[scopedName] = scoped
   }
