@@ -38,6 +38,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
+import { pathToFileURL } from 'node:url'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
@@ -619,6 +620,10 @@ const MCP_REQUEST_TIMEOUT_MS = 60000
  */
 const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream'
 
+export function getMcpRootUriForPath(path: string): string {
+  return pathToFileURL(path).href
+}
+
 /**
  * Wraps a fetch function to apply a fresh timeout signal to each request.
  * This avoids the bug where a single AbortSignal.timeout() created at connection
@@ -1158,7 +1163,7 @@ export const connectToServer = memoize(
         return {
           roots: [
             {
-              uri: `file://${getOriginalCwd()}`,
+              uri: getMcpRootUriForPath(getOriginalCwd()),
             },
           ],
         }
