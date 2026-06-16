@@ -32,3 +32,18 @@ export function pluginScopedIdentifier(
 ): string {
   return normalizePluginIdentifierName([pluginName, ...parts], finalFallback);
 }
+
+export function pluginScopedServerIdentifier(
+  pluginName: string,
+  serverName: string,
+): string {
+  const serverParts = serverName.split(":").filter((part) => part.length > 0);
+  return normalizePluginIdentifierName(
+    [
+      "plugin",
+      pluginName,
+      ...(serverParts.length > 0 ? serverParts : ["server"]),
+    ],
+    "server",
+  );
+}

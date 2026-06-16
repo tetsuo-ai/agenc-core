@@ -23,6 +23,7 @@ import type {
   PluginMcpSandboxMetadata,
 } from "../config/schema.js";
 import { getPluginDataDir } from "./directories.js";
+import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import type { LoadedPlugin } from "./loader.js";
 
 const PLUGIN_MCP_SANDBOX_MODE = "stdio-child-process" as const;
@@ -243,7 +244,8 @@ export function resolvePluginMcpSandboxedServer(
   }
 
   const dataDir = options.dataDir ?? getPluginDataDir(plugin.source);
-  const scopedServerName = options.scopedServerName ?? `plugin:${plugin.name}:${serverName}`;
+  const scopedServerName = options.scopedServerName ??
+    pluginScopedServerIdentifier(plugin.name, serverName);
   const cwd = path.resolve(server.cwd ?? plugin.root);
   if (!pathInsideOrEqual(plugin.root, cwd)) {
     return {

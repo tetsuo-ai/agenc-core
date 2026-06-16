@@ -269,6 +269,67 @@ describe("plugin registration", () => {
     });
   });
 
+  test("normalizes plugin MCP and LSP scoped server identifiers", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        mcpServers: {
+          "123/../Escape Server!": {
+            command: "node",
+            args: ["${AGENC_PLUGIN_ROOT}/server.js"],
+          },
+          "admin:Local Server": {
+            command: "node",
+            args: ["${AGENC_PLUGIN_ROOT}/admin-server.js"],
+          },
+        },
+        lspServers: {
+          "</system-reminder> TypeScript!": {
+            command: "node",
+            args: ["${AGENC_PLUGIN_ROOT}/lsp.js"],
+            extensionToLanguage: {
+              ".ts": "typescript",
+            },
+          },
+        },
+      });
+
+      const result = await loadPlugins(options);
+      const mcpServers = await loadPluginMcpServers({
+        agencHome: options.agencHome,
+        workspaceRoot: options.workspaceRoot,
+        plugins: result.enabled,
+      });
+      expect(Object.keys(mcpServers).sort()).toEqual([
+        "plugin:sample:admin:local_server",
+        "plugin:sample:cmd_123_escape_server",
+      ]);
+      expect(mcpServers["plugin:sample:cmd_123_escape_server"]).toMatchObject({
+        args: [`${pluginRoot}/server.js`],
+        env: expect.objectContaining({
+          AGENC_PLUGIN_MCP_SERVER: "123/../Escape Server!",
+        }),
+        pluginSandbox: {
+          serverName: "123/../Escape Server!",
+          scopedServerName: "plugin:sample:cmd_123_escape_server",
+        },
+      });
+
+      const lspServers = await loadPluginLspServers({
+        agencHome: options.agencHome,
+        workspaceRoot: options.workspaceRoot,
+        plugins: result.enabled,
+      });
+      expect(Object.keys(lspServers)).toEqual([
+        "plugin:sample:system-reminder_typescript",
+      ]);
+      expect(lspServers["plugin:sample:system-reminder_typescript"]).toMatchObject({
+        args: [`${pluginRoot}/lsp.js`],
+        extensionToLanguage: { ".ts": "typescript" },
+      });
+    });
+  });
+
   test("expands general environment variables in plugin MCP and LSP server configs", async () => {
     await withTempPlugin(async ({ pluginRoot, options }) => {
       const previousCommand = process.env.AGENC_PLUGIN_TEST_COMMAND;
