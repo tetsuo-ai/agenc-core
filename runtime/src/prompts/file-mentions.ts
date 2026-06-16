@@ -11,6 +11,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 
 import { isSupportedUserImagePath } from "./attachments/user-image-input.js";
 import { isSupportedUserPdfPath } from "./attachments/user-pdf-input.js";
+import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
 
 export type MentionValidationResult =
   | { ok: true; resolved: string }
@@ -275,13 +276,15 @@ export function renderFileMentionAttachmentsBlock(
 ): string {
   const attachedFiles = attachments
     .map((attachment) => {
+      const path = sanitizeSystemReminderContent(attachment.path);
+      const content = sanitizeSystemReminderContent(attachment.content);
       const attrs = [
-        `path="${escapeAttribute(attachment.path)}"`,
+        `path="${escapeAttribute(path)}"`,
         `bytes="${attachment.bytes}"`,
         `lines="${attachment.lineCount}"`,
         `truncated="${attachment.truncated ? "true" : "false"}"`,
       ].join(" ");
-      return `<file ${attrs}>\n${escapeTagBody(attachment.content)}\n</file>`;
+      return `<file ${attrs}>\n${escapeTagBody(content)}\n</file>`;
     })
     .join("\n\n");
 
