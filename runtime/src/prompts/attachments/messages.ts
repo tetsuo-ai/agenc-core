@@ -116,9 +116,10 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       );
     }
     case "output_style": {
+      const style = sanitizeSystemReminderContent(attachment.style);
       return userContextMessage(
         wrapSystemReminder(
-          `${attachment.style} output style is active. Remember to follow the specific guidelines for this style.`,
+          `${style} output style is active. Remember to follow the specific guidelines for this style.`,
         ),
       );
     }
