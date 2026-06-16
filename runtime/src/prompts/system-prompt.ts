@@ -61,6 +61,7 @@ import {
   renderMcpInstructionsSection,
   type McpServerInstructionsInput,
 } from "./mcp-instructions-framing.js";
+import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
 
 /**
@@ -438,7 +439,10 @@ export interface OutputStyleInput {
 /** output_style — user preference or config default. AgenC-original. */
 export function getOutputStyleSection(style: OutputStyleInput | null): string | null {
   if (!style) return null;
-  return `# Output Style: ${style.name}
+  const name = sanitizeSystemReminderContent(style.name)
+    .replace(/\s+/gu, " ")
+    .trim() || "unnamed";
+  return `# Output Style: ${name}
 ${style.prompt}`;
 }
 

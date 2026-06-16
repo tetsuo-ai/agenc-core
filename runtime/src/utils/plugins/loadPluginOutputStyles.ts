@@ -9,6 +9,7 @@ import {
 } from '../frontmatterParser.js'
 import { getFsImplementation, isDuplicatePath } from '../fsOperations.js'
 import { extractDescriptionFromMarkdown } from '../markdownConfigLoader.js'
+import { pluginScopedIdentifier } from '../../plugins/identifier-normalization.js'
 import { loadAllPluginsCacheOnly } from './pluginLoader.js'
 import { walkPluginMarkdown } from './walkPluginMarkdown.js'
 
@@ -52,7 +53,11 @@ async function loadOutputStyleFromFile(
     const fileName = basename(filePath, '.md')
     const baseStyleName = (frontmatter.name as string) || fileName
     // Namespace output styles with plugin name, consistent with commands and agents
-    const name = `${pluginName}:${baseStyleName}`
+    const name = pluginScopedIdentifier(
+      pluginName,
+      baseStyleName.split(':').filter(part => part.length > 0),
+      'output_style',
+    )
     const description =
       coerceDescriptionToString(frontmatter.description, name) ??
       extractDescriptionFromMarkdown(
