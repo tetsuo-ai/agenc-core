@@ -4223,12 +4223,13 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'async_hook_response': {
       const response = attachment.response
       const messages: UserMessage[] = []
+      const contextMessages: UserMessage[] = []
 
       // Handle systemMessage
       if (response.systemMessage) {
         messages.push(
           createUserMessage({
-            content: response.systemMessage,
+            content: sanitizeSystemReminderContent(response.systemMessage),
             isMeta: true,
           }),
         )
@@ -4240,15 +4241,26 @@ You have exited auto mode. The user may now want to interact more directly. You 
         'additionalContext' in response.hookSpecificOutput &&
         response.hookSpecificOutput.additionalContext
       ) {
-        messages.push(
-          createUserMessage({
-            content: response.hookSpecificOutput.additionalContext,
-            isMeta: true,
-          }),
+        const section = renderHookAdditionalContextSection(
+          [
+            {
+              hookName: attachment.hookName,
+              hookEvent: attachment.hookEvent,
+              content: response.hookSpecificOutput.additionalContext,
+            },
+          ],
         )
+        if (section !== null) {
+          contextMessages.push(
+            createUserMessage({
+              content: section,
+              isMeta: true,
+            }),
+          )
+        }
       }
 
-      return wrapMessagesInSystemReminder(messages)
+      return [...wrapMessagesInSystemReminder(messages), ...contextMessages]
     }
     // Note: 'teammate_mailbox' and 'team_context' are handled BEFORE switch
     // to avoid case label strings leaking into compiled output
