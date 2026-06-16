@@ -1,3 +1,5 @@
+import { sanitizeSystemReminderContent } from '../../prompts/attachments/system-reminder-sanitizer.js'
+
 export const WEB_FETCH_TOOL_NAME = 'WebFetch'
 
 export const DESCRIPTION = `
@@ -33,6 +35,10 @@ function neutralizeUntrustedBoundary(markdownContent: string): string {
   return markdownContent.split(WEB_FETCH_UNTRUSTED_BOUNDARY).join('= U N T R U S T E D =')
 }
 
+function sanitizeUntrustedWebContent(markdownContent: string): string {
+  return neutralizeUntrustedBoundary(sanitizeSystemReminderContent(markdownContent))
+}
+
 export function makeSecondaryModelPrompt(
   markdownContent: string,
   prompt: string,
@@ -54,7 +60,7 @@ export function makeSecondaryModelPrompt(
   // BEFORE the content, (2) the content is framed with an explicit
   // untrusted-data directive, and (3) it is wrapped in a hard-to-forge boundary
   // whose sentinel is neutralized inside the body.
-  const safeContent = neutralizeUntrustedBoundary(markdownContent)
+  const safeContent = sanitizeUntrustedWebContent(markdownContent)
 
   return `${prompt}
 
