@@ -3926,7 +3926,11 @@ Read the team config to discover your teammates' names. Check the task list peri
         return []
       }
       const todoItems = attachment.content
-        .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
+        .map((todo, index) => {
+          const safeStatus = sanitizeSystemReminderContent(todo.status)
+          const safeContent = sanitizeSystemReminderContent(todo.content)
+          return `${index + 1}. [${safeStatus}] ${safeContent}`
+        })
         .join('\n')
 
       let message = `The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
@@ -3949,7 +3953,12 @@ Read the team config to discover your teammates' names. Check the task list peri
         return []
       }
       const taskItems = attachment.content
-        .map(task => `#${task.id}. [${task.status}] ${task.subject}`)
+        .map(task => {
+          const safeId = sanitizeSystemReminderContent(String(task.id))
+          const safeStatus = sanitizeSystemReminderContent(task.status)
+          const safeSubject = sanitizeSystemReminderContent(task.subject)
+          return `#${safeId}. [${safeStatus}] ${safeSubject}`
+        })
         .join('\n')
 
       let message = `The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using ${TASK_CREATE_TOOL_NAME} to add new tasks and ${TASK_UPDATE_TOOL_NAME} to update task status (set to in_progress when starting, completed when done). Also consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
