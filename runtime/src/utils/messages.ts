@@ -4370,13 +4370,19 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {
+        const addedLines = attachment.addedLines.map(
+          sanitizeSystemReminderContent,
+        )
         parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${attachment.addedLines.join('\n')}`,
+          `The following deferred tools are now available via ToolSearch:\n${addedLines.join('\n')}`,
         )
       }
       if (attachment.removedNames.length > 0) {
+        const removedNames = attachment.removedNames.map(
+          sanitizeSystemReminderContent,
+        )
         parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${attachment.removedNames.join('\n')}`,
+          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${removedNames.join('\n')}`,
         )
       }
       return wrapMessagesInSystemReminder([
