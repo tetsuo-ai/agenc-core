@@ -119,6 +119,81 @@ const SENSITIVE_OAUTH_PARAMS = [
   'code',
 ]
 
+type DiscoveredAuthorizationServerMetadata = Awaited<
+  ReturnType<typeof discoverAuthorizationServerMetadata>
+>
+
+const REQUIRED_PKCE_CHALLENGE_METHOD = 'S256'
+
+function assertHttpsMetadataUrl(
+  field: string,
+  value: unknown,
+  issues: string[],
+): void {
+  if (value === undefined || value === null) {
+    return
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    issues.push(`${field} must be a non-empty https:// URL`)
+    return
+  }
+  try {
+    if (new URL(value).protocol !== 'https:') {
+      issues.push(`${field} must use https://`)
+    }
+  } catch {
+    issues.push(`${field} must be a valid https:// URL`)
+  }
+}
+
+/**
+ * MCP OAuth relies on browser redirects and token POSTs controlled by server
+ * metadata. The SDK's SafeUrlSchema rejects script URLs, but current MCP auth
+ * requires HTTPS endpoints and explicit PKCE support before authorization.
+ */
+export function validateMcpOAuthAuthorizationServerMetadata(
+  metadata: DiscoveredAuthorizationServerMetadata,
+  options: { requirePkce?: boolean } = {},
+): DiscoveredAuthorizationServerMetadata {
+  if (!metadata) {
+    if (options.requirePkce) {
+      throw new Error(
+        'Incompatible MCP OAuth authorization server metadata: authorization server metadata is required to verify PKCE support',
+      )
+    }
+    return metadata
+  }
+
+  const issues: string[] = []
+  const metadataRecord = metadata as Record<string, unknown>
+
+  assertHttpsMetadataUrl('issuer', metadataRecord.issuer, issues)
+  for (const [field, value] of Object.entries(metadataRecord)) {
+    if (field.endsWith('_endpoint') || field === 'jwks_uri') {
+      assertHttpsMetadataUrl(field, value, issues)
+    }
+  }
+
+  if (
+    options.requirePkce &&
+    !metadata.code_challenge_methods_supported?.includes(
+      REQUIRED_PKCE_CHALLENGE_METHOD,
+    )
+  ) {
+    issues.push(
+      `code_challenge_methods_supported must include ${REQUIRED_PKCE_CHALLENGE_METHOD}`,
+    )
+  }
+
+  if (issues.length > 0) {
+    throw new Error(
+      `Incompatible MCP OAuth authorization server metadata: ${issues.join('; ')}`,
+    )
+  }
+
+  return metadata
+}
+
 /**
  * Redacts sensitive OAuth query parameters from a URL for safe logging.
  * Prevents exposure of state, nonce, code_challenge, code_verifier, and authorization codes.
@@ -361,7 +436,9 @@ async function fetchAuthServerMetadata(
           `Configured auth server metadata returned invalid JSON from ${configuredMetadataUrl}`,
         )
       }
-      return OAuthMetadataSchema.parse(payload)
+      return validateMcpOAuthAuthorizationServerMetadata(
+        OAuthMetadataSchema.parse(payload),
+      )
     }
     throw new Error(
       `HTTP ${response.status} fetching configured auth server metadata from ${configuredMetadataUrl}`,
@@ -377,7 +454,9 @@ async function fetchAuthServerMetadata(
       },
     )
     if (authorizationServerMetadata) {
-      return authorizationServerMetadata
+      return validateMcpOAuthAuthorizationServerMetadata(
+        authorizationServerMetadata,
+      )
     }
   } catch (err) {
     // Any error from the RFC 9728 → RFC 8414 chain (5xx from the root or
@@ -395,9 +474,10 @@ async function fetchAuthServerMetadata(
   if (url.pathname === '/') {
     return undefined
   }
-  return discoverAuthorizationServerMetadata(url, {
+  const metadata = await discoverAuthorizationServerMetadata(url, {
     ...(fetchFn && { fetchFn }),
   })
+  return validateMcpOAuthAuthorizationServerMetadata(metadata)
 }
 
 class AuthenticationCancelledError extends Error {
@@ -1057,9 +1137,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   private _authorizationUrl?: string
   private _state?: string
   private _scopes?: string
-  private _metadata?: Awaited<
-    ReturnType<typeof discoverAuthorizationServerMetadata>
-  >
+  private _metadata?: DiscoveredAuthorizationServerMetadata
   private _refreshInProgress?: Promise<OAuthTokens | undefined>
   private _pendingStepUpScope?: string
   private onAuthorizationUrlCallback?: (url: string) => void
@@ -1127,9 +1205,9 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 
   setMetadata(
-    metadata: Awaited<ReturnType<typeof discoverAuthorizationServerMetadata>>,
+    metadata: DiscoveredAuthorizationServerMetadata,
   ): void {
-    this._metadata = metadata
+    this._metadata = validateMcpOAuthAuthorizationServerMetadata(metadata)
   }
 
   /**
@@ -1552,14 +1630,13 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    // Store the authorization URL
-    this._authorizationUrl = authorizationUrl.toString()
+    const urlString = authorizationUrl.toString()
 
     // Extract and store scopes from the authorization URL for later use in token exchange
     const scopes = authorizationUrl.searchParams.get('scope')
     logMCPDebug(
       this.serverName,
-      `Authorization URL: ${redactSensitiveUrlParams(authorizationUrl.toString())}`,
+      `Authorization URL: ${redactSensitiveUrlParams(urlString)}`,
     )
     logMCPDebug(this.serverName, `Scopes in URL: ${scopes || 'NOT FOUND'}`)
 
@@ -1610,13 +1687,16 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     }
 
     // Validate URL scheme for security
-    const urlString = authorizationUrl.toString()
-    if (!urlString.startsWith('http://') && !urlString.startsWith('https://')) {
+    if (authorizationUrl.protocol !== 'https:') {
       throw new Error(
-        'Invalid authorization URL: must use http:// or https:// scheme',
+        'Invalid authorization URL: MCP OAuth authorization endpoints must use https://',
       )
     }
+    validateMcpOAuthAuthorizationServerMetadata(this._metadata, {
+      requirePkce: true,
+    })
 
+    this._authorizationUrl = urlString
     logMCPDebug(this.serverName, `Redirecting to authorization URL`)
     const redactedUrl = redactSensitiveUrlParams(urlString)
     logMCPDebug(this.serverName, `Authorization URL: ${redactedUrl}`)
@@ -1697,6 +1777,25 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
+    const discoveryIssues: string[] = []
+    assertHttpsMetadataUrl(
+      'authorizationServerUrl',
+      state.authorizationServerUrl,
+      discoveryIssues,
+    )
+    if (discoveryIssues.length > 0) {
+      throw new Error(
+        `Incompatible MCP OAuth discovery state: ${discoveryIssues.join('; ')}`,
+      )
+    }
+
+    const metadata = validateMcpOAuthAuthorizationServerMetadata(
+      state.authorizationServerMetadata,
+    )
+    if (metadata) {
+      this._metadata = metadata
+    }
+
     const storage = getSecureStorage()
     const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
@@ -1743,6 +1842,18 @@ export class AgenCAuthProvider implements OAuthClientProvider {
 
     const cached = data?.mcpOAuth?.[serverKey]?.discoveryState
     if (cached?.authorizationServerUrl) {
+      const issues: string[] = []
+      assertHttpsMetadataUrl(
+        'authorizationServerUrl',
+        cached.authorizationServerUrl,
+        issues,
+      )
+      if (issues.length > 0) {
+        throw new Error(
+          `Incompatible MCP OAuth discovery state: ${issues.join('; ')}`,
+        )
+      }
+
       logMCPDebug(
         this.serverName,
         `Returning cached discovery state (authServer: ${cached.authorizationServerUrl})`,
@@ -1768,10 +1879,14 @@ export class AgenCAuthProvider implements OAuthClientProvider {
           metadataUrl,
         )
         if (metadata) {
+          const validatedMetadata =
+            validateMcpOAuthAuthorizationServerMetadata(metadata)
+          if (!validatedMetadata) {
+            return undefined
+          }
           return {
-            authorizationServerUrl: metadata.issuer,
-            authorizationServerMetadata:
-              metadata as OAuthDiscoveryState['authorizationServerMetadata'],
+            authorizationServerUrl: validatedMetadata.issuer,
+            authorizationServerMetadata: validatedMetadata,
           }
         }
       } catch (error) {
@@ -1861,9 +1976,11 @@ export class AgenCAuthProvider implements OAuthClientProvider {
               this.serverName,
               `Re-discovering metadata from persisted auth server URL: ${cached.authorizationServerUrl}`,
             )
-            metadata = await discoverAuthorizationServerMetadata(
-              cached.authorizationServerUrl,
-              { fetchFn: authFetch },
+            metadata = validateMcpOAuthAuthorizationServerMetadata(
+              await discoverAuthorizationServerMetadata(
+                cached.authorizationServerUrl,
+                { fetchFn: authFetch },
+              ),
             )
           }
         }
