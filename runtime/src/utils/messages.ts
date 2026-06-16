@@ -4423,8 +4423,11 @@ You have exited auto mode. The user may now want to interact more directly. You 
         if (section !== null) parts.push(section)
       }
       if (attachment.removedNames.length > 0) {
+        const removedNames = attachment.removedNames.map(
+          sanitizeSystemReminderContent,
+        )
         parts.push(
-          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${attachment.removedNames.join('\n')}`,
+          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${removedNames.join('\n')}`,
         )
       }
       return wrapMessagesInSystemReminder([
