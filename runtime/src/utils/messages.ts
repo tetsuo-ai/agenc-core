@@ -3867,18 +3867,21 @@ Read the team config to discover your teammates' names. Check the task list peri
           ? attachment.content.substring(0, maxSelectionLength) +
             '\n... (truncated)'
           : attachment.content
+      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+      const safeContent = sanitizeSystemReminderContent(content)
 
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `The user selected the lines ${attachment.lineStart} to ${attachment.lineEnd} from ${attachment.filename}:\n${content}\n\nThis may or may not be related to the current task.`,
+          content: `The user selected the lines ${attachment.lineStart} to ${attachment.lineEnd} from ${safeFilename}:\n${safeContent}\n\nThis may or may not be related to the current task.`,
           isMeta: true,
         }),
       ])
     }
     case 'opened_file_in_ide': {
+      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `The user opened the file ${attachment.filename} in the IDE. This may or may not be related to the current task.`,
+          content: `The user opened the file ${safeFilename} in the IDE. This may or may not be related to the current task.`,
           isMeta: true,
         }),
       ])
