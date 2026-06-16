@@ -4140,6 +4140,17 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'task_status': {
       const displayStatus =
         attachment.status === 'killed' ? 'stopped' : attachment.status
+      const safeTaskId = sanitizeSystemReminderContent(attachment.taskId)
+      const safeTaskType = sanitizeSystemReminderContent(attachment.taskType)
+      const safeDescription = sanitizeSystemReminderContent(
+        attachment.description,
+      )
+      const safeDeltaSummary = attachment.deltaSummary
+        ? sanitizeSystemReminderContent(attachment.deltaSummary)
+        : null
+      const safeOutputFilePath = attachment.outputFilePath
+        ? sanitizeSystemReminderContent(attachment.outputFilePath)
+        : null
 
       // For stopped tasks, keep it brief — the work was interrupted and
       // the raw transcript delta isn't useful context.
@@ -4147,7 +4158,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
         return [
           createUserMessage({
             content: wrapInSystemReminder(
-              `Task "${attachment.description}" (${attachment.taskId}) was stopped by the user.`,
+              `Task "${safeDescription}" (${safeTaskId}) was stopped by the user.`,
             ),
             isMeta: true,
           }),
@@ -4158,14 +4169,14 @@ You have exited auto mode. The user may now want to interact more directly. You 
       // is only emitted post-compaction, where the original spawn message is gone.
       if (attachment.status === 'running') {
         const parts = [
-          `Background agent "${attachment.description}" (${attachment.taskId}) is still running.`,
+          `Background agent "${safeDescription}" (${safeTaskId}) is still running.`,
         ]
-        if (attachment.deltaSummary) {
-          parts.push(`Progress: ${attachment.deltaSummary}`)
+        if (safeDeltaSummary) {
+          parts.push(`Progress: ${safeDeltaSummary}`)
         }
-        if (attachment.outputFilePath) {
+        if (safeOutputFilePath) {
           parts.push(
-            `Do NOT spawn a duplicate. You will be notified when it completes. You can read partial output at ${attachment.outputFilePath} or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
+            `Do NOT spawn a duplicate. You will be notified when it completes. You can read partial output at ${safeOutputFilePath} or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
           )
         } else {
           parts.push(
@@ -4182,19 +4193,19 @@ You have exited auto mode. The user may now want to interact more directly. You 
 
       // For completed/failed tasks, include the full delta
       const messageParts: string[] = [
-        `Task ${attachment.taskId}`,
-        `(type: ${attachment.taskType})`,
+        `Task ${safeTaskId}`,
+        `(type: ${safeTaskType})`,
         `(status: ${displayStatus})`,
-        `(description: ${attachment.description})`,
+        `(description: ${safeDescription})`,
       ]
 
-      if (attachment.deltaSummary) {
-        messageParts.push(`Delta: ${attachment.deltaSummary}`)
+      if (safeDeltaSummary) {
+        messageParts.push(`Delta: ${safeDeltaSummary}`)
       }
 
-      if (attachment.outputFilePath) {
+      if (safeOutputFilePath) {
         messageParts.push(
-          `Read the output file to retrieve the result: ${attachment.outputFilePath}`,
+          `Read the output file to retrieve the result: ${safeOutputFilePath}`,
         )
       } else {
         messageParts.push(
