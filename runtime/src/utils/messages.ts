@@ -3887,9 +3887,15 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'plan_file_reference': {
+      const safePlanFilePath = sanitizeSystemReminderContent(
+        attachment.planFilePath,
+      )
+      const safePlanContent = sanitizeSystemReminderContent(
+        attachment.planContent,
+      )
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `A plan file exists from plan mode at: ${attachment.planFilePath}\n\nPlan contents:\n\n${attachment.planContent}\n\nIf this plan is relevant to the current work and not already complete, continue working on it.`,
+          content: `A plan file exists from plan mode at: ${safePlanFilePath}\n\nPlan contents:\n\n${safePlanContent}\n\nIf this plan is relevant to the current work and not already complete, continue working on it.`,
           isMeta: true,
         }),
       ])
@@ -3900,10 +3906,12 @@ Read the team config to discover your teammates' names. Check the task list peri
       }
 
       const skillsContent = attachment.skills
-        .map(
-          skill =>
-            `### Skill: ${skill.name}\nPath: ${skill.path}\n\n${skill.content}`,
-        )
+        .map(skill => {
+          const safeName = sanitizeSystemReminderContent(skill.name)
+          const safePath = sanitizeSystemReminderContent(skill.path)
+          const safeContent = sanitizeSystemReminderContent(skill.content)
+          return `### Skill: ${safeName}\nPath: ${safePath}\n\n${safeContent}`
+        })
         .join('\n\n---\n\n')
 
       return wrapMessagesInSystemReminder([
@@ -3957,9 +3965,13 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'nested_memory': {
+      const safePath = sanitizeSystemReminderContent(attachment.content.path)
+      const safeContent = sanitizeSystemReminderContent(
+        attachment.content.content,
+      )
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `Contents of ${attachment.content.path}:\n\n${attachment.content.content}`,
+          content: `Contents of ${safePath}:\n\n${safeContent}`,
           isMeta: true,
         }),
       ])
