@@ -222,12 +222,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       // Image diffs are surfaced via the structured content path so
       // multimodal providers can render them. Text body carries a small
       // header so providers without multimodal support still see context.
+      const filename = sanitizeSystemReminderContent(attachment.filename);
       return {
         role: "user",
         content: [
           {
             type: "text",
-            text: `<system-reminder>\nThe image \`${attachment.filename}\` was modified. Updated content:\n</system-reminder>`,
+            text: `<system-reminder>\nThe image \`${filename}\` was modified. Updated content:\n</system-reminder>`,
           } as never,
           {
             type: "image",
