@@ -4284,15 +4284,23 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ]
     }
-    case 'hook_blocking_error':
+    case 'hook_blocking_error': {
+      const hookName = sanitizeSystemReminderContent(attachment.hookName)
+      const command = sanitizeSystemReminderContent(
+        attachment.blockingError.command,
+      )
+      const blockingError = sanitizeSystemReminderContent(
+        attachment.blockingError.blockingError,
+      )
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook blocking error from command: "${attachment.blockingError.command}": ${attachment.blockingError.blockingError}`,
+            `${hookName} hook blocking error from command: "${command}": ${blockingError}`,
           ),
           isMeta: true,
         }),
       ]
+    }
     case 'hook_success':
       if (
         attachment.hookEvent !== 'SessionStart' &&
@@ -4303,11 +4311,11 @@ You have exited auto mode. The user may now want to interact more directly. You 
       if (attachment.content === '') {
         return []
       }
+      const hookName = sanitizeSystemReminderContent(attachment.hookName)
+      const content = sanitizeSystemReminderContent(attachment.content)
       return [
         createUserMessage({
-          content: wrapInSystemReminder(
-            `${attachment.hookName} hook success: ${attachment.content}`,
-          ),
+          content: wrapInSystemReminder(`${hookName} hook success: ${content}`),
           isMeta: true,
         }),
       ]
@@ -4330,15 +4338,18 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ]
     }
-    case 'hook_stopped_continuation':
+    case 'hook_stopped_continuation': {
+      const hookName = sanitizeSystemReminderContent(attachment.hookName)
+      const message = sanitizeSystemReminderContent(attachment.message)
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook stopped continuation: ${attachment.message}`,
+            `${hookName} hook stopped continuation: ${message}`,
           ),
           isMeta: true,
         }),
       ]
+    }
     case 'compaction_reminder': {
       return wrapMessagesInSystemReminder([
         createUserMessage({
