@@ -1,10 +1,12 @@
 import Fuse from 'fuse.js'
+import stripAnsi from 'strip-ansi'
 import {
   type Command,
   formatDescriptionWithSource,
   getCommand,
   getCommandName,
 } from '../../commands.js'
+import { sanitizeSystemReminderContent } from '../../prompts/attachments/system-reminder-sanitizer.js'
 import type { SuggestionItem } from '../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import { getSkillUsageScore } from './skillUsageTracking.js'
 import {
@@ -279,9 +281,7 @@ function createCommandSuggestionItem(
   const isProtocol = cmd.kind === 'protocol'
   const fullDescription =
     (isWorkflow ? cmd.description : formatDescriptionWithSource(cmd)) +
-    (cmd.type === 'prompt' && cmd.argNames?.length
-      ? ` (arguments: ${cmd.argNames.join(', ')})`
-      : '')
+    (cmd.type === 'prompt' ? formatCommandArgumentHint(cmd.argNames) : '')
 
   return {
     id: getCommandId(cmd),
@@ -291,6 +291,24 @@ function createCommandSuggestionItem(
     metadata: cmd,
     color: isProtocol ? 'worker' : undefined,
   }
+}
+
+function sanitizeCommandSuggestionMetadataText(value: string): string {
+  return sanitizeSystemReminderContent(stripAnsi(value))
+    .replace(/\s+/gu, ' ')
+    .trim()
+}
+
+function formatCommandArgumentHint(argNames: readonly string[] | undefined) {
+  if (!argNames?.length) return ''
+
+  const displayArgNames = argNames
+    .map(argName => sanitizeCommandSuggestionMetadataText(argName))
+    .filter(argName => argName.length > 0)
+
+  return displayArgNames.length > 0
+    ? ` (arguments: ${displayArgNames.join(', ')})`
+    : ''
 }
 
 /**
