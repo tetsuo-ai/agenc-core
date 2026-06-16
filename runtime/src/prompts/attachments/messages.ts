@@ -27,6 +27,7 @@ import {
 } from "../../tools/AgentTool/agentListingMetadata.js";
 import { renderFileMentionAttachmentsBlock } from "../file-mentions.js";
 import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.js";
+import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
 import type { Attachment } from "./types.js";
 
 /**
@@ -200,9 +201,11 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       return userContextMessage(wrapSystemReminder(parts.join("\n\n")));
     }
     case "edited_text_file": {
+      const filename = sanitizeSystemReminderContent(attachment.filename);
+      const snippet = sanitizeSystemReminderContent(attachment.snippet);
       return userContextMessage(
         wrapSystemReminder(
-          `Note: ${attachment.filename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${attachment.snippet}`,
+          `Note: ${filename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${snippet}`,
         ),
       );
     }
