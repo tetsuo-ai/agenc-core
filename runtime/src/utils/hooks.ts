@@ -137,6 +137,7 @@ import {
   getLastAssistantMessage,
   wrapInSystemReminder,
 } from './messages.js'
+import { sanitizeSystemReminderContent } from '../prompts/attachments/system-reminder-sanitizer.js'
 import {
   emitHookStarted,
   emitHookResponse,
@@ -373,9 +374,11 @@ function executeInBackground({
         outcome: result.code === 0 ? 'success' : 'error',
       })
       if (result.code === 2) {
+        const safeHookName = sanitizeSystemReminderContent(hookName)
+        const safeOutput = sanitizeSystemReminderContent(stderr || stdout)
         enqueuePendingNotification({
           value: wrapInSystemReminder(
-            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
+            `Stop hook blocking error from command "${safeHookName}": ${safeOutput}`,
           ),
           mode: 'task-notification',
         })
