@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, test, vi } from 'vitest'
 
@@ -23,6 +24,7 @@ import {
   ensureConnectedClient,
   fetchResourcesForClient,
   fetchToolsForClient,
+  getMcpRootUriForPath,
   getMcpServerConnectionBatchSize,
   prefetchAllMcpResources,
   reconnectMcpServerImpl,
@@ -87,6 +89,17 @@ function connectedClient(
     } as never),
   } as ConnectedMCPServer
 }
+
+test('getMcpRootUriForPath encodes roots as unambiguous file URIs', () => {
+  const rootPath = '/tmp/agenc roots/#repo?query%done'
+  const uri = getMcpRootUriForPath(rootPath)
+  const parsed = new URL(uri)
+
+  assert.equal(parsed.protocol, 'file:')
+  assert.equal(parsed.hash, '')
+  assert.equal(parsed.search, '')
+  assert.equal(fileURLToPath(uri), rootPath)
+})
 
 function seedConnectionCache(
   name: string,
