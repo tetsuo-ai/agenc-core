@@ -14,8 +14,11 @@ import {
   isPluginRuntimeSimpleMode,
   loadRuntimePlugins,
   markdownStem,
+  normalizePluginIdentifierName,
+  normalizePluginIdentifierSegment,
   parseBoolean,
   pathIsDirectory,
+  pluginScopedIdentifier,
   readMarkdownFile,
   runtimeIdentityKey,
   splitFrontmatter,
@@ -91,32 +94,11 @@ function isSkillFile(filePath: string): boolean {
   return basename(filePath).toLowerCase() === "skill.md";
 }
 
-function normalizeSlashCommandSegment(value: string, fallback: string): string {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/gu, "_")
-    .replace(/_+/gu, "_")
-    .replace(/^_+|_+$/gu, "");
-  const segment = normalized.length > 0 ? normalized : fallback;
-  return /^[a-z]/u.test(segment) ? segment : `cmd_${segment}`;
-}
-
-function normalizeSlashCommandName(parts: readonly string[]): string {
-  return parts
-    .map((part, index) =>
-      normalizeSlashCommandSegment(
-        part,
-        index === parts.length - 1 ? "command" : "namespace",
-      )
-    )
-    .join(":");
-}
-
 function pluginCommandName(
   pluginName: string,
   parts: readonly string[],
 ): string {
-  return normalizeSlashCommandName([pluginName, ...parts]);
+  return pluginScopedIdentifier(pluginName, parts, "command");
 }
 
 function commandNameFromFile(
@@ -155,8 +137,11 @@ function commandDisplayName(
 ): string {
   const displayName = coerceString(frontmatter.name);
   if (!displayName) return commandName;
-  const normalizedDisplayName = normalizeSlashCommandName(displayName.split(":"));
-  const pluginPrefix = `${normalizeSlashCommandSegment(pluginName, "plugin")}:`;
+  const normalizedDisplayName = normalizePluginIdentifierName(
+    displayName.split(":"),
+    "command",
+  );
+  const pluginPrefix = `${normalizePluginIdentifierSegment(pluginName, "plugin")}:`;
   return normalizedDisplayName.startsWith(pluginPrefix)
     ? normalizedDisplayName
     : commandName;
@@ -218,7 +203,7 @@ function namespacedAliases(
   pluginName: string,
   aliases: readonly string[],
 ): string[] | undefined {
-  const normalizedPluginName = normalizeSlashCommandSegment(
+  const normalizedPluginName = normalizePluginIdentifierSegment(
     pluginName,
     "plugin",
   );
@@ -226,7 +211,7 @@ function namespacedAliases(
   const out = aliases
     .map((alias) =>
       alias.includes(":")
-        ? normalizeSlashCommandName(alias.split(":"))
+        ? normalizePluginIdentifierName(alias.split(":"), "command")
         : pluginCommandName(pluginName, [alias])
     )
     .filter((alias) => alias.startsWith(prefix));
