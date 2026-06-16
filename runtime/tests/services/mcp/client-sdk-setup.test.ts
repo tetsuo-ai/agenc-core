@@ -49,6 +49,7 @@ const nativeFetchLog: Array<{
 const tempDirs: string[] = []
 const originalLargeOutputFiles = process.env.ENABLE_MCP_LARGE_OUTPUT_FILES
 const originalMcpTimeout = process.env.MCP_TIMEOUT
+const originalShellPrefix = process.env.AGENC_SHELL_PREFIX
 const mutableGlobal = globalThis as unknown as {
   Bun?: unknown
   WebSocket?: unknown
@@ -282,6 +283,11 @@ afterEach(async () => {
     delete process.env.MCP_TIMEOUT
   } else {
     process.env.MCP_TIMEOUT = originalMcpTimeout
+  }
+  if (originalShellPrefix === undefined) {
+    delete process.env.AGENC_SHELL_PREFIX
+  } else {
+    process.env.AGENC_SHELL_PREFIX = originalShellPrefix
   }
   if (originalBun === undefined) {
     delete mutableGlobal.Bun
@@ -753,6 +759,51 @@ test('connectToServer creates stdio clients with lifecycle handlers and cleanup'
     await reconnected.cleanup()
   }
   assert.equal(fakeClients[1]?.closed, true)
+})
+
+test('connectToServer quotes stdio argv when a shell prefix is configured', async () => {
+  vi.resetModules()
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
+    Client: FakeClient,
+  }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+    StdioClientTransport: FakeStdioTransport,
+  }))
+
+  process.env.AGENC_SHELL_PREFIX = 'bash -lc'
+  const { connectToServer, formatMcpShellPrefixCommand } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
+    { VERSION: 'test' }
+  const config = {
+    type: 'stdio',
+    command: 'demo-server',
+    args: [
+      '--path',
+      'space dir',
+      '$(touch /tmp/agenc-mcp-pwned)',
+      '; echo pwned',
+    ],
+    scope: 'local',
+  } as const
+
+  const result = await connectToServer('stdio-demo', config)
+
+  assert.equal(result.type, 'connected')
+  assert.equal(fakeStdioTransports[0]?.command, 'bash -lc')
+  assert.deepEqual(fakeStdioTransports[0]?.args, [
+    formatMcpShellPrefixCommand(config.command, config.args),
+  ])
+  assert.notEqual(
+    fakeStdioTransports[0]?.args[0],
+    [config.command, ...config.args].join(' '),
+  )
+  const shellCommand = fakeStdioTransports[0]?.args[0] ?? ''
+  assert.equal(shellCommand.includes("'$(touch /tmp/agenc-mcp-pwned)'"), true)
+  assert.equal(shellCommand.includes("'; echo pwned'"), true)
+
+  if (result.type === 'connected') {
+    await result.cleanup()
+  }
 })
 
 test('connectToServer logs successful stdio startup stderr before cleanup', async () => {

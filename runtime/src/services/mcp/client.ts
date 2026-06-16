@@ -70,6 +70,7 @@ import {
   errorMessage,
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
+import { quote as quoteShellArgs } from '../../utils/bash/shellQuote.js'
 import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
@@ -624,6 +625,13 @@ export function getMcpRootUriForPath(path: string): string {
   return pathToFileURL(path).href
 }
 
+export function formatMcpShellPrefixCommand(
+  command: string,
+  args: readonly string[],
+): string {
+  return quoteShellArgs([command, ...args])
+}
+
 /**
  * Wraps a fetch function to apply a fresh timeout signal to each request.
  * This avoids the bug where a single AbortSignal.timeout() created at connection
@@ -1095,7 +1103,7 @@ export const connectToServer = memoize(
         const finalCommand =
           process.env.AGENC_SHELL_PREFIX || serverRef.command
         const finalArgs = process.env.AGENC_SHELL_PREFIX
-          ? [[serverRef.command, ...serverRef.args].join(' ')]
+          ? [formatMcpShellPrefixCommand(serverRef.command, serverRef.args)]
           : serverRef.args
         transport = new StdioClientTransport({
           command: finalCommand,
