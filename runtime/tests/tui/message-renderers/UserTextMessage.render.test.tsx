@@ -129,6 +129,12 @@ describe('UserTextMessage rendering', () => {
     ).resolves.toContain('agent done')
 
     await expect(
+      renderUserText(
+        `<${TASK_NOTIFICATION_TAG}><summary>agent &quot;review&quot; done &amp; escaped</summary></${TASK_NOTIFICATION_TAG}>`,
+      ),
+    ).resolves.toContain('agent "review" done & escaped')
+
+    await expect(
       renderUserText('<mcp-resource-update>resource changed</mcp-resource-update>'),
     ).resolves.toBe('\n')
   })

@@ -129,7 +129,7 @@ export function UserAgentNotificationMessage({
   addMargin,
   param,
 }: UserAgentNotificationMessageProps): React.ReactNode {
-  const summary = extractTag(param.text, 'summary')
+  const summary = unescapeXml(extractTag(param.text, 'summary') ?? '')
   if (!summary) return null
 
   const color = statusColor(extractTag(param.text, 'status'))

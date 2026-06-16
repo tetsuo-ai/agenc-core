@@ -1,18 +1,10 @@
-import {
-  OUTPUT_FILE_TAG,
-  STATUS_TAG,
-  SUMMARY_TAG,
-  TASK_ID_TAG,
-  TASK_NOTIFICATION_TAG,
-  TASK_TYPE_TAG,
-  TOOL_USE_ID_TAG,
-} from '../../constants/xml.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import {
   isTerminalTaskStatus,
   type TaskStatus,
   type TaskType,
 } from '../../tasks/Task.js'
+import { buildTaskNotificationXml } from '../../tasks/taskNotificationXml.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
@@ -275,16 +267,14 @@ function enqueueTaskNotification(attachment: TaskAttachment): void {
   const statusText = getStatusText(attachment.status)
 
   const outputPath = getTaskOutputPath(attachment.taskId)
-  const toolUseIdLine = attachment.toolUseId
-    ? `\n<${TOOL_USE_ID_TAG}>${attachment.toolUseId}</${TOOL_USE_ID_TAG}>`
-    : ''
-  const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${attachment.taskId}</${TASK_ID_TAG}>${toolUseIdLine}
-<${TASK_TYPE_TAG}>${attachment.taskType}</${TASK_TYPE_TAG}>
-<${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
-<${STATUS_TAG}>${attachment.status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>Task "${attachment.description}" ${statusText}</${SUMMARY_TAG}>
-</${TASK_NOTIFICATION_TAG}>`
+  const message = buildTaskNotificationXml({
+    taskId: attachment.taskId,
+    toolUseId: attachment.toolUseId,
+    taskType: attachment.taskType,
+    outputPath,
+    status: attachment.status,
+    summary: `Task "${attachment.description}" ${statusText}`,
+  })
 
   enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }
