@@ -91,13 +91,41 @@ function isSkillFile(filePath: string): boolean {
   return basename(filePath).toLowerCase() === "skill.md";
 }
 
+function normalizeSlashCommandSegment(value: string, fallback: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/gu, "_")
+    .replace(/_+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+  const segment = normalized.length > 0 ? normalized : fallback;
+  return /^[a-z]/u.test(segment) ? segment : `cmd_${segment}`;
+}
+
+function normalizeSlashCommandName(parts: readonly string[]): string {
+  return parts
+    .map((part, index) =>
+      normalizeSlashCommandSegment(
+        part,
+        index === parts.length - 1 ? "command" : "namespace",
+      )
+    )
+    .join(":");
+}
+
+function pluginCommandName(
+  pluginName: string,
+  parts: readonly string[],
+): string {
+  return normalizeSlashCommandName([pluginName, ...parts]);
+}
+
 function commandNameFromFile(
   file: ParsedMarkdownFile,
   pluginName: string,
 ): string {
   const namespace = namespaceFromCommandPath(file.filePath, file.baseDir);
   const name = markdownStem(file.filePath);
-  return [pluginName, ...namespace, name].join(":");
+  return pluginCommandName(pluginName, [...namespace, name]);
 }
 
 function skillNameFromFile(
@@ -111,7 +139,7 @@ function skillNameFromFile(
     !rel || rel === "." || rel.startsWith("..")
       ? []
       : rel.split(sep).filter((part) => part.length > 0);
-  return [pluginName, ...namespace, basename(skillDir)].join(":");
+  return pluginCommandName(pluginName, [...namespace, basename(skillDir)]);
 }
 
 function namespaceFromCommandPath(filePath: string, baseDir: string): readonly string[] {
@@ -126,7 +154,12 @@ function commandDisplayName(
   frontmatter: Record<string, unknown>,
 ): string {
   const displayName = coerceString(frontmatter.name);
-  return displayName?.startsWith(`${pluginName}:`) ? displayName : commandName;
+  if (!displayName) return commandName;
+  const normalizedDisplayName = normalizeSlashCommandName(displayName.split(":"));
+  const pluginPrefix = `${normalizeSlashCommandSegment(pluginName, "plugin")}:`;
+  return normalizedDisplayName.startsWith(pluginPrefix)
+    ? normalizedDisplayName
+    : commandName;
 }
 
 function metadataFrontmatter(
@@ -185,9 +218,17 @@ function namespacedAliases(
   pluginName: string,
   aliases: readonly string[],
 ): string[] | undefined {
-  const prefix = `${pluginName}:`;
+  const normalizedPluginName = normalizeSlashCommandSegment(
+    pluginName,
+    "plugin",
+  );
+  const prefix = `${normalizedPluginName}:`;
   const out = aliases
-    .map((alias) => alias.includes(":") ? alias : `${prefix}${alias}`)
+    .map((alias) =>
+      alias.includes(":")
+        ? normalizeSlashCommandName(alias.split(":"))
+        : pluginCommandName(pluginName, [alias])
+    )
     .filter((alias) => alias.startsWith(prefix));
   return out.length > 0 ? [...new Set(out)] : undefined;
 }
@@ -280,7 +321,7 @@ async function readCommandPath(
         markdown: parsed.markdown,
       },
       metadata: command.metadata,
-      declaredName: `${plugin.name}:${command.name}`,
+      declaredName: pluginCommandName(plugin.name, [command.name]),
       isSkillMode: false,
     }];
   }
@@ -298,10 +339,10 @@ async function readCommandPath(
     ? plugin.commandsPath
     : dirname(command.path);
   const declaredName = command.manifestName !== undefined
-    ? `${plugin.name}:${command.manifestName}`
+    ? pluginCommandName(plugin.name, [command.manifestName])
     : command.name === markdownStem(command.path)
     ? undefined
-    : `${plugin.name}:${command.name}`;
+    : pluginCommandName(plugin.name, [command.name]);
   return [
     await readFileAsCommand(
       plugin,
