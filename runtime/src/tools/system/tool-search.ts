@@ -3,6 +3,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../llm/wire/mcp-tool-naming.js";
+import { sanitizeSystemReminderContent } from "../../prompts/attachments/system-reminder-sanitizer.js";
 import {
   codingToolMetadata,
   MAX_RESULTS,
@@ -87,6 +88,38 @@ function mcpUseHint(toolName: string): string | undefined {
       ? `Call the selected MCP tool through the tool-call interface as ${toolName}, with JSON arguments.`
       : `Call the selected MCP tool through the tool-call interface using the available function ${wireName}; the runtime maps it to ${toolName}.`;
   return `${nameHint} The selected MCP function is now available; make that tool call directly as your next action when the user asked for it. It is not a shell command and not a skill. Do not use exec_command, Skill, echo, or any shell/script placeholder as a note to yourself before calling it.`;
+}
+
+function modelFacingToolSearchText(value: string): string {
+  return sanitizeSystemReminderContent(value);
+}
+
+function modelFacingToolSearchStrings(
+  values: readonly string[] | undefined,
+): string[] | undefined {
+  return values?.map(modelFacingToolSearchText);
+}
+
+function modelFacingToolSearchMetadata(
+  metadata: ToolCatalogEntry["metadata"],
+): Record<string, unknown> {
+  return {
+    family: modelFacingToolSearchText(metadata.family),
+    source: modelFacingToolSearchText(metadata.source),
+    hiddenByDefault: metadata.hiddenByDefault,
+    mutating: metadata.mutating,
+    deferred: metadata.deferred,
+    ...(metadata.keywords !== undefined
+      ? { keywords: modelFacingToolSearchStrings(metadata.keywords) }
+      : {}),
+    ...(metadata.preferredProfiles !== undefined
+      ? {
+          preferredProfiles: modelFacingToolSearchStrings(
+            metadata.preferredProfiles,
+          ),
+        }
+      : {}),
+  };
 }
 
 function normalizeSelections(args: Record<string, unknown>): readonly string[] {
@@ -225,20 +258,31 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
 
       return okResult({
         totalCatalogSize: catalog.length,
-        loaded,
-        missingSelections,
-        results: results.map((entry) => ({
-          name: entry.name,
-          description: entry.description,
-          metadata: entry.metadata,
-          advertised: advertisedToolNames?.has(entry.name) ?? false,
-          selected: selectedEntries.some((selected) => selected.name === entry.name),
-          loadHint:
-            entry.metadata.deferred && !selectedEntries.some((selected) => selected.name === entry.name)
-              ? `Call system.searchTools with select:${entry.name} to load this deferred tool.`
-              : undefined,
-          useHint: mcpUseHint(entry.name),
-        })),
+        loaded: loaded.map(modelFacingToolSearchText),
+        missingSelections: missingSelections.map(modelFacingToolSearchText),
+        results: results.map((entry) => {
+          const selected = selectedEntries.some(
+            (candidate) => candidate.name === entry.name,
+          );
+          const useHint = mcpUseHint(entry.name);
+          return {
+            name: modelFacingToolSearchText(entry.name),
+            description: modelFacingToolSearchText(entry.description),
+            metadata: modelFacingToolSearchMetadata(entry.metadata),
+            advertised: advertisedToolNames?.has(entry.name) ?? false,
+            selected,
+            loadHint:
+              entry.metadata.deferred && !selected
+                ? modelFacingToolSearchText(
+                    `Call system.searchTools with select:${entry.name} to load this deferred tool.`,
+                  )
+                : undefined,
+            useHint:
+              useHint !== undefined
+                ? modelFacingToolSearchText(useHint)
+                : undefined,
+          };
+        }),
       });
     },
   };
