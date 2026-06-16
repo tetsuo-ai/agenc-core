@@ -2170,10 +2170,16 @@ const fetchCommandsForClient = memoizeWithLRU(
       // Convert MCP prompts to our Command format
       return promptsToProcess.map(prompt => {
         const argNames = Object.values(prompt.arguments ?? {}).map(k => k.name)
+        const description =
+          prompt.description === undefined
+            ? ''
+            : sanitizeMcpPromptMetadataText(prompt.description)
+        const userFacingServerName = sanitizeMcpPromptMetadataText(client.name)
+        const userFacingPromptName = sanitizeMcpPromptMetadataText(prompt.name)
         return {
           type: 'prompt' as const,
-          name: 'mcp__' + normalizeNameForMCP(client.name) + '__' + prompt.name,
-          description: prompt.description ?? '',
+          name: buildMcpToolName(client.name, prompt.name),
+          description,
           hasUserSpecifiedDescription: !!prompt.description,
           contentLength: 0, // Dynamic MCP content
           isEnabled: () => true,
@@ -2183,7 +2189,7 @@ const fetchCommandsForClient = memoizeWithLRU(
           userFacingName() {
             // Use prompt.name (programmatic identifier) not prompt.title (display name)
             // to avoid spaces breaking slash command parsing
-            return `${client.name}:${prompt.name} (MCP)`
+            return `${userFacingServerName}:${userFacingPromptName} (MCP)`
           },
           argNames,
           source: 'mcp',
@@ -2238,6 +2244,10 @@ function neutralizeMcpPromptBoundary(text: string): string {
 
 function sanitizeMcpPromptText(text: string): string {
   return neutralizeMcpPromptBoundary(sanitizeSystemReminderContent(text))
+}
+
+function sanitizeMcpPromptMetadataText(text: string): string {
+  return sanitizeMcpPromptText(text).replace(/[\t\r\n]+/gu, ' ')
 }
 
 function mcpPromptFrameHeader(serverName: string, promptName: string): string {
