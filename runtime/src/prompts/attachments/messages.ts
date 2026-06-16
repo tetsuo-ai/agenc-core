@@ -62,18 +62,27 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "plan_mode": {
       // Plan-mode prose for the per-turn pulse. The producer gates
       // full/sparse emission; this renderer owns the model-facing text.
+      const planFilePath = sanitizeSystemReminderContent(
+        attachment.planFilePath,
+      );
       return userContextMessage(
-        `<system-reminder>\n${planModeBody(attachment.variant, attachment.planFilePath, attachment.planExists)}\n</system-reminder>`,
+        `<system-reminder>\n${planModeBody(attachment.variant, planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
     case "plan_mode_reentry": {
+      const planFilePath = sanitizeSystemReminderContent(
+        attachment.planFilePath,
+      );
       return userContextMessage(
-        `<system-reminder>\n${planModeReentryBody(attachment.planFilePath, attachment.planExists)}\n</system-reminder>`,
+        `<system-reminder>\n${planModeReentryBody(planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
     case "plan_mode_exit": {
+      const planFilePath = sanitizeSystemReminderContent(
+        attachment.planFilePath,
+      );
       return userContextMessage(
-        `<system-reminder>\n${planModeExitBody(attachment.planFilePath, attachment.planExists)}\n</system-reminder>`,
+        `<system-reminder>\n${planModeExitBody(planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
     case "verify_plan_reminder": {
