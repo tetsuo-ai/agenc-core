@@ -3355,14 +3355,18 @@ function renderRelevantMemoriesForCompat(
   attachment: Extract<Attachment, { type: 'relevant_memories' }>,
 ): string {
   const blocks = attachment.memories.map(m => {
-    const header = m.header ?? memoryHeader(m.path, m.mtimeMs)
+    const path = sanitizeSystemReminderContent(m.path)
+    const header = sanitizeSystemReminderContent(
+      m.header ?? memoryHeader(m.path, m.mtimeMs),
+    )
+    const content = sanitizeSystemReminderContent(m.content)
     const truncationNote =
       m.limit !== undefined
         ? `\n\n> This memory file was truncated at ${m.limit} lines.`
         : ''
     return [
-      `<persistent_memory_context type="AutoMem" path="${escapeXmlAttr(m.path)}" trust="untrusted">`,
-      escapePersistentMemoryContext(`${header}\n\n${m.content}${truncationNote}`),
+      `<persistent_memory_context type="AutoMem" path="${escapeXmlAttr(path)}" trust="untrusted">`,
+      escapePersistentMemoryContext(`${header}\n\n${content}${truncationNote}`),
       '</persistent_memory_context>',
     ].join('\n')
   })
