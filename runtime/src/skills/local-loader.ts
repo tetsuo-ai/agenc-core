@@ -1032,12 +1032,21 @@ function getListingCharBudget(contextWindowTokens?: number): number {
 }
 
 function getSkillListingDescription(
-  skill: { readonly description?: string; readonly whenToUse?: string },
+  skill: {
+    readonly description?: string;
+    readonly whenToUse?: string;
+    readonly loadedFrom?: string;
+  },
 ): string {
   const raw = skill.whenToUse
     ? `${skill.description} - ${skill.whenToUse}`
     : skill.description ?? "";
-  return truncate(raw, SKILL_LISTING_DESC_MAX_CHARS);
+  const sanitized = sanitizeSkillListingMetadata(raw);
+  const description =
+    skill.loadedFrom === "mcp" && sanitized.length > 0
+      ? `[untrusted MCP metadata] ${sanitized}`
+      : sanitized;
+  return truncate(description, SKILL_LISTING_DESC_MAX_CHARS);
 }
 
 function formatSkillListingLine(
@@ -1045,9 +1054,29 @@ function formatSkillListingLine(
     readonly name: string;
     readonly description?: string;
     readonly whenToUse?: string;
+    readonly loadedFrom?: string;
   },
 ): string {
   return `- ${skill.name}: ${getSkillListingDescription(skill)}`;
+}
+
+const SKILL_LISTING_UNTRUSTED_MARKER = "[untrusted MCP metadata]";
+const SKILL_LISTING_SYSTEM_REMINDER_TAG_RE =
+  /<\s*\/?\s*system-reminder\b[^>]*>/giu;
+const SKILL_LISTING_HIDDEN_TEXT_RE =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/gu;
+
+function sanitizeSkillListingMetadata(value: string): string {
+  return value
+    .replace(
+      SKILL_LISTING_SYSTEM_REMINDER_TAG_RE,
+      "<neutralized-system-reminder-tag>",
+    )
+    .split(SKILL_LISTING_UNTRUSTED_MARKER)
+    .join("[neutralized untrusted MCP metadata marker]")
+    .replace(SKILL_LISTING_HIDDEN_TEXT_RE, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function truncate(value: string, maxLength: number): string {
