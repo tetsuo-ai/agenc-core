@@ -4,6 +4,54 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Diagnostics Attachment Normalizer
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#getDiagnosticAttachments` emits new
+  Bash-triggered IDE diagnostics as `diagnostics` attachments.
+- `runtime/src/utils/attachments.ts#getLSPDiagnosticAttachments` emits passive
+  LSP diagnostics and clears delivered registry entries.
+- `runtime/src/services/diagnosticTracking.ts#formatDiagnosticsSummary`
+  centralizes diagnostic file formatting before model delivery.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` wraps formatted
+  diagnostics in a system-reminder `<new-diagnostics>` block.
+- `runtime/tests/conversation/messages-core.test.ts` covers empty diagnostics,
+  regular diagnostics, and unsafe diagnostic payloads containing
+  `</system-reminder>` and `</new-diagnostics>` text.
+
+### Finding
+
+Diagnostics normalization mixed centralized formatting, diagnostic tag
+neutralization, and system-reminder wrapping directly inside the large
+attachment dispatcher. Because diagnostics are untrusted IDE/LSP-originated
+content and the branch owns `<new-diagnostics>` framing, leaving the behavior
+inline increased the risk that a future attachment edit would bypass the
+neutralization boundary.
+
+### Change
+
+- Added a typed `DiagnosticsAttachment` helper alias and
+  `normalizeDiagnosticsAttachment`.
+- Moved empty diagnostics handling, centralized formatting, tag neutralization,
+  and `<new-diagnostics>` wrapper construction into the helper.
+- Left `normalizeAttachmentForAPI` delegating the `diagnostics` case without
+  changing wrapper semantics.
+- Confirmed `normalizeAttachmentForAPI` now measures 663 lines, with the
+  extracted diagnostics helper measuring 16 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Queued Command Attachment Normalizer
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

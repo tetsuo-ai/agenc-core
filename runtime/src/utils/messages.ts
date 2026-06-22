@@ -107,6 +107,7 @@ type AsyncHookResponseAttachmentForAPI = Extract<
   { type: 'async_hook_response' }
 >
 type QueuedCommandAttachment = Extract<Attachment, { type: 'queued_command' }>
+type DiagnosticsAttachment = Extract<Attachment, { type: 'diagnostics' }>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -3965,6 +3966,23 @@ function normalizeQueuedCommandAttachment(
   ])
 }
 
+function normalizeDiagnosticsAttachment(
+  attachment: DiagnosticsAttachment,
+): UserMessage[] {
+  if (attachment.files.length === 0) return []
+
+  const diagnosticSummary = sanitizeDiagnosticReminderContent(
+    DiagnosticTrackingService.formatDiagnosticsSummary(attachment.files),
+  )
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `<new-diagnostics>The following new diagnostic issues were detected:\n\n${diagnosticSummary}</new-diagnostics>`,
+      isMeta: true,
+    }),
+  ])
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4290,20 +4308,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'diagnostics': {
-      if (attachment.files.length === 0) return []
-
-      // Use the centralized diagnostic formatting
-      const diagnosticSummary =
-        sanitizeDiagnosticReminderContent(
-          DiagnosticTrackingService.formatDiagnosticsSummary(attachment.files),
-        )
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `<new-diagnostics>The following new diagnostic issues were detected:\n\n${diagnosticSummary}</new-diagnostics>`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeDiagnosticsAttachment(attachment)
     }
     case 'plan_mode': {
       return getPlanModeInstructions(attachment)
