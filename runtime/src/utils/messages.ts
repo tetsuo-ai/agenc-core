@@ -7,6 +7,7 @@
 import { feature } from 'bun:bundle'
 import { Ajv } from 'ajv'
 import { getAPIProvider } from './model/providers.js'
+import { isRecord as isRecordValue } from './record.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { StreamingToolUse } from '../llm/types.js'
 import type {
@@ -2921,10 +2922,6 @@ export function mergeUserContentBlocks(
 
 let nestedToolInputAjv: Ajv | null = null
 const nestedToolInputValidators = new WeakMap<object, (value: unknown) => boolean>()
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isJsonSchemaObject(value: unknown): value is object {
   return typeof value === 'object' && value !== null

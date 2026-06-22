@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Message Normalization Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/messages.ts` decodes nested JSON strings in tool-use input
+  payloads before validating them against tool schemas, preserving JSON arrays,
+  objects, and strings while rejecting non-JSON values.
+- `runtime/tests/conversation/messages-core.test.ts` covers nested tool input
+  decoding for canonical tools and MCP schema-only tools, including arrays
+  nested inside JSON strings.
+
+### Finding
+
+The message normalization path used a local `isRecordValue` strict non-array
+object guard equivalent to `utils/record.ts#isRecord`. Arrays are already
+handled in a separate branch before object recursion, so sharing the strict
+helper preserves nested JSON decoding behavior.
+
+### Change
+
+- Replaced the local `isRecordValue` implementation with the shared
+  `runtime/src/utils/record.ts` utility imported under the existing local name.
+- Preserved explicit array decoding before object recursion in
+  `decodeNestedJsonStrings`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/conversation/messages-core.test.ts tests/tools/code-mode/turn-host.test.ts tests/tools/tool-surface-consolidation.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Plugin Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
