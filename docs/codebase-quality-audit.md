@@ -4,6 +4,72 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: File Context Attachment Normalizers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#processAtMentionedFiles` emits
+  `directory` attachments for at-mentioned directories and delegates regular
+  files to `generateFileAttachment`.
+- `runtime/src/utils/attachments.ts#generateFileAttachment` emits `file` and
+  `compact_file_reference` attachments after permission checks and canonical
+  FileRead execution.
+- `runtime/src/utils/attachments.ts#tryGetPDFReference` emits
+  `pdf_reference` attachments for large at-mentioned PDFs that should be read
+  page-by-page.
+- `runtime/src/utils/attachments.ts#getChangedFiles` emits
+  `edited_text_file` attachments for changed text files already read into the
+  session.
+- `runtime/src/utils/attachments.ts#getSelectedLinesFromIDE` and
+  `runtime/src/utils/attachments.ts#getOpenedFileFromIDE` emit IDE selection
+  and opened-file context after permission checks.
+- `runtime/src/utils/attachments.ts#memoryFilesToAttachments` emits
+  `nested_memory` attachments for nested instruction files.
+- `runtime/src/utils/plans.ts#recoverPlanFromMessages` and
+  `runtime/src/planning/plan-files.ts#recoverPlanFromRecord` still consume
+  `plan_file_reference` attachments as post-compaction plan preservation
+  compatibility data.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` converts these
+  attachments into legacy model-facing tool messages or system reminders.
+- `runtime/tests/conversation/messages-core.test.ts` covers normal and unsafe
+  directory, file, compact-file, PDF, IDE selection/opened-file, plan-file, and
+  nested-memory payloads.
+
+### Finding
+
+File, IDE, plan-file, and nested-memory normalization mixed tool-message
+simulation, truncation reminders, PDF read guidance, and system-reminder
+sanitization directly inside the large attachment dispatcher. These attachments
+carry user- or environment-originated paths and content, so the important
+trust-boundary behavior is not the switch routing itself; it is the precise
+sanitize-and-wrap sequence for each context shape.
+
+### Change
+
+- Added typed aliases for `directory`, `edited_text_file`, `file`,
+  `compact_file_reference`, `pdf_reference`, `selected_lines_in_ide`,
+  `opened_file_in_ide`, `plan_file_reference`, and `nested_memory`
+  attachments.
+- Split the inline branches into focused normalizers for each attachment kind.
+- Preserved existing FileRead/Bash synthetic tool messages, truncation text,
+  PDF page-read guidance, IDE selection truncation, plan-file wording, and
+  nested-memory wrapping.
+- Confirmed `normalizeAttachmentForAPI` now measures 429 lines, with the
+  extracted context helpers measuring 22, 12, 23, 11, 16, 18, 11, 14, and
+  12 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Delta Attachment Normalizers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

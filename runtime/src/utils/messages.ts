@@ -139,6 +139,36 @@ type HookStoppedContinuationAttachmentForAPI = Extract<
   Attachment,
   { type: 'hook_stopped_continuation' }
 >
+type DirectoryAttachmentForAPI = Extract<Attachment, { type: 'directory' }>
+type EditedTextFileAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'edited_text_file' }
+>
+type FileAttachmentForAPI = Extract<Attachment, { type: 'file' }>
+type CompactFileReferenceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'compact_file_reference' }
+>
+type PdfReferenceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'pdf_reference' }
+>
+type SelectedLinesInIdeAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'selected_lines_in_ide' }
+>
+type OpenedFileInIdeAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'opened_file_in_ide' }
+>
+type PlanFileReferenceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'plan_file_reference' }
+>
+type NestedMemoryAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'nested_memory' }
+>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -4210,6 +4240,154 @@ function normalizeMcpInstructionsDeltaAttachment(
   ])
 }
 
+function normalizeDirectoryAttachment(
+  attachment: DirectoryAttachmentForAPI,
+): UserMessage[] {
+  const safePath = sanitizeSystemReminderContent(attachment.path)
+  return wrapMessagesInSystemReminder([
+    sanitizeMessageForSystemReminder(
+      createToolUseMessage(CanonicalBashTool.name, {
+        command: `ls ${quote([safePath])}`,
+      }),
+    ),
+    sanitizeMessageForSystemReminder(
+      createToolResultMessage(CanonicalBashTool, {
+        content: attachment.content,
+        metadata: {
+          stdout: attachment.content,
+          stderr: '',
+          interrupted: false,
+        },
+      }),
+    ),
+  ])
+}
+
+function normalizeEditedTextFileAttachment(
+  attachment: EditedTextFileAttachmentForAPI,
+): UserMessage[] {
+  const editedFilename = sanitizeSystemReminderContent(attachment.filename)
+  const editedSnippet = sanitizeSystemReminderContent(attachment.snippet)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `Note: ${editedFilename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${editedSnippet}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeFileAttachment(
+  attachment: FileAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    sanitizeMessageForSystemReminder(
+      createToolUseMessage(CanonicalFileReadTool.name, {
+        file_path: safeFilename,
+      }),
+    ),
+    sanitizeMessageForSystemReminder(
+      createToolResultMessage(CanonicalFileReadTool, attachment.content),
+    ),
+    ...(attachment.truncated
+      ? [
+          createUserMessage({
+            content: `Note: The file ${safeFilename} was too large and has been truncated to the first ${MAX_LINES_TO_READ} lines. Don't tell the user about this truncation. Use ${CanonicalFileReadTool.name} to read more of the file if you need.`,
+            isMeta: true, // model-facing metadata only
+          }),
+        ]
+      : []),
+  ])
+}
+
+function normalizeCompactFileReferenceAttachment(
+  attachment: CompactFileReferenceAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `Note: ${safeFilename} was read before the last conversation was summarized, but the contents are too large to include. Use ${CanonicalFileReadTool.name} tool if you need to access it.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizePdfReferenceAttachment(
+  attachment: PdfReferenceAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content:
+        `PDF file: ${safeFilename} (${attachment.pageCount} pages, ${formatFileSize(attachment.fileSize)}). ` +
+        `This PDF is too large to read all at once. You MUST use the ${FILE_READ_TOOL_NAME} tool with the pages parameter ` +
+        `to read specific page ranges (e.g., pages: "1-5"). Do NOT call ${FILE_READ_TOOL_NAME} without the pages parameter ` +
+        `or it will fail. Start by reading the first few pages to understand the structure, then read more as needed. ` +
+        `Maximum 20 pages per request.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeSelectedLinesInIdeAttachment(
+  attachment: SelectedLinesInIdeAttachmentForAPI,
+): UserMessage[] {
+  const maxSelectionLength = 2000
+  const content =
+    attachment.content.length > maxSelectionLength
+      ? `${attachment.content.substring(0, maxSelectionLength)}\n... (truncated)`
+      : attachment.content
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  const safeContent = sanitizeSystemReminderContent(content)
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user selected the lines ${attachment.lineStart} to ${attachment.lineEnd} from ${safeFilename}:\n${safeContent}\n\nThis may or may not be related to the current task.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeOpenedFileInIdeAttachment(
+  attachment: OpenedFileInIdeAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user opened the file ${safeFilename} in the IDE. This may or may not be related to the current task.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizePlanFileReferenceAttachment(
+  attachment: PlanFileReferenceAttachmentForAPI,
+): UserMessage[] {
+  const safePlanFilePath = sanitizeSystemReminderContent(
+    attachment.planFilePath,
+  )
+  const safePlanContent = sanitizeSystemReminderContent(attachment.planContent)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `A plan file exists from plan mode at: ${safePlanFilePath}\n\nPlan contents:\n\n${safePlanContent}\n\nIf this plan is relevant to the current work and not already complete, continue working on it.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeNestedMemoryAttachment(
+  attachment: NestedMemoryAttachmentForAPI,
+): UserMessage[] {
+  const safePath = sanitizeSystemReminderContent(attachment.content.path)
+  const safeContent = sanitizeSystemReminderContent(attachment.content.content)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `Contents of ${safePath}:\n\n${safeContent}`,
+      isMeta: true,
+    }),
+  ])
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4292,118 +4470,28 @@ Read the team config to discover your teammates' names. Check the task list peri
   // biome-ignore lint/nursery/useExhaustiveSwitchCases: teammate_mailbox/team_context/max_turns_reached/skill_discovery/bagel_console handled above, can't add case for dead code elimination
   switch (attachment.type) {
     case 'directory': {
-      const safePath = sanitizeSystemReminderContent(attachment.path)
-      return wrapMessagesInSystemReminder([
-        sanitizeMessageForSystemReminder(
-          createToolUseMessage(CanonicalBashTool.name, {
-            command: `ls ${quote([safePath])}`,
-          }),
-        ),
-        sanitizeMessageForSystemReminder(
-          createToolResultMessage(CanonicalBashTool, {
-            content: attachment.content,
-            metadata: {
-              stdout: attachment.content,
-              stderr: '',
-              interrupted: false,
-            },
-          }),
-        ),
-      ])
+      return normalizeDirectoryAttachment(attachment)
     }
     case 'edited_text_file': {
-      const editedFilename = sanitizeSystemReminderContent(attachment.filename)
-      const editedSnippet = sanitizeSystemReminderContent(attachment.snippet)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `Note: ${editedFilename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${editedSnippet}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeEditedTextFileAttachment(attachment)
     }
     case 'file': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        sanitizeMessageForSystemReminder(
-          createToolUseMessage(CanonicalFileReadTool.name, {
-            file_path: safeFilename,
-          }),
-        ),
-        sanitizeMessageForSystemReminder(
-          createToolResultMessage(CanonicalFileReadTool, attachment.content),
-        ),
-        ...(attachment.truncated
-          ? [
-              createUserMessage({
-                content: `Note: The file ${safeFilename} was too large and has been truncated to the first ${MAX_LINES_TO_READ} lines. Don't tell the user about this truncation. Use ${CanonicalFileReadTool.name} to read more of the file if you need.`,
-                isMeta: true, // model-facing metadata only
-              }),
-            ]
-          : []),
-      ])
+      return normalizeFileAttachment(attachment)
     }
     case 'compact_file_reference': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `Note: ${safeFilename} was read before the last conversation was summarized, but the contents are too large to include. Use ${CanonicalFileReadTool.name} tool if you need to access it.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeCompactFileReferenceAttachment(attachment)
     }
     case 'pdf_reference': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content:
-            `PDF file: ${safeFilename} (${attachment.pageCount} pages, ${formatFileSize(attachment.fileSize)}). ` +
-            `This PDF is too large to read all at once. You MUST use the ${FILE_READ_TOOL_NAME} tool with the pages parameter ` +
-            `to read specific page ranges (e.g., pages: "1-5"). Do NOT call ${FILE_READ_TOOL_NAME} without the pages parameter ` +
-            `or it will fail. Start by reading the first few pages to understand the structure, then read more as needed. ` +
-            `Maximum 20 pages per request.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizePdfReferenceAttachment(attachment)
     }
     case 'selected_lines_in_ide': {
-      const maxSelectionLength = 2000
-      const content =
-        attachment.content.length > maxSelectionLength
-          ? attachment.content.substring(0, maxSelectionLength) +
-            '\n... (truncated)'
-          : attachment.content
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      const safeContent = sanitizeSystemReminderContent(content)
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user selected the lines ${attachment.lineStart} to ${attachment.lineEnd} from ${safeFilename}:\n${safeContent}\n\nThis may or may not be related to the current task.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeSelectedLinesInIdeAttachment(attachment)
     }
     case 'opened_file_in_ide': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user opened the file ${safeFilename} in the IDE. This may or may not be related to the current task.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeOpenedFileInIdeAttachment(attachment)
     }
     case 'plan_file_reference': {
-      const safePlanFilePath = sanitizeSystemReminderContent(
-        attachment.planFilePath,
-      )
-      const safePlanContent = sanitizeSystemReminderContent(
-        attachment.planContent,
-      )
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `A plan file exists from plan mode at: ${safePlanFilePath}\n\nPlan contents:\n\n${safePlanContent}\n\nIf this plan is relevant to the current work and not already complete, continue working on it.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizePlanFileReferenceAttachment(attachment)
     }
     case 'invoked_skills': {
       if (attachment.skills.length === 0) {
@@ -4479,16 +4567,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'nested_memory': {
-      const safePath = sanitizeSystemReminderContent(attachment.content.path)
-      const safeContent = sanitizeSystemReminderContent(
-        attachment.content.content,
-      )
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `Contents of ${safePath}:\n\n${safeContent}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeNestedMemoryAttachment(attachment)
     }
     case 'relevant_memories': {
       if (attachment.memories.length === 0) return []
