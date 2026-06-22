@@ -69,6 +69,7 @@ import {
   parsePDFPageRange as parseSharedPDFPageRange,
   type PDFPageRange,
 } from "../../utils/pdfPageRange.js";
+import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -473,10 +474,7 @@ function pageRangeLength(range: PDFPageRange): number {
 async function getPDFPageCount(filePath: string): Promise<number | null> {
   const result = await execFileNoThrow("pdfinfo", [filePath], 10_000);
   if (result.exitCode !== 0) return null;
-  const match = /^Pages:\s+(\d+)/mu.exec(result.stdout);
-  if (!match) return null;
-  const count = Number.parseInt(match[1]!, 10);
-  return Number.isFinite(count) && count > 0 ? count : null;
+  return parsePDFInfoPageCount(result.stdout);
 }
 // ─────────────────────────────────────────────────────────────────────
 // Path resolution

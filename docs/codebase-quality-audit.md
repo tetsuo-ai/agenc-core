@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared PDF Info Page Count Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/pdf.ts#getPDFPageCount` shells out to `pdfinfo` for
+  attachment/media PDF page counts.
+- `runtime/src/tools/system/file-read.ts#getPDFPageCount` shells out to
+  `pdfinfo` before deciding whether `FileRead` requires an explicit `pages`
+  range.
+- `runtime/src/utils/pdfInfo.ts#parsePDFInfoPageCount` now owns the shared
+  positive page-count parsing for `pdfinfo` stdout.
+- `runtime/tests/utils/pdfInfo.test.ts` covers valid output, missing output,
+  zero counts, and malformed counts.
+
+### Finding
+
+The two `pdfinfo` wrappers parsed `Pages:` output independently. `FileRead`
+required a positive page count, while the general PDF utility accepted `0` as a
+valid count. Sharing the full utility module was not appropriate because it
+pulls in heavier PDF and tool-result dependencies; only the stdout parser needed
+to be shared.
+
+### Change
+
+- Added a dependency-free `parsePDFInfoPageCount` helper.
+- Routed both PDF page-count wrappers through the shared parser while preserving
+  their existing subprocess wrappers and timeouts.
+- Added focused parser coverage for positive, absent, zero, and malformed page
+  counts.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/pdfInfo.test.ts tests/tools/system/file-read.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared PDF Page Range Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

@@ -9,6 +9,7 @@ import { errorMessage } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
+import { parsePDFInfoPageCount } from './pdfInfo.js'
 import { getToolResultsDir } from './toolResultStorage.js'
 
 export type PDFError = {
@@ -126,12 +127,7 @@ export async function getPDFPageCount(
   if (code !== 0) {
     return null
   }
-  const match = /^Pages:\s+(\d+)/m.exec(stdout)
-  if (!match) {
-    return null
-  }
-  const count = parseInt(match[1]!, 10)
-  return isNaN(count) ? null : count
+  return parsePDFInfoPageCount(stdout)
 }
 
 export type PDFExtractPagesResult = {
