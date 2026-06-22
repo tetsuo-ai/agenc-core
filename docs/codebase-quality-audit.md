@@ -4,6 +4,45 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared NotebookEdit Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/system/notebook-edit.ts` parses Jupyter notebook JSON,
+  finds cells by literal id, numeric id, or index fallback, resolves notebook
+  metadata language info, and mutates cells for replace, insert, and delete
+  modes.
+- `runtime/tests/tools/system/notebook-edit.test.ts` covers invalid notebook
+  shapes, cell lookup edge cases, language fallback, and edit behavior.
+- `runtime/tests/tools/tool-surface-consolidation.test.ts` covers the
+  model-facing canonical NotebookEdit wrapper that delegates to the same
+  session-backed implementation.
+
+### Finding
+
+NotebookEdit carried a local strict `isRecord` predicate equivalent to
+`utils/record.ts#isRecord`: accept non-array objects and reject arrays, null,
+functions, and primitives. The helper is used only to narrow parsed notebook
+objects and cell/metadata records before field-specific validation.
+
+### Change
+
+- Replaced the local `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved NotebookEdit's existing validation and error messages.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tools/system/notebook-edit.test.ts tests/tools/tool-surface-consolidation.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared GitHub Device-Flow Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
