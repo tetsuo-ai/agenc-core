@@ -4,6 +4,45 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Elicitation Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/elicitation/mcp.ts` normalizes untrusted MCP elicitation
+  requests, schema records, and completion notification params before they cross
+  session, UI, or hook boundaries.
+- `runtime/src/elicitation/respond.ts` normalizes `request_user_input` and MCP
+  elicitation responses before forwarding them to session pending-responder
+  maps.
+- `runtime/src/elicitation/request-user-input.ts` keeps custom object parsing
+  because its error messages name request fields and malformed payload classes.
+
+### Finding
+
+The MCP request and elicitation-response paths carried identical local
+`asRecord` guards equivalent to `utils/record.ts#asRecord`: accept non-array
+objects and reject arrays, null, and primitives. Keeping local copies made it
+easier for untrusted elicitation payload handling to drift between request and
+response normalization.
+
+### Change
+
+- Replaced the two local `asRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Left the request-user-input parser's field-specific validation logic intact.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/elicitation/mcp.test.ts tests/elicitation/respond.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared TUI Tool Result Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

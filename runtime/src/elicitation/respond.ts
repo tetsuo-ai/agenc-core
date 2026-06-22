@@ -19,6 +19,7 @@ import type {
   RequestUserInputAnswer,
   RequestUserInputResponse,
 } from "./types.js";
+import { asRecord } from "../utils/record.js";
 
 export type ElicitationResponseKind = "request_user_input" | "mcp";
 
@@ -39,12 +40,6 @@ export interface SessionElicitationResponder {
     requestId: McpRequestId,
     response: McpElicitationResponse,
   ): Promise<boolean>;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }
 
 function readStringArray(value: unknown, field: string): readonly string[] {
