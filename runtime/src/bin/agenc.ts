@@ -194,6 +194,7 @@ import {
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import { setSessionTrustAccepted } from "../bootstrap/state.js";
 import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
+import { isRecord } from "../utils/record.js";
 
 type AgenCDaemonCliDeps = {
   readonly startPromptAgent: typeof startAgenCDaemonPromptAgent;
@@ -1617,7 +1618,7 @@ type DaemonOneShotFinalStatus = {
 };
 
 function isJsonRecord(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function daemonEventParams(event: unknown): JsonObject | null {

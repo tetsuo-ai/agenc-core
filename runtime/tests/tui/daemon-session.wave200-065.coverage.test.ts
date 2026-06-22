@@ -76,6 +76,11 @@ describe("daemon TUI realtime notification coverage", () => {
       method: "thread/realtime/started",
       params: "not-an-object",
     });
+    client.emitNotification([] as never);
+    client.emitNotification({
+      method: "thread/realtime/started",
+      params: [] as never,
+    });
     client.emitNotification({
       method: "thread/realtime/unhandled",
       params: { threadId: "agent_1" },

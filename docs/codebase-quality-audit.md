@@ -4,6 +4,41 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared TUI/CLI Daemon Event Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tui/realtime/controller.ts` accepts daemon realtime transcript
+  notifications and local realtime events before updating TUI realtime state.
+- `runtime/src/tui/daemon-session.ts` normalizes daemon session notifications,
+  realtime notification payloads, elicitation payloads, and connection-state
+  notice events for the TUI.
+- `runtime/src/bin/agenc.ts` parses daemon one-shot message/status events before
+  writing streamed CLI output and choosing the final exit code.
+
+### Finding
+
+The TUI and top-level CLI daemon event boundaries repeated the same strict
+non-array object guard already centralized in `runtime/src/utils/record.ts`.
+Leaving these local predicates duplicated increases the chance that malformed
+array-shaped daemon events drift between the TUI, CLI, and app-server paths.
+
+### Change
+
+- Delegated the TUI realtime, TUI daemon-session, and one-shot CLI event object
+  wrappers to `runtime/src/utils/record.ts#isRecord`.
+- Added regressions proving array-shaped realtime events, daemon notification
+  params, and one-shot daemon events are ignored as malformed.
+- Kept `runtime/src/thread-store/thread-source.ts` out of scope because that
+  helper is shared persistence-specific metadata parsing covered by its own
+  gotcha and tests.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tui/realtime/controller.contract.test.ts tests/tui/daemon-session.wave200-065.coverage.test.ts tests/tui/daemon-session.contract.test.ts tests/gaphunt3/tui-daemon-session.test.ts tests/bin/agenc.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared App-Server JSON Object Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
