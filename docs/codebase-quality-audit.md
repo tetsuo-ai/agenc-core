@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Legacy Command Adapter Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands.ts` adapts older local command invocations into the
+  runtime-owned slash-command dispatcher by reading `session`, `services`,
+  `sessionConfiguration`, and optional app-state bridge fields.
+- `runtime/tests/commands/dispatcher.test.ts`,
+  `runtime/tests/commands/registry.test.ts`,
+  `runtime/tests/commands/tui-command-list.test.ts`, and
+  `runtime/tests/commands/command-surface.test.ts` cover slash-command
+  dispatch, registry exposure, TUI command filtering, and the command surface.
+
+### Finding
+
+The legacy adapter used a local loose object guard that accepted arrays as
+records. The adapter reads session and app-state bridge objects; arrays with
+custom properties are malformed compatibility payloads and should not pass the
+record boundary.
+
+### Change
+
+- Replaced the local `commands.ts` `isRecord` helper with
+  `runtime/src/utils/record.ts#isRecord`.
+- Preserved fallback behavior when a legacy invocation lacks a usable session
+  context: the command still returns the existing dispatcher-context message.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/commands/dispatcher.test.ts tests/commands/registry.test.ts tests/commands/tui-command-list.test.ts tests/commands/command-surface.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Command App-State Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

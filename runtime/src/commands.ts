@@ -20,6 +20,7 @@ import {
 } from "./plugins/registration/load-plugin-commands.js";
 import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js";
 import type { AgenCConfig } from "./config/schema.js";
+import { isRecord } from "./utils/record.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
@@ -133,10 +134,6 @@ export type CommandBase = {
 };
 
 export type Command = CommandBase & (PromptCommand | LocalCommand | LocalJSXCommand);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function legacyString(
   legacyContext: LocalJSXCommandContext,
