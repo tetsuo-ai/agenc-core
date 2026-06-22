@@ -4,6 +4,52 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: State SQL Placeholder Helper
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/state/export-import.ts#exportAgentState` loads session
+  snapshots and in-flight tool calls for the exported agent session set.
+- `runtime/src/state/export-import.ts#importAgentState` checks imported
+  session ownership before replacing target rows.
+- `runtime/src/state/recovery.ts#recoverDaemonStateOnStartup` loads
+  recoverable agent runs, stale in-flight tool calls, and previously recovered
+  tool calls during daemon startup recovery.
+- `runtime/src/state/pruning.ts#pruneTerminalAgentRuns` loads terminal
+  agent-run prune candidates by retention status group.
+- `runtime/tests/state/export-import.test.ts`,
+  `runtime/tests/state/recovery-restart.test.ts`, and
+  `runtime/tests/state/pruning.test.ts` cover the SQLite paths using dynamic
+  `IN` / `NOT IN` bind lists.
+
+### Finding
+
+The state layer had three private `placeholders()` helpers that generated the
+same `?, ?, ?` SQL bind-list string in export/import, startup recovery, and
+retention pruning. The duplication was small but sat on persistence code paths
+where a future copy could silently drift, including whether empty dynamic lists
+are rejected before constructing invalid `IN ()` SQL.
+
+### Change
+
+- Added `runtime/src/state/sql.ts#sqlPlaceholders` as the single state-layer
+  helper for SQLite bind-list placeholder strings.
+- Replaced the private helpers in export/import, recovery, and pruning.
+- Added focused tests for one-item, multi-item, zero, negative, and fractional
+  counts.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/state/sql.test.ts tests/state/export-import.test.ts tests/state/recovery-restart.test.ts tests/state/pruning.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Message API Normalization Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

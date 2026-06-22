@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { isProcessRunning } from "../utils/genericProcessUtils.js";
 import { StateThreadRepository } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { sqlPlaceholders } from "./sql.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
 const FAILED_AGENT_RUN_STATUSES = ["failed", "error", "errored"] as const;
@@ -490,7 +491,7 @@ function loadCandidates(
     .prepareState<unknown[], Omit<AgentRunPruneCandidate, "category">>(
       `SELECT id, status, current_session_id
        FROM agent_runs
-       WHERE status IN (${placeholders(statuses.length)})
+       WHERE status IN (${sqlPlaceholders(statuses.length)})
          AND last_active_at < ?
        ORDER BY last_active_at ASC, id ASC`,
     )
@@ -744,10 +745,6 @@ function cutoffIso(now: string, days: number | undefined): string | undefined {
   const nowMs = Date.parse(now);
   if (!Number.isFinite(nowMs)) return undefined;
   return new Date(nowMs - days * MS_PER_DAY).toISOString();
-}
-
-function placeholders(length: number): string {
-  return Array.from({ length }, () => "?").join(", ");
 }
 
 function emptyReport(): AgentRunPruningReport {
