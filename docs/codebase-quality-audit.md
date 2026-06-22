@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Split UserPromptSubmit Record And Iterable Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/hooks/user-prompt-submit.ts` reads live session/turn/app-state
+  context to locate configured `UserPromptSubmit` hooks and build hook input
+  metadata.
+- The same executor accepts hook return values as a single result, a promise,
+  an iterable, or an async iterable, so array-returning hooks must still yield
+  multiple results.
+- `runtime/tests/hooks/user-prompt-submit.test.ts` now covers array-returning
+  hook results for the newer hook executor directly.
+
+### Finding
+
+The file used one local loose `isRecord` helper for two different purposes:
+record-shaped context reads and iterable detection. That made the record helper
+accept arrays, even though only iterable detection needs array support.
+
+### Change
+
+- Replaced context and nested metadata reads with
+  `runtime/src/utils/record.ts#isRecord`.
+- Removed the loose local `isRecord` helper and made iterable detection check
+  for non-null objects directly, preserving array-returning hook behavior.
+- Added a focused regression test for array-returning `UserPromptSubmit` hooks.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/hooks/user-prompt-submit.test.ts tests/hooks/configured-hooks.test.ts tests/bin/agenc.user-prompt-submit.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Legacy Command Adapter Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

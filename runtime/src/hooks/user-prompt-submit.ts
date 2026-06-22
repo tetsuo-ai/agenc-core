@@ -8,6 +8,7 @@
  */
 
 import type { PermissionMode } from "../permissions/types.js";
+import { isRecord } from "../utils/record.js";
 import { nonEmptyString as stringValue } from "../utils/stringUtils.js";
 
 export interface UserPromptSubmitBlockingError {
@@ -225,10 +226,6 @@ function readNested(
   return current;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 async function* toAsyncIterable(
   value:
     | UserPromptSubmitHookResult
@@ -253,7 +250,7 @@ async function* toAsyncIterable(
 function isAsyncIterable(
   value: unknown,
 ): value is AsyncIterable<UserPromptSubmitHookResult | undefined> {
-  if (!isRecord(value)) return false;
+  if (typeof value !== "object" || value === null) return false;
   const candidate = value as unknown as AsyncIterable<
     UserPromptSubmitHookResult | undefined
   >;
@@ -263,7 +260,7 @@ function isAsyncIterable(
 function isIterable(
   value: unknown,
 ): value is Iterable<UserPromptSubmitHookResult | undefined> {
-  if (!isRecord(value)) return false;
+  if (typeof value !== "object" || value === null) return false;
   const candidate = value as unknown as Iterable<
     UserPromptSubmitHookResult | undefined
   >;
