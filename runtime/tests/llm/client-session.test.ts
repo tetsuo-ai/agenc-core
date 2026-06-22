@@ -3,7 +3,11 @@ import {
   ProviderHttpClientSession,
   ProviderHttpError,
 } from "./client-session.js";
-import { LLMCaptivePortalError, LLMCertificateError } from "./errors.js";
+import {
+  LLMCaptivePortalError,
+  LLMCertificateError,
+  LLMInvalidResponseError,
+} from "./errors.js";
 
 function streamFromChunks(
   chunks: Array<string | Uint8Array>,
@@ -994,6 +998,51 @@ describe("ProviderHttpClientSession", () => {
         content: [{ type: "input_text", text: "follow up" }],
       },
     ]);
+  });
+
+  test("requestStream aborts the responses-continuation accumulation buffer when an SSE frame exceeds the cap", async () => {
+    // The continuation accumulation path (decodeSseFrames) buffers bytes while
+    // waiting for a \n\n frame separator. A misbehaving provider/proxy that
+    // streams bytes continuously without a separator would grow this buffer to
+    // the full stream size (OOM) while the idle watchdog (idle-only) never
+    // fires. The cap must abort with the typed LLMInvalidResponseError instead.
+    const MAX_SSE_FRAME_BYTES = 16 * 1024 * 1024;
+    const oversizedNoSeparator = `data: ${"x".repeat(MAX_SSE_FRAME_BYTES + 16)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(streamFromChunks([oversizedNoSeparator]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+      responsesContinuationState: { conversationId: "conv-cap" },
+    });
+
+    const stream = await session.requestStream({
+      body: {
+        model: "gpt-5",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        ],
+        stream: true,
+      },
+    });
+
+    await expect(
+      (async () => {
+        for await (const _chunk of stream) {
+          // drain until the accumulation buffer trips the cap
+        }
+      })(),
+    ).rejects.toBeInstanceOf(LLMInvalidResponseError);
   });
 
   test("I-14: requestJson retries once with full history when previous_response_id expires", async () => {
