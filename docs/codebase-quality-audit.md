@@ -4,6 +4,49 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Plugin Component Missing-Path Reporting
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/plugins/pluginLoader.ts#validatePluginPaths` validates
+  manifest agents, skills, output styles, and apps paths with parallel
+  existence checks.
+- `runtime/src/utils/plugins/pluginLoader.ts#createPluginFromPath` validates
+  manifest command source paths and additional hooks files.
+- `runtime/src/utils/plugins/pluginLoader.ts#finishLoadingPluginFromPath`
+  validates cached marketplace command and skill paths while merging
+  marketplace metadata with plugin manifests.
+- `runtime/tests/plugins/loader.test.ts` and
+  `runtime/tests/plugins/pluginLoader-core.test.ts` cover manifest and
+  cache-only loader paths, including missing marketplace components.
+
+### Finding
+
+Nine plugin loader branches duplicated the same `logError(new Error(...))` and
+`PluginError` construction for missing component files. The debug messages are
+context-specific and useful, but the error payload itself should not drift
+between manifest, hooks, and marketplace cache-only paths.
+
+### Change
+
+- Added `recordPluginComponentPathNotFound` to centralize missing-component
+  error logging and `path-not-found` issue construction.
+- Kept each branch's local debug message and log level unchanged.
+- Replaced duplicated missing-file payload blocks in manifest, hooks, and
+  marketplace component validation.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/plugins/loader.test.ts tests/plugins/pluginLoader-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared Subagent Error Finalization
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
