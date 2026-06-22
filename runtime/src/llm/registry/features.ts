@@ -4,6 +4,7 @@
  */
 
 import type { ManagedFeatures } from "../../session/turn-context.js";
+import { isRecord } from "../../utils/record.js";
 
 export type AgenCFeatureStage =
   | "under_development"
@@ -453,10 +454,6 @@ function optionalBoolean(value: unknown): boolean | undefined {
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isCanonicalFeatureKey(key: string): key is AgenCFeatureKey {

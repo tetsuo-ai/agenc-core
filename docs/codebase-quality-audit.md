@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Feature Registry Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/registry/features.ts` builds the staged feature set from
+  defaults, canonical/legacy feature config keys, structured feature entries,
+  `_unknown.features`, and dependency normalization.
+- `runtime/tests/llm/registry/registry.test.ts` covers feature defaults, legacy
+  aliases, ignored removed keys, structured entries, dependency normalization,
+  and managed feature construction from config tables.
+
+### Finding
+
+The feature registry carried a local strict `isRecord` helper equivalent to
+`utils/record.ts#isRecord`. It gates config feature tables and structured
+entries before reading `enabled` and `apps_mcp_path_override.path` values.
+
+### Change
+
+- Replaced the local feature-registry `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved feature-table fallback behavior, structured entry parsing, ignored
+  feature handling, and dependency normalization.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/llm/registry/registry.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared LLM Tool Argument Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
