@@ -4,6 +4,34 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared PowerShell Parser Error Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/shell-command/powershell-parser.ts` runs a native PowerShell AST
+  helper process, polls stdout/stderr pipes synchronously, and treats
+  `EAGAIN`/`EWOULDBLOCK` reads as nonblocking retry conditions.
+- `runtime/tests/shell-command/powershell-parser.test.ts` covers missing
+  executable behavior and native parser reuse when PowerShell is present.
+
+### Finding
+
+The nonblocking-read error check used a local loose record guard that accepted
+arrays. It only needs object-shaped Node error values with a `code` field, so
+the shared strict non-array guard is a better fit.
+
+### Change
+
+- Replaced the local parser `isRecord` helper with
+  `runtime/src/utils/record.ts#isRecord`.
+- Kept `EAGAIN` and `EWOULDBLOCK` retry handling unchanged.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/shell-command/powershell-parser.test.ts tests/shell-command/parser.test.ts tests/shell-command/safety.test.ts --reporter=dot`
+
 ## 2026-06-22: Split UserPromptSubmit Record And Iterable Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
