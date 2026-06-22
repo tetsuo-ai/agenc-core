@@ -15,6 +15,7 @@ import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -778,19 +779,7 @@ export function openProviderMenu(
   snapshot: ProviderMenuSnapshot,
   onSelect: (provider: ProviderSlug, model: string) => Promise<ProviderMenuSelectionResult>,
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <ProviderMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />,
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <ProviderMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />
+  ));
 }

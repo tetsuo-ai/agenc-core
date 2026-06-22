@@ -14,6 +14,7 @@ import { Box, useInput } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { KeyHint, MenuModal } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -929,29 +930,19 @@ export function openHooksMenu(
   ctx: SlashCommandContext,
   runtime: ConfiguredHooksRuntime,
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close: Done = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  const reload = ctx.configStore
-    ? async (): Promise<string> => {
-        const config = await ctx.configStore!.reload();
-        runtime.load(config.hooks);
-        const issues = runtime.issues();
-        return issues.length === 0
-          ? "Hooks reloaded from config."
-          : `Hooks reloaded with ${issues.length} issue(s).`;
-      }
-    : undefined;
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <HooksMenuView runtime={runtime} onDone={close} onReload={reload} />,
+  return openLocalJsxCommand(ctx, close => {
+    const reload = ctx.configStore
+      ? async (): Promise<string> => {
+          const config = await ctx.configStore!.reload();
+          runtime.load(config.hooks);
+          const issues = runtime.issues();
+          return issues.length === 0
+            ? "Hooks reloaded from config."
+            : `Hooks reloaded with ${issues.length} issue(s).`;
+        }
+      : undefined;
+    return (
+      <HooksMenuView runtime={runtime} onDone={close as Done} onReload={reload} />
+    );
   });
-  return true;
 }

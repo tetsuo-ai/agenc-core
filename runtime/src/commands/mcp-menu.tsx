@@ -3,6 +3,7 @@ import React from "react";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { KeyHint, MenuModal } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 import type {
@@ -777,26 +778,12 @@ export function openMcpMenu(
   toolsByServer: ReadonlyMap<string, readonly McpToolStatus[]>,
   controller: McpMenuController,
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: (
-      <McpMenuView
-        initialServers={servers}
-        initialToolsByServer={toolsByServer}
-        controller={controller}
-        onDone={close}
-      />
-    ),
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <McpMenuView
+      initialServers={servers}
+      initialToolsByServer={toolsByServer}
+      controller={controller}
+      onDone={close}
+    />
+  ));
 }

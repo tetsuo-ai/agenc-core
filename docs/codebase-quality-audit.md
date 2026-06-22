@@ -295,3 +295,50 @@ unavailable-method response.
 - `npm test`
 - `npm run test:bun`
 - `git diff --check`
+
+## 2026-06-22: Slash Command Local JSX Opener Helper
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/types.ts` defines the `SlashCommandContext.appState`
+  bridge used by commands that open local TUI surfaces.
+- Repeated menu openers in `compact-menu.tsx`, `config-menu.tsx`,
+  `diff-menu.tsx`, `hooks-menu.tsx`, `hooks.ts`, `mcp-menu.tsx`,
+  `model-menu.tsx`, `permissions-menu.tsx`, `plan-menu.tsx`, `plugins.tsx`,
+  `provider-menu.tsx`, `skills-menu.tsx`, and `status-menu.tsx` all used the
+  same `setToolJSX` availability check, close payload, and local JSX flags.
+- Existing command tests assert the `setToolJSX` payloads for provider, MCP,
+  diff, config, plan, plugin, session-compact, and memory command paths.
+
+### Finding
+
+The slash-command menu layer repeated the same local JSX opener and close
+callback boilerplate across many files. A change to close semantics or prompt
+visibility would have required coordinated edits in every menu opener and made
+future local JSX surfaces easy to drift.
+
+### Change
+
+- Added `runtime/src/commands/local-jsx-command.ts` with
+  `openLocalJsxCommand`, a small helper for opening and clearing TUI-local JSX
+  command surfaces.
+- Migrated the repeated menu openers listed above to the helper while preserving
+  each menu's rendered component and callback wiring.
+- Added focused tests that lock the helper's no-bridge fallback, open payload,
+  close payload, and optional prompt-visibility override.
+- Left specialized local JSX flows (`resume`, `agents`, `tasks`, `memory`,
+  help/context usage) for later slices because some of them perform async
+  imports, request relaunches, or re-render after user actions.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/local-jsx-command.test.ts tests/commands/config.test.ts tests/commands/hooks.test.ts tests/commands/diff.test.ts tests/commands/mcp.test.ts tests/commands/plugins.test.tsx tests/commands/provider.test.ts tests/commands/plan.test.ts --reporter=dot`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/session-compact-context.test.ts tests/commands/memory/memory.contract.test.tsx --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`

@@ -21,6 +21,7 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import { HooksRuntimeUnavailableModal, openHooksMenu } from "./hooks-menu.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import React from "react";
 
 function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | null {
@@ -93,21 +94,9 @@ function daemonHooksFns(ctx: SlashCommandContext): DaemonHooksFns | null {
 }
 
 function openHooksUnavailableMenu(ctx: SlashCommandContext): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: React.createElement(HooksRuntimeUnavailableModal, { onDone: close }),
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close =>
+    React.createElement(HooksRuntimeUnavailableModal, { onDone: close }),
+  );
 }
 
 function metadataFor(event: HookEventName): {

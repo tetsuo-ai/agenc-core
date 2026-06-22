@@ -9,6 +9,7 @@ import {
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 
 type PluginRow = {
@@ -179,21 +180,9 @@ function PluginsMenuView({
 }
 
 function openPluginsMenu(ctx: SlashCommandContext, snapshot: PluginSnapshot): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <PluginsMenuView snapshot={snapshot} onDone={close} />,
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <PluginsMenuView snapshot={snapshot} onDone={close} />
+  ));
 }
 
 export const pluginsCommand: SlashCommand = {
