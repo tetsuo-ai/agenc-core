@@ -1,4 +1,8 @@
 import type { LocalAgentTaskState, TaskState, TaskStatus } from "../../tasks/types.js";
+import {
+  isTaskRecord,
+  taskStringField,
+} from "../../tasks/record-fields.js";
 
 // Inlined from framework.ts; importing it creates a cycle through task UI.
 const PANEL_GRACE_MS = 30_000;
@@ -23,19 +27,8 @@ type CollabAgentTaskPatch = {
   readonly error?: string;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : undefined;
-}
-
 function collabStatusToTaskStatus(status: unknown): TaskStatus {
-  if (isRecord(status)) {
+  if (isTaskRecord(status)) {
     return collabStatusToTaskStatus(status.status);
   }
   if (typeof status !== "string") return "running";
@@ -67,11 +60,11 @@ function collabStatusToTaskStatus(status: unknown): TaskStatus {
 }
 
 function collabStatusError(status: unknown): string | undefined {
-  return isRecord(status) ? stringField(status, "error") : undefined;
+  return isTaskRecord(status) ? taskStringField(status, "error") : undefined;
 }
 
 function daemonStatusToTaskStatus(payload: Record<string, unknown>): TaskStatus {
-  const runStatus = stringField(payload, "runStatus")
+  const runStatus = taskStringField(payload, "runStatus")
     ?.toLowerCase()
     .replaceAll("_", "-");
   switch (runStatus) {
@@ -91,7 +84,7 @@ function daemonStatusToTaskStatus(payload: Record<string, unknown>): TaskStatus 
       return "killed";
   }
 
-  const status = stringField(payload, "status")?.toLowerCase();
+  const status = taskStringField(payload, "status")?.toLowerCase();
   switch (status) {
     case "running":
       return "running";
@@ -108,34 +101,34 @@ function daemonStatusToTaskStatus(payload: Record<string, unknown>): TaskStatus 
 }
 
 function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
-  if (!isRecord(event)) return null;
+  if (!isTaskRecord(event)) return null;
   const { type, payload } = event as EventLike;
-  if (typeof type !== "string" || !isRecord(payload)) return null;
+  if (typeof type !== "string" || !isTaskRecord(payload)) return null;
 
   if (type === "collab_agent_spawn_end") {
-    const id = stringField(payload, "newThreadId");
+    const id = taskStringField(payload, "newThreadId");
     if (!id) return null;
     const title =
-      stringField(payload, "newAgentNickname") ??
-      stringField(payload, "newAgentPath") ??
-      stringField(payload, "taskName") ??
+      taskStringField(payload, "newAgentNickname") ??
+      taskStringField(payload, "newAgentPath") ??
+      taskStringField(payload, "taskName") ??
       id;
     return {
       id,
       status: collabStatusToTaskStatus(payload.status),
       title,
-      prompt: stringField(payload, "prompt"),
+      prompt: taskStringField(payload, "prompt"),
       role:
-        stringField(payload, "newAgentRoleDisplayName") ??
-        stringField(payload, "newAgentRole") ??
-        stringField(payload, "agentType"),
-      model: stringField(payload, "model"),
+        taskStringField(payload, "newAgentRoleDisplayName") ??
+        taskStringField(payload, "newAgentRole") ??
+        taskStringField(payload, "agentType"),
+      model: taskStringField(payload, "model"),
       error: collabStatusError(payload.status),
     };
   }
 
   if (type === "collab_agent_status") {
-    const id = stringField(payload, "threadId");
+    const id = taskStringField(payload, "threadId");
     if (!id) return null;
     const status = collabStatusToTaskStatus(payload.status);
     return {
@@ -143,16 +136,16 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
       status,
       requiresExisting: true,
       title:
-        stringField(payload, "agentNickname") ??
-        stringField(payload, "agentPath"),
-      prompt: stringField(payload, "prompt"),
+        taskStringField(payload, "agentNickname") ??
+        taskStringField(payload, "agentPath"),
+      prompt: taskStringField(payload, "prompt"),
       role:
-        stringField(payload, "agentRoleDisplayName") ??
-        stringField(payload, "agentRole"),
-      model: stringField(payload, "model"),
+        taskStringField(payload, "agentRoleDisplayName") ??
+        taskStringField(payload, "agentRole"),
+      model: taskStringField(payload, "model"),
       error:
         collabStatusError(payload.status) ??
-        (status === "failed" ? stringField(payload, "error") : undefined),
+        (status === "failed" ? taskStringField(payload, "error") : undefined),
     };
   }
 
@@ -160,7 +153,7 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
     type === "collab_agent_interaction_begin" ||
     type === "collab_agent_interaction_end"
   ) {
-    const id = stringField(payload, "receiverThreadId");
+    const id = taskStringField(payload, "receiverThreadId");
     if (!id) return null;
     return {
       id,
@@ -168,23 +161,23 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
         type === "collab_agent_interaction_begin"
           ? "running"
           : collabStatusToTaskStatus(payload.status),
-      prompt: stringField(payload, "prompt"),
+      prompt: taskStringField(payload, "prompt"),
       role:
-        stringField(payload, "receiverAgentRoleDisplayName") ??
-        stringField(payload, "receiverAgentRole"),
+        taskStringField(payload, "receiverAgentRoleDisplayName") ??
+        taskStringField(payload, "receiverAgentRole"),
       error: collabStatusError(payload.status),
     };
   }
 
   if (type === "background_agent_status") {
-    const id = stringField(payload, "agentId");
+    const id = taskStringField(payload, "agentId");
     if (!id) return null;
     const status = daemonStatusToTaskStatus(payload);
     return {
       id,
       status,
       requiresExisting: true,
-      ...(status === "failed" ? { error: stringField(payload, "message") } : {}),
+      ...(status === "failed" ? { error: taskStringField(payload, "message") } : {}),
     };
   }
 
@@ -195,8 +188,8 @@ function patchesFromWaitingEnd(payload: Record<string, unknown>): CollabAgentTas
   const statuses = payload.agentStatuses;
   if (!Array.isArray(statuses)) return [];
   return statuses.flatMap((entry): CollabAgentTaskPatch[] => {
-    if (!isRecord(entry)) return [];
-    const id = stringField(entry, "threadId");
+    if (!isTaskRecord(entry)) return [];
+    const id = taskStringField(entry, "threadId");
     if (!id) return [];
     return [
       {
@@ -212,9 +205,9 @@ function patchesFromWaitingEnd(payload: Record<string, unknown>): CollabAgentTas
 function patchesFromEvent(event: unknown): CollabAgentTaskPatch[] {
   const patch = patchFromEvent(event);
   if (patch !== null) return [patch];
-  if (!isRecord(event)) return [];
+  if (!isTaskRecord(event)) return [];
   const { type, payload } = event as EventLike;
-  if (type !== "collab_waiting_end" || !isRecord(payload)) return [];
+  if (type !== "collab_waiting_end" || !isTaskRecord(payload)) return [];
   return patchesFromWaitingEnd(payload);
 }
 

@@ -4,6 +4,44 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Task Payload Field Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/tasks.ts` reads loose TUI app-state task records for the
+  `/tasks` slash-command summary.
+- `runtime/src/tui/state/collabAgentTaskSync.ts` reads loose collab/daemon
+  event payload records and syncs them into background local-agent task state.
+- `runtime/src/tasks/record-fields.ts` now owns the shared loose record guard,
+  trimmed string-field reader, and finite number-field reader.
+- `runtime/tests/tasks/record-fields.test.ts` pins trimming, finite-number
+  handling, and the existing loose record semantics.
+
+### Finding
+
+The `/tasks` command and collab-agent task sync carried identical local
+`isRecord` and trimmed `stringField` helpers. The `/tasks` command also had the
+same style of finite-number field reader for `startTime`. These helpers sit on
+the same task/event payload boundary; if one copy tightened array handling,
+trimming, or empty-string treatment independently, the command output and TUI
+task state could drift.
+
+### Change
+
+- Added `runtime/src/tasks/record-fields.ts`.
+- Replaced the local helper blocks in `/tasks` and collab-agent sync with the
+  shared helper.
+- Preserved the existing loose object guard (`typeof value === "object" &&
+  value !== null`), including array acceptance.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tasks/record-fields.test.ts tests/commands/tasks.test.ts tests/tui/state/collabAgentTaskSync.test.ts tests/tui/state/collabAgentTaskSync.wave200-116.coverage.test.ts tests/tui/coverage-swarm/swarm-140-state-collabAgentTaskSync.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+
 ## 2026-06-22: Shared Thread Source Metadata Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
