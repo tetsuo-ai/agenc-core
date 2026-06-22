@@ -18,7 +18,6 @@ import {
   fetchResourcesForClient,
 } from "../../services/mcp/client.js";
 import type {
-  ConnectedMCPServer,
   MCPServerConnection,
   ServerResource,
 } from "../../services/mcp/types.js";
@@ -26,19 +25,12 @@ import {
   extractMcpResourceMentions,
   parseMcpResourceMention,
 } from "../../utils/mcpResourceMentions.js";
+import { findMcpResourceServer } from "../../utils/mcpServerLookup.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 import type { McpResourceAttachment } from "./types.js";
 
 interface SessionLikeForMcpResources {
   listMcpClients?(): readonly MCPServerConnection[];
-}
-
-function connectedClientForServer(
-  clients: readonly MCPServerConnection[],
-  serverName: string,
-): ConnectedMCPServer | null {
-  const client = clients.find((candidate) => candidate.name === serverName);
-  return client?.type === "connected" ? client : null;
 }
 
 function resourceByUri(
@@ -62,8 +54,9 @@ export const mcpResourcesProducer: AttachmentProducer = async (opts) => {
     if (opts.signal.aborted) break;
     const parsed = parseMcpResourceMention(mention);
     if (parsed === null) continue;
-    const client = connectedClientForServer(clients, parsed.serverName);
-    if (client === null || !client.capabilities?.resources) continue;
+    const lookup = findMcpResourceServer(clients, parsed.serverName);
+    if (!lookup.ok) continue;
+    const client = lookup.client;
 
     try {
       const connected = await ensureConnectedClient(client);

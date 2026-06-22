@@ -4,6 +4,56 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared MCP Resource Server Lookup
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/prompts/attachments/mcp-resources.ts#mcpResourcesProducer`
+  resolves `@server:uri` prompt mentions to connected MCP resource servers
+  before fetching resource metadata and content.
+- `runtime/src/tools/ListMcpResourcesTool/ListMcpResourcesTool.ts#call`
+  validates an optional target server before listing resources from connected
+  MCP servers.
+- `runtime/src/tools/ReadMcpResourceTool/ReadMcpResourceTool.ts#call`
+  validates a named server, resource capability support, and reconnectability
+  before issuing `resources/read`.
+- `runtime/src/utils/mcpServerLookup.ts` centralizes server name formatting,
+  lookup, connected resource capability checks, and read-tool error messages.
+- `runtime/tests/utils/mcpServerLookup.test.ts` and
+  `runtime/tests/prompts/attachments/integration.test.ts` cover lookup
+  behavior plus live prompt resource mention resolution.
+
+### Finding
+
+MCP resource producers and tools repeated server-name lookup, connected-server
+checks, resource-capability checks, and available-server error formatting. The
+prompt producer intentionally skips unavailable servers while the read tool must
+raise user-facing errors, but both paths need the same definition of "a usable
+MCP resource server." Duplicating that logic risks prompt/resource-tool parity
+drift when MCP connection states or resource capability semantics change.
+
+### Change
+
+- Added `runtime/src/utils/mcpServerLookup.ts` with shared MCP server name
+  formatting, generic name lookup, resource-server lookup, and lookup error
+  formatting helpers.
+- Replaced the prompt resource producer's local connected-client lookup with
+  `findMcpResourceServer`, preserving its silent-skip behavior.
+- Reused the shared not-found formatting in `ListMcpResourcesTool` and the
+  shared resource lookup/error formatting in `ReadMcpResourceTool`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/mcpServerLookup.test.ts tests/prompts/attachments/integration.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared File Mention Media Collector
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

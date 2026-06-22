@@ -10,6 +10,10 @@ import {
   getBinaryBlobSavedMessage,
   persistBinaryContent,
 } from '../../utils/mcpOutputStorage.js'
+import {
+  findMcpResourceServer,
+  mcpResourceServerLookupErrorMessage,
+} from '../../utils/mcpServerLookup.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
@@ -75,23 +79,12 @@ export const ReadMcpResourceTool = buildTool({
   async call(input, { options: { mcpClients } }) {
     const { server: serverName, uri } = input
 
-    const client = mcpClients.find(client => client.name === serverName)
-
-    if (!client) {
-      throw new Error(
-        `Server "${serverName}" not found. Available servers: ${mcpClients.map(c => c.name).join(', ')}`,
-      )
+    const lookup = findMcpResourceServer(mcpClients, serverName)
+    if (!lookup.ok) {
+      throw new Error(mcpResourceServerLookupErrorMessage(lookup))
     }
 
-    if (client.type !== 'connected') {
-      throw new Error(`Server "${serverName}" is not connected`)
-    }
-
-    if (!client.capabilities?.resources) {
-      throw new Error(`Server "${serverName}" does not support resources`)
-    }
-
-    const connectedClient = await ensureConnectedClient(client)
+    const connectedClient = await ensureConnectedClient(lookup.client)
     const result = (await connectedClient.client.request(
       {
         method: 'resources/read',
