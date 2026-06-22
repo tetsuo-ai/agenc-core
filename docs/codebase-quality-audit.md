@@ -4,6 +4,52 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared MCP Resource Mention Parser
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#processMcpResourceAttachments` resolves
+  legacy `@server:uri` MCP resource mentions from user input.
+- `runtime/src/prompts/attachments/mcp-resources.ts#mcpResourcesProducer`
+  resolves the newer prompt attachment producer's MCP resource mentions.
+- Both paths filter memory mentions and Windows drive-letter/file-mention
+  collisions before reading remote MCP resource content.
+- `runtime/tests/utils/attachments.extractors.test.ts`,
+  `runtime/tests/memory/project-memory-routing.test.ts`,
+  `runtime/tests/prompts/attachments/extractors.test.ts`, and
+  `runtime/tests/prompts/attachments/integration.test.ts` cover parser edge
+  cases and live MCP resource attachment rendering.
+
+### Finding
+
+The legacy attachment pipeline and the newer prompt attachment producer each
+carried a local MCP resource mention parser with the same regex, dedupe, memory
+mention filtering, and Windows drive-letter guard. That duplicated a security
+and compatibility-sensitive parser: a future fix in one path could drift from
+the other and reintroduce false MCP resource matches for file mentions or
+memory references.
+
+### Change
+
+- Added `runtime/src/utils/mcpResourceMentions.ts` with shared
+  `extractMcpResourceMentions` and `parseMcpResourceMention` helpers.
+- Re-exported `extractMcpResourceMentions` from `utils/attachments.ts` so
+  existing callers and tests keep their import path.
+- Switched the prompt MCP resource producer to the shared parser while keeping
+  its fetch/ensure-connected behavior unchanged.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/attachments.extractors.test.ts tests/memory/project-memory-routing.test.ts tests/prompts/attachments/extractors.test.ts tests/prompts/attachments/integration.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Table-Driven Provider Capability Overrides
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

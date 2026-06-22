@@ -22,45 +22,15 @@ import type {
   MCPServerConnection,
   ServerResource,
 } from "../../services/mcp/types.js";
-import { isMemoryMention } from "../../memory/index.js";
+import {
+  extractMcpResourceMentions,
+  parseMcpResourceMention,
+} from "../../utils/mcpResourceMentions.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 import type { McpResourceAttachment } from "./types.js";
 
 interface SessionLikeForMcpResources {
   listMcpClients?(): readonly MCPServerConnection[];
-}
-
-const MCP_RESOURCE_MENTION_RE = /(^|\s)@(?!")([^\s"]+:[^\s"]+)\b/g;
-
-function extractMcpResourceMentions(input: string | null): string[] {
-  if (input === null || input.length === 0) return [];
-  const mentions: string[] = [];
-  const seen = new Set<string>();
-  MCP_RESOURCE_MENTION_RE.lastIndex = 0;
-
-  let match: RegExpExecArray | null;
-  while ((match = MCP_RESOURCE_MENTION_RE.exec(input)) !== null) {
-    const mention = match[2];
-    if (mention === undefined) continue;
-    if (/^[A-Za-z]:[\\/]/.test(mention)) continue;
-    if (isMemoryMention(`@${mention}`)) continue;
-    if (seen.has(mention)) continue;
-    seen.add(mention);
-    mentions.push(mention);
-  }
-
-  return mentions;
-}
-
-function splitResourceMention(
-  mention: string,
-): { serverName: string; uri: string } | null {
-  const [serverName, ...uriParts] = mention.split(":");
-  const uri = uriParts.join(":");
-  if (serverName === undefined || serverName.length === 0 || uri.length === 0) {
-    return null;
-  }
-  return { serverName, uri };
 }
 
 function connectedClientForServer(
@@ -90,7 +60,7 @@ export const mcpResourcesProducer: AttachmentProducer = async (opts) => {
 
   for (const mention of mentions) {
     if (opts.signal.aborted) break;
-    const parsed = splitResourceMention(mention);
+    const parsed = parseMcpResourceMention(mention);
     if (parsed === null) continue;
     const client = connectedClientForServer(clients, parsed.serverName);
     if (client === null || !client.capabilities?.resources) continue;
