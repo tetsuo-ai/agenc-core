@@ -169,6 +169,22 @@ type NestedMemoryAttachmentForAPI = Extract<
   Attachment,
   { type: 'nested_memory' }
 >
+type RelevantMemoriesAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'relevant_memories' }
+>
+type TeammateMailboxAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'teammate_mailbox' }
+>
+type TeamContextAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'team_context' }
+>
+type SkillDiscoveryAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'skill_discovery' }
+>
 type InvokedSkillsAttachmentForAPI = Extract<
   Attachment,
   { type: 'invoked_skills' }
@@ -213,6 +229,10 @@ type UltrathinkEffortAttachmentForAPI = Extract<
 type CompanionIntroAttachmentForAPI = Extract<
   Attachment,
   { type: 'companion_intro' }
+>
+type McpResourceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'mcp_resource' }
 >
 
 import type { APIError } from '@anthropic-ai/sdk'
@@ -4685,30 +4705,42 @@ function normalizeVerifyPlanReminderAttachment(): UserMessage[] {
   ])
 }
 
-export function normalizeAttachmentForAPI(
-  attachment: Attachment,
+const LEGACY_ATTACHMENT_TYPES_FOR_API = new Set<string>([
+  'autocheckpointing',
+  'background_task_status',
+  'todo',
+  'task_progress',
+  'ultramemory',
+])
+
+function isLegacyAttachmentTypeForAPI(attachment: { type: string }): boolean {
+  return LEGACY_ATTACHMENT_TYPES_FOR_API.has(attachment.type)
+}
+
+function normalizeTeammateMailboxAttachment(
+  attachment: TeammateMailboxAttachmentForAPI,
 ): UserMessage[] {
-  if (isAgentSwarmsEnabled()) {
-    if (attachment.type === 'teammate_mailbox') {
-      return [
-        createUserMessage({
-          content: formatTeammateMessages(attachment.messages),
-          isMeta: true,
-        }),
-      ]
-    }
-    if (attachment.type === 'team_context') {
-      const teamName = sanitizeSystemReminderContent(attachment.teamName)
-      const agentName = sanitizeSystemReminderContent(attachment.agentName)
-      const teamConfigPath = sanitizeSystemReminderContent(
-        attachment.teamConfigPath,
-      )
-      const taskListPath = sanitizeSystemReminderContent(
-        attachment.taskListPath,
-      )
-      return [
-        createUserMessage({
-          content: `<system-reminder>
+  return [
+    createUserMessage({
+      content: formatTeammateMessages(attachment.messages),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeTeamContextAttachment(
+  attachment: TeamContextAttachmentForAPI,
+): UserMessage[] {
+  const teamName = sanitizeSystemReminderContent(attachment.teamName)
+  const agentName = sanitizeSystemReminderContent(attachment.agentName)
+  const teamConfigPath = sanitizeSystemReminderContent(
+    attachment.teamConfigPath,
+  )
+  const taskListPath = sanitizeSystemReminderContent(attachment.taskListPath)
+
+  return [
+    createUserMessage({
+      content: `<system-reminder>
 # Team Coordination
 
 You are a teammate in team "${teamName}".
@@ -4734,37 +4766,81 @@ Read the team config to discover your teammates' names. Check the task list peri
 }
 \`\`\`
 </system-reminder>`,
-          isMeta: true,
-        }),
-      ]
-    }
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeSkillDiscoveryAttachment(
+  attachment: SkillDiscoveryAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.skills.length === 0) {
+    return []
   }
 
+  const lines = attachment.skills.map(
+    skill =>
+      `- ${sanitizeSystemReminderContent(skill.name)}: ${sanitizeSystemReminderContent(skill.description)}`,
+  )
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content:
+        `Skills relevant to your task:\n\n${lines.join('\n')}\n\n` +
+        `These skills encode project-specific conventions. ` +
+        `Invoke via Skill("<name>") for complete instructions.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeRelevantMemoriesAttachment(
+  attachment: RelevantMemoriesAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.memories.length === 0) {
+    return []
+  }
+  return [
+    createUserMessage({
+      content: renderRelevantMemoriesForCompat(attachment),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeMcpResourceAttachment(
+  attachment: McpResourceAttachmentForAPI,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: renderMcpResourceForCompat(attachment),
+      isMeta: true,
+    }),
+  ]
+}
+
+export function normalizeAttachmentForAPI(
+  attachment: Attachment,
+): UserMessage[] {
+  if (isAgentSwarmsEnabled()) {
+    if (attachment.type === 'teammate_mailbox') {
+      return normalizeTeammateMailboxAttachment(attachment)
+    }
+    if (attachment.type === 'team_context') {
+      return normalizeTeamContextAttachment(attachment)
+    }
+  }
 
   // skill_discovery handled here (not in the switch) so the 'skill_discovery'
   // string literal lives inside a feature()-guarded block. A case label can't
   // be gated, but this pattern can — same approach as teammate_mailbox above.
   if (feature('EXPERIMENTAL_SKILL_SEARCH')) {
     if (attachment.type === 'skill_discovery') {
-      if (attachment.skills.length === 0) return []
-      const lines = attachment.skills.map(
-        s =>
-          `- ${sanitizeSystemReminderContent(s.name)}: ${sanitizeSystemReminderContent(s.description)}`,
-      )
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content:
-            `Skills relevant to your task:\n\n${lines.join('\n')}\n\n` +
-            `These skills encode project-specific conventions. ` +
-            `Invoke via Skill("<name>") for complete instructions.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeSkillDiscoveryAttachment(attachment)
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- teammate_mailbox/team_context/skill_discovery/bagel_console handled above
-  // biome-ignore lint/nursery/useExhaustiveSwitchCases: teammate_mailbox/team_context/max_turns_reached/skill_discovery/bagel_console handled above, can't add case for dead code elimination
+  // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- teammate_mailbox/team_context/skill_discovery handled above; bagel_console has no API producer and stays uncased for DCE
+  // biome-ignore lint/nursery/useExhaustiveSwitchCases: teammate_mailbox/team_context/skill_discovery handled above, can't add case labels for dead code elimination
   switch (attachment.type) {
     case 'directory': {
       return normalizeDirectoryAttachment(attachment)
@@ -4803,13 +4879,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       return normalizeNestedMemoryAttachment(attachment)
     }
     case 'relevant_memories': {
-      if (attachment.memories.length === 0) return []
-      return [
-        createUserMessage({
-          content: renderRelevantMemoriesForCompat(attachment),
-          isMeta: true,
-        }),
-      ]
+      return normalizeRelevantMemoriesAttachment(attachment)
     }
     case 'dynamic_skill': {
       // Dynamic skills are informational for the UI only - the skills themselves
@@ -4847,12 +4917,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       return normalizeCriticalSystemReminderAttachment(attachment)
     }
     case 'mcp_resource': {
-      return [
-        createUserMessage({
-          content: renderMcpResourceForCompat(attachment),
-          isMeta: true,
-        }),
-      ]
+      return normalizeMcpResourceAttachment(attachment)
     }
     case 'agent_mention': {
       return normalizeAgentMentionAttachment(attachment)
@@ -4915,13 +4980,16 @@ Read the team config to discover your teammates' names. Check the task list peri
     }
     case 'already_read_file':
     case 'command_permissions':
+    case 'current_session_memory':
     case 'edited_image_file':
     case 'hook_cancelled':
     case 'hook_error_during_execution':
     case 'hook_non_blocking_error':
     case 'hook_system_message':
-    case 'structured_output':
     case 'hook_permission_decision':
+    case 'max_turns_reached':
+    case 'structured_output':
+    case 'teammate_shutdown_batch':
       return []
   }
 
@@ -4929,14 +4997,7 @@ Read the team config to discover your teammates' names. Check the task list peri
   // IMPORTANT: if you remove an attachment type from normalizeAttachmentForAPI, make sure
   // to add it here to avoid errors from old --resume'd sessions that might still have
   // these attachment types.
-  const LEGACY_ATTACHMENT_TYPES = [
-    'autocheckpointing',
-    'background_task_status',
-    'todo',
-    'task_progress', // removed in PR #19337
-    'ultramemory', // removed in PR #23596
-  ]
-  if (LEGACY_ATTACHMENT_TYPES.includes((attachment as { type: string }).type)) {
+  if (isLegacyAttachmentTypeForAPI(attachment as { type: string })) {
     return []
   }
 

@@ -4,6 +4,74 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Compatibility Attachment Normalizers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#processMcpResourceAttachments` emits
+  `mcp_resource` attachments from user-requested MCP resource mentions.
+- `runtime/src/utils/attachments.ts#getRelevantMemoryAttachments` and
+  `runtime/src/utils/attachments.ts#collectSurfacedMemories` emit and de-dupe
+  `relevant_memories` attachments for persistent memory surfacing.
+- `runtime/src/utils/attachments.ts#getAttachments` gates turn-zero
+  `skill_discovery` and agent-swarm `teammate_mailbox` / `team_context`
+  attachments before they reach model-message normalization.
+- `runtime/src/utils/attachments.ts#getTeammateMailboxAttachments` and
+  `runtime/src/utils/attachments.ts#getTeamContextAttachment` produce the
+  swarm-specific attachments that must keep their string-literal guards for
+  build-time dead-code elimination.
+- `runtime/src/session/turn-compat.ts#runTurnStreamCompat` emits
+  `max_turns_reached` as a non-error attachment when forked runs hit their turn
+  cap.
+- `runtime/src/utils/collapseTeammateShutdowns.ts#collapseTeammateShutdowns`
+  emits `teammate_shutdown_batch` UI bookkeeping attachments.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` converts the
+  remaining model-facing compatibility wrappers and drops model-inert
+  bookkeeping attachments.
+- `runtime/tests/conversation/messages-core.test.ts` and
+  `runtime/tests/conversation/messages-skill-discovery.test.ts` cover unsafe
+  relevant-memory, MCP-resource, skill-discovery, swarm-context, and no-op
+  compatibility attachment normalization.
+
+### Finding
+
+The final inline cluster in `normalizeAttachmentForAPI` still mixed
+feature-gated pre-switch branches, untrusted memory/resource wrappers, and the
+legacy removed-attachment list directly inside the dispatcher. That made the
+dead-code-elimination constraints around `teammate_mailbox`, `team_context`,
+and `skill_discovery` easy to disturb during ordinary cleanup. It also left
+known UI/bookkeeping attachment types such as `current_session_memory`,
+`max_turns_reached`, and `teammate_shutdown_batch` to fall through to the
+unknown-attachment logger if replayed through API normalization, even though
+they intentionally contribute no model context.
+
+### Change
+
+- Added typed aliases and focused normalizers for teammate mailbox, team
+  context, skill discovery, relevant memories, and MCP resource attachments.
+- Moved the removed-attachment compatibility list to a module-level set and
+  left the DCE-sensitive `bagel_console` string out of runtime case labels
+  because no API producer exists for it.
+- Made the known model-inert UI/bookkeeping attachments return `[]`
+  explicitly, with regression coverage for `current_session_memory`,
+  `max_turns_reached`, and `teammate_shutdown_batch`.
+- Preserved the existing feature-gated pre-switch pattern for
+  `teammate_mailbox`, `team_context`, and `skill_discovery`.
+- Confirmed `normalizeAttachmentForAPI` now measures 191 lines, with the
+  extracted compatibility helpers measuring 10 to 42 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts tests/conversation/messages-skill-discovery.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Session Reminder Attachment Normalizers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
