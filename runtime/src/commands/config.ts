@@ -22,7 +22,6 @@
 
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
 
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
@@ -35,6 +34,12 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import { openConfigMenu } from "./config-menu.js";
+import {
+  agencHomeFromCommandContext,
+  getConfigFilePath,
+} from "./config-context.js";
+
+export { getConfigFilePath } from "./config-context.js";
 
 // ---------------------------------------------------------------------------
 // Service lookup
@@ -81,23 +86,6 @@ function daemonApplyConfigFn(
     }) => Promise<DaemonApplyConfigResult>;
   }).applyDaemonConfig;
   return typeof fn === "function" ? fn.bind(ctx.session) : null;
-}
-
-// ---------------------------------------------------------------------------
-// Config path helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the path to the active `config.toml`. The input must already
- * be the resolved AgenC home (`AGENC_HOME` or `$HOME/.agenc`), matching
- * `ConfigStore`.
- */
-export function getConfigFilePath(agencHome: string): string {
-  return join(agencHome, "config.toml");
-}
-
-function agencHomeFromCtx(ctx: SlashCommandContext): string {
-  return ctx.agencHome ?? join(ctx.home, ".agenc");
 }
 
 function errorMessage(error: unknown): string {
@@ -470,11 +458,15 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
           case "profile":
             return await handleProfileSubcommand(rest, configStore, ctx);
           case "edit":
-            return openConfigInEditor(agencHomeFromCtx(ctx), env, spawner);
+            return openConfigInEditor(
+              agencHomeFromCommandContext(ctx),
+              env,
+              spawner,
+            );
           case "path":
             return {
               kind: "text",
-              text: getConfigFilePath(agencHomeFromCtx(ctx)),
+              text: getConfigFilePath(agencHomeFromCommandContext(ctx)),
             };
           default:
             return {

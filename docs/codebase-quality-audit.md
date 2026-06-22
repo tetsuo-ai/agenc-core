@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Config Command Path Context
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/config.ts` resolves the active AgenC home for `/config
+  edit` and `/config path`.
+- `runtime/src/commands/config-menu.tsx` resolves the active `config.toml`
+  path shown in the interactive config menu snapshot.
+- `runtime/src/commands/config-context.ts` already owns command-context config
+  store lookup for model/provider/menu command surfaces.
+
+### Finding
+
+The text command and menu command carried duplicate `ctx.agencHome ??
+join(ctx.home, ".agenc")` helpers. That fallback is part of the command-context
+contract and should be shared with the existing config-context bridge so future
+config command surfaces do not drift between explicit `AGENC_HOME` and default
+`$HOME/.agenc` resolution.
+
+### Change
+
+- Moved command-context AgenC home and `config.toml` path construction into
+  `runtime/src/commands/config-context.ts`.
+- Kept `getConfigFilePath` re-exported from `runtime/src/commands/config.ts`
+  for existing callers and tests.
+- Routed `/config edit`, `/config path`, and the config menu snapshot through
+  the shared helpers.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/config-context.test.ts tests/commands/config.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared TUI Planning Display String Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

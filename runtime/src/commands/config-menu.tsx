@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import React from "react";
 
 import type { AgenCConfig } from "../config/schema.js";
@@ -8,6 +7,7 @@ import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import { configFilePathFromCommandContext } from "./config-context.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ConfigRowKind =
@@ -224,10 +224,6 @@ function createConfigMenuSnapshot(
   };
 }
 
-function agencHomeFromCtx(ctx: SlashCommandContext): string {
-  return ctx.agencHome ?? join(ctx.home, ".agenc");
-}
-
 export function readConfigMenuSnapshot(ctx: SlashCommandContext): ConfigMenuSnapshot {
   const store = ctx.configStore ??
     (ctx.session.services as { configStore?: ConfigStore | null }).configStore;
@@ -235,7 +231,7 @@ export function readConfigMenuSnapshot(ctx: SlashCommandContext): ConfigMenuSnap
     throw new Error("ConfigStore not initialised");
   }
   return createConfigMenuSnapshot(store.current(), {
-    configPath: join(agencHomeFromCtx(ctx), "config.toml"),
+    configPath: configFilePathFromCommandContext(ctx),
     warnings: store.warnings(),
   });
 }

@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
-import { readCommandConfig } from "./config-context.js";
+import {
+  agencHomeFromCommandContext,
+  configFilePathFromCommandContext,
+  getConfigFilePath,
+  readCommandConfig,
+} from "./config-context.js";
 import type { SlashCommandContext } from "./types.js";
 
 function contextWithStores(params: {
   readonly direct?: AgenCConfig;
   readonly session?: AgenCConfig;
+  readonly home?: string;
+  readonly agencHome?: string;
 }): SlashCommandContext {
   return {
     session: {
@@ -18,7 +25,8 @@ function contextWithStores(params: {
     } as unknown as SlashCommandContext["session"],
     argsRaw: "",
     cwd: "/ws",
-    home: "/home/test",
+    home: params.home ?? "/home/test",
+    ...(params.agencHome !== undefined ? { agencHome: params.agencHome } : {}),
     ...(params.direct !== undefined
       ? {
           configStore: {
@@ -57,5 +65,30 @@ describe("readCommandConfig", () => {
 
   it("returns undefined when neither config store is reachable", () => {
     expect(readCommandConfig(contextWithStores({}))).toBeUndefined();
+  });
+});
+
+describe("command config paths", () => {
+  it("prefers an explicit AgenC home from the command context", () => {
+    const ctx = contextWithStores({ agencHome: "/tmp/agenc-home" });
+
+    expect(agencHomeFromCommandContext(ctx)).toBe("/tmp/agenc-home");
+  });
+
+  it("falls back to $HOME/.agenc when the command context has no AgenC home", () => {
+    const ctx = contextWithStores({ home: "/home/alice" });
+
+    expect(agencHomeFromCommandContext(ctx)).toBe("/home/alice/.agenc");
+  });
+
+  it("builds config.toml paths from command contexts and raw homes", () => {
+    const ctx = contextWithStores({ agencHome: "/tmp/agenc-home" });
+
+    expect(configFilePathFromCommandContext(ctx)).toBe(
+      "/tmp/agenc-home/config.toml",
+    );
+    expect(getConfigFilePath("/home/alice/.agenc")).toBe(
+      "/home/alice/.agenc/config.toml",
+    );
   });
 });
