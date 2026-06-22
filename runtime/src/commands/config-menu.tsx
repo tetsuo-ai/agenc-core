@@ -9,6 +9,7 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import { configFilePathFromCommandContext } from "./config-context.js";
 import type { SlashCommandContext } from "./types.js";
+import { asRecord } from "../utils/record.js";
 
 type ConfigRowKind =
   | "runtime"
@@ -44,9 +45,7 @@ type ConfigMenuSnapshotOptions = {
 };
 
 function optionalRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : undefined;
+  return asRecord(value) ?? undefined;
 }
 
 function configured(value: unknown): ConfigRowStatus {

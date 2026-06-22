@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Config Menu Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/config-menu.tsx` builds the persistent v2 `/config`
+  menu snapshot, including provider, MCP server, plugin, and profile summary
+  rows.
+- `runtime/tests/commands/config.test.ts` covers the `/config` command surface,
+  menu snapshot rows, config reload behavior, and config path handling.
+
+### Finding
+
+The config-menu key-count/key-list helpers carried a local nullable
+`optionalRecord` adapter with the same strict non-array object contract as
+`utils/record.ts#asRecord`. The broader display helpers intentionally still
+format arrays and generic objects directly, so only the record-specific helper
+should be shared.
+
+### Change
+
+- Replaced the local object/array check in `optionalRecord` with
+  `runtime/src/utils/record.ts#asRecord`.
+- Preserved the menu's existing scalar/object display formatting.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/commands/config.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared LSP Config Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
