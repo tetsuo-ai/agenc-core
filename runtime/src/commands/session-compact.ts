@@ -20,8 +20,10 @@ import type { TurnContext } from "../session/turn-context.js";
 import { modelContextWindow } from "../session/turn-context.js";
 import {
   createEmptyToolPermissionContext,
+  isPermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import { asRecord } from "../utils/record.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   getAutoCompactThreshold,
@@ -465,8 +467,10 @@ function buildAgenCToolUseContext(
     },
     getAppState: () => ({
       toolPermissionContext:
-        session.permissionModeRegistry?.current?.() ??
-        session.services.permissionModeRegistry?.current?.() ??
+        readToolPermissionContext(session.permissionModeRegistry?.current?.()) ??
+        readToolPermissionContext(
+          session.services.permissionModeRegistry?.current?.(),
+        ) ??
         createEmptyToolPermissionContext(),
       agentDefinitions,
       tasks: surface.tasks ?? {},
@@ -540,6 +544,12 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
     }
   }
   return undefined;
+}
+
+function readToolPermissionContext(value: unknown): ToolPermissionContext | null {
+  const record = asRecord(value);
+  if (record === null || !isPermissionMode(record.mode)) return null;
+  return value as ToolPermissionContext;
 }
 
 type SessionSurface = {
@@ -925,7 +935,9 @@ async function buildSyntheticSystemMessage(opts: {
   try {
     let permissionContext: ToolPermissionContext | null = null;
     try {
-      permissionContext = opts.session.permissionModeRegistry.current();
+      permissionContext = readToolPermissionContext(
+        opts.session.permissionModeRegistry.current(),
+      );
     } catch {
       permissionContext = null;
     }

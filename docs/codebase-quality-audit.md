@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Context Compaction Permission Context Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/session-compact.ts#buildAgenCToolUseContext` builds the
+  fallback app-state surface used by `/compact` and `/context`.
+- `runtime/src/commands/session-compact.ts#buildSyntheticSystemMessage`
+  reconstructs the system prompt counted by `/context`.
+- `runtime/src/prompts/permissions-prompt.ts#getPermissionsSection` renders the
+  permissions section from the active permission context mode.
+
+### Finding
+
+`/context` compaction paths passed live permission-mode registry output directly
+into app-state and synthetic system-prompt assembly. Array-shaped registry
+values with a spoofed `mode` property could therefore render an inaccurate
+permissions section in the synthetic prompt instead of being treated as absent.
+
+### Change
+
+- Added a local permission-context reader that requires non-array record shape
+  and a valid permission mode before accepting registry output.
+- Applied that reader to both fallback app-state construction and synthetic
+  system-prompt assembly.
+- Added a regression proving array-shaped `bypassPermissions` contexts produce
+  the same `/context` modal text as an absent permission context.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/session-compact-context.test.ts --reporter=dot`
+
 ## 2026-06-22: Stop-Hook Permission Mode Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
