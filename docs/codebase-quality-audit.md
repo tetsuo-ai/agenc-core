@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Snapshot Policy Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/state/snapshot-policy.ts` records session events, tool-call
+  lifecycle state, agent status transitions, and periodic/hydrated session
+  snapshots.
+- `agentStatusMetadataPatch` filters optional budget metadata before merging it
+  into agent-run metadata and status-transition snapshots.
+- `normalizeToolState` and `normalizeMcpConnectionState` hydrate persisted
+  snapshot state back into the in-memory snapshot policy.
+
+### Finding
+
+Snapshot policy still carried local strict non-array object checks for event
+payload fallback, optional metadata patches, and hydration normalization. These
+duplicated the shared record guard at a state-persistence boundary where
+array-shaped values must remain malformed instead of becoming numeric-keyed
+maps or metadata patches.
+
+### Change
+
+- Replaced local snapshot-policy record checks with
+  `runtime/src/utils/record.ts#asRecord`.
+- Added regressions proving array-shaped budget metadata is ignored and
+  array-shaped hydrated `inFlight`/`completed` maps are dropped before flush.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/state/snapshot-policy.test.ts tests/state/recovery-restart.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Recovery Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

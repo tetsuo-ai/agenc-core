@@ -17,6 +17,7 @@ import {
   rotateToolOutputForState,
   type ToolOutputRotationPolicy,
 } from "./tool-output-rotation.js";
+import { asRecord } from "../utils/record.js";
 
 export type SnapshotPolicyTrigger =
   | "agent_status"
@@ -923,9 +924,7 @@ function stringifyRecoveryOutput(value: JsonValue): string {
 }
 
 function asJsonObject(value: unknown): JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
+  return (asRecord(value) as JsonObject | null) ?? {};
 }
 
 function stringField(value: JsonObject, key: string): string | undefined {
@@ -960,9 +959,8 @@ function agentStatusMetadataPatch(params: JsonObject): JsonObject | undefined {
 }
 
 function asOptionalJsonObject(value: unknown): JsonObject | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? normalizeJsonObject(value as JsonObject)
-    : undefined;
+  const record = asRecord(value);
+  return record === null ? undefined : normalizeJsonObject(record as JsonObject);
 }
 
 function latestStatusTransition(
@@ -1082,10 +1080,8 @@ function normalizeJsonObjectRecord(
 }
 
 function normalizeJsonObjectFromUnknown(value: unknown): JsonObject {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return normalizeJsonObject(value as JsonObject);
+  const record = asRecord(value);
+  return record === null ? {} : normalizeJsonObject(record as JsonObject);
 }
 
 function normalizeJsonObject(value: JsonObject): JsonObject {
