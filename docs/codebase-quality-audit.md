@@ -102,3 +102,49 @@ this repository.
 - `npm test`
 - `npm run test:bun`
 - `git diff --check`
+
+## 2026-06-22: Dispatcher Optional-Service Responses
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/app-server/daemon-dispatcher.ts` routes every known JSON-RPC
+  method after connection initialization.
+- Optional collaborators include `sessionManager`, `clientMultiplexer`,
+  `daemonControl`, `authBackend`, and optional agent-manager hook/permission
+  methods.
+- Default collaborators cover `fuzzyFileSearch`, `commandExec`, `health`, and
+  `realtime`; these remain intentionally available without explicit injection.
+- `runtime/src/app-server/client-multiplexer.ts` reconciles session routes for
+  detach/terminate calls when a multiplexer is present.
+- Dispatcher tests already covered daemon reload auth, auth backend absence,
+  command-exec notification requirements, and several session-manager fallbacks.
+
+### Finding
+
+Unavailable optional-method responses were duplicated across the dispatcher, and
+coverage for some of those branches was incomplete. In particular, missing
+`session.list`, missing `session.attach`, missing hook methods, and missing
+`permission.list` were not locked to the same `-32601` JSON-RPC response as
+the already-tested unavailable branches.
+
+### Change
+
+- Added a shared `methodNotImplementedResponse` helper for unavailable known
+  daemon methods.
+- Reused that helper across missing session manager, daemon control, hook, and
+  permission branches.
+- Extended dispatcher contract tests so optional-service absence returns
+  `-32601` before parameter validation for session, hook, and permission
+  methods.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/app-server/daemon-dispatcher.contract.test.ts tests/app-server/daemon-dispatcher.hooks.contract.test.ts tests/app-server/daemon-dispatcher.session-control.contract.test.ts tests/app-server/daemon-dispatcher.auth-backend.contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm run check:unused`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`

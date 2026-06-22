@@ -813,6 +813,8 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
 
     for (const method of [
       "session.create",
+      "session.list",
+      "session.attach",
       "session.detach",
       "session.terminate",
     ]) {
@@ -827,6 +829,30 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         },
       });
     }
+  });
+
+  it("reports missing optional permission surface before validating params", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: {} as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch(
+        request("permission-list", "permission.list", {
+          agentId: "agent_1",
+          sessionId: "session_1",
+        }),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "permission-list",
+      error: {
+        code: -32601,
+        message: "daemon method is not implemented yet: permission.list",
+      },
+    });
   });
 
   it("maps session lifecycle errors to invalid params instead of internal errors", async () => {

@@ -458,11 +458,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return this.#createSession(id, params);
       case "session.list":
         if (this.#sessionManager === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: session.list",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -565,11 +561,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.hooks.status":
         if (this.#agentManager.getSessionHooksStatus === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: session.hooks.status",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -579,11 +571,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.hooks.setDisabled":
         if (this.#agentManager.setSessionHooksDisabled === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: session.hooks.setDisabled",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -717,11 +705,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "permission.list":
         if (this.#agentManager.listPermissions === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: permission.list",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -742,21 +726,13 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "auth.logout":
         return this.#dispatchAuthMethod(id, method, connection);
       default:
-        return errorResponse(
-          id,
-          -32601,
-          `daemon method is not implemented yet: ${method}`,
-        );
+        return methodNotImplementedResponse(id, method);
     }
   }
 
   async #reloadDaemonConfig(id: RequestId): Promise<AgenCDaemonResponse> {
     if (this.#daemonControl === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: daemon.reload",
-      );
+      return methodNotImplementedResponse(id, "daemon.reload");
     }
     if (this.#initializeAuthenticator === undefined) {
       return errorResponse(
@@ -813,11 +789,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.create",
-      );
+      return methodNotImplementedResponse(id, "session.create");
     }
     return successResponse(
       id,
@@ -831,11 +803,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.attach",
-      );
+      return methodNotImplementedResponse(id, "session.attach");
     }
     const attachParams = validateSessionAttachParams(params);
     const multiplexedResult = await this.#attachTrackedClientToSession(
@@ -854,11 +822,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.detach",
-      );
+      return methodNotImplementedResponse(id, "session.detach");
     }
     const detachParams = validateSessionDetachParams(params);
     return successResponse(
@@ -873,11 +837,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.terminate",
-      );
+      return methodNotImplementedResponse(id, "session.terminate");
     }
     const terminateParams = validateSessionTerminateParams(params);
     return successResponse(
@@ -2293,6 +2253,17 @@ function successResponse<Method extends AgenCDaemonMethod>(
     id,
     result,
   } as AgenCDaemonResponse;
+}
+
+function methodNotImplementedResponse(
+  id: RequestId,
+  method: AgenCDaemonKnownMethod,
+): AgenCDaemonResponse {
+  return errorResponse(
+    id,
+    -32601,
+    `daemon method is not implemented yet: ${method}`,
+  );
 }
 
 function mapDispatchError(
