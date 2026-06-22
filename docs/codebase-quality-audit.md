@@ -4,6 +4,56 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared File Mention Media Collector
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/prompts/attachments/file-mentions.ts#fileMentionsProducer`
+  expands text file mentions and emits image/PDF mention attachments for the
+  per-turn prompt attachment pipeline.
+- `runtime/src/prompts/attachments/file-mentions.ts#collectImageMentionAttachment`
+  resolves supported image mentions through path validation, realpath allowance,
+  stat checks, byte caps, dedupe, and data URL normalization.
+- `runtime/src/prompts/attachments/file-mentions.ts#collectPdfMentionAttachment`
+  applies the parallel PDF path with PDF byte caps, PDF normalization, and text
+  fallback metadata preservation.
+- `runtime/tests/prompts/attachments/integration.test.ts`,
+  `runtime/tests/prompts/file-mentions.test.ts`, and
+  `runtime/tests/prompts/attachments/messages.test.ts` cover live producer
+  composition, mention expansion, media limits, and renderer output.
+
+### Finding
+
+Image and PDF file mention collection carried near-identical loops for mention
+scanning, path validation, duplicate suppression, symlink-safe allowance,
+`stat` filtering, per-file byte limits, and total byte limits. The only
+meaningful differences were supported-extension checks, caps, and item
+construction. That duplication made media attachment hardening easy to apply to
+one path but miss in the other, especially around symlink and size handling.
+
+### Change
+
+- Added a shared `collectMentionMediaItems` helper that owns the common media
+  mention filtering, dedupe, realpath allowance, stat, count, and total-byte
+  logic.
+- Kept image and PDF normalization as type-specific builders so provider data
+  URL generation, PDF base64 data, and PDF fallback text metadata remain local
+  to the relevant attachment type.
+- Scanned `mentionInput` once in `fileMentionsProducer` and reused the detected
+  mentions for both media collectors.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/prompts/attachments/integration.test.ts tests/prompts/file-mentions.test.ts tests/prompts/attachments/messages.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared Agent Mention Parser
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
