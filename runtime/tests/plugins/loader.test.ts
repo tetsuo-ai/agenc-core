@@ -698,6 +698,67 @@ describe("plugin loader", () => {
     });
   });
 
+  test("ignores array-shaped configured plugin entries", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(workspaceRoot, "vendor", "toolbox");
+      await writePluginManifest(pluginRoot, {
+        name: "toolbox",
+      });
+      const spoofedEntry = Object.assign(["spoof"], {
+        path: "vendor/toolbox",
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: true,
+            plugins: {
+              toolbox: spoofedEntry as never,
+            },
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled).toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
+  test("does not let array-shaped configured plugin entries disable discovered plugins", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      await writePluginManifest(join(agencHome, "plugins", "toolbox"), {
+        name: "toolbox",
+      });
+      const spoofedEntry = Object.assign(["spoof"], {
+        enabled: false,
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: true,
+            plugins: {
+              toolbox: spoofedEntry as never,
+            },
+          },
+        },
+      });
+
+      expect(result.enabled.map((plugin) => plugin.name)).toEqual(["toolbox"]);
+      expect(result.disabled).toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   test("discovers configured plugin dirs only when plugins.enabled is true", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");

@@ -252,11 +252,12 @@ function resolvePath(base: string, path: string): string {
 function configEntryEnabled(value: boolean | PluginEntryConfig | undefined): boolean {
   if (value === undefined) return true;
   if (typeof value === "boolean") return value;
+  if (!isRecord(value)) return true;
   return value.enabled !== false;
 }
 
 function configEntryPath(value: boolean | PluginEntryConfig | undefined): string | undefined {
-  return typeof value === "object" && value !== null && typeof value.path === "string"
+  return isRecord(value) && typeof value.path === "string"
     ? value.path
     : undefined;
 }

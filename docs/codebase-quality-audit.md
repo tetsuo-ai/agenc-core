@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Plugin Config Entry Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/plugins/loader.ts#configuredPluginEntries` merges legacy
+  `enabledPlugins` and `plugins.plugins` config maps before discovery.
+- `runtime/src/plugins/loader.ts#discoverPluginRoots` uses configured entry
+  `path` values to add explicit plugin roots and configured entry `enabled`
+  values to gate discovered roots.
+- `runtime/src/skills/local-loader.ts#skillsForConfig` caches the active plugin
+  config view before loading plugin-provided skills and restarting watchers.
+
+### Finding
+
+Configured plugin entry helpers still read `path` and `enabled` from any
+non-null object. Array-shaped runtime config values with spoofed `path` or
+`enabled` properties could therefore activate explicit plugin roots or disable
+auto-discovered plugins. The skill loader had the same broad top-level config
+view and would treat an array-shaped config with a `plugins` property as valid
+for plugin skill discovery.
+
+### Change
+
+- Reused the shared plugin manifest `isRecord` guard before reading configured
+  plugin entry `path` or `enabled`.
+- Imported `runtime/src/utils/record.ts#isRecord` for the local skill loader's
+  plugin config view.
+- Added regressions for array-shaped configured plugin entries and array-shaped
+  per-call skill-loader configs.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/plugins/loader.test.ts tests/skills/local-loader.test.ts --reporter=dot`
+
 ## 2026-06-22: Compact Content Block Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
