@@ -7,6 +7,7 @@ import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
+import { isRecord } from "../utils/record.js";
 
 type StatusRowState = "ok" | "warn" | "error" | "info";
 type StatusRowGroup = "runtime" | "session";
@@ -25,10 +26,6 @@ export type StatusDashboardSnapshot = {
   readonly activeIndex: number;
   readonly summary: string;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function scalar(value: unknown, fallback = "not set"): string {
   if (value === undefined || value === null) return fallback;

@@ -4,6 +4,38 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Command App-State Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/skills.ts` reads MCP-derived skill commands from the
+  slash-command app-state bridge and merges them into the `/skills` listing.
+- `runtime/src/commands/status-menu.tsx` reads live TUI app-state snapshots to
+  render model, MCP, and task rows in the `/status` menu.
+- `runtime/tests/commands/skills.test.ts` covers MCP-derived skills, formatting,
+  filtering, and project skill creation. `runtime/tests/commands/status.test.ts`
+  covers the status dashboard snapshot rows and attention summary.
+
+### Finding
+
+Both command surfaces had local loose object guards that accepted arrays as
+records. Their callers only need plain object app-state payloads; array-shaped
+payloads already degrade to empty/default rows unless custom properties are
+attached, so the shared strict non-array guard is the safer boundary.
+
+### Change
+
+- Replaced the local `/skills` and `/status` app-state record helpers with
+  `runtime/src/utils/record.ts#isRecord`.
+- Preserved scalar display behavior for arrays in `/status` values; only
+  record-shaped app-state parsing became strict.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/commands/skills.test.ts tests/commands/status.test.ts tests/commands/tui-command-list.test.ts tests/commands/command-surface.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Config Migration Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

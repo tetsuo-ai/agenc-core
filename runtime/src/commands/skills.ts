@@ -13,6 +13,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 import type { Session } from "../session/session.js";
+import { isRecord } from "../utils/record.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -54,10 +55,6 @@ interface SkillsFormatOptions {
 const DEFAULT_SKILLS_LIMIT = 8;
 const MAX_SKILL_ROW_WIDTH = 76;
 const DOLLAR_SKILL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_:-]*$/u;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function parseArgs(argsRaw: string): ParsedSkillsArgs {
   const trimmed = argsRaw.trim();
