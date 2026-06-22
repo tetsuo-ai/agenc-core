@@ -231,6 +231,30 @@ export async function listRepoFiles(repoRoot: string): Promise<readonly string[]
   return files;
 }
 
+export type ParsedGitWorktree = {
+  readonly path: string;
+  readonly branch: string | null;
+  readonly head: string | null;
+  readonly detached: boolean;
+  readonly bare: boolean;
+};
+
+export function parseWorktreePorcelain(stdout: string): readonly ParsedGitWorktree[] {
+  return stdout
+    .split(/\n\n+/)
+    .map((block) => block.trim())
+    .filter((block) => block.length > 0)
+    .map((block) => {
+      const lines = block.split(/\r?\n/);
+      return {
+        path: lines.find((line) => line.startsWith("worktree "))?.slice(9) ?? "",
+        branch: lines.find((line) => line.startsWith("branch "))?.slice(7) ?? null,
+        head: lines.find((line) => line.startsWith("HEAD "))?.slice(5) ?? null,
+        detached: lines.includes("detached"),
+        bare: lines.includes("bare"),
+      };
+    });
+}
 
 export function parseStatusPorcelain(stdout: string): {
   readonly branch?: string;

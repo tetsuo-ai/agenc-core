@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Git Worktree Porcelain Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/system/git-tools.ts#repoInventoryTool` parses
+  `git worktree list --porcelain` output for the repo inventory payload.
+- `runtime/src/tools/system/git-tools.ts#gitWorktreeListTool` parses the same
+  porcelain format for the dedicated worktree-list tool.
+- `runtime/src/tools/system/coding-common.ts` now owns the shared worktree
+  porcelain parser next to the existing git status parser.
+- `runtime/tests/tools/system/git-tools.test.ts` covers branch, detached, bare,
+  empty-output, and tool-level worktree-list parsing.
+
+### Finding
+
+Repo inventory and worktree-list both parsed the same git porcelain blocks with
+separate inline `split`/`find` chains. Because the two payloads expose slightly
+different public field names (`worktree` versus `path`), keeping the parsing
+duplicated made it easy for branch/head/detached/bare handling to drift while
+the shape-mapping difference stayed intentional.
+
+### Change
+
+- Added `parseWorktreePorcelain` and a typed `ParsedGitWorktree` result in
+  `coding-common.ts`.
+- Reused the parser from both worktree consumers, preserving `repoInventory`'s
+  historical `worktree` field.
+- Added direct parser coverage and a tool-level `system.gitWorktreeList` check.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/system/git-tools.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Teammate Spawn Flags
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
