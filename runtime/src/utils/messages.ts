@@ -5818,6 +5818,281 @@ export function createToolUseSummaryMessage(
   }
 }
 
+const ORPHANED_TOOL_RESULT_REMOVED_TEXT =
+  '[Orphaned tool result removed due to conversation resume]'
+const INTERRUPTED_TOOL_USE_TEXT = '[Tool use interrupted]'
+
+type PairingRepairResult =
+  | { repaired: false; message: UserMessage }
+  | { repaired: true; message: UserMessage | null }
+
+function isToolResultBlockForPairing(
+  block: ContentBlock | ContentBlockParam,
+): block is ToolResultBlockParam {
+  return (
+    typeof block === 'object' &&
+    'type' in block &&
+    block.type === 'tool_result'
+  )
+}
+
+function stripUnpairedToolResultsFromUserMessage(
+  msg: UserMessage,
+  isFirstOutputMessage: boolean,
+): PairingRepairResult {
+  const content = msg.message.content
+  if (!Array.isArray(content)) {
+    return { repaired: false, message: msg }
+  }
+
+  const stripped = content.filter(block => !isToolResultBlockForPairing(block))
+  if (stripped.length === content.length) {
+    return { repaired: false, message: msg }
+  }
+
+  if (stripped.length > 0) {
+    return {
+      repaired: true,
+      message: {
+        ...msg,
+        message: { ...msg.message, content: stripped },
+      },
+    }
+  }
+
+  if (!isFirstOutputMessage) {
+    return { repaired: true, message: null }
+  }
+
+  return {
+    repaired: true,
+    message: {
+      ...msg,
+      message: {
+        ...msg.message,
+        content: [
+          {
+            type: 'text' as const,
+            text: ORPHANED_TOOL_RESULT_REMOVED_TEXT,
+          },
+        ],
+      },
+    },
+  }
+}
+
+type AssistantPairingNormalization = {
+  message: AssistantMessage
+  repaired: boolean
+  toolUseIds: string[]
+}
+
+function collectServerToolResultIds(
+  content: Array<BetaContentBlock | BetaContentBlockParam>,
+): Set<string> {
+  const serverResultIds = new Set<string>()
+  for (const block of content) {
+    if ('tool_use_id' in block && typeof block.tool_use_id === 'string') {
+      serverResultIds.add(block.tool_use_id)
+    }
+  }
+  return serverResultIds
+}
+
+function normalizeAssistantToolUseContentForPairing(
+  msg: AssistantMessage,
+  allSeenToolUseIds: Set<string>,
+): AssistantPairingNormalization {
+  const serverResultIds = collectServerToolResultIds(msg.message.content)
+  const seenToolUseIds = new Set<string>()
+  let repaired = false
+
+  const finalContent = msg.message.content.filter(
+    (block: BetaContentBlock | BetaContentBlockParam) => {
+      if (block.type === 'tool_use') {
+        if (allSeenToolUseIds.has(block.id)) {
+          repaired = true
+          return false
+        }
+        allSeenToolUseIds.add(block.id)
+        seenToolUseIds.add(block.id)
+      }
+      if (
+        (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') &&
+        !serverResultIds.has((block as { id: string }).id)
+      ) {
+        repaired = true
+        return false
+      }
+      return true
+    },
+  )
+
+  const assistantContentChanged =
+    finalContent.length !== msg.message.content.length
+
+  // Preserve legacy behavior for already-empty assistant content: the general
+  // non-empty assistant pass handles that before pairing validation.
+  if (finalContent.length === 0) {
+    finalContent.push({
+      type: 'text' as const,
+      text: INTERRUPTED_TOOL_USE_TEXT,
+      citations: [],
+    })
+  }
+
+  const message = assistantContentChanged
+    ? {
+        ...msg,
+        message: { ...msg.message, content: finalContent },
+      }
+    : msg
+
+  return {
+    message,
+    repaired,
+    toolUseIds: [...seenToolUseIds],
+  }
+}
+
+type FollowingToolResults = {
+  existingToolResultIds: Set<string>
+  hasDuplicateToolResults: boolean
+}
+
+function collectFollowingToolResultIds(
+  nextMsg: UserMessage | AssistantMessage | undefined,
+): FollowingToolResults {
+  const existingToolResultIds = new Set<string>()
+  let hasDuplicateToolResults = false
+
+  if (nextMsg?.type !== 'user') {
+    return { existingToolResultIds, hasDuplicateToolResults }
+  }
+
+  const content = nextMsg.message.content
+  if (!Array.isArray(content)) {
+    return { existingToolResultIds, hasDuplicateToolResults }
+  }
+
+  for (const block of content) {
+    if (isToolResultBlockForPairing(block)) {
+      const toolResultId = block.tool_use_id
+      if (existingToolResultIds.has(toolResultId)) {
+        hasDuplicateToolResults = true
+      }
+      existingToolResultIds.add(toolResultId)
+    }
+  }
+
+  return { existingToolResultIds, hasDuplicateToolResults }
+}
+
+function createSyntheticToolResultBlocks(
+  missingIds: string[],
+): ToolResultBlockParam[] {
+  return missingIds.map(id => ({
+    type: 'tool_result' as const,
+    tool_use_id: id,
+    content: SYNTHETIC_TOOL_RESULT_PLACEHOLDER,
+    is_error: true,
+  }))
+}
+
+function patchFollowingUserForToolPairing({
+  nextMsg,
+  syntheticBlocks,
+  orphanedIds,
+  hasDuplicateToolResults,
+}: {
+  nextMsg: UserMessage
+  syntheticBlocks: ToolResultBlockParam[]
+  orphanedIds: string[]
+  hasDuplicateToolResults: boolean
+}): UserMessage {
+  let content: (ContentBlockParam | ContentBlock)[] = Array.isArray(
+    nextMsg.message.content,
+  )
+    ? nextMsg.message.content
+    : [{ type: 'text' as const, text: nextMsg.message.content }]
+
+  if (orphanedIds.length > 0 || hasDuplicateToolResults) {
+    const orphanedSet = new Set(orphanedIds)
+    const seenToolResultIds = new Set<string>()
+    content = content.filter(block => {
+      if (isToolResultBlockForPairing(block)) {
+        const toolResultId = block.tool_use_id
+        if (orphanedSet.has(toolResultId)) return false
+        if (seenToolResultIds.has(toolResultId)) return false
+        seenToolResultIds.add(toolResultId)
+      }
+      return true
+    })
+  }
+
+  const patchedContent = [...syntheticBlocks, ...content]
+  if (patchedContent.length > 0) {
+    return {
+      ...nextMsg,
+      message: {
+        ...nextMsg.message,
+        content: patchedContent,
+      },
+    }
+  }
+
+  return createUserMessage({
+    content: NO_CONTENT_MESSAGE,
+    isMeta: true,
+  })
+}
+
+function describeToolResultPairingMessages(
+  messages: (UserMessage | AssistantMessage)[],
+): string[] {
+  return messages.map((message, index) => {
+    if (message.type === 'assistant') {
+      const toolUses = message.message.content
+        .filter(
+          (block: ContentBlock | ContentBlockParam) =>
+            block.type === 'tool_use',
+        )
+        .map(
+          (block: ContentBlock | ContentBlockParam) =>
+            (block as ToolUseBlock | ToolUseBlockParam).id,
+        )
+      const serverToolUses = message.message.content
+        .filter(
+          (block: BetaContentBlock | BetaContentBlockParam) =>
+            block.type === 'server_tool_use' || block.type === 'mcp_tool_use',
+        )
+        .map(
+          (block: BetaContentBlock | BetaContentBlockParam) =>
+            (block as { id: string }).id,
+        )
+      const parts = [
+        `id=${message.message.id}`,
+        `tool_uses=[${toolUses.join(',')}]`,
+      ]
+      if (serverToolUses.length > 0) {
+        parts.push(`server_tool_uses=[${serverToolUses.join(',')}]`)
+      }
+      return `[${index}] assistant(${parts.join(', ')})`
+    }
+
+    if (message.type === 'user' && Array.isArray(message.message.content)) {
+      const toolResults = message.message.content
+        .filter(isToolResultBlockForPairing)
+        .map((block: ToolResultBlockParam) => block.tool_use_id)
+      if (toolResults.length > 0) {
+        return `[${index}] user(tool_results=[${toolResults.join(',')}])`
+      }
+    }
+
+    return `[${index}] ${message.type}`
+  })
+}
+
 /**
  * Defensive validation: ensure tool_use/tool_result pairing is correct.
  *
@@ -5863,54 +6138,22 @@ export function ensureToolResultPairing(
       // unexpected tool_use_id").
       if (
         msg.type === 'user' &&
-        Array.isArray(msg.message.content) &&
         result.at(-1)?.type !== 'assistant'
       ) {
-        const stripped = msg.message.content.filter(
-          (block: ContentBlock | ContentBlockParam) =>
-            !(
-              typeof block === 'object' &&
-              'type' in block &&
-              block.type === 'tool_result'
-            ),
+        const repair = stripUnpairedToolResultsFromUserMessage(
+          msg,
+          result.length === 0,
         )
-        if (stripped.length !== msg.message.content.length) {
+        if (repair.repaired) {
           repaired = true
-          // If stripping emptied the message and nothing has been pushed yet,
-          // keep a placeholder so the payload still starts with a user
-          // message (normalizeMessagesForAPI runs before us, so messages[1]
-          // is an assistant — dropping messages[0] entirely would yield a
-          // payload starting with assistant, a different 400).
-          const content =
-            stripped.length > 0
-              ? stripped
-              : result.length === 0
-                ? [
-                    {
-                      type: 'text' as const,
-                      text: '[Orphaned tool result removed due to conversation resume]',
-                    },
-                  ]
-                : null
-          if (content !== null) {
-            result.push({
-              ...msg,
-              message: { ...msg.message, content },
-            })
+          if (repair.message !== null) {
+            result.push(repair.message)
           }
           continue
         }
       }
       result.push(msg)
       continue
-    }
-
-    // Collect server-side tool result IDs (*_tool_result blocks have tool_use_id).
-    const serverResultIds = new Set<string>()
-    for (const c of msg.message.content) {
-      if ('tool_use_id' in c && typeof c.tool_use_id === 'string') {
-        serverResultIds.add(c.tool_use_id)
-      }
     }
 
     // Dedupe tool_use blocks by ID. Checks against the cross-message
@@ -5925,52 +6168,18 @@ export function ensureToolResultPairing(
     // If the stream was interrupted before the result arrived, the use block
     // has no matching *_tool_result and the API rejects with e.g. "advisor
     // tool use without corresponding advisor_tool_result".
-    const seenToolUseIds = new Set<string>()
-    const finalContent = msg.message.content.filter((
-      block: BetaContentBlock | BetaContentBlockParam,
-    ) => {
-      if (block.type === 'tool_use') {
-        if (allSeenToolUseIds.has(block.id)) {
-          repaired = true
-          return false
-        }
-        allSeenToolUseIds.add(block.id)
-        seenToolUseIds.add(block.id)
-      }
-      if (
-        (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') &&
-        !serverResultIds.has((block as { id: string }).id)
-      ) {
-        repaired = true
-        return false
-      }
-      return true
-    })
-
-    const assistantContentChanged =
-      finalContent.length !== msg.message.content.length
-
-    // If stripping orphaned server tool uses empties the content array,
-    // insert a placeholder so the API doesn't reject empty assistant content.
-    if (finalContent.length === 0) {
-      finalContent.push({
-        type: 'text' as const,
-        text: '[Tool use interrupted]',
-        citations: [],
-      })
+    const assistantNormalization = normalizeAssistantToolUseContentForPairing(
+      msg,
+      allSeenToolUseIds,
+    )
+    if (assistantNormalization.repaired) {
+      repaired = true
     }
 
-    const assistantMsg = assistantContentChanged
-      ? {
-          ...msg,
-          message: { ...msg.message, content: finalContent },
-        }
-      : msg
-
-    result.push(assistantMsg)
+    result.push(assistantNormalization.message)
 
     // Collect tool_use IDs from this assistant message
-    const toolUseIds = [...seenToolUseIds]
+    const toolUseIds = assistantNormalization.toolUseIds
 
     // Check the next message for matching tool_results. Also track duplicate
     // tool_result blocks (same tool_use_id appearing twice) — for transcripts
@@ -5981,27 +6190,8 @@ export function ensureToolResultPairing(
     // second tr_X, the API rejects with a duplicate-tool_result 400 and the
     // session stays stuck.
     const nextMsg = messages[i + 1]
-    const existingToolResultIds = new Set<string>()
-    let hasDuplicateToolResults = false
-
-    if (nextMsg?.type === 'user') {
-      const content = nextMsg.message.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (
-            typeof block === 'object' &&
-            'type' in block &&
-            block.type === 'tool_result'
-          ) {
-            const trId = (block as ToolResultBlockParam).tool_use_id
-            if (existingToolResultIds.has(trId)) {
-              hasDuplicateToolResults = true
-            }
-            existingToolResultIds.add(trId)
-          }
-        }
-      }
-    }
+    const { existingToolResultIds, hasDuplicateToolResults } =
+      collectFollowingToolResultIds(nextMsg)
 
     // Find missing tool_result IDs (forward direction: tool_use without tool_result)
     const toolUseIdSet = new Set(toolUseIds)
@@ -6022,75 +6212,22 @@ export function ensureToolResultPairing(
 
     repaired = true
 
-    // Build synthetic error tool_result blocks for missing IDs
-    const syntheticBlocks: ToolResultBlockParam[] = missingIds.map(id => ({
-      type: 'tool_result' as const,
-      tool_use_id: id,
-      content: SYNTHETIC_TOOL_RESULT_PLACEHOLDER,
-      is_error: true,
-    }))
+    const syntheticBlocks = createSyntheticToolResultBlocks(missingIds)
 
     if (nextMsg?.type === 'user') {
-      // Next message is already a user message - patch it
-      let content: (ContentBlockParam | ContentBlock)[] = Array.isArray(
-        nextMsg.message.content,
+      const patchedNext = patchFollowingUserForToolPairing({
+        nextMsg,
+        syntheticBlocks,
+        orphanedIds,
+        hasDuplicateToolResults,
+      })
+      i++
+      // Prepending synthetics to existing content can produce a
+      // [tool_result, text] sibling the smoosh inside normalize never saw
+      // (pairing runs after normalize). Re-smoosh just this one message.
+      result.push(
+        false ? smooshSystemReminderSiblings([patchedNext])[0]! : patchedNext,
       )
-        ? nextMsg.message.content
-        : [{ type: 'text' as const, text: nextMsg.message.content }]
-
-      // Strip orphaned tool_results and dedupe duplicate tool_result IDs
-      if (orphanedIds.length > 0 || hasDuplicateToolResults) {
-        const orphanedSet = new Set(orphanedIds)
-        const seenTrIds = new Set<string>()
-        content = content.filter(block => {
-          if (
-            typeof block === 'object' &&
-            'type' in block &&
-            block.type === 'tool_result'
-          ) {
-            const trId = (block as ToolResultBlockParam).tool_use_id
-            if (orphanedSet.has(trId)) return false
-            if (seenTrIds.has(trId)) return false
-            seenTrIds.add(trId)
-          }
-          return true
-        })
-      }
-
-      const patchedContent = [...syntheticBlocks, ...content]
-
-      // If content is now empty after stripping orphans, skip the user message
-      if (patchedContent.length > 0) {
-        const patchedNext: UserMessage = {
-          ...nextMsg,
-          message: {
-            ...nextMsg.message,
-            content: patchedContent,
-          },
-        }
-        i++
-        // Prepending synthetics to existing content can produce a
-        // [tool_result, text] sibling the smoosh inside normalize never saw
-        // (pairing runs after normalize). Re-smoosh just this one message.
-        result.push(
-          false
-            ? smooshSystemReminderSiblings([patchedNext])[0]!
-            : patchedNext,
-        )
-      } else {
-        // Content is empty after stripping orphaned tool_results. We still
-        // need a user message here to maintain role alternation — otherwise
-        // the assistant placeholder we just pushed would be immediately
-        // followed by the NEXT assistant message, which the API rejects with
-        // a role-alternation 400 (not the duplicate-id 400 we handle).
-        i++
-        result.push(
-          createUserMessage({
-            content: NO_CONTENT_MESSAGE,
-            isMeta: true,
-          }),
-        )
-      }
     } else {
       // No user message follows - insert a synthetic user message (only if missing IDs)
       if (syntheticBlocks.length > 0) {
@@ -6105,43 +6242,7 @@ export function ensureToolResultPairing(
   }
 
   if (repaired) {
-    // Capture diagnostic info to help identify root cause
-    const messageTypes = messages.map((m, idx) => {
-      if (m.type === 'assistant') {
-        const toolUses = m.message.content
-          .filter((b: ContentBlock | ContentBlockParam) => b.type === 'tool_use')
-          .map((b: ContentBlock | ContentBlockParam) => (b as ToolUseBlock | ToolUseBlockParam).id)
-        const serverToolUses = m.message.content
-          .filter(
-            (b: BetaContentBlock | BetaContentBlockParam) =>
-              b.type === 'server_tool_use' || b.type === 'mcp_tool_use',
-          )
-          .map((b: BetaContentBlock | BetaContentBlockParam) => (b as { id: string }).id)
-        const parts = [
-          `id=${m.message.id}`,
-          `tool_uses=[${toolUses.join(',')}]`,
-        ]
-        if (serverToolUses.length > 0) {
-          parts.push(`server_tool_uses=[${serverToolUses.join(',')}]`)
-        }
-        return `[${idx}] assistant(${parts.join(', ')})`
-      }
-      if (m.type === 'user' && Array.isArray(m.message.content)) {
-        const toolResults = m.message.content
-          .filter(
-            (b: ContentBlock | ContentBlockParam) =>
-              typeof b === 'object' && 'type' in b && b.type === 'tool_result',
-          )
-          .map(
-            (b: ContentBlock | ContentBlockParam) =>
-              (b as ToolResultBlockParam).tool_use_id,
-          )
-        if (toolResults.length > 0) {
-          return `[${idx}] user(tool_results=[${toolResults.join(',')}])`
-        }
-      }
-      return `[${idx}] ${m.type}`
-    })
+    const messageTypes = describeToolResultPairingMessages(messages)
 
     if (getStrictToolResultPairing()) {
       throw new Error(

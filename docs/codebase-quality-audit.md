@@ -4,6 +4,65 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Tool Result Pairing Repair Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/turn-compat.ts#runTurnStreamCompat` converts phase
+  events into legacy messages and runs `normalizeMessagesForAPI` before SDK /
+  compatibility event emission.
+- `runtime/src/services/vcr.ts#recordRequest` calls `normalizeMessagesForAPI`
+  before recording model-bound VCR payloads.
+- `runtime/src/services/api/anthropic.ts` runs `normalizeMessagesForAPI` and
+  then `ensureToolResultPairing` before sending Anthropic-compatible requests.
+- `runtime/src/phases/stream-model.ts`, `runtime/src/phases/execute-tools.ts`,
+  and `runtime/src/recovery/terminal-tool-result.ts` are upstream producers of
+  tool-use and synthetic terminal tool-result events that this repair pass must
+  tolerate after resume, compaction, fallback, or interruption.
+- `runtime/src/utils/messages.ts#ensureToolResultPairing` validates and repairs
+  duplicate tool-use IDs, orphaned tool results, missing tool results, and
+  interrupted server-side tool uses.
+- `runtime/tests/conversation/messages-core.test.ts` covers duplicate
+  assistant tool-use blocks, duplicate tool-result blocks, orphaned leading
+  tool results, unresolved server tool uses, and valid server tool-use/result
+  pairs.
+
+### Finding
+
+`ensureToolResultPairing` was still a single 327-line repair function mixing
+five distinct concerns: user-message orphan stripping, assistant tool-use
+deduplication, interrupted server-tool cleanup, following user-message
+patching, and strict-mode diagnostic formatting. The repair policy is
+load-bearing because it prevents provider 400s after resume, compaction,
+fallback, or aborted tool execution. Keeping every branch inline made it hard
+to audit whether the user-message and assistant-message paths were truly
+orthogonal.
+
+### Change
+
+- Added focused helpers for tool-result block detection, unpaired user
+  tool-result stripping, assistant tool-use content normalization, following
+  user-message tool-result collection, synthetic tool-result construction,
+  following user-message patching, and repair diagnostic formatting.
+- Preserved strict-mode behavior: repairs are still detected first and strict
+  mode still throws before logging a repaired request.
+- Kept existing repair strings and placeholder behavior unchanged, including
+  the conversation-resume orphan placeholder and interrupted tool-use
+  placeholder.
+- Confirmed `ensureToolResultPairing` now measures 153 lines after extraction.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Compatibility Attachment Normalizers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
