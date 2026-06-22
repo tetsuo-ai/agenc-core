@@ -4,6 +4,52 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Bash Pending Classifier Spread
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/BashTool/bashPermissions.ts#bashToolHasPermission` has
+  multiple ask/passthrough return branches that attach
+  `pendingClassifierCheck` when `BASH_CLASSIFIER` is enabled.
+- `runtime/src/tools/BashTool/bashPermissions.ts#buildPendingClassifierCheck`
+  gates pending classifier metadata by classifier availability, permission
+  mode, and prompt-allow descriptions.
+- `runtime/src/types/permissions.ts#PendingClassifierCheck` defines the
+  metadata shape consumed by asynchronous permission approval paths.
+- `runtime/tests/tools/BashTool/bashPermissions.test.ts` and
+  `runtime/tests/permissions/bash.test.ts` cover Bash permission behavior in
+  the runtime and compatibility permission surfaces.
+
+### Finding
+
+Eight `bashToolHasPermission` branches duplicated the same
+`feature('BASH_CLASSIFIER')` spread and `buildPendingClassifierCheck(...)`
+payload. This file is already close to Bun's feature DCE complexity cliff, so
+the repeated branch-local shape made future edits easier to drift and harder to
+review.
+
+### Change
+
+- Added `pendingBashClassifierCheckSpread` to centralize the feature-gated
+  spread object.
+- Preserved the previous object shape exactly: feature off returns `{}`, while
+  feature on returns `{ pendingClassifierCheck: maybeUndefined }`.
+- Replaced all eight repeated pending-classifier spreads in
+  `bashToolHasPermission`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/permissions/bash.test.ts --reporter=dot`
+- `npm --workspace=@tetsuo-ai/runtime exec -- bun test tests/tools/BashTool/bashPermissions.test.ts`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Isolated PowerShell Parse-Failed Deny Scan
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
