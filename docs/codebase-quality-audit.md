@@ -4,6 +4,59 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared LLM Content Conversion Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/run-turn.ts#toAgenCRuntimeMessages` projects
+  `LLMMessage` history into compact-service runtime messages before
+  microcompact and auto-compact paths.
+- `runtime/src/session/run-turn.ts#fromAgenCRuntimeMessages` rehydrates runtime
+  compact output back into `LLMMessage` history before subsequent sampling.
+- `runtime/src/phases/post-sample-recovery.ts#toCollapseRuntimeMessages` and
+  `#fromCollapseRuntimeMessages` perform the same projection during
+  prompt-too-long context-collapse recovery.
+- `runtime/src/commands/session-compact.ts#toAgenCRuntimeMessages` and
+  `#fromAgenCRuntimeMessages` use the same conversion for manual `/compact`
+  and `/context` fallback counting paths.
+- `runtime/tests/session/run-turn.compact-contract.test.ts`,
+  `runtime/tests/phases/post-sample-recovery.compact-contract.test.ts`,
+  `runtime/tests/runtime-session.compact-contract.test.ts`, and
+  `runtime/tests/commands/session-compact-context.test.ts` cover the
+  caller-level compact contracts.
+
+### Finding
+
+Three hot compact/recovery paths carried identical private helpers for cloning
+LLM content, converting provider-compatible `image_url` blocks into runtime
+`image` URL blocks, restoring runtime image blocks back to `image_url`, and
+cloning PDF document parts with fallback metadata. A future copy drift in this
+logic would corrupt multimodal history differently depending on whether the
+turn was auto-compacted, manually compacted, or collapsed after a provider
+prompt-too-long response.
+
+### Change
+
+- Added `runtime/src/llm/content-conversion.ts` with shared helpers for LLM
+  content cloning and runtime content projection.
+- Replaced the duplicate helper clusters in run-turn, post-sample recovery,
+  and `/compact` command code.
+- Added direct unit coverage for provider-compatible images, runtime image
+  rehydration, PDF document fallback metadata, text-only runtime collapse, and
+  legacy fallback behavior for invalid content values.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/llm/content-conversion.test.ts tests/runtime-session.compact-contract.test.ts tests/commands/session-compact-context.test.ts tests/phases/post-sample-recovery.compact-contract.test.ts tests/phases/post-sample-recovery.token-budget-cap.test.ts tests/session/run-turn.compact-contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: State SQL Placeholder Helper
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
