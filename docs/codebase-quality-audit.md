@@ -4,6 +4,57 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared API Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/api/toolArgumentNormalization.ts` parses provider
+  tool-call argument strings, preserves structured JSON object arguments,
+  wraps plain strings for known tools, and leaves arrays/scalars for schema
+  validation.
+- `runtime/src/services/api/openAiCodeOAuthShared.ts` normalizes OAuth token
+  exchange JSON payloads before extracting access, refresh, and id tokens.
+- `runtime/src/services/api/openAiCodeTransform.ts` parses ProviderCode SSE
+  JSON payloads, reads nested response records, detects completed
+  function-call output, filters malformed completed response entries, and
+  converts output text/function calls back to provider message content.
+- `runtime/tests/services/api/toolArgumentNormalization.test.ts`,
+  `runtime/tests/services/api/openAiCodeTransform.test.ts`,
+  `runtime/tests/services/api/openAiCodeOAuthShared.test.ts`,
+  `runtime/tests/services/api/providerConfig.github.test.ts`, and
+  `runtime/tests/services/api/providerConfig.openAiCodeSecureStorage.test.ts`
+  cover argument normalization, malformed SSE payloads, completed response
+  filtering, token exchange failure handling, and ProviderCode credential
+  resolution.
+
+### Finding
+
+The API transform, OAuth shared helper, and tool-argument normalizer each
+carried local strict record guards equivalent to `utils/record.ts`. They gate
+untrusted JSON payloads before extracting fields or deciding whether arrays and
+scalars should be skipped, passed through, or rejected by later validation.
+
+### Change
+
+- Replaced local `isRecord` / `asRecord` helpers in the API modules with the
+  shared `runtime/src/utils/record.ts` utility.
+- Preserved non-object SSE skipping, completed-response malformed-entry
+  filtering, JSON literal pass-through for tool arguments, and OAuth token
+  payload fallback behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- bun test tests/services/api/toolArgumentNormalization.test.ts tests/services/api/openAiCodeTransform.test.ts`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/services/api/openAiCodeOAuthShared.test.ts tests/services/api/providerConfig.github.test.ts tests/services/api/providerConfig.openAiCodeSecureStorage.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Token Estimation Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

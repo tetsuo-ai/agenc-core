@@ -3,6 +3,7 @@ import { buildproviderUsageFromRawUsage } from './cacheMetrics.js'
 import { compressToolHistory } from './compressToolHistory.js'
 import { fetchWithProxyRetry } from './fetchWithProxyRetry.js'
 import { stableStringify } from '../../utils/stableStringify.js'
+import { isRecord } from '../../utils/record.js'
 import type {
   ResolvedProviderCodeCredentials,
   ResolvedProviderRequest,
@@ -78,10 +79,6 @@ type ResponsesTool = {
 type ResponsesSseEvent = {
   event: string
   data: Record<string, unknown>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function recordField(
