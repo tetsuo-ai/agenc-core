@@ -50,6 +50,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
@@ -237,11 +238,6 @@ export interface FileReadToolConfig {
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
-
-/** Runtime-shape error envelope: plain text body, isError flag. */
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
-}
 
 /** Coerce optional positive integers (model may emit ints as strings). */
 function parsePositiveIntArg(

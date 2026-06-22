@@ -19,6 +19,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
@@ -70,10 +71,6 @@ interface ApplyPatchToolInput extends ToolExecutionInjectedArgs {
   readonly input?: unknown;
   readonly cwd?: unknown;
   readonly [SESSION_ID_ARG]?: unknown;
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
 }
 
 function asNonEmptyString(value: unknown): string | undefined {

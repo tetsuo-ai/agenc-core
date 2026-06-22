@@ -4,6 +4,45 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Plain Text Tool Error Result
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/apply-patch/tool.ts` and the system `Edit`, `Read`,
+  `Write`, `Grep`, planning, and worktree tools return plain-text tool errors
+  through the same `ToolResult` envelope.
+- `runtime/src/tools/results.ts` now owns the shared plain-text error result
+  helper.
+- `runtime/tests/tools/results.test.ts` pins the helper's envelope shape.
+
+### Finding
+
+Seven tools carried identical local helpers returning
+`{ content: message, isError: true }`. That shape is part of the model-facing
+tool contract for these legacy/plain-text tools, while nearby code-intelligence
+and unified-exec tools intentionally use JSON error envelopes. The repeated
+plain-text helpers made it easy to accidentally drift the common envelope or
+confuse it with the JSON variant.
+
+### Change
+
+- Added `plainTextErrorToolResult` in `runtime/src/tools/results.ts`.
+- Replaced the seven exact local helper bodies with an import alias preserving
+  existing `errorResult(...)` call sites.
+- Left JSON-encoded and metadata-capable error helpers untouched.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/results.test.ts tests/tools/apply-patch/tool.test.ts tests/tools/system/file-edit.test.ts tests/tools/system/file-read.test.ts tests/tools/system/file-write.test.ts tests/tools/system/grep.test.ts tests/tools/system/worktree.test.ts tests/tools/runtimes/runtime.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Runtime Path Target Resolution
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

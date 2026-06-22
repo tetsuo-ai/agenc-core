@@ -54,6 +54,7 @@ import {
 } from "../../planning/plan-files.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-level worktree state — module singleton keyed by AgenC
@@ -197,10 +198,6 @@ If called outside an EnterWorktree session, the tool is a **no-op**: it reports 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
-}
 
 function okResult(data: Record<string, unknown>, message: string): ToolResult {
   return {

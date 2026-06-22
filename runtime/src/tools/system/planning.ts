@@ -43,6 +43,7 @@ import {
 } from "../../planning/exit-plan-approval.js";
 import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 
 type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -92,10 +93,6 @@ function textResult(content: string, metadata?: Record<string, unknown>): ToolRe
     content,
     ...(metadata !== undefined ? { metadata } : {}),
   };
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
 }
 
 function metadata(

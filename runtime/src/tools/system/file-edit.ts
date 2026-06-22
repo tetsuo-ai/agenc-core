@@ -48,6 +48,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
@@ -245,10 +246,6 @@ function preserveQuoteStyle(
 export interface FileEditToolConfig {
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
