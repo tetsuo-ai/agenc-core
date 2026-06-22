@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Legacy Tool Runtime Argument Record Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/phases/_deps/tool-runtime.ts#safeParseArgs` parses tool-call
+  arguments before the legacy phase-dependency executor invokes PreToolUse hooks,
+  permission arbitration, approval preview construction, and final dispatch.
+- `runtime/src/phases/_deps/tool-runtime.ts#runOne` passes the parsed args to
+  hook observers and re-stringifies the effective args for dispatch.
+- `runtime/tests/phases/tool-runtime-deps.test.ts` now exercises the direct
+  legacy executor surface without going through the production
+  `execute-tools` executor.
+
+### Finding
+
+The legacy phase-dependency executor had the same permissive
+`typeof parsed === "object"` cast as the production streaming executor. A
+model-supplied array JSON payload could therefore reach PreToolUse hooks as an
+array with numeric keys even though the downstream contract is
+`Record<string, unknown>`.
+
+### Change
+
+- Replaced the local permissive cast with `runtime/src/utils/record.ts#asRecord`.
+- Added a focused regression proving array-shaped model arguments are normalized
+  to `{}` before legacy PreToolUse hooks run.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/phases/tool-runtime-deps.test.ts tests/phases/execute-tools.test.ts --reporter=dot`
+
 ## 2026-06-22: Streaming Tool Executor Argument Record Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
