@@ -287,6 +287,33 @@ describe("configCommand — reload", () => {
     }
   });
 
+  it("ignores array-shaped MCP manager services after reload", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      const store = new ConfigStore({ home: tmp });
+      const refreshFromConfig = vi.fn().mockResolvedValue({
+        configuredServers: ["github"],
+        requiredServers: ["github"],
+      });
+      const session = stubSession();
+      (session as unknown as StubSession).services = {
+        mcpManager: Object.assign(["spoof"], { refreshFromConfig }),
+      };
+
+      const r = await configCommand.execute(
+        stubCtx({ configStore: store, argsRaw: "reload", home: tmp, session }),
+      );
+
+      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
+      expect(refreshFromConfig).not.toHaveBeenCalled();
+      expect(r.text).toContain("Config reloaded");
+      expect(r.text).not.toContain("MCP refreshed");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("re-applies the reloaded config to the daemon and folds in its summary", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
@@ -633,6 +660,21 @@ describe("configCommand — services.configStore fallback", () => {
     const r = await configCommand.execute(stubCtx({ session, argsRaw: "get model" }));
     if (r.kind !== "text") throw new Error("expected text");
     expect(r.text).toBe("via-services");
+  });
+
+  it("ignores array-shaped session.services.configStore fallback", async () => {
+    const current = vi.fn(() => makeStore({ model: "spoofed" }).current());
+    const session = stubSession();
+    (session as unknown as { services: Record<string, unknown> }).services = {
+      configStore: Object.assign(["spoof"], { current }),
+    };
+
+    const r = await configCommand.execute(
+      stubCtx({ session, argsRaw: "get model" }),
+    );
+
+    expect(r.kind).toBe("error");
+    expect(current).not.toHaveBeenCalled();
   });
 });
 

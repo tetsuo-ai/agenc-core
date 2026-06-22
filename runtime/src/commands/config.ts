@@ -38,6 +38,7 @@ import {
   agencHomeFromCommandContext,
   getConfigFilePath,
 } from "./config-context.js";
+import { asRecord } from "../utils/record.js";
 
 export { getConfigFilePath } from "./config-context.js";
 
@@ -50,11 +51,16 @@ export { getConfigFilePath } from "./config-context.js";
  * `session.services.configStore`; both entry paths wire the same store.
  */
 function findConfigStore(ctx: SlashCommandContext): ConfigStore | null {
-  if (ctx.configStore) return ctx.configStore;
-  const services = ctx.session.services as unknown as {
-    configStore?: ConfigStore | null;
-  };
-  return services?.configStore ?? null;
+  const directConfigStore = ctx.configStore;
+  if (
+    directConfigStore !== undefined &&
+    asRecord(directConfigStore) !== null
+  ) {
+    return directConfigStore;
+  }
+  const services = asRecord(ctx.session.services);
+  const configStore = services?.configStore;
+  return asRecord(configStore) !== null ? (configStore as ConfigStore) : null;
 }
 
 /**
@@ -79,13 +85,12 @@ function daemonApplyConfigFn(
       reload?: boolean;
     }) => Promise<DaemonApplyConfigResult>)
   | null {
-  const fn = (ctx.session as unknown as {
-    applyDaemonConfig?: (params: {
-      profile?: string;
-      reload?: boolean;
-    }) => Promise<DaemonApplyConfigResult>;
-  }).applyDaemonConfig;
-  return typeof fn === "function" ? fn.bind(ctx.session) : null;
+  const sessionRecord = asRecord(ctx.session);
+  const fn = sessionRecord?.applyDaemonConfig;
+  return typeof fn === "function"
+    ? (params) =>
+        fn.call(ctx.session, params) as Promise<DaemonApplyConfigResult>
+    : null;
 }
 
 function errorMessage(error: unknown): string {
@@ -218,14 +223,17 @@ async function refreshMcpAfterConfigReload(
   session: Session,
   next: AgenCConfig,
 ): Promise<string> {
-  const services = session.services as {
-    mcpManager?: Session["services"]["mcpManager"];
-  };
-  const refresh = services.mcpManager?.refreshFromConfig;
+  const services = asRecord(session.services);
+  const mcpManager = services?.mcpManager;
+  const mcpManagerRecord = asRecord(mcpManager);
+  const refresh = mcpManagerRecord?.refreshFromConfig;
   if (typeof refresh !== "function") {
     return "";
   }
-  const result = await refresh(next);
+  const result = (await refresh.call(mcpManager, next)) as {
+    readonly configuredServers: readonly unknown[];
+    readonly requiredServers: readonly unknown[];
+  };
   return `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
 }
 

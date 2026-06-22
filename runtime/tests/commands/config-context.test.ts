@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import {
@@ -65,6 +65,28 @@ describe("readCommandConfig", () => {
 
   it("returns undefined when neither config store is reachable", () => {
     expect(readCommandConfig(contextWithStores({}))).toBeUndefined();
+  });
+
+  it("ignores array-shaped config store surfaces", () => {
+    const directCurrent = vi.fn(() => configWithModel("direct-spoof"));
+    const sessionCurrent = vi.fn(() => configWithModel("session-spoof"));
+    const ctx = {
+      ...contextWithStores({}),
+      configStore: Object.assign(["direct"], {
+        current: directCurrent,
+      }) as unknown as SlashCommandContext["configStore"],
+      session: {
+        services: {
+          configStore: Object.assign(["session"], {
+            current: sessionCurrent,
+          }),
+        },
+      } as unknown as SlashCommandContext["session"],
+    };
+
+    expect(readCommandConfig(ctx)).toBeUndefined();
+    expect(directCurrent).not.toHaveBeenCalled();
+    expect(sessionCurrent).not.toHaveBeenCalled();
   });
 });
 

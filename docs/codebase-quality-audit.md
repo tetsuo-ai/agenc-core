@@ -4,6 +4,43 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Config Command Service Surface Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/config.ts#findConfigStore` resolves the `/config`
+  command's direct store or `session.services.configStore` fallback.
+- `runtime/src/commands/config.ts#daemonApplyConfigFn` detects the daemon TUI
+  bridge forwarder for `/config reload` and `/config profile`.
+- `runtime/src/commands/config.ts#refreshMcpAfterConfigReload` refreshes MCP
+  manager state after a config reload.
+- `runtime/src/commands/config-context.ts#readCommandConfig` feeds config
+  snapshots into model/provider menu command surfaces.
+
+### Finding
+
+Config command helpers accepted loose service values without validating their
+record shape. Array-shaped config stores, daemon bridge forwarders, or MCP
+manager services with spoofed methods could be invoked by `/config` and related
+menu readers.
+
+### Change
+
+- Required non-array record shape before accepting direct or service-backed
+  config stores.
+- Required non-array record shape before calling daemon bridge and MCP manager
+  methods.
+- Preserved the direct context store precedence over the session-service
+  fallback.
+- Added regressions proving array-shaped config stores and MCP managers are
+  ignored instead of invoked.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/config.test.ts tests/commands/config-context.test.ts --reporter=dot`
+
 ## 2026-06-22: Clear Command Reset Surface Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
