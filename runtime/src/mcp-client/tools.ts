@@ -54,6 +54,7 @@ import {
   encodeMcpToolNameForWire,
   isProviderToolNameSafe,
 } from "../llm/wire/mcp-tool-naming.js";
+import { asRecord } from "../utils/record.js";
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -399,12 +400,6 @@ function safeStringifyMCPPayload(value: unknown, fallback = ""): string {
   } catch {
     return String(value);
   }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }
 
 function normalizeMCPToolDescriptor(raw: unknown): MCPToolDescriptor | null {

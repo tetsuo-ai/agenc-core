@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared MCP Tool Bridge Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/mcp-client/tools.ts` normalizes MCP tool descriptors, sanitizes
+  model-facing schemas, renders MCP tool-call content, normalizes tool-call
+  responses, and builds approval prompt metadata for MCP client tools.
+- `runtime/tests/mcp-client/tools.test.ts` covers malformed tool descriptors,
+  unsafe tool names, schema metadata stripping, oversized schemas, malformed
+  call results, observer wiring, filters, and approval flows.
+- `runtime/tests/services/mcp/client.test.ts` covers service-level MCP client
+  tool mapping and schema sanitization behavior through the same bridge path.
+
+### Finding
+
+The MCP tool bridge carried a local strict `asRecord` helper with the same
+nullable non-array object contract as `utils/record.ts#asRecord`. The helper
+backs untrusted MCP descriptor parsing, result parsing, and approval metadata
+reads. The adjacent schema sanitizer intentionally still walks any object after
+handling arrays, so that broader traversal should not be replaced by a strict
+record predicate.
+
+### Change
+
+- Replaced the local MCP tool bridge `asRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved schema traversal, malformed payload rendering, approval prompt
+  metadata, and model-facing schema fallback behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/mcp-client/tools.test.ts tests/services/mcp/client.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared MCP Resource/Prompt Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
