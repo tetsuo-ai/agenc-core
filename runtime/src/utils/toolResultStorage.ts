@@ -16,6 +16,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
+import { isRecord } from './record.js'
 import { getProjectDir } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
 
@@ -466,10 +467,6 @@ type ToolResultBlockRecord = UnknownRecord & {
   type: 'tool_result'
   tool_use_id: string
   content: NonNullable<ToolResultBlockParam['content']>
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null
 }
 
 function userContentBlocks(message: Message): readonly unknown[] | undefined {

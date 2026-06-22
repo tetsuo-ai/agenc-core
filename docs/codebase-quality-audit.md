@@ -4,6 +4,36 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Tool Result Storage Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/toolResultStorage.ts` walks persisted transcript messages
+  to find user `tool_result` blocks, assistant `tool_use` blocks, and
+  previously persisted replacement records.
+- `runtime/tests/utils/toolResultStorage.test.ts` covers malformed transcript
+  blocks that must be ignored while valid tool results are replaced.
+
+### Finding
+
+The transcript shape reader used a local loose record guard that accepted
+arrays. An array with synthetic `tool_result` fields could be treated as a
+valid transcript block, even though the code only needs non-array object
+records for message envelopes and content blocks.
+
+### Change
+
+- Replaced the local tool-result storage `isRecord` helper with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a regression case that array-shaped `tool_result` blocks are ignored.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- bun test tests/utils/toolResultStorage.test.ts`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared PowerShell Parser Error Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

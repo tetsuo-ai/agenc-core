@@ -62,6 +62,12 @@ test('applyToolResultReplacementsToMessages is idempotent when messages are alre
 })
 
 test('applyToolResultReplacementsToMessages ignores malformed transcript blocks', () => {
+  const arrayShapedToolResult = Object.assign([], {
+    type: 'tool_result',
+    tool_use_id: 'array-tool-result',
+    content: 'must remain untouched',
+    is_error: false,
+  })
   const validToolResult = {
     type: 'tool_result',
     tool_use_id: 'tool-1',
@@ -77,6 +83,7 @@ test('applyToolResultReplacementsToMessages ignores malformed transcript blocks'
     { type: 'tool_result', tool_use_id: 123, content: 'bad id' },
     { type: 'tool_result', tool_use_id: 'bad-content', content: { raw: true } },
     { type: 'tool_result', tool_use_id: 'bad-text', content: [{ type: 'text' }] },
+    arrayShapedToolResult,
     validToolResult,
   ]
   const replacement =
@@ -88,19 +95,21 @@ test('applyToolResultReplacementsToMessages ignores malformed transcript blocks'
       ['tool-1', replacement],
       ['bad-content', 'must not be read'],
       ['bad-text', 'must not be read'],
+      ['array-tool-result', 'must not be read'],
     ]),
   )
 
   const blocks = next[0]!.message.content as unknown[]
   expect(next[0]).not.toBe(message)
-  expect(blocks.slice(0, 5)).toEqual([
+  expect(blocks.slice(0, 6)).toEqual([
     null,
     'loose text block',
     { type: 'tool_result', tool_use_id: 123, content: 'bad id' },
     { type: 'tool_result', tool_use_id: 'bad-content', content: { raw: true } },
     { type: 'tool_result', tool_use_id: 'bad-text', content: [{ type: 'text' }] },
+    arrayShapedToolResult,
   ])
-  expect((blocks[5] as { content: unknown }).content).toBe(replacement)
+  expect((blocks[6] as { content: unknown }).content).toBe(replacement)
   expect(next[0]!.toolUseResult).toBeUndefined()
 })
 
