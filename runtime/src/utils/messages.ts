@@ -102,6 +102,10 @@ type HookAttachmentWithName = Exclude<
   HookPermissionDecisionAttachment
 >
 type TaskStatusAttachment = Extract<Attachment, { type: 'task_status' }>
+type AsyncHookResponseAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'async_hook_response' }
+>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -3863,6 +3867,49 @@ function normalizeTaskStatusAttachment(
   ]
 }
 
+function normalizeAsyncHookResponseAttachment(
+  attachment: AsyncHookResponseAttachmentForAPI,
+): UserMessage[] {
+  const response = attachment.response
+  const messages: UserMessage[] = []
+  const contextMessages: UserMessage[] = []
+
+  if (response.systemMessage) {
+    messages.push(
+      createUserMessage({
+        content: sanitizeSystemReminderContent(response.systemMessage),
+        isMeta: true,
+      }),
+    )
+  }
+
+  if (
+    response.hookSpecificOutput &&
+    'additionalContext' in response.hookSpecificOutput &&
+    response.hookSpecificOutput.additionalContext
+  ) {
+    const section = renderHookAdditionalContextSection(
+      [
+        {
+          hookName: attachment.hookName,
+          hookEvent: attachment.hookEvent,
+          content: response.hookSpecificOutput.additionalContext,
+        },
+      ],
+    )
+    if (section !== null) {
+      contextMessages.push(
+        createUserMessage({
+          content: section,
+          isMeta: true,
+        }),
+      )
+    }
+  }
+
+  return [...wrapMessagesInSystemReminder(messages), ...contextMessages]
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4337,46 +4384,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return normalizeTaskStatusAttachment(attachment)
     }
     case 'async_hook_response': {
-      const response = attachment.response
-      const messages: UserMessage[] = []
-      const contextMessages: UserMessage[] = []
-
-      // Handle systemMessage
-      if (response.systemMessage) {
-        messages.push(
-          createUserMessage({
-            content: sanitizeSystemReminderContent(response.systemMessage),
-            isMeta: true,
-          }),
-        )
-      }
-
-      // Handle additionalContext
-      if (
-        response.hookSpecificOutput &&
-        'additionalContext' in response.hookSpecificOutput &&
-        response.hookSpecificOutput.additionalContext
-      ) {
-        const section = renderHookAdditionalContextSection(
-          [
-            {
-              hookName: attachment.hookName,
-              hookEvent: attachment.hookEvent,
-              content: response.hookSpecificOutput.additionalContext,
-            },
-          ],
-        )
-        if (section !== null) {
-          contextMessages.push(
-            createUserMessage({
-              content: section,
-              isMeta: true,
-            }),
-          )
-        }
-      }
-
-      return [...wrapMessagesInSystemReminder(messages), ...contextMessages]
+      return normalizeAsyncHookResponseAttachment(attachment)
     }
     // Note: 'teammate_mailbox' and 'team_context' are handled BEFORE switch
     // to avoid case label strings leaking into compiled output

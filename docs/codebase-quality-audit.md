@@ -4,6 +4,51 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Async Hook Response Attachment Normalizer
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#getAsyncHookResponseAttachments` converts
+  completed async hook responses into `async_hook_response` attachments.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` maps those
+  attachments into model-facing system-reminder messages and hook additional
+  context sections.
+- `runtime/prompts/hook-context-framing.ts` frames hook additional context as
+  untrusted command output.
+- `runtime/tests/conversation/messages-core.test.ts` covers async hook system
+  messages, additional context framing, and empty-response normalization.
+
+### Finding
+
+The async hook response branch mixed two separate message shapes inside the
+large attachment dispatcher: system messages that must be sanitized and wrapped
+as system reminders, and additional-context sections that are already framed by
+the hook-context renderer. Keeping that branch inline made the wrapper boundary
+harder to see beside unrelated attachment cases.
+
+### Change
+
+- Added a typed `AsyncHookResponseAttachmentForAPI` helper alias and
+  `normalizeAsyncHookResponseAttachment`.
+- Moved the existing system-message sanitization and additional-context framing
+  logic into the helper.
+- Left `normalizeAttachmentForAPI` delegating the `async_hook_response` case
+  without changing message order or wrapper semantics.
+- Confirmed `normalizeAttachmentForAPI` now measures 731 lines, with the
+  extracted async hook helper measuring 42 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Task Status Attachment Normalizer
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
