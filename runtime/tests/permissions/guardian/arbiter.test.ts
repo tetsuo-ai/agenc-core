@@ -158,6 +158,30 @@ describe("guardian arbiter", () => {
     expect(resolver).toHaveBeenCalledTimes(1);
   });
 
+  test("approval cache ignores array-shaped session services", async () => {
+    const store = new ApprovalStore<unknown>();
+    const services = Object.assign(["spoof"], {
+      toolApprovals: store,
+    });
+    const inv = invocation({ services: services as never });
+    const resolver = vi.fn(async () => APPROVED_FOR_SESSION);
+
+    const first = await requestApproval({
+      ctx: approvalCtx(inv),
+      args: { command: "pwd" },
+      resolver: { request: resolver },
+    });
+    const second = await requestApproval({
+      ctx: approvalCtx(inv),
+      args: { command: "pwd" },
+      resolver: { request: resolver },
+    });
+
+    expect(first.decision).toBe(APPROVED_FOR_SESSION);
+    expect(second.decision).toBe(APPROVED_FOR_SESSION);
+    expect(resolver).toHaveBeenCalledTimes(2);
+  });
+
   test("approval cache tolerates non-json tool args", async () => {
     const store = new ApprovalStore<unknown>();
     const inv = {
@@ -303,6 +327,30 @@ describe("guardian arbiter", () => {
     expect(result.mergedDecision?.decisionReason?.type).toBe(
       "hook_plus_rule_ask",
     );
+  });
+
+  test("permission-mode arbitration ignores array-shaped tool permission context", async () => {
+    const spoofedToolPermissionContext = Object.assign(["spoof"], {
+      alwaysAskRules: {
+        session: ["exec_command"],
+      },
+    });
+    const permissionContext = {
+      getAppState: () => ({
+        toolPermissionContext: spoofedToolPermissionContext,
+      }),
+    } as never;
+
+    const result = await arbitratePermissionMode({
+      tool: { name: "exec_command" } as Tool,
+      args: { command: "pwd" },
+      hookPermissionResult: { behavior: "allow", hookName: "PreToolUse:ok" },
+      permissionContext,
+      includeEvaluator: false,
+    });
+
+    expect(result.kind).toBe("allow");
+    expect(result.reasonCode).toBe("hook_allowed");
   });
 
   test("user approval prompt uses the session approval cache", async () => {

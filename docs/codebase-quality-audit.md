@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Guardian Arbiter Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/permissions/guardian/arbiter.ts#arbitratePermissionMode` reads
+  `toolPermissionContext` before merging PreToolUse hook decisions with
+  rule-based deny/ask checks.
+- `runtime/src/permissions/guardian/arbiter.ts#requestApproval` and
+  `#requestToolUserApproval` call `resolveApprovalCache` before consulting
+  guardian review, modal resolver, or user approval prompts.
+- `runtime/tests/permissions/guardian/arbiter.test.ts` covers approval cache
+  sharing and permission-mode arbitration.
+
+### Finding
+
+The guardian arbiter still accepted any non-null object for
+`toolPermissionContext` and `session.services`. Array-shaped runtime values with
+spoofed rule or `toolApprovals` properties could therefore influence hook/rule
+merging or expose an approval cache even though both paths expect object
+records.
+
+### Change
+
+- Reused `runtime/src/utils/record.ts#asRecord` for guardian
+  `toolPermissionContext` reads.
+- Reused the same guard before reading `session.services.toolApprovals`.
+- Added regressions proving array-shaped permission contexts do not trigger
+  rule-based asks and array-shaped service containers do not enable approval
+  caching.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/permissions/guardian/arbiter.test.ts tests/tools/execution.test.ts --reporter=dot`
+
 ## 2026-06-22: Plugin Config Entry Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

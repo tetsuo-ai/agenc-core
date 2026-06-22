@@ -848,7 +848,7 @@ function readGuardianToolPermissionContext(
     typeof permissionContext.toolPermissionContext === "function"
       ? permissionContext.toolPermissionContext(appState)
       : appState.toolPermissionContext;
-  return typeof candidate === "object" && candidate !== null ? candidate : null;
+  return asRecord(candidate) as ToolPermissionContext | null;
 }
 
 function hookPermissionReasonCode(
@@ -902,15 +902,9 @@ function toolFromApprovalCtx(ctx: ApprovalCtx): Tool {
 function resolveApprovalCache(
   invocation: ToolInvocation,
 ): ApprovalCacheAdapter | null {
-  const session = (invocation as { readonly session?: unknown }).session;
-  const services =
-    typeof session === "object" && session !== null
-      ? (session as { readonly services?: unknown }).services
-      : undefined;
-  if (typeof services !== "object" || services === null) return null;
-  const store = (services as {
-    readonly toolApprovals?: ApprovalCacheAdapter | null;
-  }).toolApprovals;
+  const session = asRecord((invocation as { readonly session?: unknown }).session);
+  const services = asRecord(session?.services);
+  const store = services?.toolApprovals as ApprovalCacheAdapter | null | undefined;
   return store && typeof store.withCachedApproval === "function" ? store : null;
 }
 
