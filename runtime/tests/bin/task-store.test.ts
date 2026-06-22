@@ -117,6 +117,23 @@ describe("task-store", () => {
     });
   });
 
+  it("rejects persisted tasks with array-shaped metadata", async () => {
+    await withTempStore(async (opts) => {
+      const created = await createNew(opts, {
+        subject: "metadata",
+        metadata: { owner: "agent" },
+      });
+      await writeFile(
+        join(tasksDir(opts), `${created.id}.json`),
+        `${JSON.stringify({ ...created, metadata: [] }, null, 2)}\n`,
+        "utf8",
+      );
+
+      expect(await loadOne(opts, created.id)).toBeNull();
+      expect(await loadAll(opts)).toEqual([]);
+    });
+  });
+
   it("updateOne reports Task not found for missing id", async () => {
     await withTempStore(async (opts) => {
       const outcome = await updateOne(opts, "9999", { status: "completed" });

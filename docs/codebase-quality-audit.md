@@ -4,6 +4,36 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Task Store Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/bin/task-store.ts` persists the durable task-board files under
+  each project-specific `AGENC_HOME` task directory.
+- `isStoredTask` validates parsed task JSON before `loadOne`, `loadAll`, and
+  dependency resolution expose it to CLI, TUI, and task-tool callers.
+- `updateOne` merges task metadata patches with existing persisted metadata.
+
+### Finding
+
+Task storage still carried a local strict non-array object predicate for parsed
+task records and task metadata maps. This duplicated the shared record guard at
+a persistence boundary where array-shaped metadata must keep invalidating the
+stored task instead of being accepted as a numeric-keyed metadata record.
+
+### Change
+
+- Replaced the local task-store object guard with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a regression proving persisted tasks with array-shaped `metadata` are
+  rejected by both single-task and list loaders.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/bin/task-store.test.ts tests/tools/tasks/task-tools.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Tool Execution Schema Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
