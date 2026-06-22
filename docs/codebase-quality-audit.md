@@ -4,6 +4,41 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Provider Policy Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/policyLimits/types.ts` validates policy-limit API/cache
+  payloads before accepting per-policy restriction objects.
+- `runtime/src/llm/providers/ollama/adapter.ts` normalizes native Ollama SDK
+  chat and stream response payloads, including tool-call wrapper objects and
+  parsed string tool arguments.
+- `runtime/tests/services/policyLimits/policyLimits.test.ts` covers malformed
+  restriction payload rejection and null-prototype restriction maps.
+- `runtime/tests/llm/providers/ollama/provider.test.ts` covers malformed
+  native SDK response fields and mixed valid/invalid Ollama tool calls in chat
+  and streaming paths.
+
+### Finding
+
+Policy-limit response parsing and the Ollama provider adapter each carried a
+local strict `isRecord` helper equivalent to `utils/record.ts#isRecord`.
+Both helpers gate untrusted provider/service payloads where arrays and `null`
+must continue to be rejected before nested fields are read.
+
+### Change
+
+- Replaced the local policy-limit and Ollama `isRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved array/null rejection, malformed policy-limit response fallback,
+  native SDK tool-call filtering, and parsed string argument validation.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/services/policyLimits/policyLimits.test.ts tests/llm/providers/ollama/provider.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Parsing Record Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

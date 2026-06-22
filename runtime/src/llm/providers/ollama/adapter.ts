@@ -35,6 +35,7 @@ import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-tur
 import { safeStringify } from "../../_deps/safe-stringify.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "./health.js";
+import { isRecord } from "../../../utils/record.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3.3";
@@ -183,10 +184,6 @@ function cloneProviderTracePayload(
   } catch {
     return undefined;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readString(value: unknown): string {
