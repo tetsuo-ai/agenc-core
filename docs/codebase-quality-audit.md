@@ -4,6 +4,50 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Tool Surface Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/canonicalToolSurface.ts` converts canonical runtime tool
+  results into legacy tool-result blocks, including text, image content items,
+  error flags, metadata, and canonical result summaries.
+- `runtime/src/tools/router.ts` dispatches model/runtime tool calls, resolves
+  current exec policies from session services, applies guardian/pre-hook
+  approval flow, and preserves code-mode/diff-tracker behavior.
+- `runtime/src/tools/context.ts` projects structured tool outputs back to
+  code-mode results, including tool-search and MCP structured response items.
+- `runtime/tests/tools/context.test.ts`, `runtime/tests/tools/router.test.ts`,
+  `runtime/tests/tools/tool-surface-consolidation.test.ts`, and
+  `runtime/tests/tools/system/signed-allowed-roots.test.ts` cover structured
+  output projection, router dispatch/policy behavior, canonical tool surfaces,
+  and signed session-root propagation.
+
+### Finding
+
+The canonical tool surface, router, and tool context modules each carried local
+strict `isRecord` helpers equivalent to `utils/record.ts#isRecord`. They gate
+structured wrapper payloads before reading fields from tool result data, exec
+policy wrappers, and code-mode response item metadata.
+
+### Change
+
+- Replaced the local tool-surface/router/context `isRecord` helpers with the
+  shared `runtime/src/utils/record.ts` utility.
+- Preserved strict array/null rejection for wrapper payloads, canonical result
+  formatting, exec-policy extraction, and structured response projection.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tools/context.test.ts tests/tools/router.test.ts tests/tools/tool-surface-consolidation.test.ts tests/tools/system/signed-allowed-roots.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared File Mention Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
