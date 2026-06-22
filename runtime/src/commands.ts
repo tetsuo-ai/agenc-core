@@ -476,7 +476,7 @@ export async function getCommands(
 }
 
 function pluginConfigSurface(config: unknown): PluginConfigSurface | undefined {
-  return typeof config === "object" && config !== null && !Array.isArray(config)
+  return isRecord(config)
     ? config as PluginConfigSurface
     : undefined;
 }

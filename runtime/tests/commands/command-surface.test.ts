@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -168,6 +172,59 @@ describe("AgenC command surface compatibility", () => {
     }
   });
 
+  it("treats array-shaped plugin config as malformed for plugin command loading", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-command-config-"));
+    const previousHome = process.env.AGENC_HOME;
+    const previousPluginCache = process.env.AGENC_PLUGIN_CACHE_DIR;
+    const pluginRoot = join(root, "plugins", "sample-plugin");
+    const objectConfig = {
+      plugins: {
+        enabled: true,
+        plugins: {
+          sample: { path: pluginRoot },
+        },
+      },
+    };
+    const arrayConfig = Object.assign([], objectConfig);
+
+    try {
+      process.env.AGENC_HOME = join(root, "home");
+      process.env.AGENC_PLUGIN_CACHE_DIR = join(root, "plugin-cache");
+      clearCommandMemoizationCaches();
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        commands: {
+          deploy: {
+            source: "./commands/deploy.md",
+            description: "Deploy the project",
+          },
+        },
+      });
+      await writeFileAt(
+        join(pluginRoot, "commands", "deploy.md"),
+        "Deploy $ARGUMENTS\n",
+      );
+
+      expect((await getCommands(root, arrayConfig)).map(command => command.name))
+        .not.toContain("sample:deploy");
+      expect((await getCommands(root, objectConfig)).map(command => command.name))
+        .toContain("sample:deploy");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.AGENC_HOME;
+      } else {
+        process.env.AGENC_HOME = previousHome;
+      }
+      if (previousPluginCache === undefined) {
+        delete process.env.AGENC_PLUGIN_CACHE_DIR;
+      } else {
+        process.env.AGENC_PLUGIN_CACHE_DIR = previousPluginCache;
+      }
+      clearCommandMemoizationCaches();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("unknown skill slash syntax is rejected instead of expanded", async () => {
     const outcome = await dispatchLine("/project-skill arg", "/tmp/project");
 
@@ -220,3 +277,12 @@ describe("AgenC command surface compatibility", () => {
     ).toBe("Bundled skill (bundled)");
   });
 });
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+  await writeFileAt(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function writeFileAt(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, "utf8");
+}

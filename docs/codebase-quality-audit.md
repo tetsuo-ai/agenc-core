@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Command Plugin Config Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands.ts#getCommands` derives the plugin-facing config
+  surface before loading production plugin command and skill sources.
+- `runtime/src/plugins/registration/load-plugin-commands.ts` treats explicit
+  plugin config as an opt-in discovery input and may load configured plugin
+  markdown commands from that surface.
+- `runtime/tests/commands/command-surface.test.ts` covers model-facing command
+  loading and now pins the array-shaped config boundary with a temp plugin
+  fixture.
+
+### Finding
+
+The command loader already imported the shared strict record helper for other
+legacy context parsing, but `pluginConfigSurface` still repeated the raw
+non-array object predicate. That boundary is security-sensitive enough to keep
+arrays malformed: an array with a `plugins` property must not opt into plugin
+command discovery.
+
+### Change
+
+- Replaced the local `pluginConfigSurface` predicate with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a regression proving array-shaped config carrying a valid plugin path is
+  ignored while the equivalent object config still loads the plugin command.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/commands/command-surface.test.ts tests/plugins/registration.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Trust Record Utility Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
