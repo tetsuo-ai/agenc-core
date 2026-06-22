@@ -17,18 +17,14 @@ import {
 import { containsPathTraversal, getDirectoryForPath } from '../../utils/path.js'
 import {
   allWorkingDirectories,
-  checkEditableInternalPath,
-  checkPathSafetyForAutoEdit,
-  checkReadableInternalPath,
   matchingRuleForInput,
-  pathInAllowedWorkingPath,
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { createReadRuleSuggestion } from '../../utils/permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
 import {
   isDangerousRemovalPath,
-  isPathInSandboxWriteAllowlist,
+  isPathAllowed,
 } from '../../utils/permissions/pathValidation.js'
 import { getPlatform } from '../../utils/platform.js'
 import type {
@@ -50,12 +46,9 @@ const GLOB_PATTERN_REGEX = /[*?[\]]/
 
 type FileOperationType = 'read' | 'write' | 'create'
 
-type PathCheckResult = {
+type ResolvedPathCheckResult = {
   allowed: boolean
   decisionReason?: import('../../utils/permissions/PermissionResult.js').PermissionDecisionReason
-}
-
-type ResolvedPathCheckResult = PathCheckResult & {
   resolvedPath: string
 }
 
@@ -853,126 +846,6 @@ export function dangerousRemovalDeny(path: string): PermissionResult {
       reason: 'Removal targets a protected system path',
     },
   }
-}
-
-/**
- * Checks if a resolved path is allowed for the given operation type.
- * Mirrors the logic in BashTool/pathValidation.ts isPathAllowed.
- */
-function isPathAllowed(
-  resolvedPath: string,
-  context: ToolPermissionContext,
-  operationType: FileOperationType,
-  precomputedPathsToCheck?: readonly string[],
-): PathCheckResult {
-  const permissionType = operationType === 'read' ? 'read' : 'edit'
-
-  // 1. Check deny rules first
-  const denyRule = matchingRuleForInput(
-    resolvedPath,
-    context,
-    permissionType,
-    'deny',
-  )
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: 'rule', rule: denyRule },
-    }
-  }
-
-  // 2. For write/create operations, check internal editable paths (plan files, scratchpad, agent memory, job dirs)
-  // This MUST come before checkPathSafetyForAutoEdit since .agenc is a dangerous directory
-  // and internal editable paths live under ~/.agenc/ — matching the ordering in
-  // checkWritePermissionForTool (filesystem.ts step 1.5)
-  if (operationType !== 'read') {
-    const internalEditResult = checkEditableInternalPath(resolvedPath, {})
-    if (internalEditResult.behavior === 'allow') {
-      return {
-        allowed: true,
-        decisionReason: internalEditResult.decisionReason,
-      }
-    }
-  }
-
-  // 2.5. For write/create operations, check safety validations
-  if (operationType !== 'read') {
-    const safetyCheck = checkPathSafetyForAutoEdit(
-      resolvedPath,
-      precomputedPathsToCheck,
-    )
-    if (!safetyCheck.safe) {
-      return {
-        allowed: false,
-        decisionReason: {
-          type: 'safetyCheck',
-          reason: safetyCheck.message,
-          classifierApprovable: safetyCheck.classifierApprovable,
-        },
-      }
-    }
-  }
-
-  // 3. Check if path is in allowed working directory
-  const isInWorkingDir = pathInAllowedWorkingPath(
-    resolvedPath,
-    context,
-    precomputedPathsToCheck,
-  )
-  if (isInWorkingDir) {
-    if (operationType === 'read' || context.mode === 'acceptEdits') {
-      return { allowed: true }
-    }
-  }
-
-  // 3.5. For read operations, check internal readable paths
-  if (operationType === 'read') {
-    const internalReadResult = checkReadableInternalPath(resolvedPath, {})
-    if (internalReadResult.behavior === 'allow') {
-      return {
-        allowed: true,
-        decisionReason: internalReadResult.decisionReason,
-      }
-    }
-  }
-
-  // 3.7. For write/create operations to paths OUTSIDE the working directory,
-  // check the sandbox write allowlist. When the sandbox is enabled, users
-  // have explicitly configured writable directories (e.g. /tmp/agenc/) —
-  // treat these as additional allowed write directories so redirects/Out-File/
-  // New-Item don't prompt unnecessarily. Paths IN the working directory are
-  // excluded: the sandbox allowlist always seeds '.' (cwd), which would
-  // bypass the acceptEdits gate at step 3.
-  if (
-    operationType !== 'read' &&
-    !isInWorkingDir &&
-    isPathInSandboxWriteAllowlist(resolvedPath)
-  ) {
-    return {
-      allowed: true,
-      decisionReason: {
-        type: 'other',
-        reason: 'Path is in sandbox write allowlist',
-      },
-    }
-  }
-
-  // 4. Check allow rules
-  const allowRule = matchingRuleForInput(
-    resolvedPath,
-    context,
-    permissionType,
-    'allow',
-  )
-  if (allowRule !== null) {
-    return {
-      allowed: true,
-      decisionReason: { type: 'rule', rule: allowRule },
-    }
-  }
-
-  // 5. Path is not allowed
-  return { allowed: false }
 }
 
 /**

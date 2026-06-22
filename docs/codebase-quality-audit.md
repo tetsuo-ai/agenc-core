@@ -4,6 +4,54 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared PowerShell Path Allowance
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/PowerShellTool/pathValidation.ts#validatePath` extracts
+  PowerShell file targets, resolves symlinks with `safeResolvePath`, and checks
+  the final path allowance for reads, writes, creates, globs, and redirections.
+- `runtime/src/tools/PowerShellTool/pathValidation.ts#checkPathConstraints`
+  reduces parsed PowerShell statements, explicit path arguments, nested command
+  paths, and redirection targets into permission decisions.
+- `runtime/src/utils/permissions/pathValidation.ts#isPathAllowed` is the shared
+  donor-stack path allowance helper used by Bash and now PowerShell.
+- `runtime/tests/tools/PowerShellTool.pathValidation.test.ts` covers
+  PowerShell path constraint allow and deny-rule behavior without requiring a
+  local PowerShell binary.
+- `runtime/tests/permissions/donor-stack-import-boundary.test.ts` confirms the
+  donor permission-stack importer set did not grow.
+
+### Finding
+
+PowerShell path validation carried a private `isPathAllowed` clone that
+mirrored the shared donor-stack helper, including deny rules, internal editable
+paths, write-safety checks, working-directory gating, internal readable paths,
+sandbox write allowlists, and allow rules. This was another security-sensitive
+copy where future changes to Bash/shared path allowance could silently miss the
+PowerShell tool.
+
+### Change
+
+- Removed the private PowerShell `isPathAllowed` implementation and imported
+  the shared helper from `runtime/src/utils/permissions/pathValidation.ts`.
+- Dropped now-unused local imports from `filesystem.ts`.
+- Added focused PowerShell path-validation tests that pin acceptEdits allowance
+  inside an extra working directory and deny-rule precedence over working-dir
+  allowance.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/PowerShellTool.pathValidation.test.ts tests/permissions/donor-stack-import-boundary.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared LLM Message Snapshot Helper
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
