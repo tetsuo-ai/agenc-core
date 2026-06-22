@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Startup Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/bin/startup-internal-events.ts` fetches worker startup
+  internal-event pages, validates envelopes, skips malformed event rows, and
+  preserves `agent_id` on subagent events.
+- `runtime/src/bin/bootstrap-services.ts` normalizes bootstrap compact-hook
+  arguments, stop-hook context objects, managed network approval requests, and
+  provider factory extras used to derive auth mode.
+- `runtime/tests/bin/bootstrap.session-ingress.test.ts` covers remote startup
+  internal-event pagination, malformed JSON/envelopes, repeated cursors, and
+  subagent event reads.
+- `runtime/tests/bin/bootstrap-services.test.ts` covers bootstrap hook/service
+  wiring and startup service behavior around the touched helpers.
+
+### Finding
+
+Startup internal-event parsing and bootstrap service construction each carried
+local strict `isRecord` helpers equivalent to `utils/record.ts#isRecord`.
+They gate startup and service payloads where arrays and `null` are not valid
+record wrappers.
+
+### Change
+
+- Replaced the local startup/bootstrap `isRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved strict array/null rejection for internal-event envelopes, hook
+  context payloads, managed network approval shapes, and provider extra data.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/bin/bootstrap.session-ingress.test.ts tests/bin/bootstrap-services.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Provider Policy Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

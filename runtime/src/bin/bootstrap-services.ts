@@ -91,6 +91,7 @@ import type {
   AuthBackend,
   AuthSubscriptionTier,
 } from "../auth/backend.js";
+import { isRecord } from "../utils/record.js";
 
 interface BootstrapShellSnapshot {
   readonly cwd: string;
@@ -843,10 +844,6 @@ function abortSignalOrUndefined(value: unknown): AbortSignal | undefined {
 
 function recordOrEmpty(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requestBootstrapNetworkApproval(
