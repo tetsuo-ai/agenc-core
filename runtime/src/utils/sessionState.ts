@@ -33,9 +33,8 @@ export type SessionExternalMetadata = {
   permission_mode?: string | null
   model?: string | null
   pending_action?: RequiresActionDetails | null
-  // Opaque — typed at the emit site. Importing PostTurnSummaryOutput here
-  // would leak the import path string into sdk.d.ts via agentSdkBridge's
-  // re-export of SessionState.
+  // Opaque — typed at the emit site. Importing PostTurnSummaryOutput here would
+  // couple session metadata to the internal agentSdkTypes declaration output.
   post_turn_summary?: unknown
   // Mid-turn progress line from the forked-agent summarizer — fires every
   // ~5 steps / 2min so long-running turns still surface "what's happening

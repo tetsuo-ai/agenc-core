@@ -137,3 +137,21 @@ describe("build-time package identity wiring", () => {
     );
   });
 });
+
+describe("runtime SDK surface hygiene", () => {
+  test("does not keep a standalone unexported SDK declaration stub", () => {
+    expect(existsSync(`${repoRoot}runtime/src/entrypoints/sdk.d.ts`)).toBe(
+      false,
+    );
+  });
+
+  test("root export stays on the daemon embedding surface", () => {
+    const indexSource = readRepoFile("runtime/src/index.ts");
+
+    expect(indexSource).toContain("AgenCDaemonJsonRpcDispatcher");
+    expect(indexSource).toContain("startAgenCInProcessDaemonTransport");
+    expect(indexSource).not.toMatch(
+      /\b(query|queryAsync|unstable_v2_createSession|unstable_v2_resumeSession|unstable_v2_prompt|createSdkMcpServer|deleteSession)\b/,
+    );
+  });
+});
