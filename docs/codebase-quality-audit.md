@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Project Trust Record Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/permissions/trust/project-trust.ts` parses
+  `trusted-projects.json` and coordinates async/sync lock acquisition.
+- `runtime/src/permissions/trust/trust-sources.ts` summarizes risky project
+  and local settings before a workspace trust prompt.
+- `runtime/src/permissions/trust/records.ts` now owns the trust-subsystem
+  non-array object guard.
+- `runtime/tests/permissions/trust/records.test.ts` pins null-prototype,
+  object-instance, array, null, and primitive handling.
+
+### Finding
+
+Project trust parsing and trust-source summarization duplicated the same strict
+non-array record guard. The project-trust lock code also repeated the same
+`EEXIST` error-shape test in its async and sync lock loops. These are small but
+security-adjacent parsing paths; keeping their shape checks local to each caller
+made future drift likely.
+
+### Change
+
+- Added trust-local `isTrustRecord`.
+- Replaced the duplicated record guards in trust file parsing and trust-source
+  summarization.
+- Extracted the repeated `EEXIST` lock-error guard inside `project-trust.ts`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/permissions/trust/records.test.ts tests/permissions/trust/project-trust.test.ts tests/permissions/trust/trust-sources.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+
 ## 2026-06-22: Shared Task Payload Field Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
