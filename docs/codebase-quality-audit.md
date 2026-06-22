@@ -4,6 +4,51 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Table-Driven Provider Capability Overrides
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/capabilities.ts#resolveProviderModelCapabilities` builds
+  provider/model capability metadata from provider defaults, model catalog
+  hints, and optional config overrides.
+- `runtime/src/llm/capabilities.ts#applyCapabilityOverrides` applies
+  `ProviderCapabilityOverrides` onto resolved provider capabilities.
+- `runtime/src/llm/registry/model-registry.ts` consumes the resolved
+  capabilities when building registry entries for the TUI/model commands.
+- `runtime/tests/llm/capabilities.test.ts` and
+  `runtime/tests/llm/model-registry.test.ts` cover direct capability
+  resolution plus registry-level configured override behavior.
+
+### Finding
+
+`applyCapabilityOverrides` repeated one conditional spread per override key.
+The provider capability matrix itself is data and should stay explicit, but
+the override copy path was mechanical and easy to drift when adding new
+boolean capability fields. The only special behavior is that
+`supportsImageInput` must also update the derived `supportsVisionInput` field.
+
+### Change
+
+- Added `DIRECT_PROVIDER_CAPABILITY_OVERRIDE_KEYS` for normal boolean override
+  fields.
+- Replaced repeated override spreads with a typed loop over that key list.
+- Kept `supportsImageInput` handling explicit so `supportsVisionInput` remains
+  coupled to image-input overrides.
+- Expanded the capability override test to cover every override key and the
+  image/vision parity rule.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/llm/capabilities.test.ts tests/llm/model-registry.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared Agent CLI Operation Wrapper
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
