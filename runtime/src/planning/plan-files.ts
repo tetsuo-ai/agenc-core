@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { asRecord } from "../utils/record.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
 
 type EnvLike = Pick<NodeJS.ProcessEnv, "AGENC_HOME" | "HOME" | "USERPROFILE">;
@@ -255,12 +256,6 @@ export function writePlanSync(ctx: PlanFileContext, content: string): string {
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, content, "utf8");
   return filePath;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | null {

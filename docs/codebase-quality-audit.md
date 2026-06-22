@@ -4,6 +4,43 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Planning Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/planning/plan-files.ts` recovers plan content from untrusted
+  nested message records, plan-file attachments, and `ExitPlanMode` tool input
+  records.
+- `runtime/src/planning/exit-plan-approval.ts` parses allowed prompt entries
+  from TUI approval payloads before converting them to session permission
+  updates.
+
+### Finding
+
+Both planning paths carried local nullable `asRecord` adapters equivalent to
+`utils/record.ts#asRecord`: accept non-array objects and reject arrays, null,
+functions, and primitives. The local copies were identical in contract to the
+shared untrusted-record helper, while the adjacent planning string parsers keep
+domain-specific trimming behavior.
+
+### Change
+
+- Replaced the two local `asRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Left planning-specific non-empty string trimming helpers local.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/planning/plan-files.test.ts tests/planning/exit-plan-approval.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Elicitation Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

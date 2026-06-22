@@ -1,4 +1,5 @@
 import type { PermissionMode, PermissionUpdate } from "../permissions/types.js";
+import { asRecord } from "../utils/record.js";
 
 export interface ExitPlanAllowedPrompt {
   readonly tool: string;
@@ -28,12 +29,6 @@ export type ExitPlanModeApproval =
 
 const CALL_ID_ARG = "__callId";
 const approvals = new Map<string, ExitPlanModeApproval>();
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
