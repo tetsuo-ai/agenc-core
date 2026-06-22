@@ -44,6 +44,7 @@ import { parseSSEFrames } from "../../_deps/sse.js";
 import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
 import {
   evaluateProviderFallback,
+  normalizeFallbackRetryBudget,
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
@@ -173,11 +174,6 @@ type ProviderFallbackWaitDecision = Extract<
   ProviderFallbackDecision,
   { readonly kind: "wait" }
 >;
-
-function normalizeFallbackRetryBudget(maxRetries: number | undefined): number {
-  if (typeof maxRetries !== "number" || !Number.isFinite(maxRetries)) return 2;
-  return Math.max(0, Math.floor(maxRetries));
-}
 
 export class AnthropicProvider implements LLMProvider {
   readonly name = "anthropic";

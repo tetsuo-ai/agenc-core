@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Provider Fallback Retry Budget
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/providers/anthropic/adapter.ts`,
+  `runtime/src/llm/providers/grok/adapter.ts`, and
+  `runtime/src/llm/providers/openai/adapter.ts` wait between configured
+  provider-fallback attempts and compare the consecutive failure count to the
+  configured retry budget.
+- `runtime/src/llm/api/fallback-ladder.ts` owns provider-fallback target,
+  status, and failure-threshold normalization.
+- `runtime/tests/llm/api/fallback-ladder.test.ts` now pins retry-budget
+  defaults, non-finite handling, flooring, and negative clamping.
+
+### Finding
+
+The Anthropic, Grok, and OpenAI adapters each carried an identical
+`normalizeFallbackRetryBudget` helper. That helper is part of the same
+configured provider-fallback policy as `evaluateProviderFallback`; keeping
+copies in each adapter made future fallback retry semantics easy to drift across
+providers.
+
+### Change
+
+- Exported `normalizeFallbackRetryBudget` from the fallback-ladder module.
+- Removed the three adapter-local copies and routed all adapters through the
+  shared helper.
+- Added direct fallback-ladder tests for the helper's boundary behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/llm/api/fallback-ladder.test.ts tests/llm/providers/grok/adapter.test.ts tests/llm/client-session.test.ts tests/llm/client.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Tool Result Text Extraction
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

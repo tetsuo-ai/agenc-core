@@ -77,6 +77,7 @@ import {
 import { isProviderCapabilityMismatch } from "../../capabilities.js";
 import {
   evaluateProviderFallback,
+  normalizeFallbackRetryBudget,
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
@@ -104,11 +105,6 @@ type ProviderFallbackWaitDecision = Extract<
   ProviderFallbackDecision,
   { readonly kind: "wait" }
 >;
-
-function normalizeFallbackRetryBudget(maxRetries: number | undefined): number {
-  if (typeof maxRetries !== "number" || !Number.isFinite(maxRetries)) return 2;
-  return Math.max(0, Math.floor(maxRetries));
-}
 
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([

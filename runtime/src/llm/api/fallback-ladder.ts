@@ -48,6 +48,7 @@ export type ProviderFallbackDecision =
   | { readonly kind: "not_applicable"; readonly consecutiveFailures: 0 };
 
 const DEFAULT_FALLBACK_MAX_FAILURES = 3;
+const DEFAULT_FALLBACK_RETRY_BUDGET = 2;
 const DEFAULT_FALLBACK_STATUSES = Object.freeze([529] as const);
 
 function normalizeProviderKey(provider: string | undefined): string | undefined {
@@ -83,6 +84,15 @@ export function normalizeFallbackTargets(
     });
   }
   return normalized;
+}
+
+export function normalizeFallbackRetryBudget(
+  maxRetries: number | undefined,
+): number {
+  if (typeof maxRetries !== "number" || !Number.isFinite(maxRetries)) {
+    return DEFAULT_FALLBACK_RETRY_BUDGET;
+  }
+  return Math.max(0, Math.floor(maxRetries));
 }
 
 function selectNextFallbackTarget(

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { FallbackTriggeredError } from "../../recovery/api-errors.js";
 import {
   evaluateProviderFallback,
+  normalizeFallbackRetryBudget,
   normalizeFallbackTargets,
 } from "./fallback-ladder.js";
 
@@ -29,6 +30,15 @@ describe("provider fallback ladder", () => {
         { provider: "openai", model: "gpt-5" },
       ]),
     ).toEqual([{ provider: "openai", model: "gpt-5" }]);
+  });
+
+  test("normalizes configured fallback retry budgets", () => {
+    expect(normalizeFallbackRetryBudget(undefined)).toBe(2);
+    expect(normalizeFallbackRetryBudget(Number.NaN)).toBe(2);
+    expect(normalizeFallbackRetryBudget(Number.POSITIVE_INFINITY)).toBe(2);
+    expect(normalizeFallbackRetryBudget(3.9)).toBe(3);
+    expect(normalizeFallbackRetryBudget(0)).toBe(0);
+    expect(normalizeFallbackRetryBudget(-4)).toBe(0);
   });
 
   test("waits for the configured consecutive overload threshold before triggering", () => {
