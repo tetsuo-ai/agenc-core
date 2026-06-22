@@ -11,6 +11,7 @@ import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErr
 import { InterruptedByUser } from '../../components/InterruptedByUser';
 import { MessageResponse } from '../../components/MessageResponse';
 import { RejectedPlanMessage, RejectedToolUseMessage } from '../../components/v2/messagePrimitives.js';
+import { getTextToolResultContent } from './utils';
 type Props = {
   progressMessagesForMessage: ProgressMessage[];
   tool?: Tool; // undefined when resuming an old conversation that uses an old tool
@@ -19,28 +20,6 @@ type Props = {
   verbose: boolean;
   isTranscriptMode?: boolean;
 };
-
-function getTextToolResultContent(
-  content: AgenCToolResultBlockParam['content'],
-): string | undefined {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-
-  const textParts: string[] = [];
-  for (const block of content) {
-    if (typeof block === 'string') {
-      textParts.push(block);
-    } else if (block && typeof block === 'object' && typeof block.text === 'string') {
-      textParts.push(block.text);
-    }
-  }
-
-  return textParts.length > 0 ? textParts.join('\n') : undefined;
-}
 
 export function UserToolErrorMessage({
   progressMessagesForMessage,

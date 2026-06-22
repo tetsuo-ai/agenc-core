@@ -5,7 +5,10 @@ import { describe, expect, test } from 'vitest'
 
 import type { Tool, Tools } from '../../../src/tools/Tool.js'
 import { createRoot, type Root } from '../../../src/tui/ink/root.js'
-import { useGetToolFromMessages } from '../../../src/tui/message-renderers/UserToolResultMessage/utils.js'
+import {
+  getTextToolResultContent,
+  useGetToolFromMessages,
+} from '../../../src/tui/message-renderers/UserToolResultMessage/utils.js'
 
 type ToolUseLike = {
   readonly id: string
@@ -117,6 +120,20 @@ async function renderHookHarness(
 }
 
 describe('UserToolResultMessage utils coverage swarm row 174', () => {
+  test('extracts string and structured text result content', () => {
+    expect(getTextToolResultContent('plain text')).toBe('plain text')
+    expect(
+      getTextToolResultContent([
+        'first',
+        { type: 'text', text: 'second' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
+        { text: 123 },
+      ]),
+    ).toBe('first\nsecond')
+    expect(getTextToolResultContent([{ type: 'image', source: {} }])).toBeUndefined()
+    expect(getTextToolResultContent({ type: 'json', value: 'ignored' })).toBeUndefined()
+  })
+
   test('returns null when the tool use is missing or the referenced tool is unavailable', async () => {
     const rendered = await renderHookHarness({
       lookups: makeLookups([]),

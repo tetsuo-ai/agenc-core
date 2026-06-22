@@ -4,6 +4,50 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Tool Result Text Extraction
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tui/message-renderers/UserToolResultMessage/UserToolResultMessage.tsx`
+  checks tool-result text for cancel/reject markers before dispatching to the
+  success or error renderers.
+- `runtime/src/tui/message-renderers/UserToolResultMessage/UserToolErrorMessage.tsx`
+  checks tool-result text for interrupt, plan rejection, explicit rejection,
+  and classifier-denial markers.
+- `runtime/src/tui/message-renderers/UserToolResultMessage/utils.tsx` now owns
+  the shared string and structured text-block extraction helper.
+- `runtime/tests/tui/coverage-swarm/swarm-174-message-renderers-UserToolResultMessage-utils.test.tsx`
+  pins string, mixed text-block, image-only, and non-array structured content
+  handling.
+
+### Finding
+
+The normal and error tool-result renderers had identical local
+`getTextToolResultContent` helpers. That parser decides whether hidden control
+markers such as cancellation, rejection, and interruption are visible to the
+renderer. Keeping two copies made it easy for one path to start recognizing a
+different subset of structured result content than the other.
+
+### Change
+
+- Moved `getTextToolResultContent` into the local
+  `UserToolResultMessage/utils.tsx` module.
+- Routed both renderers through the shared helper.
+- Added direct helper coverage for mixed structured content and ignored
+  non-text blocks.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/coverage-swarm/swarm-174-message-renderers-UserToolResultMessage-utils.test.tsx tests/tui/message-renderers/UserToolResultMessage/UserToolResultMessage.wave200-035.coverage.test.tsx tests/tui/message-renderers/UserToolResultMessage/UserToolErrorMessage.wave200-049.coverage.test.tsx tests/tui/message-renderers/UserToolResultMessage/UserToolResultMessage.test.tsx --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Project Trust Record Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
