@@ -114,6 +114,18 @@ type OutputTokenUsageAttachment = Extract<
   Attachment,
   { type: 'output_token_usage' }
 >
+type DeferredToolsDeltaAttachment = Extract<
+  Attachment,
+  { type: 'deferred_tools_delta' }
+>
+type AgentListingDeltaAttachment = Extract<
+  Attachment,
+  { type: 'agent_listing_delta' }
+>
+type McpInstructionsDeltaAttachment = Extract<
+  Attachment,
+  { type: 'mcp_instructions_delta' }
+>
 type HookBlockingErrorAttachmentForAPI = Extract<
   Attachment,
   { type: 'hook_blocking_error' }
@@ -4124,6 +4136,80 @@ function normalizeOutputTokenUsageAttachment(
   ]
 }
 
+function normalizeDeferredToolsDeltaAttachment(
+  attachment: DeferredToolsDeltaAttachment,
+): UserMessage[] {
+  const parts: string[] = []
+  if (attachment.addedLines.length > 0) {
+    const addedLines = attachment.addedLines.map(sanitizeSystemReminderContent)
+    parts.push(
+      `The following deferred tools are now available via ToolSearch:\n${addedLines.join('\n')}`,
+    )
+  }
+  if (attachment.removedNames.length > 0) {
+    const removedNames = attachment.removedNames.map(
+      sanitizeSystemReminderContent,
+    )
+    parts.push(
+      `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${removedNames.join('\n')}`,
+    )
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+  ])
+}
+
+function normalizeAgentListingDeltaAttachment(
+  attachment: AgentListingDeltaAttachment,
+): UserMessage[] {
+  const parts: string[] = []
+  if (attachment.addedLines.length > 0) {
+    const header = attachment.isInitial
+      ? 'Available agent types for the Agent tool:'
+      : 'New agent types are now available for the Agent tool:'
+    parts.push(
+      `${header}\n${attachment.addedLines.map(sanitizeAgentListingLine).join('\n')}`,
+    )
+  }
+  if (attachment.removedTypes.length > 0) {
+    parts.push(
+      `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${formatAgentListingType(t)}`).join('\n')}`,
+    )
+  }
+  if (attachment.isInitial && attachment.showConcurrencyNote) {
+    parts.push(
+      `Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses.`,
+    )
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+  ])
+}
+
+function normalizeMcpInstructionsDeltaAttachment(
+  attachment: McpInstructionsDeltaAttachment,
+): UserMessage[] {
+  const parts: string[] = []
+  if (attachment.addedBlocks.length > 0) {
+    const section = renderMcpInstructionsDeltaSection(
+      attachment.addedNames,
+      attachment.addedBlocks,
+    )
+    if (section !== null) parts.push(section)
+  }
+  if (attachment.removedNames.length > 0) {
+    const removedNames = attachment.removedNames.map(
+      sanitizeSystemReminderContent,
+    )
+    parts.push(
+      `The following MCP servers have disconnected. Their instructions above no longer apply:\n${removedNames.join('\n')}`,
+    )
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+  ])
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4595,71 +4681,13 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'deferred_tools_delta': {
-      const parts: string[] = []
-      if (attachment.addedLines.length > 0) {
-        const addedLines = attachment.addedLines.map(
-          sanitizeSystemReminderContent,
-        )
-        parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${addedLines.join('\n')}`,
-        )
-      }
-      if (attachment.removedNames.length > 0) {
-        const removedNames = attachment.removedNames.map(
-          sanitizeSystemReminderContent,
-        )
-        parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${removedNames.join('\n')}`,
-        )
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      return normalizeDeferredToolsDeltaAttachment(attachment)
     }
     case 'agent_listing_delta': {
-      const parts: string[] = []
-      if (attachment.addedLines.length > 0) {
-        const header = attachment.isInitial
-          ? 'Available agent types for the Agent tool:'
-          : 'New agent types are now available for the Agent tool:'
-        parts.push(
-          `${header}\n${attachment.addedLines.map(sanitizeAgentListingLine).join('\n')}`,
-        )
-      }
-      if (attachment.removedTypes.length > 0) {
-        parts.push(
-          `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${formatAgentListingType(t)}`).join('\n')}`,
-        )
-      }
-      if (attachment.isInitial && attachment.showConcurrencyNote) {
-        parts.push(
-          `Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses.`,
-        )
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      return normalizeAgentListingDeltaAttachment(attachment)
     }
     case 'mcp_instructions_delta': {
-      const parts: string[] = []
-      if (attachment.addedBlocks.length > 0) {
-        const section = renderMcpInstructionsDeltaSection(
-          attachment.addedNames,
-          attachment.addedBlocks,
-        )
-        if (section !== null) parts.push(section)
-      }
-      if (attachment.removedNames.length > 0) {
-        const removedNames = attachment.removedNames.map(
-          sanitizeSystemReminderContent,
-        )
-        parts.push(
-          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${removedNames.join('\n')}`,
-        )
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      return normalizeMcpInstructionsDeltaAttachment(attachment)
     }
     case 'companion_intro': {
       return wrapMessagesInSystemReminder([

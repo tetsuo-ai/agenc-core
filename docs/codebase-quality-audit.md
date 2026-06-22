@@ -4,6 +4,63 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Delta Attachment Normalizers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#getDeferredToolsDeltaAttachment` emits
+  `deferred_tools_delta` notices after ToolSearch and deferred-tool gating.
+- `runtime/src/utils/attachments.ts#getAgentListingDeltaAttachment` emits
+  `agent_listing_delta` notices after filtering available agent definitions and
+  reconstructing prior transcript state.
+- `runtime/src/utils/attachments.ts#getMcpInstructionsDeltaAttachment` emits
+  `mcp_instructions_delta` notices from MCP instruction diffs, including the
+  ToolSearch client-side instruction entry.
+- `runtime/src/prompts/mcp-instructions-framing.ts#renderMcpInstructionsDeltaSection`
+  frames added MCP instructions as untrusted server-provided content.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` converts the delta
+  attachments into legacy model-facing reminders.
+- `runtime/src/prompts/attachments/messages.ts` contains the newer prompt
+  attachment renderer for the same delta attachment kinds, with intentionally
+  different wording in a few places.
+- `runtime/tests/conversation/messages-core.test.ts` covers normal and unsafe
+  deferred-tool, agent-listing, and MCP-instructions delta payloads.
+
+### Finding
+
+The deferred-tool, agent-listing, and MCP-instructions delta branches mixed
+dynamic ToolSearch/agent/MCP capability-change notices, sanitization of
+untrusted added and removed names or lines, and MCP instruction framing directly
+inside the large attachment dispatcher. Since the newer prompt renderer covers
+similar attachment kinds but intentionally uses different wording, leaving the
+legacy compatibility formatting inline made accidental drift more likely.
+
+### Change
+
+- Added typed aliases for `deferred_tools_delta`, `agent_listing_delta`, and
+  `mcp_instructions_delta` attachments.
+- Split the inline branches into `normalizeDeferredToolsDeltaAttachment`,
+  `normalizeAgentListingDeltaAttachment`, and
+  `normalizeMcpInstructionsDeltaAttachment`.
+- Preserved legacy `utils/messages.ts` wording, including the ToolSearch
+  removed text with an em dash and no MCP-specific direct-call nudge, the
+  `Agent tool` label and concurrency note, and MCP instruction framing through
+  `renderMcpInstructionsDeltaSection`.
+- Confirmed `normalizeAttachmentForAPI` now measures 528 lines, with the
+  extracted delta helpers measuring 22, 26, and 23 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Usage And Budget Attachment Normalizers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
