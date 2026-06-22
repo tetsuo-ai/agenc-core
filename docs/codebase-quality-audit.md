@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Clear Command Reset Surface Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/clear.ts#clearSession` clears local history and resets
+  optional memory/cost sidecars, approval stores, network approvals, budget
+  sampling gates, and denial tracking.
+- `runtime/src/commands/clear.ts#maybeReset` performs best-effort sidecar
+  resets for services that expose `reset()`.
+- `runtime/tests/commands/clear.test.ts` covers clear/reset behavior and the
+  destructive alias contract.
+
+### Finding
+
+`/clear` treated any object with a matching method property as a resettable
+service. Array-shaped sidecars and approval services with spoofed `reset`,
+`clear`, or `clearSessionHosts` methods could therefore be invoked during a
+destructive clear, and non-function direct session hooks could throw.
+
+### Change
+
+- Required non-array record shape before calling reset/clear service methods.
+- Guarded direct optional session callbacks with explicit function checks.
+- Required denial tracking to be a non-array record before resetting it in
+  place.
+- Added a regression proving array-shaped reset surfaces are ignored while
+  history still clears.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/clear.test.ts --reporter=dot`
+
 ## 2026-06-22: Status Service Surface Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
