@@ -4,6 +4,45 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared App-Server JSON Object Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/app-server/daemon-dispatcher.ts` validates daemon JSON-RPC
+  method params, nested config objects, and realtime/media object fields before
+  handing requests to managers.
+- `runtime/src/app-server/command-exec.ts` validates command execution env,
+  terminal size, sandbox policy, and permission-profile objects.
+- `runtime/src/app-server/agent-cli.ts` and
+  `runtime/src/app-server/daemon-cli.ts` parse daemon JSON-line responses and
+  notifications before resolving CLI clients.
+- `runtime/src/app-server/background-agent-runner.ts` normalizes daemon event
+  payloads and persisted budget metadata.
+- `runtime/src/app-server/realtime-transport.ts` parses realtime websocket
+  events, nested response/error objects, and function-call arguments.
+
+### Finding
+
+These app-server modules each had local strict JSON-object predicates with the
+same non-array object semantics. The wrappers still expose local `JsonObject`
+type guards, but the raw predicate should stay aligned with the shared record
+contract so malformed array payloads are rejected consistently.
+
+### Change
+
+- Delegated app-server daemon/client/realtime JSON-object wrappers to
+  `runtime/src/utils/record.ts#isRecord`.
+- Added command-exec regressions for array-shaped `env` and terminal `size`
+  inputs.
+- Kept existing dispatcher array-object coverage for session metadata and
+  existing realtime/background-agent malformed payload coverage.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/app-server/daemon-dispatcher.contract.test.ts tests/app-server/command-exec.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-cli.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/realtime.contract.test.ts tests/app-server/realtime-transport.transcript-cap.test.ts tests/gaphunt3/app-server-agent-cli.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Transport JSON Object Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

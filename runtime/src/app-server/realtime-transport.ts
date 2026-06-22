@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { JsonObject, JsonValue } from "./protocol/index.js";
 import { AsyncQueue } from "../utils/async-queue.js";
+import { isRecord } from "../utils/record.js";
 import type {
   RealtimeAudioFrame,
   RealtimeConversationItemPayload,
@@ -1238,7 +1239,7 @@ function containsTranscriptEntry(
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function jsonString(value: JsonValue | undefined): string | null {

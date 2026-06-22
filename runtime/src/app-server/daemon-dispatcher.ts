@@ -98,6 +98,7 @@ import {
   type ToolCancelParams,
   type ToolDenyParams,
 } from "./protocol/index.js";
+import { isRecord } from "../utils/record.js";
 
 export interface AgenCDaemonConnectionInitializeState {
   readonly protocol: {
@@ -2376,7 +2377,7 @@ function validateStringRecord(
 }
 
 function isPlainJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function invalidParams(message: string): AgenCDaemonAgentLifecycleError {

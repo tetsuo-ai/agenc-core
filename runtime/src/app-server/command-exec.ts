@@ -37,6 +37,7 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { loadPty, type IPty } from "../pty/loadPty.js";
+import { isRecord } from "../utils/record.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_OUTPUT_BYTES_CAP = 1024 * 1024;
@@ -1151,5 +1152,5 @@ function invalidArgument(message: string): AgenCDaemonAgentLifecycleError {
 }
 
 function isPlainJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }

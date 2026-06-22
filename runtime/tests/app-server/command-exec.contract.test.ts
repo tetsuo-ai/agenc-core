@@ -726,6 +726,19 @@ describe("AgenC daemon command exec", () => {
       service.start(
         {
           command: [process.execPath, "-e", "process.stdout.write('out')"],
+          env: [] as never,
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "commandExec.start param 'env' must be an object or null",
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('out')"],
           outputBytesCap: 1,
           disableOutputCap: true,
         },
@@ -774,6 +787,16 @@ describe("AgenC daemon command exec", () => {
       { connectionId: "invalid" },
     );
     await expect(closeOnly).resolves.toMatchObject({ exitCode: 0 });
+
+    await expect(
+      service.resize(
+        { processId: "missing", size: [] as never },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "commandExec.resize param 'size' must be an object",
+    });
   });
 
   it("terminates all sessions for a closed connection", async () => {

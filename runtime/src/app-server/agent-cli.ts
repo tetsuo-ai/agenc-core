@@ -44,6 +44,7 @@ import {
   type JsonValue,
   type RequestId,
 } from "./protocol/index.js";
+import { isRecord } from "../utils/record.js";
 
 export type AgenCAgentCliCommand =
   | {
@@ -1176,7 +1177,7 @@ function daemonEventSessionId(message: JsonObject): string | null {
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 export function defaultEnsureDaemonReady(
