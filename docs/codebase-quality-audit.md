@@ -4,6 +4,36 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared AgenC Tool-Use Context Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/agenc-tool-use-context.ts` builds provider-neutral tool
+  context from live sessions, session state snapshots, app-state bridges, and
+  per-turn metadata.
+- `runtime/tests/session/agenc-tool-use-context.test.ts` now covers malformed
+  app-state snapshots at this boundary.
+
+### Finding
+
+The context builder used a local loose record guard for session/app-state shape
+checks. Array-shaped app-state snapshots could be trusted if they carried
+object-like properties, even though this boundary should only accept non-array
+records.
+
+### Change
+
+- Replaced the local context builder `isRecord` helper with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a direct regression that array-shaped app-state snapshots fall back to
+  the safe default app-state surface.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/session/agenc-tool-use-context.test.ts tests/phases/commit.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Tool Result Storage Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

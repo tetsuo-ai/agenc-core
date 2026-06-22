@@ -7,6 +7,7 @@ import {
   READ_FILE_STATE_CACHE_SIZE,
   type FileStateCache,
 } from "../utils/fileStateCache.js";
+import { isRecord } from "../utils/record.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
 
@@ -120,10 +121,6 @@ type SessionSurface = {
   readonly isNonInteractiveSession?: boolean;
   readonly verbose?: boolean;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function readFunction<T extends (...args: unknown[]) => unknown>(
   value: unknown,
