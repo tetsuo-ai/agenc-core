@@ -4,6 +4,55 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Queued Command Attachment Normalizer
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#getQueuedCommandAttachments` converts
+  queued user input, pasted images, and task notifications into
+  `queued_command` attachments.
+- `runtime/src/utils/attachments.ts#getAgentPendingMessageAttachments` creates
+  coordinator-origin queued messages for pending agent messages.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` maps queued
+  commands into model-facing user messages while preserving UUID, origin,
+  transcript visibility, text wrapping, and image blocks.
+- `runtime/tests/conversation/messages-core.test.ts` covers plain queued text,
+  unsafe text sanitization, task-notification origin/meta behavior, image block
+  preservation, and UUID propagation.
+
+### Finding
+
+The queued-command branch carried several compatibility rules directly inside
+the large attachment dispatcher. The most important rule is that human input
+drained mid-turn must remain visible, while system-generated queued commands
+must be meta and carry origin. Keeping that logic inline made future attachment
+edits riskier because the branch also handles content-block prompts and image
+preservation.
+
+### Change
+
+- Added a typed `QueuedCommandAttachment` helper alias and
+  `normalizeQueuedCommandAttachment`.
+- Moved origin fallback, meta visibility, string prompt wrapping, content-block
+  prompt wrapping, image block preservation, and UUID propagation into the
+  helper.
+- Kept concise comments next to the origin/meta rules that protect transcript
+  visibility.
+- Confirmed `normalizeAttachmentForAPI` now measures 676 lines, with the
+  extracted queued-command helper measuring 53 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Async Hook Response Attachment Normalizer
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

@@ -106,6 +106,7 @@ type AsyncHookResponseAttachmentForAPI = Extract<
   Attachment,
   { type: 'async_hook_response' }
 >
+type QueuedCommandAttachment = Extract<Attachment, { type: 'queued_command' }>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -3910,6 +3911,60 @@ function normalizeAsyncHookResponseAttachment(
   return [...wrapMessagesInSystemReminder(messages), ...contextMessages]
 }
 
+function normalizeQueuedCommandAttachment(
+  attachment: QueuedCommandAttachment,
+): UserMessage[] {
+  // Prefer explicit origin carried from the queue; fall back to commandMode for
+  // older task notifications.
+  const origin: MessageOrigin | undefined =
+    attachment.origin ??
+    (attachment.commandMode === 'task-notification'
+      ? { kind: 'task-notification' }
+      : undefined)
+
+  // Human input drained mid-turn has no origin and no QueuedCommand.isMeta, so
+  // keep it visible in transcript filters.
+  const metaProp =
+    origin !== undefined || attachment.isMeta
+      ? ({ isMeta: true } as const)
+      : {}
+
+  if (Array.isArray(attachment.prompt)) {
+    const textContent = attachment.prompt
+      .filter((block): block is TextBlockParam => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+
+    const imageBlocks = attachment.prompt.filter(block => block.type === 'image')
+
+    const content: ContentBlockParam[] = [
+      {
+        type: 'text',
+        text: wrapCommandText(textContent, origin),
+      },
+      ...imageBlocks,
+    ]
+
+    return wrapMessagesInSystemReminder([
+      createUserMessage({
+        content,
+        ...metaProp,
+        origin,
+        uuid: attachment.source_uuid,
+      }),
+    ])
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: wrapCommandText(String(attachment.prompt), origin),
+      ...metaProp,
+      origin,
+      uuid: attachment.source_uuid,
+    }),
+  ])
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4217,62 +4272,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'queued_command': {
-      // Prefer explicit origin carried from the queue; fall back to commandMode
-      // for task notifications (which predate origin).
-      const origin: MessageOrigin | undefined =
-        attachment.origin ??
-        (attachment.commandMode === 'task-notification'
-          ? { kind: 'task-notification' }
-          : undefined)
-
-      // Only hide from the transcript if the queued command was itself
-      // system-generated. Human input drained mid-turn has no origin and no
-      // QueuedCommand.isMeta — it should stay visible. Previously this
-      // hardcoded isMeta:true, which hid user-typed messages in brief mode
-      // (filterForBriefTool) and in normal mode (shouldShowUserMessage).
-      const metaProp =
-        origin !== undefined || attachment.isMeta
-          ? ({ isMeta: true } as const)
-          : {}
-
-      if (Array.isArray(attachment.prompt)) {
-        // Handle content blocks (may include images)
-        const textContent = attachment.prompt
-          .filter((block): block is TextBlockParam => block.type === 'text')
-          .map(block => block.text)
-          .join('\n')
-
-        const imageBlocks = attachment.prompt.filter(
-          block => block.type === 'image',
-        )
-
-        const content: ContentBlockParam[] = [
-          {
-            type: 'text',
-            text: wrapCommandText(textContent, origin),
-          },
-          ...imageBlocks,
-        ]
-
-        return wrapMessagesInSystemReminder([
-          createUserMessage({
-            content,
-            ...metaProp,
-            origin,
-            uuid: attachment.source_uuid,
-          }),
-        ])
-      }
-
-      // String prompt
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: wrapCommandText(String(attachment.prompt), origin),
-          ...metaProp,
-          origin,
-          uuid: attachment.source_uuid,
-        }),
-      ])
+      return normalizeQueuedCommandAttachment(attachment)
     }
     case 'output_style': {
       const outputStyle =
