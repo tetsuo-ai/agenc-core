@@ -5,7 +5,10 @@
  */
 import { describe, expect, test } from "vitest";
 
-import { _resetAttachmentTrackingStateForTest } from "../../session/attachment-state.js";
+import {
+  _resetAttachmentTrackingStateForTest,
+  getAttachmentTrackingState,
+} from "../../session/attachment-state.js";
 import {
   type GetAttachmentsOptions,
   getAttachments,
@@ -60,11 +63,43 @@ describe("attachments orchestrator", () => {
     const sessionB = {};
     await getAttachments(makeOpts({ sessionKey: sessionA }));
     await getAttachments(makeOpts({ sessionKey: sessionB }));
-    // No producers run, so the only thing this test pins is that no
-    // cross-key state pollution happened (verified by the WeakMap
-    // structural guarantee — re-read after reset still yields empty).
+
+    // Distinct session keys must resolve to distinct tracking-state objects:
+    // no shared/aliased state across keys (the WeakMap must not collapse
+    // separate sessions onto one shared object).
+    const stateA = getAttachmentTrackingState(sessionA);
+    const stateB = getAttachmentTrackingState(sessionB);
+    expect(stateA).not.toBe(stateB);
+    expect(stateA.nestedMemoryAttachmentTriggers).not.toBe(
+      stateB.nestedMemoryAttachmentTriggers,
+    );
+
+    // Mutating A's state must not leak into B's state.
+    stateA.needsPlanModeExitAttachment = true;
+    stateA.memoryMode = "disabled";
+    stateA.nestedMemoryAttachmentTriggers.add("/a/path");
+    expect(stateB.needsPlanModeExitAttachment).toBe(false);
+    expect(stateB.memoryMode).toBe("enabled");
+    expect(stateB.nestedMemoryAttachmentTriggers.has("/a/path")).toBe(false);
+
+    // Resetting A must not affect B's already-observed state: stateB stays
+    // the same instance and keeps its untouched defaults.
+    _resetAttachmentTrackingStateForTest(sessionA);
+    expect(stateB).toBe(getAttachmentTrackingState(sessionB));
+    expect(stateB.needsPlanModeExitAttachment).toBe(false);
+    expect(stateB.memoryMode).toBe("enabled");
+
+    // A fresh read of A after reset yields a clean object — A's earlier
+    // mutations are gone (proves the reset actually cleared A's entry).
+    const stateAReborn = getAttachmentTrackingState(sessionA);
+    expect(stateAReborn).not.toBe(stateA);
+    expect(stateAReborn.needsPlanModeExitAttachment).toBe(false);
+    expect(stateAReborn.memoryMode).toBe("enabled");
+    expect(stateAReborn.nestedMemoryAttachmentTriggers.has("/a/path")).toBe(
+      false,
+    );
+
     _resetAttachmentTrackingStateForTest(sessionA);
     _resetAttachmentTrackingStateForTest(sessionB);
-    expect(true).toBe(true);
   });
 });
