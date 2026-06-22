@@ -247,3 +247,51 @@ the fragile schema/type contract it now depends on.
 - `npm test`
 - `npm run test:bun`
 - `git diff --check`
+
+## 2026-06-22: Daemon Initialize Method Capabilities
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/app-server/daemon-dispatcher.ts` handles the `initialize`
+  JSON-RPC handshake and routes every known daemon method.
+- Optional dispatcher collaborators include `sessionManager`, `authBackend`,
+  `daemonControl`, and optional agent-manager hook/permission methods.
+- `runtime/src/app-server/protocol/index.ts` defines the daemon method registry,
+  initialize request/result types, and the public `capabilities` field.
+- Dispatcher contract tests cover missing optional collaborators returning
+  `-32601` or explicit unavailable-service errors before parameter validation.
+- `runtime/tests/app-server/agent-lifecycle.contract.test.ts` checks the stored
+  initialize state after protocol negotiation.
+
+### Finding
+
+`initialize` always returned an empty server `capabilities` object even though
+method availability depends on the daemon host's configured collaborators. A
+client could not tell during negotiation whether session lifecycle, daemon
+reload, or auth methods were usable until it attempted the call and received an
+unavailable-method response.
+
+### Change
+
+- Added the `daemon.methods` capability map to the daemon protocol types.
+- The dispatcher now computes method capability flags from its actual
+  configured services and returns them in `InitializeResult.capabilities`.
+- The method capability builder is exhaustive over every known public and
+  internal daemon method, so new protocol methods must declare availability
+  semantics.
+- Added contract coverage for both omitted optional collaborators and configured
+  session/reload/auth collaborators.
+- Updated initialize-state coverage to assert representative negotiated method
+  capability flags instead of the obsolete empty server capability object.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/app-server/daemon-dispatcher.contract.test.ts tests/app-server/agent-lifecycle.contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`

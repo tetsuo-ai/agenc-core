@@ -24,6 +24,8 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
   schemaExport: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
   schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
 } as const;
+export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY =
+  "daemon.methods" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonArray = readonly JsonValue[];
@@ -98,6 +100,14 @@ export type AgenCDaemonInternalMethod =
 export type AgenCDaemonKnownMethod =
   | AgenCDaemonMethod
   | AgenCDaemonInternalMethod;
+
+export type AgenCDaemonMethodCapabilities = JsonObject & {
+  readonly [Method in AgenCDaemonKnownMethod]: boolean;
+};
+
+export type AgenCDaemonServerCapabilities = JsonObject & {
+  readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
+};
 
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "commandExec.outputDelta",
@@ -1490,7 +1500,7 @@ export interface InitializeResult extends JsonObject {
    * Negotiated server protocol metadata for the connection.
    */
   readonly protocol: DaemonProtocolInfo;
-  readonly capabilities: JsonObject;
+  readonly capabilities: AgenCDaemonServerCapabilities;
 }
 
 export interface RequestCancelResult extends JsonObject {

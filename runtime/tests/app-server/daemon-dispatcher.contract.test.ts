@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AuthBackend } from "../auth/backend.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
-import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  JSON_RPC_VERSION,
+  type JsonObject,
+} from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 
 function sequence(values: readonly string[]): () => string {
@@ -42,7 +47,96 @@ async function initialize(connection: {
   });
 }
 
+function makeAuthBackend(): AuthBackend {
+  return {
+    login: () => ({ authenticated: true, provider: "local" }),
+    whoami: () => ({ authenticated: true, provider: "local" }),
+    logout: () => ({ authenticated: false }),
+    vendKey: () => {
+      throw new Error("not expected");
+    },
+    inferAgencModel: () => {
+      throw new Error("not expected");
+    },
+    getSubscriptionTier: () => "free",
+  };
+}
+
+function daemonMethodCapabilities(
+  response: JsonObject,
+): Record<string, boolean> {
+  const result = response.result as { capabilities?: Record<string, unknown> };
+  const capabilities = result.capabilities ?? {};
+  return capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY] as Record<
+    string,
+    boolean
+  >;
+}
+
 describe("AgenC daemon session lifecycle dispatcher", () => {
+  it("advertises configured daemon method capabilities during initialize", async () => {
+    const minimalDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const minimalConnection = minimalDispatcher.createConnection();
+
+    const minimalInitialize = await minimalConnection.dispatch(
+      request("minimal-init", "initialize", {
+        protocol: { version: "1.0.0" },
+      }),
+    );
+    const minimalMethods = daemonMethodCapabilities(minimalInitialize);
+    expect(minimalMethods).toMatchObject({
+      initialize: true,
+      "request.cancel": true,
+      "commandExec.start": true,
+      "health.ping": true,
+      "session.create": false,
+      "session.list": false,
+      "session.attach": false,
+      "session.detach": false,
+      "session.terminate": false,
+      "daemon.reload": false,
+      "auth.login": false,
+      "auth.whoami": false,
+      "auth.logout": false,
+    });
+
+    const configuredDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      authBackend: makeAuthBackend(),
+      daemonControl: {
+        reloadConfig: () => ({
+          reloaded: true,
+          configReloadedAt: "2026-05-01T09:00:00.000Z",
+          mcpServer: { status: "disabled" },
+        }),
+      },
+      initializeAuthenticator: () => true,
+      sessionManager: new AgenCDaemonSessionManager(),
+    });
+    const configuredConnection = configuredDispatcher.createConnection();
+
+    const configuredInitialize = await configuredConnection.dispatch(
+      request("configured-init", "initialize", {
+        protocol: { version: "1.0.0" },
+        authCookie: "cookie",
+      }),
+    );
+    const configuredMethods = daemonMethodCapabilities(configuredInitialize);
+    expect(configuredMethods).toMatchObject({
+      "session.create": true,
+      "session.list": true,
+      "session.attach": true,
+      "session.detach": true,
+      "session.terminate": true,
+      "daemon.reload": true,
+      "auth.login": true,
+      "auth.whoami": true,
+      "auth.logout": true,
+    });
+  });
+
   it("requires initialization before daemon.reload", async () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
