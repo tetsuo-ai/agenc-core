@@ -14,6 +14,8 @@
  *     fallback requests.
  */
 
+import { isRecord } from "../utils/record.js";
+
 export interface ModelTokenizerConfig {
   readonly modelFamily: string;
   readonly providerNames: readonly string[];
@@ -424,8 +426,4 @@ function safeJsonStringify(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

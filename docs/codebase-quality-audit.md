@@ -4,6 +4,55 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Token Estimation Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/token-estimation.ts` estimates deterministic local token
+  counts for strings, arrays, structured content blocks, tool-use/tool-result
+  blocks, thinking blocks, media placeholders, file-type ratios, and
+  provider/model tokenizer hints.
+- `runtime/src/services/tokenEstimation.ts` layers provider API token counting
+  on top of the local estimator, normalizes attachment payloads for estimation,
+  detects thinking blocks, strips tool-search-only fields, and resolves Bedrock
+  token-count model ids.
+- `runtime/tests/llm/token-estimation.test.ts` covers local estimator ratios,
+  structured blocks, media placeholders, provider hints, file-type ratios, and
+  message aggregation.
+- `runtime/tests/services/service-utilities.test.ts` and
+  `runtime/tests/services/service-utilities.contract.test.ts` cover service
+  token-estimation surfaces, attachment normalization, provider-count
+  fallbacks, tool-reference stripping, thinking detection, and Bedrock
+  token-count loading.
+
+### Finding
+
+Both token-estimation modules carried local strict `isRecord` helpers
+equivalent to `utils/record.ts#isRecord`. They gate untrusted content blocks,
+attachment records, message blocks, and tool-reference blocks before
+specialized token estimation or provider-count request shaping.
+
+### Change
+
+- Replaced the local `isRecord` helpers in the LLM and service
+  token-estimation modules with the shared `runtime/src/utils/record.ts`
+  utility.
+- Preserved scalar/array JSON fallback behavior, media placeholder token costs,
+  attachment normalization, thinking-block detection, and tool-reference
+  stripping.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/llm/token-estimation.test.ts tests/services/service-utilities.test.ts tests/services/service-utilities.contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Feature Registry Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
