@@ -68,6 +68,12 @@ const harness = vi.hoisted(() => {
     recordUsageCacheStats: vi.fn(),
     addToTotalSessionCost: vi.fn(() => 0),
     calculateUSDCost: vi.fn(() => 0),
+    enabledFeatures: new Set<string>(),
+    cachedMicrocompactEnabled: false,
+    cachedMicrocompactModelSupported: true,
+    pendingCacheEdits: null,
+    pinnedCacheEdits: [],
+    pinCacheEdits: vi.fn(),
   }
 
   const makeStream = (events: AnyRecord[]) => ({
@@ -144,7 +150,7 @@ const harness = vi.hoisted(() => {
 })
 
 vi.mock('bun:bundle', () => ({
-  feature: () => false,
+  feature: (name: string) => harness.enabledFeatures.has(name),
 }))
 
 vi.mock('../../../src/constants/system.js', () => ({
@@ -340,11 +346,17 @@ vi.mock('../../../src/services/compact/apiMicrocompact.js', () => ({
   getAPIContextManagement: () => null,
 }))
 
+vi.mock('../../../src/services/compact/cachedMicrocompact.js', () => ({
+  getCachedMCConfig: () => ({ supportedModels: ['test-model'] }),
+  isCachedMicrocompactEnabled: () => harness.cachedMicrocompactEnabled,
+  isModelSupportedForCacheEditing: () => harness.cachedMicrocompactModelSupported,
+}))
+
 vi.mock('../../../src/services/compact/microCompact.js', () => ({
-  consumePendingCacheEdits: () => null,
-  getPinnedCacheEdits: () => [],
+  consumePendingCacheEdits: () => harness.pendingCacheEdits,
+  getPinnedCacheEdits: () => harness.pinnedCacheEdits,
   markToolsSentToAPIState: vi.fn(),
-  pinCacheEdits: vi.fn(),
+  pinCacheEdits: harness.pinCacheEdits,
 }))
 
 vi.mock('../../../src/services/lsp/manager.js', () => ({
@@ -415,6 +427,12 @@ function resetHarness(): void {
   harness.recordUsageCacheStats.mockClear()
   harness.addToTotalSessionCost.mockClear()
   harness.calculateUSDCost.mockClear()
+  harness.enabledFeatures.clear()
+  harness.cachedMicrocompactEnabled = false
+  harness.cachedMicrocompactModelSupported = true
+  harness.pendingCacheEdits = null
+  harness.pinnedCacheEdits = []
+  harness.pinCacheEdits.mockClear()
 }
 
 function baseOptions(overrides: AnyRecord = {}): AnyRecord {
@@ -885,6 +903,56 @@ describe('provider API requests', () => {
       true,
       undefined,
     ])
+  })
+
+  test('queryModelWithStreaming annotates cached-microcompact tool results before the cache boundary', async () => {
+    harness.enabledFeatures.add('CACHED_MICROCOMPACT')
+    harness.cachedMicrocompactEnabled = true
+    harness.cachedMicrocompactModelSupported = true
+    harness.streamEvents = textStreamEvents('cache reference path')
+    const toolResultBlock: AnyRecord = {
+      type: 'tool_result',
+      tool_use_id: 'toolu_1',
+      content: 'tool done',
+    }
+
+    const seen: AnyRecord[] = []
+    for await (const event of queryModelWithStreaming({
+      messages: [
+        userMessage([
+          toolResultBlock,
+          { type: 'text', text: 'continue after tool' },
+        ]),
+        userMessage('final prompt'),
+      ],
+      systemPrompt: asSystemPrompt(['cache system']),
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal: new AbortController().signal,
+      options: baseOptions({
+        enablePromptCaching: true,
+        querySource: 'repl_main_thread',
+      }),
+    })) {
+      seen.push(event as AnyRecord)
+    }
+
+    expect(seen.some(event => event.type === 'assistant')).toBe(true)
+    const streamingCall = harness.createCalls.find(
+      ({ params }: AnyRecord) => params.stream === true,
+    )
+    const firstMessageContent = streamingCall.params.messages[0].content
+    expect(firstMessageContent[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_1',
+      cache_reference: 'toolu_1',
+    })
+    expect(streamingCall.params.messages[1].content[0]).toMatchObject({
+      type: 'text',
+      text: 'final prompt',
+      cache_control: { type: 'ephemeral' },
+    })
+    expect(toolResultBlock).not.toHaveProperty('cache_reference')
   })
 
   test('queryHaiku and queryWithModel delegate through the nonstreaming query pipeline', async () => {

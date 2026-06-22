@@ -2840,7 +2840,146 @@ type CachedMCPinnedEdits = {
   block: CachedMCEditsBlock
 }
 
-// Exported for testing cache_reference placement constraints
+type CacheEditDeduplicator = (
+  block: CachedMCEditsBlock,
+) => CachedMCEditsBlock
+
+function createCacheEditDeduplicator(): CacheEditDeduplicator {
+  const seenDeleteRefs = new Set<string>()
+  return block => {
+    const uniqueEdits = block.edits.filter(edit => {
+      if (seenDeleteRefs.has(edit.cache_reference)) {
+        return false
+      }
+      seenDeleteRefs.add(edit.cache_reference)
+      return true
+    })
+    return { ...block, edits: uniqueEdits }
+  }
+}
+
+function userContentBlocksForMutation(
+  message: MessageParam,
+): BetaContentBlockParam[] | null {
+  if (message.role !== 'user') {
+    return null
+  }
+  if (!Array.isArray(message.content)) {
+    message.content = [{ type: 'text', text: message.content as string }]
+  }
+  return message.content as BetaContentBlockParam[]
+}
+
+function addPinnedCacheEdits(
+  result: MessageParam[],
+  pinnedEdits: readonly CachedMCPinnedEdits[] | undefined,
+  deduplicateEdits: CacheEditDeduplicator,
+): void {
+  for (const pinned of pinnedEdits ?? []) {
+    const msg = result[pinned.userMessageIndex]
+    if (!msg) {
+      continue
+    }
+    const content = userContentBlocksForMutation(msg)
+    if (!content) {
+      continue
+    }
+    const dedupedBlock = deduplicateEdits(pinned.block)
+    if (dedupedBlock.edits.length > 0) {
+      insertBlockAfterToolResults(content, dedupedBlock)
+    }
+  }
+}
+
+function addNewCacheEdits(
+  result: MessageParam[],
+  newCacheEdits: CachedMCEditsBlock | null | undefined,
+  deduplicateEdits: CacheEditDeduplicator,
+): void {
+  if (!newCacheEdits || result.length === 0) {
+    return
+  }
+  const dedupedNewEdits = deduplicateEdits(newCacheEdits)
+  if (dedupedNewEdits.edits.length === 0) {
+    return
+  }
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i]
+    if (!msg) {
+      continue
+    }
+    const content = userContentBlocksForMutation(msg)
+    if (!content) {
+      continue
+    }
+    insertBlockAfterToolResults(content, dedupedNewEdits)
+    // Pin so this block is re-sent at the same position in future calls.
+    pinCacheEdits(i, newCacheEdits)
+
+    logForDebugging(
+      `Added cache_edits block with ${dedupedNewEdits.edits.length} deletion(s) to message[${i}]: ${dedupedNewEdits.edits.map(e => e.cache_reference).join(', ')}`,
+    )
+    break
+  }
+}
+
+function addCachedMicrocompactEdits(
+  result: MessageParam[],
+  newCacheEdits: CachedMCEditsBlock | null | undefined,
+  pinnedEdits: readonly CachedMCPinnedEdits[] | undefined,
+): void {
+  const deduplicateEdits = createCacheEditDeduplicator()
+  addPinnedCacheEdits(result, pinnedEdits, deduplicateEdits)
+  addNewCacheEdits(result, newCacheEdits, deduplicateEdits)
+}
+
+function findLastCacheControlMessageIndex(
+  messages: readonly MessageParam[],
+): number {
+  let lastCacheControlMessageIndex = -1
+  for (let index = 0; index < messages.length; index += 1) {
+    const msg = messages[index]!
+    if (!Array.isArray(msg.content)) {
+      continue
+    }
+    for (const block of msg.content) {
+      if (block && typeof block === 'object' && 'cache_control' in block) {
+        lastCacheControlMessageIndex = index
+      }
+    }
+  }
+  return lastCacheControlMessageIndex
+}
+
+function addCacheReferencesToToolResultsBeforeCacheControl(
+  result: MessageParam[],
+): void {
+  const lastCacheControlMessageIndex = findLastCacheControlMessageIndex(result)
+  if (lastCacheControlMessageIndex < 0) {
+    return
+  }
+
+  for (let i = 0; i < lastCacheControlMessageIndex; i++) {
+    const msg = result[i]!
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) {
+      continue
+    }
+    let cloned = false
+    for (let j = 0; j < msg.content.length; j++) {
+      const block = msg.content[j]
+      if (block && isToolResultBlock(block)) {
+        if (!cloned) {
+          msg.content = [...msg.content]
+          cloned = true
+        }
+        msg.content[j] = Object.assign({}, block, {
+          cache_reference: block.tool_use_id,
+        })
+      }
+    }
+  }
+}
+
 function addCacheBreakpoints(
   messages: (UserMessage | AssistantMessage)[],
   enablePromptCaching: boolean,
@@ -2884,74 +3023,11 @@ function addCacheBreakpoints(
     return result
   }
 
-  // Track all cache_references being deleted to prevent duplicates across blocks.
-  const seenDeleteRefs = new Set<string>()
-
-  // Helper to deduplicate a cache_edits block against already-seen deletions
-  const deduplicateEdits = (block: CachedMCEditsBlock): CachedMCEditsBlock => {
-    const uniqueEdits = block.edits.filter(edit => {
-      if (seenDeleteRefs.has(edit.cache_reference)) {
-        return false
-      }
-      seenDeleteRefs.add(edit.cache_reference)
-      return true
-    })
-    return { ...block, edits: uniqueEdits }
-  }
-
-  // Re-insert all previously-pinned cache_edits at their original positions
-  for (const pinned of pinnedEdits ?? []) {
-    const msg = result[pinned.userMessageIndex]
-    if (msg && msg.role === 'user') {
-      if (!Array.isArray(msg.content)) {
-        msg.content = [{ type: 'text', text: msg.content as string }]
-      }
-      const dedupedBlock = deduplicateEdits(pinned.block)
-      if (dedupedBlock.edits.length > 0) {
-        insertBlockAfterToolResults(msg.content, dedupedBlock)
-      }
-    }
-  }
-
-  // Insert new cache_edits into the last user message and pin them
-  if (newCacheEdits && result.length > 0) {
-    const dedupedNewEdits = deduplicateEdits(newCacheEdits)
-    if (dedupedNewEdits.edits.length > 0) {
-      for (let i = result.length - 1; i >= 0; i--) {
-        const msg = result[i]
-        if (msg && msg.role === 'user') {
-          if (!Array.isArray(msg.content)) {
-            msg.content = [{ type: 'text', text: msg.content as string }]
-          }
-          insertBlockAfterToolResults(msg.content, dedupedNewEdits)
-          // Pin so this block is re-sent at the same position in future calls
-          pinCacheEdits(i, newCacheEdits)
-
-          logForDebugging(
-            `Added cache_edits block with ${dedupedNewEdits.edits.length} deletion(s) to message[${i}]: ${dedupedNewEdits.edits.map(e => e.cache_reference).join(', ')}`,
-          )
-          break
-        }
-      }
-    }
-  }
+  addCachedMicrocompactEdits(result, newCacheEdits, pinnedEdits)
 
   // Add cache_reference to tool_result blocks that are within the cached prefix.
   // Must be done AFTER cache_edits insertion since that modifies content arrays.
   if (enablePromptCaching) {
-    // Find the last message containing a cache_control marker
-    let lastCCMsg = -1
-    for (let i = 0; i < result.length; i++) {
-      const msg = result[i]!
-      if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block && typeof block === 'object' && 'cache_control' in block) {
-            lastCCMsg = i
-          }
-        }
-      }
-    }
-
     // Add cache_reference to tool_result blocks that are strictly before
     // the last cache_control marker. The API requires cache_reference to
     // appear "before or on" the last cache_control — we use strict "before"
@@ -2959,27 +3035,7 @@ function addCacheBreakpoints(
     //
     // Create new objects instead of mutating in-place to avoid contaminating
     // blocks reused by secondary queries that use models without cache_editing support.
-    if (lastCCMsg >= 0) {
-      for (let i = 0; i < lastCCMsg; i++) {
-        const msg = result[i]!
-        if (msg.role !== 'user' || !Array.isArray(msg.content)) {
-          continue
-        }
-        let cloned = false
-        for (let j = 0; j < msg.content.length; j++) {
-          const block = msg.content[j]
-          if (block && isToolResultBlock(block)) {
-            if (!cloned) {
-              msg.content = [...msg.content]
-              cloned = true
-            }
-            msg.content[j] = Object.assign({}, block, {
-              cache_reference: block.tool_use_id,
-            })
-          }
-        }
-      }
-    }
+    addCacheReferencesToToolResultsBeforeCacheControl(result)
   }
 
   return result

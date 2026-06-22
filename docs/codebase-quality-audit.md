@@ -293,6 +293,61 @@ there were 19 models, while the current registry exports 21.
 - `npm run test:bun`
 - `git diff --check`
 
+## 2026-06-22: Anthropic Cache Breakpoint Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/api/anthropic.ts#addCacheBreakpoints` converts
+  normalized runtime messages into Anthropic request messages, places the
+  single message-level cache marker, inserts cached-microcompact edit blocks,
+  and annotates cached-prefix tool results with `cache_reference`.
+- `runtime/src/services/api/anthropic.ts#paramsFromContext` calls
+  `addCacheBreakpoints` for logging, streaming requests, retries, and
+  nonstreaming fallback requests.
+- `runtime/src/services/compact/cachedMicrocompact.ts` is the disabled-surface
+  feature gate used before the cache-edit path can run.
+- `runtime/src/services/compact/microCompact.ts` owns pending and pinned cache
+  edit state consumed by the request builder.
+- `runtime/tests/services/api/anthropic-core.test.ts` is the focused request
+  assembly harness for the Anthropic API adapter.
+
+### Finding
+
+`addCacheBreakpoints` was doing cache marker placement, cache-edit
+deduplication/insertion, cache-edit pinning, and `cache_reference` annotation in
+one 143-line helper. That made the sensitive request-shape logic hard to review
+and left the cached-microcompact tool-result annotation path without direct
+request-shape coverage.
+
+### Change
+
+- Split cache-edit deduplication, pinned/new edit insertion, mutable user
+  content coercion, cache-control boundary detection, and tool-result
+  annotation into private helpers.
+- Kept the existing early return when cached microcompact is inactive, so
+  cache-reference annotation remains scoped to the cache-edit feature path.
+- Removed a stale comment that described the private helper as exported for
+  testing.
+- Extended the Anthropic core request test harness with feature-gate mocks for
+  cached microcompact and added focused coverage that a tool result before the
+  cache boundary receives `cache_reference` without mutating the original
+  message block.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/services/api/anthropic-core.test.ts --reporter=dot`
+- Node long-function heuristic confirmed `addCacheBreakpoints` no longer
+  appears in the Anthropic `>=80` line helper list; `paramsFromContext` remains
+  the next Anthropic hotspot.
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Dispatcher Optional-Service Responses
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
