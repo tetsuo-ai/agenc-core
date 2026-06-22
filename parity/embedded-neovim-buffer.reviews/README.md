@@ -1,10 +1,15 @@
-# embedded-neovim-buffer review verdicts
+# Embedded Neovim BUFFER Review Verdicts
 
-Reviewer subagents write structured JSON verdicts here. The contract checker reads them when --require-reviews is used.
+This directory stores structured JSON verdicts for
+`parity/embedded-neovim-buffer.json`. The contract wrapper reads them when the
+reviewed gate is used.
 
-- Per-row verdicts: `<row.id>.json` (one file per row, written by the row-reviewer subagent).
-- Contract verdict: `_contract.json` (single file, written by the contract-reviewer subagent).
+- Per-row verdicts: `<row.id>.json` (one file per row).
+- Contract verdict: `_contract.json` (one aggregate verdict).
 
-Both files must report `"verdict": "APPROVED"` for the contract checker to pass. See the row-reviewer and contract-reviewer agent specs for the exact JSON shape.
+Both files must report `"verdict": "APPROVED"` for the contract checker to
+pass. The wrapper and implementation-contract checker enforce the JSON shape.
 
-Do not edit verdict files by hand; they are evidence. If a verdict is wrong, fix the implementation or the reviewer prompt and rerun the reviewer.
+Do not edit verdict files by hand; they are evidence. If a verdict is wrong,
+fix the implementation or replace the review evidence, then rerun
+`node scripts/check-embedded-neovim-buffer.mjs`.

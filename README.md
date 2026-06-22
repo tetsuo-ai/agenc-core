@@ -14,8 +14,8 @@ that reads your code, runs commands, and edits files from the terminal. It is
 **daemon-backed**: a local daemon owns agent/session lifecycle, command
 execution, permissions, and provider calls, while the interactive TUI, the
 one-shot `--print` CLI, and background agents are all clients of it. The live
-implementation is concentrated in `runtime/`, with a thin public launcher in
-`packages/agenc/` and daemon service templates in `packaging/`.
+implementation is concentrated in `runtime/`, with the published launcher
+package in `packages/agenc/` and daemon service templates in `packaging/`.
 
 For the subsystem map and how the pieces fit together, see
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -36,7 +36,7 @@ For the subsystem map and how the pieces fit together, see
 
 ## Features
 
-- **Two front-ends, one engine** — an interactive Ink/React **TUI** and a
+- **Two front-ends, one engine** — an interactive custom React **TUI** and a
   headless one-shot mode (`agenc --print "…"`), both driven by the same
   daemon-owned session engine.
 - **Background & autonomous agents** — fire-and-forget agents that run
@@ -58,12 +58,14 @@ For the subsystem map and how the pieces fit together, see
 
 ## Project status
 
-Pre-release (`0.2.0`, `private`). The codebase is **type-clean** (`0`
-`@ts-nocheck`, `tsc` at 0 errors) with ~12,000 passing tests, and the
-daemon / persistence / permission cores are mature (WAL SQLite, atomic rollout
-writes, an AST-backed Bash permission layer, transactional file edits). It is
-**not yet published** to a registry — build from source (below). A top-level
-`LICENSE` is being finalized ahead of the first public release.
+Pre-release (`0.2.0`). The public launcher package
+[`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc) is
+published at `0.2.0`; the root repo and runtime workspace remain private
+implementation packages. The codebase is **type-clean** (`0` `@ts-nocheck`,
+`tsc` at 0 errors) with 12k+ passing tests, and the daemon / persistence /
+permission cores are mature (WAL SQLite, atomic rollout writes, an AST-backed
+Bash permission layer, transactional file edits). The repository is MIT
+licensed; see [`LICENSE`](LICENSE).
 
 ## Requirements
 
@@ -81,7 +83,14 @@ writes, an AST-backed Bash permission layer, transactional file edits). It is
 
 ## Quick start
 
-Build from source and run the CLI:
+Install the published launcher:
+
+```bash
+npm install -g @tetsuo-ai/agenc
+agenc --help
+```
+
+Or build from this source checkout:
 
 ```bash
 npm install
@@ -249,8 +258,15 @@ sandbox/        OS sandbox launch helpers
 mcp-client/     outbound MCP client (tool/resource/prompt bridges)
 mcp-server/     MCP server framework + transports
 config/ state/  config schema/store/migrations, SQLite project state
+auth/           local/remote auth backends and BYOK precedence
+commands/       slash-command registry and TUI/headless command handlers
+plugins/        plugin manifests, registration, marketplaces, and CLI
+hooks/          configured hooks and hook execution engine
+elicitation/    structured user-input requests and responses
+memory/ memdir/ project/session memory storage and retrieval
 transaction-guard/  opt-in SLM tool-call guard (see Security)
-tui/            the Ink/React terminal UI
+unified-exec/ pty/  process execution and PTY helpers
+tui/            the custom React terminal UI
 ```
 
 The full subsystem map (process model, on-disk state, render stack) is in
@@ -262,7 +278,7 @@ From the repo root:
 
 ```bash
 npm run typecheck        # tsc --noEmit (keep at 0 errors)
-npm run build            # esbuild bundle → runtime/dist + VERSION
+npm run build            # esbuild bundle + declarations → runtime/dist + VERSION
 npm run test             # typecheck + full vitest suite
 npm run test:bun         # isolated Bun suite (one file per process)
 npm run validate:runtime # typecheck + build + PTY startup smoke
@@ -290,9 +306,10 @@ and `agenc --yolo` in real pseudo-terminals at several viewport sizes — keep i
 in the validation path for anything touching the TUI, daemon startup, package
 entrypoints, or built artifacts.
 
-`npm run build` compiles the runtime with `esbuild`, writes `runtime/dist/VERSION`,
-copies runtime policy assets, and verifies the package entrypoints. The
-generated `runtime/dist/` tree is build output, not source.
+`npm run build` compiles the runtime with `esbuild`, emits declarations with
+`tsc`, writes `runtime/dist/VERSION`, copies runtime policy assets, and verifies
+the package entrypoints. The generated `runtime/dist/` tree is build output, not
+source.
 
 ## Security
 
@@ -316,7 +333,8 @@ an explicit DevNet live-validation path. See
 
 1. **Branch off `main`** (never commit directly to it).
 2. Make the change with a **revert-sensitive** test where a bug is involved.
-3. Verify locally — the gates are authoritative because hosted CI is disabled:
+3. Verify locally — this checkout has no hosted CI workflow, so local gates are
+   authoritative:
    - `npm run typecheck` → **0 errors** (and no new `@ts-nocheck`),
    - `npm run test` → green,
    - `npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime` for
@@ -329,6 +347,6 @@ it with `git config core.hooksPath .githooks`.
 
 ## License
 
-Pre-release. The runtime package metadata declares **MIT**
-(`runtime/package.json`); a top-level `LICENSE`/`NOTICE` is being finalized
-ahead of the first public release. Until then the repository is `private`.
+MIT. The top-level license file and the runtime / launcher package metadata all
+declare MIT. The root workspace stays `private` because it is an implementation
+monorepo, not the package published to npm.

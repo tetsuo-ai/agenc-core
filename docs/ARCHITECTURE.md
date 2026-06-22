@@ -30,15 +30,23 @@ Everything past the launcher lives in the single runtime workspace
 | `app-server/`, `app-server-client/`, `app-server-protocol/` | The daemon: transports, JSON-RPC dispatch, auth, lifecycle, health, and the client side. |
 | `session/` | Session engine: turn loop, transcript, the append-only rollout store + `index.json` snapshot, autonomous mode, resume. |
 | `agents/` | Background-agent state, registry, worktree isolation, status. |
+| `auth/` | Local and remote auth backends, BYOK precedence, provider auth selection. |
 | `llm/` | Provider-neutral model/client/request handling, the model-capability catalog, retries, streaming. |
 | `services/api/` | Concrete provider wire layer (xAI/Anthropic-SDK/OpenAI-compatible shims), caching, cost. |
 | `tools/` | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task* …). |
 | `permissions/` | Trust, approval policy, permission rules, sandbox policy, the `unattended` background-agent policy. Permission types are single-sourced in `types/permissions.ts`. |
 | `sandbox/` | OS sandbox launch helpers (wraps `@anthropic-ai/sandbox-runtime`: bubblewrap/Landlock on Linux, Seatbelt on macOS). |
 | `mcp-client/` / `mcp-server/` | Outbound MCP client (tool/resource/prompt bridges) and the MCP server framework. |
+| `commands/` | Slash-command registry and command implementations for TUI/headless dispatch. |
+| `plugins/`, `skills/`, `outputStyles/` | Plugin manifests, marketplace sources, registration for commands/tools/hooks/MCP/LSP/agents/output styles, and skill loading. |
+| `hooks/`, `elicitation/` | Configured hook execution and structured user-input request/response plumbing. |
+| `memory/`, `memdir/` | Project/session memory extraction, storage, aging, and retrieval. |
 | `config/`, `state/`, `secrets/` | Config schema/store/migrations, on-disk SQLite project state, secret handling. |
+| `transaction-guard/` | Opt-in local SLM transaction guard for Solana-like mutating tool calls. |
+| `unified-exec/`, `pty/` | Process execution, command monitoring, and PTY helpers. |
+| `eval/` | Local agent-evaluation report schema and validator. |
 | `tui/` | The terminal UI. |
-| `utils/` | Shared utilities (largest dir): messages, hooks, bash parsing, model tables, forked-agent params, etc. |
+| `utils/` | Shared utilities: messages, bash parsing, model tables, file persistence, plugin helpers, sandbox helpers, and compatibility shims. |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -88,19 +96,21 @@ dependency, not vendored source.
 
 ## Build, test & gates
 
-- **Build** — `esbuild` bundles the runtime to `runtime/dist`, stamps
-  `dist/VERSION`, copies policy assets, and verifies the 4 package entrypoints.
+- **Build** — `esbuild` bundles the runtime to `runtime/dist`, `tsc` emits
+  declarations, `dist/VERSION` is stamped, policy assets are copied, and the 4
+  package entrypoints are verified.
 - **Type-check** — `tsc --noEmit`, kept at **0 errors** with **0 `@ts-nocheck`**.
 - **Tests** — ~12,000 vitest tests, plus an isolated Bun suite (one file per
   process) and PTY/e2e scenario gates.
-- **Remote CI** — disabled to avoid hosted runner spend; local gates are
-  authoritative.
+- **Remote CI** — no `.github` workflow is present in this checkout; local gates
+  are authoritative.
 
 ## Current status
 
 The codebase is type-clean (0 `@ts-nocheck`, `tsc` 0), the full suite is green,
 and the daemon/persistence/permission cores are mature (WAL SQLite, atomic
 rollout writes, an AST-backed Bash permission layer, transactional file edits).
-The original donor-port phase is complete. Known pre-GA gaps are tracked
-separately (packaging/installability, a `LICENSE`/`NOTICE`, observability
-wiring, and deciding whether hosted CI is worth re-enabling).
+The public launcher package is published, the repository has a top-level MIT
+license, and known pre-GA gaps are tracked separately: cross-platform runtime
+artifacts, observability wiring, release hardening, and deciding whether hosted
+CI is worth re-enabling.
