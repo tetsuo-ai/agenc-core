@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared LSP Result Partitioning
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/LSPTool/LSPTool.ts#formatResult` logs malformed
+  location/symbol responses, computes result counts, and computes file counts
+  for definition, reference, workspace-symbol, and implementation results.
+- `runtime/src/tools/LSPTool/formatters.ts#formatGoToDefinitionResult`,
+  `#formatFindReferencesResult`, and `#formatWorkspaceSymbolResult` apply the
+  formatter-side defensive filtering before rendering user-facing output.
+- `runtime/src/tools/LSPTool/locations.ts` now owns the valid/invalid
+  partitioning for LSP `Location` and `SymbolInformation` arrays.
+- `runtime/tests/tools/LSPTool/locations.test.ts` covers malformed locations,
+  malformed symbol locations, and the valid-count/invalid-count split.
+
+### Finding
+
+The LSP tool and formatter repeatedly filtered the same arrays twice: once to
+count malformed entries for logging and once to keep valid entries for counts or
+rendering. The predicates need to stay identical between formatter output and
+tool metadata, otherwise malformed LSP responses can be counted differently than
+they are displayed.
+
+### Change
+
+- Added `partitionValidLocations` and `partitionValidSymbolInformation` to the
+  local LSP location helper module.
+- Replaced repeated valid/invalid filter pairs in both formatter and tool
+  result-counting paths.
+- Extended helper tests to pin the malformed-entry counts and valid output
+  arrays.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/LSPTool/locations.test.ts tests/tools/LSPTool/schemas.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+
 ## 2026-06-22: Shared LSP Location Conversion
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

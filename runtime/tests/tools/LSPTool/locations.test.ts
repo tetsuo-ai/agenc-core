@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import type { Location, LocationLink, Range } from 'vscode-languageserver-types'
+import type {
+  Location,
+  LocationLink,
+  Range,
+  SymbolInformation,
+} from 'vscode-languageserver-types'
 
-import { toLocation } from '../../../src/tools/LSPTool/locations.js'
+import {
+  partitionValidLocations,
+  partitionValidSymbolInformation,
+  toLocation,
+} from '../../../src/tools/LSPTool/locations.js'
 
 const targetRange: Range = {
   start: { line: 3, character: 4 },
@@ -45,6 +54,53 @@ describe('LSP location helpers', () => {
     expect(toLocation(link)).toEqual({
       uri: 'file:///repo/src/file.ts',
       range: targetRange,
+    })
+  })
+
+  it('partitions locations by usable URI', () => {
+    const first: Location = {
+      uri: 'file:///repo/src/one.ts',
+      range: targetRange,
+    }
+    const second: Location = {
+      uri: 'file:///repo/src/two.ts',
+      range: selectionRange,
+    }
+
+    expect(
+      partitionValidLocations([
+        first,
+        null,
+        { uri: '', range: targetRange },
+        undefined,
+        second,
+      ]),
+    ).toEqual({
+      validLocations: [first, second],
+      invalidLocationCount: 3,
+    })
+  })
+
+  it('partitions symbol information by usable location URI', () => {
+    const symbol: SymbolInformation = {
+      name: 'example',
+      kind: 12,
+      location: {
+        uri: 'file:///repo/src/file.ts',
+        range: targetRange,
+      },
+    }
+
+    expect(
+      partitionValidSymbolInformation([
+        symbol,
+        null,
+        { ...symbol, location: { uri: '', range: selectionRange } },
+        undefined,
+      ]),
+    ).toEqual({
+      validSymbols: [symbol],
+      invalidSymbolCount: 3,
     })
   })
 })
