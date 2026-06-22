@@ -133,6 +133,7 @@ import {
 } from "../utils/messageQueueManager.js";
 import { notifyCommandLifecycle } from "../utils/commandLifecycle.js";
 import { wrapCommandText } from "../utils/messages.js";
+import { asRecord } from "../utils/record.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
 import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import {
@@ -1632,17 +1633,11 @@ function sessionQuerySourceForPostSampling(session: Session): string {
     session.services.querySource.length > 0
       ? session.services.querySource
       : "repl_main_thread";
-  const source = (
-    session as unknown as {
-      readonly sessionConfiguration?: {
-        readonly sessionSource?: unknown;
-      };
-    }
-  ).sessionConfiguration?.sessionSource;
-  const sourceKind =
-    typeof source === "object" && source !== null
-      ? (source as { readonly kind?: unknown }).kind
-      : undefined;
+  const sessionConfiguration = asRecord(
+    (session as unknown as { readonly sessionConfiguration?: unknown })
+      .sessionConfiguration,
+  );
+  const sourceKind = asRecord(sessionConfiguration?.sessionSource)?.kind;
   if (raw === "repl_main_thread" && sourceKind === "subagent") {
     return `agent:${session.conversationId}`;
   }

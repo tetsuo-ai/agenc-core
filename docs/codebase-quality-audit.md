@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Run-Turn Session Source Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/run-turn.ts#sessionQuerySourceForPostSampling` derives
+  the post-sampling query source used by MagicDocs and session-memory hooks.
+- `runtime/src/session/run-turn.ts#launchMagicDocsPostSampling` skips MagicDocs
+  updates when the query source is converted to `agent:<conversationId>`.
+- `runtime/tests/session/run-turn.test.ts` already covers the structured
+  subagent source suppression path.
+
+### Finding
+
+The session-source query-source bridge still read `sessionSource.kind` from any
+non-null object. Array-shaped session sources with a spoofed `kind: "subagent"`
+could therefore suppress main-thread MagicDocs updates even though structured
+session sources are expected to be records.
+
+### Change
+
+- Reused `runtime/src/utils/record.ts#asRecord` before reading
+  `sessionConfiguration.sessionSource.kind`.
+- Added a regression proving array-shaped `sessionSource` values no longer
+  suppress MagicDocs post-sampling work.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/run-turn.test.ts tests/services/MagicDocs/magicDocs.test.ts --reporter=dot`
+
 ## 2026-06-22: Agent Service Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
