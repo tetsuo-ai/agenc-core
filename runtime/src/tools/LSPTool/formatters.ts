@@ -15,6 +15,7 @@ import type {
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { plural } from '../../utils/stringUtils.js'
+import { toLocation } from './locations.js'
 /**
  * Formats a URI by converting it to a relative path if possible.
  * Handles URI decoding and gracefully falls back to un-decoded path if malformed.
@@ -103,23 +104,6 @@ function formatLocation(location: Location, cwd?: string): string {
 }
 
 /**
- * Converts LocationLink to Location format for consistent handling
- */
-function locationLinkToLocation(link: LocationLink): Location {
-  return {
-    uri: link.targetUri,
-    range: link.targetSelectionRange || link.targetRange,
-  }
-}
-
-/**
- * Checks if an object is a LocationLink (has targetUri) vs Location (has uri)
- */
-function isLocationLink(item: Location | LocationLink): item is LocationLink {
-  return 'targetUri' in item
-}
-
-/**
  * Formats goToDefinition result
  * Can return Location, LocationLink, or arrays of either
  */
@@ -133,9 +117,7 @@ export function formatGoToDefinitionResult(
 
   if (Array.isArray(result)) {
     // Convert LocationLinks to Locations for uniform handling
-    const locations: Location[] = result.map(item =>
-      isLocationLink(item) ? locationLinkToLocation(item) : item,
-    )
+    const locations: Location[] = result.map(toLocation)
 
     // Log and filter out any locations with undefined uris
     const invalidLocations = locations.filter(loc => !loc || !loc.uri)
@@ -161,9 +143,7 @@ export function formatGoToDefinitionResult(
   }
 
   // Single result - convert LocationLink if needed
-  const location = isLocationLink(result)
-    ? locationLinkToLocation(result)
-    : result
+  const location = toLocation(result)
   return `Defined in ${formatLocation(location, cwd)}`
 }
 

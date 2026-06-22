@@ -4,6 +4,41 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared LSP Location Conversion
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/LSPTool/LSPTool.ts#call` filters gitignored
+  location-based results and `formatResult` computes result/file counts for
+  definitions, references, workspace symbols, and implementations.
+- `runtime/src/tools/LSPTool/formatters.ts#formatGoToDefinitionResult` formats
+  both `Location` and `LocationLink` responses from LSP servers.
+- `runtime/src/tools/LSPTool/locations.ts` now owns local LSP
+  `LocationLink` detection and conversion to `Location`.
+- `runtime/tests/tools/LSPTool/locations.test.ts` covers conversion, unchanged
+  `Location` pass-through, and the malformed-link fallback to `targetRange`.
+
+### Finding
+
+The LSP tool and formatter each carried their own `LocationLink` detector and
+conversion helper. These helpers define which target range is used when LSP
+servers return link-shaped results, so duplicating them invited subtle mismatch
+between filtering/counting and displayed locations.
+
+### Change
+
+- Added `runtime/src/tools/LSPTool/locations.ts` with a shared `toLocation`
+  helper and private `LocationLink` detection/conversion.
+- Reused the helper in both the LSP tool result path and formatter path.
+- Added direct helper coverage for range selection and defensive fallback.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/LSPTool/locations.test.ts tests/tools/LSPTool/schemas.test.ts --reporter=dot`
+- `npm run typecheck`
+
 ## 2026-06-22: Shared Streaming Executor Wait Path
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

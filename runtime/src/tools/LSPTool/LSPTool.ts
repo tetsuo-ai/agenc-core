@@ -47,6 +47,7 @@ import {
   LSP_TOOL_OPERATIONS,
   lspToolInputSchema,
 } from './schemas.js'
+import { toLocation } from './locations.js'
 import {
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -581,26 +582,6 @@ async function filterGitIgnoredLocations<T extends Location>(
     const filePath = uriToPath.get(loc.uri)
     return !filePath || !ignoredPaths.has(filePath)
   })
-}
-
-/**
- * Checks if item is LocationLink (has targetUri) vs Location (has uri)
- */
-function isLocationLink(item: Location | LocationLink): item is LocationLink {
-  return 'targetUri' in item
-}
-
-/**
- * Converts LocationLink to Location format for uniform handling
- */
-function toLocation(item: Location | LocationLink): Location {
-  if (isLocationLink(item)) {
-    return {
-      uri: item.targetUri,
-      range: item.targetSelectionRange || item.targetRange,
-    }
-  }
-  return item
 }
 
 /**
