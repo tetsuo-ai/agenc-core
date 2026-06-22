@@ -4,6 +4,36 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Agent Loader Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/AgentTool/loadAgentsDir.ts` parses custom agent JSON
+  definitions, markdown frontmatter, hook settings, and plugin-provided agent
+  definitions before merging agent sources by precedence.
+- `runtime/tests/tools/AgentTool/loadAgentsDir.test.ts` covers JSON and
+  markdown agent parsing, invalid hook/MCP settings, source precedence,
+  project/user discovery, symlink dedupe, and plugin-agent loading.
+
+### Finding
+
+The agent loader carried a local strict `isRecord` helper equivalent to
+`utils/record.ts#isRecord`. It gates untrusted/custom agent configuration
+objects where arrays and `null` are not valid wrapper records.
+
+### Change
+
+- Replaced the local AgentTool loader `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved strict array/null rejection for hook maps, markdown frontmatter,
+  JSON agent objects, JSON agent maps, and plugin-agent wrappers.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/AgentTool/agent-memory.contract.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Startup Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

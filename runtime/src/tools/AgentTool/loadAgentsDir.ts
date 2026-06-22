@@ -26,6 +26,7 @@ import {
   clearPluginAgentCache,
   loadPluginAgents,
 } from '../../plugins/registration/load-plugin-agents.js'
+import { isRecord } from '../../utils/record.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
 import { loadAgentMemoryPrompt } from './agentMemory.js'
 
@@ -287,10 +288,6 @@ export function filterAgentsByMcpRequirements(
   availableServers: string[],
 ): AgentDefinition[] {
   return agents.filter(agent => hasRequiredMcpServers(agent, availableServers))
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function nonEmptyString(value: unknown): string | undefined {
