@@ -11,6 +11,7 @@ import { isProcessRunning } from "../utils/genericProcessUtils.js";
 import { StateThreadRepository } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { sqlPlaceholders } from "./sql.js";
+import { agentIdFromThreadSourceJson } from "../thread-store/thread-source.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
 const FAILED_AGENT_RUN_STATUSES = ["failed", "error", "errored"] as const;
@@ -686,43 +687,10 @@ function snapshotOwnerKey(row: SessionSnapshotPruneCandidate): string {
   const agentId =
     row.linked_agent_id ??
     row.agent_run_id ??
-    agentIdFromThreadSource(row.thread_source_json);
+    agentIdFromThreadSourceJson(row.thread_source_json);
   return agentId === undefined
     ? `session:${row.session_id}`
     : `agent:${agentId}`;
-}
-
-function agentIdFromThreadSource(raw: string | null): string | undefined {
-  if (raw === null) return undefined;
-  let source: unknown;
-  try {
-    source = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  if (source === "agent" || source === "agent_thread") return undefined;
-  if (!isRecord(source)) return undefined;
-  const direct = stringField(source, "agentId") ?? stringField(source, "agent_id");
-  if (direct !== undefined) return direct;
-  const nested = source.source;
-  if (!isRecord(nested)) return undefined;
-  return (
-    stringField(nested, "agentId") ??
-    stringField(nested, "agent_id") ??
-    stringField(nested, "parentThreadId")
-  );
-}
-
-function stringField(
-  record: Readonly<Record<string, unknown>>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function snapshotKey(

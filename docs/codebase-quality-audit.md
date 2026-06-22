@@ -4,6 +4,48 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Thread Source Metadata Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/app-server/session-lifecycle.ts` recovers stored threads into
+  daemon session summaries and derives the owning agent id from structured
+  thread source metadata.
+- `runtime/src/app-server/agent-lifecycle.ts` recovers stored agent threads and
+  detects `agent`, `agent_thread`, and `thread_spawn` sources.
+- `runtime/src/state/pruning.ts` groups session snapshots by agent owner,
+  including raw persisted `threads.source_json` when no explicit link exists.
+- `runtime/src/thread-store/thread-source.ts` now owns shared thread-source
+  record detection, non-empty string-field reads, agent-id extraction, persisted
+  JSON parsing, and agent-source detection.
+
+### Finding
+
+Session recovery and snapshot pruning had duplicated parsers for direct and
+nested thread-source agent ids. Agent recovery carried a related duplicate
+detector for agent thread sources and direct string metadata fields. These paths
+need identical handling for non-empty strings, arrays, nested `source` records,
+and malformed persisted JSON; local copies made recovery and pruning easy to
+drift.
+
+### Change
+
+- Added dependency-light `runtime/src/thread-store/thread-source.ts`.
+- Routed session recovery and pruning through the shared agent-id helpers.
+- Routed agent recovery through the shared agent-source detector and string
+  field reader while preserving its existing direct-id-only fallback to
+  `thread.threadId`.
+- Added focused helper tests covering record detection, field extraction,
+  direct/nested agent ids, malformed JSON, source labels, and nested source-kind
+  boundaries.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/thread-source.test.ts tests/app-server/session-lifecycle.contract.test.ts tests/app-server/agent-lifecycle.contract.test.ts tests/state/pruning.test.ts --reporter=dot`
+- `npm run typecheck`
+
 ## 2026-06-22: Shared Config JSON Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

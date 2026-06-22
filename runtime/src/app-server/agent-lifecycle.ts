@@ -90,6 +90,10 @@ import {
   type ThreadSource,
   type ThreadStore,
 } from "../thread-store/store.js";
+import {
+  isAgentThreadSource,
+  threadSourceStringField,
+} from "../thread-store/thread-source.js";
 import type { Event } from "../session/event-log.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
@@ -2347,7 +2351,7 @@ function storedThreadToAgent(thread: StoredThread): MutableAgent | undefined {
     agentId,
     objective:
       thread.name ??
-      firstStringMetadataField(thread.source, "objective") ??
+      threadSourceStringField(thread.source, "objective") ??
       thread.threadId,
     status: "idle",
     createdAt: thread.createdAt,
@@ -2362,49 +2366,16 @@ function storedThreadToAgent(thread: StoredThread): MutableAgent | undefined {
   };
 }
 
-function isAgentThreadSource(source: ThreadSource | undefined): boolean {
-  if (source === "agent" || source === "agent_thread") return true;
-  if (source === undefined || typeof source === "string") return false;
-  const kind = stringField(source, "kind");
-  if (kind === "agent" || kind === "agent_thread" || kind === "thread_spawn") {
-    return true;
-  }
-  const nested = source["source"];
-  return isRecord(nested) && stringField(nested, "kind") === "thread_spawn";
-}
-
 function agentIdForThread(thread: StoredThread): string {
-  if (thread.source !== undefined && typeof thread.source !== "string") {
-    const direct =
-      stringField(thread.source, "agentId") ??
-      stringField(thread.source, "agent_id");
-    if (direct !== undefined) return direct;
-  }
+  const direct =
+    threadSourceStringField(thread.source, "agentId") ??
+    threadSourceStringField(thread.source, "agent_id");
+  if (direct !== undefined) return direct;
   return thread.threadId;
-}
-
-function firstStringMetadataField(
-  source: ThreadSource | undefined,
-  key: string,
-): string | undefined {
-  if (source === undefined || typeof source === "string") return undefined;
-  return stringField(source, key);
 }
 
 function threadSourceToJson(source: ThreadSource): JsonValue {
   return typeof source === "string" ? source : (source as JsonObject);
-}
-
-function stringField(
-  record: Readonly<Record<string, unknown>>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toAgentCreateResult(agent: MutableAgent): AgentCreateResult {
