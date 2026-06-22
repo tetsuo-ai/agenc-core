@@ -4,6 +4,50 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Strict Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/mcp-server/framework.ts` parses transport-neutral JSON-RPC
+  request, response, notification, initialize, and tool-call envelopes.
+- `runtime/src/permissions/rpc/mcp-tool-approval-templates.ts` normalizes MCP
+  tool approval template files and renders JSON-object tool parameter display.
+- `runtime/src/permissions/rpc/request-permissions.ts` normalizes structured
+  request-permissions args, grants, and responses.
+- `runtime/src/transaction-guard/ollama-courtguard.ts` normalizes Ollama guard
+  model responses before verdict parsing.
+- `runtime/src/utils/record.ts` now owns the shared strict non-array object
+  check.
+
+### Finding
+
+The MCP server framework, permissions RPC normalizers, and transaction guard
+each carried the same `Record<string, unknown> | null` guard. These parsers are
+all untrusted JSON/object boundaries and all intentionally reject arrays.
+Keeping local copies invited small drift in null handling, array handling, or
+domain-specific guards that only need to layer a narrower type predicate over
+the same primitive check.
+
+### Change
+
+- Added `asRecord` and `isRecord` in `runtime/src/utils/record.ts` with direct
+  unit coverage.
+- Replaced four local `asRecord` helpers with the shared utility.
+- Kept the MCP approval-template JSON-object predicate local, but made it
+  delegate to the shared `isRecord` primitive check.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/mcp-server/framework.test.ts tests/permissions/rpc/mcp-tool-approval-templates.test.ts tests/permissions/rpc/request-permissions.test.ts tests/gaphunt3/transaction-guard-ollama-courtguard.test.ts tests/transaction-guard/transaction-guard.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared LSP Error Message Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

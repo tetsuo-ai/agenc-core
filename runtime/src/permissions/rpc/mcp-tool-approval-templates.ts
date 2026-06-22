@@ -11,6 +11,8 @@
  *     intentionally empty until AgenC has a matching connector namespace.
  */
 
+import { asRecord, isRecord } from "../../utils/record.js";
+
 export const MCP_TOOL_APPROVAL_TEMPLATES_SCHEMA_VERSION = 4;
 const MCP_CONNECTOR_NAME_TEMPLATE_VAR = "{connector_name}";
 
@@ -60,12 +62,6 @@ export const EMPTY_MCP_TOOL_APPROVAL_TEMPLATE_FILE: McpToolApprovalTemplateFile 
     schemaVersion: MCP_TOOL_APPROVAL_TEMPLATES_SCHEMA_VERSION,
     templates: Object.freeze([]) as readonly McpToolApprovalTemplate[],
   });
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
 
 function readAliasedField(
   record: Record<string, unknown>,
@@ -167,7 +163,7 @@ function renderQuestionTemplate(
 }
 
 function isJsonObject(value: unknown): value is McpToolApprovalJsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function renderToolParams(

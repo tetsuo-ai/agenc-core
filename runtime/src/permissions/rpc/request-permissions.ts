@@ -15,6 +15,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { asRecord } from "../../utils/record.js";
 
 export type PermissionGrantScope = "turn" | "session";
 
@@ -86,12 +87,6 @@ interface NormalizeProfileOptions extends RequestPermissionsNormalizeOptions {
 
 export const EMPTY_REQUEST_PERMISSION_PROFILE: RequestPermissionProfile =
   Object.freeze({});
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
 
 function readAliasedField(
   record: Record<string, unknown>,
