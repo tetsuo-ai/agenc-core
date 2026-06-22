@@ -4,6 +4,35 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Trust Record Utility Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/permissions/trust/records.ts` exports the trust-subsystem record
+  predicate used by project trust file parsing and trust-source summarization.
+- `runtime/tests/permissions/trust/records.test.ts` pins null-prototype,
+  object-instance, array, null, and primitive handling for that predicate.
+
+### Finding
+
+The trust subsystem had already centralized its domain-specific record guard in
+`isTrustRecord`, but that helper still repeated the shared strict non-array
+object predicate. Keeping the wrapper while delegating the raw predicate avoids
+future drift without changing the trust-specific API surface.
+
+### Change
+
+- Replaced the local predicate implementation with
+  `runtime/src/utils/record.ts#isRecord`.
+- Preserved `isTrustRecord` as the trust-subsystem type guard exported to
+  project-trust and trust-source callers.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/permissions/trust/records.test.ts tests/permissions/trust/project-trust.test.ts tests/permissions/trust/trust-sources.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Task Store Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
