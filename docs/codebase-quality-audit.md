@@ -4,6 +4,43 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Compact Content Block Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/compact/sessionMemoryCompact.ts#preserveToolPairsFromIndex`
+  scans kept content blocks for `tool_result` ids, then walks older messages to
+  preserve paired `tool_use` blocks.
+- `runtime/src/services/compact/microCompact.ts#collectCompactableToolUseIds`,
+  `#collectReadFilePaths`, `#collectCompactableToolResultPositions`, and
+  `#microcompactContentBlocks` all share the content-block filter before
+  deciding which tool results can be cleared.
+- `runtime/src/services/compact/microCompact.ts#readFilePathFromInput` feeds the
+  path-aware retention rule that keeps the latest read result per file path.
+
+### Finding
+
+The compact services treated any non-null object as a content block or read
+input record. Array-shaped runtime values with spoofed `type`, `tool_use_id`,
+or `file_path` properties could therefore participate in session-memory tool
+pair preservation, microcompact clearing, or path-aware retention even though
+those paths expect object records.
+
+### Change
+
+- Replaced the local compact content-block filters with
+  `runtime/src/utils/record.ts#isRecord`.
+- Reused the same strict guard for microcompact file-path extraction from
+  block-form `tool_use.input`.
+- Added regressions for spoofed array blocks in session-memory preservation,
+  microcompact clearing, and path-aware read retention.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/services/compact/compact-surfaces.test.ts tests/services/compact/microCompact.test.ts tests/gaphunt3/compaction.test.ts --reporter=dot`
+
 ## 2026-06-22: Legacy Tool Runtime Argument Record Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

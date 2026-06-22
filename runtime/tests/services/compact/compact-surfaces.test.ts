@@ -211,6 +211,41 @@ describe("compact supporting surfaces", () => {
     }
   });
 
+  test("ignores array-shaped content blocks when preserving session-memory tool pairs", () => {
+    const toolUseMessage: RuntimeMessage = {
+      role: "assistant",
+      type: "assistant",
+      content: [{ type: "tool_use", id: "tool-array", name: "Read" }],
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool-array", name: "Read" }],
+      },
+    };
+    const spoofedResultBlock = Object.assign(["spoof"], {
+      type: "tool_result",
+      tool_use_id: "tool-array",
+      content: "malformed",
+    }) as unknown as Record<string, unknown>;
+    const spoofedResultMessage: RuntimeMessage = {
+      role: "user",
+      type: "user",
+      content: [spoofedResultBlock],
+      message: { role: "user", content: [spoofedResultBlock] },
+    };
+    const tailMessage = message("tail");
+    const messages = [
+      toolUseMessage,
+      message("middle"),
+      spoofedResultMessage,
+      tailMessage,
+    ];
+
+    expect(preserveToolPairsFromIndex(messages, 2)).toEqual([
+      spoofedResultMessage,
+      tailMessage,
+    ]);
+  });
+
   test("runs cleanup callbacks and exposes warning suppression state", () => {
     const listener = vi.fn();
     const unsubscribe = compactWarningStore.subscribe(listener);
