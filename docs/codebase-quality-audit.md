@@ -4,6 +4,57 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Agent Mention Parser
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#processAgentMentions` resolves legacy
+  `@agent-<type>` and autocomplete `@"<type> (agent)"` user input into
+  `agent_mention` attachments.
+- `runtime/src/utils/attachments.ts#getRelevantMemoryAttachments` uses the
+  same mention parser to restrict memory lookup to mentioned agents.
+- `runtime/src/prompts/attachments/agent-mentions.ts#agentMentionsProducer`
+  resolves the newer prompt attachment producer's agent mentions from the
+  latest user input.
+- `runtime/tests/prompts/attachments/agent-mentions.test.ts`,
+  `runtime/tests/prompts/attachments/extractors.test.ts`, and
+  `runtime/tests/memory/project-memory-routing.test.ts` cover prompt parsing,
+  extractor compatibility, and mention-scoped memory lookup.
+
+### Finding
+
+The legacy attachment pipeline and prompt attachment producer each carried a
+local regex/dedupe parser for agent mentions. The implementations looked nearly
+identical, but their exported contracts intentionally differed: legacy
+`utils/attachments.ts` callers expect autocomplete mentions as bare types and
+manual `@agent-...` mentions with the `agent-` prefix preserved, while the
+prompt producer expects bare agent types for both forms. Keeping separate
+regexes made future drift likely and would be easy to miss because both paths
+accept plugin-scoped names containing colons, dots, at-signs, and hyphens.
+
+### Change
+
+- Added `runtime/src/utils/agentMentions.ts` with a shared token parser and
+  two explicit adapters: `extractLegacyAgentMentions` and
+  `extractAgentMentionTypes`.
+- Re-exported `extractLegacyAgentMentions` from `utils/attachments.ts` under
+  the existing `extractAgentMentions` name so legacy tests and callers keep
+  their import path and return shape.
+- Switched the prompt agent mention producer to `extractAgentMentionTypes` while
+  preserving its existing bare-type export as `extractAgentMentions`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/prompts/attachments/agent-mentions.test.ts tests/prompts/attachments/extractors.test.ts tests/memory/project-memory-routing.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared MCP Resource Mention Parser
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

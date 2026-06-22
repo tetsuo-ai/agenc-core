@@ -11,6 +11,7 @@ import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { uniq } from './array.js'
+import { extractLegacyAgentMentions } from './agentMentions.js'
 import { extractMcpResourceMentions } from './mcpResourceMentions.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
@@ -175,6 +176,7 @@ import {
 import { isHumanTurn } from './messagePredicates.js'
 import { isEnvTruthy, getAgenCConfigHomeDir } from './envUtils.js'
 import { feature } from 'bun:bundle'
+export { extractLegacyAgentMentions as extractAgentMentions } from './agentMentions.js'
 export { extractMcpResourceMentions } from './mcpResourceMentions.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
@@ -1915,7 +1917,7 @@ function processAgentMentions(
   input: string,
   agents: AgentDefinition[],
 ): Attachment[] {
-  const agentMentions = extractAgentMentions(input)
+  const agentMentions = extractLegacyAgentMentions(input)
   if (agentMentions.length === 0) return []
 
   const results = agentMentions.map(mention => {
@@ -2202,7 +2204,7 @@ async function getRelevantMemoryAttachments(
 ): Promise<Attachment[]> {
   // If an agent is @-mentioned, search only its memory dir (isolation).
   // Otherwise search both durable memory dirs: global first, then project.
-  const memoryDirs = extractAgentMentions(input).flatMap(mention => {
+  const memoryDirs = extractLegacyAgentMentions(input).flatMap(mention => {
     const agentType = mention.replace('agent-', '')
     const agentDef = agents.find(def => def.agentType === agentType)
     return agentDef?.memory
@@ -2779,34 +2781,6 @@ export function extractAtMentionedFiles(content: string): string[] {
 
   // Combine and deduplicate
   return uniq([...quotedMatches, ...regularMatches])
-}
-
-export function extractAgentMentions(content: string): string[] {
-  // Extract agent mentions in two formats:
-  // 1. @agent-<agent-type> (compatibility/manual typing)
-  //    Example: "@agent-code-elegance-refiner" → "agent-code-elegance-refiner"
-  // 2. @"<agent-type> (agent)" (from autocomplete selection)
-  //    Example: '@"code-reviewer (agent)"' → "code-reviewer"
-  // Supports colons, dots, and at-signs for plugin-scoped agents like "@agent-asana:project-status-updater"
-  const results: string[] = []
-
-  // Match quoted format: @"<type> (agent)"
-  const quotedAgentRegex = /(^|\s)@"([\w:.@-]+) \(agent\)"/g
-  let match
-  while ((match = quotedAgentRegex.exec(content)) !== null) {
-    if (match[2]) {
-      results.push(match[2])
-    }
-  }
-
-  // Match unquoted format: @agent-<type>
-  const unquotedAgentRegex = /(^|\s)@(agent-[\w:.@-]+)/g
-  const unquotedMatches = content.match(unquotedAgentRegex) || []
-  for (const m of unquotedMatches) {
-    results.push(m.slice(m.indexOf('@') + 1))
-  }
-
-  return uniq(results)
 }
 
 interface AtMentionedFileLines {
