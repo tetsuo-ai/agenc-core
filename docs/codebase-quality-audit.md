@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Rollout Spawn-Edge Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/rollout-store.ts` loads legacy and current
+  `thread-spawn-edges.json` snapshots during `RolloutStore` construction, then
+  normalizes direct arrays, versioned edge arrays, keyed legacy objects, and
+  `threadSpawnEdges` maps.
+- `runtime/tests/session/rollout-store.test.ts` covers persisted spawn-edge
+  recovery, descendant lookup, legacy snapshot migration, corrupt snapshot
+  quarantine, and path-collision handling.
+
+### Finding
+
+The rollout store duplicated the strict non-array object predicate already
+centralized in `utils/record.ts#isRecord` for thread-spawn snapshot, edge, and
+agent-metadata validation.
+
+### Change
+
+- Replaced the local rollout-store `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved strict array/null rejection for snapshot wrappers, keyed edge
+  objects, edge records, and agent metadata.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/session/rollout-store.test.ts tests/agents/control.test.ts tests/state/rollout-parse-guards.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Guardian Metadata Record Helper
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
