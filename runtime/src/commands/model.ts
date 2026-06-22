@@ -31,13 +31,13 @@ import {
   type ProviderSlug,
 } from "../config/resolve-provider.js";
 import { resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
-import type { AgenCConfig } from "../config/schema.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
 import { normalizeProviderName } from "../llm/provider.js";
 import {
   analyzeSessionHistoryRequirements,
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
+import { readCommandConfig } from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -60,15 +60,6 @@ type SessionSelection = {
   readonly provider: string;
   readonly model: string;
 };
-
-function readConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
-  return (
-    ctx.configStore?.current() ??
-    (ctx.session as unknown as {
-      services?: { configStore?: { current?: () => AgenCConfig } };
-    }).services?.configStore?.current?.()
-  );
-}
 
 export function readSessionSelection(session: Session): SessionSelection {
   const peekStateForApply = (session as unknown as {
@@ -233,7 +224,7 @@ function resolveCommandSelection(
   ctx: SlashCommandContext,
   target: string,
 ): { readonly provider?: ProviderSlug; readonly model: string; readonly error?: string } {
-  const config = readConfig(ctx);
+  const config = readCommandConfig(ctx);
   const currentProvider =
     normalizeProviderSlug(readSessionSelection(ctx.session).provider) ??
     normalizeProviderSlug(config?.model_provider);

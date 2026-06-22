@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Slash Command Config Context
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/model.ts` resolves configured provider/model defaults
+  while handling `/model` arguments.
+- `runtime/src/commands/model-menu.tsx` builds the interactive model picker
+  snapshot from the same command context.
+- `runtime/src/commands/provider-menu.tsx` builds the interactive provider
+  picker snapshot from the same command context.
+- `runtime/src/commands/config-context.ts` now owns the dispatch-context-first,
+  session-services fallback used by these slash-command surfaces.
+
+### Finding
+
+The model command, model picker, and provider picker each carried the same
+`ctx.configStore.current()` plus `session.services.configStore.current()`
+fallback helper. That fallback is specific to slash-command dispatch across
+runtime and daemon/TUI contexts; keeping three copies made it easy for one
+surface to lose the daemon fallback or change the precedence order.
+
+### Change
+
+- Added `readCommandConfig` in `runtime/src/commands/config-context.ts`.
+- Routed `/model`, the model picker, and the provider picker through the shared
+  command helper.
+- Added direct unit coverage for direct store lookup, session-services
+  fallback, direct-store precedence, and missing-store handling.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/config-context.test.ts tests/commands/model.test.ts tests/commands/provider.test.ts tests/config/model-catalog-drift.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Plain Text Tool Error Result
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
