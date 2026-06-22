@@ -12,6 +12,7 @@ import type {
   ScopedLspServerConfig,
 } from "./types.js";
 import { errorMessage } from "../../utils/errors.js";
+import { isRecord } from "../../utils/record.js";
 
 export interface LspConfigParseFailure {
   readonly success: false;
@@ -28,10 +29,6 @@ export type LspConfigParseResult =
   | LspConfigParseSuccess;
 
 let configuredSource: LspServerConfigSource = () => ({});
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function stringArray(value: unknown, field: string): readonly string[] {
   if (value === undefined) return [];
