@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared File Mention Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/prompts/file-mentions.ts` parses prompt `@file` mentions,
+  validates workspace/allowed-root boundaries, expands readable text files
+  into prompt attachments, leaves image/PDF mentions for media pipelines, and
+  reads direct plus `_unknown.attachments` allowed-root config.
+- `runtime/tests/prompts/file-mentions.test.ts` covers mention scanning,
+  path validation, typed and preserved config shapes, prompt expansion,
+  sanitization, media pass-through, root rejection, symlink rejection, and file
+  count/line limits.
+- `runtime/tests/prompts/attachments/integration.test.ts` and
+  `runtime/tests/prompts/attachments/messages.test.ts` cover the downstream
+  attachment prompt/message paths that consume file-mention output.
+
+### Finding
+
+The file-mention prompt helper carried a local strict `isRecord` helper
+equivalent to `utils/record.ts#isRecord`. It only gates untrusted config
+objects before reading direct and preserved allowed-root attachment settings.
+
+### Change
+
+- Replaced the local file-mention `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved array/null rejection for config objects, `_unknown.attachments`
+  fallback behavior, and the surrounding file/media mention expansion logic.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/prompts/file-mentions.test.ts tests/prompts/attachments/integration.test.ts tests/prompts/attachments/messages.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared API Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
