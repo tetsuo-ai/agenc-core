@@ -4,6 +4,51 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Agent CLI Operation Wrapper
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/app-server/agent-cli.ts#runAgenCAgentCli` dispatches
+  `agenc agent start/list/attach/stop/logs` to command-specific handlers.
+- `runtime/src/app-server/agent-cli.ts#startAgenCAgent`,
+  `#listAgenCAgents`, `#attachAgenCAgent`, `#stopAgenCAgent`, and
+  `#logsAgenCAgent` all need the same daemon-readiness and CLI error envelope.
+- `runtime/src/app-server/agent-cli.ts#defaultEnsureDaemonReady` owns the
+  default daemon autostart readiness path when tests or callers do not inject
+  `ensureDaemonReady`.
+- `runtime/tests/app-server/agent-cli.contract.test.ts` covers argument
+  parsing, injected readiness/client paths, daemon socket behavior, TUI attach,
+  and command error output.
+
+### Finding
+
+The five agent CLI command handlers each repeated the same readiness call,
+default daemon client construction, `try`/`catch`, and `agenc: ...` stderr
+formatting. That made a user-facing command path harder to extend consistently:
+future commands could easily drift on autostart timing, injected-client usage,
+or non-`Error` exception formatting.
+
+### Change
+
+- Added `runAgenCAgentCliOperation` for the shared readiness and error envelope.
+- Added `resolveAgenCAgentCliDaemonClient` so command handlers reuse the same
+  injected-client/default-client fallback.
+- Kept `attach` lazy with respect to daemon client construction when an
+  `attachTui` launcher is supplied.
+- Reduced the command handlers to command-specific request and output logic.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/app-server/agent-cli.contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared Bash Pending Classifier Spread
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
