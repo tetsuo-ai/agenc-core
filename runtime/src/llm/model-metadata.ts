@@ -18,6 +18,7 @@ import {
   getOpenAICompatibleMaxOutputTokens,
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
 } from "./openai-compatible-token-limits.js";
+import { asRecord } from "../utils/record.js";
 
 export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS =
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW;
@@ -449,7 +450,7 @@ function metadataFromModelsDev(
 }
 
 function metadataFromModelsDevModels(
-  models: Record<string, unknown> | undefined,
+  models: Record<string, unknown> | null | undefined,
   provider: string,
   model: string,
 ): ModelMetadataValues | undefined {
@@ -719,7 +720,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 function readPositiveInteger(
-  source: Record<string, unknown> | undefined,
+  source: Record<string, unknown> | null | undefined,
   ...keys: readonly string[]
 ): number | undefined {
   if (!source) return undefined;
@@ -837,10 +838,4 @@ function hasAnyMetadata(
     (metadata.contextWindow !== undefined ||
       metadata.maxOutputTokens !== undefined)
   );
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }

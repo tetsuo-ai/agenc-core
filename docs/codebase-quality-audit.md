@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Model Metadata Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/model-metadata.ts` resolves model context/output-token
+  metadata from explicit config, built-in catalog heuristics, live
+  OpenAI-compatible `/models` endpoints, OpenRouter, models.dev, LiteLLM, and
+  conservative fallback values.
+- `runtime/tests/llm/models-manager.test.ts` covers explicit metadata,
+  live-compatible endpoint metadata, OpenRouter metadata, models.dev fallback,
+  LiteLLM fallback, missing metadata fallback, and output-token bounds.
+- `runtime/tests/llm/model-registry.test.ts` covers synchronous registry
+  resolution and model-info conversion through the metadata resolver.
+
+### Finding
+
+Model metadata carried a local strict `asRecord` helper equivalent to
+`utils/record.ts#asRecord`, except it returned `undefined` instead of `null`.
+The helper gates untrusted registry payloads before reading token-limit fields
+from nested provider, model, limit, and top-provider records.
+
+### Change
+
+- Replaced the local model metadata `asRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Widened local metadata reader parameters to accept the shared helper's
+  `null` result while preserving the existing falsy fallback behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/llm/models-manager.test.ts tests/llm/model-registry.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Hook Output Parser Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
