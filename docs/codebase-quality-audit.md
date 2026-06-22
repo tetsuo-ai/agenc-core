@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Agent Service Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/agents/run-agent.ts#initMcpForAgent` calls `readMcpManager`
+  before deciding whether required MCP servers can be polled for readiness.
+- `runtime/src/agents/run-agent.ts#runAgent` calls `providerFromParent` before
+  driving the child agent's model turn with the parent provider.
+- `runtime/tests/agents/run-agent.test.ts` covers the provider-driving loop and
+  MCP-readiness branches.
+
+### Finding
+
+Subagent startup still read `parent.services.mcpManager` and
+`parent.services.provider` from any non-null object. Array-shaped service bags
+with spoofed `mcpManager` or `provider` properties could therefore participate
+in MCP polling or child provider execution even though the session service bag
+is expected to be a record.
+
+### Change
+
+- Added a shared `readParentServices` helper backed by
+  `runtime/src/utils/record.ts#asRecord`.
+- Reused the helper for both MCP manager lookup and parent provider lookup.
+- Tightened the nested provider and MCP manager values with the same guard.
+- Added regressions proving array-shaped parent services are ignored for both
+  provider resolution and MCP readiness.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts --reporter=dot`
+
 ## 2026-06-22: Guardian Arbiter Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

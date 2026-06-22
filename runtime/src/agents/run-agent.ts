@@ -74,6 +74,7 @@ import type { WorktreeHandle } from "./worktree.js";
 import { emitWarning } from "../session/event-log.js";
 import type { ThreadId } from "./registry.js";
 import { formatSubagentNotification, isFinal } from "./status.js";
+import { asRecord } from "../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -299,19 +300,16 @@ interface McpManagerLike {
   isConnected(name: string): boolean;
 }
 
+function readParentServices(parent: Session): Record<string, unknown> | null {
+  return asRecord((parent as unknown as { readonly services?: unknown }).services);
+}
+
 function readMcpManager(parent: Session): McpManagerLike | undefined {
-  const services = (parent as unknown as { services?: Record<string, unknown> })
-    .services;
-  if (!services || typeof services !== "object") return undefined;
-  const raw = (services as { mcpManager?: unknown }).mcpManager;
-  if (
-    raw &&
-    typeof raw === "object" &&
-    typeof (raw as McpManagerLike).isConnected === "function"
-  ) {
-    return raw as McpManagerLike;
-  }
-  return undefined;
+  const services = readParentServices(parent);
+  const raw = asRecord(services?.mcpManager);
+  return typeof raw?.isConnected === "function"
+    ? (raw as unknown as McpManagerLike)
+    : undefined;
 }
 
 /**
@@ -400,14 +398,11 @@ export async function initMcpForAgent(opts: {
 // ─────────────────────────────────────────────────────────────────────
 
 function providerFromParent(parent: Session): LLMProvider | undefined {
-  const services = (parent as unknown as { services?: Record<string, unknown> })
-    .services;
-  if (!services || typeof services !== "object") return undefined;
-  const provider = (services as { provider?: unknown }).provider;
-  if (provider && typeof (provider as LLMProvider).chat === "function") {
-    return provider as LLMProvider;
-  }
-  return undefined;
+  const services = readParentServices(parent);
+  const provider = asRecord(services?.provider);
+  return typeof provider?.chat === "function"
+    ? (provider as unknown as LLMProvider)
+    : undefined;
 }
 
 function buildChatOptions(
