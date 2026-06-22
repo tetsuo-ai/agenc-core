@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Structured Output Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/structured-output.ts` builds strict provider-facing JSON
+  schema payloads and validates parsed structured-output values returned by
+  provider adapters.
+- `validateStructuredValue` walks object, array, and union schema nodes before
+  enforcing the parsed value shape.
+- `parseStructuredOutputText` and `parseStructuredOutputValue` reject malformed
+  top-level provider payloads before exposing structured output to callers.
+
+### Finding
+
+Structured-output validation still carried a local strict non-array object
+predicate for schema branch filtering, schema cloning, and parsed-result
+checks. That duplicated the shared record guard at an LLM boundary where
+array-shaped schema branches must not become unconstrained object schemas and
+array-shaped provider payloads must remain invalid top-level results.
+
+### Change
+
+- Replaced the local structured-output object guard with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added regressions proving array-shaped union schema branches are ignored and
+  array-shaped structured payloads are rejected as non-object results.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/llm/structured-output.test.ts tests/gaphunt3/llm-structured-output.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Snapshot Policy Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

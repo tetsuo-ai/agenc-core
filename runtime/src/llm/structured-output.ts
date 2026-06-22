@@ -20,6 +20,7 @@ import type {
   LLMStructuredOutputResult,
   LLMStructuredOutputSchema,
 } from "./types.js";
+import { isRecord } from "../utils/record.js";
 
 export const ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME = "agenc_structured_output";
 
@@ -112,10 +113,6 @@ export function supportsXaiReasoningEffortParam(
   return /^grok-4[.-]20-multi-agent/i.test(model.trim());
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function validateStructuredValue(
   value: unknown,
   schema: Record<string, unknown> | undefined,
@@ -136,7 +133,7 @@ function validateStructuredValue(
   const branchSchemas = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(schema[key])
       ? (schema[key] as unknown[]).filter((entry): entry is Record<string, unknown> =>
-          isPlainObject(entry),
+          isRecord(entry),
         )
       : [];
   const anyOf = branchSchemas("anyOf");
@@ -169,10 +166,10 @@ function validateStructuredValue(
   }
   switch (schemaType) {
     case "object": {
-      if (!isPlainObject(value)) {
+      if (!isRecord(value)) {
         return `${path} must be an object`;
       }
-      const properties = isPlainObject(schema.properties)
+      const properties = isRecord(schema.properties)
         ? (schema.properties as Record<string, Record<string, unknown>>)
         : {};
       const required = Array.isArray(schema.required)
@@ -205,7 +202,7 @@ function validateStructuredValue(
       if (!Array.isArray(value)) {
         return `${path} must be an array`;
       }
-      const itemSchema = isPlainObject(schema.items)
+      const itemSchema = isRecord(schema.items)
         ? (schema.items as Record<string, unknown>)
         : undefined;
       if (!itemSchema) {
@@ -242,7 +239,7 @@ function cloneJsonSchemaValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((entry) => cloneJsonSchemaValue(entry));
   }
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     return value;
   }
   return Object.fromEntries(
@@ -273,7 +270,7 @@ function widenSchemaWithNull(
     if (Array.isArray(widened[unionKey])) {
       const branches = widened[unionKey] as unknown[];
       const hasNull = branches.some(
-        (branch) => isPlainObject(branch) && branch.type === "null",
+        (branch) => isRecord(branch) && branch.type === "null",
       );
       widened[unionKey] = hasNull ? branches : [...branches, { type: "null" }];
       return widened;
@@ -284,7 +281,7 @@ function widenSchemaWithNull(
 
 function enforceStrictSchemaValue(value: unknown): unknown {
   const cloned = cloneJsonSchemaValue(value);
-  if (!isPlainObject(cloned)) {
+  if (!isRecord(cloned)) {
     return cloned;
   }
   const record: Record<string, unknown> = { ...cloned };
@@ -292,7 +289,7 @@ function enforceStrictSchemaValue(value: unknown): unknown {
     delete record.format;
   }
 
-  if (isPlainObject(record.properties)) {
+  if (isRecord(record.properties)) {
     const properties: Record<string, unknown> = {};
     for (const [key, propertySchema] of Object.entries(record.properties)) {
       properties[key] = enforceStrictSchemaValue(propertySchema);
@@ -300,7 +297,7 @@ function enforceStrictSchemaValue(value: unknown): unknown {
     record.properties = properties;
   }
 
-  if (isPlainObject(record.items) || Array.isArray(record.items)) {
+  if (isRecord(record.items) || Array.isArray(record.items)) {
     record.items = enforceStrictSchemaValue(record.items);
   }
 
@@ -312,7 +309,7 @@ function enforceStrictSchemaValue(value: unknown): unknown {
     }
   }
 
-  if (record.type === "object" || isPlainObject(record.properties)) {
+  if (record.type === "object" || isRecord(record.properties)) {
     // gaphunt3 #11: OpenAI strict mode requires every property in `required`, but
     // originally-optional fields must be expressed as nullable. Widen the type of
     // each property NOT in the author's `required` array to include "null" before
@@ -322,15 +319,15 @@ function enforceStrictSchemaValue(value: unknown): unknown {
         ? record.required.filter((entry): entry is string => typeof entry === "string")
         : [],
     );
-    if (isPlainObject(record.properties)) {
+    if (isRecord(record.properties)) {
       for (const [key, propertySchema] of Object.entries(record.properties)) {
-        if (!originalRequired.has(key) && isPlainObject(propertySchema)) {
+        if (!originalRequired.has(key) && isRecord(propertySchema)) {
           record.properties[key] = widenSchemaWithNull(propertySchema);
         }
       }
     }
     record.additionalProperties = false;
-    record.required = isPlainObject(record.properties)
+    record.required = isRecord(record.properties)
       ? Object.keys(record.properties)
       : [];
   }
@@ -342,7 +339,7 @@ export function enforceStrictStructuredOutputSchema(
   schema: Record<string, unknown>,
 ): Record<string, unknown> {
   const enforced = enforceStrictSchemaValue(schema);
-  return isPlainObject(enforced) ? enforced : {};
+  return isRecord(enforced) ? enforced : {};
 }
 
 export function buildStructuredOutputTextFormat(
@@ -369,7 +366,7 @@ export function parseStructuredOutputValue(
   schemaName?: string,
   schema?: LLMStructuredOutputSchema["schema"],
 ): LLMStructuredOutputResult {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     throw new Error(
       `${schemaName ?? "structured_output"} must return a top-level JSON object`,
     );
@@ -407,7 +404,7 @@ export function parseStructuredOutputText(
       `${schemaName ?? "structured_output"} returned invalid JSON instead of a schema object`,
     );
   }
-  if (!isPlainObject(parsed)) {
+  if (!isRecord(parsed)) {
     throw new Error(
       `${schemaName ?? "structured_output"} must return a top-level JSON object`,
     );
