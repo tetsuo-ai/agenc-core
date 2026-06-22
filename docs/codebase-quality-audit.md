@@ -4,6 +4,54 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Parsing Record Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/providerDiscovery.ts` normalizes OpenAI-compatible and
+  Ollama model-list payloads, including nested Ollama model details and
+  string-array fields.
+- `runtime/src/onboarding/projectOnboardingState.ts` reads and normalizes
+  persisted first-run/project onboarding state, including per-project records,
+  completed step ids, and corrupt/malformed state fallbacks.
+- `runtime/src/tools/system/file-read.ts` parses Jupyter notebook JSON, cell
+  metadata, notebook language metadata, outputs, embedded images, and PDF
+  extraction command payloads for the FileRead tool.
+- `runtime/tests/utils/providerDiscovery.test.ts`,
+  `runtime/tests/onboarding/projectOnboardingState.test.ts`,
+  `runtime/tests/tools/system/file-read.test.ts`,
+  `runtime/tests/utils/pdfInfo.test.ts`, and
+  `runtime/tests/utils/pdfUtils.test.ts` cover provider payload normalization,
+  onboarding state recovery, file-read notebook/PDF paths, and PDF helper
+  parsing.
+
+### Finding
+
+Provider discovery, onboarding state, and FileRead notebook/PDF parsing each
+carried local `asRecord` helpers equivalent to `utils/record.ts#asRecord`.
+They gate untrusted JSON payloads before reading nested model, state, notebook,
+output, and command-result fields.
+
+### Change
+
+- Replaced the local parsing `asRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved truthy fallback behavior in provider discovery, `null` fallback
+  behavior in onboarding/FileRead parsing, array rejection, and malformed-state
+  recovery paths.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/utils/providerDiscovery.test.ts tests/onboarding/projectOnboardingState.test.ts tests/tools/system/file-read.test.ts tests/utils/pdfInfo.test.ts tests/utils/pdfUtils.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Tool Surface Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

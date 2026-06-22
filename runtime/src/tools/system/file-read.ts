@@ -71,6 +71,7 @@ import {
   type PDFPageRange,
 } from "../../utils/pdfPageRange.js";
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
+import { asRecord } from "../../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -656,12 +657,6 @@ interface NotebookRenderResult {
   readonly images: readonly NotebookImageOutput[];
   readonly cellCount: number;
   readonly language: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function joinNotebookText(value: unknown): string {

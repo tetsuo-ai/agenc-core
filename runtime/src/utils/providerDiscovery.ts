@@ -1,5 +1,6 @@
 import type { OllamaModelDescriptor } from './providerRecommendation.ts'
 import { DEFAULT_OPENAI_BASE_URL } from '../services/api/providerConfig.js'
+import { asRecord } from './record.js'
 import { nonEmptyString } from './stringUtils.js'
 import { isZaiBaseUrl } from './zaiProvider.js'
 
@@ -40,12 +41,6 @@ function compactDetail(value: string, maxLength = 180): string {
   }
 
   return `${compact.slice(0, maxLength)}...`
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
 }
 
 function arrayField(record: Record<string, unknown>, key: string): readonly unknown[] {
