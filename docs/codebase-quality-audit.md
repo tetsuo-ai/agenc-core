@@ -4,6 +4,63 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Message API Normalization Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/turn-compat.ts#runTurnStreamCompat` normalizes legacy
+  turn messages before SDK / compatibility event emission.
+- `runtime/src/services/vcr.ts#recordRequest` normalizes model-bound messages
+  before recording VCR payloads.
+- `runtime/src/services/api/anthropic.ts` normalizes messages and then runs
+  `ensureToolResultPairing` before provider requests.
+- `runtime/src/utils/analyzeContext.ts`, `runtime/src/llm/wire/shared.ts`, and
+  `runtime/src/llm/messages.ts` route adjacent message-shape analysis through
+  the same API-facing normalization contracts.
+- `runtime/tests/conversation/messages-core.test.ts` covers tool-reference
+  stripping, unavailable tool references, assistant caller stripping, local
+  command/user merging, content-size error replay stripping, errored
+  tool-result sanitization, and trailing thinking/non-final empty assistant
+  content.
+
+### Finding
+
+`normalizeMessagesForAPI` still mixed content-size replay mitigation,
+tool-reference compatibility, local-command conversion, user/assistant/
+attachment append semantics, assistant tool-use block normalization, and final
+cleanup pass orchestration in one 377-line function. The function is on every
+model request path and its pass order is fragile: content-size strip targets
+must be computed before synthetic API errors are filtered, attachment/user/
+assistant expansion must happen before thinking and whitespace cleanup, and
+history-snip tags must stay after merging and sanitization.
+
+### Change
+
+- Added focused helpers for API input filtering, content-size strip target
+  discovery, targeted meta-content stripping, tool-reference normalization,
+  tool-reference turn-boundary injection, assistant tool-use block
+  normalization, and user/assistant/attachment append/merge behavior.
+- Preserved the existing collapsed feature-gate behavior and kept the final
+  cleanup sequence unchanged.
+- Kept content-size error-message lookup lazy. The first full-suite validation
+  run caught that a top-level map called environment-sensitive error helpers at
+  module import time; the lookup now executes only inside the normalization
+  path, matching the prior behavior.
+- Confirmed `normalizeMessagesForAPI` now measures 161 lines after extraction.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/context.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Tool Result Pairing Repair Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

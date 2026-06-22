@@ -2158,6 +2158,326 @@ function relocateToolReferenceSiblings(
   return result
 }
 
+type ApiInputMessage =
+  | UserMessage
+  | AssistantMessage
+  | AttachmentMessage
+  | SystemLocalCommandMessage
+
+function isApiInputMessage(message: Message): message is ApiInputMessage {
+  return !(
+    message.type === 'progress' ||
+    (message.type === 'system' && !isSystemLocalCommandMessage(message)) ||
+    isSyntheticApiErrorMessage(message)
+  )
+}
+
+function addContentStripTarget(
+  targets: Map<string, Set<string>>,
+  userMessageUuid: string,
+  blockTypesToStrip: Set<string>,
+): void {
+  const existing = targets.get(userMessageUuid)
+  if (existing) {
+    for (const blockType of blockTypesToStrip) {
+      existing.add(blockType)
+    }
+    return
+  }
+
+  targets.set(userMessageUuid, new Set(blockTypesToStrip))
+}
+
+function getSyntheticApiErrorText(
+  message: AssistantMessage & { isApiErrorMessage: true },
+): string | undefined {
+  if (
+    !Array.isArray(message.message.content) ||
+    message.message.content[0]?.type !== 'text'
+  ) {
+    return undefined
+  }
+  return message.message.content[0].text
+}
+
+function getContentSizeErrorBlockTypes(
+  errorText: string,
+): Set<string> | undefined {
+  const pdfBlockTypes = new Set(['document'])
+  if (
+    errorText === getPdfTooLargeErrorMessage() ||
+    errorText === getPdfPasswordProtectedErrorMessage() ||
+    errorText === getPdfInvalidErrorMessage()
+  ) {
+    return pdfBlockTypes
+  }
+  if (errorText === getImageTooLargeErrorMessage()) {
+    return new Set(['image'])
+  }
+  if (errorText === getRequestTooLargeErrorMessage()) {
+    return new Set(['document', 'image'])
+  }
+  return undefined
+}
+
+function buildContentStripTargetsForAPI(
+  messages: Message[],
+): Map<string, Set<string>> {
+  const stripTargets = new Map<string, Set<string>>()
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!
+    if (!isSyntheticApiErrorMessage(message)) {
+      continue
+    }
+
+    const errorText = getSyntheticApiErrorText(message)
+    if (!errorText) {
+      continue
+    }
+
+    const blockTypesToStrip = getContentSizeErrorBlockTypes(errorText)
+    if (!blockTypesToStrip) {
+      continue
+    }
+
+    for (let j = i - 1; j >= 0; j--) {
+      const candidate = messages[j]!
+      if (candidate.type === 'user' && candidate.isMeta) {
+        addContentStripTarget(
+          stripTargets,
+          candidate.uuid,
+          blockTypesToStrip,
+        )
+        break
+      }
+      if (isSyntheticApiErrorMessage(candidate)) {
+        continue
+      }
+      break
+    }
+  }
+
+  return stripTargets
+}
+
+function stripTargetedContentBlocksForAPI(
+  message: UserMessage,
+  stripTargets: Map<string, Set<string>>,
+): UserMessage | null {
+  const typesToStrip = stripTargets.get(message.uuid)
+  if (!typesToStrip || !message.isMeta) {
+    return message
+  }
+
+  const content = message.message.content
+  if (!Array.isArray(content)) {
+    return message
+  }
+
+  const filtered = content.filter(block => !typesToStrip.has(block.type))
+  if (filtered.length === 0) {
+    return null
+  }
+  if (filtered.length === content.length) {
+    return message
+  }
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: filtered,
+    },
+  }
+}
+
+function normalizeToolReferencesForAPI(
+  message: UserMessage,
+  availableToolNames: Set<string>,
+): UserMessage {
+  if (!isToolSearchEnabledOptimistic()) {
+    return stripToolReferenceBlocksFromUserMessage(message)
+  }
+
+  return stripUnavailableToolReferencesFromUserMessage(
+    message,
+    availableToolNames,
+  )
+}
+
+function addToolReferenceTurnBoundaryForAPI(
+  message: UserMessage,
+): UserMessage {
+  if (false) {
+    return message
+  }
+
+  const contentAfterStrip = message.message.content
+  if (
+    !Array.isArray(contentAfterStrip) ||
+    contentAfterStrip.some(
+      block =>
+        block.type === 'text' &&
+        block.text.startsWith(TOOL_REFERENCE_TURN_BOUNDARY),
+    ) ||
+    !contentHasToolReference(contentAfterStrip)
+  ) {
+    return message
+  }
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: [
+        ...contentAfterStrip,
+        { type: 'text', text: TOOL_REFERENCE_TURN_BOUNDARY },
+      ],
+    },
+  }
+}
+
+function normalizeUserMessageForAPI({
+  message,
+  availableToolNames,
+  stripTargets,
+}: {
+  message: UserMessage
+  availableToolNames: Set<string>
+  stripTargets: Map<string, Set<string>>
+}): UserMessage | null {
+  let normalizedMessage = normalizeToolReferencesForAPI(
+    message,
+    availableToolNames,
+  )
+  normalizedMessage = stripTargetedContentBlocksForAPI(
+    normalizedMessage,
+    stripTargets,
+  )
+  if (!normalizedMessage) {
+    return null
+  }
+
+  return addToolReferenceTurnBoundaryForAPI(normalizedMessage)
+}
+
+function normalizeAssistantToolUseBlockForAPI(
+  block: ContentBlockParam,
+  tools: Tools,
+  toolSearchEnabled: boolean,
+): ContentBlockParam {
+  if (block.type !== 'tool_use') {
+    return block
+  }
+
+  const tool = tools.find(t => toolMatchesName(t, block.name))
+  const normalizedInput = tool
+    ? normalizeToolInputForAPI(tool, block.input as Record<string, unknown>)
+    : block.input
+  const canonicalName = tool?.name ?? block.name
+  const extraContent = (block as { extra_content?: unknown }).extra_content
+  const includeGeminiExtraContent = Boolean(
+    getAPIProvider() === 'gemini' && extraContent,
+  )
+
+  if (toolSearchEnabled) {
+    const { extra_content: _extraContent, ...restBlock } = block as any
+    return {
+      ...restBlock,
+      name: canonicalName,
+      input: normalizedInput,
+      ...(includeGeminiExtraContent ? { extra_content: extraContent } : {}),
+    }
+  }
+
+  return {
+    type: 'tool_use' as const,
+    id: block.id,
+    name: canonicalName,
+    input: normalizedInput,
+    ...(includeGeminiExtraContent ? { extra_content: extraContent } : {}),
+  }
+}
+
+function normalizeAssistantMessageForAPI(
+  message: AssistantMessage,
+  tools: Tools,
+): AssistantMessage {
+  const toolSearchEnabled = isToolSearchEnabledOptimistic()
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: message.message.content.map((block: ContentBlockParam) =>
+        normalizeAssistantToolUseBlockForAPI(block, tools, toolSearchEnabled),
+      ),
+    },
+  }
+}
+
+function appendUserMessageForAPI(
+  result: (UserMessage | AssistantMessage)[],
+  message: UserMessage,
+): void {
+  const lastMessage = last(result)
+  if (lastMessage?.type === 'user') {
+    result[result.length - 1] = mergeUserMessages(lastMessage, message)
+    return
+  }
+
+  result.push(message)
+}
+
+function appendAttachmentMessagesForAPI(
+  result: (UserMessage | AssistantMessage)[],
+  message: AttachmentMessage,
+): void {
+  const rawAttachmentMessage = normalizeAttachmentForAPI(message.attachment)
+  const attachmentMessage = false
+    ? rawAttachmentMessage.map(ensureSystemReminderWrap)
+    : rawAttachmentMessage
+
+  const lastMessage = last(result)
+  if (lastMessage?.type === 'user') {
+    result[result.length - 1] = attachmentMessage.reduce(
+      (previous, current) => mergeUserMessagesAndToolResults(previous, current),
+      lastMessage,
+    )
+    return
+  }
+
+  result.push(...attachmentMessage)
+}
+
+function appendAssistantMessageForAPI(
+  result: (UserMessage | AssistantMessage)[],
+  normalizedMessage: AssistantMessage,
+): void {
+  // Find a previous assistant message with the same message ID and merge.
+  // Walk backwards, skipping tool results and different-ID assistants,
+  // since concurrent agents (teammates) can interleave streaming content
+  // blocks from multiple API responses with different message IDs.
+  for (let i = result.length - 1; i >= 0; i--) {
+    const message = result[i]!
+
+    if (message.type !== 'assistant' && !isToolResultMessage(message)) {
+      break
+    }
+
+    if (message.type === 'assistant') {
+      if (message.message.id === normalizedMessage.message.id) {
+        result[i] = mergeAssistantMessages(message, normalizedMessage)
+        return
+      }
+      continue
+    }
+  }
+
+  result.push(normalizedMessage)
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
@@ -2172,79 +2492,11 @@ export function normalizeMessagesForAPI(
     m => !((m.type === 'user' || m.type === 'assistant') && m.isVirtual),
   )
 
-  // Build a map from error text → which block types to strip from the preceding user message.
-  const errorToBlockTypes: Record<string, Set<string>> = {
-    [getPdfTooLargeErrorMessage()]: new Set(['document']),
-    [getPdfPasswordProtectedErrorMessage()]: new Set(['document']),
-    [getPdfInvalidErrorMessage()]: new Set(['document']),
-    [getImageTooLargeErrorMessage()]: new Set(['image']),
-    [getRequestTooLargeErrorMessage()]: new Set(['document', 'image']),
-  }
-
-  // Walk the reordered messages to build a targeted strip map:
-  // userMessageUUID → set of block types to strip from that message.
-  const stripTargets = new Map<string, Set<string>>()
-  for (let i = 0; i < reorderedMessages.length; i++) {
-    const msg = reorderedMessages[i]!
-    if (!isSyntheticApiErrorMessage(msg)) {
-      continue
-    }
-    // Determine which error this is
-    const errorText =
-      Array.isArray(msg.message.content) &&
-      msg.message.content[0]?.type === 'text'
-        ? msg.message.content[0].text
-        : undefined
-    if (!errorText) {
-      continue
-    }
-    const blockTypesToStrip = errorToBlockTypes[errorText]
-    if (!blockTypesToStrip) {
-      continue
-    }
-    // Walk backward to find the nearest preceding isMeta user message
-    for (let j = i - 1; j >= 0; j--) {
-      const candidate = reorderedMessages[j]!
-      if (candidate.type === 'user' && candidate.isMeta) {
-        const existing = stripTargets.get(candidate.uuid)
-        if (existing) {
-          for (const t of blockTypesToStrip) {
-            existing.add(t)
-          }
-        } else {
-          stripTargets.set(candidate.uuid, new Set(blockTypesToStrip))
-        }
-        break
-      }
-      // Skip over other synthetic error messages or non-meta messages
-      if (isSyntheticApiErrorMessage(candidate)) {
-        continue
-      }
-      // Stop if we hit an assistant message or non-meta user message
-      break
-    }
-  }
+  const stripTargets = buildContentStripTargetsForAPI(reorderedMessages)
 
   const result: (UserMessage | AssistantMessage)[] = []
   reorderedMessages
-    .filter(
-      (
-        _,
-      ): _ is
-        | UserMessage
-        | AssistantMessage
-        | AttachmentMessage
-        | SystemLocalCommandMessage => {
-        if (
-          _.type === 'progress' ||
-          (_.type === 'system' && !isSystemLocalCommandMessage(_)) ||
-          isSyntheticApiErrorMessage(_)
-        ) {
-          return false
-        }
-        return true
-      },
-    )
+    .filter(isApiInputMessage)
     .forEach(message => {
       switch (message.type) {
         case 'system': {
@@ -2255,59 +2507,17 @@ export function normalizeMessagesForAPI(
             uuid: message.uuid,
             timestamp: message.timestamp,
           })
-          const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
-            result[result.length - 1] = mergeUserMessages(lastMessage, userMsg)
-            return
-          }
-          result.push(userMsg)
+          appendUserMessageForAPI(result, userMsg)
           return
         }
         case 'user': {
-          // Merge consecutive user messages because Bedrock doesn't support
-          // multiple user messages in a row; 1P API does and merges them
-          // into a single user turn
-
           // When tool search is NOT enabled, strip all tool_reference blocks from
           // tool_result content, as these are only valid with the tool search beta.
           // When tool search IS enabled, strip only tool_reference blocks for
           // tools that no longer exist (e.g., MCP server was disconnected).
-          let normalizedMessage = message
-          if (!isToolSearchEnabledOptimistic()) {
-            normalizedMessage = stripToolReferenceBlocksFromUserMessage(message)
-          } else {
-            normalizedMessage = stripUnavailableToolReferencesFromUserMessage(
-              message,
-              availableToolNames,
-            )
-          }
-
           // Strip document/image blocks from the specific meta user message that
           // preceded a PDF/image/request-too-large error, to prevent re-sending
           // the problematic content on every subsequent API call.
-          const typesToStrip = stripTargets.get(normalizedMessage.uuid)
-          if (typesToStrip && normalizedMessage.isMeta) {
-            const content = normalizedMessage.message.content
-            if (Array.isArray(content)) {
-              const filtered = content.filter(
-                block => !typesToStrip.has(block.type),
-              )
-              if (filtered.length === 0) {
-                // All content blocks were stripped; skip this message entirely
-                return
-              }
-              if (filtered.length < content.length) {
-                normalizedMessage = {
-                  ...normalizedMessage,
-                  message: {
-                    ...normalizedMessage.message,
-                    content: filtered,
-                  },
-                }
-              }
-            }
-          }
-
           // Server renders tool_reference expansion as <functions>...</functions>
           // (same tags as the system prompt's tool block). When this is at the
           // prompt tail, capybara models sample the stop sequence at ~10% (A/B:
@@ -2328,44 +2538,15 @@ export function normalizeMessagesForAPI(
           // of adding one here. This injection is itself one of the patterns
           // that gets relocated, so skipping it saves a scan. When gate is
           // off, this is the fallback (same as pre-#21049 main).
-          if (
-            !false
-          ) {
-            const contentAfterStrip = normalizedMessage.message.content
-            if (
-              Array.isArray(contentAfterStrip) &&
-              !contentAfterStrip.some(
-                b =>
-                  b.type === 'text' &&
-                  b.text.startsWith(TOOL_REFERENCE_TURN_BOUNDARY),
-              ) &&
-              contentHasToolReference(contentAfterStrip)
-            ) {
-              normalizedMessage = {
-                ...normalizedMessage,
-                message: {
-                  ...normalizedMessage.message,
-                  content: [
-                    ...contentAfterStrip,
-                    { type: 'text', text: TOOL_REFERENCE_TURN_BOUNDARY },
-                  ],
-                },
-              }
-            }
-          }
-
-          // If the last message is also a user message, merge them
-          const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
-            result[result.length - 1] = mergeUserMessages(
-              lastMessage,
-              normalizedMessage,
-            )
+          const normalizedMessage = normalizeUserMessageForAPI({
+            message,
+            availableToolNames,
+            stripTargets,
+          })
+          if (!normalizedMessage) {
             return
           }
-
-          // Otherwise, add the message normally
-          result.push(normalizedMessage)
+          appendUserMessageForAPI(result, normalizedMessage)
           return
         }
         case 'assistant': {
@@ -2373,91 +2554,14 @@ export function normalizeMessagesForAPI(
           // When tool search is NOT enabled, we must strip tool_search-specific fields
           // like 'caller' from tool_use blocks, as these are only valid with the
           // tool search beta header
-          const toolSearchEnabled = isToolSearchEnabledOptimistic()
-          const normalizedMessage: AssistantMessage = {
-            ...message,
-            message: {
-              ...message.message,
-              content: message.message.content.map((block: ContentBlockParam) => {
-                if (block.type === 'tool_use') {
-                  const tool = tools.find(t => toolMatchesName(t, block.name))
-                  const normalizedInput = tool
-                    ? normalizeToolInputForAPI(
-                        tool,
-                        block.input as Record<string, unknown>,
-                      )
-                    : block.input
-                  const canonicalName = tool?.name ?? block.name
-
-                  // When tool search is enabled, preserve all fields including 'caller'
-                  if (toolSearchEnabled) {
-                    const { extra_content, ...restBlock } = block as any
-                    return {
-                      ...restBlock,
-                      name: canonicalName,
-                      input: normalizedInput,
-                      ...(getAPIProvider() === 'gemini' && extra_content ? { extra_content } : {})
-                    }
-                  }
-
-                  // When tool search is NOT enabled, explicitly construct tool_use
-                  // block with only standard API fields to avoid sending fields like
-                  // 'caller' that may be stored in sessions from tool search runs
-                    return {
-                    type: 'tool_use' as const,
-                    id: block.id,
-                    name: canonicalName,
-                    input: normalizedInput,
-                    ...(getAPIProvider() === 'gemini' && (block as any).extra_content ? { extra_content: (block as any).extra_content } : {})
-                  }
-                }
-                return block
-              }),
-            },
-          }
-
-          // Find a previous assistant message with the same message ID and merge.
-          // Walk backwards, skipping tool results and different-ID assistants,
-          // since concurrent agents (teammates) can interleave streaming content
-          // blocks from multiple API responses with different message IDs.
-          for (let i = result.length - 1; i >= 0; i--) {
-            const msg = result[i]!
-
-            if (msg.type !== 'assistant' && !isToolResultMessage(msg)) {
-              break
-            }
-
-            if (msg.type === 'assistant') {
-              if (msg.message.id === normalizedMessage.message.id) {
-                result[i] = mergeAssistantMessages(msg, normalizedMessage)
-                return
-              }
-              continue
-            }
-          }
-
-          result.push(normalizedMessage)
+          appendAssistantMessageForAPI(
+            result,
+            normalizeAssistantMessageForAPI(message, tools),
+          )
           return
         }
         case 'attachment': {
-          const rawAttachmentMessage = normalizeAttachmentForAPI(
-            message.attachment,
-          )
-          const attachmentMessage = false
-            ? rawAttachmentMessage.map(ensureSystemReminderWrap)
-            : rawAttachmentMessage
-
-          // If the last message is also a user message, merge them
-          const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
-            result[result.length - 1] = attachmentMessage.reduce(
-              (p, c) => mergeUserMessagesAndToolResults(p, c),
-              lastMessage,
-            )
-            return
-          }
-
-          result.push(...attachmentMessage)
+          appendAttachmentMessagesForAPI(result, message)
           return
         }
       }
