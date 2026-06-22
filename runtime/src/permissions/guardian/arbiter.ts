@@ -13,6 +13,7 @@
  */
 
 import type { EventLog } from "../../session/event-log.js";
+import { asRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
@@ -1009,12 +1010,6 @@ function permissionDecisionHookContext(
 function toolNameMatcherAliases(toolName: string): readonly string[] {
   if (toolName === "apply_patch") return ["Write", "Edit"];
   return [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 function stringArrayValue(value: unknown): readonly string[] {

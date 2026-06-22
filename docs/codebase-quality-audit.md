@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Guardian Metadata Record Helper
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/permissions/guardian/arbiter.ts` builds approval context
+  metadata from invocation session/turn objects, including cwd, session id,
+  transcript path, model, permission mode, and tool matcher aliases.
+- `runtime/tests/permissions/guardian/arbiter.test.ts` covers guardian versus
+  resolver routing, approved-for-session cache reuse, stale-turn rejection,
+  and permission-mode arbitration.
+
+### Finding
+
+The guardian arbiter carried a local strict `asRecord` helper equivalent to
+`utils/record.ts#asRecord`, except that the local helper returned `undefined`
+for invalid values. Its call sites use optional chaining, so the shared helper's
+`null` fallback preserves the malformed-metadata behavior.
+
+### Change
+
+- Replaced the local guardian metadata `asRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved strict array/null rejection for session, turn, model, config, and
+  tool-name metadata wrappers.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/permissions/guardian/arbiter.test.ts tests/mcp-client/tools.test.ts tests/hooks/configured-hooks.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Agent Loader Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
