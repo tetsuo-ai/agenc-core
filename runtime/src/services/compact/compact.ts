@@ -179,21 +179,27 @@ async function compactConversationImpl(
   context: CompactContext,
   customInstructions = "",
 ): Promise<CompactionResult> {
-  const normalizedMessages = stripImagesFromMessages(messages);
-  const preCompactTokenCount = estimateMessagesTokens(normalizedMessages, context);
-  const keepCount = chooseKeepCount(normalizedMessages);
+  const summaryInputMessages = stripImagesFromMessages(messages);
+  const preCompactTokenCount = estimateMessagesTokens(
+    summaryInputMessages,
+    context,
+  );
+  const keepCount = chooseKeepCount(summaryInputMessages);
   // chooseKeepCount picks a positional split. resolveAtomicSliceIndex
   // walks that index forward past any leading `role: "tool"` message
   // so the kept suffix never starts with a tool_result whose parent
   // assistant tool_call lives in the summarized prefix. Without this
   // adjustment the kept suffix is provider-invalid (every openai-
   // compatible endpoint 400s on an orphaned tool message).
-  const candidateSplit = Math.max(0, normalizedMessages.length - keepCount);
-  const splitIndex = resolveAtomicSliceIndex(normalizedMessages, candidateSplit);
-  const messagesToSummarize = normalizedMessages.slice(0, splitIndex);
-  const messagesToKeep = normalizedMessages.slice(splitIndex);
+  const candidateSplit = Math.max(0, summaryInputMessages.length - keepCount);
+  const splitIndex = resolveAtomicSliceIndex(
+    summaryInputMessages,
+    candidateSplit,
+  );
+  const messagesToSummarize = summaryInputMessages.slice(0, splitIndex);
+  const messagesToKeep = messages.slice(splitIndex);
   const summary = await summarizeMessages(
-    messagesToSummarize.length > 0 ? messagesToSummarize : normalizedMessages,
+    messagesToSummarize.length > 0 ? messagesToSummarize : summaryInputMessages,
     context,
     customInstructions,
   );
@@ -208,7 +214,7 @@ async function compactConversationImpl(
     true,
   );
   const attachments = await context.deps?.createAttachments?.(
-    normalizedMessages,
+    summaryInputMessages,
     context,
   ) ?? [];
   const hookResults = await context.deps?.createHookResults?.(
@@ -266,16 +272,19 @@ export async function partialCompactConversationAsync(
     throw new Error("Selected message is outside the compactable history");
   }
   throwIfAborted(options.signal);
-  const normalizedMessages = stripImagesFromMessages(messages);
-  const preCompactTokenCount = estimateMessagesTokens(normalizedMessages, context);
+  const summaryInputMessages = stripImagesFromMessages(messages);
+  const preCompactTokenCount = estimateMessagesTokens(
+    summaryInputMessages,
+    context,
+  );
   const messagesToSummarize =
     options.direction === "up_to"
-      ? normalizedMessages.slice(0, selectedIndex)
-      : normalizedMessages.slice(selectedIndex);
+      ? summaryInputMessages.slice(0, selectedIndex)
+      : summaryInputMessages.slice(selectedIndex);
   const messagesToKeep =
     options.direction === "up_to"
-      ? normalizedMessages.slice(selectedIndex)
-      : normalizedMessages.slice(0, selectedIndex);
+      ? messages.slice(selectedIndex)
+      : messages.slice(0, selectedIndex);
   const hasMessagesToSummarize = messagesToSummarize.length > 0;
   const summary = hasMessagesToSummarize
     ? await summarizeMessagesWithPrompt(
@@ -297,7 +306,7 @@ export async function partialCompactConversationAsync(
     true,
   );
   const attachments = await context.deps?.createAttachments?.(
-    normalizedMessages,
+    summaryInputMessages,
     context,
   ) ?? [];
   const hookResults = await context.deps?.createHookResults?.(

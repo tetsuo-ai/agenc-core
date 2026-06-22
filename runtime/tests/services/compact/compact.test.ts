@@ -166,6 +166,51 @@ describe("compact service", () => {
     expect(summaryContent).not.toContain("<analysis>");
   });
 
+  test("manual compact strips media only from summary input, not kept suffix", async () => {
+    const seen: string[] = [];
+    const provider = {
+      name: "test",
+      chat: vi.fn(async (messages: Array<{ readonly content: string }>) => {
+        seen.push(messages[0]?.content ?? "");
+        return { content: "media-aware summary" };
+      }),
+    };
+    const keptContent = [
+      { type: "text", text: "kept tail" },
+      {
+        type: "image",
+        source: { type: "url", url: "file:///tmp/tail.png" },
+      },
+      {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: "ZmFrZS1wZGY=",
+        },
+        fallbackText: "tail document fallback",
+      },
+    ] as const;
+
+    const result = await manualCompactCall("keep media references", {
+      provider: provider as never,
+      messages: [
+        message([
+          { type: "text", text: "summarize older image" },
+          { type: "image", source: { type: "url", url: "file:///tmp/old.png" } },
+        ]),
+        message("middle-1", "assistant"),
+        message("middle-2"),
+        message("middle-3", "assistant"),
+        message(keptContent),
+      ],
+    });
+
+    expect(seen.some((payload) => payload.includes("[image]"))).toBe(true);
+    expect(result.compactionResult.messagesToKeep?.at(-1)?.content)
+      .toEqual(keptContent);
+  });
+
   test("preserves prefix and suffix ordering for partial compact projections", () => {
     const messages = ["a", "b", "c", "d", "e"].map((content) => message(content));
 
@@ -198,6 +243,35 @@ describe("compact service", () => {
         "keep",
         expect.stringContaining("recent summary"),
       ]);
+    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("summarize me");
+  });
+
+  test("async partial compact preserves media in kept prefix", async () => {
+    const provider = {
+      name: "test",
+      chat: vi.fn(async () => ({ content: "recent summary" })),
+    };
+    const keptContent = [
+      { type: "text", text: "keep media" },
+      {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: "ZmFrZS1wZGY=",
+        },
+        fallbackText: "document fallback",
+      },
+    ] as const;
+
+    const result = await partialCompactConversationAsync(
+      [message(keptContent), message("summarize me")],
+      1,
+      { provider: provider as never },
+      { direction: "from" },
+    );
+
+    expect(result.messagesToKeep?.[0]?.content).toEqual(keptContent);
     expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("summarize me");
   });
 
@@ -413,7 +487,7 @@ describe("resolveAtomicSliceIndex (compaction tool-pair atomicity)", () => {
 });
 
 function message(
-  content: string,
+  content: RuntimeMessage["content"],
   role: NonNullable<RuntimeMessage["role"]> = "user",
 ): RuntimeMessage {
   return {

@@ -4,6 +4,60 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Compact Kept Media Preservation
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/compact/compact.ts#compactConversationImpl` strips
+  media from summary input before provider calls, chooses the kept suffix, and
+  builds the post-compact replacement payload for manual/full compaction.
+- `runtime/src/services/compact/compact.ts#partialCompactConversationAsync`
+  summarizes either side of the selected message for daemon-backed partial
+  compaction.
+- `runtime/src/session/session.ts#partialCompactFromMessage` converts
+  `LLMMessage` history into compact runtime messages, calls partial compact,
+  rehydrates the replacement history, and commits it to session state and
+  rollout storage.
+- `runtime/src/session/session.ts#fromCompactRuntimeContent` restores runtime
+  image/document blocks into `LLMMessage.content`.
+- `runtime/tests/services/compact/compact.test.ts` and
+  `runtime/tests/session/session.test.ts` cover the service-level and
+  end-to-end session contracts.
+
+### Finding
+
+The compact service stripped image and document blocks before slicing the
+messages that should be kept verbatim. That protected summarization provider
+calls, but it also meant kept media could be committed back as `[image]` or
+`[document]` placeholders. The session rehydration path also restored compacted
+PDF document blocks without `fallbackText`, `fallbackTextTruncated`, or
+`fallbackTextError`, so even unstripped kept documents lost fallback metadata
+after daemon partial compaction.
+
+### Change
+
+- Kept stripped copies for summary input and token estimates, but now slices
+  `messagesToKeep` from the original runtime message list for both full and
+  partial compact flows.
+- Preserved PDF document fallback metadata in
+  `fromCompactRuntimeContent`.
+- Added service regression coverage for manual compact and async partial
+  compact kept-media preservation, plus a session-level partial-compact test
+  that preserves a kept document and image through committed replacement
+  history.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/services/compact/compact.test.ts tests/session/session.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared LLM Content Conversion Helpers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
