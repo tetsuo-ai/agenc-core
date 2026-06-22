@@ -169,6 +169,51 @@ type NestedMemoryAttachmentForAPI = Extract<
   Attachment,
   { type: 'nested_memory' }
 >
+type InvokedSkillsAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'invoked_skills' }
+>
+type TodoReminderAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'todo_reminder' }
+>
+type TaskReminderAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'task_reminder' }
+>
+type SkillListingAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'skill_listing' }
+>
+type OutputStyleAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'output_style' }
+>
+type PlanModeReentryAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'plan_mode_reentry' }
+>
+type PlanModeExitAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'plan_mode_exit' }
+>
+type CriticalSystemReminderAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'critical_system_reminder' }
+>
+type AgentMentionAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'agent_mention' }
+>
+type DateChangeAttachmentForAPI = Extract<Attachment, { type: 'date_change' }>
+type UltrathinkEffortAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'ultrathink_effort' }
+>
+type CompanionIntroAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'companion_intro' }
+>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -4388,6 +4433,258 @@ function normalizeNestedMemoryAttachment(
   ])
 }
 
+function normalizeInvokedSkillsAttachment(
+  attachment: InvokedSkillsAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.skills.length === 0) {
+    return []
+  }
+
+  const skillsContent = attachment.skills
+    .map(skill => {
+      const safeName = sanitizeSystemReminderContent(skill.name)
+      const safePath = sanitizeSystemReminderContent(skill.path)
+      const safeContent = sanitizeSystemReminderContent(skill.content)
+      return `### Skill: ${safeName}\nPath: ${safePath}\n\n${safeContent}`
+    })
+    .join('\n\n---\n\n')
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The following skills were invoked in this session. Continue to follow these guidelines:\n\n${skillsContent}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeTodoReminderAttachment(
+  attachment: TodoReminderAttachmentForAPI,
+): UserMessage[] {
+  if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
+    return []
+  }
+  const todoItems = attachment.content
+    .map((todo, index) => {
+      const safeStatus = sanitizeSystemReminderContent(todo.status)
+      const safeContent = sanitizeSystemReminderContent(todo.content)
+      return `${index + 1}. [${safeStatus}] ${safeContent}`
+    })
+    .join('\n')
+
+  let message = `The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
+  if (todoItems.length > 0) {
+    message += `\n\nHere are the existing contents of your todo list:\n\n[${todoItems}]`
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: message,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeTaskReminderAttachment(
+  attachment: TaskReminderAttachmentForAPI,
+): UserMessage[] {
+  if (!isTodoV2Enabled()) {
+    return []
+  }
+  if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
+    return []
+  }
+  const taskItems = attachment.content
+    .map(task => {
+      const safeId = sanitizeSystemReminderContent(String(task.id))
+      const safeStatus = sanitizeSystemReminderContent(task.status)
+      const safeSubject = sanitizeSystemReminderContent(task.subject)
+      return `#${safeId}. [${safeStatus}] ${safeSubject}`
+    })
+    .join('\n')
+
+  let message = `The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using ${TASK_CREATE_TOOL_NAME} to add new tasks and ${TASK_UPDATE_TOOL_NAME} to update task status (set to in_progress when starting, completed when done). Also consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
+  if (taskItems.length > 0) {
+    message += `\n\nHere are the existing tasks:\n\n${taskItems}`
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: message,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeSkillListingAttachment(
+  attachment: SkillListingAttachmentForAPI,
+): UserMessage[] {
+  if (!attachment.content) {
+    return []
+  }
+  const content = sanitizeSystemReminderContent(attachment.content)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The following skills are available for use with the Skill tool:\n\n${content}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeOutputStyleAttachment(
+  attachment: OutputStyleAttachmentForAPI,
+): UserMessage[] {
+  const outputStyle =
+    OUTPUT_STYLE_CONFIG[attachment.style as keyof typeof OUTPUT_STYLE_CONFIG]
+  if (!outputStyle) {
+    return []
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `${outputStyle.name} output style is active. Remember to follow the specific guidelines for this style.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizePlanModeReentryAttachment(
+  attachment: PlanModeReentryAttachmentForAPI,
+): UserMessage[] {
+  const safePlanFilePath = sanitizeSystemReminderContent(
+    attachment.planFilePath,
+  )
+  const content = `## Re-entering Plan Mode
+
+You are returning to plan mode after having previously exited it. A plan file exists at ${safePlanFilePath} from your previous planning session.
+
+**Before proceeding with any new planning, you should:**
+1. Read the existing plan file to understand what was previously planned
+2. Evaluate the user's current request against that plan
+3. Decide how to proceed:
+   - **Different task**: If the user's request is for a different task—even if it's similar or related—start fresh by overwriting the existing plan
+   - **Same task, continuing**: If this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections
+4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ${ExitPlanModeV2Tool.name}
+
+Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first.`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizePlanModeExitAttachment(
+  attachment: PlanModeExitAttachmentForAPI,
+): UserMessage[] {
+  const safePlanFilePath = sanitizeSystemReminderContent(
+    attachment.planFilePath,
+  )
+  const planReference = attachment.planExists
+    ? ` The plan file is located at ${safePlanFilePath} if you need to reference it.`
+    : ''
+  const content = `## Exited Plan Mode
+
+You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizeAutoModeExitAttachment(): UserMessage[] {
+  const content = `## Exited Auto Mode
+
+You have exited auto mode. The user may now want to interact more directly. You should ask clarifying questions when the approach is ambiguous rather than making assumptions.`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizeCriticalSystemReminderAttachment(
+  attachment: CriticalSystemReminderAttachmentForAPI,
+): UserMessage[] {
+  const content = sanitizeSystemReminderContent(attachment.content)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizeAgentMentionAttachment(
+  attachment: AgentMentionAttachmentForAPI,
+): UserMessage[] {
+  const agentType = sanitizeSystemReminderContent(attachment.agentType)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user has expressed a desire to invoke the agent "${agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeCompactionReminderAttachment(): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content:
+        'Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush \u2014 you have unlimited context through automatic compaction.',
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeContextEfficiencyAttachment(): UserMessage[] {
+  if (feature('HISTORY_SNIP')) {
+    const { SNIP_NUDGE_TEXT } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('../services/compact/snipCompact.js') as SnipCompactRuntime
+    return wrapMessagesInSystemReminder([
+      createUserMessage({
+        content: SNIP_NUDGE_TEXT,
+        isMeta: true,
+      }),
+    ])
+  }
+  return []
+}
+
+function normalizeDateChangeAttachment(
+  attachment: DateChangeAttachmentForAPI,
+): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The date has changed. Today's date is now ${attachment.newDate}. DO NOT mention this to the user explicitly because they are already aware.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeUltrathinkEffortAttachment(
+  attachment: UltrathinkEffortAttachmentForAPI,
+): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user has requested reasoning effort level: ${attachment.level}. Apply this to the current turn.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeCompanionIntroAttachment(
+  attachment: CompanionIntroAttachmentForAPI,
+): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: companionIntroText(attachment.name, attachment.species),
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeVerifyPlanReminderAttachment(): UserMessage[] {
+  const content = `You have completed implementing the plan. Please verify directly (NOT via the ${AGENT_TOOL_NAME} tool or an agent) that all plan items were completed correctly.`
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4494,77 +4791,13 @@ Read the team config to discover your teammates' names. Check the task list peri
       return normalizePlanFileReferenceAttachment(attachment)
     }
     case 'invoked_skills': {
-      if (attachment.skills.length === 0) {
-        return []
-      }
-
-      const skillsContent = attachment.skills
-        .map(skill => {
-          const safeName = sanitizeSystemReminderContent(skill.name)
-          const safePath = sanitizeSystemReminderContent(skill.path)
-          const safeContent = sanitizeSystemReminderContent(skill.content)
-          return `### Skill: ${safeName}\nPath: ${safePath}\n\n${safeContent}`
-        })
-        .join('\n\n---\n\n')
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The following skills were invoked in this session. Continue to follow these guidelines:\n\n${skillsContent}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeInvokedSkillsAttachment(attachment)
     }
     case 'todo_reminder': {
-      if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
-        return []
-      }
-      const todoItems = attachment.content
-        .map((todo, index) => {
-          const safeStatus = sanitizeSystemReminderContent(todo.status)
-          const safeContent = sanitizeSystemReminderContent(todo.content)
-          return `${index + 1}. [${safeStatus}] ${safeContent}`
-        })
-        .join('\n')
-
-      let message = `The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
-      if (todoItems.length > 0) {
-        message += `\n\nHere are the existing contents of your todo list:\n\n[${todoItems}]`
-      }
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: message,
-          isMeta: true,
-        }),
-      ])
+      return normalizeTodoReminderAttachment(attachment)
     }
     case 'task_reminder': {
-      if (!isTodoV2Enabled()) {
-        return []
-      }
-      if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
-        return []
-      }
-      const taskItems = attachment.content
-        .map(task => {
-          const safeId = sanitizeSystemReminderContent(String(task.id))
-          const safeStatus = sanitizeSystemReminderContent(task.status)
-          const safeSubject = sanitizeSystemReminderContent(task.subject)
-          return `#${safeId}. [${safeStatus}] ${safeSubject}`
-        })
-        .join('\n')
-
-      let message = `The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using ${TASK_CREATE_TOOL_NAME} to add new tasks and ${TASK_UPDATE_TOOL_NAME} to update task status (set to in_progress when starting, completed when done). Also consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
-      if (taskItems.length > 0) {
-        message += `\n\nHere are the existing tasks:\n\n${taskItems}`
-      }
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: message,
-          isMeta: true,
-        }),
-      ])
+      return normalizeTaskReminderAttachment(attachment)
     }
     case 'nested_memory': {
       return normalizeNestedMemoryAttachment(attachment)
@@ -4584,34 +4817,13 @@ Read the team config to discover your teammates' names. Check the task list peri
       return []
     }
     case 'skill_listing': {
-      if (!attachment.content) {
-        return []
-      }
-      const content = sanitizeSystemReminderContent(attachment.content)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The following skills are available for use with the Skill tool:\n\n${content}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeSkillListingAttachment(attachment)
     }
     case 'queued_command': {
       return normalizeQueuedCommandAttachment(attachment)
     }
     case 'output_style': {
-      const outputStyle =
-        OUTPUT_STYLE_CONFIG[
-          attachment.style as keyof typeof OUTPUT_STYLE_CONFIG
-        ]
-      if (!outputStyle) {
-        return []
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `${outputStyle.name} output style is active. Remember to follow the specific guidelines for this style.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeOutputStyleAttachment(attachment)
     }
     case 'diagnostics': {
       return normalizeDiagnosticsAttachment(attachment)
@@ -4620,59 +4832,19 @@ Read the team config to discover your teammates' names. Check the task list peri
       return getPlanModeInstructions(attachment)
     }
     case 'plan_mode_reentry': {
-      const safePlanFilePath = sanitizeSystemReminderContent(
-        attachment.planFilePath,
-      )
-      const content = `## Re-entering Plan Mode
-
-You are returning to plan mode after having previously exited it. A plan file exists at ${safePlanFilePath} from your previous planning session.
-
-**Before proceeding with any new planning, you should:**
-1. Read the existing plan file to understand what was previously planned
-2. Evaluate the user's current request against that plan
-3. Decide how to proceed:
-   - **Different task**: If the user's request is for a different task—even if it's similar or related—start fresh by overwriting the existing plan
-   - **Same task, continuing**: If this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections
-4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ${ExitPlanModeV2Tool.name}
-
-Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first.`
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizePlanModeReentryAttachment(attachment)
     }
     case 'plan_mode_exit': {
-      const safePlanFilePath = sanitizeSystemReminderContent(
-        attachment.planFilePath,
-      )
-      const planReference = attachment.planExists
-        ? ` The plan file is located at ${safePlanFilePath} if you need to reference it.`
-        : ''
-      const content = `## Exited Plan Mode
-
-You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizePlanModeExitAttachment(attachment)
     }
     case 'auto_mode': {
       return getAutoModeInstructions(attachment)
     }
     case 'auto_mode_exit': {
-      const content = `## Exited Auto Mode
-
-You have exited auto mode. The user may now want to interact more directly. You should ask clarifying questions when the approach is ambiguous rather than making assumptions.`
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizeAutoModeExitAttachment()
     }
     case 'critical_system_reminder': {
-      const content = sanitizeSystemReminderContent(attachment.content)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizeCriticalSystemReminderAttachment(attachment)
     }
     case 'mcp_resource': {
       return [
@@ -4683,13 +4855,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ]
     }
     case 'agent_mention': {
-      const agentType = sanitizeSystemReminderContent(attachment.agentType)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user has expressed a desire to invoke the agent "${agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
-          isMeta: true,
-        }),
-      ])
+      return normalizeAgentMentionAttachment(attachment)
     }
     case 'task_status': {
       return normalizeTaskStatusAttachment(attachment)
@@ -4721,43 +4887,16 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return normalizeHookStoppedContinuationAttachment(attachment)
     }
     case 'compaction_reminder': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content:
-            'Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush \u2014 you have unlimited context through automatic compaction.',
-          isMeta: true,
-        }),
-      ])
+      return normalizeCompactionReminderAttachment()
     }
     case 'context_efficiency': {
-      if (feature('HISTORY_SNIP')) {
-        const { SNIP_NUDGE_TEXT } =
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          require('../services/compact/snipCompact.js') as SnipCompactRuntime
-        return wrapMessagesInSystemReminder([
-          createUserMessage({
-            content: SNIP_NUDGE_TEXT,
-            isMeta: true,
-          }),
-        ])
-      }
-      return []
+      return normalizeContextEfficiencyAttachment()
     }
     case 'date_change': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The date has changed. Today's date is now ${attachment.newDate}. DO NOT mention this to the user explicitly because they are already aware.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeDateChangeAttachment(attachment)
     }
     case 'ultrathink_effort': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user has requested reasoning effort level: ${attachment.level}. Apply this to the current turn.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeUltrathinkEffortAttachment(attachment)
     }
     case 'deferred_tools_delta': {
       return normalizeDeferredToolsDeltaAttachment(attachment)
@@ -4769,18 +4908,10 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return normalizeMcpInstructionsDeltaAttachment(attachment)
     }
     case 'companion_intro': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: companionIntroText(attachment.name, attachment.species),
-          isMeta: true,
-        }),
-      ])
+      return normalizeCompanionIntroAttachment(attachment)
     }
     case 'verify_plan_reminder': {
-      const content = `You have completed implementing the plan. Please verify directly (NOT via the ${AGENT_TOOL_NAME} tool or an agent) that all plan items were completed correctly.`
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizeVerifyPlanReminderAttachment()
     }
     case 'already_read_file':
     case 'command_permissions':

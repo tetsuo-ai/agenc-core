@@ -4,6 +4,77 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Session Reminder Attachment Normalizers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#getAttachments` wires thread-safe reminder
+  attachments for `date_change`, `ultrathink_effort`, `skill_listing`,
+  `plan_mode_reentry`, `plan_mode_exit`, `auto_mode_exit`, `todo_reminder`,
+  `task_reminder`, `critical_system_reminder`, `compaction_reminder`, and
+  `context_efficiency`.
+- `runtime/src/utils/attachments.ts#processAgentMentions` emits
+  `agent_mention` attachments from user `@agent-...` input after active-agent
+  resolution.
+- `runtime/src/utils/attachments.ts#getOutputStyleAttachment` emits
+  `output_style` attachments for non-default configured styles on the main
+  thread.
+- `runtime/src/utils/attachments.ts#getVerifyPlanReminderAttachment` emits
+  `verify_plan_reminder` while post-plan verification is pending and the turn
+  cadence matches.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` converts these
+  session reminders and mode-transition notices into legacy model-facing
+  system reminders.
+- `runtime/tests/conversation/messages-core.test.ts` covers unsafe
+  skill-listing, todo/task reminder, plan-mode reentry/exit,
+  critical-reminder, agent-mention, date-change, ultrathink, output-style,
+  compaction, context-efficiency, and verify-plan reminder payloads.
+- `runtime/tests/utils/monotonic.test.ts` covers monotonic clock advancement
+  and elapsed-time helpers used by session timeout and duration paths.
+
+### Finding
+
+Session reminder normalization mixed user- and environment-originated reminder
+content, mode-transition guidance, feature-gated snip nudges, and output-style
+lookup directly inside the large attachment dispatcher. The branches are small
+individually, but each owns a distinct compatibility string or sanitizer gate,
+and several differ from the newer prompt attachment renderer. During validation,
+the full Vitest gate also exposed a flaky monotonic timing assertion that
+expected a 5 ms timer to always produce at least 4 ms of measured elapsed time
+under full-suite scheduler load.
+
+### Change
+
+- Added typed aliases for `invoked_skills`, `todo_reminder`, `task_reminder`,
+  `skill_listing`, `output_style`, `plan_mode_reentry`, `plan_mode_exit`,
+  `critical_system_reminder`, `agent_mention`, `date_change`,
+  `ultrathink_effort`, and `companion_intro` attachments.
+- Split inline branches into focused normalizers for invoked skills, todo/task
+  reminders, skill listing, output style, plan/auto mode exits and reentry,
+  critical reminders, agent mentions, compaction, context efficiency, date
+  changes, ultrathink effort, companion intro, and verify-plan reminders.
+- Preserved legacy strings and gates, including `OUTPUT_STYLE_CONFIG` lookup,
+  `AGENC_DISABLE_TOOL_REMINDERS`, Todo V2 gating, lazy `HISTORY_SNIP` require,
+  and the AgenC-safe verify-plan reminder wording.
+- Hardened `runtime/tests/utils/monotonic.test.ts` to assert monotonic
+  advancement after a longer sleep instead of relying on a narrow timer
+  threshold that can fail under load.
+- Confirmed `normalizeAttachmentForAPI` now measures 263 lines, with the
+  extracted session-reminder helpers measuring 6 to 30 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/monotonic.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: File Context Attachment Normalizers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
