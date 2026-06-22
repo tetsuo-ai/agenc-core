@@ -4,6 +4,44 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Hook Output Parser Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/hooks/engine/output-parser.ts` parses command-hook JSON stdout,
+  selects nested `hookSpecificOutput`, validates known fields, merges
+  common/root event fields, and normalizes permission decisions and updated
+  input/permission records.
+- `runtime/tests/hooks/engine/dispatcher.test.ts` covers nested
+  `hookSpecificOutput` normalization, malformed structured output, universal
+  field merging, and event-specific `hookSpecificOutput` validation.
+
+### Finding
+
+Hook output parsing carried a local strict `isRecord` helper equivalent to
+`utils/record.ts#isRecord`: accept non-array objects and reject arrays, null,
+functions, and primitives. The helper gates untrusted hook JSON before
+field-specific validation reports exact parser errors.
+
+### Change
+
+- Replaced the local hook output parser `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved `hookSpecificOutput` object validation, malformed array rejection,
+  and field-specific parser messages.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/hooks/engine/dispatcher.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Configured Hooks Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
