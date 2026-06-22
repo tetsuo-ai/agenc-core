@@ -207,6 +207,7 @@ vi.mock('../../../src/utils/context.js', () => ({
 }))
 
 vi.mock('../../../src/utils/model/model.js', () => ({
+  getCanonicalName: (model: string) => model,
   getDefaultOpusModel: () => 'opus-default',
   getDefaultSonnetModel: () => 'sonnet-default',
   getSmallFastModel: () => 'small-fast-model',
@@ -538,6 +539,7 @@ beforeEach(() => {
   delete process.env.AGENC_EXTRA_METADATA
   delete process.env.AGENC_EXTRA_BODY
   delete process.env.AGENC_DISABLE_THINKING
+  delete process.env.AGENC_DISABLE_ADAPTIVE_THINKING
   delete process.env.AGENC_DISABLE_PROMPT_CACHING
   delete process.env.AGENC_DISABLE_NONSTREAMING_FALLBACK
   delete process.env.API_TIMEOUT_MS
@@ -550,6 +552,7 @@ afterEach(() => {
   delete process.env.AGENC_EXTRA_METADATA
   delete process.env.AGENC_EXTRA_BODY
   delete process.env.AGENC_DISABLE_THINKING
+  delete process.env.AGENC_DISABLE_ADAPTIVE_THINKING
   delete process.env.AGENC_DISABLE_PROMPT_CACHING
   delete process.env.AGENC_DISABLE_NONSTREAMING_FALLBACK
   delete process.env.API_TIMEOUT_MS
@@ -903,6 +906,36 @@ describe('provider API requests', () => {
       true,
       undefined,
     ])
+  })
+
+  test('queryModelWithStreaming sends budgeted thinking below max tokens when adaptive thinking is disabled', async () => {
+    process.env.AGENC_DISABLE_ADAPTIVE_THINKING = '1'
+    harness.streamEvents = textStreamEvents('thinking budget path')
+
+    const seen: AnyRecord[] = []
+    for await (const event of queryModelWithStreaming({
+      messages: [userMessage('think carefully')],
+      systemPrompt: asSystemPrompt(['thinking system']),
+      thinkingConfig: { type: 'enabled', budgetTokens: 777 },
+      tools: [],
+      signal: new AbortController().signal,
+      options: baseOptions({
+        maxOutputTokensOverride: 500,
+      }),
+    })) {
+      seen.push(event as AnyRecord)
+    }
+
+    expect(seen.some(event => event.type === 'assistant')).toBe(true)
+    const streamingCall = harness.createCalls.find(
+      ({ params }: AnyRecord) => params.stream === true,
+    )
+    expect(streamingCall.params.max_tokens).toBe(500)
+    expect(streamingCall.params.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 499,
+    })
+    expect(streamingCall.params).not.toHaveProperty('temperature')
   })
 
   test('queryModelWithStreaming annotates cached-microcompact tool results before the cache boundary', async () => {

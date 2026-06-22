@@ -348,6 +348,60 @@ request-shape coverage.
 - `npm run test:bun`
 - `git diff --check`
 
+## 2026-06-22: Anthropic Request Params Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/api/anthropic.ts#paramsFromContext` builds the final
+  Anthropic request object for logging, retries, streaming attempts, and
+  nonstreaming fallback attempts.
+- Request assembly combines beta headers, extra body parameters, output config,
+  thinking config, context management, prompt caching, fast-mode speed, AFK beta
+  headers, cached-microcompact state, and temperature behavior.
+- `configureEffortParams`, `configureTaskBudgetParams`,
+  `getAPIContextManagement`, `getPromptCachingEnabled`, and
+  `addCacheBreakpoints` are the direct helper dependencies of that request
+  builder.
+- `runtime/tests/services/api/anthropic-core.test.ts` captures request payloads
+  through the mocked Anthropic client and is the focused harness for this code
+  path.
+
+### Finding
+
+After splitting `addCacheBreakpoints`, `paramsFromContext` was still a
+198-line closure mixing output-config mutation, thinking selection,
+context-management payloads, mode beta headers, cached-microcompact flags, and
+the final request object. That made retry request-shape changes hard to review,
+and the budgeted-thinking branch had no direct request-payload assertion in the
+core API harness.
+
+### Change
+
+- Extracted named helpers for output-config assembly, thinking parameter
+  selection, fast-mode speed/header handling, AFK beta insertion,
+  cached-microcompact request state, and context-management payload assembly.
+- Preserved the final request-object ordering so `system` still appears before
+  `messages` for Bun attestation cache replacement.
+- Added focused coverage for budgeted thinking with adaptive thinking disabled:
+  `thinking.budget_tokens` is capped below `max_tokens` and `temperature` is
+  omitted while thinking is enabled.
+- Added the missing `getCanonicalName` export to the Anthropic core test's
+  model mock so real thinking-support logic can execute in that harness.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/services/api/anthropic-core.test.ts --reporter=dot`
+- Node long-function heuristic confirmed `paramsFromContext` is now 119 lines,
+  below the 120-line hotspot threshold used by this audit.
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Dispatcher Optional-Service Responses
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
