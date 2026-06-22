@@ -22,6 +22,7 @@ import type {
   LLMUsage,
   StreamProgressCallback,
 } from "../../types.js";
+import { nonEmptyString as nonBlankText } from "../../../utils/stringUtils.js";
 
 const DEFAULT_REGION = "us-east-1";
 const BEDROCK_SERVICE = "bedrock";
@@ -259,10 +260,6 @@ function messageText(message: LLMMessage): string {
     .map(contentPartText)
     .filter((part): part is string => typeof part === "string")
     .join("\n");
-}
-
-function nonBlankText(value: string): string | undefined {
-  return value.trim().length > 0 ? value : undefined;
 }
 
 function hasTextSerializableContent(message: LLMMessage): boolean {

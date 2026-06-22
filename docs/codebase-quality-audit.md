@@ -4,6 +4,45 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Provider Guard String Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/transaction-guard/tool-intent.ts` extracts command, cwd, and
+  script-like arguments from tool invocations before Solana transaction intent
+  classification and docket construction.
+- `runtime/src/utils/providerDiscovery.ts` normalizes OpenAI-compatible and
+  Ollama model descriptors returned from local provider discovery endpoints.
+- `runtime/src/llm/providers/bedrock/index.ts` filters serialized message text
+  before constructing Bedrock Converse user/assistant blocks.
+
+### Finding
+
+These paths used the same return-original non-blank string predicate as the
+shared `nonEmptyString` helper. Nearby provider and agent helpers often trim
+accepted strings before returning them, but these call sites preserve the
+accepted string and only use `trim()` as the blankness check. Local copies made
+that distinction easy to miss during future provider or guard changes.
+
+### Change
+
+- Reused `nonEmptyString` for transaction-guard command/cwd extraction.
+- Reused `nonEmptyString` for local provider model descriptor parsing.
+- Reused `nonEmptyString` as Bedrock's `nonBlankText` helper to keep the
+  message serialization contract unchanged.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/stringUtils.test.ts tests/utils/providerDiscovery.test.ts tests/transaction-guard/transaction-guard.test.ts tests/gaphunt3/transaction-guard-ollama-courtguard.test.ts tests/llm/providers/bedrock/provider.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Tool Argument String Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
