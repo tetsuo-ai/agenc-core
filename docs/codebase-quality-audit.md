@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Ask-User-Question Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/ask-user-question/tool.ts` parses model-facing
+  `AskUserQuestion` tool payloads, TUI-recorded answers, annotations, metadata,
+  and one-shot answered inputs keyed by tool call id.
+- `runtime/tests/tools/ask-user-question/tool.test.ts` covers malformed
+  payload rejection, recorded answer consumption, and schema exposure.
+- `runtime/tests/tools/ask-user-question/tui-tool.test.tsx` and
+  `runtime/tests/tools/ask-user-question-tui-routing.test.tsx` cover the TUI
+  adapter and routing contract for the same tool surface.
+
+### Finding
+
+The ask-user-question parser carried a local nullable `asRecord` adapter
+equivalent to `utils/record.ts#asRecord`: accept non-array objects and reject
+arrays, null, functions, and primitives. The parser's adjacent `nonEmptyString`
+helper remains domain-specific because it trims accepted labels, descriptions,
+headers, and preview strings.
+
+### Change
+
+- Replaced the local `asRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Left ask-user-question string normalization local to preserve trimmed
+  payload fields.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tools/ask-user-question/tool.test.ts tests/tools/ask-user-question/tui-tool.test.tsx tests/tools/ask-user-question-tui-routing.test.tsx --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Planning Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
