@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Tool Orchestrator Permission Mode Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/orchestrator.ts#orchestrateToolCall` reads the current
+  permission mode from `approvalCtx.invocation.session.permissionModeRegistry`.
+- The derived `bypassPermissions` flag is passed into
+  `classifyToolApproval`, where it can suppress approval prompts under
+  granular policies.
+- `runtime/tests/tools/orchestrator.test.ts` covers granular policy lifecycle
+  decisions and resolver invocation.
+
+### Finding
+
+The orchestrator accepted any non-null object returned by the permission-mode
+registry. Array-shaped values with a spoofed `mode: "bypassPermissions"` could
+therefore skip approval prompting even though permission modes are expected to
+be object records.
+
+### Change
+
+- Reused `runtime/src/utils/record.ts#asRecord` before checking the mode value.
+- Added a regression proving array-shaped mode values cannot spoof
+  `bypassPermissions` and still go through the resolver.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/orchestrator.test.ts tests/phases/execute-tools.test.ts --reporter=dot`
+
 ## 2026-06-22: Run-Turn Session Source Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

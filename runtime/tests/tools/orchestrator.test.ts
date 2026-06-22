@@ -1453,6 +1453,38 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(resolver.request).not.toHaveBeenCalled();
     expect(ran).toHaveBeenCalledOnce();
   });
+
+  test("array-shaped permission mode does not spoof bypassPermissions", async () => {
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const ran = vi.fn(async () => "ok");
+    const spoofedMode = Object.assign(["spoof"], {
+      mode: "bypassPermissions",
+    });
+
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool({ isReadOnly: false }),
+      approvalCtx: {
+        ...mkCtx(),
+        invocation: {
+          session: {
+            permissionModeRegistry: {
+              current: () => spoofedMode,
+            },
+          },
+        } as never,
+      },
+      approvalPolicy: "granular",
+      sandboxMode: "read_only",
+      dispatch: ran,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(resolver.request).toHaveBeenCalledOnce();
+    expect(ran).toHaveBeenCalledOnce();
+  });
 });
 
 describe("escalateOnFailure + wantsNoSandboxApproval helpers", () => {

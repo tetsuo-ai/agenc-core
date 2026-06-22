@@ -98,6 +98,7 @@ import {
 import {
   defaultAvailableApprovalDecisions,
 } from "../sandbox/escalation/approvals.js";
+import { asRecord } from "../utils/record.js";
 
 export { requestApproval };
 export type {
@@ -638,9 +639,7 @@ export async function orchestrateToolCall<T>(
     session?: { permissionModeRegistry?: { current?: () => unknown } };
   }).session?.permissionModeRegistry?.current?.();
   const isBypassPermissionsMode =
-    typeof sessionMode === "object" &&
-    sessionMode !== null &&
-    (sessionMode as { mode?: string }).mode === "bypassPermissions";
+    asRecord(sessionMode)?.mode === "bypassPermissions";
   const toolRequirement = classifyToolApproval(opts.tool, {
     approvalPolicy: effectiveApprovalPolicy,
     sandboxMode: opts.sandboxMode,
