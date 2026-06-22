@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Teammate Spawn Flags
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/shared/spawnMultiAgent.ts#handleSpawnSplitPane` and
+  `#handleSpawnSeparateWindow` build the command used for tmux/iTerm2 teammate
+  processes.
+- `runtime/src/utils/swarm/backends/PaneBackendExecutor.ts#spawn` builds the
+  pane-backend teammate command through the newer executor abstraction.
+- `runtime/src/utils/swarm/spawnUtils.ts#buildInheritedCliFlags` owns shared
+  propagation for permission mode, model selection, teammate mode, settings,
+  plugins, and browser flags.
+- `runtime/tests/utils/swarm/spawnUtils.flags.test.ts` covers the shared flag
+  builder for auto permissions, teammate mode, and explicit model overrides.
+
+### Finding
+
+The legacy spawn path carried a local copy of the teammate command and inherited
+flag builders while the pane backend used `spawnUtils.ts`. The two copies had
+already drifted: the local copy propagated `--permission-mode auto`, while the
+shared copy propagated `--teammate-mode`. The per-call-site model replacement
+also split a shell-quoted flag string, which could corrupt a leader model value
+containing spaces before appending the teammate model.
+
+### Change
+
+- Removed the duplicated command and flag builders from `spawnMultiAgent.ts`.
+- Extended the shared flag builder to preserve auto permission propagation and
+  accept a teammate-specific model before shell formatting.
+- Routed both legacy spawn handlers and `PaneBackendExecutor` through the
+  shared model-aware flag builder.
+- Added direct tests for auto permission propagation, teammate-mode propagation,
+  and quoted explicit model replacement.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/swarm/spawnUtils.flags.test.ts tests/auth/remote-token-path.test.ts --reporter=dot`
+- `npm run typecheck`
+
 ## 2026-06-22: Shared LSP Result Partitioning
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

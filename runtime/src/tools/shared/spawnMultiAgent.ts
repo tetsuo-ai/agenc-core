@@ -4,28 +4,19 @@
  */
 
 import React from 'react'
-import {
-  getChromeFlagOverride,
-  getFlagSettingsPath,
-  getInlinePlugins,
-  getMainLoopModelOverride,
-  getSessionBypassPermissionsMode,
-  getSessionId,
-} from '../../bootstrap/state.js'
+import { getSessionId } from '../../bootstrap/state.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import { createTaskStateBase, generateTaskId } from '../../tasks/Task.js'
 import type { ToolUseContext } from '../Tool.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import { formatAgentId } from '../../utils/agentId.js'
 import { quote } from '../../utils/bash/shellQuote.js'
-import { isInBundledMode } from '../../utils/bundledMode.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
-import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { isTmuxAvailable } from '../../utils/swarm/backends/detection.js'
 import {
   detectAndGetBackend,
@@ -40,7 +31,6 @@ import { isPaneBackend } from '../../utils/swarm/backends/types.js'
 import {
   SWARM_SESSION_NAME,
   TEAM_LEAD_NAME,
-  TEAMMATE_COMMAND_ENV_VAR,
   TMUX_COMMAND,
 } from '../../utils/swarm/constants.js'
 import { It2SetupPrompt } from '../../utils/swarm/It2SetupPrompt.js'
@@ -49,7 +39,11 @@ import {
   type InProcessSpawnConfig,
   spawnInProcessTeammate,
 } from '../../utils/swarm/spawnInProcess.js'
-import { buildInheritedEnvVars } from '../../utils/swarm/spawnUtils.js'
+import {
+  buildInheritedCliFlags,
+  buildInheritedEnvVars,
+  getTeammateCommand,
+} from '../../utils/swarm/spawnUtils.js'
 import {
   getTeamFilePath,
   readTeamFileAsync,
@@ -185,80 +179,6 @@ async function ensureSession(sessionName: string): Promise<void> {
       )
     }
   }
-}
-
-/**
- * Gets the command to spawn a teammate.
- * For native builds (compiled binaries), use process.execPath.
- * For non-native (node/bun running a script), use process.argv[1].
- */
-function getTeammateCommand(): string {
-  if (process.env[TEAMMATE_COMMAND_ENV_VAR]) {
-    return process.env[TEAMMATE_COMMAND_ENV_VAR]
-  }
-  return isInBundledMode() ? process.execPath : process.argv[1]!
-}
-
-/**
- * Builds CLI flags to propagate from the current session to spawned teammates.
- * This ensures teammates inherit important settings like permission mode,
- * model selection, and plugin configuration from their parent.
- *
- * @param options.planModeRequired - If true, don't inherit bypass permissions (plan mode takes precedence)
- * @param options.permissionMode - Permission mode to propagate
- */
-function buildInheritedCliFlags(options?: {
-  planModeRequired?: boolean
-  permissionMode?: PermissionMode
-}): string {
-  const flags: string[] = []
-  const { planModeRequired, permissionMode } = options || {}
-
-  // Propagate permission mode to teammates, but NOT if plan mode is required
-  // Plan mode takes precedence over bypass permissions for safety
-  if (planModeRequired) {
-    // Don't inherit bypass permissions when plan mode is required
-  } else if (
-    permissionMode === 'bypassPermissions' ||
-    getSessionBypassPermissionsMode()
-  ) {
-    flags.push('--dangerously-skip-permissions')
-  } else if (permissionMode === 'acceptEdits') {
-    flags.push('--permission-mode acceptEdits')
-  } else if (permissionMode === 'auto') {
-    // Teammates inherit auto mode so the classifier auto-approves their tool
-    // calls too. The teammate's own startup (permissionSetup.ts) handles
-    // GrowthBook gate checks and setAutoModeActive(true) independently.
-    flags.push('--permission-mode auto')
-  }
-
-  // Propagate --model if explicitly set via CLI
-  const modelOverride = getMainLoopModelOverride()
-  if (modelOverride) {
-    flags.push(`--model ${quote([modelOverride])}`)
-  }
-
-  // Propagate --settings if set via CLI
-  const settingsPath = getFlagSettingsPath()
-  if (settingsPath) {
-    flags.push(`--settings ${quote([settingsPath])}`)
-  }
-
-  // Propagate --plugin-dir for each inline plugin
-  const inlinePlugins = getInlinePlugins()
-  for (const pluginDir of inlinePlugins) {
-    flags.push(`--plugin-dir ${quote([pluginDir])}`)
-  }
-
-  // Propagate --chrome / --no-chrome if explicitly set on the CLI
-  const chromeFlagOverride = getChromeFlagOverride()
-  if (chromeFlagOverride === true) {
-    flags.push('--chrome')
-  } else if (chromeFlagOverride === false) {
-    flags.push('--no-chrome')
-  }
-
-  return flags.join(' ')
 }
 
 /**
@@ -488,23 +408,11 @@ async function handleSpawnSplitPane(
 
   // Build CLI flags to propagate to teammate
   // Pass plan_mode_required to prevent inheriting bypass permissions
-  let inheritedFlags = buildInheritedCliFlags({
+  const inheritedFlags = buildInheritedCliFlags({
     planModeRequired: plan_mode_required,
     permissionMode: appState.toolPermissionContext.mode,
+    model,
   })
-
-  // If teammate has a custom model, add --model flag (or replace inherited one)
-  if (model) {
-    // Remove any inherited --model flag first
-    inheritedFlags = inheritedFlags
-      .split(' ')
-      .filter((flag, i, arr) => flag !== '--model' && arr[i - 1] !== '--model')
-      .join(' ')
-    // Add the teammate's model
-    inheritedFlags = inheritedFlags
-      ? `${inheritedFlags} --model ${quote([model])}`
-      : `--model ${quote([model])}`
-  }
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
   // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
@@ -690,23 +598,11 @@ async function handleSpawnSeparateWindow(
 
   // Build CLI flags to propagate to teammate
   // Pass plan_mode_required to prevent inheriting bypass permissions
-  let inheritedFlags = buildInheritedCliFlags({
+  const inheritedFlags = buildInheritedCliFlags({
     planModeRequired: plan_mode_required,
     permissionMode: appState.toolPermissionContext.mode,
+    model,
   })
-
-  // If teammate has a custom model, add --model flag (or replace inherited one)
-  if (model) {
-    // Remove any inherited --model flag first
-    inheritedFlags = inheritedFlags
-      .split(' ')
-      .filter((flag, i, arr) => flag !== '--model' && arr[i - 1] !== '--model')
-      .join(' ')
-    // Add the teammate's model
-    inheritedFlags = inheritedFlags
-      ? `${inheritedFlags} --model ${quote([model])}`
-      : `--model ${quote([model])}`
-  }
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
   // Propagate env vars that teammates need but may not inherit from tmux split-window shells.

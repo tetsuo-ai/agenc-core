@@ -127,23 +127,11 @@ export class PaneBackendExecutor implements TeammateExecutor {
 
       // Build CLI flags to propagate to teammate
       const appState = this.context.getAppState()
-      let inheritedFlags = buildInheritedCliFlags({
+      const inheritedFlags = buildInheritedCliFlags({
         planModeRequired: config.planModeRequired,
         permissionMode: appState.toolPermissionContext.mode,
+        model: config.model,
       })
-
-      // If teammate has a custom model, add --model flag (or replace inherited one)
-      if (config.model) {
-        inheritedFlags = inheritedFlags
-          .split(' ')
-          .filter(
-            (flag, i, arr) => flag !== '--model' && arr[i - 1] !== '--model',
-          )
-          .join(' ')
-        inheritedFlags = inheritedFlags
-          ? `${inheritedFlags} --model ${quote([config.model])}`
-          : `--model ${quote([config.model])}`
-      }
 
       const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
       const workingDir = config.cwd
