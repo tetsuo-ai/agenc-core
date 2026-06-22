@@ -247,6 +247,52 @@ and rendered a duplicate selectable row in the model picker.
 - `npm run test:bun`
 - `git diff --check`
 
+## 2026-06-22: Copilot Model Registry Builder
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/model/copilotModels.ts` exports the GitHub Copilot model
+  registry and the `getCopilotModelIds`, `getCopilotModel`, and
+  `getAllCopilotModels` accessors.
+- `runtime/src/utils/model/modelOptions.ts#getCopilotModelOptions` maps
+  `getAllCopilotModels()` into `/model` picker rows when
+  `getAPIProvider() === 'github'`.
+- `runtime/tests/utils/model/modelOptions.github.test.ts` verifies the GitHub
+  provider picker includes Copilot registry entries.
+- `runtime/tests/utils/model/providers.test.ts` covers provider detection and
+  GitHub native-model mode behavior.
+
+### Finding
+
+The Copilot registry repeated the same cost, modality, capability, and date
+metadata in nearly every model object. The header comment also still claimed
+there were 19 models, while the current registry exports 21.
+
+### Change
+
+- Replaced the repeated full-object registry with a shared default metadata
+  object plus per-model override definitions.
+- Kept the exported `COPILOT_MODELS` object and accessor functions unchanged for
+  current consumers.
+- Added duplicate-ID rejection while building the registry.
+- Added focused registry tests that pin model order, key/id sync, selected
+  default and override metadata, and nested metadata object independence.
+- Removed the stale hardcoded model-count comment.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/model/copilotModels.test.ts tests/utils/model/modelOptions.github.test.ts --reporter=dot`
+- Old-vs-new registry comparison from `HEAD` confirmed exported JSON is
+  identical across all 21 models.
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Dispatcher Optional-Service Responses
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
