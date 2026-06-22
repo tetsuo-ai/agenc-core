@@ -143,6 +143,9 @@ describe("runtime SDK surface hygiene", () => {
     expect(existsSync(`${repoRoot}runtime/src/entrypoints/sdk.d.ts`)).toBe(
       false,
     );
+    expect(
+      existsSync(`${repoRoot}runtime/src/entrypoints/sdk/controlTypes.ts`),
+    ).toBe(false);
   });
 
   test("root export stays on the daemon embedding surface", () => {
@@ -153,5 +156,39 @@ describe("runtime SDK surface hygiene", () => {
     expect(indexSource).not.toMatch(
       /\b(query|queryAsync|unstable_v2_createSession|unstable_v2_resumeSession|unstable_v2_prompt|createSdkMcpServer|deleteSession)\b/,
     );
+  });
+
+  test("internal SDK barrel remains a type and constants re-export", () => {
+    const sdkBarrel = readRepoFile("runtime/src/entrypoints/agentSdkTypes.ts");
+
+    expect(sdkBarrel).toContain(
+      "export { EXIT_REASONS, HOOK_EVENTS } from './sdk/coreTypes.js'",
+    );
+    expect(sdkBarrel).toContain("export type * from './sdk/coreTypes.js'");
+    expect(sdkBarrel).not.toMatch(/\bexport\s+(?:async\s+)?function\b/);
+    expect(sdkBarrel).not.toContain("throw new Error");
+    expect(sdkBarrel).not.toContain("SDKControlRequest");
+  });
+
+  test("generated SDK permission update arrays match schemas", () => {
+    const schemas = readRepoFile("runtime/src/entrypoints/sdk/coreSchemas.ts");
+    const generated = readRepoFile(
+      "runtime/src/entrypoints/sdk/coreTypes.generated.ts",
+    );
+
+    expect(schemas).toContain(
+      "updatedPermissions: z.array(PermissionUpdateSchema()).optional()",
+    );
+    expect(schemas).toContain(
+      "permission_suggestions: z.array(PermissionUpdateSchema()).optional()",
+    );
+    expect(generated).not.toMatch(
+      /(updatedPermissions|permission_suggestions)\?: \(\{/,
+    );
+    expect(
+      generated.match(
+        /(updatedPermissions|permission_suggestions)\?: PermissionUpdate\[\]/g,
+      ) ?? [],
+    ).toHaveLength(6);
   });
 });

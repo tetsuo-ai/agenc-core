@@ -114,13 +114,6 @@ declare module "image-processor-napi" {
   export default defaultProcessor;
 }
 
-declare module "src/entrypoints/agentSdkTypes.js" {
-  export type HookEvent = any;
-  export type ModelUsage = Record<string, unknown>;
-  export const HOOK_EVENTS: readonly HookEvent[];
-  export type SDKMessage = any;
-}
-
 declare module "src/types/hooks.js" {
   export type HookCallbackMatcher = Record<string, unknown>;
 }

@@ -112,12 +112,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
-// SDKAssistantMessageError is imported from its canonical generated source.
-// The barrel `agentSdkTypes.js` re-declares it locally (= any) AND re-exports
-// the generated union via `export type *`, which collide and make the name
-// unresolvable through the barrel (TS2305). Importing the generated type
-// directly is type-level only — the value is used solely as the `error?` field.
-import type { SDKAssistantMessageError } from 'src/entrypoints/sdk/coreTypes.generated.js'
+import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
 import { areExplorePlanAgentsEnabled } from 'src/tools/AgentTool/builtInAgents.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'

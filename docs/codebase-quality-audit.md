@@ -56,7 +56,7 @@ package, `@tetsuo-ai/agenc`.
 
 ### Remaining Work
 
-- Continue auditing large runtime slices, especially public SDK stubs,
+- Continue auditing large runtime slices, especially SDK/package boundaries,
   dispatcher optional-service behavior, and repeated command-menu patterns.
 - Do not mark the full quality goal complete until every repository area has
   stronger current-state evidence than this first slice provides.
@@ -145,6 +145,58 @@ the already-tested unavailable branches.
 - `npm run typecheck`
 - `npm run build --workspace=@tetsuo-ai/runtime`
 - `npm run check:unused`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
+## 2026-06-22: Internal SDK Type Barrel Tightening
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/entrypoints/agentSdkTypes.ts` is imported by hook, message,
+  attachment, tool, and bootstrap code as an internal SDK event/type barrel.
+- `runtime/src/entrypoints/sdk/coreTypes.ts` re-exports generated SDK
+  message, hook, permission, and runtime event types.
+- `runtime/src/entrypoints/sdk/coreSchemas.ts` is the Zod source of truth for
+  generated SDK types, including hook outputs and permission updates.
+- `runtime/src/types/hooks.ts`, `runtime/src/utils/hooks.ts`, and
+  `runtime/src/utils/hooks/agentSdkHookTypes.ts` parse, guard, and consume hook
+  JSON output.
+- `runtime/src/types/runtime-ambient.d.ts` previously shadowed the internal SDK
+  barrel with permissive ambient declarations.
+
+### Finding
+
+`agentSdkTypes.ts` mixed a real internal type/value barrel with query-style SDK
+functions that all threw `not implemented`, broad `any` aliases that duplicated
+generated SDK types, and a re-export of unused `SDKControl*` aliases from a
+source-only `controlTypes.ts` stub. Removing those permissive aliases exposed a
+generated type drift: schema fields declared as `z.array(PermissionUpdateSchema())`
+had been emitted as a union whose array applied only to the last union branch.
+
+### Change
+
+- Reduced `agentSdkTypes.ts` to a narrow internal barrel for `HOOK_EVENTS`,
+  `EXIT_REASONS`, generated core SDK types, runtime `EffortLevel`, and settings
+  types.
+- Deleted the unused `sdk/controlTypes.ts` stub and the ambient module block
+  that shadowed `agentSdkTypes.ts` with `any` declarations.
+- Replaced local hook `any` aliases with re-exports of generated SDK hook types.
+- Corrected generated `PermissionUpdate[]` array shapes for
+  `updatedPermissions` and `permission_suggestions`.
+- Updated stale comments that described the old `any` collision.
+- Added meta tests that prevent the internal SDK barrel from regaining throwing
+  runtime functions and lock generated permission-update arrays to the schema
+  shape.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/meta/license-and-version.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
 - `npm test`
 - `npm run test:bun`
 - `git diff --check`
