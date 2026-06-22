@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared MCP Resource/Prompt Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/mcp-client/resources.ts` lists MCP resources, normalizes
+  resource descriptors, reads resource content, skips malformed entries, and
+  enforces the 5MB resource read cap.
+- `runtime/src/mcp-client/prompts.ts` lists MCP prompts, normalizes prompt
+  argument specs, renders prompt messages, and frames untrusted prompt content.
+- `runtime/tests/mcp-client/resources.test.ts` and
+  `runtime/tests/mcp-client/prompts.test.ts` cover malformed catalogs,
+  malformed content/messages, non-array payloads, disposal, and untrusted prompt
+  framing.
+
+### Finding
+
+The MCP resource and prompt bridges each carried a local strict `asRecord`
+adapter equivalent to `utils/record.ts#asRecord`, except the local helpers
+returned `undefined` instead of `null`. The bridge field readers already treat
+missing records as absent payloads, so they can accept the shared helper's
+nullable result directly.
+
+### Change
+
+- Replaced the local MCP resource/prompt `asRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Widened the bridge field-reader parameters to accept `null` while preserving
+  malformed-payload behavior and output shapes.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/mcp-client/resources.test.ts tests/mcp-client/prompts.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Config Menu Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
