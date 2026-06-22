@@ -4,6 +4,38 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared SDK MCP Schema Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/mcp/client.ts` fetches SDK MCP tool descriptors and
+  sanitizes untrusted tool descriptions/search hints/input schemas before
+  exposing them to runtime tools.
+- `runtime/tests/services/mcp/client.test.ts` and
+  `runtime/tests/mcp-client/tools.test.ts` cover model-facing MCP tool metadata
+  sanitization, schema stripping, schema-size fallback, and MCP tool bridging.
+
+### Finding
+
+SDK MCP schema sanitization still had a local `asObjectRecord` helper with the
+same strict non-array object semantics as `runtime/src/utils/record.ts`. The
+local duplicate sat on a sensitive untrusted-server boundary where accidentally
+accepting arrays as records would expose array-shaped input schemas instead of
+falling back to the safe open-object schema.
+
+### Change
+
+- Replaced the local `asObjectRecord` helper with
+  `runtime/src/utils/record.ts#asRecord`.
+- Added a regression that array-shaped SDK MCP input schemas are rejected and
+  normalized to `{ type: "object", properties: {} }`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/services/mcp/client.test.ts tests/mcp-client/tools.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Agent Run Metadata Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

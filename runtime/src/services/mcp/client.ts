@@ -75,6 +75,7 @@ import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
+import { asRecord } from '../../utils/record.js'
 import {
   getBinaryBlobSavedMessage,
   getFormatDescription,
@@ -337,12 +338,6 @@ function sanitizeMcpSearchHint(value: unknown): string | undefined {
     : undefined
 }
 
-function asObjectRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
-}
-
 function sanitizeSdkMcpSchemaNodeForModel(
   value: unknown,
   depth = 0,
@@ -357,7 +352,7 @@ function sanitizeSdkMcpSchemaNodeForModel(
       .filter(item => item !== undefined)
   }
 
-  const record = asObjectRecord(value)
+  const record = asRecord(value)
   if (record) {
     const output: Record<string, unknown> = {}
     const isSchemaMap =
@@ -391,7 +386,7 @@ function sanitizeSdkMcpInputSchemaForModel(
   inputSchema: unknown,
 ): Tool['inputJSONSchema'] {
   const sanitized = sanitizeSdkMcpSchemaNodeForModel(inputSchema)
-  const record = asObjectRecord(sanitized)
+  const record = asRecord(sanitized)
   if (!record) return { type: 'object', properties: {} }
 
   const bytes = Buffer.byteLength(JSON.stringify(record), 'utf8')

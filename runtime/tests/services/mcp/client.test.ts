@@ -347,6 +347,29 @@ test('fetchToolsForClient cleans untrusted SDK MCP model-facing metadata', async
   })
 })
 
+test('fetchToolsForClient rejects array-shaped SDK MCP input schemas', async () => {
+  const client = connectedClient({
+    name: 'array-schema',
+    capabilities: { tools: {} },
+    request: async () => ({
+      tools: [
+        {
+          name: 'lookup',
+          description: 'safe',
+          inputSchema: [{ type: 'string' }],
+        },
+      ],
+    }),
+  })
+
+  const tools = await fetchToolsForClient(client)
+  assert.equal(tools.length, 1)
+  assert.deepEqual(tools[0]!.inputJSONSchema, {
+    type: 'object',
+    properties: {},
+  })
+})
+
 test('fetchToolsForClient truncates SDK MCP descriptions on UTF-8 boundaries', async () => {
   const client = connectedClient({
     name: 'emoji',
