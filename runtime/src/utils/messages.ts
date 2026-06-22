@@ -108,6 +108,19 @@ type AsyncHookResponseAttachmentForAPI = Extract<
 >
 type QueuedCommandAttachment = Extract<Attachment, { type: 'queued_command' }>
 type DiagnosticsAttachment = Extract<Attachment, { type: 'diagnostics' }>
+type HookBlockingErrorAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'hook_blocking_error' }
+>
+type HookSuccessAttachmentForAPI = Extract<Attachment, { type: 'hook_success' }>
+type HookAdditionalContextAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'hook_additional_context' }
+>
+type HookStoppedContinuationAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'hook_stopped_continuation' }
+>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -3983,6 +3996,85 @@ function normalizeDiagnosticsAttachment(
   ])
 }
 
+function normalizeHookBlockingErrorAttachment(
+  attachment: HookBlockingErrorAttachmentForAPI,
+): UserMessage[] {
+  const hookName = sanitizeSystemReminderContent(attachment.hookName)
+  const command = sanitizeSystemReminderContent(
+    attachment.blockingError.command,
+  )
+  const blockingError = sanitizeSystemReminderContent(
+    attachment.blockingError.blockingError,
+  )
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `${hookName} hook blocking error from command: "${command}": ${blockingError}`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeHookSuccessAttachment(
+  attachment: HookSuccessAttachmentForAPI,
+): UserMessage[] {
+  if (
+    attachment.hookEvent !== 'SessionStart' &&
+    attachment.hookEvent !== 'UserPromptSubmit'
+  ) {
+    return []
+  }
+  if (attachment.content === '') {
+    return []
+  }
+  const hookName = sanitizeSystemReminderContent(attachment.hookName)
+  const content = sanitizeSystemReminderContent(attachment.content)
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(`${hookName} hook success: ${content}`),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeHookAdditionalContextAttachment(
+  attachment: HookAdditionalContextAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.content.length === 0) {
+    return []
+  }
+  const section = renderHookAdditionalContextSection(
+    attachment.content.map((content) => ({
+      hookName: attachment.hookName,
+      hookEvent: attachment.hookEvent,
+      content,
+    })),
+  )
+  if (section === null) return []
+  return [
+    createUserMessage({
+      content: section,
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeHookStoppedContinuationAttachment(
+  attachment: HookStoppedContinuationAttachmentForAPI,
+): UserMessage[] {
+  const hookName = sanitizeSystemReminderContent(attachment.hookName)
+  const message = sanitizeSystemReminderContent(attachment.message)
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `${hookName} hook stopped continuation: ${message}`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4426,70 +4518,16 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ]
     }
     case 'hook_blocking_error': {
-      const hookName = sanitizeSystemReminderContent(attachment.hookName)
-      const command = sanitizeSystemReminderContent(
-        attachment.blockingError.command,
-      )
-      const blockingError = sanitizeSystemReminderContent(
-        attachment.blockingError.blockingError,
-      )
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `${hookName} hook blocking error from command: "${command}": ${blockingError}`,
-          ),
-          isMeta: true,
-        }),
-      ]
+      return normalizeHookBlockingErrorAttachment(attachment)
     }
-    case 'hook_success':
-      if (
-        attachment.hookEvent !== 'SessionStart' &&
-        attachment.hookEvent !== 'UserPromptSubmit'
-      ) {
-        return []
-      }
-      if (attachment.content === '') {
-        return []
-      }
-      const hookName = sanitizeSystemReminderContent(attachment.hookName)
-      const content = sanitizeSystemReminderContent(attachment.content)
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(`${hookName} hook success: ${content}`),
-          isMeta: true,
-        }),
-      ]
+    case 'hook_success': {
+      return normalizeHookSuccessAttachment(attachment)
+    }
     case 'hook_additional_context': {
-      if (attachment.content.length === 0) {
-        return []
-      }
-      const section = renderHookAdditionalContextSection(
-        attachment.content.map((content) => ({
-          hookName: attachment.hookName,
-          hookEvent: attachment.hookEvent,
-          content,
-        })),
-      )
-      if (section === null) return []
-      return [
-        createUserMessage({
-          content: section,
-          isMeta: true,
-        }),
-      ]
+      return normalizeHookAdditionalContextAttachment(attachment)
     }
     case 'hook_stopped_continuation': {
-      const hookName = sanitizeSystemReminderContent(attachment.hookName)
-      const message = sanitizeSystemReminderContent(attachment.message)
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `${hookName} hook stopped continuation: ${message}`,
-          ),
-          isMeta: true,
-        }),
-      ]
+      return normalizeHookStoppedContinuationAttachment(attachment)
     }
     case 'compaction_reminder': {
       return wrapMessagesInSystemReminder([

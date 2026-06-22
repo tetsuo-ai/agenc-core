@@ -4,6 +4,63 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Runtime Hook Attachment Normalizers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/hooks.ts`, `runtime/src/utils/hooks/execPromptHook.ts`,
+  and `runtime/src/utils/hooks/execAgentHook.ts` emit hook success and blocking
+  error attachments from configured hook execution.
+- `runtime/src/tools/execution.ts` emits `hook_additional_context`,
+  `hook_blocking_error`, and `hook_stopped_continuation` attachments from live
+  tool hook decisions.
+- `runtime/src/llm/hooks/dispatcher.ts` emits hook additional context and
+  stopped-continuation attachments from LLM hook dispatch results.
+- `runtime/src/prompts/hook-context-framing.ts#renderHookAdditionalContextSection`
+  frames hook-provided context as untrusted command output.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` converts hook
+  attachments into model-facing reminders or framed context.
+- `runtime/tests/conversation/messages-core.test.ts` covers hook blocking
+  errors, event-filtered hook success, empty hook content suppression,
+  additional-context framing, escaped hook context delimiters, and stopped
+  continuations.
+
+### Finding
+
+Runtime hook normalization handled multiple untrusted hook-output shapes
+directly inside the large attachment dispatcher. The branch cluster mixed
+system-reminder sanitization, success event filtering, empty-content
+suppression, and dedicated hook-context framing beside unrelated attachment
+cases, increasing the chance that future hook edits would bypass the intended
+trust boundary.
+
+### Change
+
+- Added typed aliases for `hook_blocking_error`, `hook_success`,
+  `hook_additional_context`, and `hook_stopped_continuation` attachments.
+- Split the inline hook branches into
+  `normalizeHookBlockingErrorAttachment`,
+  `normalizeHookSuccessAttachment`,
+  `normalizeHookAdditionalContextAttachment`, and
+  `normalizeHookStoppedContinuationAttachment`.
+- Preserved the existing `SessionStart`/`UserPromptSubmit` success filter,
+  empty-content suppression, system-reminder sanitization, and
+  `renderHookAdditionalContextSection` framing.
+- Confirmed `normalizeAttachmentForAPI` now measures 609 lines, with the
+  extracted hook helpers measuring 19, 21, 21, and 14 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Diagnostics Attachment Normalizer
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
