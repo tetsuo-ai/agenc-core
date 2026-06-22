@@ -101,6 +101,7 @@ type HookAttachmentWithName = Exclude<
   HookAttachment,
   HookPermissionDecisionAttachment
 >
+type TaskStatusAttachment = Extract<Attachment, { type: 'task_status' }>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -3779,6 +3780,89 @@ function getAutoModeSparseInstructions(): UserMessage[] {
   ])
 }
 
+function normalizeTaskStatusAttachment(
+  attachment: TaskStatusAttachment,
+): UserMessage[] {
+  const displayStatus =
+    attachment.status === 'killed' ? 'stopped' : attachment.status
+  const safeTaskId = sanitizeSystemReminderContent(attachment.taskId)
+  const safeTaskType = sanitizeSystemReminderContent(attachment.taskType)
+  const safeDescription = sanitizeSystemReminderContent(attachment.description)
+  const safeDeltaSummary = attachment.deltaSummary
+    ? sanitizeSystemReminderContent(attachment.deltaSummary)
+    : null
+  const safeOutputFilePath = attachment.outputFilePath
+    ? sanitizeSystemReminderContent(attachment.outputFilePath)
+    : null
+
+  // For stopped tasks, keep it brief: the work was interrupted and the raw
+  // transcript delta is not useful context.
+  if (attachment.status === 'killed') {
+    return [
+      createUserMessage({
+        content: wrapInSystemReminder(
+          `Task "${safeDescription}" (${safeTaskId}) was stopped by the user.`,
+        ),
+        isMeta: true,
+      }),
+    ]
+  }
+
+  // Running task status is emitted post-compaction, where the original spawn
+  // message is gone, so preserve the duplicate-spawn warning with the summary.
+  if (attachment.status === 'running') {
+    const parts = [
+      `Background agent "${safeDescription}" (${safeTaskId}) is still running.`,
+    ]
+    if (safeDeltaSummary) {
+      parts.push(`Progress: ${safeDeltaSummary}`)
+    }
+    if (safeOutputFilePath) {
+      parts.push(
+        `Do NOT spawn a duplicate. You will be notified when it completes. You can read partial output at ${safeOutputFilePath} or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
+      )
+    } else {
+      parts.push(
+        `Do NOT spawn a duplicate. You will be notified when it completes. You can check its progress with the ${TASK_OUTPUT_TOOL_NAME} tool or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
+      )
+    }
+    return [
+      createUserMessage({
+        content: wrapInSystemReminder(parts.join(' ')),
+        isMeta: true,
+      }),
+    ]
+  }
+
+  const messageParts: string[] = [
+    `Task ${safeTaskId}`,
+    `(type: ${safeTaskType})`,
+    `(status: ${displayStatus})`,
+    `(description: ${safeDescription})`,
+  ]
+
+  if (safeDeltaSummary) {
+    messageParts.push(`Delta: ${safeDeltaSummary}`)
+  }
+
+  if (safeOutputFilePath) {
+    messageParts.push(
+      `Read the output file to retrieve the result: ${safeOutputFilePath}`,
+    )
+  } else {
+    messageParts.push(
+      `You can check its output using the ${TASK_OUTPUT_TOOL_NAME} tool.`,
+    )
+  }
+
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(messageParts.join(' ')),
+      isMeta: true,
+    }),
+  ]
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4250,87 +4334,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'task_status': {
-      const displayStatus =
-        attachment.status === 'killed' ? 'stopped' : attachment.status
-      const safeTaskId = sanitizeSystemReminderContent(attachment.taskId)
-      const safeTaskType = sanitizeSystemReminderContent(attachment.taskType)
-      const safeDescription = sanitizeSystemReminderContent(
-        attachment.description,
-      )
-      const safeDeltaSummary = attachment.deltaSummary
-        ? sanitizeSystemReminderContent(attachment.deltaSummary)
-        : null
-      const safeOutputFilePath = attachment.outputFilePath
-        ? sanitizeSystemReminderContent(attachment.outputFilePath)
-        : null
-
-      // For stopped tasks, keep it brief — the work was interrupted and
-      // the raw transcript delta isn't useful context.
-      if (attachment.status === 'killed') {
-        return [
-          createUserMessage({
-            content: wrapInSystemReminder(
-              `Task "${safeDescription}" (${safeTaskId}) was stopped by the user.`,
-            ),
-            isMeta: true,
-          }),
-        ]
-      }
-
-      // For running tasks, warn against spawning a duplicate — this attachment
-      // is only emitted post-compaction, where the original spawn message is gone.
-      if (attachment.status === 'running') {
-        const parts = [
-          `Background agent "${safeDescription}" (${safeTaskId}) is still running.`,
-        ]
-        if (safeDeltaSummary) {
-          parts.push(`Progress: ${safeDeltaSummary}`)
-        }
-        if (safeOutputFilePath) {
-          parts.push(
-            `Do NOT spawn a duplicate. You will be notified when it completes. You can read partial output at ${safeOutputFilePath} or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
-          )
-        } else {
-          parts.push(
-            `Do NOT spawn a duplicate. You will be notified when it completes. You can check its progress with the ${TASK_OUTPUT_TOOL_NAME} tool or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
-          )
-        }
-        return [
-          createUserMessage({
-            content: wrapInSystemReminder(parts.join(' ')),
-            isMeta: true,
-          }),
-        ]
-      }
-
-      // For completed/failed tasks, include the full delta
-      const messageParts: string[] = [
-        `Task ${safeTaskId}`,
-        `(type: ${safeTaskType})`,
-        `(status: ${displayStatus})`,
-        `(description: ${safeDescription})`,
-      ]
-
-      if (safeDeltaSummary) {
-        messageParts.push(`Delta: ${safeDeltaSummary}`)
-      }
-
-      if (safeOutputFilePath) {
-        messageParts.push(
-          `Read the output file to retrieve the result: ${safeOutputFilePath}`,
-        )
-      } else {
-        messageParts.push(
-          `You can check its output using the ${TASK_OUTPUT_TOOL_NAME} tool.`,
-        )
-      }
-
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(messageParts.join(' ')),
-          isMeta: true,
-        }),
-      ]
+      return normalizeTaskStatusAttachment(attachment)
     }
     case 'async_hook_response': {
       const response = attachment.response

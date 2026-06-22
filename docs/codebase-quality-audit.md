@@ -4,6 +4,48 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Task Status Attachment Normalizer
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` converts persisted
+  attachment records into model-facing `UserMessage` entries.
+- The `task_status` attachment branch handles stopped, running, completed, and
+  failed background task state after transcript compaction.
+- `runtime/tests/conversation/messages-core.test.ts` covers stopped, running,
+  and completed task-status normalization, including system-reminder
+  neutralization.
+
+### Finding
+
+`normalizeAttachmentForAPI` remained a large attachment dispatcher with
+state-specific background-task formatting embedded directly in the switch. That
+made the task-status behavior harder to review beside unrelated attachment
+cases and kept a future attachment edit close to duplicate-spawn warning logic.
+
+### Change
+
+- Added a typed `TaskStatusAttachment` helper alias and
+  `normalizeTaskStatusAttachment`.
+- Moved the existing task-status formatting and sanitization logic into the
+  helper while preserving stopped/running/completed output shape.
+- Left the dispatcher as a narrow type switch that delegates `task_status` to
+  the helper.
+- Confirmed `normalizeAttachmentForAPI` now measures 770 lines, with the
+  extracted helper measuring 82 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Public Package Identity In Build Macros
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
