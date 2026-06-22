@@ -15,6 +15,7 @@ import { Buffer } from "node:buffer";
 import { createInterface, type Interface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
+import { isRecord } from "../../utils/record.js";
 
 /**
  * Default upper bound on a single unterminated input line, matching the
@@ -207,7 +208,7 @@ function isControlMessage(message: JsonObject): boolean {
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function asError(error: unknown): Error {

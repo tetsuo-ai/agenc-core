@@ -26,6 +26,7 @@ import {
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
+import { isRecord } from "../../utils/record.js";
 
 export const AGENC_WEBSOCKET_DEFAULT_HOST = "127.0.0.1";
 export const AGENC_WEBSOCKET_DEFAULT_PATH = "/";
@@ -681,7 +682,7 @@ export function armWebSocketAcceptAuthTimeout(
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function asError(error: unknown): Error {

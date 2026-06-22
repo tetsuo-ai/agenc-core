@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Transport JSON Object Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/app-server/transport/auth.ts` validates daemon initialize
+  params before accepting cookie-authenticated transports.
+- `runtime/src/app-server/transport/stdio.ts#parseJsonObjectLine` validates
+  newline-delimited JSON-RPC frames.
+- `runtime/src/app-server/transport/websocket.ts#parseJsonObjectPayload`
+  validates websocket JSON-RPC payloads before dispatch.
+- Focused contract tests cover auth cookie initialization, stdio frame parsing,
+  websocket malformed payload handling, and websocket accept-auth teardown.
+
+### Finding
+
+The app-server transport layer had three local JSON-object predicates with the
+same strict non-array object semantics. These wrappers still need their local
+`JsonObject` type guard API, but the raw predicate should not drift from the
+shared record contract used elsewhere.
+
+### Change
+
+- Delegated the auth, stdio, and websocket `isJsonObject` wrappers to
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a missing auth regression proving array-shaped initialize params do not
+  authenticate.
+- Kept existing stdio/websocket array-frame rejection coverage intact.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/app-server/transport-auth.contract.test.ts tests/app-server/stdio-transport.contract.test.ts tests/app-server/websocket-transport.contract.test.ts tests/gaphunt3/app-server-transport-websocket.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Task Board Metadata Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
