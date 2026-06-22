@@ -4,6 +4,48 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Config JSON Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/bin/config-cli.ts` clones config values for `agenc config`
+  get/set/unset/validate/edit flows and compares stable TOML snapshots.
+- `runtime/src/config/edit.ts` performs the programmatic config edit builder
+  clone/validate/write cycle.
+- `runtime/src/config/migrate.ts` clones and compares config TOML/JSON during
+  file-version migration.
+- `runtime/src/config/json.ts` now owns the shared plain-record, clone, and
+  stable JSON helpers.
+- `runtime/tests/config/json.test.ts` covers plain-record detection, deep
+  cloning, and recursive stable ordering.
+
+### Finding
+
+The config CLI, edit builder, and file migration code carried identical copies
+of `isPlainRecord`, `cloneJsonValue`, `cloneRecord`, `stableValue`, and
+`stableJson`. Those helpers are part of the config write-safety path: they
+decide which objects can be merged/cloned and how rewritten TOML is compared to
+avoid unnecessary writes. Keeping three copies made prototype handling and
+stable ordering easy to drift.
+
+### Change
+
+- Added dependency-free `runtime/src/config/json.ts`.
+- Replaced the three local helper blocks with imports from the shared module.
+- Added focused tests that pin null-prototype object support, non-plain object
+  rejection, deep clone behavior, and recursive stable key ordering.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/config/json.test.ts tests/config/config.test.ts tests/personality/personality-migration.contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared PDF Info Page Count Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

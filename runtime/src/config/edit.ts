@@ -16,6 +16,12 @@ import {
 
 import type { Personality } from "./schema.js";
 import { readTextFile } from "./_deps/file-read.js";
+import {
+  cloneRecord,
+  isPlainRecord,
+  stableJson,
+  type JsonRecord,
+} from "./json.js";
 import { parseToml } from "./loader.js";
 import {
   CONFIG_FILE_VERSION_KEY,
@@ -36,8 +42,6 @@ interface WritableConfigTarget {
   readonly exists: boolean;
   readonly mode: number;
 }
-
-type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_FILE_MODE = 0o600;
 const UNSAFE_MIGRATION_SKIPS = new Set([
@@ -263,46 +267,6 @@ async function writeTextAtomic(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-}
-
-function isPlainRecord(value: unknown): value is JsonRecord {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
-  );
-}
-
-function cloneJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => cloneJsonValue(item));
-  if (isPlainRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)]),
-    );
-  }
-  return value;
-}
-
-function cloneRecord(value: Readonly<Record<string, unknown>>): JsonRecord {
-  return cloneJsonValue(value) as JsonRecord;
-}
-
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => stableValue(item));
-  if (isPlainRecord(value)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, stableValue(value[key])]),
-    );
-  }
-  return value;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stableValue(value));
 }
 
 function errorMessage(error: unknown): string {
