@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared LLM Tool Argument Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/llm/types.ts` validates provider tool-call payloads, normalizes
+  parsed JSON/string arguments, preserves shell-command string shortcuts, and
+  rejects non-object decoded arguments before dispatch.
+- `runtime/src/llm/stream-parser.ts` consumes `validateToolCallDetailed` when
+  batching streamed tool calls for execution.
+- `runtime/tests/llm/types.test.ts` covers plain-string argument wrapping,
+  structured argument preservation, malformed structured fallbacks, and
+  shell-command edge cases.
+- `runtime/tests/llm/stream-parser.test.ts` covers downstream valid and
+  malformed tool-call batching.
+
+### Finding
+
+LLM tool-call argument normalization carried a local strict `isRecord` helper
+equivalent to `utils/record.ts#isRecord`. It gates parsed argument objects
+before the later validation path rejects arrays, null, and primitives as
+non-object tool arguments.
+
+### Change
+
+- Replaced the local LLM tool argument `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved plain-string command/path wrapping, malformed structured fallback,
+  and non-object argument rejection behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/llm/types.test.ts tests/llm/stream-parser.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Model Metadata Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
