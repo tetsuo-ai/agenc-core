@@ -4,6 +4,56 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared LLM Message Snapshot Helper
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/phases/commit.ts#commitPhase` snapshots turn messages before
+  scheduling async memory extraction work.
+- `runtime/src/services/extractMemories/extractMemories.ts#snapshotContext`
+  clones queued extraction context before dispatching the background memory
+  extractor.
+- `runtime/src/memory/session/sessionMemory.ts` clones messages before
+  session-memory child-agent requests and before passing context messages into
+  the agent runner.
+- `runtime/src/llm/content-conversion.ts#cloneLlmMessageSnapshot` now owns the
+  shared message snapshot semantics.
+- `runtime/tests/llm/content-conversion.test.ts`,
+  `runtime/tests/phases/commit.test.ts`,
+  `runtime/tests/services/extractMemories/extractMemories.test.ts`, and
+  `runtime/tests/memory/session/sessionMemory.test.ts` cover the shared helper
+  and its callers.
+
+### Finding
+
+Three async memory/session paths carried identical private `cloneMessage`
+helpers. Each cloned the message shell, tool calls, and `runtimeOnly`, but
+only shallow-copied each content block. That left nested image/document source
+objects shared with the original history and made future snapshot semantics
+easy to drift between commit, queued extraction, and session-memory child-agent
+flows.
+
+### Change
+
+- Added `cloneLlmMessageSnapshot` beside the existing LLM content conversion
+  helpers, reusing `cloneLlmContent` for deep content-block clones.
+- Replaced the three private snapshot helpers in commit, extract-memories, and
+  session-memory code with the shared helper.
+- Added direct unit coverage for message snapshot independence across content
+  blocks, nested document source data, tool calls, and `runtimeOnly` metadata.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/llm/content-conversion.test.ts tests/phases/commit.test.ts tests/services/extractMemories/extractMemories.test.ts tests/memory/session/sessionMemory.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Compact Kept Media Preservation
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

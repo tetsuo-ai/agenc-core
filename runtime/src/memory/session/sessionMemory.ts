@@ -23,6 +23,9 @@ import type {
   RunAgentParams,
 } from "../../agents/run-agent.js";
 import type { LLMMessage } from "../../llm/types.js";
+import {
+  cloneLlmMessageSnapshot as cloneMessage,
+} from "../../llm/content-conversion.js";
 import { roughTokenCountEstimationForMessages } from "../../llm/token-estimation.js";
 import type { Session } from "../../session/session.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
@@ -122,21 +125,6 @@ function errnoCode(error: unknown): string | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function cloneMessage(message: LLMMessage): LLMMessage {
-  return {
-    ...message,
-    content: Array.isArray(message.content)
-      ? message.content.map((part) => ({ ...part }))
-      : message.content,
-    ...(message.toolCalls !== undefined
-      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
-      : {}),
-    ...(message.runtimeOnly !== undefined
-      ? { runtimeOnly: { ...message.runtimeOnly } }
-      : {}),
-  };
 }
 
 function hasToolCallsInLastAssistantTurn(

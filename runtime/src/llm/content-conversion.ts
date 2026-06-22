@@ -99,6 +99,19 @@ export function cloneLlmContent(content: unknown): LLMMessage["content"] {
   return "";
 }
 
+export function cloneLlmMessageSnapshot(message: LLMMessage): LLMMessage {
+  return {
+    ...message,
+    content: cloneLlmContent(message.content),
+    ...(message.toolCalls !== undefined
+      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+      : {}),
+    ...(message.runtimeOnly !== undefined
+      ? { runtimeOnly: { ...message.runtimeOnly } }
+      : {}),
+  };
+}
+
 export function toRuntimeMessageContent(content: unknown): unknown {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) return [];

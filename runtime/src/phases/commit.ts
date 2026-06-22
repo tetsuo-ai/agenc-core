@@ -44,6 +44,9 @@ import {
 } from "../session/agenc-tool-use-context.js";
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import {
+  cloneLlmMessageSnapshot as cloneMessage,
+} from "../llm/content-conversion.js";
+import {
   ensureExtractMemoriesInitialized,
   executeExtractMemories,
 } from "../services/extractMemories/extractMemories.js";
@@ -85,21 +88,6 @@ function toolUseSummaryText(summary: unknown): string | null {
         : "";
   if (text.length === 0) return null;
   return text;
-}
-
-function cloneMessage(message: LLMMessage): LLMMessage {
-  return {
-    ...message,
-    content: Array.isArray(message.content)
-      ? message.content.map((part) => ({ ...part }))
-      : message.content,
-    ...(message.toolCalls !== undefined
-      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
-      : {}),
-    ...(message.runtimeOnly !== undefined
-      ? { runtimeOnly: { ...message.runtimeOnly } }
-      : {}),
-  };
 }
 
 function cloneCompletedToolResult(

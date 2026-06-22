@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
+import type { LLMMessage } from "./types.js";
 
 import {
   cloneLlmContent,
+  cloneLlmMessageSnapshot,
   fromRuntimeMessageContent,
   toRuntimeMessageContent,
 } from "./content-conversion.js";
@@ -74,6 +76,48 @@ describe("LLM content conversion", () => {
         source: { type: "url", url: "https://example.test/image.png" },
       },
     ]);
+  });
+
+  test("clones LLM messages for async snapshots", () => {
+    const message: LLMMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: "ZmFrZS1wZGY=",
+          },
+          fallbackText: "document text",
+        },
+      ],
+      toolCalls: [{ id: "call-1", name: "Read", arguments: "{}" }],
+      runtimeOnly: { anchorPreserve: true },
+    };
+
+    const cloned = cloneLlmMessageSnapshot(message);
+
+    expect(cloned).toEqual(message);
+    expect(cloned).not.toBe(message);
+    expect(cloned.content).not.toBe(message.content);
+    expect(Array.isArray(cloned.content) ? cloned.content[0] : undefined)
+      .not.toBe(message.content[0]);
+    const clonedDocument = Array.isArray(cloned.content)
+      ? cloned.content[0]
+      : undefined;
+    expect(clonedDocument?.type).toBe("document");
+    if (clonedDocument?.type === "document") {
+      const originalDocument = Array.isArray(message.content)
+        ? message.content[0]
+        : undefined;
+      expect(originalDocument?.type).toBe("document");
+      if (originalDocument?.type === "document") {
+        expect(clonedDocument.source).not.toBe(originalDocument.source);
+      }
+    }
+    expect(cloned.toolCalls).not.toBe(message.toolCalls);
+    expect(cloned.runtimeOnly).not.toBe(message.runtimeOnly);
   });
 
   test("converts runtime content back to LLM content", () => {
