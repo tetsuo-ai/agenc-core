@@ -4,6 +4,36 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Agent Run Metadata Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/state/agent-runs.ts` persists agent-run rows and merges status
+  metadata patches into existing `metadata_json`.
+- `runtime/src/state/snapshot-policy.ts` and app-server lifecycle paths call
+  `updateAgentRunStatus` when status transitions add budget/snapshot metadata.
+
+### Finding
+
+Agent-run metadata parsing still carried a local non-array object guard. The
+behavior matched the shared strict record guard, but keeping a local helper at
+the persisted state boundary made it easier for future edits to accidentally
+accept array-shaped `metadata_json` and merge numeric array keys into agent-run
+metadata.
+
+### Change
+
+- Replaced the local metadata object guard with
+  `runtime/src/utils/record.ts#asRecord`.
+- Added a state regression proving array-shaped stored metadata is discarded
+  before applying a status metadata patch.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/state/agent-runs.test.ts tests/state/snapshot-policy.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Plugin Registration Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
