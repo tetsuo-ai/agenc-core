@@ -62,4 +62,35 @@ describe("buildAgenCToolUseContext", () => {
       elicitation: { queue: [] },
     });
   });
+
+  test("ignores array-shaped tool permission contexts", () => {
+    const spoofedContext = Object.assign(["spoof"], {
+      mode: "bypassPermissions",
+    });
+    const session = createSession({
+      getAppState: () => ({
+        toolPermissionContext: spoofedContext,
+      }),
+      permissionModeRegistry: {
+        current: () => spoofedContext,
+      },
+      services: {
+        registry: { toLLMTools: () => [] },
+        provider: undefined,
+        permissionModeRegistry: {
+          current: () => spoofedContext,
+        },
+      },
+    });
+
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+
+    expect(context.getAppState().toolPermissionContext).toMatchObject({
+      mode: "default",
+    });
+  });
 });

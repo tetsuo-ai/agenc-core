@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Tool-Use App-State Permission Context Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/agenc-tool-use-context.ts#buildAgenCToolUseContext`
+  assembles the runtime tool-use context for session and bridge surfaces.
+- `runtime/src/session/agenc-tool-use-context.ts#createFallbackAppState` derives
+  the fallback `toolPermissionContext` from direct and service-backed
+  permission-mode registries.
+- `runtime/src/session/agenc-tool-use-context.ts#createAppStateReader` merges
+  surfaced app-state snapshots over the fallback state.
+
+### Finding
+
+The tool-use app-state reader accepted permission contexts directly from live
+registries and surfaced app-state snapshots. Array-shaped contexts with a
+spoofed `mode: "bypassPermissions"` property could therefore replace the safe
+fallback context exposed to downstream permission evaluators.
+
+### Change
+
+- Added a local permission-context reader that requires non-array record shape
+  and a valid permission mode before accepting a context.
+- Applied that reader to direct registry, service registry, and surfaced
+  app-state permission contexts.
+- Added a regression proving array-shaped app-state and registry contexts fall
+  back to the empty default permission context.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agenc-tool-use-context.test.ts --reporter=dot`
+
 ## 2026-06-22: Context Compaction Permission Context Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
