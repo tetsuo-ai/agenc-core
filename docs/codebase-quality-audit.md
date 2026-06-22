@@ -154,6 +154,53 @@ lazy imports and headless fallbacks.
 - `npm run test:bun`
 - `git diff --check`
 
+## 2026-06-22: LSP Tool Schema Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/LSPTool/schemas.ts` defines the discriminated union used
+  by `LSPTool.validateInput` for operation-specific parsing.
+- `runtime/src/tools/LSPTool/LSPTool.ts` exposes the model-facing input and
+  output schemas and then validates inputs against the discriminated union.
+- `runtime/src/tools/LSPTool/LSPTool.ts#getMethodAndParams` maps every current
+  operation to the LSP request method while preserving the existing requirement
+  that all tool inputs include `filePath`, 1-based `line`, and 1-based
+  `character`.
+- `runtime/tests/bin/model-facing-tools.test.ts` covers model-facing LSP
+  definition, references, symbols, diagnostics, and no-server behavior.
+
+### Finding
+
+The LSP input schemas repeated the same operation list and
+`filePath`/`line`/`character` field definitions across the discriminated union
+and the tool-facing object schema. Adding or renaming an LSP operation required
+manual edits in multiple places, which made schema drift easy.
+
+### Change
+
+- Added shared `LSP_TOOL_OPERATIONS` and `LSP_POSITION_INPUT_FIELDS` constants
+  in `runtime/src/tools/LSPTool/schemas.ts`.
+- Replaced the repeated operation branch bodies with a narrow
+  `positionOperationSchema` helper while keeping each branch's operation
+  literal for discriminated-union parsing.
+- Reused the same operation tuple and position-field schemas in
+  `runtime/src/tools/LSPTool/LSPTool.ts` for the public tool input schema.
+- Added focused schema tests that assert every declared operation is accepted by
+  both schemas and that unknown operations or non-positive editor positions are
+  rejected.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/LSPTool/schemas.test.ts tests/bin/model-facing-tools.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Dispatcher Optional-Service Responses
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

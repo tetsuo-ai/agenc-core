@@ -42,7 +42,11 @@ import {
   formatWorkspaceSymbolResult,
 } from './formatters.js'
 import { DESCRIPTION, LSP_TOOL_NAME } from './prompt.js'
-import { lspToolInputSchema } from './schemas.js'
+import {
+  LSP_POSITION_INPUT_FIELDS,
+  LSP_TOOL_OPERATIONS,
+  lspToolInputSchema,
+} from './schemas.js'
 import {
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -58,29 +62,9 @@ const MAX_LSP_FILE_SIZE_BYTES = 10_000_000
 const inputSchema = lazySchema(() =>
   z.strictObject({
     operation: z
-      .enum([
-        'goToDefinition',
-        'findReferences',
-        'hover',
-        'documentSymbol',
-        'workspaceSymbol',
-        'goToImplementation',
-        'prepareCallHierarchy',
-        'incomingCalls',
-        'outgoingCalls',
-      ])
+      .enum(LSP_TOOL_OPERATIONS)
       .describe('The LSP operation to perform'),
-    filePath: z.string().describe('The absolute or relative path to the file'),
-    line: z
-      .number()
-      .int()
-      .positive()
-      .describe('The line number (1-based, as shown in editors)'),
-    character: z
-      .number()
-      .int()
-      .positive()
-      .describe('The character offset (1-based, as shown in editors)'),
+    ...LSP_POSITION_INPUT_FIELDS,
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -88,17 +72,7 @@ type InputSchema = ReturnType<typeof inputSchema>
 const outputSchema = lazySchema(() =>
   z.object({
     operation: z
-      .enum([
-        'goToDefinition',
-        'findReferences',
-        'hover',
-        'documentSymbol',
-        'workspaceSymbol',
-        'goToImplementation',
-        'prepareCallHierarchy',
-        'incomingCalls',
-        'outgoingCalls',
-      ])
+      .enum(LSP_TOOL_OPERATIONS)
       .describe('The LSP operation that was performed'),
     result: z.string().describe('The formatted result of the LSP operation'),
     filePath: z
