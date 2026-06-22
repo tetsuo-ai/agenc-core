@@ -222,6 +222,8 @@ describe("check-local-vllm-smoke script", () => {
       ],
       {
         ...process.env,
+        AGENC_LOCAL_OPENAI_MODEL: "",
+        AGENC_LOCAL_VLLM_MODEL: "",
         OPENAI_BASE_URL: "https://api.openai.com/v1",
         AGENC_MODEL: "",
       },

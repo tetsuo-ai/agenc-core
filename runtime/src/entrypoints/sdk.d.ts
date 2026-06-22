@@ -1,4 +1,4 @@
-// Type declarations for @gitlawb/agenc SDK
+// Type declarations for the AgenC SDK surface
 // Manually maintained — keep in sync with src/entrypoints/sdk/index.ts
 // Drift is caught by validate-externals.ts (runs in CI)
 

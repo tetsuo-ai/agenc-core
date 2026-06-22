@@ -127,3 +127,13 @@ describe("build-time MACRO.VERSION wiring", () => {
     expect(runtimePkg.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
+
+describe("build-time package identity wiring", () => {
+  test("MACRO.PACKAGE_URL points at the public launcher package", () => {
+    const buildConfig = readRepoFile("runtime/build.config.ts");
+    expect(buildConfig).toContain("const publicPackageName = '@tetsuo-ai/agenc'");
+    expect(buildConfig).toMatch(
+      /'MACRO\.PACKAGE_URL':\s*JSON\.stringify\(publicPackageName\)/,
+    );
+  });
+});
