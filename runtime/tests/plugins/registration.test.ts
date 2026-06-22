@@ -748,6 +748,72 @@ describe("plugin registration", () => {
     });
   });
 
+  test("active refresh treats array-shaped AppState containers as malformed", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const configStore = {
+        current: () => ({
+          plugins: {
+            enabled: true,
+            plugins: {
+              sample: { path: pluginRoot },
+            },
+          },
+        }),
+      };
+      const staleError = {
+        type: "lsp-manager",
+        server: "stale",
+        reason: "array-shaped plugin state",
+      };
+      const arrayPlugins = Object.assign(["stale-plugin-entry"], {
+        errors: [staleError],
+        needsRefresh: true,
+      });
+      const arrayAgentDefinitions = Object.assign(["stale-agent-entry"], {
+        allAgents: [{ agentType: "built-in", source: "built-in" }],
+        activeAgents: [{ agentType: "built-in", source: "built-in" }],
+      });
+      const arrayMcp = Object.assign(["stale-mcp-entry"], {
+        pluginReconnectKey: 41,
+      });
+      let appState: Record<string, unknown> = {
+        plugins: arrayPlugins,
+        agentDefinitions: arrayAgentDefinitions,
+        mcp: arrayMcp,
+      };
+      const ctx = {
+        cwd: root,
+        home: root,
+        agencHome: options.agencHome,
+        argsRaw: "",
+        configStore,
+        appState: {
+          setAppState: (updater: (prev: unknown) => unknown) => {
+            appState = updater(appState) as Record<string, unknown>;
+          },
+        },
+        session: {
+          services: {
+            configStore,
+          },
+        },
+      } as unknown as SlashCommandContext;
+
+      await refreshActivePlugins(ctx);
+
+      expect(appState.plugins).toMatchObject({
+        needsRefresh: false,
+      });
+      expect(appState.plugins).not.toHaveProperty("0");
+      expect((appState.plugins as { errors: unknown[] }).errors)
+        .not.toContainEqual(staleError);
+      expect(appState.mcp).toEqual({ pluginReconnectKey: 1 });
+      expect(appState.agentDefinitions).not.toHaveProperty("0");
+      expect((appState.agentDefinitions as { activeAgents: Array<{ agentType: string }> }).activeAgents)
+        .toEqual([expect.objectContaining({ agentType: "sample:review" })]);
+    });
+  });
+
   test("clearing registration caches drops active discovery snapshots", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       const cwd = join(root, "workspace-without-default-plugin");

@@ -4,6 +4,36 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Plugin Registration Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/plugins/registration/manager.ts` loads enabled plugins, merges
+  their commands/agents/hooks/servers into active discovery snapshots, and
+  refreshes plugin-related app-state.
+- `runtime/tests/plugins/registration.test.ts` covers active plugin refresh,
+  existing plugin errors, agent definition merging, and app-state publication.
+
+### Finding
+
+The registration manager still used a local loose record guard for app-state
+containers and plugin error records. Array-shaped `plugins`, `agentDefinitions`,
+or `mcp` containers could be merged as records, preserving stale array entries
+and reconnect counters from malformed state.
+
+### Change
+
+- Replaced the local registration manager `isRecord` helper with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a regression that array-shaped plugin app-state containers are treated
+  as malformed and rebuilt from the fresh plugin snapshot.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/plugins/registration.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared AgenC Tool-Use Context Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
