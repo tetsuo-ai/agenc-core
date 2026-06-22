@@ -4,6 +4,56 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Non-Empty String Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/hooks/configured-hooks.ts` builds hook execution metadata from
+  untyped runtime/session context.
+- `runtime/src/hooks/user-prompt-submit.ts` reads prompt-submit session, turn,
+  transcript, model, and abort-signal context.
+- `runtime/src/permissions/guardian/arbiter.ts` builds permission-decision hook
+  inputs from current tool invocation state.
+- `runtime/src/mcp-client/tools.ts`,
+  `runtime/src/mcp-client/resources.ts`, and
+  `runtime/src/mcp-client/prompts.ts` normalize untrusted MCP descriptors.
+- `runtime/src/tui/session-transcript.ts` formats daemon/task/collaboration
+  transcript payloads for display.
+- `runtime/src/tools/system/notebook-edit.ts` validates notebook-edit tool
+  arguments before path permission checks and cell mutation.
+
+### Finding
+
+These paths each carried the same guard for accepting only strings with
+non-whitespace content while returning the original, untrimmed string. That
+contract matters for path, label, transcript, and descriptor values where
+validation should reject blank strings but must not silently alter accepted
+content. Keeping local copies made it easy for one call site to start trimming
+or accepting blank strings independently.
+
+### Change
+
+- Added `nonEmptyString` to `runtime/src/utils/stringUtils.ts` and direct unit
+  coverage that asserts accepted strings are returned unchanged.
+- Replaced eight exact local helper copies with the shared utility, using local
+  import aliases where the surrounding code already used `stringValue`.
+- Left similar-but-different helpers untouched, including helpers that return
+  `null`, trim accepted values, or intentionally accept any non-empty string
+  without a whitespace-only check.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/stringUtils.test.ts tests/hooks/configured-hooks.test.ts tests/hooks/hooks-core.test.ts tests/hooks/engine/dispatcher.test.ts tests/permissions/guardian/arbiter.test.ts tests/mcp-client/tools.test.ts tests/mcp-client/resources.test.ts tests/mcp-client/prompts.test.ts tests/tools/system/notebook-edit.test.ts --reporter=dot`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/session-transcript.coverage2.test.ts tests/tui/session-transcript.wave200-003.coverage.test.ts tests/tui/session-transcript.envelope-clamp-ihunt.test.ts tests/tui/parity/session-transcript.test.ts tests/tui/parity/session-transcript.contract.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Strict Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

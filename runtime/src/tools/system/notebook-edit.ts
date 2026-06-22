@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
 import {
   getSessionReadSnapshot,
@@ -24,12 +25,6 @@ function json(value: Record<string, unknown>, isError = false): ToolResult {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function parseNotebookCellIndex(cellId: string): number | undefined {

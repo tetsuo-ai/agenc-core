@@ -8,6 +8,7 @@
  */
 
 import type { PermissionMode } from "../permissions/types.js";
+import { nonEmptyString as stringValue } from "../utils/stringUtils.js";
 
 export interface UserPromptSubmitBlockingError {
   readonly blockingError: string;
@@ -222,12 +223,6 @@ function readNested(
     current = current[key];
   }
   return current;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -13,6 +13,7 @@
  */
 
 import type { EventLog } from "../../session/event-log.js";
+import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
 import type {
@@ -1013,12 +1014,6 @@ function toolNameMatcherAliases(toolName: string): readonly string[] {
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
     : undefined;
 }
 
