@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Process PID Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/genericProcessUtils.ts#getAncestorPidsAsync` parses
+  PowerShell comma-separated ancestor PIDs on Windows and newline-separated
+  `ps` output on Unix.
+- `runtime/src/utils/genericProcessUtils.ts#getChildPids` parses child PID
+  output from PowerShell or `pgrep`.
+- `runtime/src/utils/genericProcessUtils.ts#parsePidList` now owns the shared
+  PID token parsing.
+- `runtime/tests/utils/genericProcessUtils.test.ts` covers comma/newline
+  separators, whitespace, invalid tokens, and blank output.
+
+### Finding
+
+The process utilities repeated the same trim/split/parse/filter pipeline in
+three places. Two call sites split newlines and one split commas, even though
+the logical operation is the same: turn process-command output into valid PID
+numbers. Keeping those parser details local made Windows and Unix behavior easy
+to change inconsistently.
+
+### Change
+
+- Added `parsePidList` with shared comma/newline splitting and invalid-token
+  filtering.
+- Routed ancestor PID parsing and child PID parsing through the helper.
+- Added focused unit coverage for the shared parser behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/genericProcessUtils.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Git Worktree Porcelain Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
