@@ -753,6 +753,24 @@ describe("validateToolArgs", () => {
     expect(validateToolArgs(schema, { value: true }).valid).toBe(false);
   });
 
+  test("ignores array-shaped union schema branches as malformed", () => {
+    const anyOfSchema = {
+      type: "object",
+      properties: {
+        value: { anyOf: [[], { type: "string" }] },
+      },
+    };
+    expect(validateToolArgs(anyOfSchema, { value: 42 }).valid).toBe(false);
+
+    const oneOfSchema = {
+      type: "object",
+      properties: {
+        value: { oneOf: [[], { type: "string" }] },
+      },
+    };
+    expect(validateToolArgs(oneOfSchema, { value: "ok" }).valid).toBe(true);
+  });
+
   test("const enforces exact equality", () => {
     const schema = {
       type: "object",

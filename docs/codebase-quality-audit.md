@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Tool Execution Schema Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/execution.ts` validates model-supplied tool arguments
+  against the JSON schemas attached to runtime tools.
+- `validateNode` handles `$ref`, union combinators, array item schemas, object
+  properties, additional properties, and deep enum/const comparison.
+- `runtime/tests/tools/execution.test.ts` covers the validator directly and the
+  `runToolUse` schema-validation integration path.
+
+### Finding
+
+Tool execution still carried a local strict non-array object predicate for JSON
+schema nodes. This duplicated the shared record guard at the tool boundary,
+where array-shaped `anyOf`/`oneOf`/`allOf` branches must stay malformed instead
+of becoming unconstrained schemas that make invalid tool arguments pass.
+
+### Change
+
+- Replaced the local `isSchemaObj` predicate with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added regressions proving array-shaped union schema branches are ignored as
+  malformed while valid object branches still control validation.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tools/execution.test.ts tests/tools/schema-errors.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Structured Output Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
