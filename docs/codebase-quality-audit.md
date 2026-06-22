@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Config Migration Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/state/migrations/config-migrations.ts` deep-clones raw config
+  JSON, normalizes provider/profile aliases, and applies startup settings
+  migrations from leniently-read settings files.
+- `runtime/src/config/loader.ts`, `runtime/src/config/migrate.ts`, and
+  `runtime/src/config/edit.ts` call `migrateRawAgenCConfig` before exposing or
+  writing config.
+- `runtime/tests/state/config-migrations.test.ts` covers raw config alias
+  migration, settings migration versions, skipped migration paths, and project
+  approval migration behavior.
+
+### Finding
+
+Config migrations used a local strict non-array object guard identical to
+`utils/record.ts#isRecord`. The local `JsonRecord` alias is
+`Record<string, unknown>`, so the shared guard preserves the same narrowing and
+array rejection.
+
+### Change
+
+- Replaced the local `isRecord` implementation with
+  `runtime/src/utils/record.ts#isRecord`.
+- Kept recursive clone behavior unchanged: arrays are cloned before object
+  recursion, and primitives pass through unchanged.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/state/config-migrations.test.ts tests/config/config.test.ts tests/config/json.test.ts tests/personality/personality-migration.contract.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Message Normalization Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
