@@ -64,7 +64,23 @@ describe("createTaskTools", () => {
       ).task;
       expect(task.status).toBe("pending");
 
+      const badCreateMetadata = await map.get("TaskCreate")!.execute({
+        subject: "Bad metadata",
+        description: "Array metadata must be rejected",
+        metadata: [],
+      });
+      expect(badCreateMetadata.isError).toBe(true);
+      expect(badCreateMetadata.content).toBe("metadata must be an object");
+
       expansions.length = 0;
+      const badUpdateMetadata = await map.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        metadata: [],
+      });
+      expect(badUpdateMetadata.isError).toBe(true);
+      expect(badUpdateMetadata.content).toBe("metadata must be an object");
+      expect(expansions).toEqual([]);
+
       const updated = await map.get("TaskUpdate")!.execute({
         taskId: task.id,
         status: "in_progress",

@@ -4,6 +4,39 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Task Board Metadata Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/tasks/task-board.ts#parseTaskMetadata` validates optional
+  `metadata` arguments for the model-facing `TaskCreate` and `TaskUpdate`
+  durable task-board tools.
+- Valid metadata is passed through to `runtime/src/bin/task-store.ts`, which
+  persists task metadata under the project task directory.
+- `runtime/tests/tools/tasks/task-tools.test.ts` covers durable task creation,
+  update, listing, and app-state expansion behavior.
+
+### Finding
+
+Task-board tool argument validation still repeated the local strict non-array
+object predicate even though persisted task-store validation now uses the shared
+guard. Array-shaped metadata must be rejected at the tool boundary before any
+task mutation or task-panel expansion occurs.
+
+### Change
+
+- Replaced the local metadata predicate with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added create/update regressions proving array-shaped metadata returns the
+  existing `"metadata must be an object"` tool error and does not trigger task
+  panel expansion.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tools/tasks/task-tools.test.ts tests/bin/task-store.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Error Log Payload Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
