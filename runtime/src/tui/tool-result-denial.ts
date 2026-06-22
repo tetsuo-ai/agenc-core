@@ -1,11 +1,9 @@
+import { isRecord } from "../utils/record.js";
+
 export const PERMISSION_DENIED_TOOL_RESULT_MESSAGE =
   "Permission request denied by user.";
 
 const USER_REJECTION_TEXT = "rejected by user";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function parseJsonText(value: string): unknown {
   try {

@@ -1,3 +1,5 @@
+import { asRecord } from '../../utils/record.js'
+
 const PROVIDER_CODE_OAUTH_ISSUER = 'https://auth.openai.com'
 export const PROVIDER_CODE_REFRESH_URL = `${PROVIDER_CODE_OAUTH_ISSUER}/oauth/token`
 const DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -21,12 +23,6 @@ export type OAuthTokenPayload = {
   accessToken?: string
   refreshToken?: string
   idToken?: string
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined
 }
 
 export function normalizeOAuthTokenPayload(value: unknown): OAuthTokenPayload {

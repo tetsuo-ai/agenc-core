@@ -27,6 +27,13 @@ import {
   resolveAgencHome,
   type EnvSnapshot,
 } from "../config/env.js";
+import {
+  cloneJsonValue,
+  cloneRecord,
+  isPlainRecord,
+  stableJson,
+  type JsonRecord,
+} from "../config/json.js";
 import { loadConfig, parseToml } from "../config/loader.js";
 import {
   CONFIG_FILE_VERSION_KEY,
@@ -77,8 +84,6 @@ interface WritableConfigTarget {
   readonly exists: boolean;
   readonly mode: number;
 }
-
-type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_FILE_MODE = 0o600;
 const CONFIG_PATH_LIMITATION =
@@ -787,44 +792,4 @@ function deleteNestedValue(
     }
   }
   return true;
-}
-
-function isPlainRecord(value: unknown): value is JsonRecord {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
-  );
-}
-
-function cloneJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => cloneJsonValue(item));
-  if (isPlainRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)]),
-    );
-  }
-  return value;
-}
-
-function cloneRecord(value: Readonly<Record<string, unknown>>): JsonRecord {
-  return cloneJsonValue(value) as JsonRecord;
-}
-
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => stableValue(item));
-  if (isPlainRecord(value)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, stableValue(value[key])]),
-    );
-  }
-  return value;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stableValue(value));
 }

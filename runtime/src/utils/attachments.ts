@@ -11,6 +11,8 @@ import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { uniq } from './array.js'
+import { extractLegacyAgentMentions } from './agentMentions.js'
+import { extractMcpResourceMentions } from './mcpResourceMentions.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../tui/hooks/useIdeSelection.js'
@@ -174,6 +176,8 @@ import {
 import { isHumanTurn } from './messagePredicates.js'
 import { isEnvTruthy, getAgenCConfigHomeDir } from './envUtils.js'
 import { feature } from 'bun:bundle'
+export { extractLegacyAgentMentions as extractAgentMentions } from './agentMentions.js'
+export { extractMcpResourceMentions } from './mcpResourceMentions.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
@@ -1913,7 +1917,7 @@ function processAgentMentions(
   input: string,
   agents: AgentDefinition[],
 ): Attachment[] {
-  const agentMentions = extractAgentMentions(input)
+  const agentMentions = extractLegacyAgentMentions(input)
   if (agentMentions.length === 0) return []
 
   const results = agentMentions.map(mention => {
@@ -2200,7 +2204,7 @@ async function getRelevantMemoryAttachments(
 ): Promise<Attachment[]> {
   // If an agent is @-mentioned, search only its memory dir (isolation).
   // Otherwise search both durable memory dirs: global first, then project.
-  const memoryDirs = extractAgentMentions(input).flatMap(mention => {
+  const memoryDirs = extractLegacyAgentMentions(input).flatMap(mention => {
     const agentType = mention.replace('agent-', '')
     const agentDef = agents.find(def => def.agentType === agentType)
     return agentDef?.memory
@@ -2777,64 +2781,6 @@ export function extractAtMentionedFiles(content: string): string[] {
 
   // Combine and deduplicate
   return uniq([...quotedMatches, ...regularMatches])
-}
-
-export function extractMcpResourceMentions(content: string): string[] {
-  // Extract MCP resources mentioned with @ symbol in format @server:uri
-  // Example: "@server1:resource/path" would extract "server1:resource/path"
-  //
-  // Two guards against Windows-path / quoted-file collisions (see
-  // `attachments.extractors.test.ts`):
-  //
-  // 1. `(?!")` right after `@` drops quoted tokens entirely. The earlier
-  //    form (without the lookahead and with `[^\s]` character classes)
-  //    backtracked past the closing `"` at the `\b` anchor and produced
-  //    ghost matches like `"C:\Users\...\file.txt` for any quoted file
-  //    mention containing a colon.
-  // 2. The `"` added to the character classes is belt-and-braces: even
-  //    if the lookahead were later removed or bypassed, the engine can
-  //    no longer consume a quote character mid-match.
-  const atMentionRegex = /(^|\s)@(?!")([^\s"]+:[^\s"]+)\b/g
-  const matches = content.match(atMentionRegex) || []
-
-  return uniq(
-    matches
-      .map(match => match.slice(match.indexOf('@') + 1))
-      // Post-match filter: a single-letter "server" followed by `:\` or
-      // `:/` is always a Windows drive-letter prefix, never a real MCP
-      // resource. This covers the unquoted `@C:\Users\...` case that
-      // the regex alone cannot disambiguate from `@server:resource`.
-      .filter(m => !/^[A-Za-z]:[\\/]/.test(m))
-      .filter(m => !isMemoryMention(`@${m}`)),
-  )
-}
-
-export function extractAgentMentions(content: string): string[] {
-  // Extract agent mentions in two formats:
-  // 1. @agent-<agent-type> (compatibility/manual typing)
-  //    Example: "@agent-code-elegance-refiner" → "agent-code-elegance-refiner"
-  // 2. @"<agent-type> (agent)" (from autocomplete selection)
-  //    Example: '@"code-reviewer (agent)"' → "code-reviewer"
-  // Supports colons, dots, and at-signs for plugin-scoped agents like "@agent-asana:project-status-updater"
-  const results: string[] = []
-
-  // Match quoted format: @"<type> (agent)"
-  const quotedAgentRegex = /(^|\s)@"([\w:.@-]+) \(agent\)"/g
-  let match
-  while ((match = quotedAgentRegex.exec(content)) !== null) {
-    if (match[2]) {
-      results.push(match[2])
-    }
-  }
-
-  // Match unquoted format: @agent-<type>
-  const unquotedAgentRegex = /(^|\s)@(agent-[\w:.@-]+)/g
-  const unquotedMatches = content.match(unquotedAgentRegex) || []
-  for (const m of unquotedMatches) {
-    results.push(m.slice(m.indexOf('@') + 1))
-  }
-
-  return uniq(results)
 }
 
 interface AtMentionedFileLines {

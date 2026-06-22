@@ -20,6 +20,9 @@
 
 import type { AgentMentionAttachment } from "./types.js";
 import type { AttachmentProducer } from "./orchestrator.js";
+import { extractAgentMentionTypes } from "../../utils/agentMentions.js";
+
+export { extractAgentMentionTypes as extractAgentMentions } from "../../utils/agentMentions.js";
 
 /**
  * Loose duck-type for the session-key shape produced by AgenC's runtime
@@ -49,47 +52,8 @@ function readActiveAgentTypes(sessionKey: object): ReadonlySet<string> {
   return out;
 }
 
-/** Match `@"<type> (agent)"` autocomplete form. */
-const QUOTED_AGENT_RE = /(^|\s)@"([\w:.@-]+) \(agent\)"/g;
-/** Match `@agent-<type>` compatibility form. */
-const UNQUOTED_AGENT_RE = /(^|\s)@(agent-[\w:.@-]+)/g;
-
-/**
- * Extract the set of unique agent identifiers (already prefixed
- * `agent-...` for the unquoted form, bare type for the quoted form) from
- * a text input. Returns an empty list when input is null/empty.
- */
-export function extractAgentMentions(input: string | null): string[] {
-  if (input === null || input.length === 0) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-
-  let m: RegExpExecArray | null;
-  QUOTED_AGENT_RE.lastIndex = 0;
-  while ((m = QUOTED_AGENT_RE.exec(input)) !== null) {
-    const type = m[2];
-    if (typeof type !== "string" || type.length === 0) continue;
-    if (seen.has(type)) continue;
-    seen.add(type);
-    out.push(type);
-  }
-
-  UNQUOTED_AGENT_RE.lastIndex = 0;
-  while ((m = UNQUOTED_AGENT_RE.exec(input)) !== null) {
-    const raw = m[2];
-    if (typeof raw !== "string" || !raw.startsWith("agent-")) continue;
-    const type = raw.slice("agent-".length);
-    if (type.length === 0) continue;
-    if (seen.has(type)) continue;
-    seen.add(type);
-    out.push(type);
-  }
-
-  return out;
-}
-
 export const agentMentionsProducer: AttachmentProducer = async (opts) => {
-  const types = extractAgentMentions(opts.userInput);
+  const types = extractAgentMentionTypes(opts.userInput);
   if (types.length === 0) return [];
   const known = readActiveAgentTypes(opts.sessionKey);
   // Empty registry = headless / pre-bootstrap. Match AgenC's

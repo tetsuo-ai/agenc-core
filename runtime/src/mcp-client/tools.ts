@@ -16,6 +16,7 @@ import {
   type PermissionDefaultMode,
   type PerToolConfig,
 } from "../config/schema.js";
+import { nonEmptyString as stringValue } from "../utils/stringUtils.js";
 import { createTurnDiffTracker, type ToolInvocation } from "../tools/context.js";
 import {
   arbitratePermissionMode,
@@ -53,6 +54,7 @@ import {
   encodeMcpToolNameForWire,
   isProviderToolNameSafe,
 } from "../llm/wire/mcp-tool-naming.js";
+import { asRecord } from "../utils/record.js";
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -398,18 +400,6 @@ function safeStringifyMCPPayload(value: unknown, fallback = ""): string {
   } catch {
     return String(value);
   }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function normalizeMCPToolDescriptor(raw: unknown): MCPToolDescriptor | null {

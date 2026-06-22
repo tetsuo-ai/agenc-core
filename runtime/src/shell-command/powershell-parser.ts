@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readSync, writeSync } from "node:fs";
+import { isRecord } from "../utils/record.js";
 
 export type PowerShellParseOutcome =
   | {
@@ -448,8 +449,4 @@ function isWouldBlock(error: unknown): boolean {
 
 function sleepSync(ms: number): void {
   Atomics.wait(SLEEP_VIEW, 0, 0, ms);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

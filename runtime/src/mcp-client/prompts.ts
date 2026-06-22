@@ -14,6 +14,8 @@
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
+import { asRecord } from "../utils/record.js";
+import { nonEmptyString } from "../utils/stringUtils.js";
 
 const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
 
@@ -133,20 +135,8 @@ export async function createPromptBridge(
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
-}
-
 function arrayField(
-  record: Record<string, unknown> | undefined,
+  record: Record<string, unknown> | null | undefined,
   key: string,
 ): readonly unknown[] {
   const value = record?.[key];

@@ -19,6 +19,7 @@ import type {
   ThreadSource,
   ThreadStore,
 } from "../thread-store/store.js";
+import { agentIdFromThreadSource } from "../thread-store/thread-source.js";
 import type {
   JsonObject,
   JsonValue,
@@ -516,7 +517,7 @@ function storedThreadToSessionSummary(
   };
   return {
     sessionId: thread.threadId,
-    agentId: agentIdForThreadSource(thread.source) ?? defaultAgentId,
+    agentId: agentIdFromThreadSource(thread.source) ?? defaultAgentId,
     status: "waiting",
     createdAt: thread.createdAt,
     ...(thread.cwd !== undefined ? { cwd: thread.cwd } : {}),
@@ -524,38 +525,8 @@ function storedThreadToSessionSummary(
   };
 }
 
-function agentIdForThreadSource(
-  source: ThreadSource | undefined,
-): string | undefined {
-  if (source === "agent" || source === "agent_thread") return undefined;
-  if (source === undefined || typeof source === "string") return undefined;
-  const direct = stringField(source, "agentId") ?? stringField(source, "agent_id");
-  if (direct !== undefined) return direct;
-  const nested = source["source"];
-  if (isRecord(nested)) {
-    return (
-      stringField(nested, "agentId") ??
-      stringField(nested, "agent_id") ??
-      stringField(nested, "parentThreadId")
-    );
-  }
-  return undefined;
-}
-
 function threadSourceToJson(source: ThreadSource): JsonValue {
   return typeof source === "string" ? source : (source as JsonObject);
-}
-
-function stringField(
-  record: Readonly<Record<string, unknown>>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseCursor(cursor: string | undefined): number {

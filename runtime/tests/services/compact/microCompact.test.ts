@@ -186,6 +186,72 @@ describe("micro compact", () => {
     expect(oldActiveBlocks[0]?.content).toBe("[Old tool result content cleared]");
   });
 
+  test("does not use array-shaped tool input for path-aware retention", async () => {
+    const longText = "P".repeat(16_000);
+    const spoofedInput = Object.assign(["spoof"], {
+      file_path: "/spoofed.ts",
+    });
+    const spoofedReadUse = [
+      { type: "tool_use", id: "spoofed-read", name: "Read", input: spoofedInput },
+    ];
+    const spoofedReadResult = [
+      { type: "tool_result", tool_use_id: "spoofed-read", content: longText },
+    ];
+    const fillerToolUse = Array.from({ length: 6 }, (_, index) => ({
+      type: "tool_use",
+      id: `filler-${index}`,
+      name: "Read",
+      input: { file_path: `/filler-${index}.ts` },
+    }));
+    const fillerResults = Array.from({ length: 6 }, (_, index) => ({
+      type: "tool_result",
+      tool_use_id: `filler-${index}`,
+      content: longText,
+    }));
+    const messages = [
+      blockMessage("assistant", spoofedReadUse),
+      blockMessage("user", spoofedReadResult),
+      blockMessage("assistant", fillerToolUse),
+      blockMessage("user", fillerResults),
+    ] satisfies RuntimeMessage[];
+
+    const result = await microcompactMessages(messages);
+    const spoofedResultBlocks = result.messages[1]?.content as Array<
+      Record<string, unknown>
+    >;
+
+    expect(spoofedResultBlocks[0]?.content)
+      .toBe("[Old tool result content cleared]");
+  });
+
+  test("ignores array-shaped content blocks when clearing old tool results", async () => {
+    const longText = "S".repeat(16_000);
+    const spoofedResultBlock = Object.assign(["spoof"], {
+      type: "tool_result",
+      tool_use_id: "spoofed-result",
+      content: longText,
+    }) as unknown as Record<string, unknown>;
+    const messages = [
+      blockMessage("user", [spoofedResultBlock]),
+      ...Array.from({ length: 6 }, (_, index) =>
+        blockMessage("user", [
+          {
+            type: "tool_result",
+            tool_use_id: `recent-${index}`,
+            content: longText,
+          },
+        ])),
+    ] satisfies RuntimeMessage[];
+
+    const result = await microcompactMessages(messages);
+    const spoofedBlocks = result.messages[0]?.content as Array<
+      Record<string, unknown>
+    >;
+
+    expect(spoofedBlocks[0]).toBe(spoofedResultBlock);
+    expect(spoofedBlocks[0]?.content).toBe(longText);
+  });
+
   test("reports API context-management microcompact settings", async () => {
     const result = await microcompactMessages([], {
       options: {

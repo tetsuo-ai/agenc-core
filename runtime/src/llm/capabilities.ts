@@ -85,6 +85,29 @@ interface ProviderCapabilityDefinition {
 }
 
 type CapabilityFlagValue = boolean | ((model: string) => boolean);
+type DirectProviderCapabilityOverrideKey = Exclude<
+  keyof ProviderCapabilityOverrides,
+  "supportsImageInput"
+>;
+type MutableProviderModelCapabilities = {
+  -readonly [Key in keyof ProviderModelCapabilities]: ProviderModelCapabilities[Key];
+};
+
+const DIRECT_PROVIDER_CAPABILITY_OVERRIDE_KEYS = [
+  "supportsToolUse",
+  "supportsPromptCaching",
+  "supportsContextEdits",
+  "supportsAudioInput",
+  "supportsAudioOutput",
+  "supportsStructuredOutput",
+  "supportsStructuredOutputWithTools",
+  "supportsProviderNativeWebSearch",
+  "supportsExtendedThinking",
+  "acceptsImageHistory",
+  "acceptsAudioHistory",
+  "acceptsThinkingHistory",
+  "acceptsReasoningEffort",
+] as const satisfies readonly DirectProviderCapabilityOverrideKey[];
 
 function isVisionishOllamaModel(model: string): boolean {
   return /(?:llava|bakllava|vision|(?:^|[-_.:])vl(?:$|[-_.:])|qwen(?:2\.?5)?-vl|minicpm-v|moondream|llama3(?:\.2)?-vision|gemma3)/i.test(
@@ -172,60 +195,18 @@ function applyCapabilityOverrides(
   overrides: ProviderCapabilityOverrides | undefined,
 ): ProviderModelCapabilities {
   if (!overrides) return caps;
-  return {
-    ...caps,
-    ...(overrides.supportsToolUse !== undefined
-      ? { supportsToolUse: overrides.supportsToolUse }
-      : {}),
-    ...(overrides.supportsPromptCaching !== undefined
-      ? { supportsPromptCaching: overrides.supportsPromptCaching }
-      : {}),
-    ...(overrides.supportsContextEdits !== undefined
-      ? { supportsContextEdits: overrides.supportsContextEdits }
-      : {}),
-    ...(overrides.supportsImageInput !== undefined
-      ? {
-        supportsImageInput: overrides.supportsImageInput,
-        supportsVisionInput: overrides.supportsImageInput,
-      }
-      : {}),
-    ...(overrides.supportsAudioInput !== undefined
-      ? { supportsAudioInput: overrides.supportsAudioInput }
-      : {}),
-    ...(overrides.supportsAudioOutput !== undefined
-      ? { supportsAudioOutput: overrides.supportsAudioOutput }
-      : {}),
-    ...(overrides.supportsStructuredOutput !== undefined
-      ? { supportsStructuredOutput: overrides.supportsStructuredOutput }
-      : {}),
-    ...(overrides.supportsStructuredOutputWithTools !== undefined
-      ? {
-        supportsStructuredOutputWithTools:
-          overrides.supportsStructuredOutputWithTools,
-      }
-      : {}),
-    ...(overrides.supportsProviderNativeWebSearch !== undefined
-      ? {
-        supportsProviderNativeWebSearch:
-          overrides.supportsProviderNativeWebSearch,
-      }
-      : {}),
-    ...(overrides.supportsExtendedThinking !== undefined
-      ? { supportsExtendedThinking: overrides.supportsExtendedThinking }
-      : {}),
-    ...(overrides.acceptsImageHistory !== undefined
-      ? { acceptsImageHistory: overrides.acceptsImageHistory }
-      : {}),
-    ...(overrides.acceptsAudioHistory !== undefined
-      ? { acceptsAudioHistory: overrides.acceptsAudioHistory }
-      : {}),
-    ...(overrides.acceptsThinkingHistory !== undefined
-      ? { acceptsThinkingHistory: overrides.acceptsThinkingHistory }
-      : {}),
-    ...(overrides.acceptsReasoningEffort !== undefined
-      ? { acceptsReasoningEffort: overrides.acceptsReasoningEffort }
-      : {}),
-  };
+  const next: MutableProviderModelCapabilities = { ...caps };
+  for (const key of DIRECT_PROVIDER_CAPABILITY_OVERRIDE_KEYS) {
+    const value = overrides[key];
+    if (value !== undefined) {
+      next[key] = value;
+    }
+  }
+  if (overrides.supportsImageInput !== undefined) {
+    next.supportsImageInput = overrides.supportsImageInput;
+    next.supportsVisionInput = overrides.supportsImageInput;
+  }
+  return next;
 }
 
 function resolveGrokImageHistory(model: string): boolean {

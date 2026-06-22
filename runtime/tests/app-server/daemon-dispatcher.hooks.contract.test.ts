@@ -164,4 +164,33 @@ describe("daemon session.hooks.* internal method dispatch", () => {
     });
     expect(setSessionHooksDisabled).not.toHaveBeenCalled();
   });
+
+  it("reports missing optional hook surface before validating params", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: {} as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    for (const method of [
+      "session.hooks.status",
+      "session.hooks.setDisabled",
+    ]) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: method,
+          method,
+          params: {},
+        }),
+      ).resolves.toEqual({
+        jsonrpc: JSON_RPC_VERSION,
+        id: method,
+        error: {
+          code: -32601,
+          message: `daemon method is not implemented yet: ${method}`,
+        },
+      });
+    }
+  });
 });

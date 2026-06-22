@@ -26,6 +26,7 @@ import { dirname, join, resolve } from "node:path";
 import { resolveAgencHome } from "../../config/env.js";
 import { findProjectRootSync } from "../../session/session-store.js";
 import type { ProjectTrust } from "../approval-policy.js";
+import { isTrustRecord } from "./records.js";
 
 export interface TrustedProjectEntry {
   readonly path: string;
@@ -108,14 +109,10 @@ async function resolveProjectTrustRoot(
   return canonicalizePath(found?.rootDir ?? cwd);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseTrustedProjects(raw: string): TrustedProjectsFile {
   try {
     const parsed = JSON.parse(raw);
-    if (!isRecord(parsed) || parsed.version !== 1) {
+    if (!isTrustRecord(parsed) || parsed.version !== 1) {
       return { version: 1, trustedProjects: [] };
     }
     const entries = Array.isArray(parsed.trustedProjects)
@@ -123,7 +120,7 @@ function parseTrustedProjects(raw: string): TrustedProjectsFile {
       : [];
     const trustedProjects: TrustedProjectEntry[] = [];
     for (const entry of entries) {
-      if (!isRecord(entry)) continue;
+      if (!isTrustRecord(entry)) continue;
       if (typeof entry.path !== "string" || entry.path.length === 0) continue;
       if (typeof entry.trustedAt !== "string" || entry.trustedAt.length === 0) {
         continue;
@@ -272,12 +269,7 @@ async function withTrustedProjectsLock<T>(
       }
       break;
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "EEXIST"
-      ) {
+      if (isFileExistsError(error)) {
         if (Date.now() - startedAt > TRUSTED_PROJECTS_LOCK_TIMEOUT_MS) {
           throw new Error(
             `Timed out waiting for project trust lock at ${lockPath}. ` +
@@ -339,12 +331,7 @@ function withTrustedProjectsLockSync<T>(path: string, fn: () => T): T {
       }
       break;
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "EEXIST"
-      ) {
+      if (isFileExistsError(error)) {
         if (Date.now() - startedAt > TRUSTED_PROJECTS_LOCK_TIMEOUT_MS) {
           throw new Error(
             `Timed out waiting for project trust lock at ${lockPath}. ` +
@@ -374,6 +361,14 @@ function withTrustedProjectsLockSync<T>(path: string, fn: () => T): T {
       // Best effort only.
     }
   }
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { readonly code?: unknown }).code === "EEXIST"
+  );
 }
 
 function writeTrustedProjectsFileSync(

@@ -623,6 +623,72 @@ async function getSubCommandsForPermissionCheck(
   ]
 }
 
+function getParseFailedPowerShellDenyDecision(
+  command: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | null {
+  // SECURITY: Fallback sub-command deny scan for parse-failed paths.
+  // The AST-backed sub-command deny loop cannot run when parsing fails
+  // (command too long, pwsh unavailable, timeout, bad JSON). Split on actual
+  // statement/grouping separators, normalize the fragment shape the AST would
+  // have provided, then run the same prefix deny matcher.
+  const backtickStripped = command
+    .replace(/`[\r\n]+\s*/g, '')
+    .replace(/`/g, '')
+  for (const fragment of backtickStripped.split(/[;|\n\r{}()&]+/)) {
+    const trimmedFrag = fragment.trim()
+    if (!trimmedFrag) continue
+
+    const isAlreadyCheckedFullCommand =
+      trimmedFrag === command &&
+      !/^\$[\w:]/.test(trimmedFrag) &&
+      !/^[&.]\s/.test(trimmedFrag)
+
+    let normalized = trimmedFrag
+    let match: RegExpMatchArray | null
+    while ((match = normalized.match(PS_ASSIGN_PREFIX_RE))) {
+      normalized = normalized.slice(match[0].length)
+    }
+    normalized = normalized.replace(/^[&.]\s+/, '')
+    const rawFirst = normalized.split(/\s+/)[0] ?? ''
+    const firstTok = rawFirst.replace(/^['"]|['"]$/g, '')
+    const normalizedFrag = firstTok + normalized.slice(rawFirst.length)
+
+    // SECURITY: parse-independent dangerous-removal hard-deny. The normal
+    // path check needs a valid AST; when pwsh is degraded, root/home/system
+    // deletion must still deny instead of downgrading to a generic ask.
+    if (resolveToCanonical(firstTok) === 'remove-item') {
+      for (const arg of normalized.split(/\s+/).slice(1)) {
+        if (PS_TOKENIZER_DASH_CHARS.has(arg[0] ?? '')) continue
+        if (isDangerousRemovalRawPath(arg)) {
+          return dangerousRemovalDeny(arg)
+        }
+      }
+    }
+
+    // The full command was already checked before parse. Re-check it only
+    // when assignment or invocation operator normalization can expose a
+    // hidden command name, e.g. `$x = iex` or `. Invoke-Expression`.
+    if (isAlreadyCheckedFullCommand) {
+      continue
+    }
+
+    const { matchingDenyRules: fragDenyRules } = matchingRulesForInput(
+      { command: normalizedFrag },
+      toolPermissionContext,
+      'prefix',
+    )
+    if (fragDenyRules[0] !== undefined) {
+      return {
+        behavior: 'deny',
+        message: `Permission to use ${POWERSHELL_TOOL_NAME} with command ${command} has been denied.`,
+        decisionReason: { type: 'rule', rule: fragDenyRules[0] },
+      }
+    }
+  }
+  return null
+}
+
 /**
  * Main permission check function for PowerShell tool.
  *
@@ -762,94 +828,12 @@ export async function powershellToolHasPermission(
   // NOTE: This check is intentionally AFTER deny/ask rules so explicit rules still work
   // even when the parser fails (e.g., pwsh unavailable).
   if (!parsed.valid) {
-    // SECURITY: Fallback sub-command deny scan for parse-failed path.
-    // The sub-command deny loop at L851+ needs the AST; when parsing fails
-    // (command exceeds MAX_COMMAND_LENGTH, pwsh unavailable, timeout, bad
-    // JSON), we'd return 'ask' without ever checking sub-command deny rules.
-    // Attack: `Get-ChildItem # <~2000 chars padding> ; Invoke-Expression evil`
-    // → padding forces valid=false → generic ask prompt, deny(iex:*) never
-    // fires. This fallback splits on PowerShell separators/grouping and runs
-    // each fragment through the SAME rule matcher as step 2a (prefix deny).
-    // Conservative: fragments inside string literals/comments may false-positive
-    // deny — safe here (parse-failed is already a degraded state, and this is
-    // a deny-DOWNGRADE fix). Match against full fragment (not just first token)
-    // so multi-word rules like `Remove-Item foo:*` still fire; the matcher's
-    // canonical resolution handles aliases (`iex` → `Invoke-Expression`).
-    //
-    // SECURITY: backtick is PS escape/line-continuation, NOT a separator.
-    // Splitting on it would fragment `Invoke-Ex`pression` into non-matching
-    // pieces. Instead: collapse backtick-newline (line continuation) so
-    // `Invoke-Ex`<nl>pression` rejoins, strip remaining backticks (escape
-    // chars — ``x → x), then split on actual statement/grouping separators.
-    const backtickStripped = command
-      .replace(/`[\r\n]+\s*/g, '')
-      .replace(/`/g, '')
-    for (const fragment of backtickStripped.split(/[;|\n\r{}()&]+/)) {
-      const trimmedFrag = fragment.trim()
-      if (!trimmedFrag) continue // skip empty fragments
-      // Skip the full command ONLY if it starts with a cmdlet name (no
-      // assignment prefix). The full command was already checked at 2a, but
-      // 2a uses the raw text — $x %= iex as first token `$x` misses the
-      // deny(iex:*) rule. If normalization would change the fragment
-      // (assignment prefix, dot-source), don't skip — let it be re-checked
-      // after normalization. (bug #10/#24)
-      if (
-        trimmedFrag === command &&
-        !/^\$[\w:]/.test(trimmedFrag) &&
-        !/^[&.]\s/.test(trimmedFrag)
-      ) {
-        continue
-      }
-      // SECURITY: Normalize invocation-operator and assignment prefixes before
-      // rule matching (findings #5/#22). The splitter gives us the raw fragment
-      // text; matchingRulesForInput extracts the first token as the cmdlet name.
-      // Without normalization:
-      //   `$x = Invoke-Expression 'p'` → first token `$x` → deny(iex:*) misses
-      //   `. Invoke-Expression 'p'`    → first token `.`  → deny(iex:*) misses
-      //   `& 'Invoke-Expression' 'p'`  → first token `&` removed by split but
-      //                                  `'Invoke-Expression'` retains quotes
-      //                                  → deny(iex:*) misses
-      // The parse-succeeded path handles these via AST (parser.ts:839 strips
-      // quotes from rawNameUnstripped; invocation operators are separate AST
-      // nodes). This fallback mirrors that normalization.
-      // Loop strips nested assignments: $x = $y = iex → $y = iex → iex
-      let normalized = trimmedFrag
-      let m: RegExpMatchArray | null
-      while ((m = normalized.match(PS_ASSIGN_PREFIX_RE))) {
-        normalized = normalized.slice(m[0].length)
-      }
-      normalized = normalized.replace(/^[&.]\s+/, '') // & cmd, . cmd (dot-source)
-      const rawFirst = normalized.split(/\s+/)[0] ?? ''
-      const firstTok = rawFirst.replace(/^['"]|['"]$/g, '')
-      const normalizedFrag = firstTok + normalized.slice(rawFirst.length)
-      // SECURITY: parse-independent dangerous-removal hard-deny. The
-      // isDangerousRemovalPath check in checkPathConstraintsForStatement
-      // requires a valid AST; when pwsh times out or is unavailable,
-      // `Remove-Item /` degrades from hard-deny to generic ask. Check
-      // raw positional args here so root/home/system deletion is denied
-      // regardless of parser availability. Conservative: only positional
-      // args (skip -Param tokens); over-deny in degraded state is safe
-      // (same deny-downgrade rationale as the sub-command scan above).
-      if (resolveToCanonical(firstTok) === 'remove-item') {
-        for (const arg of normalized.split(/\s+/).slice(1)) {
-          if (PS_TOKENIZER_DASH_CHARS.has(arg[0] ?? '')) continue
-          if (isDangerousRemovalRawPath(arg)) {
-            return dangerousRemovalDeny(arg)
-          }
-        }
-      }
-      const { matchingDenyRules: fragDenyRules } = matchingRulesForInput(
-        { command: normalizedFrag },
-        toolPermissionContext,
-        'prefix',
-      )
-      if (fragDenyRules[0] !== undefined) {
-        return {
-          behavior: 'deny',
-          message: `Permission to use ${POWERSHELL_TOOL_NAME} with command ${command} has been denied.`,
-          decisionReason: { type: 'rule', rule: fragDenyRules[0] },
-        }
-      }
+    const fallbackDenyDecision = getParseFailedPowerShellDenyDecision(
+      command,
+      toolPermissionContext,
+    )
+    if (fallbackDenyDecision !== null) {
+      return fallbackDenyDecision
     }
     // Preserve pre-parse ask messaging when parse fails. The deferred ask
     // (2b prefix rule or UNC) carries a better decisionReason than the

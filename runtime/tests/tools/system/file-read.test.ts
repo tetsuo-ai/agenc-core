@@ -720,7 +720,16 @@ describe("FileRead tool", () => {
     const file = join(root, "malformed-pages.pdf");
     await writeFile(file, "%PDF-1.4\n", "utf8");
     const tool = createFileReadTool({ allowedPaths: [root] });
-    const badPages = ["", "0", "0-1", "2-1", "1abc", "1-2abc", "1--2"];
+    const badPages = [
+      "",
+      "0",
+      "0-1",
+      "2-1",
+      "1abc",
+      "1-2abc",
+      "1-2-3",
+      "1--2",
+    ];
 
     for (const pages of badPages) {
       const result = await tool.execute({ file_path: file, pages });

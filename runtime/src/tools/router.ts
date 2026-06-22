@@ -49,6 +49,7 @@ import type {
 } from "../permissions/evaluator.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { reviewDecisionIsAllow } from "../permissions/review-decision.js";
+import { isRecord } from "../utils/record.js";
 import type { Tool } from "./types.js";
 import {
   parseToolName,
@@ -1200,10 +1201,6 @@ function isExecPolicy(value: unknown): value is Policy {
     typeof (value as { readonly checkMultipleWithOptions?: unknown })
       .checkMultipleWithOptions === "function"
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function rawPayloadArguments(payload: ToolPayload): string {

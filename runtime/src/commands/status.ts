@@ -12,7 +12,8 @@ import { spawn } from "node:child_process";
 
 import { monotonicMs } from "../utils/monotonic.js";
 import type { Session } from "../session/session.js";
-import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { isPermissionMode } from "../permissions/types.js";
+import { asRecord } from "../utils/record.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -27,6 +28,13 @@ import {
 export interface StatusLine {
   key: string;
   value: string;
+}
+
+interface StatusServices {
+  readonly permissionModeRegistry?: {
+    readonly current?: () => unknown;
+  } | null;
+  readonly costSidecar?: unknown;
 }
 
 interface GitCommandResult {
@@ -256,21 +264,36 @@ export function collectStatus(
   // (`session.services.permissionModeRegistry`). Fall back to "default"
   // when the registry is not wired (unit-test fixtures, early bootstrap).
   const services = (session as unknown as {
-    services?: {
-      permissionModeRegistry?: PermissionModeRegistry | null;
-      costSidecar?: { formatSummary: () => string } | null;
-    };
+    services?: StatusServices;
   }).services;
-  if (services?.costSidecar) {
-    lines.push({ key: "Cost", value: services.costSidecar.formatSummary() });
+  const costSummary = readCostSummary(services?.costSidecar);
+  if (costSummary !== null) {
+    lines.push({ key: "Cost", value: costSummary });
   }
   const registry = services?.permissionModeRegistry ?? null;
   lines.push({
     key: "Permission mode",
-    value: registry?.current().mode ?? "default",
+    value: readPermissionMode(registry),
   });
 
   return lines;
+}
+
+function readCostSummary(costSidecar: unknown): string | null {
+  const record = asRecord(costSidecar);
+  if (record === null || typeof record.formatSummary !== "function") {
+    return null;
+  }
+  const summary = record.formatSummary.call(costSidecar);
+  return typeof summary === "string" ? summary : null;
+}
+
+function readPermissionMode(
+  registry: StatusServices["permissionModeRegistry"],
+): string {
+  const current = registry?.current?.();
+  const record = asRecord(current);
+  return isPermissionMode(record?.mode) ? record.mode : "default";
 }
 
 /**

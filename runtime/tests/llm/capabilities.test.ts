@@ -349,14 +349,39 @@ describe("resolveProviderModelCapabilities", () => {
       model: "openai/gpt-5",
       overrides: {
         supportsToolUse: false,
+        supportsPromptCaching: true,
+        supportsContextEdits: true,
+        supportsImageInput: true,
+        supportsAudioInput: true,
+        supportsAudioOutput: true,
+        supportsStructuredOutput: true,
+        supportsStructuredOutputWithTools: true,
+        supportsProviderNativeWebSearch: true,
+        supportsExtendedThinking: true,
+        acceptsImageHistory: true,
+        acceptsAudioHistory: true,
         acceptsThinkingHistory: true,
         acceptsReasoningEffort: true,
       },
     });
 
-    expect(caps.supportsToolUse).toBe(false);
-    expect(caps.acceptsThinkingHistory).toBe(true);
-    expect(caps.acceptsReasoningEffort).toBe(true);
+    expect(caps).toMatchObject({
+      supportsToolUse: false,
+      supportsPromptCaching: true,
+      supportsContextEdits: true,
+      supportsImageInput: true,
+      supportsVisionInput: true,
+      supportsAudioInput: true,
+      supportsAudioOutput: true,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: true,
+      supportsProviderNativeWebSearch: true,
+      supportsExtendedThinking: true,
+      acceptsImageHistory: true,
+      acceptsAudioHistory: true,
+      acceptsThinkingHistory: true,
+      acceptsReasoningEffort: true,
+    });
   });
 });
 

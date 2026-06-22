@@ -38,6 +38,7 @@ import type {
   TurnState,
 } from "../session/turn-state.js";
 import type { Message } from "../types/message.js";
+import { asRecord } from "../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -530,9 +531,15 @@ function currentPermissionMode(ctx: TurnContext, session: Session): string {
       };
     };
   };
+  const directMode = asRecord(
+    sessionSurface.permissionModeRegistry?.current?.(),
+  )?.mode;
+  const serviceMode = asRecord(
+    sessionSurface.services?.permissionModeRegistry?.current?.(),
+  )?.mode;
   return (
-    stringValue(sessionSurface.permissionModeRegistry?.current?.()?.mode) ??
-    stringValue(sessionSurface.services?.permissionModeRegistry?.current?.()?.mode) ??
+    stringValue(directMode) ??
+    stringValue(serviceMode) ??
     stringValue(ctx.permissionMode) ??
     "default"
   );

@@ -1,5 +1,6 @@
 import { logPayload, toolNameDisplay, type ToolInvocation } from "../tools/context.js";
 import type { Tool } from "../tools/types.js";
+import { nonEmptyString as asString } from "../utils/stringUtils.js";
 import type { TransactionGuardInput } from "./types.js";
 
 const SOLANA_SIGNAL_RE =
@@ -29,12 +30,6 @@ function stringifyForScan(value: unknown): string {
 function compactString(value: string, limit = 4096): string {
   if (value.length <= limit) return value;
   return `${value.slice(0, limit)}\n[truncated]`;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function sanitizeForDocket(value: unknown, depth = 0): unknown {

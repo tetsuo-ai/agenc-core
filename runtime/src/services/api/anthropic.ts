@@ -499,6 +499,193 @@ function configureTaskBudgetParams(
   }
 }
 
+function buildRequestOutputConfig({
+  extraBodyParams,
+  effort,
+  model,
+  taskBudget,
+  outputFormat,
+  betasParams,
+}: {
+  extraBodyParams: JsonObject
+  effort: EffortValue | undefined
+  model: string
+  taskBudget: Options['taskBudget']
+  outputFormat: BetaJSONOutputFormat | undefined
+  betasParams: string[]
+}): BetaOutputConfig {
+  const outputConfig: BetaOutputConfig = {
+    ...((extraBodyParams.output_config as BetaOutputConfig) ?? {}),
+  }
+
+  configureEffortParams(
+    effort,
+    outputConfig,
+    extraBodyParams,
+    betasParams,
+    model,
+  )
+  configureTaskBudgetParams(
+    taskBudget,
+    outputConfig as BetaOutputConfig & { task_budget?: TaskBudgetParam },
+    betasParams,
+  )
+
+  // Merge outputFormat into extraBodyParams.output_config alongside effort.
+  // Requires structured-outputs beta header per SDK (see parse() in messages.mjs).
+  if (outputFormat && !('format' in outputConfig)) {
+    outputConfig.format = outputFormat
+    if (
+      modelSupportsStructuredOutputs(model) &&
+      !betasParams.includes(STRUCTURED_OUTPUTS_BETA_HEADER)
+    ) {
+      betasParams.push(STRUCTURED_OUTPUTS_BETA_HEADER)
+    }
+  }
+
+  return outputConfig
+}
+
+function resolveThinkingParams({
+  thinkingConfig,
+  model,
+  maxOutputTokens,
+}: {
+  thinkingConfig: ThinkingConfig
+  model: string
+  maxOutputTokens: number
+}): {
+  readonly hasThinking: boolean
+  readonly thinking?: BetaMessageStreamParams['thinking']
+} {
+  const hasThinking =
+    thinkingConfig.type !== 'disabled' &&
+    !isEnvTruthy(process.env.AGENC_DISABLE_THINKING)
+
+  // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
+  // without notifying the model launch DRI and research. This is a sensitive
+  // setting that can greatly affect model quality and bashing.
+  if (!hasThinking || !modelSupportsThinking(model)) {
+    return { hasThinking }
+  }
+  if (
+    !isEnvTruthy(process.env.AGENC_DISABLE_ADAPTIVE_THINKING) &&
+    modelSupportsAdaptiveThinking(model)
+  ) {
+    return { hasThinking, thinking: { type: 'adaptive' } }
+  }
+
+  let thinkingBudget = getMaxThinkingTokensForModel(model)
+  if (
+    thinkingConfig.type === 'enabled' &&
+    thinkingConfig.budgetTokens !== undefined
+  ) {
+    thinkingBudget = thinkingConfig.budgetTokens
+  }
+  return {
+    hasThinking,
+    thinking: {
+      budget_tokens: Math.min(maxOutputTokens - 1, thinkingBudget),
+      type: 'enabled',
+    },
+  }
+}
+
+function resolveFastModeRequestSpeed({
+  model,
+  retryFastMode,
+  fastModeHeaderLatched,
+  betasParams,
+}: {
+  model: string
+  retryFastMode: boolean | undefined
+  fastModeHeaderLatched: boolean
+  betasParams: string[]
+}): BetaMessageStreamParams['speed'] | undefined {
+  const isFastModeForRetry =
+    isFastModeEnabled() &&
+    isFastModeAvailable() &&
+    !isFastModeCooldown() &&
+    isFastModeSupportedByModel(model) &&
+    !!retryFastMode
+  if (fastModeHeaderLatched && !betasParams.includes(FAST_MODE_BETA_HEADER)) {
+    betasParams.push(FAST_MODE_BETA_HEADER)
+  }
+  return isFastModeForRetry ? 'fast' : undefined
+}
+
+function addAfkModeBetaIfNeeded({
+  afkHeaderLatched,
+  isAgenticQuery,
+  betasParams,
+}: {
+  afkHeaderLatched: boolean
+  isAgenticQuery: boolean
+  betasParams: string[]
+}): void {
+  if (
+    feature('TRANSCRIPT_CLASSIFIER') &&
+    afkHeaderLatched &&
+    shouldIncludeFirstPartyOnlyBetas() &&
+    isAgenticQuery &&
+    !betasParams.includes(AFK_MODE_BETA_HEADER)
+  ) {
+    betasParams.push(AFK_MODE_BETA_HEADER)
+  }
+}
+
+function resolveUseCachedMicrocompact({
+  cachedMCEnabled,
+  querySource,
+  cacheEditingHeaderLatched,
+  cacheEditingBetaHeader,
+  betasParams,
+}: {
+  cachedMCEnabled: boolean
+  querySource: QuerySource
+  cacheEditingHeaderLatched: boolean
+  cacheEditingBetaHeader: string
+  betasParams: string[]
+}): boolean {
+  const useCachedMC =
+    cachedMCEnabled &&
+    getAPIProvider() === 'firstParty' &&
+    querySource === 'repl_main_thread'
+  if (
+    cacheEditingHeaderLatched &&
+    getAPIProvider() === 'firstParty' &&
+    querySource === 'repl_main_thread' &&
+    !betasParams.includes(cacheEditingBetaHeader)
+  ) {
+    betasParams.push(cacheEditingBetaHeader)
+    logForDebugging(
+      'Cache editing beta header enabled for cached microcompact',
+    )
+  }
+  return useCachedMC
+}
+
+function getRequestContextManagement({
+  hasThinking,
+  betasParams,
+  thinkingClearLatched,
+}: {
+  hasThinking: boolean
+  betasParams: readonly string[]
+  thinkingClearLatched: boolean
+}): ReturnType<typeof getAPIContextManagement> {
+  // The open-build getAPIContextManagement only reads
+  // clearThinking/clearToolResults/clearToolUses (and falls back to env vars);
+  // hasThinking/isRedactThinkingActive/clearAllThinking are from the richer
+  // upstream signature and are inert in this build. Cast through unknown to pass
+  // the argument verbatim without changing runtime behavior.
+  return getAPIContextManagement({
+    hasThinking,
+    isRedactThinkingActive: betasParams.includes(REDACT_THINKING_BETA_HEADER),
+    clearAllThinking: thinkingClearLatched,
+  } as unknown as ApiMicrocompactConfig)
+}
+
 export function getAPIMetadata() {
   // https://docs.google.com/document/d/1dURO9ycXXQCBS0V4Vhl4poDBRgkelFc5t2BNPoEgH5Q/edit?tab=t.0#heading=h.5g7nec5b09w5
   let extra: JsonObject = {}
@@ -1533,37 +1720,14 @@ async function* queryModel(
     }
 
     const extraBodyParams = getExtraBodyParams()
-
-    const outputConfig: BetaOutputConfig = {
-      ...((extraBodyParams.output_config as BetaOutputConfig) ?? {}),
-    }
-
-    configureEffortParams(
-      effort,
-      outputConfig,
+    const outputConfig = buildRequestOutputConfig({
       extraBodyParams,
+      effort,
+      model: options.model,
+      taskBudget: options.taskBudget,
+      outputFormat: options.outputFormat,
       betasParams,
-      options.model,
-    )
-
-    configureTaskBudgetParams(
-      options.taskBudget,
-      outputConfig as BetaOutputConfig & { task_budget?: TaskBudgetParam },
-      betasParams,
-    )
-
-    // Merge outputFormat into extraBodyParams.output_config alongside effort
-    // Requires structured-outputs beta header per SDK (see parse() in messages.mjs)
-    if (options.outputFormat && !('format' in outputConfig)) {
-      outputConfig.format = options.outputFormat as BetaJSONOutputFormat
-      // Add beta header if not already present and provider supports it
-      if (
-        modelSupportsStructuredOutputs(options.model) &&
-        !betasParams.includes(STRUCTURED_OUTPUTS_BETA_HEADER)
-      ) {
-        betasParams.push(STRUCTURED_OUTPUTS_BETA_HEADER)
-      }
-    }
+    })
 
     // Retry context gets preference because it tries to course correct if we exceed the context window limit
     const maxOutputTokens =
@@ -1571,53 +1735,17 @@ async function* queryModel(
       options.maxOutputTokensOverride ||
       getMaxOutputTokensForModel(options.model)
 
-    const hasThinking =
-      thinkingConfig.type !== 'disabled' &&
-      !isEnvTruthy(process.env.AGENC_DISABLE_THINKING)
-    let thinking: BetaMessageStreamParams['thinking'] | undefined = undefined
+    const { hasThinking, thinking } = resolveThinkingParams({
+      thinkingConfig,
+      model: options.model,
+      maxOutputTokens,
+    })
 
-    // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
-    // without notifying the model launch DRI and research. This is a sensitive
-    // setting that can greatly affect model quality and bashing.
-    if (hasThinking && modelSupportsThinking(options.model)) {
-      if (
-        !isEnvTruthy(process.env.AGENC_DISABLE_ADAPTIVE_THINKING) &&
-        modelSupportsAdaptiveThinking(options.model)
-      ) {
-        // For models that support adaptive thinking, always use adaptive
-        // thinking without a budget.
-        thinking = {
-          type: 'adaptive',
-        } satisfies BetaMessageStreamParams['thinking']
-      } else {
-        // For models that do not support adaptive thinking, use the default
-        // thinking budget unless explicitly specified.
-        let thinkingBudget = getMaxThinkingTokensForModel(options.model)
-        if (
-          thinkingConfig.type === 'enabled' &&
-          thinkingConfig.budgetTokens !== undefined
-        ) {
-          thinkingBudget = thinkingConfig.budgetTokens
-        }
-        thinkingBudget = Math.min(maxOutputTokens - 1, thinkingBudget)
-        thinking = {
-          budget_tokens: thinkingBudget,
-          type: 'enabled',
-        } satisfies BetaMessageStreamParams['thinking']
-      }
-    }
-
-    // Get API context management strategies if enabled.
-    // NOTE: the open-build getAPIContextManagement only reads
-    // clearThinking/clearToolResults/clearToolUses (and falls back to env vars);
-    // the hasThinking/isRedactThinkingActive/clearAllThinking keys passed here are
-    // from the richer upstream signature and are inert in this build. Cast through
-    // unknown to pass the argument verbatim without changing runtime behavior.
-    const contextManagement = getAPIContextManagement({
+    const contextManagement = getRequestContextManagement({
       hasThinking,
-      isRedactThinkingActive: betasParams.includes(REDACT_THINKING_BETA_HEADER),
-      clearAllThinking: thinkingClearLatched,
-    } as unknown as ApiMicrocompactConfig)
+      betasParams,
+      thinkingClearLatched,
+    })
 
     const enablePromptCaching =
       options.enablePromptCaching ?? getPromptCachingEnabled(retryContext.model)
@@ -1625,51 +1753,31 @@ async function* queryModel(
     // Fast mode: header is latched session-stable (cache-safe), but
     // `speed='fast'` stays dynamic so cooldown still suppresses the actual
     // fast-mode request without changing the cache key.
-    let speed: BetaMessageStreamParams['speed']
-    const isFastModeForRetry =
-      isFastModeEnabled() &&
-      isFastModeAvailable() &&
-      !isFastModeCooldown() &&
-      isFastModeSupportedByModel(options.model) &&
-      !!retryContext.fastMode
-    if (isFastModeForRetry) {
-      speed = 'fast'
-    }
-    if (fastModeHeaderLatched && !betasParams.includes(FAST_MODE_BETA_HEADER)) {
-      betasParams.push(FAST_MODE_BETA_HEADER)
-    }
+    const speed = resolveFastModeRequestSpeed({
+      model: options.model,
+      retryFastMode: retryContext.fastMode,
+      fastModeHeaderLatched,
+      betasParams,
+    })
 
     // AFK mode beta: latched once auto mode is first activated. Still gated
     // by isAgenticQuery per-call so classifiers/compaction don't get it.
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
-      if (
-        afkHeaderLatched &&
-        shouldIncludeFirstPartyOnlyBetas() &&
-        isAgenticQuery &&
-        !betasParams.includes(AFK_MODE_BETA_HEADER)
-      ) {
-        betasParams.push(AFK_MODE_BETA_HEADER)
-      }
-    }
+    addAfkModeBetaIfNeeded({
+      afkHeaderLatched,
+      isAgenticQuery,
+      betasParams,
+    })
 
     // Cache editing beta: header is latched session-stable; useCachedMC
     // (controls cache_edits body behavior) stays live so edits stop when
     // the feature disables but the header doesn't flip.
-    const useCachedMC =
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
-    if (
-      cacheEditingHeaderLatched &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread' &&
-      !betasParams.includes(cacheEditingBetaHeader)
-    ) {
-      betasParams.push(cacheEditingBetaHeader)
-      logForDebugging(
-        'Cache editing beta header enabled for cached microcompact',
-      )
-    }
+    const useCachedMC = resolveUseCachedMicrocompact({
+      cachedMCEnabled,
+      querySource: options.querySource,
+      cacheEditingHeaderLatched,
+      cacheEditingBetaHeader,
+      betasParams,
+    })
 
     // Only send temperature when thinking is disabled — the API requires
     // temperature: 1 when thinking is enabled, which is already the default.
@@ -2840,7 +2948,146 @@ type CachedMCPinnedEdits = {
   block: CachedMCEditsBlock
 }
 
-// Exported for testing cache_reference placement constraints
+type CacheEditDeduplicator = (
+  block: CachedMCEditsBlock,
+) => CachedMCEditsBlock
+
+function createCacheEditDeduplicator(): CacheEditDeduplicator {
+  const seenDeleteRefs = new Set<string>()
+  return block => {
+    const uniqueEdits = block.edits.filter(edit => {
+      if (seenDeleteRefs.has(edit.cache_reference)) {
+        return false
+      }
+      seenDeleteRefs.add(edit.cache_reference)
+      return true
+    })
+    return { ...block, edits: uniqueEdits }
+  }
+}
+
+function userContentBlocksForMutation(
+  message: MessageParam,
+): BetaContentBlockParam[] | null {
+  if (message.role !== 'user') {
+    return null
+  }
+  if (!Array.isArray(message.content)) {
+    message.content = [{ type: 'text', text: message.content as string }]
+  }
+  return message.content as BetaContentBlockParam[]
+}
+
+function addPinnedCacheEdits(
+  result: MessageParam[],
+  pinnedEdits: readonly CachedMCPinnedEdits[] | undefined,
+  deduplicateEdits: CacheEditDeduplicator,
+): void {
+  for (const pinned of pinnedEdits ?? []) {
+    const msg = result[pinned.userMessageIndex]
+    if (!msg) {
+      continue
+    }
+    const content = userContentBlocksForMutation(msg)
+    if (!content) {
+      continue
+    }
+    const dedupedBlock = deduplicateEdits(pinned.block)
+    if (dedupedBlock.edits.length > 0) {
+      insertBlockAfterToolResults(content, dedupedBlock)
+    }
+  }
+}
+
+function addNewCacheEdits(
+  result: MessageParam[],
+  newCacheEdits: CachedMCEditsBlock | null | undefined,
+  deduplicateEdits: CacheEditDeduplicator,
+): void {
+  if (!newCacheEdits || result.length === 0) {
+    return
+  }
+  const dedupedNewEdits = deduplicateEdits(newCacheEdits)
+  if (dedupedNewEdits.edits.length === 0) {
+    return
+  }
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i]
+    if (!msg) {
+      continue
+    }
+    const content = userContentBlocksForMutation(msg)
+    if (!content) {
+      continue
+    }
+    insertBlockAfterToolResults(content, dedupedNewEdits)
+    // Pin so this block is re-sent at the same position in future calls.
+    pinCacheEdits(i, newCacheEdits)
+
+    logForDebugging(
+      `Added cache_edits block with ${dedupedNewEdits.edits.length} deletion(s) to message[${i}]: ${dedupedNewEdits.edits.map(e => e.cache_reference).join(', ')}`,
+    )
+    break
+  }
+}
+
+function addCachedMicrocompactEdits(
+  result: MessageParam[],
+  newCacheEdits: CachedMCEditsBlock | null | undefined,
+  pinnedEdits: readonly CachedMCPinnedEdits[] | undefined,
+): void {
+  const deduplicateEdits = createCacheEditDeduplicator()
+  addPinnedCacheEdits(result, pinnedEdits, deduplicateEdits)
+  addNewCacheEdits(result, newCacheEdits, deduplicateEdits)
+}
+
+function findLastCacheControlMessageIndex(
+  messages: readonly MessageParam[],
+): number {
+  let lastCacheControlMessageIndex = -1
+  for (let index = 0; index < messages.length; index += 1) {
+    const msg = messages[index]!
+    if (!Array.isArray(msg.content)) {
+      continue
+    }
+    for (const block of msg.content) {
+      if (block && typeof block === 'object' && 'cache_control' in block) {
+        lastCacheControlMessageIndex = index
+      }
+    }
+  }
+  return lastCacheControlMessageIndex
+}
+
+function addCacheReferencesToToolResultsBeforeCacheControl(
+  result: MessageParam[],
+): void {
+  const lastCacheControlMessageIndex = findLastCacheControlMessageIndex(result)
+  if (lastCacheControlMessageIndex < 0) {
+    return
+  }
+
+  for (let i = 0; i < lastCacheControlMessageIndex; i++) {
+    const msg = result[i]!
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) {
+      continue
+    }
+    let cloned = false
+    for (let j = 0; j < msg.content.length; j++) {
+      const block = msg.content[j]
+      if (block && isToolResultBlock(block)) {
+        if (!cloned) {
+          msg.content = [...msg.content]
+          cloned = true
+        }
+        msg.content[j] = Object.assign({}, block, {
+          cache_reference: block.tool_use_id,
+        })
+      }
+    }
+  }
+}
+
 function addCacheBreakpoints(
   messages: (UserMessage | AssistantMessage)[],
   enablePromptCaching: boolean,
@@ -2884,74 +3131,11 @@ function addCacheBreakpoints(
     return result
   }
 
-  // Track all cache_references being deleted to prevent duplicates across blocks.
-  const seenDeleteRefs = new Set<string>()
-
-  // Helper to deduplicate a cache_edits block against already-seen deletions
-  const deduplicateEdits = (block: CachedMCEditsBlock): CachedMCEditsBlock => {
-    const uniqueEdits = block.edits.filter(edit => {
-      if (seenDeleteRefs.has(edit.cache_reference)) {
-        return false
-      }
-      seenDeleteRefs.add(edit.cache_reference)
-      return true
-    })
-    return { ...block, edits: uniqueEdits }
-  }
-
-  // Re-insert all previously-pinned cache_edits at their original positions
-  for (const pinned of pinnedEdits ?? []) {
-    const msg = result[pinned.userMessageIndex]
-    if (msg && msg.role === 'user') {
-      if (!Array.isArray(msg.content)) {
-        msg.content = [{ type: 'text', text: msg.content as string }]
-      }
-      const dedupedBlock = deduplicateEdits(pinned.block)
-      if (dedupedBlock.edits.length > 0) {
-        insertBlockAfterToolResults(msg.content, dedupedBlock)
-      }
-    }
-  }
-
-  // Insert new cache_edits into the last user message and pin them
-  if (newCacheEdits && result.length > 0) {
-    const dedupedNewEdits = deduplicateEdits(newCacheEdits)
-    if (dedupedNewEdits.edits.length > 0) {
-      for (let i = result.length - 1; i >= 0; i--) {
-        const msg = result[i]
-        if (msg && msg.role === 'user') {
-          if (!Array.isArray(msg.content)) {
-            msg.content = [{ type: 'text', text: msg.content as string }]
-          }
-          insertBlockAfterToolResults(msg.content, dedupedNewEdits)
-          // Pin so this block is re-sent at the same position in future calls
-          pinCacheEdits(i, newCacheEdits)
-
-          logForDebugging(
-            `Added cache_edits block with ${dedupedNewEdits.edits.length} deletion(s) to message[${i}]: ${dedupedNewEdits.edits.map(e => e.cache_reference).join(', ')}`,
-          )
-          break
-        }
-      }
-    }
-  }
+  addCachedMicrocompactEdits(result, newCacheEdits, pinnedEdits)
 
   // Add cache_reference to tool_result blocks that are within the cached prefix.
   // Must be done AFTER cache_edits insertion since that modifies content arrays.
   if (enablePromptCaching) {
-    // Find the last message containing a cache_control marker
-    let lastCCMsg = -1
-    for (let i = 0; i < result.length; i++) {
-      const msg = result[i]!
-      if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block && typeof block === 'object' && 'cache_control' in block) {
-            lastCCMsg = i
-          }
-        }
-      }
-    }
-
     // Add cache_reference to tool_result blocks that are strictly before
     // the last cache_control marker. The API requires cache_reference to
     // appear "before or on" the last cache_control — we use strict "before"
@@ -2959,27 +3143,7 @@ function addCacheBreakpoints(
     //
     // Create new objects instead of mutating in-place to avoid contaminating
     // blocks reused by secondary queries that use models without cache_editing support.
-    if (lastCCMsg >= 0) {
-      for (let i = 0; i < lastCCMsg; i++) {
-        const msg = result[i]!
-        if (msg.role !== 'user' || !Array.isArray(msg.content)) {
-          continue
-        }
-        let cloned = false
-        for (let j = 0; j < msg.content.length; j++) {
-          const block = msg.content[j]
-          if (block && isToolResultBlock(block)) {
-            if (!cloned) {
-              msg.content = [...msg.content]
-              cloned = true
-            }
-            msg.content[j] = Object.assign({}, block, {
-              cache_reference: block.tool_use_id,
-            })
-          }
-        }
-      }
-    }
+    addCacheReferencesToToolResultsBeforeCacheControl(result)
   }
 
   return result

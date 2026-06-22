@@ -190,6 +190,81 @@ describe("recoverDaemonStateOnStartup", () => {
     ]);
   });
 
+  it("drops array-shaped agent metadata during startup recovery", () => {
+    insertAgentRun({
+      id: "run-array-metadata",
+      objective: "recover metadata",
+      status: "running",
+    });
+    driver
+      .prepareState<[string, string]>(
+        "UPDATE agent_runs SET metadata_json = ? WHERE id = ?",
+      )
+      .run(JSON.stringify(["spoof"]), "run-array-metadata");
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toHaveLength(1);
+    expect(report.recoveredRuns[0]).not.toHaveProperty("metadata");
+  });
+
+  it("drops array-shaped recovered tool-state maps before applying recovered tool calls", () => {
+    insertAgentRun({
+      id: "run-array-tool-state",
+      objective: "recover tool state",
+      status: "running",
+      currentSessionId: "session-array-tool-state",
+    });
+    insertSnapshot("session-array-tool-state", "2026-05-01T00:00:00.000Z", {
+      conversation: [],
+      toolState: {
+        pending: ["tool-replay", "tool-poison"],
+        inFlight: ["spoof"],
+        completed: ["spoof"],
+      },
+      mcpConnectionState: {},
+    });
+    insertToolCall({
+      sessionId: "session-array-tool-state",
+      toolCallId: "tool-replay",
+      toolName: "FileRead",
+      args: { path: "a.txt" },
+      status: "running",
+      recoveryCategory: "idempotent",
+    });
+    insertToolCall({
+      sessionId: "session-array-tool-state",
+      toolCallId: "tool-poison",
+      toolName: "FileWrite",
+      args: { path: "b.txt" },
+      status: "running",
+      recoveryCategory: "side-effecting",
+    });
+
+    const report = recoverDaemonStateOnStartup(driver);
+    const toolState = report.recoveredRuns[0]?.latestSnapshot?.toolState as
+      | {
+          readonly pending?: unknown;
+          readonly inFlight?: unknown;
+          readonly completed?: unknown;
+        }
+      | undefined;
+
+    expect(toolState?.pending).toEqual([]);
+    expect(toolState?.inFlight).toEqual({
+      "tool-replay": expect.objectContaining({
+        status: "replay_pending",
+        recoveryAction: "replay",
+      }),
+    });
+    expect(toolState?.completed).toEqual({
+      "tool-poison": expect.objectContaining({
+        status: "poisoned",
+        recoveryAction: "poison",
+      }),
+    });
+  });
+
   it("keeps daemon startup recovery non-throwing when snapshot JSON is invalid", () => {
     insertAgentRun({
       id: "run-bad-snapshot",

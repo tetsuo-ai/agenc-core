@@ -7,6 +7,7 @@ import {
   type SettingsJson,
 } from "../settings.js";
 import type { PermissionRuleSource } from "../types.js";
+import { isTrustRecord } from "./records.js";
 
 export interface ProjectTrustSourceSummary {
   readonly source: "projectSettings" | "localSettings";
@@ -41,12 +42,8 @@ function sourceLabel(source: PermissionRuleSource): string {
   return source === "projectSettings" ? "Project settings" : "Local settings";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function stringKeys(value: unknown): string[] {
-  if (!isRecord(value)) return [];
+  if (!isTrustRecord(value)) return [];
   return Object.keys(value).filter((key) => key.length > 0).sort();
 }
 
@@ -56,25 +53,25 @@ function isSafeEnvKey(key: string): boolean {
 
 function collectHookDetails(json: SettingsJson): string[] {
   const hooks = json.hooks;
-  if (!isRecord(hooks)) return [];
+  if (!isTrustRecord(hooks)) return [];
   const names = stringKeys(hooks);
   return names.length > 0 ? [`hooks: ${names.join(", ")}`] : [];
 }
 
 function collectMcpServerDetails(json: SettingsJson): string[] {
-  const servers = isRecord(json.mcp_servers)
+  const servers = isTrustRecord(json.mcp_servers)
     ? json.mcp_servers
-    : isRecord(json.mcpServers)
+    : isTrustRecord(json.mcpServers)
       ? json.mcpServers
       : null;
   if (servers === null) return [];
   const serverNames = Object.entries(servers)
-    .filter(([, server]) => !isRecord(server) || server.enabled !== false)
+    .filter(([, server]) => !isTrustRecord(server) || server.enabled !== false)
     .map(([name]) => name)
     .sort();
   const envKeys = new Set<string>();
   for (const server of Object.values(servers)) {
-    if (!isRecord(server) || !isRecord(server.env)) continue;
+    if (!isTrustRecord(server) || !isTrustRecord(server.env)) continue;
     for (const key of Object.keys(server.env)) {
       if (!isSafeEnvKey(key)) envKeys.add(key);
     }
@@ -115,12 +112,12 @@ function collectPermissionDetails(
 }
 
 function collectShellEnvDetails(json: SettingsJson): string[] {
-  const policy = isRecord(json.shell_environment_policy)
+  const policy = isTrustRecord(json.shell_environment_policy)
     ? json.shell_environment_policy
-    : isRecord(json.shellEnvironmentPolicy)
+    : isTrustRecord(json.shellEnvironmentPolicy)
       ? json.shellEnvironmentPolicy
       : null;
-  if (policy === null || !isRecord(policy.set)) return [];
+  if (policy === null || !isTrustRecord(policy.set)) return [];
   const keys = Object.keys(policy.set).filter((key) => !isSafeEnvKey(key)).sort();
   return keys.length > 0 ? [`shell env keys: ${keys.join(", ")}`] : [];
 }

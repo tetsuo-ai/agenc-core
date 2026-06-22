@@ -1,3 +1,5 @@
+import { isRecord } from '../../utils/record.js'
+
 const STRING_ARGUMENT_TOOL_FIELDS: Record<string, string> = {
   Bash: 'command',
   Read: 'file_path',
@@ -16,10 +18,6 @@ function isLikelyStructuredObjectLiteral(value: string): boolean {
   // {"key":, {key:, {'key':, { "key" :, etc.
   // But NOT bash compound commands like { pwd; } or { echo hi; }
   return /^\s*\{\s*['"]?\w+['"]?\s*:/.test(value)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function getPlainStringToolArgumentField(toolName: string): string | null {

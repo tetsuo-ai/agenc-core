@@ -4,6 +4,7 @@ import { Box, useInput } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { KeyHint } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import type { SlashCommandContext } from "./types.js";
 
 function rowsFromText(text: string): readonly string[] {
@@ -65,25 +66,11 @@ export function openCompactStatusModal(
     readonly contextText: string;
   },
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: (
-      <CompactStatusModal
-        message={params.message}
-        contextText={params.contextText}
-        onDone={close}
-      />
-    ),
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <CompactStatusModal
+      message={params.message}
+      contextText={params.contextText}
+      onDone={close}
+    />
+  ));
 }

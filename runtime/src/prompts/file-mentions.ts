@@ -12,6 +12,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { isSupportedUserImagePath } from "./attachments/user-image-input.js";
 import { isSupportedUserPdfPath } from "./attachments/user-pdf-input.js";
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
+import { isRecord } from "../utils/record.js";
 
 export type MentionValidationResult =
   | { ok: true; resolved: string }
@@ -81,10 +82,6 @@ const FILE_MENTION_MAX_LINES = 4_000;
  * are deliberately ignored.
  */
 const MENTION_REGEX = /(^|[\s([{])@([^\s,;:)"'`\]}<>]+)/g;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isInsideRoot(root: string, target: string): boolean {
   const rel = relative(root, target);

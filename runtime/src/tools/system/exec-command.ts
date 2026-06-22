@@ -20,6 +20,7 @@ import {
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   permissionProfileForRuntimeContext,
@@ -37,12 +38,6 @@ const PLAIN_INTERACTIVE_SHELL_RE =
 const MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/u;
 const DIRECT_MCP_TOOL_COMMAND_RE =
   /^\s*mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+(?:\s|$|\()/u;
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
-}
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)

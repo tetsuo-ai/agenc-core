@@ -47,6 +47,15 @@ export function firstLineOf(s: string): string {
 }
 
 /**
+ * Returns the original string when it contains non-whitespace content.
+ */
+export function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value
+    : undefined
+}
+
+/**
  * Counts occurrences of `char` in `str` using indexOf jumps instead of
  * per-character iteration. Structurally typed so Buffer works too
  * (Buffer.indexOf accepts string needles).

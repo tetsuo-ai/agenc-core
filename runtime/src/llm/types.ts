@@ -8,6 +8,7 @@
  */
 
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
+import { isRecord } from "../utils/record.js";
 
 /**
  * Message role in a conversation
@@ -191,10 +192,6 @@ function shouldTreatMalformedArgumentsAsStructuredLiteral(
     return false;
   }
   return /^\s*[\[{]/.test(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function wrapPlainStringToolArguments(

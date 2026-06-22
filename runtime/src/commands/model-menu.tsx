@@ -14,6 +14,8 @@ import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { readCommandConfig } from "./config-context.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -52,15 +54,6 @@ type SessionModelSnapshot = {
   readonly provider?: string;
   readonly model?: string;
 };
-
-function readConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
-  return (
-    ctx.configStore?.current() ??
-    (ctx.session as unknown as {
-      services?: { configStore?: { current?: () => AgenCConfig } };
-    }).services?.configStore?.current?.()
-  );
-}
 
 function readSessionSelection(ctx: SlashCommandContext): SessionModelSnapshot {
   const peekState = (ctx.session as unknown as {
@@ -253,7 +246,7 @@ function providerRows(params: {
 }
 
 export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapshot {
-  const config = readConfig(ctx);
+  const config = readCommandConfig(ctx);
   const sessionSelection = readSessionSelection(ctx);
   const provider =
     normalizeProviderSlug(sessionSelection.provider) ??
@@ -462,19 +455,7 @@ export function openModelMenu(
   snapshot: ModelMenuSnapshot,
   onSelect: (provider: ProviderSlug, model: string) => Promise<ModelMenuSelectionResult>,
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <ModelMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />,
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <ModelMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />
+  ));
 }

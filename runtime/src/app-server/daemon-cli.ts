@@ -123,6 +123,7 @@ import {
   createSizeCappedFileLogSink,
   type SizeCappedFileLogSink,
 } from "../utils/logger.js";
+import { isRecord } from "../utils/record.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -2764,7 +2765,7 @@ function asNodeError(error: unknown): NodeJS.ErrnoException {
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function isJsonRpcResponse(message: JsonObject): boolean {

@@ -12,6 +12,7 @@ import {
   MAX_DIFF_BYTES,
   okResult,
   parseStatusPorcelain,
+  parseWorktreePorcelain,
   resolveRepoRoot,
   summarizeChanges,
   toOptionalString,
@@ -84,19 +85,15 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
         topLevelDirectories,
         manifests,
         languages,
-        worktrees: worktrees.stdout
-          .split(/\n\n+/)
-          .map((block) => block.trim())
-          .filter((block) => block.length > 0)
-          .map((block) => {
-            const lines = block.split(/\r?\n/);
-            const worktree = lines.find((line) => line.startsWith("worktree "))?.slice(9) ?? "";
-            const branch = lines.find((line) => line.startsWith("branch "))?.slice(7) ?? null;
-            const head = lines.find((line) => line.startsWith("HEAD "))?.slice(5) ?? null;
-            const bare = lines.includes("bare");
-            const detached = lines.includes("detached");
-            return { worktree, branch, head, bare, detached };
-          }),
+        worktrees: parseWorktreePorcelain(worktrees.stdout).map((worktree) => {
+          return {
+            worktree: worktree.path,
+            branch: worktree.branch,
+            head: worktree.head,
+            bare: worktree.bare,
+            detached: worktree.detached,
+          };
+        }),
       });
     },
   };
@@ -336,20 +333,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (result.exitCode !== 0) {
         return errorResult(result.stderr.trim() || result.stdout.trim() || "git worktree list failed");
       }
-      const worktrees = result.stdout
-        .split(/\n\n+/)
-        .map((block) => block.trim())
-        .filter((block) => block.length > 0)
-        .map((block) => {
-          const lines = block.split(/\r?\n/);
-          return {
-            path: lines.find((line) => line.startsWith("worktree "))?.slice(9) ?? "",
-            branch: lines.find((line) => line.startsWith("branch "))?.slice(7) ?? null,
-            head: lines.find((line) => line.startsWith("HEAD "))?.slice(5) ?? null,
-            detached: lines.includes("detached"),
-            bare: lines.includes("bare"),
-          };
-        });
+      const worktrees = parseWorktreePorcelain(result.stdout);
       return okResult({ repoRoot, worktrees });
     },
   };

@@ -4,6 +4,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "../types.js";
+import { openAsyncLocalJsxCommand } from "../local-jsx-command.js";
 
 const MEMORY_CLI_SURFACE = "agenc memory";
 
@@ -21,28 +22,18 @@ export const memorySlashCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const setToolJSX = ctx.appState?.setToolJSX;
-      if (typeof setToolJSX === "function") {
-        const { call } = await import("./memory.js");
-        const close = () => {
-          setToolJSX({
-            jsx: null,
-            shouldHidePromptInput: false,
-            clearLocalJSX: true,
-          });
-        };
-        const jsx = await call(
-          () => {
-            close();
-          },
-          {} as never,
-          ctx.argsRaw,
-        );
-        setToolJSX({
-          isLocalJSXCommand: true,
-          shouldHidePromptInput: true,
-          jsx,
-        });
+      if (
+        await openAsyncLocalJsxCommand(ctx, async close => {
+          const { call } = await import("./memory.js");
+          return call(
+            () => {
+              close();
+            },
+            {} as never,
+            ctx.argsRaw,
+          );
+        })
+      ) {
         return { kind: "skip" };
       }
       return {

@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveAgencHome } from "../../config/env.js";
+import { isRecord } from "../../utils/record.js";
 import { sanitizePluginId } from "../directories.js";
 import { loadPluginManifest } from "../manifest.js";
 import type { PluginManifest, PluginManifestInterface } from "../manifest-schema.js";
@@ -1380,10 +1381,6 @@ function isMarketplaceRecord(value: unknown): value is MarketplaceRecord {
     typeof value.installedPath === "string" &&
     typeof value.manifestPath === "string" &&
     typeof value.updatedAt === "string";
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isStringArray(value: unknown): value is readonly string[] {

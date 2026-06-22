@@ -650,6 +650,37 @@ All=$ARGUMENTS
       .resolves.toBeNull();
   });
 
+  it("ignores array-shaped per-call plugin config when loading plugin skills", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const configuredPlugin = join(workspaceRoot, "vendor", "configured");
+    writeSkill(join(configuredPlugin, "skills"), "configured-skill");
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      env: {},
+    });
+    const spoofedConfig = Object.assign([], {
+      plugins: {
+        enabled: true,
+        plugins: {
+          configured: { path: "vendor/configured" },
+        },
+      },
+    });
+
+    const loaded = await services.skillsManager.skillsForConfig(
+      spoofedConfig,
+      null,
+    );
+
+    expect(loaded.availableSkills?.map((skill) => skill.name)).not.toContain(
+      "configured-skill",
+    );
+    await expect(services.skillsManager.resolveSkill?.("configured-skill"))
+      .resolves.toBeNull();
+  });
+
   it("supports listing budgets and argument substitution", () => {
     expect(substituteArguments("Do $0 for $name via $ARGUMENTS", "one two", true, [
       "name",

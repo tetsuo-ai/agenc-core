@@ -39,6 +39,7 @@ import {
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { tmpdir } from "node:os";
+import { nonEmptyString } from "../../utils/stringUtils.js";
 // Inline lean replacement (gateway/host-workspace.js was deleted).
 function resolveSessionWorkspaceRoot(entry?: string): string {
   if (typeof entry === "string" && entry.length > 0) return entry;
@@ -704,11 +705,7 @@ export function snapshotTopRecentReads(params: {
  * caller has seeded a session id into the tool args.
  */
 export function resolveSessionId(args: Record<string, unknown>): string | undefined {
-  const value = args[SESSION_ID_ARG];
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value;
-  }
-  return undefined;
+  return nonEmptyString(args[SESSION_ID_ARG]);
 }
 
 /**

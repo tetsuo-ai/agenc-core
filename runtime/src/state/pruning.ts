@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { isProcessRunning } from "../utils/genericProcessUtils.js";
 import { StateThreadRepository } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { sqlPlaceholders } from "./sql.js";
+import { agentIdFromThreadSourceJson } from "../thread-store/thread-source.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
 const FAILED_AGENT_RUN_STATUSES = ["failed", "error", "errored"] as const;
@@ -490,7 +492,7 @@ function loadCandidates(
     .prepareState<unknown[], Omit<AgentRunPruneCandidate, "category">>(
       `SELECT id, status, current_session_id
        FROM agent_runs
-       WHERE status IN (${placeholders(statuses.length)})
+       WHERE status IN (${sqlPlaceholders(statuses.length)})
          AND last_active_at < ?
        ORDER BY last_active_at ASC, id ASC`,
     )
@@ -685,43 +687,10 @@ function snapshotOwnerKey(row: SessionSnapshotPruneCandidate): string {
   const agentId =
     row.linked_agent_id ??
     row.agent_run_id ??
-    agentIdFromThreadSource(row.thread_source_json);
+    agentIdFromThreadSourceJson(row.thread_source_json);
   return agentId === undefined
     ? `session:${row.session_id}`
     : `agent:${agentId}`;
-}
-
-function agentIdFromThreadSource(raw: string | null): string | undefined {
-  if (raw === null) return undefined;
-  let source: unknown;
-  try {
-    source = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  if (source === "agent" || source === "agent_thread") return undefined;
-  if (!isRecord(source)) return undefined;
-  const direct = stringField(source, "agentId") ?? stringField(source, "agent_id");
-  if (direct !== undefined) return direct;
-  const nested = source.source;
-  if (!isRecord(nested)) return undefined;
-  return (
-    stringField(nested, "agentId") ??
-    stringField(nested, "agent_id") ??
-    stringField(nested, "parentThreadId")
-  );
-}
-
-function stringField(
-  record: Readonly<Record<string, unknown>>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function snapshotKey(
@@ -744,10 +713,6 @@ function cutoffIso(now: string, days: number | undefined): string | undefined {
   const nowMs = Date.parse(now);
   if (!Number.isFinite(nowMs)) return undefined;
   return new Date(nowMs - days * MS_PER_DAY).toISOString();
-}
-
-function placeholders(length: number): string {
-  return Array.from({ length }, () => "?").join(", ");
 }
 
 function emptyReport(): AgentRunPruningReport {

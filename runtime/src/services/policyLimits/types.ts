@@ -3,6 +3,8 @@
  * dependency-free through the small parser in this package.
  */
 
+import { isRecord } from "../../utils/record.js";
+
 export interface PolicyRestriction {
   readonly allowed: boolean;
 }
@@ -46,8 +48,4 @@ function parsePolicyLimitsRestrictions(
     });
   }
   return restrictions;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

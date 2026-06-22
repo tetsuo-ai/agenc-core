@@ -15,7 +15,7 @@ beforeAll(() => {
   priorMacro = (globalThis as { MACRO?: unknown }).MACRO;
   (globalThis as { MACRO?: unknown }).MACRO = {
     VERSION: "test",
-    PACKAGE_URL: "@tetsuo-ai/runtime",
+    PACKAGE_URL: "@tetsuo-ai/agenc",
   };
 });
 afterAll(() => {

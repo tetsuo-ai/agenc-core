@@ -177,6 +177,15 @@ describe("AgenC daemon transport authentication", () => {
     expect(
       authenticator.authenticateInitializeParams({ authCookie: "wrong-cookie" }),
     ).toBeNull();
+    expect(authenticator.verifyInitializeParams([] as never)).toBe(false);
+    expect(
+      authenticator.authenticateInitializeMessage({
+        jsonrpc: "2.0",
+        id: "array-params",
+        method: "initialize",
+        params: [] as never,
+      }),
+    ).toBeNull();
   });
 
   it("rejects empty expected cookies", () => {

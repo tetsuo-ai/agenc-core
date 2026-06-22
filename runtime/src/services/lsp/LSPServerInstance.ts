@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import { createLSPClient, type LSPClient } from "./LSPClient.js";
 import type { InitializeParams } from "./protocol.js";
 import type { LspServerState, ScopedLspServerConfig } from "./types.js";
+import { errorMessage, toError } from "../../utils/errors.js";
 
 const LSP_ERROR_CONTENT_MODIFIED = -32801;
 const MAX_RETRIES_FOR_TRANSIENT_ERRORS = 3;
@@ -46,10 +47,6 @@ export interface LSPServerInstanceOptions {
     onCrash: (error: Error) => void,
   ) => LSPClient;
   readonly cwd?: string;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function withTimeout<T>(
@@ -206,7 +203,7 @@ export function createLSPServerInstance(
       void initPromise?.catch(() => {});
       if (generation !== startGeneration) return;
       state = "error";
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = toError(error);
       throw lastError;
     }
   }
@@ -221,7 +218,7 @@ export function createLSPServerInstance(
       startTime = undefined;
     } catch (error) {
       state = "error";
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = toError(error);
       throw lastError;
     }
   }

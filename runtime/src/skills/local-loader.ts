@@ -27,6 +27,7 @@ import { discoverPluginSkillRoots as discoverLoadedPluginSkillRoots } from "../p
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
+import { isRecord } from "../utils/record.js";
 import {
   createSkillChangeDetector,
   skillChangeDetector,
@@ -1293,7 +1294,7 @@ function skillSnapshotCacheKey(
 function pluginConfigView(
   config: unknown,
 ): Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined {
-  return typeof config === "object" && config !== null
+  return isRecord(config)
     ? config as Pick<AgenCConfig, "plugins" | "enabledPlugins">
     : undefined;
 }

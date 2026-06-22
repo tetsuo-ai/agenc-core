@@ -44,6 +44,7 @@ import {
   type JsonValue,
   type RequestId,
 } from "./protocol/index.js";
+import { isRecord } from "../utils/record.js";
 
 export type AgenCAgentCliCommand =
   | {
@@ -624,20 +625,53 @@ function sleepForDaemonReconnect(ms: number): Promise<void> {
   });
 }
 
+async function runAgenCAgentCliOperation(
+  io: AgenCAgentCliIo,
+  options: AgenCAgentCliOptions,
+  operation: () => Promise<number>,
+): Promise<number> {
+  try {
+    await ensureAgenCAgentDaemonReady(options);
+    return await operation();
+  } catch (error) {
+    writeAgenCAgentCliError(io, error);
+    return 1;
+  }
+}
+
+function ensureAgenCAgentDaemonReady(
+  options: AgenCAgentCliOptions,
+): Promise<void> {
+  return (options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env))();
+}
+
+function resolveAgenCAgentCliDaemonClient(
+  options: AgenCAgentCliOptions,
+): AgenCAgentCliDaemonClient {
+  return (
+    options.client ??
+    createAgenCJsonLineDaemonClient({
+      env: options.env,
+    })
+  );
+}
+
+function writeAgenCAgentCliError(
+  io: AgenCAgentCliIo,
+  error: unknown,
+): void {
+  io.stderr.write(
+    `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+  );
+}
+
 async function startAgenCAgent(
   command: Extract<AgenCAgentCliCommand, { readonly kind: "start" }>,
   io: AgenCAgentCliIo,
   options: AgenCAgentCliOptions,
 ): Promise<number> {
-  try {
-    await (
-      options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env)
-    )();
-    const client =
-      options.client ??
-      createAgenCJsonLineDaemonClient({
-        env: options.env,
-      });
+  return runAgenCAgentCliOperation(io, options, async () => {
+    const client = resolveAgenCAgentCliDaemonClient(options);
     const objective = command.objective;
     const result = await client.createAgent({
       objective,
@@ -653,36 +687,19 @@ async function startAgenCAgent(
     });
     io.stdout.write(`${result.agentId}\n`);
     return 0;
-  } catch (error) {
-    io.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 1;
-  }
+  });
 }
 
 async function listAgenCAgents(
   io: AgenCAgentCliIo,
   options: AgenCAgentCliOptions,
 ): Promise<number> {
-  try {
-    await (
-      options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env)
-    )();
-    const client =
-      options.client ??
-      createAgenCJsonLineDaemonClient({
-        env: options.env,
-      });
+  return runAgenCAgentCliOperation(io, options, async () => {
+    const client = resolveAgenCAgentCliDaemonClient(options);
     const result = await listAllAgenCAgents(client);
     io.stdout.write(`${formatAgenCAgentList(result)}\n`);
     return 0;
-  } catch (error) {
-    io.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 1;
-  }
+  });
 }
 
 async function attachAgenCAgent(
@@ -690,10 +707,7 @@ async function attachAgenCAgent(
   io: AgenCAgentCliIo,
   options: AgenCAgentCliOptions,
 ): Promise<number> {
-  try {
-    await (
-      options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env)
-    )();
+  return runAgenCAgentCliOperation(io, options, async () => {
     const clientId = options.clientId ?? defaultAgenCAgentAttachClientId();
     if (options.attachTui !== undefined) {
       return await options.attachTui({
@@ -702,23 +716,14 @@ async function attachAgenCAgent(
         ...(options.env !== undefined ? { env: options.env } : {}),
       });
     }
-    const client =
-      options.client ??
-      createAgenCJsonLineDaemonClient({
-        env: options.env,
-      });
+    const client = resolveAgenCAgentCliDaemonClient(options);
     const result = await client.attachAgent({
       agentId: command.agentId,
       clientId,
     });
     io.stdout.write(`${formatAgenCAgentAttachResult(result)}\n`);
     return 0;
-  } catch (error) {
-    io.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 1;
-  }
+  });
 }
 
 async function stopAgenCAgent(
@@ -726,27 +731,15 @@ async function stopAgenCAgent(
   io: AgenCAgentCliIo,
   options: AgenCAgentCliOptions,
 ): Promise<number> {
-  try {
-    await (
-      options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env)
-    )();
-    const client =
-      options.client ??
-      createAgenCJsonLineDaemonClient({
-        env: options.env,
-      });
+  return runAgenCAgentCliOperation(io, options, async () => {
+    const client = resolveAgenCAgentCliDaemonClient(options);
     const result = await client.stopAgent({
       agentId: command.agentId,
       reason: "agenc agent stop",
     });
     io.stdout.write(`${formatAgenCAgentStopResult(result)}\n`);
     return 0;
-  } catch (error) {
-    io.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 1;
-  }
+  });
 }
 
 async function logsAgenCAgent(
@@ -754,27 +747,15 @@ async function logsAgenCAgent(
   io: AgenCAgentCliIo,
   options: AgenCAgentCliOptions,
 ): Promise<number> {
-  try {
-    await (
-      options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env)
-    )();
-    const client =
-      options.client ??
-      createAgenCJsonLineDaemonClient({
-        env: options.env,
-      });
+  return runAgenCAgentCliOperation(io, options, async () => {
+    const client = resolveAgenCAgentCliDaemonClient(options);
     if (client.getAgentLogs === undefined) {
       throw new Error("daemon client does not support agent.logs");
     }
     const result = await client.getAgentLogs({ agentId: command.agentId });
     io.stdout.write(`${formatAgenCAgentLogsResult(result)}\n`);
     return 0;
-  } catch (error) {
-    io.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 1;
-  }
+  });
 }
 
 async function listAllAgenCAgents(
@@ -1196,7 +1177,7 @@ function daemonEventSessionId(message: JsonObject): string | null {
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 export function defaultEnsureDaemonReady(

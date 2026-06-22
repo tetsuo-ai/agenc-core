@@ -48,6 +48,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
@@ -62,6 +63,7 @@ import {
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -245,16 +247,6 @@ function preserveQuoteStyle(
 export interface FileEditToolConfig {
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function asString(value: unknown): string | undefined {

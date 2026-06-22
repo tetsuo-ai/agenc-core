@@ -25,6 +25,7 @@ import ignore from "ignore";
 
 import { runCommand } from "../../utils/process.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { resolveToolAllowedPaths, safePath } from "./filesystem.js";
 
 export const GREP_TOOL_NAME = "Grep";
@@ -96,10 +97,6 @@ interface GrepInput extends ToolExecutionInjectedArgs {
 export interface GrepToolConfig {
   /** Allowed path prefixes (mirrors `FilesystemToolConfig.allowedPaths`). */
   readonly allowedPaths: readonly string[];
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
 }
 
 function textResult(content: string): ToolResult {

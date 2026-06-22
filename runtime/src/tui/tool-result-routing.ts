@@ -9,6 +9,8 @@
  * @module
  */
 
+import { isRecord } from "../utils/record.js";
+
 /**
  * Hardcoded copies of the live registered tool names that the TUI
  * dispatches structurally. Canonical sources:
@@ -233,10 +235,6 @@ export function pickToolResultDispatch(
  * `resultText` helper in `tool-rendering.tsx` (kept in sync by hand;
  * see test coverage).
  */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function shortJson(value: unknown): string {
   if (typeof value === "string") return value;
   try {

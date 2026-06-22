@@ -1,12 +1,17 @@
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMTool } from "../llm/types.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  createEmptyToolPermissionContext,
+  isPermissionMode,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
 import {
   createFileStateCacheWithSizeLimit,
   READ_FILE_STATE_CACHE_SIZE,
   type FileStateCache,
 } from "../utils/fileStateCache.js";
+import { asRecord, isRecord } from "../utils/record.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
 
@@ -120,10 +125,6 @@ type SessionSurface = {
   readonly isNonInteractiveSession?: boolean;
   readonly verbose?: boolean;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function readFunction<T extends (...args: unknown[]) => unknown>(
   value: unknown,
@@ -298,8 +299,10 @@ function createFallbackAppState(
 ): AppStateShape {
   return {
     toolPermissionContext:
-      session.permissionModeRegistry?.current?.() ??
-      session.services.permissionModeRegistry?.current?.() ??
+      readToolPermissionContext(session.permissionModeRegistry?.current?.()) ??
+      readToolPermissionContext(
+        session.services.permissionModeRegistry?.current?.(),
+      ) ??
       createEmptyToolPermissionContext(),
     agentDefinitions,
     tasks: surface.tasks ?? {},
@@ -308,6 +311,12 @@ function createFallbackAppState(
     pendingSandboxRequest: null,
     elicitation: { queue: [] },
   };
+}
+
+function readToolPermissionContext(value: unknown): ToolPermissionContext | null {
+  const record = asRecord(value);
+  if (record === null || !isPermissionMode(record.mode)) return null;
+  return value as ToolPermissionContext;
 }
 
 function normalizeElicitation(value: unknown): unknown {
@@ -328,7 +337,8 @@ function createAppStateReader(
     return {
       ...state,
       toolPermissionContext:
-        state.toolPermissionContext ?? fallback.toolPermissionContext,
+        readToolPermissionContext(state.toolPermissionContext) ??
+        fallback.toolPermissionContext,
       agentDefinitions:
         isRecord(state.agentDefinitions) &&
         Array.isArray(state.agentDefinitions.activeAgents)

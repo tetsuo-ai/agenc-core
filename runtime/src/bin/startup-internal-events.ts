@@ -1,13 +1,11 @@
+import { isRecord } from "../utils/record.js";
+
 type StartupInternalEvent = {
   readonly payload: Record<string, unknown>;
   readonly agent_id?: string;
 };
 
 const MAX_STARTUP_INTERNAL_EVENT_PAGES = 1000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function normalizeStartupInternalEventPage(
   value: unknown,

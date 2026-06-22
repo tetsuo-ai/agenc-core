@@ -1,50 +1,42 @@
 /**
- * Stable local aliases for hook-related types pulled from the donor SDK.
+ * Stable local re-exports for hook-related SDK types.
  *
- * The canonical SDK barrel `src/entrypoints/agentSdkTypes.ts` overlaps its
- * own `export type * from './sdk/coreTypes.js'` re-exports with inline
- * `export type X = any` declarations. TypeScript's export resolver drops the
- * duplicated names from the emitted type table, which surfaces as
- * `TS2305: has no exported member` at downstream consumers.
- *
- * Until the donor surface is absorbed proper, expose `any`-shaped aliases
- * here so live AgenC-owned hook code can type-check without depending on the
- * unstable donor exports.
+ * Hook execution code imports this helper to avoid depending on the full SDK
+ * barrel path at every call site, but the types themselves come from the
+ * generated SDK contract.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-export type HookEvent = any
-export type HookInput = any
-export type HookJSONOutput = any
-export type SyncHookJSONOutput = any
-export type AsyncHookJSONOutput = any
-
-export type NotificationHookInput = any
-export type PostToolUseHookInput = any
-export type PostToolUseFailureHookInput = any
-export type PermissionDeniedHookInput = any
-export type PreCompactHookInput = any
-export type PostCompactHookInput = any
-export type PreToolUseHookInput = any
-export type SessionStartHookInput = any
-export type SessionEndHookInput = any
-export type SetupHookInput = any
-export type StopHookInput = any
-export type StopFailureHookInput = any
-export type SubagentStartHookInput = any
-export type SubagentStopHookInput = any
-export type TeammateIdleHookInput = any
-export type TaskCreatedHookInput = any
-export type TaskCompletedHookInput = any
-export type ConfigChangeHookInput = any
-export type CwdChangedHookInput = any
-export type FileChangedHookInput = any
-export type InstructionsLoadedHookInput = any
-export type UserPromptSubmitHookInput = any
-export type PermissionRequestHookInput = any
-export type ElicitationHookInput = any
-export type ElicitationResultHookInput = any
-
-export type PermissionUpdate = any
-export type ExitReason = any
+export type {
+  AsyncHookJSONOutput,
+  ConfigChangeHookInput,
+  CwdChangedHookInput,
+  ElicitationHookInput,
+  ElicitationResultHookInput,
+  ExitReason,
+  FileChangedHookInput,
+  HookEvent,
+  HookInput,
+  HookJSONOutput,
+  InstructionsLoadedHookInput,
+  NotificationHookInput,
+  PermissionDeniedHookInput,
+  PermissionRequestHookInput,
+  PermissionUpdate,
+  PostCompactHookInput,
+  PostToolUseFailureHookInput,
+  PostToolUseHookInput,
+  PreCompactHookInput,
+  PreToolUseHookInput,
+  SessionEndHookInput,
+  SessionStartHookInput,
+  SetupHookInput,
+  StopFailureHookInput,
+  StopHookInput,
+  SubagentStartHookInput,
+  SubagentStopHookInput,
+  SyncHookJSONOutput,
+  TaskCompletedHookInput,
+  TaskCreatedHookInput,
+  TeammateIdleHookInput,
+  UserPromptSubmitHookInput,
+} from '../../entrypoints/sdk/coreTypes.js'

@@ -73,6 +73,7 @@ import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
+import { isRecord } from '../record.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import {
   clearPluginSettingsBase,
@@ -1289,21 +1290,38 @@ async function validatePluginPaths(
         `${componentLabel} path ${relPath} ${contextLabel} not found at ${fullPath} for ${pluginName}`,
         { level: 'warn' },
       )
-      logError(
-        new Error(
-          `Plugin component file not found: ${fullPath} for ${pluginName}`,
-        ),
-      )
-      errors.push({
-        type: 'path-not-found',
+      recordPluginComponentPathNotFound(errors, {
         source,
-        plugin: pluginName,
+        pluginName,
         path: fullPath,
         component,
       })
     }
   }
   return validPaths
+}
+
+function recordPluginComponentPathNotFound(
+  errors: PluginError[],
+  params: {
+    readonly source: string
+    readonly pluginName: string
+    readonly path: string
+    readonly component: PluginComponent
+  },
+): void {
+  logError(
+    new Error(
+      `Plugin component file not found: ${params.path} for ${params.pluginName}`,
+    ),
+  )
+  errors.push({
+    type: 'path-not-found',
+    source: params.source,
+    plugin: params.pluginName,
+    path: params.path,
+    component: params.component,
+  })
 }
 
 /**
@@ -1445,15 +1463,9 @@ export async function createPluginFromPath(
             `Command ${check.commandName} path ${check.metadata.source} specified in manifest but not found at ${check.fullPath} for ${manifest.name}`,
             { level: 'warn' },
           )
-          logError(
-            new Error(
-              `Plugin component file not found: ${check.fullPath} for ${manifest.name}`,
-            ),
-          )
-          errors.push({
-            type: 'path-not-found',
+          recordPluginComponentPathNotFound(errors, {
             source,
-            plugin: manifest.name,
+            pluginName: manifest.name,
             path: check.fullPath,
             component: 'commands',
           })
@@ -1505,15 +1517,9 @@ export async function createPluginFromPath(
             `Command path ${check.cmdPath} specified in manifest but not found at ${check.fullPath} for ${manifest.name}`,
             { level: 'warn' },
           )
-          logError(
-            new Error(
-              `Plugin component file not found: ${check.fullPath} for ${manifest.name}`,
-            ),
-          )
-          errors.push({
-            type: 'path-not-found',
+          recordPluginComponentPathNotFound(errors, {
             source,
-            plugin: manifest.name,
+            pluginName: manifest.name,
             path: check.fullPath,
             component: 'commands',
           })
@@ -1663,15 +1669,9 @@ export async function createPluginFromPath(
             `Hooks file ${hookSpec} specified in manifest but not found at ${hookFilePath} for ${manifest.name}`,
             { level: 'error' },
           )
-          logError(
-            new Error(
-              `Plugin component file not found: ${hookFilePath} for ${manifest.name}`,
-            ),
-          )
-          errors.push({
-            type: 'path-not-found',
+          recordPluginComponentPathNotFound(errors, {
             source,
-            plugin: manifest.name,
+            pluginName: manifest.name,
             path: hookFilePath,
             component: 'hooks',
           })
@@ -2500,15 +2500,9 @@ async function finishLoadingPluginFromPath(
               `Command ${check.commandName} path ${check.metadata.source} from marketplace entry not found at ${check.fullPath} for ${entry.name}`,
               { level: 'warn' },
             )
-            logError(
-              new Error(
-                `Plugin component file not found: ${check.fullPath} for ${entry.name}`,
-              ),
-            )
-            errors.push({
-              type: 'path-not-found',
+            recordPluginComponentPathNotFound(errors, {
               source: pluginId,
-              plugin: entry.name,
+              pluginName: entry.name,
               path: check.fullPath,
               component: 'commands',
             })
@@ -2556,15 +2550,9 @@ async function finishLoadingPluginFromPath(
               `Command path ${check.cmdPath} from marketplace entry not found at ${check.fullPath} for ${entry.name}`,
               { level: 'warn' },
             )
-            logError(
-              new Error(
-                `Plugin component file not found: ${check.fullPath} for ${entry.name}`,
-              ),
-            )
-            errors.push({
-              type: 'path-not-found',
+            recordPluginComponentPathNotFound(errors, {
               source: pluginId,
-              plugin: entry.name,
+              pluginName: entry.name,
               path: check.fullPath,
               component: 'commands',
             })
@@ -2629,15 +2617,9 @@ async function finishLoadingPluginFromPath(
             `Skill path ${skillPath} from marketplace entry not found at ${fullPath} for ${entry.name}`,
             { level: 'warn' },
           )
-          logError(
-            new Error(
-              `Plugin component file not found: ${fullPath} for ${entry.name}`,
-            ),
-          )
-          errors.push({
-            type: 'path-not-found',
+          recordPluginComponentPathNotFound(errors, {
             source: pluginId,
-            plugin: entry.name,
+            pluginName: entry.name,
             path: fullPath,
             component: 'skills',
           })
@@ -2751,15 +2733,9 @@ async function finishLoadingPluginFromPath(
               `Command ${check.commandName} path ${check.metadata.source} from marketplace entry not found at ${check.fullPath} for ${entry.name}`,
               { level: 'warn' },
             )
-            logError(
-              new Error(
-                `Plugin component file not found: ${check.fullPath} for ${entry.name}`,
-              ),
-            )
-            errors.push({
-              type: 'path-not-found',
+            recordPluginComponentPathNotFound(errors, {
               source: pluginId,
-              plugin: entry.name,
+              pluginName: entry.name,
               path: check.fullPath,
               component: 'commands',
             })
@@ -2810,15 +2786,9 @@ async function finishLoadingPluginFromPath(
               `Command path ${check.cmdPath} from marketplace entry not found at ${check.fullPath} for ${entry.name}`,
               { level: 'warn' },
             )
-            logError(
-              new Error(
-                `Plugin component file not found: ${check.fullPath} for ${entry.name}`,
-              ),
-            )
-            errors.push({
-              type: 'path-not-found',
+            recordPluginComponentPathNotFound(errors, {
               source: pluginId,
-              plugin: entry.name,
+              pluginName: entry.name,
               path: check.fullPath,
               component: 'commands',
             })
@@ -3331,11 +3301,4 @@ export function cachePluginSettings(plugins: LoadedPlugin[]): void {
       `Cached plugin settings with keys: ${Object.keys(settings).join(', ')}`,
     )
   }
-}
-
-/**
- * Type predicate: check if a value is a non-null, non-array object (i.e., a record).
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

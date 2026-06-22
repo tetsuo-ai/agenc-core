@@ -1,7 +1,31 @@
 import { c as _c } from "react-compiler-runtime";
 import { useMemo } from 'react';
 import { findToolByName, type Tool, type Tools } from '../../../tools/Tool';
+import type { AgenCToolResultBlockParam } from '../../../types/message.js';
 import type { buildMessageLookups } from '../../../utils/messages';
+
+export function getTextToolResultContent(
+  content: AgenCToolResultBlockParam['content'],
+): string | undefined {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+
+  const textParts: string[] = [];
+  for (const block of content) {
+    if (typeof block === 'string') {
+      textParts.push(block);
+    } else if (block && typeof block === 'object' && typeof block.text === 'string') {
+      textParts.push(block.text);
+    }
+  }
+
+  return textParts.length > 0 ? textParts.join('\n') : undefined;
+}
+
 export function useGetToolFromMessages(toolUseID, tools, lookups) {
   const $ = _c(7);
   let t0;

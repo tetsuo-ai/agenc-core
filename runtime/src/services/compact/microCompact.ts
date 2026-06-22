@@ -12,6 +12,7 @@ import {
   messageText,
   stringifyContent,
 } from "./_deps/runtime.js";
+import { isRecord } from "../../utils/record.js";
 
 const MICROCOMPACT_MIN_CHARS = 6_000;
 const MICROCOMPACT_KEEP_RECENT = 5;
@@ -227,8 +228,8 @@ function readFilePathFromArguments(
 }
 
 function readFilePathFromInput(input: unknown): string | undefined {
-  if (typeof input !== "object" || input === null) return undefined;
-  const filePath = (input as Record<string, unknown>).file_path;
+  const record = isRecord(input) ? input : undefined;
+  const filePath = record?.file_path;
   return typeof filePath === "string" && filePath.length > 0
     ? filePath
     : undefined;
@@ -308,10 +309,7 @@ function microcompactContentBlocks(
 
 function asContentBlocks(content: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(content)) return [];
-  return content.filter(
-    (block): block is Record<string, unknown> =>
-      typeof block === "object" && block !== null,
-  );
+  return content.filter(isRecord);
 }
 
 function isCompactableTool(name: string): boolean {

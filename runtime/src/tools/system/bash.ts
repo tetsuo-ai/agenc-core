@@ -20,6 +20,8 @@ import type {
   BashToolInput,
 } from "./types.js";
 import {
+  SHELL_COMMAND_SEPARATORS,
+  SHELL_REDIRECT_OPERATORS,
   parseDirectCommandLine,
   tokenizeShellCommand,
 } from "./command-line.js";
@@ -70,26 +72,6 @@ const SHELL_BUILTIN_COMMANDS = new Set([
 ]);
 const SINGLE_EXECUTABLE_RE = /^[A-Za-z0-9_./+-]+$/;
 const SHELL_OPERATOR_RE = /[|&;<>`$\\\r\n]/;
-const SHELL_COMMAND_SEPARATORS = new Set([
-  "|",
-  "||",
-  "&&",
-  ";",
-  "&",
-  "(",
-  ")",
-  "`",
-]);
-const SHELL_REDIRECT_OPERATORS = new Set([
-  ">",
-  ">>",
-  "<",
-  "<<",
-  "<>",
-  ">&",
-  "<&",
-  ">|",
-]);
 const SHELL_PREFIX_COMMANDS = new Set([
   "command",
   "builtin",

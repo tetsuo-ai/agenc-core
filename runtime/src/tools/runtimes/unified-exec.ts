@@ -1,5 +1,5 @@
-import path from "node:path";
 import type { Tool } from "../types.js";
+import { resolveRuntimePathTarget } from "./paths.js";
 
 const UNIFIED_EXEC_RUNTIME_TOOL_NAMES = new Set([
   "exec_command",
@@ -41,14 +41,8 @@ function shellWorkingDirectory(
   cwd: string,
 ): string {
   return typeof args["workdir"] === "string"
-    ? resolveTarget(args["workdir"], cwd)
+    ? resolveRuntimePathTarget(args["workdir"], cwd)
     : typeof args["cwd"] === "string"
-      ? resolveTarget(args["cwd"], cwd)
+      ? resolveRuntimePathTarget(args["cwd"], cwd)
       : cwd;
-}
-
-function resolveTarget(value: string, cwd: string): string {
-  return path.isAbsolute(value)
-    ? path.normalize(value)
-    : path.resolve(cwd, value);
 }

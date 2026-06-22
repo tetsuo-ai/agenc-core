@@ -14,6 +14,7 @@ import {
   isProjectOnboardingComplete,
   type ProjectOnboardingStepOptions,
 } from "./projectOnboardingSteps.js";
+import { asRecord } from "../utils/record.js";
 
 const ONBOARDING_STATE_VERSION = 1;
 export const DEFAULT_FIRST_RUN_SEEN_LIMIT = 4;
@@ -84,13 +85,6 @@ function clonedDefaultState(): FirstRunOnboardingState {
     completedStepIds: [],
     projects: {},
   };
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
 }
 
 function stringValue(value: unknown): string | undefined {

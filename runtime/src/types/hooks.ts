@@ -1,22 +1,14 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { z } from 'zod/v4'
 import { lazySchema } from '../utils/lazySchema.js'
-import { type HookEvent } from 'src/entrypoints/agentSdkTypes.js'
-// These hook types are re-exported by agentSdkTypes via `export type *` from
-// the generated coreTypes barrel, but agentSdkTypes also declares conflicting
-// local `= any` stubs for the same names, which makes them ambiguous and
-// unresolvable through that entrypoint (TS2305). Import the real definitions
-// directly from the coreTypes barrel they originate from — same types, no
-// behavior change.
 import type {
-  HookInput,
-  PermissionUpdate,
-} from 'src/entrypoints/sdk/coreTypes.js'
-import type {
-  HookJSONOutput,
   AsyncHookJSONOutput,
+  HookEvent,
+  HookInput,
+  HookJSONOutput,
+  PermissionUpdate,
   SyncHookJSONOutput,
-} from 'src/entrypoints/sdk/coreTypes.js'
+} from 'src/entrypoints/agentSdkTypes.js'
 import type { Message } from 'src/types/message.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
 import { permissionBehaviorSchema } from 'src/utils/permissions/PermissionRule.js'
@@ -190,16 +182,9 @@ export function isAsyncHookJSONOutput(
   return 'async' in json && json.async === true
 }
 
-// NOTE: A compile-time assertion `_assertSDKTypesMatch` previously lived here to
-// verify the local Zod `hookJSONOutputSchema` exactly matched the SDK
-// `HookJSONOutput` type. Once strict checking reached this file it failed
-// (TS2344): the generated SDK `PermissionUpdate` union (reached via the
-// `PermissionRequest` hook output's `decision.updatedPermissions`) includes
-// `addDirectories`/`removeDirectories` variants that the runtime
-// `permissionUpdateSchema` does not, so the schema is a strict subset of the SDK
-// type. Fixing that drift requires changing the Zod schema (a different file /
-// runtime-validation change) and is out of scope for this type-only cleanup, so
-// the dead assertion is removed and the drift is recorded for follow-up.
+// The local hook output schema mirrors the generated SDK HookJSONOutput type.
+// Meta tests guard the generated PermissionUpdate array shapes that keep this
+// assignment strict instead of falling back to permissive aliases.
 
 /** Context passed to callback hooks for state access */
 export type HookCallbackContext = {

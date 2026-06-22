@@ -42,7 +42,16 @@ import {
   formatWorkspaceSymbolResult,
 } from './formatters.js'
 import { DESCRIPTION, LSP_TOOL_NAME } from './prompt.js'
-import { lspToolInputSchema } from './schemas.js'
+import {
+  LSP_POSITION_INPUT_FIELDS,
+  LSP_TOOL_OPERATIONS,
+  lspToolInputSchema,
+} from './schemas.js'
+import {
+  partitionValidLocations,
+  partitionValidSymbolInformation,
+  toLocation,
+} from './locations.js'
 import {
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -58,29 +67,9 @@ const MAX_LSP_FILE_SIZE_BYTES = 10_000_000
 const inputSchema = lazySchema(() =>
   z.strictObject({
     operation: z
-      .enum([
-        'goToDefinition',
-        'findReferences',
-        'hover',
-        'documentSymbol',
-        'workspaceSymbol',
-        'goToImplementation',
-        'prepareCallHierarchy',
-        'incomingCalls',
-        'outgoingCalls',
-      ])
+      .enum(LSP_TOOL_OPERATIONS)
       .describe('The LSP operation to perform'),
-    filePath: z.string().describe('The absolute or relative path to the file'),
-    line: z
-      .number()
-      .int()
-      .positive()
-      .describe('The line number (1-based, as shown in editors)'),
-    character: z
-      .number()
-      .int()
-      .positive()
-      .describe('The character offset (1-based, as shown in editors)'),
+    ...LSP_POSITION_INPUT_FIELDS,
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -88,17 +77,7 @@ type InputSchema = ReturnType<typeof inputSchema>
 const outputSchema = lazySchema(() =>
   z.object({
     operation: z
-      .enum([
-        'goToDefinition',
-        'findReferences',
-        'hover',
-        'documentSymbol',
-        'workspaceSymbol',
-        'goToImplementation',
-        'prepareCallHierarchy',
-        'incomingCalls',
-        'outgoingCalls',
-      ])
+      .enum(LSP_TOOL_OPERATIONS)
       .describe('The LSP operation that was performed'),
     result: z.string().describe('The formatted result of the LSP operation'),
     filePath: z
@@ -610,26 +589,6 @@ async function filterGitIgnoredLocations<T extends Location>(
 }
 
 /**
- * Checks if item is LocationLink (has targetUri) vs Location (has uri)
- */
-function isLocationLink(item: Location | LocationLink): item is LocationLink {
-  return 'targetUri' in item
-}
-
-/**
- * Converts LocationLink to Location format for uniform handling
- */
-function toLocation(item: Location | LocationLink): Location {
-  if (isLocationLink(item)) {
-    return {
-      uri: item.targetUri,
-      range: item.targetSelectionRange || item.targetRange,
-    }
-  }
-  return item
-}
-
-/**
  * Formats LSP result based on operation type and extracts summary counts
  */
 function formatResult(
@@ -650,17 +609,17 @@ function formatResult(
       const locations = rawResults.map(toLocation)
 
       // Log and filter out locations with undefined uris
-      const invalidLocations = locations.filter(loc => !loc || !loc.uri)
-      if (invalidLocations.length > 0) {
+      const { validLocations, invalidLocationCount } =
+        partitionValidLocations(locations)
+      if (invalidLocationCount > 0) {
         logError(
           new Error(
-            `LSP server returned ${invalidLocations.length} location(s) with undefined URI for goToDefinition on ${cwd}. ` +
+            `LSP server returned ${invalidLocationCount} location(s) with undefined URI for goToDefinition on ${cwd}. ` +
               `This indicates malformed data from the LSP server.`,
           ),
         )
       }
 
-      const validLocations = locations.filter(loc => loc && loc.uri)
       return {
         formatted: formatGoToDefinitionResult(
           result as
@@ -679,17 +638,17 @@ function formatResult(
       const locations = (result as Location[]) || []
 
       // Log and filter out locations with undefined uris
-      const invalidLocations = locations.filter(loc => !loc || !loc.uri)
-      if (invalidLocations.length > 0) {
+      const { validLocations, invalidLocationCount } =
+        partitionValidLocations(locations)
+      if (invalidLocationCount > 0) {
         logError(
           new Error(
-            `LSP server returned ${invalidLocations.length} location(s) with undefined URI for findReferences on ${cwd}. ` +
+            `LSP server returned ${invalidLocationCount} location(s) with undefined URI for findReferences on ${cwd}. ` +
               `This indicates malformed data from the LSP server.`,
           ),
         )
       }
 
-      const validLocations = locations.filter(loc => loc && loc.uri)
       return {
         formatted: formatFindReferencesResult(result as Location[] | null, cwd),
         resultCount: validLocations.length,
@@ -726,21 +685,17 @@ function formatResult(
       const symbols = (result as SymbolInformation[]) || []
 
       // Log and filter out symbols with undefined location.uri
-      const invalidSymbols = symbols.filter(
-        sym => !sym || !sym.location || !sym.location.uri,
-      )
-      if (invalidSymbols.length > 0) {
+      const { validSymbols, invalidSymbolCount } =
+        partitionValidSymbolInformation(symbols)
+      if (invalidSymbolCount > 0) {
         logError(
           new Error(
-            `LSP server returned ${invalidSymbols.length} symbol(s) with undefined location URI for workspaceSymbol on ${cwd}. ` +
+            `LSP server returned ${invalidSymbolCount} symbol(s) with undefined location URI for workspaceSymbol on ${cwd}. ` +
               `This indicates malformed data from the LSP server.`,
           ),
         )
       }
 
-      const validSymbols = symbols.filter(
-        sym => sym && sym.location && sym.location.uri,
-      )
       const locations = validSymbols.map(s => s.location)
       return {
         formatted: formatWorkspaceSymbolResult(
@@ -763,17 +718,17 @@ function formatResult(
       const locations = rawResults.map(toLocation)
 
       // Log and filter out locations with undefined uris
-      const invalidLocations = locations.filter(loc => !loc || !loc.uri)
-      if (invalidLocations.length > 0) {
+      const { validLocations, invalidLocationCount } =
+        partitionValidLocations(locations)
+      if (invalidLocationCount > 0) {
         logError(
           new Error(
-            `LSP server returned ${invalidLocations.length} location(s) with undefined URI for goToImplementation on ${cwd}. ` +
+            `LSP server returned ${invalidLocationCount} location(s) with undefined URI for goToImplementation on ${cwd}. ` +
               `This indicates malformed data from the LSP server.`,
           ),
         )
       }
 
-      const validLocations = locations.filter(loc => loc && loc.uri)
       return {
         // Reuse goToDefinition formatter since the result format is identical
         formatted: formatGoToDefinitionResult(

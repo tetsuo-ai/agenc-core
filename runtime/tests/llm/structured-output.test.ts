@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 import {
   buildStructuredOutputTextFormat,
   enforceStrictStructuredOutputSchema,
+  parseStructuredOutputText,
+  parseStructuredOutputValue,
   resolveProviderStructuredOutputMode,
   supportsOpenAIStructuredOutputs,
   supportsXaiStructuredOutputsWithTools,
@@ -104,5 +106,28 @@ describe("structured-output provider capability helpers", () => {
         required: ["answer", "meta"],
       },
     });
+  });
+
+  test("ignores array-shaped union schema branches while validating structured output", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        answer: { anyOf: [[], { type: "string" }] },
+      },
+      required: ["answer"],
+    };
+
+    expect(() => parseStructuredOutputValue({ answer: 123 }, "answer", schema)).toThrow(
+      /anyOf/,
+    );
+    expect(() =>
+      parseStructuredOutputValue({ answer: "ok" }, "answer", schema),
+    ).not.toThrow();
+  });
+
+  test("rejects array-shaped structured payloads as non-object results", () => {
+    expect(() =>
+      parseStructuredOutputText(JSON.stringify([{ answer: "ok" }]), "answer", SCHEMA),
+    ).toThrow(/top-level JSON object/);
   });
 });

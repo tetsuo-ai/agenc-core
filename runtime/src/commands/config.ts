@@ -22,7 +22,6 @@
 
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
 
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
@@ -35,6 +34,13 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import { openConfigMenu } from "./config-menu.js";
+import {
+  agencHomeFromCommandContext,
+  getConfigFilePath,
+} from "./config-context.js";
+import { asRecord } from "../utils/record.js";
+
+export { getConfigFilePath } from "./config-context.js";
 
 // ---------------------------------------------------------------------------
 // Service lookup
@@ -45,11 +51,16 @@ import { openConfigMenu } from "./config-menu.js";
  * `session.services.configStore`; both entry paths wire the same store.
  */
 function findConfigStore(ctx: SlashCommandContext): ConfigStore | null {
-  if (ctx.configStore) return ctx.configStore;
-  const services = ctx.session.services as unknown as {
-    configStore?: ConfigStore | null;
-  };
-  return services?.configStore ?? null;
+  const directConfigStore = ctx.configStore;
+  if (
+    directConfigStore !== undefined &&
+    asRecord(directConfigStore) !== null
+  ) {
+    return directConfigStore;
+  }
+  const services = asRecord(ctx.session.services);
+  const configStore = services?.configStore;
+  return asRecord(configStore) !== null ? (configStore as ConfigStore) : null;
 }
 
 /**
@@ -74,30 +85,12 @@ function daemonApplyConfigFn(
       reload?: boolean;
     }) => Promise<DaemonApplyConfigResult>)
   | null {
-  const fn = (ctx.session as unknown as {
-    applyDaemonConfig?: (params: {
-      profile?: string;
-      reload?: boolean;
-    }) => Promise<DaemonApplyConfigResult>;
-  }).applyDaemonConfig;
-  return typeof fn === "function" ? fn.bind(ctx.session) : null;
-}
-
-// ---------------------------------------------------------------------------
-// Config path helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the path to the active `config.toml`. The input must already
- * be the resolved AgenC home (`AGENC_HOME` or `$HOME/.agenc`), matching
- * `ConfigStore`.
- */
-export function getConfigFilePath(agencHome: string): string {
-  return join(agencHome, "config.toml");
-}
-
-function agencHomeFromCtx(ctx: SlashCommandContext): string {
-  return ctx.agencHome ?? join(ctx.home, ".agenc");
+  const sessionRecord = asRecord(ctx.session);
+  const fn = sessionRecord?.applyDaemonConfig;
+  return typeof fn === "function"
+    ? (params) =>
+        fn.call(ctx.session, params) as Promise<DaemonApplyConfigResult>
+    : null;
 }
 
 function errorMessage(error: unknown): string {
@@ -230,14 +223,17 @@ async function refreshMcpAfterConfigReload(
   session: Session,
   next: AgenCConfig,
 ): Promise<string> {
-  const services = session.services as {
-    mcpManager?: Session["services"]["mcpManager"];
-  };
-  const refresh = services.mcpManager?.refreshFromConfig;
+  const services = asRecord(session.services);
+  const mcpManager = services?.mcpManager;
+  const mcpManagerRecord = asRecord(mcpManager);
+  const refresh = mcpManagerRecord?.refreshFromConfig;
   if (typeof refresh !== "function") {
     return "";
   }
-  const result = await refresh(next);
+  const result = (await refresh.call(mcpManager, next)) as {
+    readonly configuredServers: readonly unknown[];
+    readonly requiredServers: readonly unknown[];
+  };
   return `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
 }
 
@@ -470,11 +466,15 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
           case "profile":
             return await handleProfileSubcommand(rest, configStore, ctx);
           case "edit":
-            return openConfigInEditor(agencHomeFromCtx(ctx), env, spawner);
+            return openConfigInEditor(
+              agencHomeFromCommandContext(ctx),
+              env,
+              spawner,
+            );
           case "path":
             return {
               kind: "text",
-              text: getConfigFilePath(agencHomeFromCtx(ctx)),
+              text: getConfigFilePath(agencHomeFromCommandContext(ctx)),
             };
           default:
             return {

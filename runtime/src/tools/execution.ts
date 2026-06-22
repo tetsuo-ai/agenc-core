@@ -65,6 +65,7 @@ import {
   emitWarning as emitWarningEvent,
 } from "../session/event-log.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
+import { isRecord } from "../utils/record.js";
 import type {
   FunctionCallOutputContentItem,
   ToolInvocation,
@@ -583,20 +584,16 @@ function typeMatches(expected: string, actualType: string): boolean {
 
 type SchemaObj = Record<string, unknown>;
 
-function isSchemaObj(value: unknown): value is SchemaObj {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function resolveRef(schema: SchemaObj, rootSchema: SchemaObj): SchemaObj {
   const ref = schema["$ref"];
   if (typeof ref !== "string" || !ref.startsWith("#/")) return schema;
   const segments = ref.slice(2).split("/");
   let node: unknown = rootSchema;
   for (const seg of segments) {
-    if (!isSchemaObj(node)) return schema;
+    if (!isRecord(node)) return schema;
     node = node[seg];
   }
-  return isSchemaObj(node) ? node : schema;
+  return isRecord(node) ? node : schema;
 }
 
 function joinPath(prefix: string, key: string | number): string {
@@ -637,7 +634,7 @@ function validateNode(
   if (Array.isArray(anyOf) && anyOf.length > 0) {
     let anyValid = false;
     for (const sub of anyOf) {
-      if (!isSchemaObj(sub)) continue;
+      if (!isRecord(sub)) continue;
       const subErrors: SchemaValidationError[] = [];
       validateNode(sub, value, path, subErrors, rootSchema);
       if (subErrors.length === 0) {
@@ -659,7 +656,7 @@ function validateNode(
   if (Array.isArray(oneOf) && oneOf.length > 0) {
     let matched = 0;
     for (const sub of oneOf) {
-      if (!isSchemaObj(sub)) continue;
+      if (!isRecord(sub)) continue;
       const subErrors: SchemaValidationError[] = [];
       validateNode(sub, value, path, subErrors, rootSchema);
       if (subErrors.length === 0) matched += 1;
@@ -680,7 +677,7 @@ function validateNode(
   const allOf = resolved["allOf"];
   if (Array.isArray(allOf) && allOf.length > 0) {
     for (const sub of allOf) {
-      if (!isSchemaObj(sub)) continue;
+      if (!isRecord(sub)) continue;
       validateNode(sub, value, path, errors, rootSchema);
     }
   }
@@ -762,8 +759,8 @@ function validateNode(
     validateArray(resolved, value, path, errors, rootSchema);
     return;
   }
-  if (isSchemaObj(value as unknown)) {
-    validateObject(resolved, value as SchemaObj, path, errors, rootSchema);
+  if (isRecord(value)) {
+    validateObject(resolved, value, path, errors, rootSchema);
     return;
   }
   if (typeof value === "string") {
@@ -814,7 +811,7 @@ function validateArray(
   rootSchema: SchemaObj,
 ): void {
   const items = schema["items"];
-  if (isSchemaObj(items)) {
+  if (isRecord(items)) {
     for (let i = 0; i < value.length; i += 1) {
       validateNode(items, value[i], joinPath(path, i), errors, rootSchema);
     }
@@ -867,7 +864,7 @@ function validateObject(
     for (const [key, sub] of Object.entries(propMap)) {
       declaredProps.add(key);
       if (!(key in obj)) continue;
-      if (!isSchemaObj(sub)) continue;
+      if (!isRecord(sub)) continue;
       validateNode(sub, obj[key], joinPath(path, key), errors, rootSchema);
     }
   }
@@ -882,7 +879,7 @@ function validateObject(
         });
       }
     }
-  } else if (isSchemaObj(additional)) {
+  } else if (isRecord(additional)) {
     for (const [key, val] of Object.entries(obj)) {
       if (declaredProps.has(key)) continue;
       validateNode(additional, val, joinPath(path, key), errors, rootSchema);
@@ -899,7 +896,7 @@ function deepEq(a: unknown, b: unknown): boolean {
     for (let i = 0; i < a.length; i += 1) if (!deepEq(a[i], b[i])) return false;
     return true;
   }
-  if (isSchemaObj(a) && isSchemaObj(b)) {
+  if (isRecord(a) && isRecord(b)) {
     const ka = Object.keys(a);
     const kb = Object.keys(b);
     if (ka.length !== kb.length) return false;

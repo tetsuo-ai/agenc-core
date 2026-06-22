@@ -83,6 +83,7 @@ import {
   runToolRuntimeCall,
   type ToolRuntimeScheduler,
 } from "./runtimes/parallel.js";
+import { asRecord } from "../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -384,12 +385,7 @@ export class StreamingToolExecutor {
     }
 
     const classifiable = this.resolveClassifiable(toolCall);
-    let parsedArgs: Record<string, unknown> = {};
-    try {
-      parsedArgs = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};
-    } catch {
-      parsedArgs = {};
-    }
+    const parsedArgs = parseToolCallArguments(toolCall.arguments);
     const classification = classify(classifiable, parsedArgs);
     // AgenC tracks a per-call `isConcurrencySafe` boolean derived
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
@@ -565,20 +561,7 @@ export class StreamingToolExecutor {
           !this.hasCompletedResults() &&
           !this.hasPendingProgress()
         ) {
-          const executingPromises = this.tools
-            .filter((t) => t.status === "executing" && t.promise)
-            .map((t) => t.promise!);
-          const progressPromise = new Promise<void>((resolve) => {
-            this.wakeResolve = resolve;
-          });
-          if (executingPromises.length > 0) {
-            await Promise.race([...executingPromises, progressPromise]);
-          } else {
-            // No executing tools but unfinished queued tools: wait for
-            // progress/close signal. signalProgress wakes us when
-            // status transitions, including on discard().
-            await progressPromise;
-          }
+          await this.waitForExecutingToolOrProgress();
         }
       }
       // Final drain: flush any last-completed tools post-loop.
@@ -617,17 +600,7 @@ export class StreamingToolExecutor {
           !this.hasCompletedResults() &&
           !this.hasPendingProgress()
         ) {
-          const executingPromises = this.tools
-            .filter((t) => t.status === "executing" && t.promise)
-            .map((t) => t.promise!);
-          const progressPromise = new Promise<void>((resolve) => {
-            this.wakeResolve = resolve;
-          });
-          if (executingPromises.length > 0) {
-            await Promise.race([...executingPromises, progressPromise]);
-          } else {
-            await progressPromise;
-          }
+          await this.waitForExecutingToolOrProgress();
         }
       }
       if (this.discarded) return;
@@ -775,6 +748,23 @@ export class StreamingToolExecutor {
 
   private hasPendingProgress(): boolean {
     return this.tools.some((t) => t.pendingProgress.length > 0);
+  }
+
+  private async waitForExecutingToolOrProgress(): Promise<void> {
+    const executingPromises = this.tools
+      .filter((t) => t.status === "executing" && t.promise)
+      .map((t) => t.promise!);
+    const progressPromise = new Promise<void>((resolve) => {
+      this.wakeResolve = resolve;
+    });
+    if (executingPromises.length > 0) {
+      await Promise.race([...executingPromises, progressPromise]);
+      return;
+    }
+    // No executing promises are attached yet: wait for a progress/close
+    // signal. signalProgress wakes us when status transitions, including
+    // on discard().
+    await progressPromise;
   }
 
   /**
@@ -1179,5 +1169,14 @@ export class StreamingToolExecutor {
       this.siblingAbortController.abort(reason);
     }
     this.discard(reason);
+  }
+}
+
+function parseToolCallArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    return asRecord(JSON.parse(raw)) ?? {};
+  } catch {
+    return {};
   }
 }

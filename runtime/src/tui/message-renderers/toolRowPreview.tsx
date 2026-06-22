@@ -1,4 +1,5 @@
 import type { ToolKind } from '../components/v2/primitives.js'
+import { nonEmptyString } from '../../utils/stringUtils.js'
 
 /**
  * Per-tool human-readable arg summary for the "Tool(<args>)" call row. Never
@@ -38,22 +39,19 @@ export function summarizeToolInput(input: unknown, kind?: ToolKind): string {
   }
 
   // Read / Edit / Write: the file path.
-  if (typeof record.file_path === 'string' && record.file_path.trim()) {
-    return record.file_path
-  }
-  if (typeof record.path === 'string' && record.path.trim()) {
-    return record.path
-  }
+  const filePath = nonEmptyString(record.file_path)
+  if (filePath !== undefined) return filePath
+  const path = nonEmptyString(record.path)
+  if (path !== undefined) return path
 
   // Bash / Run: the command.
-  if (typeof record.command === 'string' && record.command.trim()) {
-    return record.command
-  }
+  const command = nonEmptyString(record.command)
+  if (command !== undefined) return command
 
   // Known single-value fields.
   for (const key of ['query', 'url', 'prompt', 'description']) {
-    const value = record[key]
-    if (typeof value === 'string' && value.trim().length > 0) return value
+    const value = nonEmptyString(record[key])
+    if (value !== undefined) return value
   }
 
   // Generic: readable key=value of known scalar keys — NEVER a raw JSON dump.

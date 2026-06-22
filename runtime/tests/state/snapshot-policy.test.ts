@@ -349,6 +349,35 @@ describe("AgenCSessionSnapshotPolicy", () => {
     });
   });
 
+  it("ignores array-shaped budget metadata in status events", () => {
+    seedRun("run-budget-arrays", "session-budget-arrays");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock(["2026-05-01T00:00:12.000Z", "2026-05-01T00:00:13.000Z"]),
+    });
+
+    policy.recordSessionEvent("session-budget-arrays", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-budget-arrays",
+        status: "stopped",
+        runStatus: "stopped",
+        message: "agent budget token_cap reached",
+        budgetHalt: ["spoof"],
+        budgetUsage: ["spoof"],
+      },
+    });
+
+    expect(runMetadata("run-budget-arrays")).toBeNull();
+    const [transition] = latestSnapshot("session-budget-arrays").toolState
+      .statusTransitions as Record<string, unknown>[];
+    expect(transition).toMatchObject({
+      agentId: "run-budget-arrays",
+      status: "stopped",
+      reason: "agent budget token_cap reached",
+    });
+    expect(transition).not.toHaveProperty("metadataPatch");
+  });
+
   it("periodically flushes tracked sessions and stops the timer", () => {
     const clearInterval = vi.fn();
     let tick: (() => void) | undefined;
@@ -419,6 +448,31 @@ describe("AgenCSessionSnapshotPolicy", () => {
     expect(runLastSnapshotAt("run-hydrate")).toBe(
       "2026-05-01T00:00:30.000Z",
     );
+  });
+
+  it("drops array-shaped hydrated tool-state maps before flushing", () => {
+    seedRun("run-hydrate-arrays", "session-hydrate-arrays");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock(["2026-05-01T00:00:30.000Z"]),
+    });
+
+    policy.hydrateSession({
+      sessionId: "session-hydrate-arrays",
+      snapshotAt: "2026-05-01T00:00:10.000Z",
+      conversation: [],
+      toolState: {
+        inFlight: ["spoof"],
+        completed: ["spoof"],
+      },
+      mcpConnectionState: {},
+    });
+    policy.flushPeriodic();
+
+    expect(latestSnapshot("session-hydrate-arrays").toolState).toMatchObject({
+      inFlight: {},
+      completed: {},
+      lastTrigger: "periodic",
+    });
   });
 
   it("persists session agent ownership for retention pruning", () => {

@@ -15,6 +15,11 @@ import type {
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { plural } from '../../utils/stringUtils.js'
+import {
+  partitionValidLocations,
+  partitionValidSymbolInformation,
+  toLocation,
+} from './locations.js'
 /**
  * Formats a URI by converting it to a relative path if possible.
  * Handles URI decoding and gracefully falls back to un-decoded path if malformed.
@@ -103,23 +108,6 @@ function formatLocation(location: Location, cwd?: string): string {
 }
 
 /**
- * Converts LocationLink to Location format for consistent handling
- */
-function locationLinkToLocation(link: LocationLink): Location {
-  return {
-    uri: link.targetUri,
-    range: link.targetSelectionRange || link.targetRange,
-  }
-}
-
-/**
- * Checks if an object is a LocationLink (has targetUri) vs Location (has uri)
- */
-function isLocationLink(item: Location | LocationLink): item is LocationLink {
-  return 'targetUri' in item
-}
-
-/**
  * Formats goToDefinition result
  * Can return Location, LocationLink, or arrays of either
  */
@@ -133,20 +121,17 @@ export function formatGoToDefinitionResult(
 
   if (Array.isArray(result)) {
     // Convert LocationLinks to Locations for uniform handling
-    const locations: Location[] = result.map(item =>
-      isLocationLink(item) ? locationLinkToLocation(item) : item,
-    )
+    const locations: Location[] = result.map(toLocation)
 
     // Log and filter out any locations with undefined uris
-    const invalidLocations = locations.filter(loc => !loc || !loc.uri)
-    if (invalidLocations.length > 0) {
+    const { validLocations, invalidLocationCount } =
+      partitionValidLocations(locations)
+    if (invalidLocationCount > 0) {
       logForDebugging(
-        `formatGoToDefinitionResult: Filtering out ${invalidLocations.length} invalid location(s) - this should have been caught earlier`,
+        `formatGoToDefinitionResult: Filtering out ${invalidLocationCount} invalid location(s) - this should have been caught earlier`,
         { level: 'warn' },
       )
     }
-
-    const validLocations = locations.filter(loc => loc && loc.uri)
 
     if (validLocations.length === 0) {
       return 'No definition found. This may occur if the cursor is not on a symbol, or if the definition is in an external library not indexed by the LSP server.'
@@ -161,9 +146,7 @@ export function formatGoToDefinitionResult(
   }
 
   // Single result - convert LocationLink if needed
-  const location = isLocationLink(result)
-    ? locationLinkToLocation(result)
-    : result
+  const location = toLocation(result)
   return `Defined in ${formatLocation(location, cwd)}`
 }
 
@@ -179,15 +162,14 @@ export function formatFindReferencesResult(
   }
 
   // Log and filter out any locations with undefined uris
-  const invalidLocations = result.filter(loc => !loc || !loc.uri)
-  if (invalidLocations.length > 0) {
+  const { validLocations, invalidLocationCount } =
+    partitionValidLocations(result)
+  if (invalidLocationCount > 0) {
     logForDebugging(
-      `formatFindReferencesResult: Filtering out ${invalidLocations.length} invalid location(s) - this should have been caught earlier`,
+      `formatFindReferencesResult: Filtering out ${invalidLocationCount} invalid location(s) - this should have been caught earlier`,
       { level: 'warn' },
     )
   }
-
-  const validLocations = result.filter(loc => loc && loc.uri)
 
   if (validLocations.length === 0) {
     return 'No references found. This may occur if the symbol has no usages, or if the LSP server has not fully indexed the workspace.'
@@ -376,19 +358,14 @@ export function formatWorkspaceSymbolResult(
   }
 
   // Log and filter out any symbols with undefined location.uri
-  const invalidSymbols = result.filter(
-    sym => !sym || !sym.location || !sym.location.uri,
-  )
-  if (invalidSymbols.length > 0) {
+  const { validSymbols, invalidSymbolCount } =
+    partitionValidSymbolInformation(result)
+  if (invalidSymbolCount > 0) {
     logForDebugging(
-      `formatWorkspaceSymbolResult: Filtering out ${invalidSymbols.length} invalid symbol(s) - this should have been caught earlier`,
+      `formatWorkspaceSymbolResult: Filtering out ${invalidSymbolCount} invalid symbol(s) - this should have been caught earlier`,
       { level: 'warn' },
     )
   }
-
-  const validSymbols = result.filter(
-    sym => sym && sym.location && sym.location.uri,
-  )
 
   if (validSymbols.length === 0) {
     return 'No symbols found in workspace. This may occur if the workspace is empty, or if the LSP server has not finished indexing the project.'

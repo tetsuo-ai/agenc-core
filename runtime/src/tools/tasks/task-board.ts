@@ -26,6 +26,7 @@ import {
   type TaskUpdateStatus,
   type UpdateTaskInput,
 } from "../../bin/task-store.js";
+import { isRecord } from "../../utils/record.js";
 import type { Tool, ToolResult } from "../types.js";
 import {
   TASK_CONCURRENCY,
@@ -74,8 +75,8 @@ function parseTaskMetadata(value: unknown): {
   readonly error?: ToolResult;
 } {
   if (value === undefined) return {};
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return { metadata: value as Record<string, unknown> };
+  if (isRecord(value)) {
+    return { metadata: value };
   }
   return {
     error: taskTextResult(

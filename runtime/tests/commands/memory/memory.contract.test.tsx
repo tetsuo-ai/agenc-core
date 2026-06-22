@@ -76,7 +76,7 @@ describe("memory command contract", () => {
       "utf8",
     );
     expect(memorySlash).toContain('await import("./memory.js")');
-    expect(memorySlash).toContain("setToolJSX");
+    expect(memorySlash).toContain("openAsyncLocalJsxCommand");
 
     const memoryBody = readFileSync(
       resolve(root, "runtime/src/commands/memory/memory.tsx"),

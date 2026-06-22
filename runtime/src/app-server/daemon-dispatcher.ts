@@ -38,6 +38,9 @@ import {
 } from "./realtime.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
+  AGENC_DAEMON_INTERNAL_METHODS,
+  AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonKnownMethod,
   JSON_RPC_VERSION,
@@ -50,8 +53,10 @@ import {
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
   type AgenCDaemonKnownMethod,
+  type AgenCDaemonMethodCapabilities,
   type AgenCDaemonResponse,
   type AgenCDaemonResultByMethod,
+  type AgenCDaemonServerCapabilities,
   type CommandExecResizeParams,
   type CommandExecStartParams,
   type CommandExecTerminateParams,
@@ -93,6 +98,7 @@ import {
   type ToolCancelParams,
   type ToolDenyParams,
 } from "./protocol/index.js";
+import { isRecord } from "../utils/record.js";
 
 export interface AgenCDaemonConnectionInitializeState {
   readonly protocol: {
@@ -105,10 +111,9 @@ export interface AgenCDaemonConnectionInitializeState {
     readonly version: string;
   };
   readonly clientCapabilities: JsonObject;
-  readonly serverCapabilities: JsonObject;
+  readonly serverCapabilities: AgenCDaemonServerCapabilities;
 }
 
-const AGENC_DAEMON_SERVER_CAPABILITIES = Object.freeze({}) as JsonObject;
 const THREAD_REALTIME_VOICES = [
   "alloy",
   "arbor",
@@ -130,6 +135,123 @@ const THREAD_REALTIME_VOICES = [
   "vale",
   "verse",
 ] as const;
+
+interface AgenCDaemonServerCapabilityInputs {
+  readonly agentManager: AgenCDaemonDispatcherOptions["agentManager"];
+  readonly initializeAuthenticator: AgenCDaemonDispatcherOptions["initializeAuthenticator"];
+  readonly sessionManager: AgenCDaemonDispatcherOptions["sessionManager"];
+  readonly fuzzyFileSearch: AgenCFuzzyFileSearch;
+  readonly commandExec: AgenCCommandExec;
+  readonly authHandlers: AgenCDaemonAuthHandlers | undefined;
+  readonly daemonControl: AgenCDaemonDispatcherOptions["daemonControl"];
+  readonly health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly realtime: AgenCRealtimeRpcHandlers;
+}
+
+function buildServerCapabilities(
+  inputs: AgenCDaemonServerCapabilityInputs,
+): AgenCDaemonServerCapabilities {
+  const agentManager = inputs.agentManager;
+  const sessionManager = inputs.sessionManager;
+  const methodCapabilities = {
+    initialize: true,
+    "request.cancel": true,
+    "agent.create": hasMethod(agentManager, "createAgent"),
+    "agent.list": hasMethod(agentManager, "listAgents"),
+    "agent.attach": hasMethod(agentManager, "attachAgent"),
+    "agent.stop": hasMethod(agentManager, "stopAgent"),
+    "agent.logs": hasMethod(agentManager, "getAgentLogs"),
+    "session.create": hasMethod(sessionManager, "createSession"),
+    "session.list": hasMethod(sessionManager, "listSessions"),
+    "session.attach": hasMethod(sessionManager, "attachSession"),
+    "session.detach": hasMethod(sessionManager, "detachSession"),
+    "session.terminate": hasMethod(sessionManager, "terminateSession"),
+    "session.clear": hasMethod(agentManager, "clearSessionHistory"),
+    "session.snapshot": hasMethod(agentManager, "snapshotSession"),
+    "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
+    "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
+    "message.send": hasMethod(agentManager, "streamAgentMessage"),
+    "message.stream": hasMethod(agentManager, "streamAgentMessage"),
+    "thread/realtime/start": hasMethod(inputs.realtime, "start"),
+    "thread/realtime/appendAudio": hasMethod(inputs.realtime, "appendAudio"),
+    "thread/realtime/appendText": hasMethod(inputs.realtime, "appendText"),
+    "thread/realtime/stop": hasMethod(inputs.realtime, "stop"),
+    "thread/realtime/listVoices": hasMethod(inputs.realtime, "listVoices"),
+    "tool.approve": hasMethod(agentManager, "approveTool"),
+    "tool.deny": hasMethod(agentManager, "denyTool"),
+    "tool.cancel": hasMethod(agentManager, "cancelTool"),
+    "elicitation.respond": hasMethod(agentManager, "respondToElicitation"),
+    "permission.list": hasMethod(agentManager, "listPermissions"),
+    "fs.fuzzy_search": hasMethod(inputs.fuzzyFileSearch, "search"),
+    "commandExec.start": hasMethod(inputs.commandExec, "start"),
+    "commandExec.write": hasMethod(inputs.commandExec, "write"),
+    "commandExec.resize": hasMethod(inputs.commandExec, "resize"),
+    "commandExec.terminate": hasMethod(inputs.commandExec, "terminate"),
+    "health.ping": hasMethod(inputs.health, "ping"),
+    "health.ready": hasMethod(inputs.health, "ready"),
+    "health.stats": hasMethod(inputs.health, "stats"),
+    "daemon.reload":
+      inputs.daemonControl !== undefined &&
+      inputs.initializeAuthenticator !== undefined,
+    "auth.login": inputs.authHandlers !== undefined,
+    "auth.whoami": inputs.authHandlers !== undefined,
+    "auth.logout": inputs.authHandlers !== undefined,
+    "session.partialCompactFromMessage": hasMethod(
+      agentManager,
+      "partialCompactFromMessage",
+    ),
+    "session.rewindConversationToMessage": hasMethod(
+      agentManager,
+      "rewindConversationToMessage",
+    ),
+    "session.setModel": hasMethod(agentManager, "setSessionModel"),
+    "session.setPermissionMode": hasMethod(
+      agentManager,
+      "setSessionPermissionMode",
+    ),
+    "session.hooks.status": hasMethod(agentManager, "getSessionHooksStatus"),
+    "session.hooks.setDisabled": hasMethod(
+      agentManager,
+      "setSessionHooksDisabled",
+    ),
+    "session.applyConfig": hasMethod(agentManager, "applyConfigToSession"),
+    "session.mcp.reconnectServer": hasMethod(
+      agentManager,
+      "reconnectMcpServerOnSession",
+    ),
+    "session.mcp.enableServer": hasMethod(
+      agentManager,
+      "enableMcpServerOnSession",
+    ),
+    "session.mcp.disableServer": hasMethod(
+      agentManager,
+      "disableMcpServerOnSession",
+    ),
+  } satisfies Record<AgenCDaemonKnownMethod, boolean>;
+
+  const knownMethods = [
+    ...AGENC_DAEMON_METHODS,
+    ...AGENC_DAEMON_INTERNAL_METHODS,
+  ] as const;
+  for (const method of knownMethods) {
+    if (!(method in methodCapabilities)) {
+      throw new Error(`missing daemon method capability: ${method}`);
+    }
+  }
+
+  return Object.freeze({
+    [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
+      methodCapabilities,
+    ) as AgenCDaemonMethodCapabilities,
+  }) as AgenCDaemonServerCapabilities;
+}
+
+function hasMethod(target: object | undefined, key: PropertyKey): boolean {
+  return (
+    target !== undefined &&
+    typeof (target as Record<PropertyKey, unknown>)[key] === "function"
+  );
+}
 
 export interface AgenCDaemonDispatcherOptions {
   readonly agentManager: Pick<
@@ -271,6 +393,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly #realtime: AgenCRealtimeRpcHandlers;
+  readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -294,6 +417,17 @@ export class AgenCDaemonJsonRpcDispatcher {
         ? createAgenCDaemonAuthHandlers(options.authBackend)
         : undefined;
     this.#daemonControl = options.daemonControl;
+    this.#serverCapabilities = buildServerCapabilities({
+      agentManager: this.#agentManager,
+      authHandlers: this.#authHandlers,
+      commandExec: this.#commandExec,
+      daemonControl: this.#daemonControl,
+      fuzzyFileSearch: this.#fuzzyFileSearch,
+      health: this.#health,
+      initializeAuthenticator: this.#initializeAuthenticator,
+      realtime: this.#realtime,
+      sessionManager: this.#sessionManager,
+    });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -355,7 +489,10 @@ export class AgenCDaemonJsonRpcDispatcher {
             code: "CONNECTION_ALREADY_INITIALIZED",
           });
         }
-        const negotiated = negotiateInitializeProtocol(initializeParams);
+        const negotiated = negotiateInitializeProtocol(
+          initializeParams,
+          this.#serverCapabilities,
+        );
         if (!negotiated.supported) {
           return errorResponse(id, -32000, "Unsupported protocol version", {
             code: "PROTOCOL_VERSION_UNSUPPORTED",
@@ -458,11 +595,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return this.#createSession(id, params);
       case "session.list":
         if (this.#sessionManager === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: session.list",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -565,11 +698,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.hooks.status":
         if (this.#agentManager.getSessionHooksStatus === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: session.hooks.status",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -579,11 +708,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.hooks.setDisabled":
         if (this.#agentManager.setSessionHooksDisabled === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: session.hooks.setDisabled",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -717,11 +842,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "permission.list":
         if (this.#agentManager.listPermissions === undefined) {
-          return errorResponse(
-            id,
-            -32601,
-            "daemon method is not implemented yet: permission.list",
-          );
+          return methodNotImplementedResponse(id, method);
         }
         return successResponse(
           id,
@@ -742,21 +863,13 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "auth.logout":
         return this.#dispatchAuthMethod(id, method, connection);
       default:
-        return errorResponse(
-          id,
-          -32601,
-          `daemon method is not implemented yet: ${method}`,
-        );
+        return methodNotImplementedResponse(id, method);
     }
   }
 
   async #reloadDaemonConfig(id: RequestId): Promise<AgenCDaemonResponse> {
     if (this.#daemonControl === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: daemon.reload",
-      );
+      return methodNotImplementedResponse(id, "daemon.reload");
     }
     if (this.#initializeAuthenticator === undefined) {
       return errorResponse(
@@ -813,11 +926,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.create",
-      );
+      return methodNotImplementedResponse(id, "session.create");
     }
     return successResponse(
       id,
@@ -831,11 +940,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.attach",
-      );
+      return methodNotImplementedResponse(id, "session.attach");
     }
     const attachParams = validateSessionAttachParams(params);
     const multiplexedResult = await this.#attachTrackedClientToSession(
@@ -854,11 +959,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.detach",
-      );
+      return methodNotImplementedResponse(id, "session.detach");
     }
     const detachParams = validateSessionDetachParams(params);
     return successResponse(
@@ -873,11 +974,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     if (this.#sessionManager === undefined) {
-      return errorResponse(
-        id,
-        -32601,
-        "daemon method is not implemented yet: session.terminate",
-      );
+      return methodNotImplementedResponse(id, "session.terminate");
     }
     const terminateParams = validateSessionTerminateParams(params);
     return successResponse(
@@ -1212,7 +1309,10 @@ function validateInitializeParams(params: JsonObject): InitializeParams {
   return validated as InitializeParams;
 }
 
-function negotiateInitializeProtocol(params: InitializeParams):
+function negotiateInitializeProtocol(
+  params: InitializeParams,
+  serverCapabilities: AgenCDaemonServerCapabilities,
+):
   | {
       readonly supported: true;
       readonly state: AgenCDaemonConnectionInitializeState;
@@ -1236,7 +1336,7 @@ function negotiateInitializeProtocol(params: InitializeParams):
       clientProtocol: { version: clientVersion },
       serverProtocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientCapabilities: cloneJsonObject(params.capabilities),
-      serverCapabilities: AGENC_DAEMON_SERVER_CAPABILITIES,
+      serverCapabilities,
     },
   };
 }
@@ -2277,7 +2377,7 @@ function validateStringRecord(
 }
 
 function isPlainJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function invalidParams(message: string): AgenCDaemonAgentLifecycleError {
@@ -2293,6 +2393,17 @@ function successResponse<Method extends AgenCDaemonMethod>(
     id,
     result,
   } as AgenCDaemonResponse;
+}
+
+function methodNotImplementedResponse(
+  id: RequestId,
+  method: AgenCDaemonKnownMethod,
+): AgenCDaemonResponse {
+  return errorResponse(
+    id,
+    -32601,
+    `daemon method is not implemented yet: ${method}`,
+  );
 }
 
 function mapDispatchError(

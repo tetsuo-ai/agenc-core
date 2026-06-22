@@ -1,7 +1,7 @@
-// AUTO-GENERATED — do not edit manually.
-// Regenerate with: bun scripts/generate-sdk-types.ts
+// COMMITTED SDK TYPES - keep in sync with coreSchemas.ts.
+// Verify with: npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types
 //
-// Generated from Zod schemas in coreSchemas.ts
+// Source schemas: coreSchemas.ts
 
 export type ModelUsage = {
   inputTokens: number
@@ -238,43 +238,7 @@ export type PermissionDecisionClassification = "user_temporary" | "user_permanen
 export type PermissionResult = ({
   behavior: "allow"
   updatedInput?: Record<string, unknown>
-  updatedPermissions?: ({
-    type: "addRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "replaceRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "removeRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "setMode"
-    mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "addDirectories"
-    directories: string[]
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "removeDirectories"
-    directories: string[]
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  })[]
+  updatedPermissions?: PermissionUpdate[]
   toolUseID?: string
   decisionClassification?: "user_temporary" | "user_permanent" | "user_reject"
 }) | ({
@@ -504,43 +468,7 @@ export type PermissionRequestHookInput = {
   hook_event_name: "PermissionRequest"
   tool_name: string
   tool_input: unknown
-  permission_suggestions?: ({
-    type: "addRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "replaceRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "removeRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "setMode"
-    mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "addDirectories"
-    directories: string[]
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "removeDirectories"
-    directories: string[]
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  })[]
+  permission_suggestions?: PermissionUpdate[]
 }
 
 export type SetupHookInput = {
@@ -892,43 +820,7 @@ export type HookInput = ({
   hook_event_name: "PermissionRequest"
   tool_name: string
   tool_input: unknown
-  permission_suggestions?: ({
-    type: "addRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "replaceRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "removeRules"
-    rules: {
-      toolName: string
-      ruleContent?: string
-    }[]
-    behavior: "allow" | "deny" | "ask"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "setMode"
-    mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "addDirectories"
-    directories: string[]
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  }) | ({
-    type: "removeDirectories"
-    directories: string[]
-    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-  })[]
+  permission_suggestions?: PermissionUpdate[]
 }) | ({
   session_id: string
   transcript_path: string
@@ -1138,43 +1030,7 @@ export type PermissionRequestHookSpecificOutput = {
   decision: ({
     behavior: "allow"
     updatedInput?: Record<string, unknown>
-    updatedPermissions?: ({
-      type: "addRules"
-      rules: {
-        toolName: string
-        ruleContent?: string
-      }[]
-      behavior: "allow" | "deny" | "ask"
-      destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-    }) | ({
-      type: "replaceRules"
-      rules: {
-        toolName: string
-        ruleContent?: string
-      }[]
-      behavior: "allow" | "deny" | "ask"
-      destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-    }) | ({
-      type: "removeRules"
-      rules: {
-        toolName: string
-        ruleContent?: string
-      }[]
-      behavior: "allow" | "deny" | "ask"
-      destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-    }) | ({
-      type: "setMode"
-      mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
-      destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-    }) | ({
-      type: "addDirectories"
-      directories: string[]
-      destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-    }) | ({
-      type: "removeDirectories"
-      directories: string[]
-      destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-    })[]
+    updatedPermissions?: PermissionUpdate[]
   }) | ({
     behavior: "deny"
     message?: string
@@ -1257,43 +1113,7 @@ export type SyncHookJSONOutput = {
     decision: ({
       behavior: "allow"
       updatedInput?: Record<string, unknown>
-      updatedPermissions?: ({
-        type: "addRules"
-        rules: {
-          toolName: string
-          ruleContent?: string
-        }[]
-        behavior: "allow" | "deny" | "ask"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "replaceRules"
-        rules: {
-          toolName: string
-          ruleContent?: string
-        }[]
-        behavior: "allow" | "deny" | "ask"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "removeRules"
-        rules: {
-          toolName: string
-          ruleContent?: string
-        }[]
-        behavior: "allow" | "deny" | "ask"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "setMode"
-        mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "addDirectories"
-        directories: string[]
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "removeDirectories"
-        directories: string[]
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      })[]
+      updatedPermissions?: PermissionUpdate[]
     }) | ({
       behavior: "deny"
       message?: string
@@ -1367,43 +1187,7 @@ export type HookJSONOutput = ({
     decision: ({
       behavior: "allow"
       updatedInput?: Record<string, unknown>
-      updatedPermissions?: ({
-        type: "addRules"
-        rules: {
-          toolName: string
-          ruleContent?: string
-        }[]
-        behavior: "allow" | "deny" | "ask"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "replaceRules"
-        rules: {
-          toolName: string
-          ruleContent?: string
-        }[]
-        behavior: "allow" | "deny" | "ask"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "removeRules"
-        rules: {
-          toolName: string
-          ruleContent?: string
-        }[]
-        behavior: "allow" | "deny" | "ask"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "setMode"
-        mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "addDirectories"
-        directories: string[]
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      }) | ({
-        type: "removeDirectories"
-        directories: string[]
-        destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
-      })[]
+      updatedPermissions?: PermissionUpdate[]
     }) | ({
       behavior: "deny"
       message?: string

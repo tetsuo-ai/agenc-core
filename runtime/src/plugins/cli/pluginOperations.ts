@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { resolveAgencHome } from "../../config/env.js";
 import { loadConfig } from "../../config/loader.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
+import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
 import { findPluginManifestPath } from "../manifest.js";
 import { validateMarketplaceManifest, validatePluginManifest, type ValidationResult } from "../validation.js";
@@ -634,10 +635,6 @@ function isPathInside(path: string, root: string): boolean {
   const normalizedPath = resolve(path);
   const normalizedRoot = resolve(root);
   return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function writePluginConfigEntry(

@@ -34,13 +34,15 @@ export function getTeammateCommand(): string {
  *
  * @param options.planModeRequired - If true, don't inherit bypass permissions (plan mode takes precedence)
  * @param options.permissionMode - Permission mode to propagate
+ * @param options.model - Teammate-specific model to use instead of the leader's CLI model override
  */
 export function buildInheritedCliFlags(options?: {
   planModeRequired?: boolean
   permissionMode?: PermissionMode
+  model?: string
 }): string {
   const flags: string[] = []
-  const { planModeRequired, permissionMode } = options || {}
+  const { planModeRequired, permissionMode, model } = options || {}
 
   // Propagate permission mode to teammates, but NOT if plan mode is required
   // Plan mode takes precedence over bypass permissions for safety
@@ -53,10 +55,14 @@ export function buildInheritedCliFlags(options?: {
     flags.push('--dangerously-skip-permissions')
   } else if (permissionMode === 'acceptEdits') {
     flags.push('--permission-mode acceptEdits')
+  } else if (permissionMode === 'auto') {
+    // Teammates inherit auto mode so the classifier auto-approves their tool
+    // calls too. The teammate's own startup handles feature-gate activation.
+    flags.push('--permission-mode auto')
   }
 
   // Propagate --model if explicitly set via CLI
-  const modelOverride = getMainLoopModelOverride()
+  const modelOverride = model || getMainLoopModelOverride()
   if (modelOverride) {
     flags.push(`--model ${quote([modelOverride])}`)
   }

@@ -121,6 +121,46 @@ describe("clearCommand", () => {
     await expect(clearSession(session)).resolves.toBeUndefined();
   });
 
+  it("ignores array-shaped reset surfaces", async () => {
+    const memReset = vi.fn();
+    const costReset = vi.fn();
+    const budgetReset = vi.fn();
+    const toolApprovalsClear = vi.fn();
+    const networkApprovalClear = vi.fn();
+    const history: unknown[] = [{ keep: false }];
+    const state = { sessionConfiguration: {}, history };
+    const session = {
+      state: {
+        with: async (fn: (s: typeof state) => unknown) => fn(state),
+      },
+      services: {
+        memorySidecar: Object.assign(["spoof"], { reset: memReset }),
+        costSidecar: Object.assign(["spoof"], { reset: costReset }),
+        toolApprovals: Object.assign(["spoof"], {
+          clear: toolApprovalsClear,
+        }),
+        networkApproval: Object.assign(["spoof"], {
+          clearSessionHosts: networkApprovalClear,
+        }),
+      },
+      budgetTracker: Object.assign(["spoof"], {
+        resetSamplingGate: budgetReset,
+      }),
+      clearProviderResponseId: "not-a-function",
+      activeTurn: { unsafePeek: () => null },
+      denialTracking: Object.assign(["spoof"], { count: 1 }),
+    } as unknown as Session;
+
+    await expect(clearSession(session)).resolves.toBeUndefined();
+
+    expect(history).toHaveLength(0);
+    expect(memReset).not.toHaveBeenCalled();
+    expect(costReset).not.toHaveBeenCalled();
+    expect(budgetReset).not.toHaveBeenCalled();
+    expect(toolApprovalsClear).not.toHaveBeenCalled();
+    expect(networkApprovalClear).not.toHaveBeenCalled();
+  });
+
   it("clears bridge-like sessions without local history state and still emits a TUI reset", async () => {
     const emitPhaseEvent = vi.fn();
     const session = {

@@ -29,6 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve as pathResolve } from "node:path";
+import { isRecord } from "../../utils/record.js";
 
 export const CURRENT_CONFIG_MIGRATION_VERSION = 11;
 export const CONFIG_MIGRATION_VERSION_KEY = "configMigrationVersion";
@@ -79,14 +80,6 @@ const SETTINGS_MCP_KEYS = Object.freeze([
 
 function hasOwn(record: JsonRecord, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  );
 }
 
 function cloneJsonValue(value: unknown): unknown {

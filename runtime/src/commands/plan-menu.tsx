@@ -8,6 +8,7 @@ import {
   Popup,
 } from "../tui/components/v2/primitives.js";
 import { AURA_PLAN_GLYPHS } from "../utils/theme.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import type { SlashCommandContext } from "./types.js";
 
 type PlanItemState = "done" | "active" | "pending" | "failed";
@@ -256,25 +257,11 @@ export function openPlanDashboard(
     readonly onPlanTextChange?: (nextPlanText: string) => void | Promise<void>;
   } = {},
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: (
-      <PlanDashboardView
-        snapshot={snapshot}
-        onDone={close}
-        onPlanTextChange={options.onPlanTextChange}
-      />
-    ),
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <PlanDashboardView
+      snapshot={snapshot}
+      onDone={close}
+      onPlanTextChange={options.onPlanTextChange}
+    />
+  ));
 }

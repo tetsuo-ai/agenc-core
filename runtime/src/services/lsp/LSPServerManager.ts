@@ -15,6 +15,7 @@ import {
   type LSPServerInstance,
 } from "./LSPServerInstance.js";
 import type { LspServerConfigSource, ScopedLspServerConfig } from "./types.js";
+import { errorMessage } from "../../utils/errors.js";
 
 export interface LSPServerManager {
   initialize(): Promise<void>;
@@ -41,10 +42,6 @@ export interface LSPServerManagerOptions {
     name: string,
     config: ScopedLspServerConfig,
   ) => LSPServerInstance;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function createLSPServerManager(

@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 
 import { getSessionId } from "../bootstrap/state.js";
 import { getCwd } from "../utils/cwd.js";
+import { isRecord } from "../utils/record.js";
 import { createBashTool } from "./system/bash.js";
 import { createFileEditTool } from "./system/file-edit.js";
 import { createFileReadTool } from "./system/file-read.js";
@@ -118,10 +119,6 @@ function textToolResultBlock(
 function canonicalResultText(content: unknown): string {
   if (isCanonicalToolData(content)) return content.content;
   return String(content ?? "");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isCanonicalToolData(value: unknown): value is Exclude<CanonicalToolData, string> {

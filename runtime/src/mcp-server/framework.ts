@@ -32,6 +32,7 @@ import {
   type McpToolCallParams,
   type McpToolProvider,
 } from "./types.js";
+import { asRecord } from "../utils/record.js";
 
 export interface McpServerFrameworkOptions {
   readonly serverInfo?: Partial<McpServerInfo>;
@@ -60,12 +61,6 @@ type InitializeParseResult =
 type ToolCallParseResult =
   | { readonly ok: true; readonly params: McpToolCallParams }
   | { readonly ok: false; readonly message: string };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 function isValidRequestId(value: unknown): value is McpRequestId {
   return (

@@ -1,9 +1,10 @@
 // SDK Core Types - Common serializable types used by both SDK consumers and SDK builders.
 //
-// Types are generated from Zod schemas in coreSchemas.ts.
+// Types are committed from Zod schemas in coreSchemas.ts.
 // To modify types:
-// 1. Edit Zod schemas in coreSchemas.ts
-// 2. Run: bun scripts/generate-sdk-types.ts
+// 1. Edit Zod schemas in coreSchemas.ts.
+// 2. Update coreTypes.generated.ts.
+// 3. Run: npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types.
 //
 // Schemas are available in coreSchemas.ts for runtime validation but are not
 // part of the public API.

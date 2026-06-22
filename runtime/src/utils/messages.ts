@@ -7,6 +7,7 @@
 import { feature } from 'bun:bundle'
 import { Ajv } from 'ajv'
 import { getAPIProvider } from './model/providers.js'
+import { isRecord as isRecordValue } from './record.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { StreamingToolUse } from '../llm/types.js'
 import type {
@@ -101,6 +102,139 @@ type HookAttachmentWithName = Exclude<
   HookAttachment,
   HookPermissionDecisionAttachment
 >
+type TaskStatusAttachment = Extract<Attachment, { type: 'task_status' }>
+type AsyncHookResponseAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'async_hook_response' }
+>
+type QueuedCommandAttachment = Extract<Attachment, { type: 'queued_command' }>
+type DiagnosticsAttachment = Extract<Attachment, { type: 'diagnostics' }>
+type TokenUsageAttachment = Extract<Attachment, { type: 'token_usage' }>
+type BudgetUsdAttachment = Extract<Attachment, { type: 'budget_usd' }>
+type OutputTokenUsageAttachment = Extract<
+  Attachment,
+  { type: 'output_token_usage' }
+>
+type DeferredToolsDeltaAttachment = Extract<
+  Attachment,
+  { type: 'deferred_tools_delta' }
+>
+type AgentListingDeltaAttachment = Extract<
+  Attachment,
+  { type: 'agent_listing_delta' }
+>
+type McpInstructionsDeltaAttachment = Extract<
+  Attachment,
+  { type: 'mcp_instructions_delta' }
+>
+type HookBlockingErrorAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'hook_blocking_error' }
+>
+type HookSuccessAttachmentForAPI = Extract<Attachment, { type: 'hook_success' }>
+type HookAdditionalContextAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'hook_additional_context' }
+>
+type HookStoppedContinuationAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'hook_stopped_continuation' }
+>
+type DirectoryAttachmentForAPI = Extract<Attachment, { type: 'directory' }>
+type EditedTextFileAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'edited_text_file' }
+>
+type FileAttachmentForAPI = Extract<Attachment, { type: 'file' }>
+type CompactFileReferenceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'compact_file_reference' }
+>
+type PdfReferenceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'pdf_reference' }
+>
+type SelectedLinesInIdeAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'selected_lines_in_ide' }
+>
+type OpenedFileInIdeAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'opened_file_in_ide' }
+>
+type PlanFileReferenceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'plan_file_reference' }
+>
+type NestedMemoryAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'nested_memory' }
+>
+type RelevantMemoriesAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'relevant_memories' }
+>
+type TeammateMailboxAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'teammate_mailbox' }
+>
+type TeamContextAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'team_context' }
+>
+type SkillDiscoveryAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'skill_discovery' }
+>
+type InvokedSkillsAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'invoked_skills' }
+>
+type TodoReminderAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'todo_reminder' }
+>
+type TaskReminderAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'task_reminder' }
+>
+type SkillListingAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'skill_listing' }
+>
+type OutputStyleAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'output_style' }
+>
+type PlanModeReentryAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'plan_mode_reentry' }
+>
+type PlanModeExitAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'plan_mode_exit' }
+>
+type CriticalSystemReminderAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'critical_system_reminder' }
+>
+type AgentMentionAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'agent_mention' }
+>
+type DateChangeAttachmentForAPI = Extract<Attachment, { type: 'date_change' }>
+type UltrathinkEffortAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'ultrathink_effort' }
+>
+type CompanionIntroAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'companion_intro' }
+>
+type McpResourceAttachmentForAPI = Extract<
+  Attachment,
+  { type: 'mcp_resource' }
+>
 
 import type { APIError } from '@anthropic-ai/sdk'
 import type {
@@ -112,12 +246,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
-// SDKAssistantMessageError is imported from its canonical generated source.
-// The barrel `agentSdkTypes.js` re-declares it locally (= any) AND re-exports
-// the generated union via `export type *`, which collide and make the name
-// unresolvable through the barrel (TS2305). Importing the generated type
-// directly is type-level only — the value is used solely as the `error?` field.
-import type { SDKAssistantMessageError } from 'src/entrypoints/sdk/coreTypes.generated.js'
+import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
 import { areExplorePlanAgentsEnabled } from 'src/tools/AgentTool/builtInAgents.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
@@ -2030,6 +2159,326 @@ function relocateToolReferenceSiblings(
   return result
 }
 
+type ApiInputMessage =
+  | UserMessage
+  | AssistantMessage
+  | AttachmentMessage
+  | SystemLocalCommandMessage
+
+function isApiInputMessage(message: Message): message is ApiInputMessage {
+  return !(
+    message.type === 'progress' ||
+    (message.type === 'system' && !isSystemLocalCommandMessage(message)) ||
+    isSyntheticApiErrorMessage(message)
+  )
+}
+
+function addContentStripTarget(
+  targets: Map<string, Set<string>>,
+  userMessageUuid: string,
+  blockTypesToStrip: Set<string>,
+): void {
+  const existing = targets.get(userMessageUuid)
+  if (existing) {
+    for (const blockType of blockTypesToStrip) {
+      existing.add(blockType)
+    }
+    return
+  }
+
+  targets.set(userMessageUuid, new Set(blockTypesToStrip))
+}
+
+function getSyntheticApiErrorText(
+  message: AssistantMessage & { isApiErrorMessage: true },
+): string | undefined {
+  if (
+    !Array.isArray(message.message.content) ||
+    message.message.content[0]?.type !== 'text'
+  ) {
+    return undefined
+  }
+  return message.message.content[0].text
+}
+
+function getContentSizeErrorBlockTypes(
+  errorText: string,
+): Set<string> | undefined {
+  const pdfBlockTypes = new Set(['document'])
+  if (
+    errorText === getPdfTooLargeErrorMessage() ||
+    errorText === getPdfPasswordProtectedErrorMessage() ||
+    errorText === getPdfInvalidErrorMessage()
+  ) {
+    return pdfBlockTypes
+  }
+  if (errorText === getImageTooLargeErrorMessage()) {
+    return new Set(['image'])
+  }
+  if (errorText === getRequestTooLargeErrorMessage()) {
+    return new Set(['document', 'image'])
+  }
+  return undefined
+}
+
+function buildContentStripTargetsForAPI(
+  messages: Message[],
+): Map<string, Set<string>> {
+  const stripTargets = new Map<string, Set<string>>()
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!
+    if (!isSyntheticApiErrorMessage(message)) {
+      continue
+    }
+
+    const errorText = getSyntheticApiErrorText(message)
+    if (!errorText) {
+      continue
+    }
+
+    const blockTypesToStrip = getContentSizeErrorBlockTypes(errorText)
+    if (!blockTypesToStrip) {
+      continue
+    }
+
+    for (let j = i - 1; j >= 0; j--) {
+      const candidate = messages[j]!
+      if (candidate.type === 'user' && candidate.isMeta) {
+        addContentStripTarget(
+          stripTargets,
+          candidate.uuid,
+          blockTypesToStrip,
+        )
+        break
+      }
+      if (isSyntheticApiErrorMessage(candidate)) {
+        continue
+      }
+      break
+    }
+  }
+
+  return stripTargets
+}
+
+function stripTargetedContentBlocksForAPI(
+  message: UserMessage,
+  stripTargets: Map<string, Set<string>>,
+): UserMessage | null {
+  const typesToStrip = stripTargets.get(message.uuid)
+  if (!typesToStrip || !message.isMeta) {
+    return message
+  }
+
+  const content = message.message.content
+  if (!Array.isArray(content)) {
+    return message
+  }
+
+  const filtered = content.filter(block => !typesToStrip.has(block.type))
+  if (filtered.length === 0) {
+    return null
+  }
+  if (filtered.length === content.length) {
+    return message
+  }
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: filtered,
+    },
+  }
+}
+
+function normalizeToolReferencesForAPI(
+  message: UserMessage,
+  availableToolNames: Set<string>,
+): UserMessage {
+  if (!isToolSearchEnabledOptimistic()) {
+    return stripToolReferenceBlocksFromUserMessage(message)
+  }
+
+  return stripUnavailableToolReferencesFromUserMessage(
+    message,
+    availableToolNames,
+  )
+}
+
+function addToolReferenceTurnBoundaryForAPI(
+  message: UserMessage,
+): UserMessage {
+  if (false) {
+    return message
+  }
+
+  const contentAfterStrip = message.message.content
+  if (
+    !Array.isArray(contentAfterStrip) ||
+    contentAfterStrip.some(
+      block =>
+        block.type === 'text' &&
+        block.text.startsWith(TOOL_REFERENCE_TURN_BOUNDARY),
+    ) ||
+    !contentHasToolReference(contentAfterStrip)
+  ) {
+    return message
+  }
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: [
+        ...contentAfterStrip,
+        { type: 'text', text: TOOL_REFERENCE_TURN_BOUNDARY },
+      ],
+    },
+  }
+}
+
+function normalizeUserMessageForAPI({
+  message,
+  availableToolNames,
+  stripTargets,
+}: {
+  message: UserMessage
+  availableToolNames: Set<string>
+  stripTargets: Map<string, Set<string>>
+}): UserMessage | null {
+  let normalizedMessage = normalizeToolReferencesForAPI(
+    message,
+    availableToolNames,
+  )
+  normalizedMessage = stripTargetedContentBlocksForAPI(
+    normalizedMessage,
+    stripTargets,
+  )
+  if (!normalizedMessage) {
+    return null
+  }
+
+  return addToolReferenceTurnBoundaryForAPI(normalizedMessage)
+}
+
+function normalizeAssistantToolUseBlockForAPI(
+  block: ContentBlockParam,
+  tools: Tools,
+  toolSearchEnabled: boolean,
+): ContentBlockParam {
+  if (block.type !== 'tool_use') {
+    return block
+  }
+
+  const tool = tools.find(t => toolMatchesName(t, block.name))
+  const normalizedInput = tool
+    ? normalizeToolInputForAPI(tool, block.input as Record<string, unknown>)
+    : block.input
+  const canonicalName = tool?.name ?? block.name
+  const extraContent = (block as { extra_content?: unknown }).extra_content
+  const includeGeminiExtraContent = Boolean(
+    getAPIProvider() === 'gemini' && extraContent,
+  )
+
+  if (toolSearchEnabled) {
+    const { extra_content: _extraContent, ...restBlock } = block as any
+    return {
+      ...restBlock,
+      name: canonicalName,
+      input: normalizedInput,
+      ...(includeGeminiExtraContent ? { extra_content: extraContent } : {}),
+    }
+  }
+
+  return {
+    type: 'tool_use' as const,
+    id: block.id,
+    name: canonicalName,
+    input: normalizedInput,
+    ...(includeGeminiExtraContent ? { extra_content: extraContent } : {}),
+  }
+}
+
+function normalizeAssistantMessageForAPI(
+  message: AssistantMessage,
+  tools: Tools,
+): AssistantMessage {
+  const toolSearchEnabled = isToolSearchEnabledOptimistic()
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: message.message.content.map((block: ContentBlockParam) =>
+        normalizeAssistantToolUseBlockForAPI(block, tools, toolSearchEnabled),
+      ),
+    },
+  }
+}
+
+function appendUserMessageForAPI(
+  result: (UserMessage | AssistantMessage)[],
+  message: UserMessage,
+): void {
+  const lastMessage = last(result)
+  if (lastMessage?.type === 'user') {
+    result[result.length - 1] = mergeUserMessages(lastMessage, message)
+    return
+  }
+
+  result.push(message)
+}
+
+function appendAttachmentMessagesForAPI(
+  result: (UserMessage | AssistantMessage)[],
+  message: AttachmentMessage,
+): void {
+  const rawAttachmentMessage = normalizeAttachmentForAPI(message.attachment)
+  const attachmentMessage = false
+    ? rawAttachmentMessage.map(ensureSystemReminderWrap)
+    : rawAttachmentMessage
+
+  const lastMessage = last(result)
+  if (lastMessage?.type === 'user') {
+    result[result.length - 1] = attachmentMessage.reduce(
+      (previous, current) => mergeUserMessagesAndToolResults(previous, current),
+      lastMessage,
+    )
+    return
+  }
+
+  result.push(...attachmentMessage)
+}
+
+function appendAssistantMessageForAPI(
+  result: (UserMessage | AssistantMessage)[],
+  normalizedMessage: AssistantMessage,
+): void {
+  // Find a previous assistant message with the same message ID and merge.
+  // Walk backwards, skipping tool results and different-ID assistants,
+  // since concurrent agents (teammates) can interleave streaming content
+  // blocks from multiple API responses with different message IDs.
+  for (let i = result.length - 1; i >= 0; i--) {
+    const message = result[i]!
+
+    if (message.type !== 'assistant' && !isToolResultMessage(message)) {
+      break
+    }
+
+    if (message.type === 'assistant') {
+      if (message.message.id === normalizedMessage.message.id) {
+        result[i] = mergeAssistantMessages(message, normalizedMessage)
+        return
+      }
+      continue
+    }
+  }
+
+  result.push(normalizedMessage)
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
@@ -2044,79 +2493,11 @@ export function normalizeMessagesForAPI(
     m => !((m.type === 'user' || m.type === 'assistant') && m.isVirtual),
   )
 
-  // Build a map from error text → which block types to strip from the preceding user message.
-  const errorToBlockTypes: Record<string, Set<string>> = {
-    [getPdfTooLargeErrorMessage()]: new Set(['document']),
-    [getPdfPasswordProtectedErrorMessage()]: new Set(['document']),
-    [getPdfInvalidErrorMessage()]: new Set(['document']),
-    [getImageTooLargeErrorMessage()]: new Set(['image']),
-    [getRequestTooLargeErrorMessage()]: new Set(['document', 'image']),
-  }
-
-  // Walk the reordered messages to build a targeted strip map:
-  // userMessageUUID → set of block types to strip from that message.
-  const stripTargets = new Map<string, Set<string>>()
-  for (let i = 0; i < reorderedMessages.length; i++) {
-    const msg = reorderedMessages[i]!
-    if (!isSyntheticApiErrorMessage(msg)) {
-      continue
-    }
-    // Determine which error this is
-    const errorText =
-      Array.isArray(msg.message.content) &&
-      msg.message.content[0]?.type === 'text'
-        ? msg.message.content[0].text
-        : undefined
-    if (!errorText) {
-      continue
-    }
-    const blockTypesToStrip = errorToBlockTypes[errorText]
-    if (!blockTypesToStrip) {
-      continue
-    }
-    // Walk backward to find the nearest preceding isMeta user message
-    for (let j = i - 1; j >= 0; j--) {
-      const candidate = reorderedMessages[j]!
-      if (candidate.type === 'user' && candidate.isMeta) {
-        const existing = stripTargets.get(candidate.uuid)
-        if (existing) {
-          for (const t of blockTypesToStrip) {
-            existing.add(t)
-          }
-        } else {
-          stripTargets.set(candidate.uuid, new Set(blockTypesToStrip))
-        }
-        break
-      }
-      // Skip over other synthetic error messages or non-meta messages
-      if (isSyntheticApiErrorMessage(candidate)) {
-        continue
-      }
-      // Stop if we hit an assistant message or non-meta user message
-      break
-    }
-  }
+  const stripTargets = buildContentStripTargetsForAPI(reorderedMessages)
 
   const result: (UserMessage | AssistantMessage)[] = []
   reorderedMessages
-    .filter(
-      (
-        _,
-      ): _ is
-        | UserMessage
-        | AssistantMessage
-        | AttachmentMessage
-        | SystemLocalCommandMessage => {
-        if (
-          _.type === 'progress' ||
-          (_.type === 'system' && !isSystemLocalCommandMessage(_)) ||
-          isSyntheticApiErrorMessage(_)
-        ) {
-          return false
-        }
-        return true
-      },
-    )
+    .filter(isApiInputMessage)
     .forEach(message => {
       switch (message.type) {
         case 'system': {
@@ -2127,59 +2508,17 @@ export function normalizeMessagesForAPI(
             uuid: message.uuid,
             timestamp: message.timestamp,
           })
-          const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
-            result[result.length - 1] = mergeUserMessages(lastMessage, userMsg)
-            return
-          }
-          result.push(userMsg)
+          appendUserMessageForAPI(result, userMsg)
           return
         }
         case 'user': {
-          // Merge consecutive user messages because Bedrock doesn't support
-          // multiple user messages in a row; 1P API does and merges them
-          // into a single user turn
-
           // When tool search is NOT enabled, strip all tool_reference blocks from
           // tool_result content, as these are only valid with the tool search beta.
           // When tool search IS enabled, strip only tool_reference blocks for
           // tools that no longer exist (e.g., MCP server was disconnected).
-          let normalizedMessage = message
-          if (!isToolSearchEnabledOptimistic()) {
-            normalizedMessage = stripToolReferenceBlocksFromUserMessage(message)
-          } else {
-            normalizedMessage = stripUnavailableToolReferencesFromUserMessage(
-              message,
-              availableToolNames,
-            )
-          }
-
           // Strip document/image blocks from the specific meta user message that
           // preceded a PDF/image/request-too-large error, to prevent re-sending
           // the problematic content on every subsequent API call.
-          const typesToStrip = stripTargets.get(normalizedMessage.uuid)
-          if (typesToStrip && normalizedMessage.isMeta) {
-            const content = normalizedMessage.message.content
-            if (Array.isArray(content)) {
-              const filtered = content.filter(
-                block => !typesToStrip.has(block.type),
-              )
-              if (filtered.length === 0) {
-                // All content blocks were stripped; skip this message entirely
-                return
-              }
-              if (filtered.length < content.length) {
-                normalizedMessage = {
-                  ...normalizedMessage,
-                  message: {
-                    ...normalizedMessage.message,
-                    content: filtered,
-                  },
-                }
-              }
-            }
-          }
-
           // Server renders tool_reference expansion as <functions>...</functions>
           // (same tags as the system prompt's tool block). When this is at the
           // prompt tail, capybara models sample the stop sequence at ~10% (A/B:
@@ -2200,44 +2539,15 @@ export function normalizeMessagesForAPI(
           // of adding one here. This injection is itself one of the patterns
           // that gets relocated, so skipping it saves a scan. When gate is
           // off, this is the fallback (same as pre-#21049 main).
-          if (
-            !false
-          ) {
-            const contentAfterStrip = normalizedMessage.message.content
-            if (
-              Array.isArray(contentAfterStrip) &&
-              !contentAfterStrip.some(
-                b =>
-                  b.type === 'text' &&
-                  b.text.startsWith(TOOL_REFERENCE_TURN_BOUNDARY),
-              ) &&
-              contentHasToolReference(contentAfterStrip)
-            ) {
-              normalizedMessage = {
-                ...normalizedMessage,
-                message: {
-                  ...normalizedMessage.message,
-                  content: [
-                    ...contentAfterStrip,
-                    { type: 'text', text: TOOL_REFERENCE_TURN_BOUNDARY },
-                  ],
-                },
-              }
-            }
-          }
-
-          // If the last message is also a user message, merge them
-          const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
-            result[result.length - 1] = mergeUserMessages(
-              lastMessage,
-              normalizedMessage,
-            )
+          const normalizedMessage = normalizeUserMessageForAPI({
+            message,
+            availableToolNames,
+            stripTargets,
+          })
+          if (!normalizedMessage) {
             return
           }
-
-          // Otherwise, add the message normally
-          result.push(normalizedMessage)
+          appendUserMessageForAPI(result, normalizedMessage)
           return
         }
         case 'assistant': {
@@ -2245,91 +2555,14 @@ export function normalizeMessagesForAPI(
           // When tool search is NOT enabled, we must strip tool_search-specific fields
           // like 'caller' from tool_use blocks, as these are only valid with the
           // tool search beta header
-          const toolSearchEnabled = isToolSearchEnabledOptimistic()
-          const normalizedMessage: AssistantMessage = {
-            ...message,
-            message: {
-              ...message.message,
-              content: message.message.content.map((block: ContentBlockParam) => {
-                if (block.type === 'tool_use') {
-                  const tool = tools.find(t => toolMatchesName(t, block.name))
-                  const normalizedInput = tool
-                    ? normalizeToolInputForAPI(
-                        tool,
-                        block.input as Record<string, unknown>,
-                      )
-                    : block.input
-                  const canonicalName = tool?.name ?? block.name
-
-                  // When tool search is enabled, preserve all fields including 'caller'
-                  if (toolSearchEnabled) {
-                    const { extra_content, ...restBlock } = block as any
-                    return {
-                      ...restBlock,
-                      name: canonicalName,
-                      input: normalizedInput,
-                      ...(getAPIProvider() === 'gemini' && extra_content ? { extra_content } : {})
-                    }
-                  }
-
-                  // When tool search is NOT enabled, explicitly construct tool_use
-                  // block with only standard API fields to avoid sending fields like
-                  // 'caller' that may be stored in sessions from tool search runs
-                    return {
-                    type: 'tool_use' as const,
-                    id: block.id,
-                    name: canonicalName,
-                    input: normalizedInput,
-                    ...(getAPIProvider() === 'gemini' && (block as any).extra_content ? { extra_content: (block as any).extra_content } : {})
-                  }
-                }
-                return block
-              }),
-            },
-          }
-
-          // Find a previous assistant message with the same message ID and merge.
-          // Walk backwards, skipping tool results and different-ID assistants,
-          // since concurrent agents (teammates) can interleave streaming content
-          // blocks from multiple API responses with different message IDs.
-          for (let i = result.length - 1; i >= 0; i--) {
-            const msg = result[i]!
-
-            if (msg.type !== 'assistant' && !isToolResultMessage(msg)) {
-              break
-            }
-
-            if (msg.type === 'assistant') {
-              if (msg.message.id === normalizedMessage.message.id) {
-                result[i] = mergeAssistantMessages(msg, normalizedMessage)
-                return
-              }
-              continue
-            }
-          }
-
-          result.push(normalizedMessage)
+          appendAssistantMessageForAPI(
+            result,
+            normalizeAssistantMessageForAPI(message, tools),
+          )
           return
         }
         case 'attachment': {
-          const rawAttachmentMessage = normalizeAttachmentForAPI(
-            message.attachment,
-          )
-          const attachmentMessage = false
-            ? rawAttachmentMessage.map(ensureSystemReminderWrap)
-            : rawAttachmentMessage
-
-          // If the last message is also a user message, merge them
-          const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
-            result[result.length - 1] = attachmentMessage.reduce(
-              (p, c) => mergeUserMessagesAndToolResults(p, c),
-              lastMessage,
-            )
-            return
-          }
-
-          result.push(...attachmentMessage)
+          appendAttachmentMessagesForAPI(result, message)
           return
         }
       }
@@ -2689,10 +2922,6 @@ export function mergeUserContentBlocks(
 
 let nestedToolInputAjv: Ajv | null = null
 const nestedToolInputValidators = new WeakMap<object, (value: unknown) => boolean>()
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isJsonSchemaObject(value: unknown): value is object {
   return typeof value === 'object' && value !== null
@@ -3784,30 +4013,835 @@ function getAutoModeSparseInstructions(): UserMessage[] {
   ])
 }
 
-export function normalizeAttachmentForAPI(
-  attachment: Attachment,
+function normalizeTaskStatusAttachment(
+  attachment: TaskStatusAttachment,
 ): UserMessage[] {
-  if (isAgentSwarmsEnabled()) {
-    if (attachment.type === 'teammate_mailbox') {
-      return [
+  const displayStatus =
+    attachment.status === 'killed' ? 'stopped' : attachment.status
+  const safeTaskId = sanitizeSystemReminderContent(attachment.taskId)
+  const safeTaskType = sanitizeSystemReminderContent(attachment.taskType)
+  const safeDescription = sanitizeSystemReminderContent(attachment.description)
+  const safeDeltaSummary = attachment.deltaSummary
+    ? sanitizeSystemReminderContent(attachment.deltaSummary)
+    : null
+  const safeOutputFilePath = attachment.outputFilePath
+    ? sanitizeSystemReminderContent(attachment.outputFilePath)
+    : null
+
+  // For stopped tasks, keep it brief: the work was interrupted and the raw
+  // transcript delta is not useful context.
+  if (attachment.status === 'killed') {
+    return [
+      createUserMessage({
+        content: wrapInSystemReminder(
+          `Task "${safeDescription}" (${safeTaskId}) was stopped by the user.`,
+        ),
+        isMeta: true,
+      }),
+    ]
+  }
+
+  // Running task status is emitted post-compaction, where the original spawn
+  // message is gone, so preserve the duplicate-spawn warning with the summary.
+  if (attachment.status === 'running') {
+    const parts = [
+      `Background agent "${safeDescription}" (${safeTaskId}) is still running.`,
+    ]
+    if (safeDeltaSummary) {
+      parts.push(`Progress: ${safeDeltaSummary}`)
+    }
+    if (safeOutputFilePath) {
+      parts.push(
+        `Do NOT spawn a duplicate. You will be notified when it completes. You can read partial output at ${safeOutputFilePath} or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
+      )
+    } else {
+      parts.push(
+        `Do NOT spawn a duplicate. You will be notified when it completes. You can check its progress with the ${TASK_OUTPUT_TOOL_NAME} tool or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
+      )
+    }
+    return [
+      createUserMessage({
+        content: wrapInSystemReminder(parts.join(' ')),
+        isMeta: true,
+      }),
+    ]
+  }
+
+  const messageParts: string[] = [
+    `Task ${safeTaskId}`,
+    `(type: ${safeTaskType})`,
+    `(status: ${displayStatus})`,
+    `(description: ${safeDescription})`,
+  ]
+
+  if (safeDeltaSummary) {
+    messageParts.push(`Delta: ${safeDeltaSummary}`)
+  }
+
+  if (safeOutputFilePath) {
+    messageParts.push(
+      `Read the output file to retrieve the result: ${safeOutputFilePath}`,
+    )
+  } else {
+    messageParts.push(
+      `You can check its output using the ${TASK_OUTPUT_TOOL_NAME} tool.`,
+    )
+  }
+
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(messageParts.join(' ')),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeAsyncHookResponseAttachment(
+  attachment: AsyncHookResponseAttachmentForAPI,
+): UserMessage[] {
+  const response = attachment.response
+  const messages: UserMessage[] = []
+  const contextMessages: UserMessage[] = []
+
+  if (response.systemMessage) {
+    messages.push(
+      createUserMessage({
+        content: sanitizeSystemReminderContent(response.systemMessage),
+        isMeta: true,
+      }),
+    )
+  }
+
+  if (
+    response.hookSpecificOutput &&
+    'additionalContext' in response.hookSpecificOutput &&
+    response.hookSpecificOutput.additionalContext
+  ) {
+    const section = renderHookAdditionalContextSection(
+      [
+        {
+          hookName: attachment.hookName,
+          hookEvent: attachment.hookEvent,
+          content: response.hookSpecificOutput.additionalContext,
+        },
+      ],
+    )
+    if (section !== null) {
+      contextMessages.push(
         createUserMessage({
-          content: formatTeammateMessages(attachment.messages),
+          content: section,
           isMeta: true,
         }),
-      ]
+      )
     }
-    if (attachment.type === 'team_context') {
-      const teamName = sanitizeSystemReminderContent(attachment.teamName)
-      const agentName = sanitizeSystemReminderContent(attachment.agentName)
-      const teamConfigPath = sanitizeSystemReminderContent(
-        attachment.teamConfigPath,
-      )
-      const taskListPath = sanitizeSystemReminderContent(
-        attachment.taskListPath,
-      )
-      return [
-        createUserMessage({
-          content: `<system-reminder>
+  }
+
+  return [...wrapMessagesInSystemReminder(messages), ...contextMessages]
+}
+
+function normalizeQueuedCommandAttachment(
+  attachment: QueuedCommandAttachment,
+): UserMessage[] {
+  // Prefer explicit origin carried from the queue; fall back to commandMode for
+  // older task notifications.
+  const origin: MessageOrigin | undefined =
+    attachment.origin ??
+    (attachment.commandMode === 'task-notification'
+      ? { kind: 'task-notification' }
+      : undefined)
+
+  // Human input drained mid-turn has no origin and no QueuedCommand.isMeta, so
+  // keep it visible in transcript filters.
+  const metaProp =
+    origin !== undefined || attachment.isMeta
+      ? ({ isMeta: true } as const)
+      : {}
+
+  if (Array.isArray(attachment.prompt)) {
+    const textContent = attachment.prompt
+      .filter((block): block is TextBlockParam => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+
+    const imageBlocks = attachment.prompt.filter(block => block.type === 'image')
+
+    const content: ContentBlockParam[] = [
+      {
+        type: 'text',
+        text: wrapCommandText(textContent, origin),
+      },
+      ...imageBlocks,
+    ]
+
+    return wrapMessagesInSystemReminder([
+      createUserMessage({
+        content,
+        ...metaProp,
+        origin,
+        uuid: attachment.source_uuid,
+      }),
+    ])
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: wrapCommandText(String(attachment.prompt), origin),
+      ...metaProp,
+      origin,
+      uuid: attachment.source_uuid,
+    }),
+  ])
+}
+
+function normalizeDiagnosticsAttachment(
+  attachment: DiagnosticsAttachment,
+): UserMessage[] {
+  if (attachment.files.length === 0) return []
+
+  const diagnosticSummary = sanitizeDiagnosticReminderContent(
+    DiagnosticTrackingService.formatDiagnosticsSummary(attachment.files),
+  )
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `<new-diagnostics>The following new diagnostic issues were detected:\n\n${diagnosticSummary}</new-diagnostics>`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeHookBlockingErrorAttachment(
+  attachment: HookBlockingErrorAttachmentForAPI,
+): UserMessage[] {
+  const hookName = sanitizeSystemReminderContent(attachment.hookName)
+  const command = sanitizeSystemReminderContent(
+    attachment.blockingError.command,
+  )
+  const blockingError = sanitizeSystemReminderContent(
+    attachment.blockingError.blockingError,
+  )
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `${hookName} hook blocking error from command: "${command}": ${blockingError}`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeHookSuccessAttachment(
+  attachment: HookSuccessAttachmentForAPI,
+): UserMessage[] {
+  if (
+    attachment.hookEvent !== 'SessionStart' &&
+    attachment.hookEvent !== 'UserPromptSubmit'
+  ) {
+    return []
+  }
+  if (attachment.content === '') {
+    return []
+  }
+  const hookName = sanitizeSystemReminderContent(attachment.hookName)
+  const content = sanitizeSystemReminderContent(attachment.content)
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(`${hookName} hook success: ${content}`),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeHookAdditionalContextAttachment(
+  attachment: HookAdditionalContextAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.content.length === 0) {
+    return []
+  }
+  const section = renderHookAdditionalContextSection(
+    attachment.content.map((content) => ({
+      hookName: attachment.hookName,
+      hookEvent: attachment.hookEvent,
+      content,
+    })),
+  )
+  if (section === null) return []
+  return [
+    createUserMessage({
+      content: section,
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeHookStoppedContinuationAttachment(
+  attachment: HookStoppedContinuationAttachmentForAPI,
+): UserMessage[] {
+  const hookName = sanitizeSystemReminderContent(attachment.hookName)
+  const message = sanitizeSystemReminderContent(attachment.message)
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `${hookName} hook stopped continuation: ${message}`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeTokenUsageAttachment(
+  attachment: TokenUsageAttachment,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `Token usage: ${attachment.used}/${attachment.total}; ${attachment.remaining} remaining`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeBudgetUsdAttachment(
+  attachment: BudgetUsdAttachment,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `USD budget: $${attachment.used}/$${attachment.total}; $${attachment.remaining} remaining`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeOutputTokenUsageAttachment(
+  attachment: OutputTokenUsageAttachment,
+): UserMessage[] {
+  const turnText =
+    attachment.budget !== null
+      ? `${formatNumber(attachment.turn)} / ${formatNumber(attachment.budget)}`
+      : formatNumber(attachment.turn)
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `Output tokens \u2014 turn: ${turnText} \u00b7 session: ${formatNumber(attachment.session)}`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeDeferredToolsDeltaAttachment(
+  attachment: DeferredToolsDeltaAttachment,
+): UserMessage[] {
+  const parts: string[] = []
+  if (attachment.addedLines.length > 0) {
+    const addedLines = attachment.addedLines.map(sanitizeSystemReminderContent)
+    parts.push(
+      `The following deferred tools are now available via ToolSearch:\n${addedLines.join('\n')}`,
+    )
+  }
+  if (attachment.removedNames.length > 0) {
+    const removedNames = attachment.removedNames.map(
+      sanitizeSystemReminderContent,
+    )
+    parts.push(
+      `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${removedNames.join('\n')}`,
+    )
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+  ])
+}
+
+function normalizeAgentListingDeltaAttachment(
+  attachment: AgentListingDeltaAttachment,
+): UserMessage[] {
+  const parts: string[] = []
+  if (attachment.addedLines.length > 0) {
+    const header = attachment.isInitial
+      ? 'Available agent types for the Agent tool:'
+      : 'New agent types are now available for the Agent tool:'
+    parts.push(
+      `${header}\n${attachment.addedLines.map(sanitizeAgentListingLine).join('\n')}`,
+    )
+  }
+  if (attachment.removedTypes.length > 0) {
+    parts.push(
+      `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${formatAgentListingType(t)}`).join('\n')}`,
+    )
+  }
+  if (attachment.isInitial && attachment.showConcurrencyNote) {
+    parts.push(
+      `Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses.`,
+    )
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+  ])
+}
+
+function normalizeMcpInstructionsDeltaAttachment(
+  attachment: McpInstructionsDeltaAttachment,
+): UserMessage[] {
+  const parts: string[] = []
+  if (attachment.addedBlocks.length > 0) {
+    const section = renderMcpInstructionsDeltaSection(
+      attachment.addedNames,
+      attachment.addedBlocks,
+    )
+    if (section !== null) parts.push(section)
+  }
+  if (attachment.removedNames.length > 0) {
+    const removedNames = attachment.removedNames.map(
+      sanitizeSystemReminderContent,
+    )
+    parts.push(
+      `The following MCP servers have disconnected. Their instructions above no longer apply:\n${removedNames.join('\n')}`,
+    )
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+  ])
+}
+
+function normalizeDirectoryAttachment(
+  attachment: DirectoryAttachmentForAPI,
+): UserMessage[] {
+  const safePath = sanitizeSystemReminderContent(attachment.path)
+  return wrapMessagesInSystemReminder([
+    sanitizeMessageForSystemReminder(
+      createToolUseMessage(CanonicalBashTool.name, {
+        command: `ls ${quote([safePath])}`,
+      }),
+    ),
+    sanitizeMessageForSystemReminder(
+      createToolResultMessage(CanonicalBashTool, {
+        content: attachment.content,
+        metadata: {
+          stdout: attachment.content,
+          stderr: '',
+          interrupted: false,
+        },
+      }),
+    ),
+  ])
+}
+
+function normalizeEditedTextFileAttachment(
+  attachment: EditedTextFileAttachmentForAPI,
+): UserMessage[] {
+  const editedFilename = sanitizeSystemReminderContent(attachment.filename)
+  const editedSnippet = sanitizeSystemReminderContent(attachment.snippet)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `Note: ${editedFilename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${editedSnippet}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeFileAttachment(
+  attachment: FileAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    sanitizeMessageForSystemReminder(
+      createToolUseMessage(CanonicalFileReadTool.name, {
+        file_path: safeFilename,
+      }),
+    ),
+    sanitizeMessageForSystemReminder(
+      createToolResultMessage(CanonicalFileReadTool, attachment.content),
+    ),
+    ...(attachment.truncated
+      ? [
+          createUserMessage({
+            content: `Note: The file ${safeFilename} was too large and has been truncated to the first ${MAX_LINES_TO_READ} lines. Don't tell the user about this truncation. Use ${CanonicalFileReadTool.name} to read more of the file if you need.`,
+            isMeta: true, // model-facing metadata only
+          }),
+        ]
+      : []),
+  ])
+}
+
+function normalizeCompactFileReferenceAttachment(
+  attachment: CompactFileReferenceAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `Note: ${safeFilename} was read before the last conversation was summarized, but the contents are too large to include. Use ${CanonicalFileReadTool.name} tool if you need to access it.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizePdfReferenceAttachment(
+  attachment: PdfReferenceAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content:
+        `PDF file: ${safeFilename} (${attachment.pageCount} pages, ${formatFileSize(attachment.fileSize)}). ` +
+        `This PDF is too large to read all at once. You MUST use the ${FILE_READ_TOOL_NAME} tool with the pages parameter ` +
+        `to read specific page ranges (e.g., pages: "1-5"). Do NOT call ${FILE_READ_TOOL_NAME} without the pages parameter ` +
+        `or it will fail. Start by reading the first few pages to understand the structure, then read more as needed. ` +
+        `Maximum 20 pages per request.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeSelectedLinesInIdeAttachment(
+  attachment: SelectedLinesInIdeAttachmentForAPI,
+): UserMessage[] {
+  const maxSelectionLength = 2000
+  const content =
+    attachment.content.length > maxSelectionLength
+      ? `${attachment.content.substring(0, maxSelectionLength)}\n... (truncated)`
+      : attachment.content
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  const safeContent = sanitizeSystemReminderContent(content)
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user selected the lines ${attachment.lineStart} to ${attachment.lineEnd} from ${safeFilename}:\n${safeContent}\n\nThis may or may not be related to the current task.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeOpenedFileInIdeAttachment(
+  attachment: OpenedFileInIdeAttachmentForAPI,
+): UserMessage[] {
+  const safeFilename = sanitizeSystemReminderContent(attachment.filename)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user opened the file ${safeFilename} in the IDE. This may or may not be related to the current task.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizePlanFileReferenceAttachment(
+  attachment: PlanFileReferenceAttachmentForAPI,
+): UserMessage[] {
+  const safePlanFilePath = sanitizeSystemReminderContent(
+    attachment.planFilePath,
+  )
+  const safePlanContent = sanitizeSystemReminderContent(attachment.planContent)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `A plan file exists from plan mode at: ${safePlanFilePath}\n\nPlan contents:\n\n${safePlanContent}\n\nIf this plan is relevant to the current work and not already complete, continue working on it.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeNestedMemoryAttachment(
+  attachment: NestedMemoryAttachmentForAPI,
+): UserMessage[] {
+  const safePath = sanitizeSystemReminderContent(attachment.content.path)
+  const safeContent = sanitizeSystemReminderContent(attachment.content.content)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `Contents of ${safePath}:\n\n${safeContent}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeInvokedSkillsAttachment(
+  attachment: InvokedSkillsAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.skills.length === 0) {
+    return []
+  }
+
+  const skillsContent = attachment.skills
+    .map(skill => {
+      const safeName = sanitizeSystemReminderContent(skill.name)
+      const safePath = sanitizeSystemReminderContent(skill.path)
+      const safeContent = sanitizeSystemReminderContent(skill.content)
+      return `### Skill: ${safeName}\nPath: ${safePath}\n\n${safeContent}`
+    })
+    .join('\n\n---\n\n')
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The following skills were invoked in this session. Continue to follow these guidelines:\n\n${skillsContent}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeTodoReminderAttachment(
+  attachment: TodoReminderAttachmentForAPI,
+): UserMessage[] {
+  if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
+    return []
+  }
+  const todoItems = attachment.content
+    .map((todo, index) => {
+      const safeStatus = sanitizeSystemReminderContent(todo.status)
+      const safeContent = sanitizeSystemReminderContent(todo.content)
+      return `${index + 1}. [${safeStatus}] ${safeContent}`
+    })
+    .join('\n')
+
+  let message = `The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
+  if (todoItems.length > 0) {
+    message += `\n\nHere are the existing contents of your todo list:\n\n[${todoItems}]`
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: message,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeTaskReminderAttachment(
+  attachment: TaskReminderAttachmentForAPI,
+): UserMessage[] {
+  if (!isTodoV2Enabled()) {
+    return []
+  }
+  if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
+    return []
+  }
+  const taskItems = attachment.content
+    .map(task => {
+      const safeId = sanitizeSystemReminderContent(String(task.id))
+      const safeStatus = sanitizeSystemReminderContent(task.status)
+      const safeSubject = sanitizeSystemReminderContent(task.subject)
+      return `#${safeId}. [${safeStatus}] ${safeSubject}`
+    })
+    .join('\n')
+
+  let message = `The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using ${TASK_CREATE_TOOL_NAME} to add new tasks and ${TASK_UPDATE_TOOL_NAME} to update task status (set to in_progress when starting, completed when done). Also consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
+  if (taskItems.length > 0) {
+    message += `\n\nHere are the existing tasks:\n\n${taskItems}`
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: message,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeSkillListingAttachment(
+  attachment: SkillListingAttachmentForAPI,
+): UserMessage[] {
+  if (!attachment.content) {
+    return []
+  }
+  const content = sanitizeSystemReminderContent(attachment.content)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The following skills are available for use with the Skill tool:\n\n${content}`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeOutputStyleAttachment(
+  attachment: OutputStyleAttachmentForAPI,
+): UserMessage[] {
+  const outputStyle =
+    OUTPUT_STYLE_CONFIG[attachment.style as keyof typeof OUTPUT_STYLE_CONFIG]
+  if (!outputStyle) {
+    return []
+  }
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `${outputStyle.name} output style is active. Remember to follow the specific guidelines for this style.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizePlanModeReentryAttachment(
+  attachment: PlanModeReentryAttachmentForAPI,
+): UserMessage[] {
+  const safePlanFilePath = sanitizeSystemReminderContent(
+    attachment.planFilePath,
+  )
+  const content = `## Re-entering Plan Mode
+
+You are returning to plan mode after having previously exited it. A plan file exists at ${safePlanFilePath} from your previous planning session.
+
+**Before proceeding with any new planning, you should:**
+1. Read the existing plan file to understand what was previously planned
+2. Evaluate the user's current request against that plan
+3. Decide how to proceed:
+   - **Different task**: If the user's request is for a different task—even if it's similar or related—start fresh by overwriting the existing plan
+   - **Same task, continuing**: If this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections
+4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ${ExitPlanModeV2Tool.name}
+
+Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first.`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizePlanModeExitAttachment(
+  attachment: PlanModeExitAttachmentForAPI,
+): UserMessage[] {
+  const safePlanFilePath = sanitizeSystemReminderContent(
+    attachment.planFilePath,
+  )
+  const planReference = attachment.planExists
+    ? ` The plan file is located at ${safePlanFilePath} if you need to reference it.`
+    : ''
+  const content = `## Exited Plan Mode
+
+You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizeAutoModeExitAttachment(): UserMessage[] {
+  const content = `## Exited Auto Mode
+
+You have exited auto mode. The user may now want to interact more directly. You should ask clarifying questions when the approach is ambiguous rather than making assumptions.`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizeCriticalSystemReminderAttachment(
+  attachment: CriticalSystemReminderAttachmentForAPI,
+): UserMessage[] {
+  const content = sanitizeSystemReminderContent(attachment.content)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+function normalizeAgentMentionAttachment(
+  attachment: AgentMentionAttachmentForAPI,
+): UserMessage[] {
+  const agentType = sanitizeSystemReminderContent(attachment.agentType)
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user has expressed a desire to invoke the agent "${agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeCompactionReminderAttachment(): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content:
+        'Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush \u2014 you have unlimited context through automatic compaction.',
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeContextEfficiencyAttachment(): UserMessage[] {
+  if (feature('HISTORY_SNIP')) {
+    const { SNIP_NUDGE_TEXT } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('../services/compact/snipCompact.js') as SnipCompactRuntime
+    return wrapMessagesInSystemReminder([
+      createUserMessage({
+        content: SNIP_NUDGE_TEXT,
+        isMeta: true,
+      }),
+    ])
+  }
+  return []
+}
+
+function normalizeDateChangeAttachment(
+  attachment: DateChangeAttachmentForAPI,
+): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The date has changed. Today's date is now ${attachment.newDate}. DO NOT mention this to the user explicitly because they are already aware.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeUltrathinkEffortAttachment(
+  attachment: UltrathinkEffortAttachmentForAPI,
+): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: `The user has requested reasoning effort level: ${attachment.level}. Apply this to the current turn.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeCompanionIntroAttachment(
+  attachment: CompanionIntroAttachmentForAPI,
+): UserMessage[] {
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content: companionIntroText(attachment.name, attachment.species),
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeVerifyPlanReminderAttachment(): UserMessage[] {
+  const content = `You have completed implementing the plan. Please verify directly (NOT via the ${AGENT_TOOL_NAME} tool or an agent) that all plan items were completed correctly.`
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
+}
+
+const LEGACY_ATTACHMENT_TYPES_FOR_API = new Set<string>([
+  'autocheckpointing',
+  'background_task_status',
+  'todo',
+  'task_progress',
+  'ultramemory',
+])
+
+function isLegacyAttachmentTypeForAPI(attachment: { type: string }): boolean {
+  return LEGACY_ATTACHMENT_TYPES_FOR_API.has(attachment.type)
+}
+
+function normalizeTeammateMailboxAttachment(
+  attachment: TeammateMailboxAttachmentForAPI,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: formatTeammateMessages(attachment.messages),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeTeamContextAttachment(
+  attachment: TeamContextAttachmentForAPI,
+): UserMessage[] {
+  const teamName = sanitizeSystemReminderContent(attachment.teamName)
+  const agentName = sanitizeSystemReminderContent(attachment.agentName)
+  const teamConfigPath = sanitizeSystemReminderContent(
+    attachment.teamConfigPath,
+  )
+  const taskListPath = sanitizeSystemReminderContent(attachment.taskListPath)
+
+  return [
+    createUserMessage({
+      content: `<system-reminder>
 # Team Coordination
 
 You are a teammate in team "${teamName}".
@@ -3833,245 +4867,120 @@ Read the team config to discover your teammates' names. Check the task list peri
 }
 \`\`\`
 </system-reminder>`,
-          isMeta: true,
-        }),
-      ]
-    }
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeSkillDiscoveryAttachment(
+  attachment: SkillDiscoveryAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.skills.length === 0) {
+    return []
   }
 
+  const lines = attachment.skills.map(
+    skill =>
+      `- ${sanitizeSystemReminderContent(skill.name)}: ${sanitizeSystemReminderContent(skill.description)}`,
+  )
+  return wrapMessagesInSystemReminder([
+    createUserMessage({
+      content:
+        `Skills relevant to your task:\n\n${lines.join('\n')}\n\n` +
+        `These skills encode project-specific conventions. ` +
+        `Invoke via Skill("<name>") for complete instructions.`,
+      isMeta: true,
+    }),
+  ])
+}
+
+function normalizeRelevantMemoriesAttachment(
+  attachment: RelevantMemoriesAttachmentForAPI,
+): UserMessage[] {
+  if (attachment.memories.length === 0) {
+    return []
+  }
+  return [
+    createUserMessage({
+      content: renderRelevantMemoriesForCompat(attachment),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeMcpResourceAttachment(
+  attachment: McpResourceAttachmentForAPI,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: renderMcpResourceForCompat(attachment),
+      isMeta: true,
+    }),
+  ]
+}
+
+export function normalizeAttachmentForAPI(
+  attachment: Attachment,
+): UserMessage[] {
+  if (isAgentSwarmsEnabled()) {
+    if (attachment.type === 'teammate_mailbox') {
+      return normalizeTeammateMailboxAttachment(attachment)
+    }
+    if (attachment.type === 'team_context') {
+      return normalizeTeamContextAttachment(attachment)
+    }
+  }
 
   // skill_discovery handled here (not in the switch) so the 'skill_discovery'
   // string literal lives inside a feature()-guarded block. A case label can't
   // be gated, but this pattern can — same approach as teammate_mailbox above.
   if (feature('EXPERIMENTAL_SKILL_SEARCH')) {
     if (attachment.type === 'skill_discovery') {
-      if (attachment.skills.length === 0) return []
-      const lines = attachment.skills.map(
-        s =>
-          `- ${sanitizeSystemReminderContent(s.name)}: ${sanitizeSystemReminderContent(s.description)}`,
-      )
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content:
-            `Skills relevant to your task:\n\n${lines.join('\n')}\n\n` +
-            `These skills encode project-specific conventions. ` +
-            `Invoke via Skill("<name>") for complete instructions.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeSkillDiscoveryAttachment(attachment)
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- teammate_mailbox/team_context/skill_discovery/bagel_console handled above
-  // biome-ignore lint/nursery/useExhaustiveSwitchCases: teammate_mailbox/team_context/max_turns_reached/skill_discovery/bagel_console handled above, can't add case for dead code elimination
+  // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- teammate_mailbox/team_context/skill_discovery handled above; bagel_console has no API producer and stays uncased for DCE
+  // biome-ignore lint/nursery/useExhaustiveSwitchCases: teammate_mailbox/team_context/skill_discovery handled above, can't add case labels for dead code elimination
   switch (attachment.type) {
     case 'directory': {
-      const safePath = sanitizeSystemReminderContent(attachment.path)
-      return wrapMessagesInSystemReminder([
-        sanitizeMessageForSystemReminder(
-          createToolUseMessage(CanonicalBashTool.name, {
-            command: `ls ${quote([safePath])}`,
-          }),
-        ),
-        sanitizeMessageForSystemReminder(
-          createToolResultMessage(CanonicalBashTool, {
-            content: attachment.content,
-            metadata: {
-              stdout: attachment.content,
-              stderr: '',
-              interrupted: false,
-            },
-          }),
-        ),
-      ])
+      return normalizeDirectoryAttachment(attachment)
     }
     case 'edited_text_file': {
-      const editedFilename = sanitizeSystemReminderContent(attachment.filename)
-      const editedSnippet = sanitizeSystemReminderContent(attachment.snippet)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `Note: ${editedFilename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${editedSnippet}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeEditedTextFileAttachment(attachment)
     }
     case 'file': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        sanitizeMessageForSystemReminder(
-          createToolUseMessage(CanonicalFileReadTool.name, {
-            file_path: safeFilename,
-          }),
-        ),
-        sanitizeMessageForSystemReminder(
-          createToolResultMessage(CanonicalFileReadTool, attachment.content),
-        ),
-        ...(attachment.truncated
-          ? [
-              createUserMessage({
-                content: `Note: The file ${safeFilename} was too large and has been truncated to the first ${MAX_LINES_TO_READ} lines. Don't tell the user about this truncation. Use ${CanonicalFileReadTool.name} to read more of the file if you need.`,
-                isMeta: true, // model-facing metadata only
-              }),
-            ]
-          : []),
-      ])
+      return normalizeFileAttachment(attachment)
     }
     case 'compact_file_reference': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `Note: ${safeFilename} was read before the last conversation was summarized, but the contents are too large to include. Use ${CanonicalFileReadTool.name} tool if you need to access it.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeCompactFileReferenceAttachment(attachment)
     }
     case 'pdf_reference': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content:
-            `PDF file: ${safeFilename} (${attachment.pageCount} pages, ${formatFileSize(attachment.fileSize)}). ` +
-            `This PDF is too large to read all at once. You MUST use the ${FILE_READ_TOOL_NAME} tool with the pages parameter ` +
-            `to read specific page ranges (e.g., pages: "1-5"). Do NOT call ${FILE_READ_TOOL_NAME} without the pages parameter ` +
-            `or it will fail. Start by reading the first few pages to understand the structure, then read more as needed. ` +
-            `Maximum 20 pages per request.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizePdfReferenceAttachment(attachment)
     }
     case 'selected_lines_in_ide': {
-      const maxSelectionLength = 2000
-      const content =
-        attachment.content.length > maxSelectionLength
-          ? attachment.content.substring(0, maxSelectionLength) +
-            '\n... (truncated)'
-          : attachment.content
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      const safeContent = sanitizeSystemReminderContent(content)
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user selected the lines ${attachment.lineStart} to ${attachment.lineEnd} from ${safeFilename}:\n${safeContent}\n\nThis may or may not be related to the current task.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeSelectedLinesInIdeAttachment(attachment)
     }
     case 'opened_file_in_ide': {
-      const safeFilename = sanitizeSystemReminderContent(attachment.filename)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user opened the file ${safeFilename} in the IDE. This may or may not be related to the current task.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeOpenedFileInIdeAttachment(attachment)
     }
     case 'plan_file_reference': {
-      const safePlanFilePath = sanitizeSystemReminderContent(
-        attachment.planFilePath,
-      )
-      const safePlanContent = sanitizeSystemReminderContent(
-        attachment.planContent,
-      )
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `A plan file exists from plan mode at: ${safePlanFilePath}\n\nPlan contents:\n\n${safePlanContent}\n\nIf this plan is relevant to the current work and not already complete, continue working on it.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizePlanFileReferenceAttachment(attachment)
     }
     case 'invoked_skills': {
-      if (attachment.skills.length === 0) {
-        return []
-      }
-
-      const skillsContent = attachment.skills
-        .map(skill => {
-          const safeName = sanitizeSystemReminderContent(skill.name)
-          const safePath = sanitizeSystemReminderContent(skill.path)
-          const safeContent = sanitizeSystemReminderContent(skill.content)
-          return `### Skill: ${safeName}\nPath: ${safePath}\n\n${safeContent}`
-        })
-        .join('\n\n---\n\n')
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The following skills were invoked in this session. Continue to follow these guidelines:\n\n${skillsContent}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeInvokedSkillsAttachment(attachment)
     }
     case 'todo_reminder': {
-      if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
-        return []
-      }
-      const todoItems = attachment.content
-        .map((todo, index) => {
-          const safeStatus = sanitizeSystemReminderContent(todo.status)
-          const safeContent = sanitizeSystemReminderContent(todo.content)
-          return `${index + 1}. [${safeStatus}] ${safeContent}`
-        })
-        .join('\n')
-
-      let message = `The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
-      if (todoItems.length > 0) {
-        message += `\n\nHere are the existing contents of your todo list:\n\n[${todoItems}]`
-      }
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: message,
-          isMeta: true,
-        }),
-      ])
+      return normalizeTodoReminderAttachment(attachment)
     }
     case 'task_reminder': {
-      if (!isTodoV2Enabled()) {
-        return []
-      }
-      if (isEnvTruthy(process.env.AGENC_DISABLE_TOOL_REMINDERS)) {
-        return []
-      }
-      const taskItems = attachment.content
-        .map(task => {
-          const safeId = sanitizeSystemReminderContent(String(task.id))
-          const safeStatus = sanitizeSystemReminderContent(task.status)
-          const safeSubject = sanitizeSystemReminderContent(task.subject)
-          return `#${safeId}. [${safeStatus}] ${safeSubject}`
-        })
-        .join('\n')
-
-      let message = `The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using ${TASK_CREATE_TOOL_NAME} to add new tasks and ${TASK_UPDATE_TOOL_NAME} to update task status (set to in_progress when starting, completed when done). Also consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n`
-      if (taskItems.length > 0) {
-        message += `\n\nHere are the existing tasks:\n\n${taskItems}`
-      }
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: message,
-          isMeta: true,
-        }),
-      ])
+      return normalizeTaskReminderAttachment(attachment)
     }
     case 'nested_memory': {
-      const safePath = sanitizeSystemReminderContent(attachment.content.path)
-      const safeContent = sanitizeSystemReminderContent(
-        attachment.content.content,
-      )
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `Contents of ${safePath}:\n\n${safeContent}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeNestedMemoryAttachment(attachment)
     }
     case 'relevant_memories': {
-      if (attachment.memories.length === 0) return []
-      return [
-        createUserMessage({
-          content: renderRelevantMemoriesForCompat(attachment),
-          isMeta: true,
-        }),
-      ]
+      return normalizeRelevantMemoriesAttachment(attachment)
     }
     case 'dynamic_skill': {
       // Dynamic skills are informational for the UI only - the skills themselves
@@ -4079,535 +4988,109 @@ Read the team config to discover your teammates' names. Check the task list peri
       return []
     }
     case 'skill_listing': {
-      if (!attachment.content) {
-        return []
-      }
-      const content = sanitizeSystemReminderContent(attachment.content)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The following skills are available for use with the Skill tool:\n\n${content}`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeSkillListingAttachment(attachment)
     }
     case 'queued_command': {
-      // Prefer explicit origin carried from the queue; fall back to commandMode
-      // for task notifications (which predate origin).
-      const origin: MessageOrigin | undefined =
-        attachment.origin ??
-        (attachment.commandMode === 'task-notification'
-          ? { kind: 'task-notification' }
-          : undefined)
-
-      // Only hide from the transcript if the queued command was itself
-      // system-generated. Human input drained mid-turn has no origin and no
-      // QueuedCommand.isMeta — it should stay visible. Previously this
-      // hardcoded isMeta:true, which hid user-typed messages in brief mode
-      // (filterForBriefTool) and in normal mode (shouldShowUserMessage).
-      const metaProp =
-        origin !== undefined || attachment.isMeta
-          ? ({ isMeta: true } as const)
-          : {}
-
-      if (Array.isArray(attachment.prompt)) {
-        // Handle content blocks (may include images)
-        const textContent = attachment.prompt
-          .filter((block): block is TextBlockParam => block.type === 'text')
-          .map(block => block.text)
-          .join('\n')
-
-        const imageBlocks = attachment.prompt.filter(
-          block => block.type === 'image',
-        )
-
-        const content: ContentBlockParam[] = [
-          {
-            type: 'text',
-            text: wrapCommandText(textContent, origin),
-          },
-          ...imageBlocks,
-        ]
-
-        return wrapMessagesInSystemReminder([
-          createUserMessage({
-            content,
-            ...metaProp,
-            origin,
-            uuid: attachment.source_uuid,
-          }),
-        ])
-      }
-
-      // String prompt
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: wrapCommandText(String(attachment.prompt), origin),
-          ...metaProp,
-          origin,
-          uuid: attachment.source_uuid,
-        }),
-      ])
+      return normalizeQueuedCommandAttachment(attachment)
     }
     case 'output_style': {
-      const outputStyle =
-        OUTPUT_STYLE_CONFIG[
-          attachment.style as keyof typeof OUTPUT_STYLE_CONFIG
-        ]
-      if (!outputStyle) {
-        return []
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `${outputStyle.name} output style is active. Remember to follow the specific guidelines for this style.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeOutputStyleAttachment(attachment)
     }
     case 'diagnostics': {
-      if (attachment.files.length === 0) return []
-
-      // Use the centralized diagnostic formatting
-      const diagnosticSummary =
-        sanitizeDiagnosticReminderContent(
-          DiagnosticTrackingService.formatDiagnosticsSummary(attachment.files),
-        )
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `<new-diagnostics>The following new diagnostic issues were detected:\n\n${diagnosticSummary}</new-diagnostics>`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeDiagnosticsAttachment(attachment)
     }
     case 'plan_mode': {
       return getPlanModeInstructions(attachment)
     }
     case 'plan_mode_reentry': {
-      const safePlanFilePath = sanitizeSystemReminderContent(
-        attachment.planFilePath,
-      )
-      const content = `## Re-entering Plan Mode
-
-You are returning to plan mode after having previously exited it. A plan file exists at ${safePlanFilePath} from your previous planning session.
-
-**Before proceeding with any new planning, you should:**
-1. Read the existing plan file to understand what was previously planned
-2. Evaluate the user's current request against that plan
-3. Decide how to proceed:
-   - **Different task**: If the user's request is for a different task—even if it's similar or related—start fresh by overwriting the existing plan
-   - **Same task, continuing**: If this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections
-4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ${ExitPlanModeV2Tool.name}
-
-Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first.`
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizePlanModeReentryAttachment(attachment)
     }
     case 'plan_mode_exit': {
-      const safePlanFilePath = sanitizeSystemReminderContent(
-        attachment.planFilePath,
-      )
-      const planReference = attachment.planExists
-        ? ` The plan file is located at ${safePlanFilePath} if you need to reference it.`
-        : ''
-      const content = `## Exited Plan Mode
-
-You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizePlanModeExitAttachment(attachment)
     }
     case 'auto_mode': {
       return getAutoModeInstructions(attachment)
     }
     case 'auto_mode_exit': {
-      const content = `## Exited Auto Mode
-
-You have exited auto mode. The user may now want to interact more directly. You should ask clarifying questions when the approach is ambiguous rather than making assumptions.`
-
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizeAutoModeExitAttachment()
     }
     case 'critical_system_reminder': {
-      const content = sanitizeSystemReminderContent(attachment.content)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizeCriticalSystemReminderAttachment(attachment)
     }
     case 'mcp_resource': {
-      return [
-        createUserMessage({
-          content: renderMcpResourceForCompat(attachment),
-          isMeta: true,
-        }),
-      ]
+      return normalizeMcpResourceAttachment(attachment)
     }
     case 'agent_mention': {
-      const agentType = sanitizeSystemReminderContent(attachment.agentType)
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user has expressed a desire to invoke the agent "${agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
-          isMeta: true,
-        }),
-      ])
+      return normalizeAgentMentionAttachment(attachment)
     }
     case 'task_status': {
-      const displayStatus =
-        attachment.status === 'killed' ? 'stopped' : attachment.status
-      const safeTaskId = sanitizeSystemReminderContent(attachment.taskId)
-      const safeTaskType = sanitizeSystemReminderContent(attachment.taskType)
-      const safeDescription = sanitizeSystemReminderContent(
-        attachment.description,
-      )
-      const safeDeltaSummary = attachment.deltaSummary
-        ? sanitizeSystemReminderContent(attachment.deltaSummary)
-        : null
-      const safeOutputFilePath = attachment.outputFilePath
-        ? sanitizeSystemReminderContent(attachment.outputFilePath)
-        : null
-
-      // For stopped tasks, keep it brief — the work was interrupted and
-      // the raw transcript delta isn't useful context.
-      if (attachment.status === 'killed') {
-        return [
-          createUserMessage({
-            content: wrapInSystemReminder(
-              `Task "${safeDescription}" (${safeTaskId}) was stopped by the user.`,
-            ),
-            isMeta: true,
-          }),
-        ]
-      }
-
-      // For running tasks, warn against spawning a duplicate — this attachment
-      // is only emitted post-compaction, where the original spawn message is gone.
-      if (attachment.status === 'running') {
-        const parts = [
-          `Background agent "${safeDescription}" (${safeTaskId}) is still running.`,
-        ]
-        if (safeDeltaSummary) {
-          parts.push(`Progress: ${safeDeltaSummary}`)
-        }
-        if (safeOutputFilePath) {
-          parts.push(
-            `Do NOT spawn a duplicate. You will be notified when it completes. You can read partial output at ${safeOutputFilePath} or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
-          )
-        } else {
-          parts.push(
-            `Do NOT spawn a duplicate. You will be notified when it completes. You can check its progress with the ${TASK_OUTPUT_TOOL_NAME} tool or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
-          )
-        }
-        return [
-          createUserMessage({
-            content: wrapInSystemReminder(parts.join(' ')),
-            isMeta: true,
-          }),
-        ]
-      }
-
-      // For completed/failed tasks, include the full delta
-      const messageParts: string[] = [
-        `Task ${safeTaskId}`,
-        `(type: ${safeTaskType})`,
-        `(status: ${displayStatus})`,
-        `(description: ${safeDescription})`,
-      ]
-
-      if (safeDeltaSummary) {
-        messageParts.push(`Delta: ${safeDeltaSummary}`)
-      }
-
-      if (safeOutputFilePath) {
-        messageParts.push(
-          `Read the output file to retrieve the result: ${safeOutputFilePath}`,
-        )
-      } else {
-        messageParts.push(
-          `You can check its output using the ${TASK_OUTPUT_TOOL_NAME} tool.`,
-        )
-      }
-
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(messageParts.join(' ')),
-          isMeta: true,
-        }),
-      ]
+      return normalizeTaskStatusAttachment(attachment)
     }
     case 'async_hook_response': {
-      const response = attachment.response
-      const messages: UserMessage[] = []
-      const contextMessages: UserMessage[] = []
-
-      // Handle systemMessage
-      if (response.systemMessage) {
-        messages.push(
-          createUserMessage({
-            content: sanitizeSystemReminderContent(response.systemMessage),
-            isMeta: true,
-          }),
-        )
-      }
-
-      // Handle additionalContext
-      if (
-        response.hookSpecificOutput &&
-        'additionalContext' in response.hookSpecificOutput &&
-        response.hookSpecificOutput.additionalContext
-      ) {
-        const section = renderHookAdditionalContextSection(
-          [
-            {
-              hookName: attachment.hookName,
-              hookEvent: attachment.hookEvent,
-              content: response.hookSpecificOutput.additionalContext,
-            },
-          ],
-        )
-        if (section !== null) {
-          contextMessages.push(
-            createUserMessage({
-              content: section,
-              isMeta: true,
-            }),
-          )
-        }
-      }
-
-      return [...wrapMessagesInSystemReminder(messages), ...contextMessages]
+      return normalizeAsyncHookResponseAttachment(attachment)
     }
     // Note: 'teammate_mailbox' and 'team_context' are handled BEFORE switch
     // to avoid case label strings leaking into compiled output
-    case 'token_usage':
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `Token usage: ${attachment.used}/${attachment.total}; ${attachment.remaining} remaining`,
-          ),
-          isMeta: true,
-        }),
-      ]
-    case 'budget_usd':
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `USD budget: $${attachment.used}/$${attachment.total}; $${attachment.remaining} remaining`,
-          ),
-          isMeta: true,
-        }),
-      ]
+    case 'token_usage': {
+      return normalizeTokenUsageAttachment(attachment)
+    }
+    case 'budget_usd': {
+      return normalizeBudgetUsdAttachment(attachment)
+    }
     case 'output_token_usage': {
-      const turnText =
-        attachment.budget !== null
-          ? `${formatNumber(attachment.turn)} / ${formatNumber(attachment.budget)}`
-          : formatNumber(attachment.turn)
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `Output tokens \u2014 turn: ${turnText} \u00b7 session: ${formatNumber(attachment.session)}`,
-          ),
-          isMeta: true,
-        }),
-      ]
+      return normalizeOutputTokenUsageAttachment(attachment)
     }
     case 'hook_blocking_error': {
-      const hookName = sanitizeSystemReminderContent(attachment.hookName)
-      const command = sanitizeSystemReminderContent(
-        attachment.blockingError.command,
-      )
-      const blockingError = sanitizeSystemReminderContent(
-        attachment.blockingError.blockingError,
-      )
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `${hookName} hook blocking error from command: "${command}": ${blockingError}`,
-          ),
-          isMeta: true,
-        }),
-      ]
+      return normalizeHookBlockingErrorAttachment(attachment)
     }
-    case 'hook_success':
-      if (
-        attachment.hookEvent !== 'SessionStart' &&
-        attachment.hookEvent !== 'UserPromptSubmit'
-      ) {
-        return []
-      }
-      if (attachment.content === '') {
-        return []
-      }
-      const hookName = sanitizeSystemReminderContent(attachment.hookName)
-      const content = sanitizeSystemReminderContent(attachment.content)
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(`${hookName} hook success: ${content}`),
-          isMeta: true,
-        }),
-      ]
+    case 'hook_success': {
+      return normalizeHookSuccessAttachment(attachment)
+    }
     case 'hook_additional_context': {
-      if (attachment.content.length === 0) {
-        return []
-      }
-      const section = renderHookAdditionalContextSection(
-        attachment.content.map((content) => ({
-          hookName: attachment.hookName,
-          hookEvent: attachment.hookEvent,
-          content,
-        })),
-      )
-      if (section === null) return []
-      return [
-        createUserMessage({
-          content: section,
-          isMeta: true,
-        }),
-      ]
+      return normalizeHookAdditionalContextAttachment(attachment)
     }
     case 'hook_stopped_continuation': {
-      const hookName = sanitizeSystemReminderContent(attachment.hookName)
-      const message = sanitizeSystemReminderContent(attachment.message)
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `${hookName} hook stopped continuation: ${message}`,
-          ),
-          isMeta: true,
-        }),
-      ]
+      return normalizeHookStoppedContinuationAttachment(attachment)
     }
     case 'compaction_reminder': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content:
-            'Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush \u2014 you have unlimited context through automatic compaction.',
-          isMeta: true,
-        }),
-      ])
+      return normalizeCompactionReminderAttachment()
     }
     case 'context_efficiency': {
-      if (feature('HISTORY_SNIP')) {
-        const { SNIP_NUDGE_TEXT } =
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          require('../services/compact/snipCompact.js') as SnipCompactRuntime
-        return wrapMessagesInSystemReminder([
-          createUserMessage({
-            content: SNIP_NUDGE_TEXT,
-            isMeta: true,
-          }),
-        ])
-      }
-      return []
+      return normalizeContextEfficiencyAttachment()
     }
     case 'date_change': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The date has changed. Today's date is now ${attachment.newDate}. DO NOT mention this to the user explicitly because they are already aware.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeDateChangeAttachment(attachment)
     }
     case 'ultrathink_effort': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: `The user has requested reasoning effort level: ${attachment.level}. Apply this to the current turn.`,
-          isMeta: true,
-        }),
-      ])
+      return normalizeUltrathinkEffortAttachment(attachment)
     }
     case 'deferred_tools_delta': {
-      const parts: string[] = []
-      if (attachment.addedLines.length > 0) {
-        const addedLines = attachment.addedLines.map(
-          sanitizeSystemReminderContent,
-        )
-        parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${addedLines.join('\n')}`,
-        )
-      }
-      if (attachment.removedNames.length > 0) {
-        const removedNames = attachment.removedNames.map(
-          sanitizeSystemReminderContent,
-        )
-        parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${removedNames.join('\n')}`,
-        )
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      return normalizeDeferredToolsDeltaAttachment(attachment)
     }
     case 'agent_listing_delta': {
-      const parts: string[] = []
-      if (attachment.addedLines.length > 0) {
-        const header = attachment.isInitial
-          ? 'Available agent types for the Agent tool:'
-          : 'New agent types are now available for the Agent tool:'
-        parts.push(
-          `${header}\n${attachment.addedLines.map(sanitizeAgentListingLine).join('\n')}`,
-        )
-      }
-      if (attachment.removedTypes.length > 0) {
-        parts.push(
-          `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${formatAgentListingType(t)}`).join('\n')}`,
-        )
-      }
-      if (attachment.isInitial && attachment.showConcurrencyNote) {
-        parts.push(
-          `Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses.`,
-        )
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      return normalizeAgentListingDeltaAttachment(attachment)
     }
     case 'mcp_instructions_delta': {
-      const parts: string[] = []
-      if (attachment.addedBlocks.length > 0) {
-        const section = renderMcpInstructionsDeltaSection(
-          attachment.addedNames,
-          attachment.addedBlocks,
-        )
-        if (section !== null) parts.push(section)
-      }
-      if (attachment.removedNames.length > 0) {
-        const removedNames = attachment.removedNames.map(
-          sanitizeSystemReminderContent,
-        )
-        parts.push(
-          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${removedNames.join('\n')}`,
-        )
-      }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      return normalizeMcpInstructionsDeltaAttachment(attachment)
     }
     case 'companion_intro': {
-      return wrapMessagesInSystemReminder([
-        createUserMessage({
-          content: companionIntroText(attachment.name, attachment.species),
-          isMeta: true,
-        }),
-      ])
+      return normalizeCompanionIntroAttachment(attachment)
     }
     case 'verify_plan_reminder': {
-      const content = `You have completed implementing the plan. Please verify directly (NOT via the ${AGENT_TOOL_NAME} tool or an agent) that all plan items were completed correctly.`
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
-      ])
+      return normalizeVerifyPlanReminderAttachment()
     }
     case 'already_read_file':
     case 'command_permissions':
+    case 'current_session_memory':
     case 'edited_image_file':
     case 'hook_cancelled':
     case 'hook_error_during_execution':
     case 'hook_non_blocking_error':
     case 'hook_system_message':
-    case 'structured_output':
     case 'hook_permission_decision':
+    case 'max_turns_reached':
+    case 'structured_output':
+    case 'teammate_shutdown_batch':
       return []
   }
 
@@ -4615,14 +5098,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
   // IMPORTANT: if you remove an attachment type from normalizeAttachmentForAPI, make sure
   // to add it here to avoid errors from old --resume'd sessions that might still have
   // these attachment types.
-  const LEGACY_ATTACHMENT_TYPES = [
-    'autocheckpointing',
-    'background_task_status',
-    'todo',
-    'task_progress', // removed in PR #19337
-    'ultramemory', // removed in PR #23596
-  ]
-  if (LEGACY_ATTACHMENT_TYPES.includes((attachment as { type: string }).type)) {
+  if (isLegacyAttachmentTypeForAPI(attachment as { type: string })) {
     return []
   }
 
@@ -5443,6 +5919,281 @@ export function createToolUseSummaryMessage(
   }
 }
 
+const ORPHANED_TOOL_RESULT_REMOVED_TEXT =
+  '[Orphaned tool result removed due to conversation resume]'
+const INTERRUPTED_TOOL_USE_TEXT = '[Tool use interrupted]'
+
+type PairingRepairResult =
+  | { repaired: false; message: UserMessage }
+  | { repaired: true; message: UserMessage | null }
+
+function isToolResultBlockForPairing(
+  block: ContentBlock | ContentBlockParam,
+): block is ToolResultBlockParam {
+  return (
+    typeof block === 'object' &&
+    'type' in block &&
+    block.type === 'tool_result'
+  )
+}
+
+function stripUnpairedToolResultsFromUserMessage(
+  msg: UserMessage,
+  isFirstOutputMessage: boolean,
+): PairingRepairResult {
+  const content = msg.message.content
+  if (!Array.isArray(content)) {
+    return { repaired: false, message: msg }
+  }
+
+  const stripped = content.filter(block => !isToolResultBlockForPairing(block))
+  if (stripped.length === content.length) {
+    return { repaired: false, message: msg }
+  }
+
+  if (stripped.length > 0) {
+    return {
+      repaired: true,
+      message: {
+        ...msg,
+        message: { ...msg.message, content: stripped },
+      },
+    }
+  }
+
+  if (!isFirstOutputMessage) {
+    return { repaired: true, message: null }
+  }
+
+  return {
+    repaired: true,
+    message: {
+      ...msg,
+      message: {
+        ...msg.message,
+        content: [
+          {
+            type: 'text' as const,
+            text: ORPHANED_TOOL_RESULT_REMOVED_TEXT,
+          },
+        ],
+      },
+    },
+  }
+}
+
+type AssistantPairingNormalization = {
+  message: AssistantMessage
+  repaired: boolean
+  toolUseIds: string[]
+}
+
+function collectServerToolResultIds(
+  content: Array<BetaContentBlock | BetaContentBlockParam>,
+): Set<string> {
+  const serverResultIds = new Set<string>()
+  for (const block of content) {
+    if ('tool_use_id' in block && typeof block.tool_use_id === 'string') {
+      serverResultIds.add(block.tool_use_id)
+    }
+  }
+  return serverResultIds
+}
+
+function normalizeAssistantToolUseContentForPairing(
+  msg: AssistantMessage,
+  allSeenToolUseIds: Set<string>,
+): AssistantPairingNormalization {
+  const serverResultIds = collectServerToolResultIds(msg.message.content)
+  const seenToolUseIds = new Set<string>()
+  let repaired = false
+
+  const finalContent = msg.message.content.filter(
+    (block: BetaContentBlock | BetaContentBlockParam) => {
+      if (block.type === 'tool_use') {
+        if (allSeenToolUseIds.has(block.id)) {
+          repaired = true
+          return false
+        }
+        allSeenToolUseIds.add(block.id)
+        seenToolUseIds.add(block.id)
+      }
+      if (
+        (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') &&
+        !serverResultIds.has((block as { id: string }).id)
+      ) {
+        repaired = true
+        return false
+      }
+      return true
+    },
+  )
+
+  const assistantContentChanged =
+    finalContent.length !== msg.message.content.length
+
+  // Preserve legacy behavior for already-empty assistant content: the general
+  // non-empty assistant pass handles that before pairing validation.
+  if (finalContent.length === 0) {
+    finalContent.push({
+      type: 'text' as const,
+      text: INTERRUPTED_TOOL_USE_TEXT,
+      citations: [],
+    })
+  }
+
+  const message = assistantContentChanged
+    ? {
+        ...msg,
+        message: { ...msg.message, content: finalContent },
+      }
+    : msg
+
+  return {
+    message,
+    repaired,
+    toolUseIds: [...seenToolUseIds],
+  }
+}
+
+type FollowingToolResults = {
+  existingToolResultIds: Set<string>
+  hasDuplicateToolResults: boolean
+}
+
+function collectFollowingToolResultIds(
+  nextMsg: UserMessage | AssistantMessage | undefined,
+): FollowingToolResults {
+  const existingToolResultIds = new Set<string>()
+  let hasDuplicateToolResults = false
+
+  if (nextMsg?.type !== 'user') {
+    return { existingToolResultIds, hasDuplicateToolResults }
+  }
+
+  const content = nextMsg.message.content
+  if (!Array.isArray(content)) {
+    return { existingToolResultIds, hasDuplicateToolResults }
+  }
+
+  for (const block of content) {
+    if (isToolResultBlockForPairing(block)) {
+      const toolResultId = block.tool_use_id
+      if (existingToolResultIds.has(toolResultId)) {
+        hasDuplicateToolResults = true
+      }
+      existingToolResultIds.add(toolResultId)
+    }
+  }
+
+  return { existingToolResultIds, hasDuplicateToolResults }
+}
+
+function createSyntheticToolResultBlocks(
+  missingIds: string[],
+): ToolResultBlockParam[] {
+  return missingIds.map(id => ({
+    type: 'tool_result' as const,
+    tool_use_id: id,
+    content: SYNTHETIC_TOOL_RESULT_PLACEHOLDER,
+    is_error: true,
+  }))
+}
+
+function patchFollowingUserForToolPairing({
+  nextMsg,
+  syntheticBlocks,
+  orphanedIds,
+  hasDuplicateToolResults,
+}: {
+  nextMsg: UserMessage
+  syntheticBlocks: ToolResultBlockParam[]
+  orphanedIds: string[]
+  hasDuplicateToolResults: boolean
+}): UserMessage {
+  let content: (ContentBlockParam | ContentBlock)[] = Array.isArray(
+    nextMsg.message.content,
+  )
+    ? nextMsg.message.content
+    : [{ type: 'text' as const, text: nextMsg.message.content }]
+
+  if (orphanedIds.length > 0 || hasDuplicateToolResults) {
+    const orphanedSet = new Set(orphanedIds)
+    const seenToolResultIds = new Set<string>()
+    content = content.filter(block => {
+      if (isToolResultBlockForPairing(block)) {
+        const toolResultId = block.tool_use_id
+        if (orphanedSet.has(toolResultId)) return false
+        if (seenToolResultIds.has(toolResultId)) return false
+        seenToolResultIds.add(toolResultId)
+      }
+      return true
+    })
+  }
+
+  const patchedContent = [...syntheticBlocks, ...content]
+  if (patchedContent.length > 0) {
+    return {
+      ...nextMsg,
+      message: {
+        ...nextMsg.message,
+        content: patchedContent,
+      },
+    }
+  }
+
+  return createUserMessage({
+    content: NO_CONTENT_MESSAGE,
+    isMeta: true,
+  })
+}
+
+function describeToolResultPairingMessages(
+  messages: (UserMessage | AssistantMessage)[],
+): string[] {
+  return messages.map((message, index) => {
+    if (message.type === 'assistant') {
+      const toolUses = message.message.content
+        .filter(
+          (block: ContentBlock | ContentBlockParam) =>
+            block.type === 'tool_use',
+        )
+        .map(
+          (block: ContentBlock | ContentBlockParam) =>
+            (block as ToolUseBlock | ToolUseBlockParam).id,
+        )
+      const serverToolUses = message.message.content
+        .filter(
+          (block: BetaContentBlock | BetaContentBlockParam) =>
+            block.type === 'server_tool_use' || block.type === 'mcp_tool_use',
+        )
+        .map(
+          (block: BetaContentBlock | BetaContentBlockParam) =>
+            (block as { id: string }).id,
+        )
+      const parts = [
+        `id=${message.message.id}`,
+        `tool_uses=[${toolUses.join(',')}]`,
+      ]
+      if (serverToolUses.length > 0) {
+        parts.push(`server_tool_uses=[${serverToolUses.join(',')}]`)
+      }
+      return `[${index}] assistant(${parts.join(', ')})`
+    }
+
+    if (message.type === 'user' && Array.isArray(message.message.content)) {
+      const toolResults = message.message.content
+        .filter(isToolResultBlockForPairing)
+        .map((block: ToolResultBlockParam) => block.tool_use_id)
+      if (toolResults.length > 0) {
+        return `[${index}] user(tool_results=[${toolResults.join(',')}])`
+      }
+    }
+
+    return `[${index}] ${message.type}`
+  })
+}
+
 /**
  * Defensive validation: ensure tool_use/tool_result pairing is correct.
  *
@@ -5488,54 +6239,22 @@ export function ensureToolResultPairing(
       // unexpected tool_use_id").
       if (
         msg.type === 'user' &&
-        Array.isArray(msg.message.content) &&
         result.at(-1)?.type !== 'assistant'
       ) {
-        const stripped = msg.message.content.filter(
-          (block: ContentBlock | ContentBlockParam) =>
-            !(
-              typeof block === 'object' &&
-              'type' in block &&
-              block.type === 'tool_result'
-            ),
+        const repair = stripUnpairedToolResultsFromUserMessage(
+          msg,
+          result.length === 0,
         )
-        if (stripped.length !== msg.message.content.length) {
+        if (repair.repaired) {
           repaired = true
-          // If stripping emptied the message and nothing has been pushed yet,
-          // keep a placeholder so the payload still starts with a user
-          // message (normalizeMessagesForAPI runs before us, so messages[1]
-          // is an assistant — dropping messages[0] entirely would yield a
-          // payload starting with assistant, a different 400).
-          const content =
-            stripped.length > 0
-              ? stripped
-              : result.length === 0
-                ? [
-                    {
-                      type: 'text' as const,
-                      text: '[Orphaned tool result removed due to conversation resume]',
-                    },
-                  ]
-                : null
-          if (content !== null) {
-            result.push({
-              ...msg,
-              message: { ...msg.message, content },
-            })
+          if (repair.message !== null) {
+            result.push(repair.message)
           }
           continue
         }
       }
       result.push(msg)
       continue
-    }
-
-    // Collect server-side tool result IDs (*_tool_result blocks have tool_use_id).
-    const serverResultIds = new Set<string>()
-    for (const c of msg.message.content) {
-      if ('tool_use_id' in c && typeof c.tool_use_id === 'string') {
-        serverResultIds.add(c.tool_use_id)
-      }
     }
 
     // Dedupe tool_use blocks by ID. Checks against the cross-message
@@ -5550,52 +6269,18 @@ export function ensureToolResultPairing(
     // If the stream was interrupted before the result arrived, the use block
     // has no matching *_tool_result and the API rejects with e.g. "advisor
     // tool use without corresponding advisor_tool_result".
-    const seenToolUseIds = new Set<string>()
-    const finalContent = msg.message.content.filter((
-      block: BetaContentBlock | BetaContentBlockParam,
-    ) => {
-      if (block.type === 'tool_use') {
-        if (allSeenToolUseIds.has(block.id)) {
-          repaired = true
-          return false
-        }
-        allSeenToolUseIds.add(block.id)
-        seenToolUseIds.add(block.id)
-      }
-      if (
-        (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') &&
-        !serverResultIds.has((block as { id: string }).id)
-      ) {
-        repaired = true
-        return false
-      }
-      return true
-    })
-
-    const assistantContentChanged =
-      finalContent.length !== msg.message.content.length
-
-    // If stripping orphaned server tool uses empties the content array,
-    // insert a placeholder so the API doesn't reject empty assistant content.
-    if (finalContent.length === 0) {
-      finalContent.push({
-        type: 'text' as const,
-        text: '[Tool use interrupted]',
-        citations: [],
-      })
+    const assistantNormalization = normalizeAssistantToolUseContentForPairing(
+      msg,
+      allSeenToolUseIds,
+    )
+    if (assistantNormalization.repaired) {
+      repaired = true
     }
 
-    const assistantMsg = assistantContentChanged
-      ? {
-          ...msg,
-          message: { ...msg.message, content: finalContent },
-        }
-      : msg
-
-    result.push(assistantMsg)
+    result.push(assistantNormalization.message)
 
     // Collect tool_use IDs from this assistant message
-    const toolUseIds = [...seenToolUseIds]
+    const toolUseIds = assistantNormalization.toolUseIds
 
     // Check the next message for matching tool_results. Also track duplicate
     // tool_result blocks (same tool_use_id appearing twice) — for transcripts
@@ -5606,27 +6291,8 @@ export function ensureToolResultPairing(
     // second tr_X, the API rejects with a duplicate-tool_result 400 and the
     // session stays stuck.
     const nextMsg = messages[i + 1]
-    const existingToolResultIds = new Set<string>()
-    let hasDuplicateToolResults = false
-
-    if (nextMsg?.type === 'user') {
-      const content = nextMsg.message.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (
-            typeof block === 'object' &&
-            'type' in block &&
-            block.type === 'tool_result'
-          ) {
-            const trId = (block as ToolResultBlockParam).tool_use_id
-            if (existingToolResultIds.has(trId)) {
-              hasDuplicateToolResults = true
-            }
-            existingToolResultIds.add(trId)
-          }
-        }
-      }
-    }
+    const { existingToolResultIds, hasDuplicateToolResults } =
+      collectFollowingToolResultIds(nextMsg)
 
     // Find missing tool_result IDs (forward direction: tool_use without tool_result)
     const toolUseIdSet = new Set(toolUseIds)
@@ -5647,75 +6313,22 @@ export function ensureToolResultPairing(
 
     repaired = true
 
-    // Build synthetic error tool_result blocks for missing IDs
-    const syntheticBlocks: ToolResultBlockParam[] = missingIds.map(id => ({
-      type: 'tool_result' as const,
-      tool_use_id: id,
-      content: SYNTHETIC_TOOL_RESULT_PLACEHOLDER,
-      is_error: true,
-    }))
+    const syntheticBlocks = createSyntheticToolResultBlocks(missingIds)
 
     if (nextMsg?.type === 'user') {
-      // Next message is already a user message - patch it
-      let content: (ContentBlockParam | ContentBlock)[] = Array.isArray(
-        nextMsg.message.content,
+      const patchedNext = patchFollowingUserForToolPairing({
+        nextMsg,
+        syntheticBlocks,
+        orphanedIds,
+        hasDuplicateToolResults,
+      })
+      i++
+      // Prepending synthetics to existing content can produce a
+      // [tool_result, text] sibling the smoosh inside normalize never saw
+      // (pairing runs after normalize). Re-smoosh just this one message.
+      result.push(
+        false ? smooshSystemReminderSiblings([patchedNext])[0]! : patchedNext,
       )
-        ? nextMsg.message.content
-        : [{ type: 'text' as const, text: nextMsg.message.content }]
-
-      // Strip orphaned tool_results and dedupe duplicate tool_result IDs
-      if (orphanedIds.length > 0 || hasDuplicateToolResults) {
-        const orphanedSet = new Set(orphanedIds)
-        const seenTrIds = new Set<string>()
-        content = content.filter(block => {
-          if (
-            typeof block === 'object' &&
-            'type' in block &&
-            block.type === 'tool_result'
-          ) {
-            const trId = (block as ToolResultBlockParam).tool_use_id
-            if (orphanedSet.has(trId)) return false
-            if (seenTrIds.has(trId)) return false
-            seenTrIds.add(trId)
-          }
-          return true
-        })
-      }
-
-      const patchedContent = [...syntheticBlocks, ...content]
-
-      // If content is now empty after stripping orphans, skip the user message
-      if (patchedContent.length > 0) {
-        const patchedNext: UserMessage = {
-          ...nextMsg,
-          message: {
-            ...nextMsg.message,
-            content: patchedContent,
-          },
-        }
-        i++
-        // Prepending synthetics to existing content can produce a
-        // [tool_result, text] sibling the smoosh inside normalize never saw
-        // (pairing runs after normalize). Re-smoosh just this one message.
-        result.push(
-          false
-            ? smooshSystemReminderSiblings([patchedNext])[0]!
-            : patchedNext,
-        )
-      } else {
-        // Content is empty after stripping orphaned tool_results. We still
-        // need a user message here to maintain role alternation — otherwise
-        // the assistant placeholder we just pushed would be immediately
-        // followed by the NEXT assistant message, which the API rejects with
-        // a role-alternation 400 (not the duplicate-id 400 we handle).
-        i++
-        result.push(
-          createUserMessage({
-            content: NO_CONTENT_MESSAGE,
-            isMeta: true,
-          }),
-        )
-      }
     } else {
       // No user message follows - insert a synthetic user message (only if missing IDs)
       if (syntheticBlocks.length > 0) {
@@ -5730,43 +6343,7 @@ export function ensureToolResultPairing(
   }
 
   if (repaired) {
-    // Capture diagnostic info to help identify root cause
-    const messageTypes = messages.map((m, idx) => {
-      if (m.type === 'assistant') {
-        const toolUses = m.message.content
-          .filter((b: ContentBlock | ContentBlockParam) => b.type === 'tool_use')
-          .map((b: ContentBlock | ContentBlockParam) => (b as ToolUseBlock | ToolUseBlockParam).id)
-        const serverToolUses = m.message.content
-          .filter(
-            (b: BetaContentBlock | BetaContentBlockParam) =>
-              b.type === 'server_tool_use' || b.type === 'mcp_tool_use',
-          )
-          .map((b: BetaContentBlock | BetaContentBlockParam) => (b as { id: string }).id)
-        const parts = [
-          `id=${m.message.id}`,
-          `tool_uses=[${toolUses.join(',')}]`,
-        ]
-        if (serverToolUses.length > 0) {
-          parts.push(`server_tool_uses=[${serverToolUses.join(',')}]`)
-        }
-        return `[${idx}] assistant(${parts.join(', ')})`
-      }
-      if (m.type === 'user' && Array.isArray(m.message.content)) {
-        const toolResults = m.message.content
-          .filter(
-            (b: ContentBlock | ContentBlockParam) =>
-              typeof b === 'object' && 'type' in b && b.type === 'tool_result',
-          )
-          .map(
-            (b: ContentBlock | ContentBlockParam) =>
-              (b as ToolResultBlockParam).tool_use_id,
-          )
-        if (toolResults.length > 0) {
-          return `[${idx}] user(tool_results=[${toolResults.join(',')}])`
-        }
-      }
-      return `[${idx}] ${m.type}`
-    })
+    const messageTypes = describeToolResultPairingMessages(messages)
 
     if (getStrictToolResultPairing()) {
       throw new Error(

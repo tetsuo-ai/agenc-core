@@ -649,6 +649,13 @@ describe("AgenC realtime TUI controller", () => {
     };
 
     await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent([] as never);
+    controls.handleTranscriptEvent({
+      type: "realtime_output_audio_delta",
+      payload: [] as never,
+    });
+    expect(audioPlayer.enqueue).not.toHaveBeenCalled();
+
     controls.handleTranscriptEvent({
       type: "realtime_started",
       payload: { realtimeSessionId: "rt_1" },

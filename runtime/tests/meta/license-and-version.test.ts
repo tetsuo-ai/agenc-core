@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
@@ -125,5 +126,102 @@ describe("build-time MACRO.VERSION wiring", () => {
       version?: string;
     };
     expect(runtimePkg.version).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});
+
+describe("build-time package identity wiring", () => {
+  test("MACRO.PACKAGE_URL points at the public launcher package", () => {
+    const buildConfig = readRepoFile("runtime/build.config.ts");
+    expect(buildConfig).toContain("const publicPackageName = '@tetsuo-ai/agenc'");
+    expect(buildConfig).toMatch(
+      /'MACRO\.PACKAGE_URL':\s*JSON\.stringify\(publicPackageName\)/,
+    );
+  });
+});
+
+describe("runtime SDK surface hygiene", () => {
+  test("does not keep a standalone unexported SDK declaration stub", () => {
+    expect(existsSync(`${repoRoot}runtime/src/entrypoints/sdk.d.ts`)).toBe(
+      false,
+    );
+    expect(
+      existsSync(`${repoRoot}runtime/src/entrypoints/sdk/controlTypes.ts`),
+    ).toBe(false);
+  });
+
+  test("root export stays on the daemon embedding surface", () => {
+    const indexSource = readRepoFile("runtime/src/index.ts");
+
+    expect(indexSource).toContain("AgenCDaemonJsonRpcDispatcher");
+    expect(indexSource).toContain("startAgenCInProcessDaemonTransport");
+    expect(indexSource).not.toMatch(
+      /\b(query|queryAsync|unstable_v2_createSession|unstable_v2_resumeSession|unstable_v2_prompt|createSdkMcpServer|deleteSession)\b/,
+    );
+  });
+
+  test("internal SDK barrel remains a type and constants re-export", () => {
+    const sdkBarrel = readRepoFile("runtime/src/entrypoints/agentSdkTypes.ts");
+
+    expect(sdkBarrel).toContain(
+      "export { EXIT_REASONS, HOOK_EVENTS } from './sdk/coreTypes.js'",
+    );
+    expect(sdkBarrel).toContain("export type * from './sdk/coreTypes.js'");
+    expect(sdkBarrel).not.toMatch(/\bexport\s+(?:async\s+)?function\b/);
+    expect(sdkBarrel).not.toContain("throw new Error");
+    expect(sdkBarrel).not.toContain("SDKControlRequest");
+  });
+
+  test("generated SDK permission update arrays match schemas", () => {
+    const schemas = readRepoFile("runtime/src/entrypoints/sdk/coreSchemas.ts");
+    const generated = readRepoFile(
+      "runtime/src/entrypoints/sdk/coreTypes.generated.ts",
+    );
+
+    expect(schemas).toContain(
+      "updatedPermissions: z.array(PermissionUpdateSchema()).optional()",
+    );
+    expect(schemas).toContain(
+      "permission_suggestions: z.array(PermissionUpdateSchema()).optional()",
+    );
+    expect(generated).not.toMatch(
+      /(updatedPermissions|permission_suggestions)\?: \(\{/,
+    );
+    expect(
+      generated.match(
+        /(updatedPermissions|permission_suggestions)\?: PermissionUpdate\[\]/g,
+      ) ?? [],
+    ).toHaveLength(6);
+  });
+
+  test("generated SDK type workflow uses the checked-in validator", () => {
+    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    const workflowFiles = [
+      "runtime/src/entrypoints/sdk/coreSchemas.ts",
+      "runtime/src/entrypoints/sdk/coreTypes.ts",
+      "runtime/src/entrypoints/sdk/coreTypes.generated.ts",
+    ];
+    const checkCommand =
+      "npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types";
+
+    expect(runtimePkg.scripts?.["check:sdk-generated-types"]).toBe(
+      "node scripts/check-sdk-generated-types.mjs",
+    );
+    expect(
+      existsSync(`${repoRoot}runtime/scripts/check-sdk-generated-types.mjs`),
+    ).toBe(true);
+
+    for (const relativePath of workflowFiles) {
+      const source = readRepoFile(relativePath);
+      expect(source).not.toContain("generate-sdk-types.ts");
+      expect(source).toContain(checkCommand);
+    }
+
+    execFileSync(
+      process.execPath,
+      ["runtime/scripts/check-sdk-generated-types.mjs"],
+      { cwd: repoRoot, stdio: "pipe" },
+    );
   });
 });

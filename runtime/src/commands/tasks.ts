@@ -23,6 +23,12 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
+import {
+  isTaskRecord,
+  taskNumberField,
+  taskStringField,
+} from "../tasks/record-fields.js";
 
 export interface TaskSummaryRow {
   readonly id: string;
@@ -34,22 +40,6 @@ export interface TaskSummaryRow {
 }
 
 const SUMMARY_LINE_WIDTH = 76;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : undefined;
-}
-
-function numberField(record: Record<string, unknown>, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
 
 function truncate(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
@@ -88,7 +78,7 @@ function taskTypeLabel(type: TaskType): string {
 }
 
 function readProgress(task: Record<string, unknown>): AgentProgress | undefined {
-  return isRecord(task.progress) ? (task.progress as AgentProgress) : undefined;
+  return isTaskRecord(task.progress) ? (task.progress as AgentProgress) : undefined;
 }
 
 function formatProgress(progress: AgentProgress | undefined): string | undefined {
@@ -109,15 +99,15 @@ function formatProgress(progress: AgentProgress | undefined): string | undefined
 
 function taskTitle(task: TaskState): string {
   const record = task as unknown as Record<string, unknown>;
-  const identity = isRecord(record.identity) ? record.identity : undefined;
-  const selectedAgent = isRecord(record.selectedAgent) ? record.selectedAgent : undefined;
+  const identity = isTaskRecord(record.identity) ? record.identity : undefined;
+  const selectedAgent = isTaskRecord(record.selectedAgent) ? record.selectedAgent : undefined;
   const candidates = [
-    stringField(identity ?? {}, "agentName"),
-    stringField(selectedAgent ?? {}, "name"),
-    stringField(record, "title"),
-    stringField(record, "command"),
-    stringField(record, "prompt"),
-    stringField(record, "description"),
+    taskStringField(identity ?? {}, "agentName"),
+    taskStringField(selectedAgent ?? {}, "name"),
+    taskStringField(record, "title"),
+    taskStringField(record, "command"),
+    taskStringField(record, "prompt"),
+    taskStringField(record, "description"),
     task.id,
   ];
   for (const candidate of candidates) {
@@ -131,13 +121,13 @@ function taskDetail(task: TaskState): string | undefined {
   const parts: string[] = [];
   const progress = formatProgress(readProgress(record));
   if (progress) parts.push(progress);
-  const error = stringField(record, "error");
+  const error = taskStringField(record, "error");
   if (error) parts.push(`error: ${truncate(firstLine(error), 56)}`);
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
 function isTaskState(value: unknown): value is TaskState {
-  if (!isRecord(value)) return false;
+  if (!isTaskRecord(value)) return false;
   const type = value.type;
   const status = value.status;
   return (
@@ -155,13 +145,13 @@ function isTaskState(value: unknown): value is TaskState {
 }
 
 export function collectTaskSummaryRows(appState: unknown): TaskSummaryRow[] {
-  if (!isRecord(appState) || !isRecord(appState.tasks)) return [];
+  if (!isTaskRecord(appState) || !isTaskRecord(appState.tasks)) return [];
   return Object.values(appState.tasks)
     .filter(isTaskState)
     .map((task) => {
       const detail = taskDetail(task);
       const startTime =
-        numberField(task as unknown as Record<string, unknown>, "startTime") ?? 0;
+        taskNumberField(task as unknown as Record<string, unknown>, "startTime") ?? 0;
       return {
         id: task.id,
         type: task.type,
@@ -216,23 +206,14 @@ export const tasksCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const setToolJSX = ctx.appState?.setToolJSX;
-      if (typeof setToolJSX === "function") {
-        const { BackgroundTasksPanel } = await import(
-          "../tui/components/tasks/BackgroundTasksPanel.js"
-        );
-        const close = () => {
-          setToolJSX({
-            jsx: null,
-            shouldHidePromptInput: false,
-            clearLocalJSX: true,
-          });
-        };
-        setToolJSX({
-          isLocalJSXCommand: true,
-          shouldHidePromptInput: true,
-          jsx: React.createElement(BackgroundTasksPanel, { onDone: close }),
-        });
+      if (
+        await openAsyncLocalJsxCommand(ctx, async close => {
+          const { BackgroundTasksPanel } = await import(
+            "../tui/components/tasks/BackgroundTasksPanel.js"
+          );
+          return React.createElement(BackgroundTasksPanel, { onDone: close });
+        })
+      ) {
         return { kind: "skip" };
       }
       const getAppState = ctx.appState?.getAppState;

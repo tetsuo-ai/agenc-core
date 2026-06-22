@@ -1549,6 +1549,29 @@ describe("main() smoke", () => {
       agentId: "agent_slash",
       sessionId: "session_slash",
       cwd: tmpCwd,
+      oneShotEvents: [
+        [],
+        { method: "event.message_chunk", params: [] },
+        {
+          method: "event.message_chunk",
+          params: {
+            sessionId: "session_slash",
+            eventId: "delta_test",
+            agentId: "agent_slash",
+            delta: "daemon answer",
+          },
+        },
+        {
+          method: "event.agent_status",
+          params: {
+            sessionId: "session_slash",
+            eventId: "complete_test",
+            agentId: "agent_slash",
+            status: "idle",
+            runStatus: "completed",
+          },
+        },
+      ],
     });
     const stdoutSpy = vi
       .spyOn(process.stdout, "write")

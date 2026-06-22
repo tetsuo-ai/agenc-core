@@ -5,6 +5,7 @@
  */
 
 import type { PermissionResult } from "../../permissions/types.js";
+import { asRecord } from "../../utils/record.js";
 import type { Tool } from "../types.js";
 
 export const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
@@ -44,12 +45,6 @@ export type AskUserQuestionParseResult =
   | { readonly ok: false; readonly error: string };
 
 const answeredInputs = new Map<string, AskUserQuestionInput>();
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0

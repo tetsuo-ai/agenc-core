@@ -50,6 +50,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
@@ -65,6 +66,12 @@ import {
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
+import {
+  parsePDFPageRange as parseSharedPDFPageRange,
+  type PDFPageRange,
+} from "../../utils/pdfPageRange.js";
+import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
+import { asRecord } from "../../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -232,11 +239,6 @@ export interface FileReadToolConfig {
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
-
-/** Runtime-shape error envelope: plain text body, isError flag. */
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
-}
 
 /** Coerce optional positive integers (model may emit ints as strings). */
 function parsePositiveIntArg(
@@ -447,41 +449,21 @@ function execFileNoThrow(
   });
 }
 
-function parsePDFPageRange(
+function parsePDFPageRangeArg(
   pages: unknown,
-): { firstPage: number; lastPage: number } | { err: string } | null {
+): PDFPageRange | { err: string } | null {
   if (pages === undefined || pages === null) return null;
   if (typeof pages !== "string" || pages.trim().length === 0) {
     return { err: "pages must be a non-empty string when provided" };
   }
 
   const trimmed = pages.trim();
-  const openEnded = /^([1-9]\d*)-$/.exec(trimmed);
-  if (openEnded) {
-    const firstPage = Number.parseInt(openEnded[1]!, 10);
-    return { firstPage, lastPage: Infinity };
-  }
-
-  const singlePage = /^([1-9]\d*)$/.exec(trimmed);
-  if (singlePage) {
-    const page = Number.parseInt(singlePage[1]!, 10);
-    return { firstPage: page, lastPage: page };
-  }
-
-  const closedRange = /^([1-9]\d*)-([1-9]\d*)$/.exec(trimmed);
-  if (closedRange) {
-    const firstPage = Number.parseInt(closedRange[1]!, 10);
-    const lastPage = Number.parseInt(closedRange[2]!, 10);
-    if (lastPage < firstPage) {
-      return { err: `Invalid PDF page range: ${trimmed}` };
-    }
-    return { firstPage, lastPage };
-  }
-
-  return { err: `Invalid PDF page range: ${trimmed}` };
+  return parseSharedPDFPageRange(trimmed) ?? {
+    err: `Invalid PDF page range: ${trimmed}`,
+  };
 }
 
-function pageRangeLength(range: { firstPage: number; lastPage: number }): number {
+function pageRangeLength(range: PDFPageRange): number {
   if (range.lastPage === Infinity) return Infinity;
   return range.lastPage - range.firstPage + 1;
 }
@@ -489,10 +471,7 @@ function pageRangeLength(range: { firstPage: number; lastPage: number }): number
 async function getPDFPageCount(filePath: string): Promise<number | null> {
   const result = await execFileNoThrow("pdfinfo", [filePath], 10_000);
   if (result.exitCode !== 0) return null;
-  const match = /^Pages:\s+(\d+)/mu.exec(result.stdout);
-  if (!match) return null;
-  const count = Number.parseInt(match[1]!, 10);
-  return Number.isFinite(count) && count > 0 ? count : null;
+  return parsePDFInfoPageCount(result.stdout);
 }
 // ─────────────────────────────────────────────────────────────────────
 // Path resolution
@@ -678,12 +657,6 @@ interface NotebookRenderResult {
   readonly images: readonly NotebookImageOutput[];
   readonly cellCount: number;
   readonly language: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function joinNotebookText(value: unknown): string {
@@ -1009,7 +982,7 @@ async function readPDFFile(
     );
   }
 
-  const parsedRange = parsePDFPageRange(opts.pages);
+  const parsedRange = parsePDFPageRangeArg(opts.pages);
   if (parsedRange && "err" in parsedRange) {
     return errorResult(parsedRange.err);
   }

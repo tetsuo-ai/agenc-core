@@ -4515,12 +4515,6 @@ function parseElicitationHookOutput(
   }
 
   try {
-    // The Zod-inferred parse result is a strict structural subset of the SDK
-    // `HookJSONOutput` (the schema omits the `addDirectories`/`removeDirectories`
-    // PermissionUpdate variants — see types/hooks.ts drift note), so it isn't
-    // directly assignable to the guard parameters. Annotate via the in-file
-    // permissive `HookJSONOutput` alias; the guards inspect `'async' in json` at
-    // runtime regardless, so behavior is unchanged.
     const parsedRaw: HookJSONOutput = hookJSONOutputSchema().parse(
       JSON.parse(trimmed),
     )
@@ -4530,9 +4524,7 @@ function parseElicitationHookOutput(
     if (!isSyncHookJSONOutput(parsedRaw)) {
       return {}
     }
-    // After the predicate guards above, the inferred narrowed type collapses
-    // because the donor `HookJSONOutput` alias is permissive (`any`). Re-widen
-    // through a local alias so the structural lookups below typecheck.
+    // The elicitation bridge only consumes a narrow subset of sync hook fields.
     const parsed = parsedRaw as {
       decision?: string
       reason?: string

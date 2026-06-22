@@ -48,6 +48,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
@@ -150,10 +151,6 @@ interface FileWriteToolInput extends ToolExecutionInjectedArgs {
 }
 
 const DEFAULT_MAX_WRITE_BYTES = 10_485_760; // 10 MB — matches filesystem.ts
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
-}
 
 function successResult(message: string): ToolResult {
   return { content: message };

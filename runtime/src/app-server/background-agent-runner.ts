@@ -115,6 +115,7 @@ import {
   createAgenCDaemonRuntimeAuthBackend,
   type AgenCDaemonRuntimeAuthBackend,
 } from "./provider-key-vending.js";
+import { isRecord } from "../utils/record.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -3653,7 +3654,7 @@ function jsonObjectArray(value: readonly unknown[]): JsonObject[] {
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

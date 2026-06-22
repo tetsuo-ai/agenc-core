@@ -17,6 +17,7 @@
 import type { Session } from "../session/session.js";
 import type { ApprovalPolicy } from "../session/turn-context.js";
 import type { MCPElicitationHandlers } from "../mcp-client/types.js";
+import { asRecord } from "../utils/record.js";
 import {
   type McpElicitationCompleteEvent,
   type McpElicitationFormRequest,
@@ -48,12 +49,6 @@ const MCP_PRIMITIVE_SCHEMA_TYPES = new Set([
 
 export interface McpGranularElicitationPolicy {
   allowsMcpElicitations(): boolean;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }
 
 function requiredString(value: unknown, field: string): string {

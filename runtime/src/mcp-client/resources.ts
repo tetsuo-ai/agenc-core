@@ -20,6 +20,8 @@
 
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
+import { asRecord } from "../utils/record.js";
+import { nonEmptyString } from "../utils/stringUtils.js";
 
 /** Upper bound on a single resource read (I-76). */
 export const MAX_RESOURCE_BYTES = 5 * 1024 * 1024;
@@ -187,20 +189,8 @@ export async function createResourceBridge(
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
-}
-
 function stringField(
-  record: Record<string, unknown> | undefined,
+  record: Record<string, unknown> | null | undefined,
   key: string,
 ): string | undefined {
   const value = record?.[key];
@@ -208,7 +198,7 @@ function stringField(
 }
 
 function arrayField(
-  record: Record<string, unknown> | undefined,
+  record: Record<string, unknown> | null | undefined,
   key: string,
 ): readonly unknown[] {
   const value = record?.[key];
@@ -251,7 +241,7 @@ function normalizeResourceDescriptor(
 function firstResourceContent(response: unknown): Record<string, unknown> | undefined {
   return arrayField(asRecord(response), "contents")
     .map(asRecord)
-    .find((record) => record !== undefined);
+    .find((record): record is Record<string, unknown> => record !== null);
 }
 
 function withDeadline<T>(

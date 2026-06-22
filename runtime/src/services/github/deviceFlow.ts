@@ -3,6 +3,8 @@
  * Uses GitHub Copilot's official OAuth app for device authentication.
  */
 
+import { asRecord } from '../../utils/record.js'
+
 const DEFAULT_GITHUB_DEVICE_FLOW_CLIENT_ID = 'Iv1.b507a08c87ecfe98'
 
 const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code'
@@ -55,12 +57,6 @@ function getGithubDeviceFlowClientId(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
 }
 
 async function readGitHubDeviceFlowJson(

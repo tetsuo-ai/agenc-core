@@ -14,11 +14,13 @@
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import type { PermissionResult } from "../../permissions/types.js";
+import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type {
   Tool,
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
@@ -70,16 +72,6 @@ interface ApplyPatchToolInput extends ToolExecutionInjectedArgs {
   readonly input?: unknown;
   readonly cwd?: unknown;
   readonly [SESSION_ID_ARG]?: unknown;
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: message, isError: true };
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function pathsForHunk(hunk: ApplyPatchHunk): readonly {

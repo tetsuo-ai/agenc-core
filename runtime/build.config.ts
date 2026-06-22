@@ -89,6 +89,7 @@ const runtimePackage = JSON.parse(
   readFileSync(resolve(runtimeRoot, 'package.json'), 'utf8'),
 ) as { version?: string };
 const displayVersion = runtimePackage.version ?? '0.0.0';
+const publicPackageName = '@tetsuo-ai/agenc';
 
 function copyYoloClassifierPrompts(): void {
   if (!existsSync(yoloClassifierPromptSourceDir)) return;
@@ -415,6 +416,7 @@ export const __agencBuildConfigTest = {
   featureFlagLiteral,
   inlineCopiedTreeFeatureCalls,
   isKnownMissingOptionalModule,
+  publicPackageName,
   relocatedTuiSourceRoots,
   relocatedUpstreamRoots,
   resolveAgenCBareSrc,
@@ -512,7 +514,7 @@ export default defineConfig({
       'MACRO.FEEDBACK_CHANNEL': JSON.stringify(
         'https://github.com/tetsuo-ai/agenc-core/issues',
       ),
-      'MACRO.PACKAGE_URL': JSON.stringify('@tetsuo-ai/runtime'),
+      'MACRO.PACKAGE_URL': JSON.stringify(publicPackageName),
       'MACRO.NATIVE_PACKAGE_URL': 'undefined',
       'MACRO.VERSION_CHANGELOG': 'undefined',
     };

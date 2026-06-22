@@ -54,7 +54,7 @@ import {
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import type { LLMProvider } from "../llm/types.js";
+import type { LLMContentPart, LLMProvider } from "../llm/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import {
   createProvider,
@@ -1345,6 +1345,70 @@ describe("Session.partialCompactFromMessage", () => {
     expect(history[0]?.content).toEqual(expect.stringContaining("<compact>"));
     expect(history.some((message) => message.content === "summarize from here"))
       .toBe(false);
+  });
+
+  it("preserves multimodal kept messages when compacting from a later message", async () => {
+    const documentPart: LLMContentPart = {
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: "ZmFrZS1wZGY=",
+      },
+      title: "notes.pdf",
+      filename: "notes.pdf",
+      fallbackText: "document fallback",
+      fallbackTextTruncated: true,
+      fallbackTextError: "ocr warning",
+    };
+    const imagePart: LLMContentPart = {
+      type: "image_url",
+      image_url: { url: "file:///tmp/screenshot.png" },
+    };
+    const session = buildSession({
+      services: {
+        provider: {
+          ...mkProvider(),
+          chat: vi.fn(async () => ({
+            content: "recent summary",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          })),
+        },
+      },
+    });
+    session.rolloutStore = {
+      isDegraded: false,
+      appendRollout: vi.fn(),
+    } as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [
+        {
+          role: "user",
+          content: [{ type: "text", text: "keep this" }, documentPart, imagePart],
+        },
+        { role: "user", content: "summarize from here" },
+        { role: "assistant", content: "assistant summarized" },
+      ];
+    });
+
+    const result = await session.partialCompactFromMessage({
+      messageOrdinal: 1,
+      direction: "from",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const history = session.snapshotHistoryMessages();
+    const kept = history.find(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type === "document"),
+    );
+    expect(kept?.content).toContainEqual(documentPart);
+    expect(kept?.content).toContainEqual(imagePart);
   });
 
   it("installs an active compact task while provider summarization is running", async () => {

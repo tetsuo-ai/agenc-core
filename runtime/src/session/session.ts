@@ -1400,6 +1400,15 @@ function fromCompactRuntimeContent(content: unknown): LLMMessage["content"] {
           ...(typeof record.filename === "string"
             ? { filename: record.filename }
             : {}),
+          ...(typeof record.fallbackText === "string"
+            ? { fallbackText: record.fallbackText }
+            : {}),
+          ...(typeof record.fallbackTextTruncated === "boolean"
+            ? { fallbackTextTruncated: record.fallbackTextTruncated }
+            : {}),
+          ...(typeof record.fallbackTextError === "string"
+            ? { fallbackTextError: record.fallbackTextError }
+            : {}),
         });
       }
       continue;

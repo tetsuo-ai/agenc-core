@@ -41,6 +41,7 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
+import { isRecord } from "../utils/record.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
   /** Flush interval in ms. Default 100. */
@@ -453,8 +454,4 @@ function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     (normalized as Record<typeof key, string>)[key] = value;
   }
   return normalized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

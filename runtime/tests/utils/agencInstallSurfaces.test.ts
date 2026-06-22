@@ -22,10 +22,11 @@ async function importFreshInstaller() {
   return import('../../src/utils/nativeInstaller/installer.ts')
 }
 
-test('cleanupNpmInstallations removes both agenc and legacy agenc local install dirs', async () => {
+test('cleanupNpmInstallations checks runtime, launcher, and local install dirs', async () => {
   const removedPaths: string[] = []
+  const uninstallPackages: string[] = []
   ;(globalThis as Record<string, unknown>).MACRO = {
-    PACKAGE_URL: '@gitlawb/agenc',
+    PACKAGE_URL: '@tetsuo-ai/agenc',
   }
 
   vi.doMock('fs/promises', () => ({
@@ -41,14 +42,18 @@ test('cleanupNpmInstallations removes both agenc and legacy agenc local install 
       code: 1,
       stderr: 'npm ERR! code E404',
     }),
-    execFileNoThrowWithCwd: async () => ({
-      code: 1,
-      stderr: 'npm ERR! code E404',
-    }),
+    execFileNoThrowWithCwd: async (_cmd: string, args: string[]) => {
+      uninstallPackages.push(args.at(-1) ?? '')
+      return {
+        code: 1,
+        stderr: 'npm ERR! code E404',
+      }
+    },
   }))
 
   const { cleanupNpmInstallations } = await importFreshInstaller()
   await cleanupNpmInstallations()
 
+  expect(uninstallPackages).toEqual(['@tetsuo-ai/runtime', '@tetsuo-ai/agenc'])
   expect(removedPaths).toEqual([join(homedir(), '.agenc', 'local')])
 })

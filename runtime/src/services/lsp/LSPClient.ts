@@ -24,6 +24,7 @@ import type {
   InitializeResult,
   ServerCapabilities,
 } from "./protocol.js";
+import { errorMessage } from "../../utils/errors.js";
 import { subprocessEnv } from "../../utils/subprocessEnv.js";
 
 export interface LSPClient {
@@ -56,10 +57,6 @@ export interface LSPClientOptions {
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
 const CONNECTION_CLOSE_EXIT_GRACE_MS = 20;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function mergedEnv(
   baseEnv: NodeJS.ProcessEnv | undefined,

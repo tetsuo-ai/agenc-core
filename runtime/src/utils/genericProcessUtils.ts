@@ -27,6 +27,16 @@ export function isProcessRunning(pid: number): boolean {
   }
 }
 
+export function parsePidList(stdout: string): number[] {
+  return stdout
+    .trim()
+    .split(/[\r\n,]+/)
+    .map(pid => pid.trim())
+    .filter(Boolean)
+    .map(pid => Number.parseInt(pid, 10))
+    .filter(pid => !Number.isNaN(pid))
+}
+
 /**
  * Gets the ancestor process chain for a given process (up to maxDepth levels)
  * @param pid - The starting process ID
@@ -59,12 +69,7 @@ export async function getAncestorPidsAsync(
     if (result.code !== 0 || !result.stdout?.trim()) {
       return []
     }
-    return result.stdout
-      .trim()
-      .split(',')
-      .filter(Boolean)
-      .map(p => parseInt(p, 10))
-      .filter(p => !isNaN(p))
+    return parsePidList(result.stdout)
   }
 
   // For Unix, use a shell command that walks up the process tree
@@ -77,12 +82,7 @@ export async function getAncestorPidsAsync(
   if (result.code !== 0 || !result.stdout?.trim()) {
     return []
   }
-  return result.stdout
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map(p => parseInt(p, 10))
-    .filter(p => !isNaN(p))
+  return parsePidList(result.stdout)
 }
 
 /**
@@ -172,12 +172,7 @@ export function getChildPids(pid: string | number): number[] {
     if (!result) {
       return []
     }
-    return result
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map(p => parseInt(p, 10))
-      .filter(p => !isNaN(p))
+    return parsePidList(result)
   } catch {
     return []
   }

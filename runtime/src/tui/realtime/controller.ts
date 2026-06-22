@@ -22,6 +22,7 @@ import {
   type StartRealtimeAudioCapture,
 } from "./audio.js";
 import { logError } from "../../utils/log.js";
+import { isRecord } from "../../utils/record.js";
 import {
   effectiveRealtimeMicrophoneMuted,
   initialRealtimeTuiState,
@@ -564,7 +565,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 function toRealtimeAudioChunk(value: JsonObject): ThreadRealtimeAudioChunk | null {

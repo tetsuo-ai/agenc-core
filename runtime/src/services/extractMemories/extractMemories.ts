@@ -16,6 +16,9 @@
 
 import { basename, isAbsolute, normalize, resolve } from "node:path";
 import type { LLMMessage } from "../../llm/types.js";
+import {
+  cloneLlmMessageSnapshot as cloneMessage,
+} from "../../llm/content-conversion.js";
 import type { Session } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import type { CompletedToolResultRecord } from "../../session/turn-state.js";
@@ -130,21 +133,6 @@ let extractor:
 
 /** The active drain function, set by initExtractMemories(). No-op until init. */
 let drainer: (timeoutMs?: number) => Promise<void> = async () => {};
-
-function cloneMessage(message: LLMMessage): LLMMessage {
-  return {
-    ...message,
-    content: Array.isArray(message.content)
-      ? message.content.map((part) => ({ ...part }))
-      : message.content,
-    ...(message.toolCalls !== undefined
-      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
-      : {}),
-    ...(message.runtimeOnly !== undefined
-      ? { runtimeOnly: { ...message.runtimeOnly } }
-      : {}),
-  };
-}
 
 function snapshotContext(context: ExtractMemoriesContext): ExtractMemoriesContext {
   return {

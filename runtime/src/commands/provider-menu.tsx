@@ -15,6 +15,8 @@ import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { readCommandConfig } from "./config-context.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -64,15 +66,6 @@ export type ProviderMenuSelectionResult = {
   readonly message: string;
   readonly shouldClose: boolean;
 };
-
-function readConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
-  return (
-    ctx.configStore?.current() ??
-    (ctx.session as unknown as {
-      services?: { configStore?: { current?: () => AgenCConfig } };
-    }).services?.configStore?.current?.()
-  );
-}
 
 function readSessionSelection(ctx: SlashCommandContext): {
   readonly provider?: string;
@@ -331,7 +324,7 @@ function authColor(state: ProviderAuthState): ProviderColor {
 }
 
 export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenuSnapshot {
-  const config = readConfig(ctx);
+  const config = readCommandConfig(ctx);
   const sessionSelection = readSessionSelection(ctx);
   const diagnostics: string[] = [];
   if (
@@ -778,19 +771,7 @@ export function openProviderMenu(
   snapshot: ProviderMenuSnapshot,
   onSelect: (provider: ProviderSlug, model: string) => Promise<ProviderMenuSelectionResult>,
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <ProviderMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />,
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <ProviderMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />
+  ));
 }

@@ -4,6 +4,8 @@
  * Parses the JSON forms emitted by AgenC command hooks.
  */
 
+import { isRecord } from "../../utils/record.js";
+
 export type HookPermissionBehavior = "allow" | "deny" | "ask";
 
 export type HookSpecificOutput = {
@@ -416,8 +418,4 @@ function isHookPermissionBehavior(
   value: unknown,
 ): value is HookPermissionBehavior {
   return value === "allow" || value === "deny" || value === "ask";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -365,6 +365,29 @@ describe("runAgent", () => {
     expect(events.filter((e) => e.kind === "message")).toHaveLength(3);
   });
 
+  it("ignores array-shaped parent services when resolving the provider", async () => {
+    const provider = makeProvider([{ content: "should not run" }]);
+    const session = makeStubSession();
+    const { live } = await spawnLive(session);
+    (session as unknown as { services: unknown }).services = Object.assign(
+      ["spoof"],
+      { provider },
+    );
+
+    const { events, result } = await collectRun(
+      runAgent({
+        live,
+        parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    expect(result.outcome).toBe("errored");
+    expect(provider.chatStream).not.toHaveBeenCalled();
+    expect(events.some((e) => e.kind === "run_error")).toBe(true);
+  });
+
   it("marks completed on success", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });
@@ -1821,6 +1844,30 @@ describe("initMcpForAgent", () => {
       signal: ctrl.signal,
     });
     expect(result.ready).toBe(true);
+  });
+
+  it("ignores array-shaped service bags while checking MCP readiness", async () => {
+    vi.useFakeTimers();
+    const mcpManager = {
+      isConnected: vi.fn(() => false),
+    };
+    const session = makeStubSession();
+    (session as unknown as { services: unknown }).services = Object.assign(
+      ["spoof"],
+      { mcpManager },
+    );
+    const ctrl = new AbortController();
+
+    const promise = initMcpForAgent({
+      parent: session as unknown as Parameters<typeof initMcpForAgent>[0]["parent"],
+      signal: ctrl.signal,
+      roleConfig: { requiredMcpServers: ["fs"] },
+    });
+    await vi.advanceTimersByTimeAsync(MCP_INIT_TIMEOUT_MS + 100);
+    const result = await promise;
+
+    expect(result.ready).toBe(true);
+    expect(mcpManager.isConnected).not.toHaveBeenCalled();
   });
 
   it("returns ready:false, reason:'aborted' when signal aborts mid-wait", async () => {

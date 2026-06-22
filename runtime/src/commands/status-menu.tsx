@@ -4,8 +4,10 @@ import type { GitStatusSummary, StatusLine } from "./status.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
+import { isRecord } from "../utils/record.js";
 
 type StatusRowState = "ok" | "warn" | "error" | "info";
 type StatusRowGroup = "runtime" | "session";
@@ -24,10 +26,6 @@ export type StatusDashboardSnapshot = {
   readonly activeIndex: number;
   readonly summary: string;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function scalar(value: unknown, fallback = "not set"): string {
   if (value === undefined || value === null) return fallback;
@@ -314,19 +312,7 @@ export function openStatusDashboard(
   ctx: SlashCommandContext,
   snapshot: StatusDashboardSnapshot,
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <StatusDashboardView snapshot={snapshot} onDone={close} />,
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <StatusDashboardView snapshot={snapshot} onDone={close} />
+  ));
 }

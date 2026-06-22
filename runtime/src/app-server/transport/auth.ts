@@ -28,6 +28,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import type { InitializeParams, JsonObject } from "../protocol/index.js";
 import type { AuthDaemonSocketIdentity } from "../../auth/backend.js";
+import { isRecord } from "../../utils/record.js";
 
 const AGENC_DAEMON_COOKIE_BYTES = 32;
 export const AGENC_DAEMON_COOKIE_HEX_LENGTH =
@@ -168,7 +169,7 @@ export function normalizeAgenCDaemonCookie(
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }
 
 async function assertRegularCookiePath(cookiePath: string): Promise<void> {

@@ -25,6 +25,7 @@ import {
   type TokenEstimationMessage,
   type TokenizerProviderHint,
 } from "../llm/token-estimation.js";
+import { isRecord } from "../utils/record.js";
 
 export {
   bytesPerTokenForFileType,
@@ -566,8 +567,4 @@ async function loadBedrockRuntimeModule(
     options.logError?.(error);
     return null;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

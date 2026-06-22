@@ -17,6 +17,7 @@
 
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
+import { isRecord } from "../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // ToolCallSource — which layer injected the call
@@ -1089,10 +1090,6 @@ function abortedCodeModeResult(
     });
   }
   return variant.reason;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cloneSerializable(value: unknown, label: string): unknown {

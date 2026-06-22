@@ -1596,6 +1596,46 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("launches MagicDocs when sessionSource is an array-shaped subagent spoof", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "agenc-magic-docs-run-turn-"));
+    const docPath = join(tempDir, "doc.md");
+    resetMagicDocsForTests();
+    try {
+      writeFileSync(docPath, "# MAGIC DOC: Run Turn\n\nBody\n", "utf8");
+      registerMagicDoc(docPath, "conv-test");
+      const seen: string[] = [];
+      setMagicDocsAgentRunnerForTests(async (request) => {
+        seen.push(request.docPath);
+      });
+      const { session } = mkSession({
+        provider: mkProvider({ content: "main reply" }),
+        registry: mkRegistry(),
+        sessionConfiguration: {
+          sessionSource: Object.assign(["spoof"], {
+            kind: "subagent",
+            source: {
+              kind: "thread_spawn",
+              parentThreadId: "parent",
+              depth: 1,
+            },
+          }),
+        },
+      });
+
+      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+      await runMagicDocsPostSamplingHook({
+        messages: [],
+        querySource: "agent:flush",
+        sessionId: "conv-test",
+      });
+
+      expect(seen).toEqual([docPath]);
+    } finally {
+      resetMagicDocsForTests();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("persists turn_context + response_items into the rollout-owned stream", async () => {
     const { session } = mkSession({
       provider: mkProvider({ content: "reply" }),

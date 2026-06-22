@@ -1,7 +1,9 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
+import { sqlPlaceholders } from "./sql.js";
 import { normalizeToolRecoveryCategory } from "./tool-output-rotation.js";
+import { asRecord } from "../utils/record.js";
 
 const RECOVERABLE_AGENT_RUN_STATUSES = [
   "pending",
@@ -164,7 +166,7 @@ function loadRecoverableAgentRuns(
          last_snapshot_at,
          metadata_json
        FROM agent_runs
-       WHERE status IN (${placeholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
+       WHERE status IN (${sqlPlaceholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
        ORDER BY last_active_at ASC, id ASC`,
     )
     .all(...RECOVERABLE_AGENT_RUN_STATUSES);
@@ -284,7 +286,7 @@ function recoverStaleToolCalls(
          output_log_bytes,
          started_at
        FROM in_flight_tool_calls
-       WHERE status NOT IN (${placeholders(TERMINAL_TOOL_CALL_STATUSES.length)})
+       WHERE status NOT IN (${sqlPlaceholders(TERMINAL_TOOL_CALL_STATUSES.length)})
        ORDER BY started_at ASC, session_id ASC, tool_call_id ASC`,
     )
     .all(...TERMINAL_TOOL_CALL_STATUSES);
@@ -300,7 +302,7 @@ function recoverStaleToolCalls(
        SET status = ?
        WHERE session_id = ?
          AND tool_call_id = ?
-         AND status NOT IN (${placeholders(TERMINAL_TOOL_CALL_STATUSES.length)})`,
+         AND status NOT IN (${sqlPlaceholders(TERMINAL_TOOL_CALL_STATUSES.length)})`,
     );
     for (const call of freshlyRecovered) {
       markRecovered.run(
@@ -341,7 +343,7 @@ function loadPreviouslyRecoveredToolCalls(
          output_log_bytes,
          started_at
        FROM in_flight_tool_calls
-       WHERE status IN (${placeholders(RECOVERY_SURFACE_TOOL_CALL_STATUSES.length)})
+       WHERE status IN (${sqlPlaceholders(RECOVERY_SURFACE_TOOL_CALL_STATUSES.length)})
        ORDER BY started_at ASC, session_id ASC, tool_call_id ASC`,
     )
     .all(...RECOVERY_SURFACE_TOOL_CALL_STATUSES);
@@ -450,10 +452,7 @@ function reconcileRecoveredToolCallMap(
   recoveredToolCalls: readonly RecoveredInFlightToolCall[],
   target: "inFlight" | "completed",
 ): Record<string, unknown> {
-  const map =
-    value !== null && typeof value === "object" && !Array.isArray(value)
-      ? { ...(value as Record<string, unknown>) }
-      : {};
+  const map = { ...(asRecord(value) ?? {}) };
   for (const call of recoveredToolCalls) {
     if (target === "inFlight" && call.recoveryAction !== "replay") {
       delete map[call.toolCallId];
@@ -476,13 +475,7 @@ function valueAtKeyAsRecord(
   key: string,
 ): Record<string, unknown> | undefined {
   const value = map[key];
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function placeholders(length: number): string {
-  return Array.from({ length }, () => "?").join(", ");
+  return asRecord(value) ?? undefined;
 }
 
 function nullableString(value: string | null): string | undefined {
@@ -493,13 +486,8 @@ function parseJsonObject(value: string | null): JsonObject | undefined {
   if (value === null || value.length === 0) return undefined;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      return parsed as JsonObject;
-    }
+    const parsedRecord = asRecord(parsed);
+    if (parsedRecord !== null) return parsedRecord as JsonObject;
   } catch {
     return undefined;
   }

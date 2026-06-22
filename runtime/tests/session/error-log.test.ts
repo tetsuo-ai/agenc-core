@@ -118,6 +118,20 @@ describe("ErrorLogSidecar", () => {
       },
     } as unknown as Event);
     expect(actionableWarning).toMatchObject({ persist: true });
+
+    const arrayPayloadWarning = errorLog.classifyErrorLogEvent?.({
+      id: "array-warning-1",
+      seq: 3,
+      msg: {
+        type: "warning",
+        payload: Object.assign(["debug details"], {
+          cause: "compact_prompt_build_slow",
+          visibility: "internal",
+          surface: "debug",
+        }),
+      },
+    } as unknown as Event);
+    expect(arrayPayloadWarning).toMatchObject({ persist: true });
   });
 
   test("writes actionable warnings as sanitized entries", async () => {

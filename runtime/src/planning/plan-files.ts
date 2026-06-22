@@ -8,6 +8,8 @@ import {
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { asRecord } from "../utils/record.js";
+import { nonEmptyString } from "../utils/stringUtils.js";
 
 type EnvLike = Pick<NodeJS.ProcessEnv, "AGENC_HOME" | "HOME" | "USERPROFILE">;
 
@@ -256,12 +258,6 @@ export function writePlanSync(ctx: PlanFileContext, content: string): string {
   return filePath;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function parseJsonObject(value: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -272,8 +268,7 @@ function parseJsonObject(value: string): Record<string, unknown> | null {
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
+  return nonEmptyString(record[key]) ?? null;
 }
 
 function recoverPlanFromRecord(record: Record<string, unknown>): string | null {

@@ -8,6 +8,7 @@
 import { createUserMessage } from "./compact.js";
 import { getCompactUserSummaryMessage } from "./prompt.js";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
+import { isRecord } from "../../utils/record.js";
 
 type SessionMemoryCompactEnv = Partial<Record<
   "AGENC_ENABLE_SESSION_MEMORY_COMPACT" | "AGENC_DISABLE_SESSION_MEMORY_COMPACT",
@@ -110,8 +111,5 @@ function messageHasToolUse(
 function contentBlocks(message: RuntimeMessage): Array<Record<string, unknown>> {
   const content = message.message?.content ?? message.content;
   if (!Array.isArray(content)) return [];
-  return content.filter(
-    (block): block is Record<string, unknown> =>
-      typeof block === "object" && block !== null,
-  );
+  return content.filter(isRecord);
 }

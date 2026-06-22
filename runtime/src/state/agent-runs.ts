@@ -1,5 +1,6 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import type { JsonObject } from "../app-server/protocol/index.js";
+import { asRecord } from "../utils/record.js";
 
 export interface AgenCStateAgentRunRecord {
   readonly id: string;
@@ -132,12 +133,9 @@ function parseJsonObject(value: string | null | undefined): JsonObject {
   }
   try {
     const parsed: unknown = JSON.parse(value);
-    return isJsonObject(parsed) ? parsed : {};
+    const parsedRecord = asRecord(parsed);
+    return parsedRecord === null ? {} : (parsedRecord as JsonObject);
   } catch {
     return {};
   }
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

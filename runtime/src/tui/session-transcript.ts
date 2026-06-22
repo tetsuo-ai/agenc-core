@@ -15,6 +15,7 @@ import type {
   RuntimeTranscriptMessage,
 } from "../session/transcript-replacement.js";
 import type { AgenCBridgeSession } from "./session-types.js";
+import { nonEmptyString } from "../utils/stringUtils.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
 import {
   isPermissionDeniedToolResult,
@@ -806,12 +807,6 @@ interface CollabAgentDisplay {
   agentNickname?: string;
   agentRole?: string;
   agentRoleDisplayName?: string;
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function formatLamports(value: unknown): string | null {

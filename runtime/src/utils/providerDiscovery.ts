@@ -1,5 +1,7 @@
 import type { OllamaModelDescriptor } from './providerRecommendation.ts'
 import { DEFAULT_OPENAI_BASE_URL } from '../services/api/providerConfig.js'
+import { asRecord } from './record.js'
+import { nonEmptyString } from './stringUtils.js'
 import { isZaiBaseUrl } from './zaiProvider.js'
 
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434'
@@ -41,21 +43,9 @@ function compactDetail(value: string, maxLength = 180): string {
   return `${compact.slice(0, maxLength)}...`
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
-}
-
 function arrayField(record: Record<string, unknown>, key: string): readonly unknown[] {
   const value = record[key]
   return Array.isArray(value) ? value : []
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0
-    ? value
-    : undefined
 }
 
 function stringArray(value: unknown): string[] {

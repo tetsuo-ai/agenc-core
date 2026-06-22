@@ -2,9 +2,9 @@
  * SDK Core Schemas - Zod schemas for serializable SDK data types.
  *
  * These schemas are the single source of truth for SDK data types.
- * TypeScript types are generated from these schemas and committed for IDE support.
+ * TypeScript types are committed in coreTypes.generated.ts for IDE support.
  *
- * @see scripts/generate-sdk-types.ts for type generation
+ * Verify with: npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types
  */
 
 import { z } from 'zod/v4'

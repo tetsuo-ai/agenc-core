@@ -26,7 +26,10 @@ import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { parseStatusPorcelain } from "src/tools/system/coding-common.js";
+import {
+  parseStatusPorcelain,
+  parseWorktreePorcelain,
+} from "src/tools/system/coding-common.js";
 import { createGitAndRepoTools } from "./git-tools.js";
 import type { Tool } from "../../../src/tools/types.js";
 
@@ -93,6 +96,54 @@ describe("parseStatusPorcelain (ahead/behind regression)", () => {
     const parsed = parseStatusPorcelain("## HEAD (no branch)\n");
     expect(parsed.detached).toBe(true);
     expect(parsed.branch).toBeUndefined();
+  });
+});
+
+describe("parseWorktreePorcelain", () => {
+  it("parses branch, detached, and bare worktree entries", () => {
+    const parsed = parseWorktreePorcelain(
+      [
+        "worktree /repo",
+        "HEAD abc123",
+        "branch refs/heads/main",
+        "",
+        "worktree /repo-detached",
+        "HEAD def456",
+        "detached",
+        "",
+        "worktree /repo-bare",
+        "bare",
+        "",
+      ].join("\n"),
+    );
+
+    expect(parsed).toEqual([
+      {
+        path: "/repo",
+        branch: "refs/heads/main",
+        head: "abc123",
+        detached: false,
+        bare: false,
+      },
+      {
+        path: "/repo-detached",
+        branch: null,
+        head: "def456",
+        detached: true,
+        bare: false,
+      },
+      {
+        path: "/repo-bare",
+        branch: null,
+        head: null,
+        detached: false,
+        bare: true,
+      },
+    ]);
+  });
+
+  it("returns an empty list for empty porcelain output", () => {
+    expect(parseWorktreePorcelain("\n")).toEqual([]);
   });
 });
 
@@ -257,6 +308,20 @@ describe("createGitAndRepoTools", () => {
       expect(result.content).toContain("ref must not begin with '-'");
       // The injected --output ref must never reach git, so no file is written.
       await expect(stat(clobber)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  describe("system.gitWorktreeList", () => {
+    it("lists worktrees with parsed porcelain fields", async () => {
+      const tool = toolByName(tools, "system.gitWorktreeList");
+      const result = await tool.execute({ path: root });
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content);
+      expect(payload.repoRoot).toBe(root);
+      expect(payload.worktrees.length).toBeGreaterThanOrEqual(1);
+      expect(payload.worktrees[0].path).toBe(root);
+      expect(payload.worktrees[0].head).toMatch(/^[0-9a-f]{40}$/);
+      expect(payload.worktrees[0].bare).toBe(false);
     });
   });
 

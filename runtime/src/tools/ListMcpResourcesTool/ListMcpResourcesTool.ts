@@ -7,6 +7,7 @@ import { buildTool, type ToolDef } from '../Tool.js'
 import { errorMessage } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logMCPError } from '../../utils/log.js'
+import { mcpServerNotFoundMessage } from '../../utils/mcpServerLookup.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
 import { DESCRIPTION, LIST_MCP_RESOURCES_TOOL_NAME, PROMPT } from './prompt.js'
@@ -71,9 +72,7 @@ export const ListMcpResourcesTool = buildTool({
       : mcpClients
 
     if (targetServer && clientsToProcess.length === 0) {
-      throw new Error(
-        `Server "${targetServer}" not found. Available servers: ${mcpClients.map(c => c.name).join(', ')}`,
-      )
+      throw new Error(mcpServerNotFoundMessage(targetServer, mcpClients))
     }
 
     // fetchResourcesForClient is LRU-cached (by server name) and already

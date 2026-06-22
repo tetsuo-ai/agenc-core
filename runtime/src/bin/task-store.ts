@@ -25,6 +25,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { lock as acquireLock } from "../utils/lockfile.js";
+import { isRecord } from "../utils/record.js";
 import { createSignal } from "../utils/signal.js";
 import { slugifyCwd, findProjectRootSync } from "../session/session-store.js";
 
@@ -213,10 +214,6 @@ async function findHighestTaskId(opts: TaskStoreOptions): Promise<number> {
   return Math.max(fromFiles, fromMark);
 }
 
-function isObjectLiteral(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function dedupePreserveOrder(values: readonly string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -234,7 +231,7 @@ function isTaskStatus(value: unknown): value is TaskStatus {
 }
 
 function isStoredTask(value: unknown): value is StoredTask {
-  if (!isObjectLiteral(value)) return false;
+  if (!isRecord(value)) return false;
   return (
     typeof value.id === "string" &&
     ID_RE.test(value.id) &&
@@ -247,7 +244,7 @@ function isStoredTask(value: unknown): value is StoredTask {
     value.blocks.every((entry) => typeof entry === "string") &&
     Array.isArray(value.blockedBy) &&
     value.blockedBy.every((entry) => typeof entry === "string") &&
-    (value.metadata === undefined || isObjectLiteral(value.metadata))
+    (value.metadata === undefined || isRecord(value.metadata))
   );
 }
 
@@ -359,7 +356,7 @@ async function applyFieldUpdates(
   }
   if (input.metadata !== undefined) {
     const metadata = {
-      ...(isObjectLiteral(existing.metadata) ? existing.metadata : {}),
+      ...(isRecord(existing.metadata) ? existing.metadata : {}),
     };
     for (const [key, value] of Object.entries(input.metadata)) {
       if (value === null) {

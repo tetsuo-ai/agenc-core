@@ -6,6 +6,7 @@ import {
 } from "./agent-runs.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { sqlPlaceholders } from "./sql.js";
 import {
   normalizeToolRecoveryCategory,
   rotateToolOutputForState,
@@ -242,7 +243,7 @@ function loadSnapshots(
          tool_state_json,
          mcp_connection_state_json
        FROM session_state_snapshots
-       WHERE session_id IN (${placeholders(sessionIds.length)})
+       WHERE session_id IN (${sqlPlaceholders(sessionIds.length)})
        ORDER BY session_id ASC, snapshot_at ASC`,
     )
     .all(...sessionIds)
@@ -275,7 +276,7 @@ function loadToolCalls(
          output_partial,
          started_at
        FROM in_flight_tool_calls
-       WHERE session_id IN (${placeholders(sessionIds.length)})
+       WHERE session_id IN (${sqlPlaceholders(sessionIds.length)})
        ORDER BY session_id ASC, started_at ASC, tool_call_id ASC`,
     )
     .all(...sessionIds)
@@ -508,7 +509,7 @@ function assertSessionIdsOwnedByImportAgent(
     .prepareState<unknown[], { id: string; current_session_id: string }>(
       `SELECT id, current_session_id
        FROM agent_runs
-       WHERE current_session_id IN (${placeholders(sessionIds.length)})
+       WHERE current_session_id IN (${sqlPlaceholders(sessionIds.length)})
          AND id != ?
        ORDER BY id ASC
        LIMIT 1`,
@@ -616,10 +617,6 @@ function parseJsonField(raw: string, label: string): JsonValue {
       `stored ${label} is not valid JSON: ${errorMessage(error)}`,
     );
   }
-}
-
-function placeholders(count: number): string {
-  return Array.from({ length: count }, () => "?").join(", ");
 }
 
 function errorMessage(error: unknown): string {

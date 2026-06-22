@@ -31,6 +31,7 @@ import { useAppState, useSetAppState } from "../tui/state/AppState.js";
 import type { AppState } from "../tui/state/AppStateStore.js";
 import { useTerminalSize } from "../tui/hooks/useTerminalSize.js";
 import { getSourceDisplayName } from "../utils/settings/constants.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -1134,21 +1135,7 @@ function AgentsMenuModal({
 }
 
 export function openAgentsMenu(ctx: SlashCommandContext): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: <AgentsMenuModal onDone={close} initialTools={ctx.appState?.tools ?? []} />,
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <AgentsMenuModal onDone={close} initialTools={ctx.appState?.tools ?? []} />
+  ));
 }

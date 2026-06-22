@@ -13,6 +13,8 @@
  */
 
 import type { EventLog } from "../../session/event-log.js";
+import { asRecord } from "../../utils/record.js";
+import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
 import type {
@@ -846,7 +848,7 @@ function readGuardianToolPermissionContext(
     typeof permissionContext.toolPermissionContext === "function"
       ? permissionContext.toolPermissionContext(appState)
       : appState.toolPermissionContext;
-  return typeof candidate === "object" && candidate !== null ? candidate : null;
+  return asRecord(candidate) as ToolPermissionContext | null;
 }
 
 function hookPermissionReasonCode(
@@ -900,15 +902,9 @@ function toolFromApprovalCtx(ctx: ApprovalCtx): Tool {
 function resolveApprovalCache(
   invocation: ToolInvocation,
 ): ApprovalCacheAdapter | null {
-  const session = (invocation as { readonly session?: unknown }).session;
-  const services =
-    typeof session === "object" && session !== null
-      ? (session as { readonly services?: unknown }).services
-      : undefined;
-  if (typeof services !== "object" || services === null) return null;
-  const store = (services as {
-    readonly toolApprovals?: ApprovalCacheAdapter | null;
-  }).toolApprovals;
+  const session = asRecord((invocation as { readonly session?: unknown }).session);
+  const services = asRecord(session?.services);
+  const store = services?.toolApprovals as ApprovalCacheAdapter | null | undefined;
   return store && typeof store.withCachedApproval === "function" ? store : null;
 }
 
@@ -1008,18 +1004,6 @@ function permissionDecisionHookContext(
 function toolNameMatcherAliases(toolName: string): readonly string[] {
   if (toolName === "apply_patch") return ["Write", "Edit"];
   return [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 function stringArrayValue(value: unknown): readonly string[] {

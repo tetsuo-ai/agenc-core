@@ -373,6 +373,70 @@ describe("/context TUI bridge", () => {
     expect(payload?.jsx?.props?.text).toContain("prompt cache");
   });
 
+  test("array-shaped permission context is ignored for synthetic system prompt", async () => {
+    const renderContextText = async (current: () => unknown): Promise<string> => {
+      const setToolJSX = vi.fn();
+      const session = {
+        abortController: new AbortController(),
+        conversationId: "session-1",
+        newDefaultTurnWithSubId: () => ({
+          cwd: "/tmp/agenc-context",
+          config: {},
+          modelInfo: {
+            slug: "grok-4",
+            contextWindow: 200_000,
+            effectiveContextWindowPercent: 100,
+          },
+          modelProviderId: "xai",
+          options: {},
+        }),
+        nextInternalSubId: () => "sub-1",
+        snapshotHistoryMessages: () => [],
+        state: {
+          unsafePeek: () => ({
+            totalTokenUsage: {
+              promptTokens: 1_000,
+              cachedInputTokens: 250,
+            },
+          }),
+        },
+        permissionModeRegistry: { current },
+        services: {
+          registry: {
+            toLLMTools: () => [],
+            allSpecs: () => [],
+          },
+          configStore: {
+            current: () => ({}),
+          },
+          permissionModeRegistry: { current },
+          provider: {},
+        },
+        emit: vi.fn(),
+        clearProviderResponseId: vi.fn(),
+      };
+
+      const result = await contextCommand.execute({
+        session: session as never,
+        argsRaw: "",
+        cwd: "/tmp/agenc-context",
+        home: "/home/test",
+        appState: { setToolJSX },
+      });
+
+      expect(result).toEqual({ kind: "skip" });
+      const payload = setToolJSX.mock.calls[0]?.[0];
+      return String(payload?.jsx?.props?.text ?? "");
+    };
+
+    const noPermissionContext = await renderContextText(() => undefined);
+    const spoofedPermissionContext = await renderContextText(() =>
+      Object.assign(["spoof"], { mode: "bypassPermissions" }),
+    );
+
+    expect(spoofedPermissionContext).toBe(noPermissionContext);
+  });
+
   test("falls back to daemon token usage when no in-process turn context exists", async () => {
     const setToolJSX = vi.fn();
     const session = {

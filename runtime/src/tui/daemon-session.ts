@@ -59,6 +59,7 @@ import type {
 } from "./realtime/audio.js";
 import type { AgenCCompactProgressControls } from "./session-types.js";
 import type { McpServerMutationResult } from "../session/session.js";
+import { isRecord } from "../utils/record.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -1236,5 +1237,5 @@ function connectionNoticeEvents(
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }

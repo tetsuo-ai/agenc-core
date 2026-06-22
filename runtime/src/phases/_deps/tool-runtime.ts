@@ -87,6 +87,7 @@ import {
   routerFromRegistry as realRouterFromRegistry,
   type ToolRouter as RealToolRouter,
 } from "../../tools/router.js";
+import { asRecord } from "../../utils/record.js";
 
 interface ToolDispatchResultLike {
   readonly content: string;
@@ -326,10 +327,7 @@ const PERMISSION_MODE_CHANGED_MESSAGE =
 function safeParseArgs(raw: string | undefined): Record<string, unknown> {
   if (!raw) return {};
   try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : {};
+    return asRecord(JSON.parse(raw)) ?? {};
   } catch {
     return {};
   }

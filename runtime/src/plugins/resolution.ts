@@ -22,6 +22,7 @@ import {
   verify as verifySignatureBytes,
 } from "node:crypto";
 import { redactSecrets } from "../secrets/index.js";
+import { isRecord } from "../utils/record.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { sanitizePluginId } from "./directories.js";
 import type { LoadedPlugin } from "./loader.js";
@@ -1719,8 +1720,4 @@ function emitTelemetry(
   event: PluginFetchTelemetry,
 ): void {
   options.onTelemetry?.(event);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

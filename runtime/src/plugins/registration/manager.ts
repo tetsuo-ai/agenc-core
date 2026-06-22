@@ -4,6 +4,7 @@ import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } fro
 import type { Command } from "../../commands.js";
 import type { SlashCommandContext } from "../../commands/types.js";
 import type { PluginAgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
+import { isRecord } from "../../utils/record.js";
 import { loadPlugins, type LoadedPlugin, type PluginLoadIssue, type PluginLoadResult } from "../loader.js";
 import {
   clearRuntimePluginLoadCache,
@@ -111,10 +112,6 @@ export async function refreshPluginRegistrations(
     outputStyles,
     loadResult: combinedLoadResult,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function isPluginAgent(value: unknown): boolean {

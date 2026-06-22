@@ -19,16 +19,13 @@ import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { Session } from "../session/session.js";
+import { asRecord } from "../utils/record.js";
 import {
   safeExecute,
   type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-
-interface ResettableSidecar {
-  reset?: () => void;
-}
 
 interface ActiveTurnPeek {
   unsafePeek?: () => unknown;
@@ -65,16 +62,20 @@ interface ClearableSessionShape {
 
 /** Best-effort reset of any sidecar instance that exposes `reset()`. */
 function maybeReset(cand: unknown): boolean {
-  if (
-    cand &&
-    typeof cand === "object" &&
-    "reset" in (cand as object) &&
-    typeof (cand as ResettableSidecar).reset === "function"
-  ) {
-    (cand as ResettableSidecar).reset!();
+  const record = asRecord(cand);
+  if (record !== null && typeof record.reset === "function") {
+    record.reset.call(cand);
     return true;
   }
   return false;
+}
+
+function callServiceMethod(cand: unknown, method: string): void {
+  const record = asRecord(cand);
+  const fn = record?.[method];
+  if (typeof fn === "function") {
+    fn.call(cand);
+  }
 }
 
 function hasActiveTurn(session: Session): boolean {
@@ -113,10 +114,12 @@ export async function clearSession(session: Session): Promise<void> {
   // Clearing conversation history must also sever provider continuation
   // ids; otherwise the next Responses turn can be sent with an orphaned
   // previous_response_id that no longer matches the local transcript.
-  clearable.clearProviderResponseId?.();
+  if (typeof clearable.clearProviderResponseId === "function") {
+    clearable.clearProviderResponseId();
+  }
 
   // Reset sidecars if present on services (e.g. memory/cost).
-  const svc = clearable.services ?? {};
+  const svc = asRecord(clearable.services) ?? {};
   for (const key of [
     "memorySidecar",
     "costSidecar",
@@ -128,16 +131,17 @@ export async function clearSession(session: Session): Promise<void> {
 
   // Session-level approvals are explicitly scoped to the current chat
   // and must not survive `/clear`.
-  svc.toolApprovals?.clear?.();
-  svc.networkApproval?.clearSessionHosts?.();
+  callServiceMethod(svc.toolApprovals, "clear");
+  callServiceMethod(svc.networkApproval, "clearSessionHosts");
 
   // Budget tracker has no `reset()` but exposes sampling-gate reset.
-  clearable.budgetTracker?.resetSamplingGate?.();
+  callServiceMethod(clearable.budgetTracker, "resetSamplingGate");
 
   // T11 W4: reset permission denial tracking in place so the evaluator
   // continues to observe a single shared reference across turns.
-  if (clearable.denialTracking) {
-    Object.assign(clearable.denialTracking, freshDenialTracking());
+  const denialTracking = asRecord(clearable.denialTracking);
+  if (denialTracking !== null) {
+    Object.assign(denialTracking, freshDenialTracking());
   }
 }
 

@@ -9,7 +9,7 @@ import { UserToolCanceledMessage } from '../../components/v2/messagePrimitives.j
 import { UserToolErrorMessage } from './UserToolErrorMessage';
 import { UserToolRejectMessage } from './UserToolRejectMessage';
 import { UserToolSuccessMessage } from './UserToolSuccessMessage';
-import { useGetToolFromMessages } from './utils';
+import { getTextToolResultContent, useGetToolFromMessages } from './utils';
 type Props = {
   param: AgenCToolResultBlockParam;
   message: NormalizedUserMessage;
@@ -21,28 +21,6 @@ type Props = {
   width: number | string;
   isTranscriptMode?: boolean;
 };
-
-function getTextToolResultContent(
-  content: AgenCToolResultBlockParam['content'],
-): string | undefined {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-
-  const textParts: string[] = [];
-  for (const block of content) {
-    if (typeof block === 'string') {
-      textParts.push(block);
-    } else if (block && typeof block === 'object' && typeof block.text === 'string') {
-      textParts.push(block.text);
-    }
-  }
-
-  return textParts.length > 0 ? textParts.join('\n') : undefined;
-}
 
 export function formatOrphanToolResultContent(content: AgenCToolResultBlockParam["content"]): string {
   if (isPermissionDeniedToolResult(content)) return PERMISSION_DENIED_TOOL_RESULT_MESSAGE;

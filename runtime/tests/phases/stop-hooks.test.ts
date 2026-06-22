@@ -392,6 +392,42 @@ describe("evaluateStopHooks", () => {
       permission_mode: "plan",
     });
   });
+
+  test("array-shaped live permission mode falls back to turn context", async () => {
+    const capturedModes: string[] = [];
+    const hook: StopHookHandler = {
+      name: "capture",
+      run: (request) => {
+        capturedModes.push(request.permissionMode);
+        return {
+          shouldStop: true,
+          shouldBlock: false,
+          continuationFragments: [],
+        };
+      },
+    };
+    const log = new EventLog();
+    const session = mkSession(log, [hook]);
+    (
+      session as unknown as {
+        services: { permissionModeRegistry?: unknown };
+      }
+    ).services.permissionModeRegistry = {
+      current: () =>
+        Object.assign(["spoof"], {
+          mode: "bypassPermissions",
+        }),
+    };
+
+    const result = await evaluateStopHooks(
+      mkState(),
+      mkCtx({ permissionMode: "acceptEdits" }),
+      session,
+    );
+
+    expect(result.allowStop).toBe(true);
+    expect(capturedModes).toEqual(["acceptEdits"]);
+  });
 });
 
 describe("executeStopFailureHooks", () => {

@@ -1,6 +1,6 @@
-import path from "node:path";
 import { parsePatch } from "../apply-patch/parser.js";
 import type { Tool } from "../types.js";
+import { resolveRuntimePathTarget } from "./paths.js";
 
 export interface ApplyPatchRuntimeWriteAnalysis {
   readonly targets: readonly string[];
@@ -25,19 +25,13 @@ export function analyzeApplyPatchRuntimeWrites(
     const parsed = parsePatch(patch);
     const targets = new Set<string>();
     for (const hunk of parsed.hunks) {
-      targets.add(resolveTarget(hunk.path, cwd));
+      targets.add(resolveRuntimePathTarget(hunk.path, cwd));
       if (hunk.kind === "update" && hunk.movePath !== null) {
-        targets.add(resolveTarget(hunk.movePath, cwd));
+        targets.add(resolveRuntimePathTarget(hunk.movePath, cwd));
       }
     }
     return { targets: [...targets], indeterminate: targets.size === 0 };
   } catch {
     return { targets: [], indeterminate: true };
   }
-}
-
-function resolveTarget(value: string, cwd: string): string {
-  return path.isAbsolute(value)
-    ? path.normalize(value)
-    : path.resolve(cwd, value);
 }

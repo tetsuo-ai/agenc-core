@@ -17,7 +17,10 @@ import {
 } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  JSON_RPC_VERSION,
+} from "./protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
   createAgenCPortalAgentCreateRequest,
@@ -3383,12 +3386,21 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
-    expect(connection.initializeState).toEqual({
+    expect(connection.initializeState).toMatchObject({
       protocol: { version: "1.0.0" },
       clientProtocol: { version: "1.0.0" },
       serverProtocol: { version: "1.0.0" },
       clientCapabilities: { experimentalApi: true },
-      serverCapabilities: {},
+    });
+    expect(
+      connection.initializeState?.serverCapabilities[
+        AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+      ],
+    ).toMatchObject({
+      "agent.create": true,
+      "session.create": false,
+      "daemon.reload": false,
+      "auth.login": false,
     });
 
     await expect(
