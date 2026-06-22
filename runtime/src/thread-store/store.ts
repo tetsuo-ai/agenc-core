@@ -53,6 +53,7 @@ import {
 } from "../state/sqlite-driver.js";
 import { StateThreadRepository } from "../state/threads.js";
 import { backfillRolloutFile } from "../state/backfill.js";
+import { isRecord } from "../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Params + types — mirrored from agenc runtime `thread-store/src/types.rs`.
@@ -1852,8 +1853,4 @@ function fileSha256(path: string): string {
 
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

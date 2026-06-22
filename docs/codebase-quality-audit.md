@@ -4,6 +4,42 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Thread Store Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/thread-store/store.ts` normalizes registry entries read from the
+  filesystem-backed thread registry and canonicalizes `ThreadSource` JSON before
+  persistence/listing.
+- `runtime/tests/session/thread-store.test.ts` covers structured thread-source
+  creation, metadata updates, registry durability, corrupt registry recovery,
+  and legacy import paths.
+- `runtime/tests/session/live-thread.test.ts`,
+  `runtime/tests/state/backfill.test.ts`, and app-server lifecycle contract
+  tests cover callers that create, resume, archive, and index persisted
+  `FileThreadStore` threads.
+
+### Finding
+
+The thread store duplicated the strict non-array object guard already provided
+by `utils/record.ts#isRecord` for registry entries and nested thread-source JSON
+objects. Arrays are handled explicitly in `canonicalizeJsonValue` before object
+recursion, so the shared strict guard preserves source validation.
+
+### Change
+
+- Replaced the local thread-store `isRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved strict array/null rejection for registry entries and structured
+  thread-source object recursion while keeping arrays valid only in JSON value
+  positions.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/session/thread-store.test.ts tests/session/live-thread.test.ts tests/state/backfill.test.ts tests/state/rollout-parse-guards.test.ts tests/app-server/session-lifecycle.contract.test.ts tests/app-server/agent-lifecycle.contract.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Rollout Spawn-Edge Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
