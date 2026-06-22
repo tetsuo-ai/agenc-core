@@ -8,9 +8,10 @@
  */
 import { getDoctorDiagnostic } from "../utils/doctorDiagnostic.js";
 
-export interface AgenCDoctorCliCommand {
-  readonly json: boolean;
-}
+export type AgenCDoctorCliCommand =
+  | { readonly kind: "doctor"; readonly json: boolean }
+  | { readonly kind: "help"; readonly text: string }
+  | { readonly kind: "error"; readonly message: string };
 
 export function formatAgenCDoctorCliHelpText(): string {
   return [
@@ -20,6 +21,9 @@ export function formatAgenCDoctorCliHelpText(): string {
     "  agenc doctor            Print installation, version, ripgrep, update,",
     "                          and PATH/glob diagnostics with suggested fixes",
     "  agenc doctor --json     Emit the raw diagnostic as JSON",
+    "",
+    "Options:",
+    "  -h, --help  Show this help text",
     "",
     "See also: agenc mcp doctor (MCP server configuration diagnostics)",
   ].join("\n");
@@ -33,9 +37,21 @@ export function parseAgenCDoctorCliArgs(
   argv: readonly string[],
 ): AgenCDoctorCliCommand | null {
   if (argv[0] !== "doctor") return null;
-  const rest = argv.slice(1);
-  const json = rest.includes("--json");
-  return { json };
+  let json = false;
+  for (const arg of argv.slice(1)) {
+    if (arg === "--help" || arg === "-h") {
+      return { kind: "help", text: formatAgenCDoctorCliHelpText() };
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    return {
+      kind: "error",
+      message: `doctor command does not accept argument '${arg}'`,
+    };
+  }
+  return { kind: "doctor", json };
 }
 
 function formatDiagnosticText(
@@ -102,11 +118,22 @@ function formatDiagnosticText(
 export async function runAgenCDoctorCli(
   command: AgenCDoctorCliCommand,
 ): Promise<number> {
-  const info = await getDoctorDiagnostic();
-  if (command.json) {
-    process.stdout.write(`${JSON.stringify(info, null, 2)}\n`);
-  } else {
-    process.stdout.write(`${formatDiagnosticText(info)}\n`);
+  switch (command.kind) {
+    case "help":
+      process.stdout.write(`${command.text}\n`);
+      return 0;
+    case "error":
+      process.stderr.write(`agenc: ${command.message}\n`);
+      process.stderr.write(`${formatAgenCDoctorCliHelpText()}\n`);
+      return 1;
+    case "doctor": {
+      const info = await getDoctorDiagnostic();
+      if (command.json) {
+        process.stdout.write(`${JSON.stringify(info, null, 2)}\n`);
+      } else {
+        process.stdout.write(`${formatDiagnosticText(info)}\n`);
+      }
+      return info.warnings.length > 0 ? 1 : 0;
+    }
   }
-  return info.warnings.length > 0 ? 1 : 0;
 }

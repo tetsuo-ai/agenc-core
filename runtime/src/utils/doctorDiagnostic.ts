@@ -560,8 +560,12 @@ export function buildRipgrepWarning(
 
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationType = await getCurrentInstallationType()
-  const version =
-    typeof MACRO !== 'undefined' && MACRO.VERSION ? MACRO.VERSION : 'unknown'
+  // The bundler substitutes `MACRO.VERSION` (property access) with a string
+  // literal at build time, but never defines the bare `MACRO` identifier — so a
+  // `typeof MACRO !== 'undefined'` guard always reports the global as undefined
+  // under the built binary and falls through to 'unknown'. Read `MACRO.VERSION`
+  // directly, the same canonical build-time source the `--version` path uses.
+  const version = MACRO.VERSION || 'unknown'
   const installationPath = await getInstallationPath()
   const invokedBinary = getInvokedBinary()
   const multipleInstallations = await detectMultipleInstallations()
