@@ -1,7 +1,10 @@
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { openLocalJsxCommand } from "../../src/commands/local-jsx-command.js";
+import {
+  openAsyncLocalJsxCommand,
+  openLocalJsxCommand,
+} from "../../src/commands/local-jsx-command.js";
 import type { SlashCommandContext } from "../../src/commands/types.js";
 
 function makeContext(
@@ -17,6 +20,15 @@ describe("openLocalJsxCommand", () => {
     const render = vi.fn(() => React.createElement("div"));
 
     expect(openLocalJsxCommand(makeContext(), render)).toBe(false);
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("returns false from the async opener without importing or rendering", async () => {
+    const render = vi.fn(async () => React.createElement("div"));
+
+    await expect(openAsyncLocalJsxCommand(makeContext(), render)).resolves.toBe(
+      false,
+    );
     expect(render).not.toHaveBeenCalled();
   });
 
@@ -59,5 +71,20 @@ describe("openLocalJsxCommand", () => {
     expect(setToolJSX).toHaveBeenCalledWith(
       expect.objectContaining({ shouldHidePromptInput: false }),
     );
+  });
+
+  it("opens async local JSX after the render callback resolves", async () => {
+    const setToolJSX = vi.fn();
+    const jsx = React.createElement("strong", { id: "async-menu" });
+
+    await expect(
+      openAsyncLocalJsxCommand(makeContext(setToolJSX), async () => jsx),
+    ).resolves.toBe(true);
+
+    expect(setToolJSX).toHaveBeenCalledWith({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+      jsx,
+    });
   });
 });

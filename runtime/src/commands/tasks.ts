@@ -23,6 +23,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 
 export interface TaskSummaryRow {
   readonly id: string;
@@ -216,23 +217,14 @@ export const tasksCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const setToolJSX = ctx.appState?.setToolJSX;
-      if (typeof setToolJSX === "function") {
-        const { BackgroundTasksPanel } = await import(
-          "../tui/components/tasks/BackgroundTasksPanel.js"
-        );
-        const close = () => {
-          setToolJSX({
-            jsx: null,
-            shouldHidePromptInput: false,
-            clearLocalJSX: true,
-          });
-        };
-        setToolJSX({
-          isLocalJSXCommand: true,
-          shouldHidePromptInput: true,
-          jsx: React.createElement(BackgroundTasksPanel, { onDone: close }),
-        });
+      if (
+        await openAsyncLocalJsxCommand(ctx, async close => {
+          const { BackgroundTasksPanel } = await import(
+            "../tui/components/tasks/BackgroundTasksPanel.js"
+          );
+          return React.createElement(BackgroundTasksPanel, { onDone: close });
+        })
+      ) {
         return { kind: "skip" };
       }
       const getAppState = ctx.appState?.getAppState;

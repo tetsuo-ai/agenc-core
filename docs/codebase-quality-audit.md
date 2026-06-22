@@ -103,6 +103,57 @@ this repository.
 - `npm run test:bun`
 - `git diff --check`
 
+## 2026-06-22: Async Local JSX Command Helper
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/local-jsx-command.ts` owned the shared local JSX open
+  and close payload for simple slash-command TUI surfaces.
+- Remaining direct local JSX surfaces were `resume-menu.tsx`,
+  `agents-menu.tsx`, `tasks.ts`, `memory/slash.ts`, `help.ts`, and
+  `session-compact.ts`.
+- `resume` and `agents` render synchronously but have command-specific bridge
+  data (`requestResumeSession`, available tools).
+- `tasks`, `memory`, `help`, and `context` lazily import TUI components only
+  when a TUI bridge is present; headless command execution must keep falling
+  back without loading those renderers.
+- Focused tests cover the affected commands in
+  `agent-management.test.tsx`, `resume-menu.test.tsx`, `help.test.ts`,
+  `tasks.test.ts`, `memory.contract.test.tsx`, and
+  `session-compact-context.test.ts`.
+
+### Finding
+
+The first local JSX helper removed duplication from simple menu openers, but
+specialized command surfaces still repeated the same bridge check, local JSX
+flags, and clear payload. The async surfaces needed a helper that preserves
+lazy imports and headless fallbacks.
+
+### Change
+
+- Extended `local-jsx-command.ts` with `openAsyncLocalJsxCommand`, sharing the
+  same bridge detection, local JSX flags, prompt visibility default, and clear
+  payload as the synchronous opener.
+- Migrated `resume`, `agents`, `tasks`, `memory`, `help`, and `context` command
+  surfaces to the shared helpers while preserving their rendered components,
+  command-specific bridge data, and fallback behavior.
+- Added focused async-helper tests proving the no-bridge path does not invoke
+  the render callback and the bridged path opens after the callback resolves.
+- Updated the memory command contract to assert the lazy command body remains
+  behind the shared async helper boundary.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/local-jsx-command.test.ts tests/commands/agent-management.test.tsx tests/commands/resume-menu.test.tsx tests/commands/help.test.ts tests/commands/tasks.test.ts tests/commands/memory/memory.contract.test.tsx tests/commands/session-compact-context.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Dispatcher Optional-Service Responses
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

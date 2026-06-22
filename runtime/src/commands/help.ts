@@ -23,6 +23,7 @@ import {
   OTHER_COMMANDS_TITLE,
   helpWorkflowTitleForCommand,
 } from "./help-groups.js";
+import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import { sanitizeSuggestionMetadataText } from "../utils/suggestions/sanitizeSuggestionMetadataText.js";
 
 export interface HelpCommand {
@@ -238,27 +239,14 @@ async function openHelpMenu(
   commands: readonly HelpCommand[],
   query: string,
 ): Promise<boolean> {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-
-  const { HelpV2 } = await import("../tui/components/HelpV2/HelpV2.js");
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: React.createElement(HelpV2, {
+  return openAsyncLocalJsxCommand(ctx, async close => {
+    const { HelpV2 } = await import("../tui/components/HelpV2/HelpV2.js");
+    return React.createElement(HelpV2, {
       commands: commands as never,
       query,
       onClose: close,
-    }),
+    });
   });
-  return true;
 }
 
 export const helpCommand: SlashCommand = {

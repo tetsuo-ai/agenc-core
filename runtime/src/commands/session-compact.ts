@@ -35,6 +35,7 @@ import {
   loadTieredInstructions,
 } from "../prompts/agenc-md.js";
 import { openCompactStatusModal } from "./compact-menu.js";
+import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 
 /**
  * Both /compact and /context allocate a fresh TurnContext via the
@@ -197,24 +198,12 @@ async function openContextUsageModal(
   ctx: SlashCommandContext,
   text: string,
 ): Promise<boolean> {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
-  const { ContextUsageModal } = await import(
-    "../tui/components/v2/ContextUsageModal.js"
-  );
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: React.createElement(ContextUsageModal, { text, onDone: close }),
+  return openAsyncLocalJsxCommand(ctx, async close => {
+    const { ContextUsageModal } = await import(
+      "../tui/components/v2/ContextUsageModal.js"
+    );
+    return React.createElement(ContextUsageModal, { text, onDone: close });
   });
-  return true;
 }
 
 async function buildFallbackContextUsageText(

@@ -4,6 +4,7 @@ import React from "react";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 import type { RolloutEntry } from "./resume.js";
@@ -137,28 +138,14 @@ export function openResumeMenu(
   ctx: SlashCommandContext,
   entries: readonly RolloutEntry[],
 ): boolean {
-  const setToolJSX = ctx.appState?.setToolJSX;
-  if (typeof setToolJSX !== "function") return false;
   const requestResumeSession = ctx.appState?.requestResumeSession;
-  const close = () => {
-    setToolJSX({
-      jsx: null,
-      shouldHidePromptInput: false,
-      clearLocalJSX: true,
-    });
-  };
-  setToolJSX({
-    isLocalJSXCommand: true,
-    shouldHidePromptInput: true,
-    jsx: (
-      <ResumeMenuView
-        entries={entries}
-        onDone={close}
-        {...(typeof requestResumeSession === "function"
-          ? { requestResumeSession }
-          : {})}
-      />
-    ),
-  });
-  return true;
+  return openLocalJsxCommand(ctx, close => (
+    <ResumeMenuView
+      entries={entries}
+      onDone={close}
+      {...(typeof requestResumeSession === "function"
+        ? { requestResumeSession }
+        : {})}
+    />
+  ));
 }
