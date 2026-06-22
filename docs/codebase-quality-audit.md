@@ -4,6 +4,54 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Tool Argument String Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/apply-patch/tool.ts` validates freeform patch input, cwd,
+  and injected session ids before parsing and path permission checks.
+- `runtime/src/tools/system/file-edit.ts` validates `Edit` / `MultiEdit` paths
+  and cwd values before read-before-write and mutation guards.
+- `runtime/src/tools/system/exec-command.ts` validates command, workdir, call id,
+  and shell arguments before sandbox/runtime execution setup.
+- `runtime/src/tools/system/filesystem.ts` resolves injected session ids used by
+  filesystem mutation guards.
+- `runtime/src/tools/system/monitor.ts` validates background command and
+  description inputs.
+- `runtime/src/tools/system/worktree.ts` validates worktree names, actions, and
+  active session ids.
+
+### Finding
+
+These tool paths had exact local copies of the guard now owned by
+`nonEmptyString`: reject non-strings and whitespace-only strings, but return the
+accepted original string unchanged. That distinction is important for paths,
+commands, shell names, and injected ids; it should not be conflated with nearby
+helpers that trim accepted values or intentionally accept whitespace-only
+strings.
+
+### Change
+
+- Reused `runtime/src/utils/stringUtils.ts` `nonEmptyString` in six tool-path
+  parsers.
+- Kept local aliases (`asNonEmptyString` / `asString`) where they describe the
+  argument parser role at the call site.
+- Left the trim-returning tool helpers in Grep, Glob, planning, task helpers,
+  and ask-user-question untouched because they intentionally normalize accepted
+  values.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/stringUtils.test.ts tests/tools/apply-patch/tool.test.ts tests/tools/system/file-edit.test.ts tests/tools/system/exec-command.test.ts tests/tools/system/filesystem.test.ts tests/tools/system/monitor.test.ts tests/tools/system/worktree.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Non-Empty String Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

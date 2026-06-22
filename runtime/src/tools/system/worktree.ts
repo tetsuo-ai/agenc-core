@@ -52,6 +52,7 @@ import {
   getPlanFilePath,
   getPlansDirectory,
 } from "../../planning/plan-files.js";
+import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
@@ -204,12 +205,6 @@ function okResult(data: Record<string, unknown>, message: string): ToolResult {
     content: message,
     metadata: data,
   };
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 async function findGitRoot(cwd: string): Promise<string | null> {

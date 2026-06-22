@@ -25,6 +25,7 @@ import type {
   ToolResult,
 } from "../types.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
+import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 
 const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — AgenC behavior.
 
@@ -40,12 +41,6 @@ const MONITOR_DESCRIPTION = `Execute a shell command in the background and strea
 interface MonitorToolInput extends ToolExecutionInjectedArgs {
   readonly command?: unknown;
   readonly description?: unknown;
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
 }
 
 export interface MonitorToolConfig {
