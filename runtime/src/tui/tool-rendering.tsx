@@ -4,6 +4,7 @@ import React from "react";
 import { Box, Text } from "./ink.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
+import { isRecord } from "../utils/record.js";
 import { unescapeXml } from "../utils/xml.js";
 import {
   pickToolResultDispatch,
@@ -489,10 +490,6 @@ export function BashOutputView({
 type SafeParseResult =
   | { readonly success: true; readonly data: Record<string, unknown> }
   | { readonly success: false; readonly error: Error };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function objectFromUnknown(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : { value };

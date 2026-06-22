@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared TUI Tool Result Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tui/tool-result-denial.ts` recursively detects permission-denied
+  tool results from raw strings, JSON strings, arrays, and structured records.
+- `runtime/src/tui/tool-result-routing.ts` flattens tool result content before
+  routing structured results to specialized TUI renderers.
+- `runtime/src/tui/tool-rendering.tsx` converts unknown tool input/results into
+  display records and fallback summaries.
+- `runtime/src/tui/edit-diff-preview.ts` extracts edit/write diff previews from
+  unknown tool-use input.
+
+### Finding
+
+These TUI tool-result paths each carried a local strict record guard equivalent
+to `utils/record.ts#isRecord`: accept non-array objects and reject arrays, null,
+and primitives. Keeping local copies made it easier for tool result parsing,
+routing, and edit preview extraction to drift from the shared untrusted-record
+contract.
+
+### Change
+
+- Replaced the four local `isRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Added direct permission-denied parser coverage for nested records, arrays,
+  JSON strings, and non-denial values.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/tui/tool-result-denial.test.ts tests/tui/tool-result-routing.test.ts tests/tui/tool-result-routing.editSuccessSuppress.test.ts tests/tui/tool-rendering.test.tsx tests/tui/tool-rendering.coverage.test.tsx tests/tools/tool-rendering-edit.test.tsx tests/tui/message-renderers/UserToolResultMessage/UserToolResultMessage.test.tsx tests/tui/message-renderers/UserToolResultMessage/UserToolErrorMessage.wave200-049.coverage.test.tsx --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Config Command Path Context
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
