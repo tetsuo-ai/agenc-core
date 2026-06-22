@@ -132,6 +132,30 @@ describe("statusCommand", () => {
     expect(flat["Cost"]).toBe(summary);
   });
 
+  it("ignores array-shaped service status surfaces", () => {
+    const spoofedMode = Object.assign(["spoof"], {
+      mode: "bypassPermissions",
+    });
+    const spoofedCostSidecar = Object.assign(["spoof"], {
+      formatSummary: () => "unsafe-cost",
+    });
+    const session = {
+      ...stubSession(),
+      services: {
+        costSidecar: spoofedCostSidecar,
+        permissionModeRegistry: {
+          current: () => spoofedMode,
+        },
+      },
+    } as unknown as Session;
+
+    const lines = collectStatus(session, "/ws", 2000);
+    const flat = Object.fromEntries(lines.map((l) => [l.key, l.value]));
+
+    expect(flat["Cost"]).toBeUndefined();
+    expect(flat["Permission mode"]).toBe("default");
+  });
+
   it("formatStatus aligns keys with a colon separator", () => {
     const out = formatStatus([
       { key: "a", value: "1" },

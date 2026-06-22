@@ -4,6 +4,38 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Status Service Surface Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/commands/status.ts#collectStatus` reads `session.services` from
+  a loose session cast to display cost and permission mode metadata.
+- `runtime/src/session/cost.ts#CostSidecar.formatSummary` supplies the optional
+  cost row when the sidecar is present.
+- `runtime/tests/commands/status.test.ts` covers permission-mode and cost
+  summary display.
+
+### Finding
+
+`/status` accepted loose service values without validating their record shape.
+Array-shaped `costSidecar` values with spoofed `formatSummary` functions could
+inject a cost row, and array-shaped permission-mode registry snapshots with a
+spoofed `mode` property could display an inaccurate permission mode.
+
+### Change
+
+- Added local readers for cost summaries and permission modes that require
+  non-array record shape before reading fields.
+- Required permission mode values to pass `isPermissionMode` before display.
+- Added a regression proving array-shaped cost sidecars and registry snapshots
+  are ignored.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/commands/status.test.ts --reporter=dot`
+
 ## 2026-06-22: Tool-Use App-State Permission Context Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
