@@ -4,6 +4,46 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Plugin Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/plugins/manifest-schema.ts` validates plugin manifests,
+  component declarations, hook/MCP/LSP maps, metadata objects, and nested
+  manifest interfaces. It also exports `isRecord` for plugin registration
+  helpers.
+- `runtime/src/plugins/resolution.ts` validates npm pack entries and plugin
+  signature file wrappers during plugin source resolution.
+- `runtime/src/plugins/marketplace/marketplace.ts` validates marketplace index
+  files, marketplace manifests, plugin entries, and persisted marketplace
+  records.
+- `runtime/src/plugins/cli/pluginOperations.ts` validates installed plugin
+  metadata while removing plugin config entries and data directories.
+- `runtime/src/utils/plugins/pluginLoader.ts` validates cached plugin settings
+  and parsed plugin manifests during plugin discovery/loading.
+
+### Finding
+
+These plugin modules duplicated strict non-array object guards equivalent to
+`utils/record.ts#isRecord`. `manifest-schema.ts` exported the helper to sibling
+registration modules, so that exported surface needed to be preserved while
+centralizing the predicate implementation.
+
+### Change
+
+- Replaced compatible strict plugin `isRecord` helpers with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved the `manifest-schema.ts` `isRecord` export by re-exporting the
+  shared helper.
+- Left `plugins/registration/manager.ts` unchanged because its local guard
+  intentionally accepts arrays at app-state merge boundaries.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/plugins/loader.test.ts tests/plugins/pluginLoader-core.test.ts tests/plugins/pluginLoader-merge-sources.test.ts tests/utils/plugins/pluginLoader.test.ts tests/plugins/resolution.test.ts tests/plugins/marketplace/marketplace.test.ts tests/plugins/cli/pluginCliCommands.test.ts tests/plugins/registration.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Thread Store Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

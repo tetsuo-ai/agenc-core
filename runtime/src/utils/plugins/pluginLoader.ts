@@ -73,6 +73,7 @@ import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
+import { isRecord } from '../record.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import {
   clearPluginSettingsBase,
@@ -3300,11 +3301,4 @@ export function cachePluginSettings(plugins: LoadedPlugin[]): void {
       `Cached plugin settings with keys: ${Object.keys(settings).join(', ')}`,
     )
   }
-}
-
-/**
- * Type predicate: check if a value is a non-null, non-array object (i.e., a record).
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

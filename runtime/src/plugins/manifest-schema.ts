@@ -1,5 +1,8 @@
 import { basename, isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
+import { isRecord } from "../utils/record.js";
+
+export { isRecord };
 
 const MAX_DEFAULT_PROMPT_COUNT = 3;
 const MAX_DEFAULT_PROMPT_LENGTH = 128;
@@ -281,10 +284,6 @@ function isValidUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function optionalString(value: unknown): string | undefined {
