@@ -201,6 +201,52 @@ manual edits in multiple places, which made schema drift easy.
 - `npm run test:bun`
 - `git diff --check`
 
+## 2026-06-22: NVIDIA NIM Model Catalog Builder
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/model/nvidiaNimModels.ts` owns provider detection for
+  NVIDIA NIM and the model-option list used by the picker.
+- `runtime/src/utils/model/modelOptions.ts#getModelOptionsBase` calls
+  `isNvidiaNimProvider()` and then prepends the default option to
+  `getCachedNvidiaNimModelOptions()`.
+- `runtime/tests/utils/model/providers.test.ts` covers provider detection for
+  the `NVIDIA_NIM` flag and precedence around stale provider environment.
+- `runtime/tests/services/api/client.test.ts`,
+  `runtime/tests/llm/provider.test.ts`, and
+  `runtime/tests/llm/provider-parity.test.ts` cover the request-path provider
+  wiring, default base URL, default model, and API key handling.
+
+### Finding
+
+The NVIDIA NIM picker catalog repeated the same `description` field in every
+row and included two picker entries with the same
+`mistralai/mixtral-8x22b-instruct-v0.1` value. That made category drift easy
+and rendered a duplicate selectable row in the model picker.
+
+### Change
+
+- Replaced the flat row list with grouped `[value, label]` tuples keyed by a
+  shared group `description`.
+- Added a build step inside the cached catalog path that rejects duplicate model
+  values before returning picker options.
+- Removed the duplicate Mixtral picker row while preserving all other model
+  values and selected category metadata.
+- Added focused catalog tests that assert unique picker values, pin selected
+  category metadata, and preserve the existing cache reference behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/model/nvidiaNimModels.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Dispatcher Optional-Service Responses
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
