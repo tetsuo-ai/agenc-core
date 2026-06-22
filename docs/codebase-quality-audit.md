@@ -4,6 +4,47 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared GitHub Device-Flow Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/github/deviceFlow.ts` parses GitHub OAuth device-code
+  responses, access-token polling responses, and Copilot token exchange
+  responses from untrusted JSON.
+- `runtime/tests/services/github/deviceFlow.test.ts` covers successful parsing,
+  malformed `null` payloads, non-JSON payloads, HTTP failures, and OAuth error
+  responses for the device-code, polling, and Copilot exchange paths.
+- `runtime/tests/utils/githubModelsCredentials.refresh.test.ts` covers the
+  downstream Copilot token refresh path that mocks the device-flow exchange.
+
+### Finding
+
+The GitHub device-flow parser carried a local nullable `asRecord` adapter
+equivalent to `utils/record.ts#asRecord`: accept non-array objects and reject
+arrays, null, functions, and primitives. The parser already treats rejected
+payloads as empty records before surfacing field-specific malformed-response
+errors.
+
+### Change
+
+- Replaced the local `asRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved the existing response-specific malformed JSON and malformed payload
+  errors.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- bun test tests/services/github/deviceFlow.test.ts`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/utils/githubModelsCredentials.refresh.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Ask-User-Question Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
