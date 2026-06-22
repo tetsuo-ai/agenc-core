@@ -459,6 +459,40 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(peak).toBe(1);
   });
 
+  test("normalizes array-shaped parsed arguments before concurrency hooks", async () => {
+    let observedArgs: Record<string, unknown> | undefined;
+    const tool: Tool = {
+      name: "FileRead",
+      description: "array args should be malformed for classification",
+      inputSchema: { type: "object" },
+      concurrencyClass: SHARED_READ,
+      isConcurrencySafe: (args) => {
+        observedArgs = args;
+        return true;
+      },
+      execute: async () => ({ content: "ok" }),
+    };
+    const exec = new StreamingToolExecutor({
+      ...mockGuardedDispatch(async () => ({ content: "ok" }), [tool]),
+    });
+
+    exec.addTool(makeBlock("array-args", "FileRead"), {
+      id: "array-args",
+      name: "FileRead",
+      arguments: "[\"spoof\"]",
+    });
+    exec.close();
+
+    const seenIds: string[] = [];
+    for await (const result of exec.getRemainingResults()) {
+      seenIds.push(result.toolCall.id);
+    }
+
+    expect(seenIds).toEqual(["array-args"]);
+    expect(observedArgs).toEqual({});
+    expect(Array.isArray(observedArgs)).toBe(false);
+  });
+
   test("maxConcurrency caps safe tools without changing yield order", async () => {
     let active = 0;
     let peak = 0;

@@ -83,6 +83,7 @@ import {
   runToolRuntimeCall,
   type ToolRuntimeScheduler,
 } from "./runtimes/parallel.js";
+import { asRecord } from "../utils/record.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -384,12 +385,7 @@ export class StreamingToolExecutor {
     }
 
     const classifiable = this.resolveClassifiable(toolCall);
-    let parsedArgs: Record<string, unknown> = {};
-    try {
-      parsedArgs = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};
-    } catch {
-      parsedArgs = {};
-    }
+    const parsedArgs = parseToolCallArguments(toolCall.arguments);
     const classification = classify(classifiable, parsedArgs);
     // AgenC tracks a per-call `isConcurrencySafe` boolean derived
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
@@ -1173,5 +1169,14 @@ export class StreamingToolExecutor {
       this.siblingAbortController.abort(reason);
     }
     this.discard(reason);
+  }
+}
+
+function parseToolCallArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    return asRecord(JSON.parse(raw)) ?? {};
+  } catch {
+    return {};
   }
 }
