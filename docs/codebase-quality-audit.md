@@ -4,6 +4,38 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Recovery Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/state/recovery.ts` recovers daemon startup state from persisted
+  agent runs, session snapshots, and stale in-flight tool calls.
+- `applyRecoveredToolState` reconciles snapshot `pending`, `inFlight`, and
+  `completed` tool-state maps with recovered tool-call rows.
+- `toRecoveredAgentRun` parses persisted agent-run `metadata_json` before
+  returning recovered run records to daemon/app-server recovery paths.
+
+### Finding
+
+Daemon recovery carried local strict-record checks for recovered tool-state maps,
+existing recovered tool-call entries, and agent-run metadata parsing. These
+duplicated the shared non-array object contract at a persisted recovery boundary
+where array-shaped JSON must be treated as malformed state rather than merged as
+records.
+
+### Change
+
+- Replaced the local recovery record checks with
+  `runtime/src/utils/record.ts#asRecord`.
+- Added regressions proving array-shaped `metadata_json`, `inFlight`, and
+  `completed` recovery maps are discarded before recovered state is surfaced.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/state/recovery-restart.test.ts tests/state/pruning.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared SDK MCP Schema Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

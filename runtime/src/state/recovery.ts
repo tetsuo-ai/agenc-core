@@ -3,6 +3,7 @@ import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { sqlPlaceholders } from "./sql.js";
 import { normalizeToolRecoveryCategory } from "./tool-output-rotation.js";
+import { asRecord } from "../utils/record.js";
 
 const RECOVERABLE_AGENT_RUN_STATUSES = [
   "pending",
@@ -451,10 +452,7 @@ function reconcileRecoveredToolCallMap(
   recoveredToolCalls: readonly RecoveredInFlightToolCall[],
   target: "inFlight" | "completed",
 ): Record<string, unknown> {
-  const map =
-    value !== null && typeof value === "object" && !Array.isArray(value)
-      ? { ...(value as Record<string, unknown>) }
-      : {};
+  const map = { ...(asRecord(value) ?? {}) };
   for (const call of recoveredToolCalls) {
     if (target === "inFlight" && call.recoveryAction !== "replay") {
       delete map[call.toolCallId];
@@ -477,9 +475,7 @@ function valueAtKeyAsRecord(
   key: string,
 ): Record<string, unknown> | undefined {
   const value = map[key];
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+  return asRecord(value) ?? undefined;
 }
 
 function nullableString(value: string | null): string | undefined {
@@ -490,13 +486,8 @@ function parseJsonObject(value: string | null): JsonObject | undefined {
   if (value === null || value.length === 0) return undefined;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      return parsed as JsonObject;
-    }
+    const parsedRecord = asRecord(parsed);
+    if (parsedRecord !== null) return parsedRecord as JsonObject;
   } catch {
     return undefined;
   }
