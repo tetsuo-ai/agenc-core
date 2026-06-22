@@ -4,6 +4,56 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Isolated PowerShell Parse-Failed Deny Scan
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/PowerShellTool/powershellPermissions.ts#powershellToolHasPermission`
+  checks exact/prefix deny and ask rules before parse validity, then handles
+  parse-failed commands with a degraded fallback before the generic parse-error
+  prompt.
+- The parse-failed fallback normalizes PowerShell backtick continuations,
+  assignment prefixes, invocation operators, quoted command names, and raw
+  `Remove-Item` positional paths before checking deny rules.
+- `runtime/src/tools/PowerShellTool/pathValidation.ts#dangerousRemovalDeny`
+  is the shared hard-deny result for protected root/home/system removal paths.
+- `runtime/tests/tools/PowerShellTool.permissions.test.ts` mocks the parser to
+  return `valid: false` so the degraded permission path is deterministic.
+
+### Finding
+
+The large PowerShell permission function embedded the full parse-failed
+fallback scan inline. That made the degraded security path harder to review
+because fragment normalization, dangerous-removal hard-deny, and sub-command
+deny-rule matching were interleaved with generic parse-error prompt assembly.
+The focused extraction test also exposed a defect: simple parse-failed commands
+like `Remove-Item / -Recurse` skipped the raw dangerous-removal check because
+the full-command fragment was treated as already covered by pre-parse rule
+matching.
+
+### Change
+
+- Extracted `getParseFailedPowerShellDenyDecision` as a private helper.
+- Kept the existing permission precedence: parse-failed deny/dangerous-removal
+  decisions still beat deferred pre-parse asks and the generic malformed-syntax
+  prompt.
+- Moved the protected-path removal check ahead of the full-command duplicate
+  rule-match skip so parser-unavailable `Remove-Item /` stays a hard deny.
+- Added focused coverage for assignment-normalized deny rules and
+  parser-unavailable `Remove-Item /` hard-deny behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/PowerShellTool.permissions.test.ts tests/tools/PowerShellTool.pathValidation.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared Plugin Component Missing-Path Reporting
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
