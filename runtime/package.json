@@ -23,12 +23,13 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints",
+    "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types",
     "daemon": "node bin/agenc daemon start --foreground",
     "daemon:status": "node bin/agenc daemon status",
     "start": "node bin/agenc",
     "typecheck": "tsc --noEmit",
     "check:package-entrypoints": "node scripts/check-package-entrypoints.mjs",
+    "check:sdk-generated-types": "node scripts/check-sdk-generated-types.mjs",
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
     "check:tui-e2e": "node scripts/check-tui-e2e/runner.mjs",
     "check:tui-workbench-buffer-neovim": "node scripts/check-tui-workbench-buffer-neovim.mjs",

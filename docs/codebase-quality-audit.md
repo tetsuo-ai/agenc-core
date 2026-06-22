@@ -200,3 +200,50 @@ had been emitted as a union whose array applied only to the last union branch.
 - `npm test`
 - `npm run test:bun`
 - `git diff --check`
+
+## 2026-06-22: SDK Committed-Type Workflow Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/entrypoints/sdk/coreSchemas.ts` is the Zod schema source for
+  SDK serializable data types.
+- `runtime/src/entrypoints/sdk/coreTypes.generated.ts` is the committed
+  TypeScript type surface consumed through `coreTypes.ts`.
+- `runtime/src/entrypoints/sdk/coreTypes.ts` documents the maintenance path for
+  SDK consumers and internal builders.
+- `runtime/package.json` owns runtime validation scripts and the build command.
+- `runtime/tests/meta/license-and-version.test.ts` already guards SDK surface
+  drift found during this audit.
+
+### Finding
+
+The committed SDK type files still instructed maintainers to run
+`bun scripts/generate-sdk-types.ts`, but that generator is not present in this
+repository. The previous slice had to correct generated permission-update array
+types manually, so the repository needed a live workflow that at least verifies
+the fragile schema/type contract it now depends on.
+
+### Change
+
+- Added `runtime/scripts/check-sdk-generated-types.mjs`, a deterministic source
+  validator for the committed SDK type workflow.
+- Wired `check:sdk-generated-types` into `runtime/package.json` and the runtime
+  `build` command, so the check runs under the existing pre-commit build gate.
+- Updated SDK source comments to point at the checked-in validation command
+  instead of the absent generator.
+- Extended the meta test suite to assert the validator exists, the stale
+  generator reference stays out of SDK workflow comments, and the validator
+  succeeds.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/meta/license-and-version.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`

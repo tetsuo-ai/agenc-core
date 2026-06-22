@@ -1,7 +1,7 @@
-// AUTO-GENERATED — do not edit manually.
-// Regenerate with: bun scripts/generate-sdk-types.ts
+// COMMITTED SDK TYPES - keep in sync with coreSchemas.ts.
+// Verify with: npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types
 //
-// Generated from Zod schemas in coreSchemas.ts
+// Source schemas: coreSchemas.ts
 
 export type ModelUsage = {
   inputTokens: number

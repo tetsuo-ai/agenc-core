@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
@@ -190,5 +191,37 @@ describe("runtime SDK surface hygiene", () => {
         /(updatedPermissions|permission_suggestions)\?: PermissionUpdate\[\]/g,
       ) ?? [],
     ).toHaveLength(6);
+  });
+
+  test("generated SDK type workflow uses the checked-in validator", () => {
+    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    const workflowFiles = [
+      "runtime/src/entrypoints/sdk/coreSchemas.ts",
+      "runtime/src/entrypoints/sdk/coreTypes.ts",
+      "runtime/src/entrypoints/sdk/coreTypes.generated.ts",
+    ];
+    const checkCommand =
+      "npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types";
+
+    expect(runtimePkg.scripts?.["check:sdk-generated-types"]).toBe(
+      "node scripts/check-sdk-generated-types.mjs",
+    );
+    expect(
+      existsSync(`${repoRoot}runtime/scripts/check-sdk-generated-types.mjs`),
+    ).toBe(true);
+
+    for (const relativePath of workflowFiles) {
+      const source = readRepoFile(relativePath);
+      expect(source).not.toContain("generate-sdk-types.ts");
+      expect(source).toContain(checkCommand);
+    }
+
+    execFileSync(
+      process.execPath,
+      ["runtime/scripts/check-sdk-generated-types.mjs"],
+      { cwd: repoRoot, stdio: "pipe" },
+    );
   });
 });
