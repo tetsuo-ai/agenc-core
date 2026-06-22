@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { nonEmptyString } from "../utils/stringUtils.js";
 
 type EnvLike = Pick<NodeJS.ProcessEnv, "AGENC_HOME" | "HOME" | "USERPROFILE">;
 
@@ -272,8 +273,7 @@ function parseJsonObject(value: string): Record<string, unknown> | null {
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
+  return nonEmptyString(record[key]) ?? null;
 }
 
 function recoverPlanFromRecord(record: Record<string, unknown>): string | null {

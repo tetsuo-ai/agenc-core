@@ -1,3 +1,5 @@
+import { nonEmptyString } from "../utils/stringUtils.js";
+
 const COMMAND_KEYS = ["command", "cmd"] as const;
 const TEXT_KEYS = ["input", "query", "path", "file_path"] as const;
 
@@ -74,7 +76,7 @@ function scalarArrayParts(value: readonly unknown[]): readonly string[] | null {
 
 function textValue(value: unknown): string | null {
   if (typeof value === "string") {
-    return value.trim().length > 0 ? value : null;
+    return nonEmptyString(value) ?? null;
   }
   if (
     typeof value === "number" ||

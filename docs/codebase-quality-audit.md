@@ -4,6 +4,49 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared TUI Planning Display String Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/planning/plan-files.ts` recovers plan metadata fields from
+  persisted JSON plan records.
+- `runtime/src/tui/approval-input-text.ts` formats approval prompt text from
+  tool command/input payloads.
+- `runtime/src/tui/message-renderers/toolRowPreview.tsx` builds one-line tool
+  argument previews for file paths, commands, URLs, prompts, and descriptions.
+- `runtime/src/tui/workbench/agents/AgentsRail.tsx` formats agent rail labels,
+  branch names, goals, and status text from loose task metadata.
+
+### Finding
+
+These UI/planning paths used local copies of the return-original non-blank
+string predicate already covered by `nonEmptyString`. A few of the helpers
+expose `null` at their local boundary, but the acceptance rule is still the
+shared one: reject non-strings and whitespace-only strings while preserving the
+accepted text exactly.
+
+### Change
+
+- Reused `nonEmptyString` in plan-record field recovery and approval input
+  text extraction, adapting `undefined` back to existing `null` return values.
+- Reused `nonEmptyString` for tool-row preview file, path, command, and known
+  scalar fields while leaving whitespace-sensitive generic/pattern behavior
+  unchanged.
+- Replaced the agent rail's local `nonBlankString` helper with a local import
+  alias of `nonEmptyString`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/stringUtils.test.ts tests/planning/plan-files.test.ts tests/tui/workbench/approval-input-text.test.ts tests/tui/message-renderers/toolRowPreview.render.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Provider Guard String Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

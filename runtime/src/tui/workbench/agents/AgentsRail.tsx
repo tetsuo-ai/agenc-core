@@ -7,6 +7,7 @@ import { useAppState, useSetAppState } from "../../state/AppState.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { formatTaskElapsed } from "./activity.js";
+import { nonEmptyString as nonBlankString } from "../../../utils/stringUtils.js";
 
 export function AgentsRail({
   focused,
@@ -200,10 +201,6 @@ function AgentRailRow({
       </Text>
     </Box>
   );
-}
-
-function nonBlankString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function statusMarker(status: string): string {
