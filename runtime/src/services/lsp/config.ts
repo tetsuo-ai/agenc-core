@@ -11,6 +11,7 @@ import type {
   LspServerConfigSource,
   ScopedLspServerConfig,
 } from "./types.js";
+import { errorMessage } from "../../utils/errors.js";
 
 export interface LspConfigParseFailure {
   readonly success: false;
@@ -165,7 +166,7 @@ export function parseLspServersConfig(raw: unknown): LspConfigParseResult {
   } catch (error) {
     return {
       success: false,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: errorMessage(error),
     };
   }
 }

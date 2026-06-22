@@ -4,6 +4,50 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared LSP Error Message Helpers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/services/lsp/LSPClient.ts` reports process, JSON-RPC, and
+  notification errors through LSP diagnostics and crash callbacks.
+- `runtime/src/services/lsp/LSPServerInstance.ts` wraps startup, restart,
+  request, and notification failures.
+- `runtime/src/services/lsp/LSPServerManager.ts` aggregates shutdown failures
+  across running, starting, and error-state LSP servers.
+- `runtime/src/services/lsp/manager.ts` records singleton initialization
+  failures and best-effort reinitialize cleanup warnings.
+- `runtime/src/services/lsp/config.ts` and
+  `runtime/src/services/lsp/passiveFeedback.ts` surface config parse and
+  diagnostic-handler failures.
+
+### Finding
+
+The LSP subsystem carried three private `errorMessage` helpers, one private
+`toError` helper, and several inline `error instanceof Error ? error.message :
+String(error)` conversions. These all matched the existing shared
+`utils/errors.ts` behavior, but the local copies made LSP failure formatting
+easy to drift from the rest of the runtime.
+
+### Change
+
+- Reused `errorMessage` and `toError` from `runtime/src/utils/errors.ts`.
+- Removed LSP-local helper copies from the client, server instance, server
+  manager, and singleton manager.
+- Routed LSP config and passive diagnostic-handler error strings through the
+  same shared helper.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/services/lsp/LSPClient.test.ts tests/services/lsp/LSPServerInstance.test.ts tests/services/lsp/LSPServerManager.test.ts tests/services/lsp/manager.test.ts tests/services/lsp/config.test.ts tests/services/lsp/passiveFeedback.test.ts tests/services/lsp/LSPDiagnosticRegistry.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Slash Command Config Context
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

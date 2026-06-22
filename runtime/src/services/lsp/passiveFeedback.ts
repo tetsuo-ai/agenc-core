@@ -12,6 +12,7 @@ import { registerPendingLSPDiagnostic } from "./LSPDiagnosticRegistry.js";
 import type { LSPServerManager } from "./LSPServerManager.js";
 import type { PublishDiagnosticsParams } from "./protocol.js";
 import type { DiagnosticEntry, DiagnosticFile } from "./types.js";
+import { errorMessage } from "../../utils/errors.js";
 
 function mapLSPSeverity(
   severity: number | undefined,
@@ -128,7 +129,7 @@ export function registerLSPNotificationHandlers(
           registerPendingLSPDiagnostic({ serverName, files });
           diagnosticFailures.delete(serverName);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = errorMessage(error);
           const failures = diagnosticFailures.get(serverName) ?? {
             count: 0,
             lastError: "",
@@ -142,7 +143,7 @@ export function registerLSPNotificationHandlers(
     } catch (error) {
       registrationErrors.push({
         serverName,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }

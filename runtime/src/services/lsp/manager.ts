@@ -12,6 +12,7 @@ import {
   type LSPServerManagerOptions,
 } from "./LSPServerManager.js";
 import { registerLSPNotificationHandlers } from "./passiveFeedback.js";
+import { errorMessage, toError } from "../../utils/errors.js";
 
 type InitializationState = "not-started" | "pending" | "success" | "failed";
 
@@ -32,10 +33,6 @@ function lspDisabledByEnv(): boolean {
     isEnvTruthy(process.env.AGENC_BARE) ||
     isEnvTruthy(process.env.AGENC_DISABLE_LSP)
   );
-}
-
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }
 
 export function _resetLspManagerForTesting(): void {
@@ -141,7 +138,7 @@ export function reinitializeLspServerManager(
         // eslint-disable-next-line no-console
         console.warn(
           "[lsp] previous manager shutdown failed during reinitialize:",
-          error instanceof Error ? error.message : String(error),
+          errorMessage(error),
         );
       }
     }
