@@ -4,6 +4,44 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Streaming Executor Wait Path
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/streaming-executor.ts#getRemainingResults` drains
+  completed terminal tool results in submission order and waits for either
+  running tool completion or progress/close wake-ups.
+- `runtime/src/tools/streaming-executor.ts#getRemainingUpdates` drains progress
+  events and terminal results through the same queue lifecycle.
+- `runtime/src/tools/streaming-executor.ts#signalProgress` owns the wake signal
+  consumed by both async drainers when tool state changes, progress arrives, or
+  discard interrupts the stream.
+- `runtime/tests/tools/streaming-executor.test.ts` covers ordered result
+  draining, progress-event wake-up through `getRemainingUpdates`, discard
+  behavior, and sibling-abort handling.
+
+### Finding
+
+Both async drainers repeated the same executing-promise collection,
+progress-promise registration, and `Promise.race` wake-up logic. That logic is
+load-bearing for progress events and discard responsiveness, so duplicating it
+made future changes easy to apply to one iterator but miss the other.
+
+### Change
+
+- Added a private `waitForExecutingToolOrProgress` helper that owns the shared
+  executing-tool/progress wake path.
+- Reused the helper from both result-only and progress+result async drainers.
+- Tightened the fallback comment to describe the real "executing status without
+  attached promise yet" case.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/streaming-executor.test.ts --reporter=dot`
+- `npm run typecheck`
+
 ## 2026-06-22: Shared Shell Operator Sets
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

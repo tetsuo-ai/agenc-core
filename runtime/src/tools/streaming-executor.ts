@@ -565,20 +565,7 @@ export class StreamingToolExecutor {
           !this.hasCompletedResults() &&
           !this.hasPendingProgress()
         ) {
-          const executingPromises = this.tools
-            .filter((t) => t.status === "executing" && t.promise)
-            .map((t) => t.promise!);
-          const progressPromise = new Promise<void>((resolve) => {
-            this.wakeResolve = resolve;
-          });
-          if (executingPromises.length > 0) {
-            await Promise.race([...executingPromises, progressPromise]);
-          } else {
-            // No executing tools but unfinished queued tools: wait for
-            // progress/close signal. signalProgress wakes us when
-            // status transitions, including on discard().
-            await progressPromise;
-          }
+          await this.waitForExecutingToolOrProgress();
         }
       }
       // Final drain: flush any last-completed tools post-loop.
@@ -617,17 +604,7 @@ export class StreamingToolExecutor {
           !this.hasCompletedResults() &&
           !this.hasPendingProgress()
         ) {
-          const executingPromises = this.tools
-            .filter((t) => t.status === "executing" && t.promise)
-            .map((t) => t.promise!);
-          const progressPromise = new Promise<void>((resolve) => {
-            this.wakeResolve = resolve;
-          });
-          if (executingPromises.length > 0) {
-            await Promise.race([...executingPromises, progressPromise]);
-          } else {
-            await progressPromise;
-          }
+          await this.waitForExecutingToolOrProgress();
         }
       }
       if (this.discarded) return;
@@ -775,6 +752,23 @@ export class StreamingToolExecutor {
 
   private hasPendingProgress(): boolean {
     return this.tools.some((t) => t.pendingProgress.length > 0);
+  }
+
+  private async waitForExecutingToolOrProgress(): Promise<void> {
+    const executingPromises = this.tools
+      .filter((t) => t.status === "executing" && t.promise)
+      .map((t) => t.promise!);
+    const progressPromise = new Promise<void>((resolve) => {
+      this.wakeResolve = resolve;
+    });
+    if (executingPromises.length > 0) {
+      await Promise.race([...executingPromises, progressPromise]);
+      return;
+    }
+    // No executing promises are attached yet: wait for a progress/close
+    // signal. signalProgress wakes us when status transitions, including
+    // on discard().
+    await progressPromise;
   }
 
   /**
