@@ -31,6 +31,7 @@ import type {
   SessionStartHookInput,
 } from "../llm/hooks/types.js";
 import { redactSecrets } from "../secrets/index.js";
+import { asRecord } from "../utils/record.js";
 import { nonEmptyString as stringValue } from "../utils/stringUtils.js";
 import { HookEngine, matchesPattern } from "./engine/dispatcher.js";
 import { groupHooksByEvent } from "./engine/discovery.js";
@@ -1107,10 +1108,4 @@ function unsupportedPermissionRequestOutput(
 function trimmedReason(reason: string | undefined): string | undefined {
   const trimmed = reason?.trim();
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }

@@ -4,6 +4,44 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Configured Hooks Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/hooks/configured-hooks.ts` builds configured command-hook
+  runtime inputs for tool hooks, permission decision hooks, prompt-submit hooks,
+  stop hooks, lifecycle hooks, and test-hook diagnostics.
+- `runtime/tests/hooks/configured-hooks.test.ts` covers configured hook loading,
+  diagnostics, redaction, permission hook behavior, stop/lifecycle hooks, trust
+  gating, and abort cleanup.
+- `runtime/tests/hooks/hooks-core.test.ts` covers the public hook execution
+  wrappers and tool-use context paths that feed configured hooks.
+
+### Finding
+
+Configured hooks carried a local strict `asRecord` helper equivalent to
+`utils/record.ts#asRecord`, except it returned `undefined` instead of `null`.
+Its call sites already use optional chaining while extracting session, turn,
+model, collaboration mode, and config fields from unknown invocation context.
+
+### Change
+
+- Replaced the local configured-hooks `asRecord` helper with the shared
+  `runtime/src/utils/record.ts` utility.
+- Preserved hook input fallback values and hook output parsing behavior.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/hooks/configured-hooks.test.ts tests/hooks/hooks-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared MCP Tool Bridge Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
