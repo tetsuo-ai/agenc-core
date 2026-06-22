@@ -1666,6 +1666,31 @@ function daemonOneShotMessageChunk(event: unknown): string | null {
   return null;
 }
 
+/**
+ * Detect a daemon `event.permission_request` and extract the `requestId` the
+ * client must answer.
+ *
+ * The one-shot `--print` CLI is inherently non-interactive: there is no human
+ * attached to answer an "ask"/"pause" permission request. The daemon forces
+ * `--autonomous`, so any tool the model invokes that is not on the (empty by
+ * default) unattended allowlist resolves to a pause → the evaluator surfaces an
+ * "ask", and the runner suspends the turn awaiting a client decision that never
+ * arrives — the run hangs until the wrapper SIGTERMs it. Answering the request
+ * with a DENY (see {@link runDaemonOneShotPrompt}) lets the agent continue: the
+ * tool call is rejected, and the agent produces a terminal answer/error so the
+ * run terminates. This NEVER grants a permission — the only behavior change is
+ * "unanswerable ask in non-interactive one-shot → deny + continue".
+ */
+function daemonOneShotPermissionRequestId(event: unknown): string | null {
+  if (!isJsonRecord(event)) return null;
+  if (event.method !== "event.permission_request") return null;
+  const params = daemonEventParams(event);
+  if (params === null) return null;
+  return typeof params.requestId === "string" && params.requestId.length > 0
+    ? params.requestId
+    : null;
+}
+
 function daemonOneShotFinalStatus(
   event: unknown,
 ): DaemonOneShotFinalStatus | null {
@@ -1765,6 +1790,7 @@ async function runDaemonOneShotPrompt(params: {
       throw new Error(`daemon agent has no attached session: ${started.agentId}`);
     }
 
+    const deniedPermissionRequestIds = new Set<string>();
     const code = await new Promise<number>((resolve, reject) => {
       let settled = false;
       const settle = (next: { readonly code: number } | { readonly error: Error }) => {
@@ -1790,6 +1816,28 @@ async function runDaemonOneShotPrompt(params: {
       unsubscribeEvents = daemonClient.subscribeToSessionEvents(
         sessionId,
         (event) => {
+          // Non-interactive one-shot has no human to answer a permission
+          // request, so an unanswered "ask"/"pause" suspends the turn and the
+          // run hangs forever. DENY it (never grant) so the agent continues and
+          // produces a terminal status. See daemonOneShotPermissionRequestId.
+          const permissionRequestId = daemonOneShotPermissionRequestId(event);
+          if (
+            permissionRequestId !== null &&
+            !deniedPermissionRequestIds.has(permissionRequestId)
+          ) {
+            deniedPermissionRequestIds.add(permissionRequestId);
+            void daemonClient
+              .request("tool.deny", {
+                sessionId,
+                requestId: permissionRequestId,
+                reason: "non-interactive one-shot: no approver",
+              })
+              .catch(() => {
+                /* best effort: a stale/already-resolved request is harmless */
+              });
+            return;
+          }
+
           const chunk = daemonOneShotMessageChunk(event);
           if (chunk !== null && chunk.length > 0) {
             process.stdout.write(chunk);
