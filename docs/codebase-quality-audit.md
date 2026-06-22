@@ -4,6 +4,40 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Shell Operator Sets
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/system/command-line.ts` owns shell tokenization,
+  direct-command parsing, command separators, and redirect operators for the
+  daemon system shell surface.
+- `runtime/src/tools/system/bash.ts` validates direct-mode arguments,
+  strips safe redirections, and classifies read/search command segments using
+  the same separator and redirect definitions.
+- `runtime/tests/tools/system/command-line.test.ts` and
+  `runtime/tests/tools/system/bash.test.ts` cover parser behavior and bash
+  safety paths that consume those operator sets.
+
+### Finding
+
+The bash tool imported the shared shell parser but carried private copies of
+the parser's command separator and redirect operator sets. Any future shell
+syntax adjustment could update parser behavior without updating bash safety
+classification, creating avoidable parser/validator drift.
+
+### Change
+
+- Removed the duplicated operator set declarations from `bash.ts`.
+- Imported `SHELL_COMMAND_SEPARATORS` and `SHELL_REDIRECT_OPERATORS` from the
+  existing `command-line.ts` parser module.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/system/command-line.test.ts tests/tools/system/bash.test.ts --reporter=dot`
+- `npm run typecheck`
+
 ## 2026-06-22: Shared MCP Resource Server Lookup
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
