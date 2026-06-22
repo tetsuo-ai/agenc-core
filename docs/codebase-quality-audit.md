@@ -4,6 +4,37 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Stop-Hook Permission Mode Record Guards
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/phases/stop-hooks.ts#evaluateStopHooks` builds the `StopRequest`
+  sent to configured stop hooks.
+- `runtime/src/phases/stop-hooks.ts#currentPermissionMode` prefers live
+  permission-mode registry output over the turn context fallback.
+- `runtime/tests/phases/stop-hooks.test.ts` covers hook request metadata and
+  configured Stop stdin payloads.
+
+### Finding
+
+Stop-hook request construction read `.mode` from any object returned by the
+permission-mode registry. Array-shaped mode values with spoofed `mode`
+properties could therefore be reported to hooks instead of falling back to the
+turn context's permission mode.
+
+### Change
+
+- Reused `runtime/src/utils/record.ts#asRecord` for both direct-session and
+  service-backed permission-mode registry outputs.
+- Added a regression proving array-shaped live permission-mode values fall back
+  to the turn context value in hook requests.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/phases/stop-hooks.test.ts tests/hooks/configured-hooks.test.ts --reporter=dot`
+
 ## 2026-06-22: Tool Orchestrator Permission Mode Record Guards
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
