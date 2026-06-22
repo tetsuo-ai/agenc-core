@@ -4,6 +4,38 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Error Log Payload Record Guard
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/session/error-log.ts#classifyErrorLogEvent` decides whether
+  error, warning, and stream-error session events are persisted to the sidecar
+  JSONL error log.
+- `payloadRecord` normalizes untrusted event payloads before checking
+  internal/debug visibility, diagnostic surface, and internal warning causes.
+- `runtime/tests/session/error-log.test.ts` covers error-log writes,
+  sanitized warning entries, and classifier persistence decisions.
+
+### Finding
+
+The classifier had a local strict non-array object predicate at a persistence
+decision boundary. Array-shaped payloads must stay malformed; otherwise an array
+with spoofed `visibility`, `surface`, or internal `cause` properties could
+suppress an otherwise actionable warning.
+
+### Change
+
+- Replaced the local payload object predicate with
+  `runtime/src/utils/record.ts#isRecord`.
+- Added a regression proving an array-shaped warning payload with
+  internal-looking properties is ignored as malformed and remains persistable.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/record.test.ts tests/session/error-log.test.ts --reporter=dot`
+
 ## 2026-06-22: Shared Command Plugin Config Record Guard
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

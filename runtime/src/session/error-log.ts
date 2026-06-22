@@ -32,6 +32,7 @@ import type { Sidecar } from "./sidecar.js";
 import { StateSqliteDriver } from "../state/sqlite-driver.js";
 import { LogsRepository } from "../state/logs.js";
 import { redactSecretsInValue } from "../secrets/index.js";
+import { isRecord } from "../utils/record.js";
 
 export interface ErrorLogEntry {
   readonly timestamp: string;
@@ -75,9 +76,7 @@ const INTERNAL_WARNING_CAUSES = new Set([
 
 function payloadRecord(event: Event): Record<string, unknown> {
   const payload = (event.msg as { readonly payload?: unknown }).payload;
-  return typeof payload === "object" && payload !== null && !Array.isArray(payload)
-    ? (payload as Record<string, unknown>)
-    : {};
+  return isRecord(payload) ? payload : {};
 }
 
 export function classifyErrorLogEvent(event: Event): ErrorLogClassification {
