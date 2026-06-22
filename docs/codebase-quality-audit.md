@@ -4,6 +4,50 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared PDF Page Range Parsing
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/pdfPageRange.ts#parsePDFPageRange` owns dependency-free
+  PDF page range grammar.
+- `runtime/src/utils/pdfUtils.ts` re-exports the parser for existing utility
+  callers while keeping model-dependent PDF support checks local.
+- `runtime/src/tools/system/file-read.ts#readPdfFile` validates the
+  model-facing `pages` argument before calling `pdfinfo` and `pdftotext`.
+- `runtime/tests/utils/pdfUtils.test.ts` now pins accepted and rejected page
+  range syntax directly.
+- `runtime/tests/tools/system/file-read.test.ts` covers the user-facing
+  `FileRead` error envelope for malformed page ranges.
+
+### Finding
+
+The exported PDF parser and the `FileRead` tool carried separate page-range
+parsers. The utility version used `parseInt` on partial slices, so malformed
+values such as `1-2abc` or `1-2-3` could be accepted by the shared utility even
+though `FileRead` correctly rejected them with anchored regex validation.
+
+### Change
+
+- Added a dependency-free shared parser that uses the same anchored page,
+  closed-range, and open-ended-range grammar as `FileRead`.
+- Re-exported the parser from `pdfUtils.ts` without making `FileRead` import
+  model-selection dependencies.
+- Routed `FileRead` through the shared parser with a small wrapper that
+  preserves its existing `undefined`/empty/non-string argument errors.
+- Added direct parser tests and extended `FileRead` malformed-page coverage for
+  the multi-dash case.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/utils/pdfUtils.test.ts tests/tools/system/file-read.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Process PID Parsing
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

@@ -65,6 +65,10 @@ import {
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
+import {
+  parsePDFPageRange as parseSharedPDFPageRange,
+  type PDFPageRange,
+} from "../../utils/pdfPageRange.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -447,41 +451,21 @@ function execFileNoThrow(
   });
 }
 
-function parsePDFPageRange(
+function parsePDFPageRangeArg(
   pages: unknown,
-): { firstPage: number; lastPage: number } | { err: string } | null {
+): PDFPageRange | { err: string } | null {
   if (pages === undefined || pages === null) return null;
   if (typeof pages !== "string" || pages.trim().length === 0) {
     return { err: "pages must be a non-empty string when provided" };
   }
 
   const trimmed = pages.trim();
-  const openEnded = /^([1-9]\d*)-$/.exec(trimmed);
-  if (openEnded) {
-    const firstPage = Number.parseInt(openEnded[1]!, 10);
-    return { firstPage, lastPage: Infinity };
-  }
-
-  const singlePage = /^([1-9]\d*)$/.exec(trimmed);
-  if (singlePage) {
-    const page = Number.parseInt(singlePage[1]!, 10);
-    return { firstPage: page, lastPage: page };
-  }
-
-  const closedRange = /^([1-9]\d*)-([1-9]\d*)$/.exec(trimmed);
-  if (closedRange) {
-    const firstPage = Number.parseInt(closedRange[1]!, 10);
-    const lastPage = Number.parseInt(closedRange[2]!, 10);
-    if (lastPage < firstPage) {
-      return { err: `Invalid PDF page range: ${trimmed}` };
-    }
-    return { firstPage, lastPage };
-  }
-
-  return { err: `Invalid PDF page range: ${trimmed}` };
+  return parseSharedPDFPageRange(trimmed) ?? {
+    err: `Invalid PDF page range: ${trimmed}`,
+  };
 }
 
-function pageRangeLength(range: { firstPage: number; lastPage: number }): number {
+function pageRangeLength(range: PDFPageRange): number {
   if (range.lastPage === Infinity) return Infinity;
   return range.lastPage - range.firstPage + 1;
 }
@@ -1009,7 +993,7 @@ async function readPDFFile(
     );
   }
 
-  const parsedRange = parsePDFPageRange(opts.pages);
+  const parsedRange = parsePDFPageRangeArg(opts.pages);
   if (parsedRange && "err" in parsedRange) {
     return errorResult(parsedRange.err);
   }
