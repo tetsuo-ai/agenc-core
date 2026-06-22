@@ -1761,6 +1761,7 @@ export async function* runAgent(
   params: RunAgentParams,
 ): AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void> {
   const startedAt = Date.now();
+  const turnId = crypto.randomUUID();
   const { live, parent } = params;
   const relayAgentEvent = (
     event: Omit<Parameters<typeof relayToParentMailbox>[0], "live" | "parent">,
@@ -1771,6 +1772,34 @@ export async function* runAgent(
   const sendParentNotification = (): void => {
     if (params.silent) return;
     sendSubagentNotificationToParent({ live, parent });
+  };
+  const finishErroredRun = (opts: {
+    readonly message: string;
+    readonly error: unknown;
+    readonly toolCallCount?: number;
+    readonly relayToParent?: boolean;
+  }): RunAgentResult => {
+    live.status.markErrored(turnId, opts.message);
+    sendParentNotification();
+    if (opts.relayToParent ?? true) {
+      relayAgentEvent({
+        content: opts.message,
+        triggerTurn: false,
+        metadata: {
+          kind: "subagent_error",
+          turnId,
+        },
+      });
+    }
+    return {
+      threadId: live.agentId,
+      durationMs: Date.now() - startedAt,
+      outcome: "errored",
+      error: opts.error,
+      ...(opts.toolCallCount !== undefined
+        ? { toolCallCount: opts.toolCallCount }
+        : {}),
+    };
   };
 
   // Merge parent's + external signal with the live agent's controller.
@@ -1806,7 +1835,6 @@ export async function* runAgent(
     });
   }
 
-  const turnId = crypto.randomUUID();
   let childSession: ChildSession | null = null;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -1879,15 +1907,13 @@ export async function* runAgent(
       const err = new Error(
         "subagent has no provider on parent.services.provider",
       );
-      live.status.markErrored(turnId, err.message);
-      sendParentNotification();
-      yield { kind: "run_error", error: err.message };
-      return {
-        threadId: live.agentId,
-        durationMs: Date.now() - startedAt,
-        outcome: "errored",
+      const result = finishErroredRun({
+        message: err.message,
         error: err,
-      };
+        relayToParent: false,
+      });
+      yield { kind: "run_error", error: err.message };
+      return result;
     }
 
     // Build the chat options. Honor per-role timeoutMs via an inner
@@ -2107,48 +2133,26 @@ export async function* runAgent(
         } else {
           message = assistantText || "subagent turn failed";
         }
-        live.status.markErrored(turnId, message);
-        sendParentNotification();
-        relayAgentEvent({
-          content: message,
-          triggerTurn: false,
-          metadata: {
-            kind: "subagent_error",
-            turnId,
-          },
-        });
-        yield { kind: "run_error", error: message };
-        return {
-          threadId: live.agentId,
-          durationMs: Date.now() - startedAt,
-          outcome: "errored",
+        const result = finishErroredRun({
+          message,
           error:
             terminalError instanceof Error ? terminalError : new Error(message),
           toolCallCount,
-        };
+        });
+        yield { kind: "run_error", error: message };
+        return result;
       }
 
       if (stopReason === "cancelled") {
         if (roleTimeoutFired) {
           const message = `role_timeout after ${roleTimeoutMs}ms`;
-          live.status.markErrored(turnId, message);
-          sendParentNotification();
-          relayAgentEvent({
-            content: message,
-            triggerTurn: false,
-            metadata: {
-              kind: "subagent_error",
-              turnId,
-            },
-          });
-          yield { kind: "run_error", error: message };
-          return {
-            threadId: live.agentId,
-            durationMs: Date.now() - startedAt,
-            outcome: "errored",
+          const result = finishErroredRun({
+            message,
             error: new Error(message),
             toolCallCount,
-          };
+          });
+          yield { kind: "run_error", error: message };
+          return result;
         }
         const reason =
           terminalError instanceof Error
@@ -2264,24 +2268,13 @@ export async function* runAgent(
     }
     if (roleTimeoutFired) {
       const message = `role_timeout after ${roleTimeoutMs}ms`;
-      live.status.markErrored(turnId, message);
-      sendParentNotification();
-      relayAgentEvent({
-        content: message,
-        triggerTurn: false,
-        metadata: {
-          kind: "subagent_error",
-          turnId,
-        },
-      });
-      yield { kind: "run_error", error: message };
-      return {
-        threadId: live.agentId,
-        durationMs: Date.now() - startedAt,
-        outcome: "errored",
+      const result = finishErroredRun({
+        message,
         error: new Error(message),
         toolCallCount,
-      };
+      });
+      yield { kind: "run_error", error: message };
+      return result;
     }
 
     live.status.markCompleted(turnId, assistantText);
@@ -2322,23 +2315,12 @@ export async function* runAgent(
       };
     }
     const message = err instanceof Error ? err.message : String(err);
-    live.status.markErrored(turnId, message);
-    sendParentNotification();
-    relayAgentEvent({
-      content: message,
-      triggerTurn: false,
-      metadata: {
-        kind: "subagent_error",
-        turnId,
-      },
+    const result = finishErroredRun({
+      message,
+      error: err,
     });
     yield { kind: "run_error", error: message };
-    return {
-      threadId: live.agentId,
-      durationMs: Date.now() - startedAt,
-      outcome: "errored",
-      error: err,
-    };
+    return result;
   } finally {
     if (roleTimeoutHandle !== null) clearTimeout(roleTimeoutHandle);
     if (forwardMergedAbort !== null) {

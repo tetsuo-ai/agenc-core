@@ -4,6 +4,50 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Subagent Error Finalization
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/agents/run-agent.ts#runAgent` drives subagent lifecycle
+  startup, provider streaming, terminal turn handling, role-timeout handling,
+  abort/interruption classification, and cleanup.
+- The provider-missing, child turn error/max-turns, role-timeout, and thrown
+  exception branches all mark the live status errored, notify the parent, emit
+  a `run_error` progress event, and return an errored `RunAgentResult`.
+- `runtime/tests/agents/run-agent.test.ts` covers provider rejection,
+  role-timeout classification, max-turns-as-error handling, and interrupted
+  abort behavior.
+
+### Finding
+
+The subagent runner repeated the same terminal error side effects across
+several branches. That made this lifecycle path harder to audit because a
+future change to errored status, parent notification, mailbox relay metadata,
+or result assembly would need to be copied into every branch without changing
+the order observed by generator consumers.
+
+### Change
+
+- Added a local `finishErroredRun` helper inside `runAgent` to centralize
+  `markErrored`, parent notification, optional `subagent_error` relay, and
+  errored-result construction.
+- Preserved the existing event ordering by finalizing the live status before
+  yielding `run_error`.
+- Kept the provider-missing branch's existing no-relay behavior explicit with
+  `relayToParent: false`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/run-agent.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Shared PowerShell Path Allowance
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
