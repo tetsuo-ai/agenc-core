@@ -4,6 +4,48 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Shared Runtime Path Target Resolution
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/tools/runtimes/apply-patch.ts` resolves parsed patch file paths
+  into write targets for runtime sandbox analysis.
+- `runtime/src/tools/runtimes/shell.ts` resolves shell read operands into
+  absolute read targets for sandbox preflight.
+- `runtime/src/tools/runtimes/sandboxing.ts` resolves generic tool path
+  arguments and caller-provided working directories before sandbox checks.
+- `runtime/src/tools/runtimes/unified-exec.ts` resolves `cwd`/`workdir` for
+  unified exec-like runtime commands.
+- `runtime/src/tools/runtimes/paths.ts` now owns the shared absolute-normalize
+  and relative-from-cwd resolution helper.
+
+### Finding
+
+Four runtime analyzer modules carried identical `resolveTarget` helpers. These
+modules feed sandbox read/write decisions; if one copy changed absolute
+normalization or relative path resolution independently, shell, apply-patch,
+generic tool, and unified exec preflights could disagree on the same path.
+
+### Change
+
+- Added `resolveRuntimePathTarget` in `tools/runtimes/paths.ts`.
+- Routed apply-patch, shell, sandboxing, and unified-exec runtime analyzers
+  through the shared helper.
+- Added direct runtime test coverage for absolute normalization and relative
+  resolution from `cwd`.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tools/runtimes/runtime.test.ts tests/tools/apply-patch/runtime.test.ts tests/tools/system/exec-command.test.ts tests/tools/system/bash.test.ts tests/tools/system/command-line.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `git diff --check`
+- `npm run test:bun`
+- `npm test`
+
 ## 2026-06-22: Shared Provider Fallback Retry Budget
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

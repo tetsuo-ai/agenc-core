@@ -28,6 +28,7 @@ import type { SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { ToolRuntimeAttemptContext } from "./context.js";
 import { analyzeApplyPatchRuntimeWrites } from "./apply-patch.js";
+import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
 
 export interface RuntimeSandboxProfileOptions {
@@ -656,7 +657,7 @@ function collectWriteTargets(
 ): void {
   if (typeof value === "string") {
     if (key !== undefined && isWritePathArgKey(key)) {
-      targets.add(resolveTarget(value, cwd));
+      targets.add(resolveRuntimePathTarget(value, cwd));
     }
     return;
   }
@@ -681,18 +682,12 @@ function argWorkingDirectory(
     : typeof args["cwd"] === "string"
       ? args["cwd"]
       : undefined;
-  return value === undefined ? cwd : resolveTarget(value, cwd);
+  return value === undefined ? cwd : resolveRuntimePathTarget(value, cwd);
 }
 
 function isWritePathArgKey(key: string): boolean {
   const normalized = key.replace(/[-_]/g, "").toLowerCase();
   return WRITE_PATH_ARG_KEYS.has(normalized) || normalized.endsWith("path");
-}
-
-function resolveTarget(value: string, cwd: string): string {
-  return path.isAbsolute(value)
-    ? path.normalize(value)
-    : path.resolve(cwd, value);
 }
 
 function isPathUnder(candidateRaw: string, rootRaw: string): boolean {

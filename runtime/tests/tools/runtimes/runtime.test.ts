@@ -7,7 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import { EventLog } from "../../session/event-log.js";
@@ -30,6 +30,7 @@ import {
   permissionProfileForRuntimeContext,
   permissionProfileForSandboxMode,
 } from "./sandboxing.js";
+import { resolveRuntimePathTarget } from "./paths.js";
 import {
   readToolRuntimeContext,
   type ToolRuntimeCallContext,
@@ -73,6 +74,13 @@ function makeExecutableSandboxHelper(): string {
 }
 
 describe("tools/runtimes", () => {
+  test("resolveRuntimePathTarget normalizes absolute paths and resolves relatives from cwd", () => {
+    expect(resolveRuntimePathTarget("nested/../file.txt", "/repo/work"))
+      .toBe(resolve("/repo/work", "file.txt"));
+    expect(resolveRuntimePathTarget("/repo/work/../other.txt", "/ignored"))
+      .toBe(normalize("/repo/other.txt"));
+  });
+
   test("ToolExecutionRuntime schedules each call through its runtime context", async () => {
     const runtime = createToolExecutionRuntime();
     const started: string[] = [];

@@ -9,6 +9,7 @@ import {
   isUnifiedExecRuntimeTool,
   unifiedExecRuntimeCommand,
 } from "./unified-exec.js";
+import { resolveRuntimePathTarget } from "./paths.js";
 
 export interface ShellRuntimeAccessAnalysis {
   readonly writeTargets: readonly string[];
@@ -134,7 +135,7 @@ function collectShellSegmentReadTargets(
       continue;
     }
     if (pathOptionValueIndexes.has(i) || isShellPathOperand(token)) {
-      targets.add(resolveTarget(token, cwd));
+      targets.add(resolveRuntimePathTarget(token, cwd));
     }
   }
   return { indeterminate };
@@ -191,12 +192,6 @@ function gitSubcommand(segment: readonly string[]): string | undefined {
     return token;
   }
   return undefined;
-}
-
-function resolveTarget(value: string, cwd: string): string {
-  return path.isAbsolute(value)
-    ? path.normalize(value)
-    : path.resolve(cwd, value);
 }
 
 function isShellPathOperand(token: string): boolean {
