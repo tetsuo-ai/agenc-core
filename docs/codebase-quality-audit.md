@@ -4,6 +4,59 @@ This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.
 
+## 2026-06-22: Usage And Budget Attachment Normalizers
+
+Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>
+
+### Code Paths Traced
+
+- `runtime/src/utils/attachments.ts#getTokenUsageAttachment` emits
+  `token_usage` attachments when `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT` is set.
+- `runtime/src/utils/attachments.ts#getMaxBudgetUsdAttachment` emits
+  `budget_usd` attachments when a max USD budget is configured.
+- `runtime/src/utils/attachments.ts#getOutputTokenUsageAttachment` emits
+  `output_token_usage` attachments when the token-budget feature is active and
+  a positive turn budget exists.
+- `runtime/src/utils/messages.ts#normalizeAttachmentForAPI` wraps these
+  accounting notices in model-facing system reminders.
+- `runtime/src/prompts/attachments/messages.ts` contains the newer prompt
+  attachment renderer for the same attachment kinds, which makes preserving
+  legacy `utils/messages.ts` formatting explicit.
+- `runtime/tests/conversation/messages-core.test.ts` covers token usage,
+  USD budget, output token budget formatting, and null output token budget
+  formatting.
+
+### Finding
+
+Token, USD budget, and output-token usage normalization kept small but distinct
+accounting formatting rules directly inside the large attachment dispatcher.
+The branches are not security-sensitive, but they are user-facing budget
+notices, and the legacy compatibility renderer intentionally does not format
+`token_usage` and `budget_usd` the same way as the newer prompt-attachment
+renderer. Keeping that detail inline made accidental formatter drift more likely
+during unrelated dispatcher edits.
+
+### Change
+
+- Added typed aliases for `token_usage`, `budget_usd`, and
+  `output_token_usage` attachments.
+- Split the inline branches into `normalizeTokenUsageAttachment`,
+  `normalizeBudgetUsdAttachment`, and `normalizeOutputTokenUsageAttachment`.
+- Preserved the existing token and USD strings exactly, including raw
+  `token_usage` and `budget_usd` values and abbreviated output-token values.
+- Confirmed `normalizeAttachmentForAPI` now measures 586 lines, with the
+  extracted accounting helpers measuring 12, 12, and 16 lines.
+
+### Validation
+
+- `npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/conversation/messages-core.test.ts --reporter=dot`
+- `npm run typecheck`
+- `npm run check:unused`
+- `npm run build --workspace=@tetsuo-ai/runtime`
+- `npm test`
+- `npm run test:bun`
+- `git diff --check`
+
 ## 2026-06-22: Runtime Hook Attachment Normalizers
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/1276>

@@ -108,6 +108,12 @@ type AsyncHookResponseAttachmentForAPI = Extract<
 >
 type QueuedCommandAttachment = Extract<Attachment, { type: 'queued_command' }>
 type DiagnosticsAttachment = Extract<Attachment, { type: 'diagnostics' }>
+type TokenUsageAttachment = Extract<Attachment, { type: 'token_usage' }>
+type BudgetUsdAttachment = Extract<Attachment, { type: 'budget_usd' }>
+type OutputTokenUsageAttachment = Extract<
+  Attachment,
+  { type: 'output_token_usage' }
+>
 type HookBlockingErrorAttachmentForAPI = Extract<
   Attachment,
   { type: 'hook_blocking_error' }
@@ -4075,6 +4081,49 @@ function normalizeHookStoppedContinuationAttachment(
   ]
 }
 
+function normalizeTokenUsageAttachment(
+  attachment: TokenUsageAttachment,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `Token usage: ${attachment.used}/${attachment.total}; ${attachment.remaining} remaining`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeBudgetUsdAttachment(
+  attachment: BudgetUsdAttachment,
+): UserMessage[] {
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `USD budget: $${attachment.used}/$${attachment.total}; $${attachment.remaining} remaining`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
+function normalizeOutputTokenUsageAttachment(
+  attachment: OutputTokenUsageAttachment,
+): UserMessage[] {
+  const turnText =
+    attachment.budget !== null
+      ? `${formatNumber(attachment.turn)} / ${formatNumber(attachment.budget)}`
+      : formatNumber(attachment.turn)
+  return [
+    createUserMessage({
+      content: wrapInSystemReminder(
+        `Output tokens \u2014 turn: ${turnText} \u00b7 session: ${formatNumber(attachment.session)}`,
+      ),
+      isMeta: true,
+    }),
+  ]
+}
+
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
@@ -4485,37 +4534,14 @@ You have exited auto mode. The user may now want to interact more directly. You 
     }
     // Note: 'teammate_mailbox' and 'team_context' are handled BEFORE switch
     // to avoid case label strings leaking into compiled output
-    case 'token_usage':
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `Token usage: ${attachment.used}/${attachment.total}; ${attachment.remaining} remaining`,
-          ),
-          isMeta: true,
-        }),
-      ]
-    case 'budget_usd':
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `USD budget: $${attachment.used}/$${attachment.total}; $${attachment.remaining} remaining`,
-          ),
-          isMeta: true,
-        }),
-      ]
+    case 'token_usage': {
+      return normalizeTokenUsageAttachment(attachment)
+    }
+    case 'budget_usd': {
+      return normalizeBudgetUsdAttachment(attachment)
+    }
     case 'output_token_usage': {
-      const turnText =
-        attachment.budget !== null
-          ? `${formatNumber(attachment.turn)} / ${formatNumber(attachment.budget)}`
-          : formatNumber(attachment.turn)
-      return [
-        createUserMessage({
-          content: wrapInSystemReminder(
-            `Output tokens \u2014 turn: ${turnText} \u00b7 session: ${formatNumber(attachment.session)}`,
-          ),
-          isMeta: true,
-        }),
-      ]
+      return normalizeOutputTokenUsageAttachment(attachment)
     }
     case 'hook_blocking_error': {
       return normalizeHookBlockingErrorAttachment(attachment)
