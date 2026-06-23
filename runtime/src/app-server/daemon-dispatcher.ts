@@ -1147,6 +1147,17 @@ export class AgenCDaemonJsonRpcConnection {
     this.#clientIds.add(clientId);
   }
 
+  /**
+   * Stop tracking a single client on this connection without tearing the
+   * connection down. Used when one co-located client is evicted (e.g. as a slow
+   * consumer) but other healthy clients still share the connection. Returns
+   * whether the connection no longer tracks any client.
+   */
+  untrackClientId(clientId: string): boolean {
+    this.#clientIds.delete(clientId);
+    return this.#clientIds.size === 0;
+  }
+
   get trackedClientIds(): readonly string[] {
     return [...this.#clientIds];
   }

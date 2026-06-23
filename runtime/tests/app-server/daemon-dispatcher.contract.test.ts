@@ -137,6 +137,191 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
   });
 
+  it("untrackClientId removes one co-located client without dropping the others", () => {
+    // A single connection can track MULTIPLE clients (trackedClientIds is a set
+    // keyed by the clientId a peer supplies). When one co-located client is
+    // evicted as a slow consumer, the daemon must scope teardown to JUST that
+    // client and only destroy the whole connection when the evicted client is
+    // its SOLE tracked client. This is the per-connection seam that makes that
+    // scoping correct: untrackClientId removes one client and reports whether
+    // the connection still tracks any. Revert-sensitive — without it (or if the
+    // daemon tore down the whole connection) the healthy co-located client would
+    // be collaterally disconnected.
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const connection = dispatcher.createConnection();
+
+    connection.trackClientId("client_a");
+    connection.trackClientId("client_b");
+    expect([...connection.trackedClientIds].sort()).toEqual([
+      "client_a",
+      "client_b",
+    ]);
+
+    // Untrack one of two co-located clients: NOT the sole client, the other
+    // healthy client remains tracked (connection must be kept alive).
+    expect(connection.untrackClientId("client_a")).toBe(false);
+    expect([...connection.trackedClientIds]).toEqual(["client_b"]);
+
+    // Untrack the last client: now sole — connection may be torn down.
+    expect(connection.untrackClientId("client_b")).toBe(true);
+    expect([...connection.trackedClientIds]).toEqual([]);
+
+    // Untracking an unknown client is a no-op and reports the empty state.
+    expect(connection.untrackClientId("client_x")).toBe(true);
+  });
+
+  it("scopes slow-consumer teardown to the evicted client and keeps the connection + co-located client alive", async () => {
+    // Integration coverage for the EXACT regression site in daemon-cli's
+    // destroyEvictedClientConnection wiring: when the multiplexer evicts ONE
+    // slow consumer that shares a transport connection with a healthy co-located
+    // client, only the evicted client must be torn down — the connection and the
+    // healthy client must survive. This reconstructs that wiring faithfully:
+    //   * a REAL multiplexer whose onClientEvicted drives a copy of daemon-cli's
+    //     destroyEvictedClientConnection,
+    //   * a REAL dispatcher connection that tracks BOTH clientIds via the genuine
+    //     trackClientId/untrackClientId/trackedClientIds API,
+    //   * eviction triggered by a REAL broadcastSessionEvent against a stuck slow
+    //     consumer (its send never settles), with an independent healthy client.
+    // The scoping decision flows multiplexer eviction -> onClientEvicted ->
+    // destroyEvictedClientConnection -> connection.untrackClientId. It is
+    // revert-sensitive to untrackClientId's `size === 0` return: if that returns
+    // true unconditionally (v1's whole-connection teardown) the connection is
+    // closed and the healthy co-located client is collaterally removed.
+    const sessionManager = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_1",
+    });
+
+    // Reconstruct daemon-cli's connection registry + teardown seam.
+    const connections = new Map<string, AgenCDaemonJsonRpcConnection>();
+    const closedConnectionKeys: string[] = [];
+    let destroyEvictedClientConnection:
+      | ((clientId: string) => void)
+      | undefined;
+
+    const multiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager,
+      // Small live pending caps so a couple of ~1KB events trip the slow
+      // consumer; the detached-buffer cap stays generous and irrelevant here.
+      maxBufferedBytesPerSession: 8 * 1024 * 1024,
+      maxPendingDeliveryBytesPerClient: 2 * 1024,
+      maxPendingDeliveryCountPerClient: 1000,
+      onClientEvicted: (clientId) => {
+        destroyEvictedClientConnection?.(clientId);
+      },
+    });
+
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      clientMultiplexer: multiplexer,
+      sessionManager,
+    });
+
+    const closeConnection = (connectionKey: string): void => {
+      const connection = connections.get(connectionKey);
+      connections.delete(connectionKey);
+      closedConnectionKeys.push(connectionKey);
+      for (const clientId of connection?.trackedClientIds ?? []) {
+        void multiplexer.removeClient(clientId).catch(() => {});
+      }
+    };
+    // Byte-for-byte the daemon-cli scoping decision under test.
+    destroyEvictedClientConnection = (clientId: string): void => {
+      for (const [connectionKey, connection] of connections) {
+        if (!connection.trackedClientIds.includes(clientId)) {
+          continue;
+        }
+        const wasSoleClient = connection.untrackClientId(clientId);
+        if (wasSoleClient) {
+          closeConnection(connectionKey);
+        }
+        return;
+      }
+    };
+
+    // ONE transport connection carrying TWO co-located tracked clients. Each
+    // clientId is a distinct multiplexer client with its OWN send closure, so
+    // their pending-backlog accounting is independent (the slow one stalls, the
+    // healthy one drains).
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    connections.set("conn_1", connection);
+    await sessionManager.createSession({ agentId: "agent_1" });
+
+    let slowSendCount = 0;
+    await multiplexer.registerClient({
+      clientId: "slow_client",
+      send: () => {
+        slowSendCount += 1;
+        return new Promise<void>(() => {
+          /* never resolves: backpressured/stuck socket */
+        });
+      },
+    });
+    await multiplexer.attachClientToSession("session_1", "slow_client");
+    connection.trackClientId("slow_client");
+
+    const healthyReceived: JsonObject[] = [];
+    await multiplexer.registerClient({
+      clientId: "healthy_client",
+      send: (message) => {
+        healthyReceived.push(message);
+        return Promise.resolve();
+      },
+    });
+    await multiplexer.attachClientToSession("session_1", "healthy_client");
+    connection.trackClientId("healthy_client");
+
+    expect([...connection.trackedClientIds].sort()).toEqual([
+      "healthy_client",
+      "slow_client",
+    ]);
+
+    // Drive large events: the slow client's first delivery never settles so its
+    // pending backlog climbs past the 2KB cap and the multiplexer evicts it,
+    // firing onClientEvicted -> destroyEvictedClientConnection. Yield between
+    // broadcasts so the healthy client's deliveries drain.
+    for (let i = 1; i <= 50; i += 1) {
+      void multiplexer.broadcastSessionEvent("session_1", {
+        type: "session.delta",
+        sessionId: "session_1",
+        sequence: i,
+        text: "x".repeat(1000),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The slow client was evicted from the multiplexer route AND untracked from
+    // the connection — but the connection itself was NOT closed.
+    expect(slowSendCount).toBeGreaterThan(0);
+    expect(closedConnectionKeys).toEqual([]);
+    expect(connections.has("conn_1")).toBe(true);
+    expect([...connection.trackedClientIds]).toEqual(["healthy_client"]);
+
+    const attached = await multiplexer.attachedClientIds("session_1");
+    expect(attached).toEqual(["healthy_client"]);
+
+    // The healthy co-located client SURVIVED: still registered, still attached,
+    // and still receiving broadcasts after the slow client was torn down.
+    healthyReceived.length = 0;
+    await multiplexer.broadcastSessionEvent("session_1", {
+      type: "session.delta",
+      sessionId: "session_1",
+      sequence: 1000,
+      text: "post-eviction",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(healthyReceived).toEqual([
+      {
+        type: "session.delta",
+        sessionId: "session_1",
+        sequence: 1000,
+        text: "post-eviction",
+      },
+    ]);
+  });
+
   it("requires initialization before daemon.reload", async () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
