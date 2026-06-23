@@ -12,7 +12,12 @@ export function WorkbenchStatusBar({
   readonly activityMode?: SpinnerMode | null;
 } = {}): React.ReactElement {
   const workbench = useWorkbenchState();
-  const active = workbench.activeFilePath ?? workbench.activeSurfaceMode;
+  // Show the active file path when one is open (preview/buffer); otherwise show
+  // the surface name. Uppercase the surface name so the title-bar label matches
+  // the pane-header casing (e.g. "TRANSCRIPT", not lowercase "transcript") —
+  // the descriptors in ActiveWorkSurface render the same uppercase titles. The
+  // file-path branch is left untouched so file labels keep their real casing.
+  const active = workbench.activeFilePath ?? workbench.activeSurfaceMode.toUpperCase();
   return (
     <Box height={1} width="100%" flexDirection="row">
       <Text color="text2" wrap="truncate-end">AgenC Workbench</Text>

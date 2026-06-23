@@ -476,6 +476,29 @@ describe("workbench render contract", () => {
     expect(output).not.toContain("src/stale.ts");
   });
 
+  it("indents the surface-hint footer line to match the composer footer", async () => {
+    // The composer's own "? for shortcuts" hint is rendered inside a
+    // paddingX={2} box (PromptInputFooter). The workbench surface-hint line
+    // used to render flush at column 0, so the two stacked footer lines had
+    // mismatched left margins. WorkbenchFooter now shares the same 2-column
+    // inset. Revert-sensitive: dropping paddingX={2} from WorkbenchFooter makes
+    // the leading-space assertion fail.
+    const output = await renderToString(
+      <AppStateProvider initialState={getDefaultAppState()}>
+        <WorkbenchFooter />
+      </AppStateProvider>,
+      120,
+    );
+
+    const hintLine = output
+      .split(/\r?\n/u)
+      .find((line) => line.includes("Composer: write prompt"));
+
+    expect(hintLine).toBeDefined();
+    expect(hintLine).toMatch(/^ {2}\S/u);
+    expect(hintLine?.startsWith("Composer:")).toBe(false);
+  });
+
   it.each([
     [148, "wide"],
     [120, "medium"],
@@ -738,9 +761,12 @@ describe("workbench render contract", () => {
       120,
     );
 
-    // Title bar shows the product name and active surface...
+    // Title bar shows the product name and active surface. The surface label
+    // uses the same uppercase casing as the pane header ("TRANSCRIPT"), not the
+    // lowercase surface-mode id, so the two render sites stay consistent.
     expect(output).toContain("AgenC Workbench");
-    expect(output).toContain("transcript");
+    expect(output).toContain("TRANSCRIPT");
+    expect(output).not.toContain("| transcript");
     // ...but must NOT surface the live terminal width as a debug-style segment.
     expect(output).not.toMatch(/\d+\s+cols/u);
     expect(output).not.toContain("cols");
