@@ -136,6 +136,64 @@ export function isStartupValueFlagToken(arg: string): boolean {
   );
 }
 
+/**
+ * Startup value-flags that select the boot configuration (provider, model,
+ * profile, attached image). Unlike `--resume` (which has its own guard above)
+ * and `--permission-mode` (guarded in startup-selection's
+ * `resolvePermissionModeOrThrow`), these are silently swallowed when their
+ * value is missing or dash-prefixed: `extractFlagValue` / `extractFlagValues`
+ * return null/empty (correct, tested dash-guard) and `stripRoutingFlags`
+ * removes the bare flag token, so the user's explicit selection vanishes and
+ * the session boots on defaults with zero feedback. Each is guarded below.
+ */
+const STARTUP_SELECTION_VALUE_FLAGS = Object.freeze([
+  "--provider",
+  "--model",
+  "--profile",
+  "--image",
+] as const);
+
+type StartupSelectionValueFlag =
+  (typeof STARTUP_SELECTION_VALUE_FLAGS)[number];
+
+const STARTUP_SELECTION_FLAG_USAGE: Readonly<
+  Record<StartupSelectionValueFlag, string>
+> = Object.freeze({
+  "--provider": "agenc --provider requires a value (usage: agenc --provider <name>)",
+  "--model": "agenc --model requires a value (usage: agenc --model <id|provider:id>)",
+  "--profile": "agenc --profile requires a value (usage: agenc --profile <name>)",
+  "--image": "agenc --image requires a value (usage: agenc --image <path|url>)",
+});
+
+/**
+ * Detect a selection value-flag (`--provider`/`--model`/`--profile`/`--image`)
+ * that was supplied as a real leading flag token but with no usable value —
+ * either a bare flag whose next token is absent or dash-prefixed, or the empty
+ * `--flag=` form. Returns the first such flag in argv order (so the error names
+ * the flag the user actually mistyped), or null when every selection flag that
+ * appears carries a value (or none appears at all). A `--flag=value` token and
+ * a positional prompt that merely contains the word "model" never match.
+ */
+function findMissingValueSelectionFlag(
+  userArgv: readonly string[],
+): StartupSelectionValueFlag | null {
+  for (let i = 0; i < userArgv.length; i += 1) {
+    const arg = userArgv[i]!;
+    for (const flag of STARTUP_SELECTION_VALUE_FLAGS) {
+      // Empty equals form (`--model=`) is unambiguously a missing value.
+      if (arg === `${flag}=`) return flag;
+      // Bare flag token (`--model`): missing when the next token is absent
+      // or a dash-prefixed flag (the same condition that makes
+      // extractFlagValue/extractFlagValues yield null/empty).
+      if (arg === flag) {
+        const next = userArgv[i + 1];
+        if (typeof next !== "string" || next.startsWith("-")) return flag;
+      }
+    }
+  }
+  return null;
+}
+
 function shouldStripBooleanFlag(arg: string): boolean {
   return ROUTING_BOOLEAN_FLAGS.includes(
     arg as (typeof ROUTING_BOOLEAN_FLAGS)[number],
@@ -248,6 +306,26 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return {
       kind: "errorAndExit",
       message: `agenc --resume requires a session id (usage: agenc --resume <session-id>)`,
+      exitCode: 2,
+    };
+  }
+
+  // 0b. A selection value-flag (`--provider`/`--model`/`--profile`/`--image`)
+  //     was supplied as a real leading flag token but with no value — its next
+  //     token is absent or dash-prefixed, or it is the empty `--flag=` form.
+  //     `extractFlagValue`/`extractFlagValues` correctly yield null/empty here
+  //     (the tested dash-guard), but readStartupCliFlags/startup-selection then
+  //     drop the override AND stripRoutingFlags removes the bare flag token, so
+  //     the user's explicit selection vanishes and the session silently boots
+  //     on defaults. Error instead, mirroring the --resume guard exactly (same
+  //     errorAndExit shape, exitCode 2, both TTY and non-TTY). Only a real
+  //     leading flag token matches — a `--model=gpt` value form or a prompt
+  //     that merely contains the word "model" is unaffected.
+  const missingSelectionFlag = findMissingValueSelectionFlag(userArgv);
+  if (missingSelectionFlag !== null) {
+    return {
+      kind: "errorAndExit",
+      message: STARTUP_SELECTION_FLAG_USAGE[missingSelectionFlag],
       exitCode: 2,
     };
   }
