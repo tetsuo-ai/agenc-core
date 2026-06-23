@@ -581,6 +581,140 @@ describe("transaction guard tool intent detection", () => {
     expect(input).toBeNull();
   });
 
+  // Gap A: lock the AND-gate at tool-intent.ts:92
+  // (SOLANA_SIGNAL_RE.test(text) && SOLANA_WRITE_SIGNAL_RE.test(text)).
+  // SOLANA_WRITE_SIGNAL_RE matches generic shell verbs (transfer/deploy/
+  // upgrade/approve/...), so every command below DELIBERATELY contains a
+  // write-signal word but NO Solana token. Detection must stay null because
+  // the write half alone is not sufficient. Loosening the AND to an OR (or
+  // broadening SOLANA_WRITE_SIGNAL_RE) would start blocking these benign
+  // commands — and reddens this table.
+  test.each([
+    { name: "kubectl apply with deploy manifest", cmd: "kubectl apply -f deploy.yaml" },
+    { name: "terraform apply auto-approve", cmd: "terraform apply -auto-approve" },
+    { name: "make deploy target", cmd: "make deploy" },
+    { name: "helm upgrade release", cmd: "helm upgrade myrelease ./chart" },
+    { name: "ansible deploy playbook", cmd: "ansible-playbook deploy.yml" },
+    { name: "move report into transfer dir", cmd: "mv report.pdf /tmp/transfer/" },
+    {
+      name: "stress string of write verbs",
+      cmd: "echo transfer deploy submit execute sign swap approve",
+    },
+  ])(
+    "does not guard benign non-Solana command with write word: $name",
+    ({ cmd }) => {
+      const input = buildToolTransactionGuardInput(
+        makeTool("exec_command", () => {}),
+        makeInvocation("benign-write", "exec_command"),
+        { cmd },
+      );
+      expect(input).toBeNull();
+    },
+  );
+
+  // Gap B: lock the metadata branch at tool-intent.ts:95
+  // (metadataSolanaHint(tool) && tool.metadata?.mutating === true).
+  // metadataSolanaHint() returns true when tool.metadata.family — or any
+  // tool.metadata.keywords entry — contains the word "solana". To isolate
+  // this branch from the text-based AND-gate above, the metadata carries a
+  // Solana hint but NO write-signal word (e.g. family "solana" / keyword
+  // "cluster"), and the args carry no command text. So detection here is
+  // decided solely by line 95.
+  test("guards a mutating Solana-hinted metadata tool (family hint)", () => {
+    const tool: Tool = {
+      name: "mcp.solana.settle",
+      description: "test tool",
+      inputSchema: { type: "object", additionalProperties: true },
+      metadata: { family: "solana", source: "mcp", mutating: true },
+      async execute() {
+        return { content: "executed" };
+      },
+    };
+    const input = buildToolTransactionGuardInput(
+      tool,
+      makeInvocation("meta-family-mutating", "mcp.solana.settle"),
+      {},
+    );
+    expect(input).not.toBeNull();
+    expect(input?.kind).toBe("solana_tool_invocation");
+  });
+
+  test("guards a mutating Solana-hinted metadata tool (keyword hint)", () => {
+    const tool: Tool = {
+      name: "mcp.defi.settle",
+      description: "test tool",
+      inputSchema: { type: "object", additionalProperties: true },
+      metadata: {
+        family: "defi",
+        keywords: ["solana", "cluster"],
+        source: "mcp",
+        mutating: true,
+      },
+      async execute() {
+        return { content: "executed" };
+      },
+    };
+    const input = buildToolTransactionGuardInput(
+      tool,
+      makeInvocation("meta-keyword-mutating", "mcp.defi.settle"),
+      {},
+    );
+    expect(input).not.toBeNull();
+    expect(input?.kind).toBe("solana_tool_invocation");
+  });
+
+  // Negatives that lock the AND in line 95. A Solana hint without
+  // mutating=true must NOT be guarded — reddening if the
+  // `&& tool.metadata?.mutating === true` conjunct is dropped.
+  test.each([
+    { name: "mutating false", mutating: false },
+    { name: "mutating undefined", mutating: undefined },
+  ])(
+    "does not guard a Solana-hinted metadata tool when not mutating: $name",
+    ({ mutating }) => {
+      const tool: Tool = {
+        name: "mcp.solana.lookup",
+        description: "test tool",
+        inputSchema: { type: "object", additionalProperties: true },
+        metadata: {
+          family: "solana",
+          source: "mcp",
+          ...(mutating === undefined ? {} : { mutating }),
+        },
+        async execute() {
+          return { content: "executed" };
+        },
+      };
+      const input = buildToolTransactionGuardInput(
+        tool,
+        makeInvocation("meta-not-mutating", "mcp.solana.lookup"),
+        {},
+      );
+      expect(input).toBeNull();
+    },
+  );
+
+  // Negative that locks the metadataSolanaHint() conjunct in line 95.
+  // A mutating tool WITHOUT a Solana hint and with no transaction text
+  // must NOT be guarded.
+  test("does not guard a mutating tool with no Solana metadata hint", () => {
+    const tool: Tool = {
+      name: "exec_command",
+      description: "test tool",
+      inputSchema: { type: "object", additionalProperties: true },
+      metadata: { family: "terminal", source: "mcp", mutating: true },
+      async execute() {
+        return { content: "executed" };
+      },
+    };
+    const input = buildToolTransactionGuardInput(
+      tool,
+      makeInvocation("meta-no-hint", "exec_command"),
+      { cmd: "ls -la" },
+    );
+    expect(input).toBeNull();
+  });
+
   test("guards write_stdin content that would submit a transaction", () => {
     const input = buildToolTransactionGuardInput(
       makeTool("write_stdin", () => {}),
