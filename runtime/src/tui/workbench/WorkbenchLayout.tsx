@@ -90,7 +90,7 @@ export function WorkbenchLayout({
 
   return (
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
-      {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} /> : null}
+      {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={columns} /> : null}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         {showExplorer ? (
           <NoSelect flexShrink={0} width={explorerWidth} height="100%">
