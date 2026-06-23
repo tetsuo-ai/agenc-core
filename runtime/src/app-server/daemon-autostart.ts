@@ -191,7 +191,17 @@ export async function ensureAgenCDaemonAutostart(
     }
     const startExit = await runAgenCDaemonCli(
       { kind: "command", action: "start" },
-      { host, io },
+      {
+        host,
+        io,
+        // The autostart path owns its own readiness wait below
+        // (`waitForAgenCDaemonReady`, honoring this call's `isReady`/timeout
+        // options), so opt the bare `start` control out of its own duplicate
+        // socket-readiness gate. This keeps autostart's start→ready sequence
+        // byte-for-byte identical to before the bare-control readiness gate
+        // was added.
+        waitForDaemonReady: async () => true,
+      },
     );
     if (startExit !== 0) {
       throw new AgenCDaemonAutostartError("AgenC daemon start failed");

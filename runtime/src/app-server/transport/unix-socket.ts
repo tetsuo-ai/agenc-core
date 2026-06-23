@@ -382,7 +382,9 @@ function getSocketFd(socket: Socket): number | null {
     : null;
 }
 
-async function canConnectToUnixSocket(socketPath: string): Promise<boolean> {
+export async function canConnectToUnixSocket(
+  socketPath: string,
+): Promise<boolean> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
     socket.once("connect", () => {

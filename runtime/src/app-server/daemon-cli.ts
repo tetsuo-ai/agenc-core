@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -62,7 +62,10 @@ import {
   type SessionStatus,
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
-import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
+import {
+  AgenCUnixSocketServer,
+  canConnectToUnixSocket,
+} from "./transport/unix-socket.js";
 import { AgenCWebSocketServer } from "./transport/websocket.js";
 import {
   AgenCDaemonCookieAuthenticator,
@@ -177,6 +180,16 @@ const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
   "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
+/**
+ * Bound for how long the bare daemon controls (`start`/`restart`/`reload`)
+ * wait for the detached daemon to bind and accept on its control socket before
+ * giving up. Kept in sync with the agent autostart path
+ * (`AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS` in `daemon-autostart.ts`); imported
+ * as a local constant rather than from that module to avoid an import cycle
+ * (`daemon-autostart` already depends on `daemon-cli`).
+ */
+const DEFAULT_DAEMON_READY_TIMEOUT_MS = 15_000;
+const DEFAULT_DAEMON_READY_POLL_MS = 25;
 
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -237,6 +250,21 @@ export interface RunAgenCDaemonCliOptions {
   readonly requestHealthStats?: (
     host: AgenCDaemonCliHost,
   ) => Promise<HealthStatsResult>;
+  /**
+   * Overrides the control-socket readiness probe used by `start`/`restart`,
+   * `status`, and `reload`. Resolves `true` once the detached daemon has bound
+   * and is accepting connections on its Unix socket (pid alive, cookie
+   * written, socket connectable), mirroring the agent autostart readiness
+   * contract. Defaults to a real connectability poll bounded by
+   * {@link DEFAULT_DAEMON_READY_TIMEOUT_MS}. Injectable so unit tests can stub
+   * readiness without spinning up a full server. The boolean argument is the
+   * single-shot mode: when `true`, the probe checks readiness once with no
+   * polling/timeout (used by `status`).
+   */
+  readonly waitForDaemonReady?: (
+    host: AgenCDaemonCliHost,
+    singleShot: boolean,
+  ) => Promise<boolean>;
 }
 
 export interface AgenCDaemonWebSocketListenOptions {
@@ -556,7 +584,7 @@ async function runAgenCDaemonAction(
 ): Promise<number> {
   switch (action) {
     case "start":
-      return startAgenCDaemon(host, io);
+      return startAgenCDaemon(host, io, options);
     case "stop":
       return stopAgenCDaemon(
         host,
@@ -566,7 +594,7 @@ async function runAgenCDaemonAction(
     case "status":
       return statusAgenCDaemon(host, io, options);
     case "reload":
-      return reloadAgenCDaemon(host, io);
+      return reloadAgenCDaemon(host, io, options);
     case "restart": {
       await stopAgenCDaemon(
         host,
@@ -576,7 +604,7 @@ async function runAgenCDaemonAction(
           quietWhenStopped: true,
         },
       );
-      return startAgenCDaemon(host, io);
+      return startAgenCDaemon(host, io, options);
     }
     case "run":
       return runAgenCDaemonForeground(host, io, {
@@ -591,9 +619,64 @@ async function runAgenCDaemonAction(
   }
 }
 
+/**
+ * Single-shot control-socket readiness check, mirroring the agent autostart
+ * contract (`isAgenCDaemonPidAndCookieReady` in `daemon-autostart.ts`): the pid
+ * must be alive, the daemon cookie present and non-empty, and the Unix socket
+ * must exist as a socket AND be connectable. The connectability probe closes
+ * the window where the socket inode exists but `socketServer.listen()` has not
+ * yet started accepting, which is exactly the race the bare controls hit.
+ */
+async function isAgenCDaemonControlSocketReady(
+  host: AgenCDaemonCliHost,
+  pid: number,
+): Promise<boolean> {
+  if (!host.isPidRunning(pid)) return false;
+  const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+  try {
+    if ((await readFile(cookiePath, "utf8")).trim().length === 0) {
+      return false;
+    }
+    if (!(await lstat(socketPath)).isSocket()) {
+      return false;
+    }
+  } catch (error) {
+    if (asNodeError(error).code === "ENOENT") return false;
+    throw error;
+  }
+  return canConnectToUnixSocket(socketPath);
+}
+
+/**
+ * Polls {@link isAgenCDaemonControlSocketReady} until it observes readiness or
+ * the bounded timeout elapses. Uses `host.sleep` so tests can drive the clock.
+ * When `singleShot` is true, the readiness is checked exactly once with no
+ * polling (used by `status`, which must not block on a slow/absent socket).
+ */
+async function defaultWaitForAgenCDaemonReady(
+  host: AgenCDaemonCliHost,
+  singleShot: boolean,
+): Promise<boolean> {
+  const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+  const pid = await readAgenCDaemonPid(pidPath);
+  if (pid === null) return false;
+  if (singleShot) {
+    return isAgenCDaemonControlSocketReady(host, pid);
+  }
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < DEFAULT_DAEMON_READY_TIMEOUT_MS) {
+    if (await isAgenCDaemonControlSocketReady(host, pid)) return true;
+    if (!host.isPidRunning(pid)) return false;
+    await host.sleep(DEFAULT_DAEMON_READY_POLL_MS);
+  }
+  return isAgenCDaemonControlSocketReady(host, pid);
+}
+
 async function startAgenCDaemon(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
+  options: RunAgenCDaemonCliOptions = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   const existingPid = await readAgenCDaemonPid(pidPath);
@@ -613,6 +696,30 @@ async function startAgenCDaemon(
     AGENC_DAEMON_RUN: "1",
   });
   await writeAgenCDaemonPid(pidPath, childPid);
+
+  // Do not advertise "started" until the detached daemon is actually accepting
+  // connections on its control socket. The foreground daemon binds the socket
+  // only after state hydration, so there is a real window where the pid is
+  // alive but `daemon.sock` is absent/not-yet-listening; printing "started"
+  // before then would lie to callers (and break an immediate reload).
+  const waitForReady =
+    options.waitForDaemonReady ?? defaultWaitForAgenCDaemonReady;
+  const ready = await waitForReady(host, false);
+  if (!ready) {
+    if (host.isPidRunning(childPid)) {
+      io.stderr.write(
+        `agenc: daemon process started (pid ${childPid}) but its control ` +
+          `socket did not become ready before timeout\n`,
+      );
+    } else {
+      await removeAgenCDaemonPid(pidPath, childPid);
+      io.stderr.write(
+        `agenc: daemon process (pid ${childPid}) exited before its control ` +
+          `socket became ready\n`,
+      );
+    }
+    return 1;
+  }
   io.stdout.write(`AgenC daemon started (pid ${childPid})\n`);
   return 0;
 }
@@ -670,7 +777,26 @@ async function statusAgenCDaemon(
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   const pid = await readAgenCDaemonPid(pidPath);
   if (pid !== null && host.isPidRunning(pid)) {
-    io.stdout.write(`AgenC daemon running (pid ${pid})\n`);
+    // Distinguish "pid alive AND control socket accepting" from "pid alive but
+    // socket not yet listening" (the post-spawn / hydrating window). Probe the
+    // socket connectability once (no blocking poll) so `status` stays fast and
+    // never claims definitive readiness while the socket is absent.
+    const waitForReady =
+      options.waitForDaemonReady ?? defaultWaitForAgenCDaemonReady;
+    let socketReady = false;
+    try {
+      socketReady = await waitForReady(host, true);
+    } catch {
+      // Treat a probe error the same as not-ready; the pid is still alive.
+      socketReady = false;
+    }
+    if (socketReady) {
+      io.stdout.write(`AgenC daemon running (pid ${pid})\n`);
+    } else {
+      io.stdout.write(
+        `AgenC daemon running (pid ${pid}, control socket not ready)\n`,
+      );
+    }
     // Best-effort: enrich the running line with live health.stats
     // (uptime/RSS/heap/session+state counts) pulled over the daemon socket.
     // A pid-only fallback is preserved when the daemon is unreachable or the
@@ -833,6 +959,7 @@ function isHealthStateStats(
 async function reloadAgenCDaemon(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
+  options: RunAgenCDaemonCliOptions = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   const pid = await readAgenCDaemonPid(pidPath);
@@ -843,6 +970,20 @@ async function reloadAgenCDaemon(
   if (!host.isPidRunning(pid)) {
     await removeAgenCDaemonPid(pidPath);
     io.stdout.write("AgenC daemon stopped\n");
+    return 1;
+  }
+
+  // Wait for the control socket to be connectable before issuing the reload
+  // RPC. Immediately after `start`, the daemon may have a live pid but a socket
+  // that is not yet listening; connecting without this gate races into ENOENT.
+  const waitForReady =
+    options.waitForDaemonReady ?? defaultWaitForAgenCDaemonReady;
+  const ready = await waitForReady(host, false);
+  if (!ready) {
+    io.stderr.write(
+      `agenc: daemon reload failed (pid ${pid}): control socket did not ` +
+        `become ready before timeout\n`,
+    );
     return 1;
   }
 
