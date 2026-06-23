@@ -300,6 +300,113 @@ describe("classifyCLI", () => {
     ).toEqual({ kind: "continueTUI", args: {} });
   });
 
+  it("errors (exit 2) when --resume is given with no session id in a TTY", () => {
+    // Regression: a bare `--resume` flag used to fall through the resume
+    // branch (resumeId === null) and silently boot a brand-new TUI with no
+    // initialPrompt — the user asked to resume and got a fresh session with
+    // zero feedback. It must error explicitly instead.
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --resume requires a session id (usage: agenc --resume <session-id>)",
+      exitCode: 2,
+    });
+  });
+
+  it("errors (exit 2) when -r is given with no session id in a TTY", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "-r"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --resume requires a session id (usage: agenc --resume <session-id>)",
+      exitCode: 2,
+    });
+  });
+
+  it("errors (exit 2) for the empty --resume= form in a TTY", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume="],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --resume requires a session id (usage: agenc --resume <session-id>)",
+      exitCode: 2,
+    });
+  });
+
+  it("errors (exit 2) when --resume has no id in a non-TTY context too", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume"],
+        isTTY: false,
+        isStdoutTTY: false,
+      }),
+    ).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --resume requires a session id (usage: agenc --resume <session-id>)",
+      exitCode: 2,
+    });
+  });
+
+  it("errors when --resume is followed only by another flag (no value)", () => {
+    // `--resume` consumes nothing because the next token is a flag, so the
+    // id is missing — still an error, not a silent fresh boot.
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume", "--no-tui"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --resume requires a session id (usage: agenc --resume <session-id>)",
+      exitCode: 2,
+    });
+  });
+
+  it("still resumes normally when --resume carries a session id", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume", "sess-9"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "resumeTUI", args: { resumeId: "sess-9" } });
+  });
+
+  it("treats a plain prompt containing the word 'resume' as prompt text", () => {
+    // Only a real leading `--resume`/`-r` flag token triggers the missing-id
+    // error — a positional prompt that merely mentions resume must boot the
+    // TUI with that text intact.
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "please", "resume", "my", "work"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "please resume my work" },
+    });
+  });
+
   it("keeps non-interactive routes out of the TUI preflight path", () => {
     expect(
       classifyCLI({
