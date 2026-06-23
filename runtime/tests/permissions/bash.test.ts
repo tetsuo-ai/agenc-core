@@ -686,6 +686,39 @@ describe("bashToolHasPermission", () => {
     }
   });
 
+  test("explicit ask-rule survives autoAllowBashIfSandboxed (no sandbox auto-allow upgrade)", async () => {
+    // SECURITY REGRESSION: a user-configured ask rule (Bash(cat:*)) must still
+    // prompt even when the command is sandbox-safe and auto-allow-when-sandboxed
+    // is enabled. Upgrading it to `allow` would silently skip the user's
+    // approval prompt and short-circuit evaluator.ts 1f.
+    const ctx = makeCtx({
+      autoAllowBashIfSandboxed: true,
+      alwaysAskRules: {
+        userSettings: ["Bash(cat:*)"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "cat somefile" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("ask");
+  });
+
+  test("autoAllowBashIfSandboxed still auto-allows a safe command with no explicit rule", async () => {
+    // Positive case: ensure the ask-rule guard did not disable the feature.
+    const ctx = makeCtx({ autoAllowBashIfSandboxed: true });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "cat somefile" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("allow");
+    if (result.behavior === "allow") {
+      expect(result.decisionReason?.type).toBe("sandboxOverride");
+    }
+  });
+
   test("plan mode does not hard-block non-read-only commands (upstream parity)", async () => {
     // AgenC's `checkPermissionMode`
     // (BashTool/modeValidation.ts:168-205) has no plan branch; bash

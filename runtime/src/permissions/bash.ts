@@ -319,6 +319,46 @@ function buildSubcommandReason(
   return { type: "subcommandResults", reasons: map };
 }
 
+/**
+ * True when an aggregated `ask` decision was produced by at least one
+ * explicit permission rule (a rule-based `ask`), as opposed to a non-rule
+ * ask such as an unverifiable shell construct (`bash_parse_unavailable`).
+ *
+ * The aggregate's top-level `decisionReason` is always
+ * `{ type: "subcommandResults", … }`, so the rule provenance lives in the
+ * per-subcommand results. A subcommand's `ask` carries
+ * `decisionReason: { type: "rule", rule: { ruleBehavior: "ask", … } }`
+ * when it matched a content-specific rule (`Bash(cat:*)`) OR a whole-tool
+ * ask rule — both must survive the sandbox auto-allow, mirroring
+ * `checkSandboxAutoAllow`'s rule-based-ask handling.
+ */
+function aggregateAskCameFromRule(
+  aggregate: BashPermissionResult,
+): boolean {
+  // Defensive: top-level reason may itself encode a rule-based ask in
+  // future shapes; honor it directly.
+  const topReason = aggregate.decisionReason;
+  if (
+    topReason !== undefined &&
+    topReason.type === "rule" &&
+    topReason.rule.ruleBehavior === "ask"
+  ) {
+    return true;
+  }
+  const subs = aggregate.subcommandResults;
+  if (subs === undefined) return false;
+  return subs.some((s) => {
+    const r = s.result;
+    if (r.behavior !== "ask") return false;
+    const reason = r.decisionReason;
+    return (
+      reason !== undefined &&
+      reason.type === "rule" &&
+      reason.rule.ruleBehavior === "ask"
+    );
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Main entry point
 // ─────────────────────────────────────────────────────────────────────
@@ -455,6 +495,20 @@ export async function bashToolHasPermission(
     readonly autoAllowBashIfSandboxed?: boolean;
   };
   if (ctxWithFlag.autoAllowBashIfSandboxed === true && shouldUseSandbox(input)) {
+    // SECURITY: An explicit user ask-rule must survive the sandbox
+    // auto-allow. Mirrors `checkSandboxAutoAllow` in BashTool/bashPermissions.ts:
+    // only `passthrough` (and a non-rule "ask", e.g. an unverifiable shell
+    // construct) may be upgraded to `allow`. An `ask` that originated from a
+    // permission rule (content-specific like `Bash(cat:*)` OR a whole-tool ask)
+    // must be returned as-is, so the user's configured approval prompt fires.
+    // Without this guard the auto-allow short-circuits the evaluator's
+    // "content-specific ask rule survives bypass" protection (evaluator.ts 1f).
+    if (
+      aggregate.behavior === "ask" &&
+      aggregateAskCameFromRule(aggregate)
+    ) {
+      return aggregate;
+    }
     if (aggregate.behavior === "passthrough" || aggregate.behavior === "ask") {
       return {
         behavior: "allow",
