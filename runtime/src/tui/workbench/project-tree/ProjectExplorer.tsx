@@ -217,7 +217,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
             <Text dimColor wrap="truncate-end">{glyphs.arrowUp} {viewport.above} more</Text>
           </Box>
         ) : null}
-        {visibleRows.map((row) => <ProjectExplorerRow key={row.id} row={row} width={Math.max(8, width - 2)} />)}
+        {visibleRows.map((row) => <ProjectExplorerRow key={row.id} row={row} width={Math.max(8, width - 3)} />)}
         {viewport.below > 0 ? (
           <Box height={1} flexShrink={0}>
             <Text dimColor wrap="truncate-end">{glyphs.arrowDown} {viewport.below} more</Text>
@@ -415,7 +415,7 @@ function colorForRow(row: ProjectTreeRow): string | undefined {
 function trim(value: string, width: number): string {
   if (stringWidth(value) <= width) return value;
   if (width <= 1) return value.slice(0, width);
-  const suffix = "...";
+  const suffix = selectAgenCTuiGlyphs().ellipsis;
   const maxWidth = Math.max(0, width - stringWidth(suffix));
   let output = "";
   let used = 0;

@@ -38,6 +38,7 @@ import { useWorkbenchComposerFocus } from "../../../src/tui/workbench/composerFo
 import { WORKBENCH_SURFACES } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 import { TranscriptSurface } from "../../../src/tui/workbench/surfaces/TranscriptSurface.js";
 import { WorkbenchFooter } from "../../../src/tui/workbench/WorkbenchFooter.js";
+import { WorkbenchStatusBar } from "../../../src/tui/workbench/WorkbenchStatusBar.js";
 import { layoutSizeForColumns, WorkbenchLayout } from "../../../src/tui/workbench/WorkbenchLayout.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
@@ -706,6 +707,22 @@ describe("workbench render contract", () => {
     const source = readFileSync("src/tui/components/FullscreenLayout.tsx", "utf8");
 
     expect(source).not.toMatch(/readdirSync|getWorkspaceFileTreeRows|WorkspaceFileTreeGutter/u);
+  });
+
+  it("renders the workbench title bar without leaking the viewport column count", async () => {
+    const output = await renderToString(
+      <AppStateProvider initialState={getDefaultAppState()}>
+        <WorkbenchStatusBar />
+      </AppStateProvider>,
+      120,
+    );
+
+    // Title bar shows the product name and active surface...
+    expect(output).toContain("AgenC Workbench");
+    expect(output).toContain("transcript");
+    // ...but must NOT surface the live terminal width as a debug-style segment.
+    expect(output).not.toMatch(/\d+\s+cols/u);
+    expect(output).not.toContain("cols");
   });
 });
 
