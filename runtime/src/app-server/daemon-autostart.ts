@@ -13,6 +13,7 @@ import {
   removeAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
+  resolveAgenCDaemonReadyTimeoutMs,
   resolveAgenCDaemonSocketPath,
   runAgenCDaemonCli,
   resolveAgenCDaemonHome,
@@ -36,7 +37,17 @@ import { canConnectToUnixSocket } from "./transport/unix-socket.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
-export const AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS = 15_000;
+/**
+ * Default cold-start readiness budget for the agent autostart path. Derived
+ * from the shared {@link resolveAgenCDaemonReadyTimeoutMs} default (45s, raised
+ * from 15s — see that helper for the cold-hydration rationale) so the autostart
+ * and bare-control (`start`/`restart`/`reload`) budgets stay in sync from one
+ * source. The actual wait honors the `AGENC_DAEMON_READY_TIMEOUT_MS` env
+ * override via {@link resolveAgenCDaemonReadyTimeoutMs}; this constant is the
+ * resolved fallback used when no per-call override is supplied.
+ */
+export const AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS =
+  resolveAgenCDaemonReadyTimeoutMs({});
 
 export interface AgenCDaemonConnectionTarget {
   readonly pid: number;
@@ -393,7 +404,8 @@ async function waitForAgenCDaemonReady(
   host: AgenCDaemonCliHost,
   options: AgenCDaemonAutostartOptions,
 ): Promise<boolean> {
-  const timeoutMs = options.waitTimeoutMs ?? AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS;
+  const timeoutMs =
+    options.waitTimeoutMs ?? resolveAgenCDaemonReadyTimeoutMs(host.env);
   const pollMs = options.pollMs ?? 25;
   const startedAt = Date.now();
   const isReady =

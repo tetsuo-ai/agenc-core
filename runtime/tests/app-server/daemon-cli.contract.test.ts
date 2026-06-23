@@ -17,11 +17,14 @@ import type { AgenCShutdownSignal } from "../lifecycle/signal-handlers.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import {
+  AGENC_DAEMON_READY_TIMEOUT_MS_ENV,
   AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
   AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
   AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
   AGENC_DAEMON_WEBSOCKET_PORT_ENV,
+  DEFAULT_DAEMON_READY_TIMEOUT_MS,
   defaultAgenCDaemonPidPath,
+  resolveAgenCDaemonReadyTimeoutMs,
   ensureAgenCDaemonCookie,
   formatAgenCDaemonCliHelpText,
   createAgenCDaemonRealtimeHeaderResolver,
@@ -390,6 +393,43 @@ async function resolveRealtimeHeadersForTest(
 ): Promise<Readonly<Record<string, string>>> {
   return typeof provider === "function" ? provider(sessionConfig) : provider;
 }
+
+describe("AgenC daemon readiness timeout resolution", () => {
+  it("raises the default cold-start budget to at least 30s", () => {
+    // Regression guard: the old 15s default left near-zero margin for cold
+    // hydration (state recovery + MCP start + socketServer.listen), which
+    // produced false "did not become ready before timeout" failures on healthy
+    // daemons. The default must keep comfortable headroom.
+    expect(DEFAULT_DAEMON_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
+  });
+
+  it("honors AGENC_DAEMON_READY_TIMEOUT_MS when set to a valid number", () => {
+    // Revert-sensitive: the pre-fix code hardcoded 15s with no env override, so
+    // the resolver would have ignored this env var entirely.
+    expect(
+      resolveAgenCDaemonReadyTimeoutMs({
+        [AGENC_DAEMON_READY_TIMEOUT_MS_ENV]: "60000",
+      }),
+    ).toBe(60_000);
+  });
+
+  it("falls back to the default when the env override is unset", () => {
+    expect(resolveAgenCDaemonReadyTimeoutMs({})).toBe(
+      DEFAULT_DAEMON_READY_TIMEOUT_MS,
+    );
+  });
+
+  it.each(["", "   ", "abc", "0", "-5", "NaN", "1e", "Infinity"])(
+    "falls back to the default for invalid env override %j",
+    (raw) => {
+      expect(
+        resolveAgenCDaemonReadyTimeoutMs({
+          [AGENC_DAEMON_READY_TIMEOUT_MS_ENV]: raw,
+        }),
+      ).toBe(DEFAULT_DAEMON_READY_TIMEOUT_MS);
+    },
+  );
+});
 
 describe("AgenC daemon CLI", () => {
   it("resolves the required pid file path", () => {

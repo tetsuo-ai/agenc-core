@@ -12,6 +12,7 @@ import {
   shouldAutostartAgenCDaemon,
 } from "./daemon-autostart.js";
 import {
+  DEFAULT_DAEMON_READY_TIMEOUT_MS,
   readAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
@@ -125,8 +126,13 @@ async function closeServer(server: Server | null): Promise<void> {
 
 describe("AgenC daemon autostart", () => {
   it("keeps the default readiness window long enough for cold starts", () => {
+    // Raised from 15s to give cold hydration comfortable margin, and kept in
+    // sync with the shared bare-control default so both paths move together.
     expect(AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(
-      10_000,
+      30_000,
+    );
+    expect(AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS).toBe(
+      DEFAULT_DAEMON_READY_TIMEOUT_MS,
     );
   });
 

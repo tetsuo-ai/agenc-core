@@ -181,15 +181,49 @@ const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 /**
- * Bound for how long the bare daemon controls (`start`/`restart`/`reload`)
- * wait for the detached daemon to bind and accept on its control socket before
- * giving up. Kept in sync with the agent autostart path
- * (`AGENC_DAEMON_AUTOSTART_READY_TIMEOUT_MS` in `daemon-autostart.ts`); imported
- * as a local constant rather than from that module to avoid an import cycle
- * (`daemon-autostart` already depends on `daemon-cli`).
+ * Env override (ms) for how long the daemon readiness waits block, plus the
+ * default applied when unset/invalid. This single name covers BOTH the bare
+ * daemon controls (`start`/`restart`/`reload`, here) and the agent autostart
+ * path (`waitForAgenCDaemonReady` in `daemon-autostart.ts`), which imports
+ * {@link resolveAgenCDaemonReadyTimeoutMs} so both budgets stay in sync from
+ * one resolved value.
  */
-const DEFAULT_DAEMON_READY_TIMEOUT_MS = 15_000;
+export const AGENC_DAEMON_READY_TIMEOUT_MS_ENV = "AGENC_DAEMON_READY_TIMEOUT_MS";
+/**
+ * Bound for how long the daemon readiness waits block for the detached daemon
+ * to bind and accept on its control socket before giving up.
+ *
+ * Raised from 15s to 45s: a cold start has to pay the full hydration cost
+ * (state recovery + MCP server start + `socketServer.listen()`) before it can
+ * accept, which empirically lands at ~15-16.5s — leaving the old 15s budget with
+ * near-zero margin and producing false "did not become ready before timeout"
+ * failures on healthy daemons. 45s gives ~3x headroom; CI can tune it back down
+ * via {@link AGENC_DAEMON_READY_TIMEOUT_MS_ENV}. A longer budget only makes a
+ * genuinely-broken daemon take longer to surface, which is the safer tradeoff
+ * against false negatives on cold start.
+ */
+export const DEFAULT_DAEMON_READY_TIMEOUT_MS = 45_000;
 const DEFAULT_DAEMON_READY_POLL_MS = 25;
+
+/**
+ * Resolve the daemon readiness timeout (ms) from the env override, falling back
+ * to {@link DEFAULT_DAEMON_READY_TIMEOUT_MS} when unset or invalid. Matches the
+ * codebase env-int convention (e.g. `getMaxMcpOutputTokens`): only a finite,
+ * strictly-positive parse wins; everything else (non-numeric, NaN, <= 0) falls
+ * back to the default. Exported so the autostart path resolves the same value.
+ */
+export function resolveAgenCDaemonReadyTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const envValue = env[AGENC_DAEMON_READY_TIMEOUT_MS_ENV];
+  if (envValue !== undefined && envValue.trim().length > 0) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_DAEMON_READY_TIMEOUT_MS;
+}
 
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -665,7 +699,8 @@ async function defaultWaitForAgenCDaemonReady(
     return isAgenCDaemonControlSocketReady(host, pid);
   }
   const startedAt = Date.now();
-  while (Date.now() - startedAt < DEFAULT_DAEMON_READY_TIMEOUT_MS) {
+  const timeoutMs = resolveAgenCDaemonReadyTimeoutMs(host.env);
+  while (Date.now() - startedAt < timeoutMs) {
     if (await isAgenCDaemonControlSocketReady(host, pid)) return true;
     if (!host.isPidRunning(pid)) return false;
     await host.sleep(DEFAULT_DAEMON_READY_POLL_MS);
