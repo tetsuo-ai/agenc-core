@@ -274,6 +274,15 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     });
     const dd = res.dropped.find((d) => d.reason === "max_depth");
     expect(dd).toBeDefined();
+    // Positive: in-bounds files (depth <= maxDepth) ARE inlined. With
+    // maxDepth:2 the guard is `depth+1 > max`, so f0 (->1) and f1 (->2)
+    // inline; f1's ok-marker only appears if f0 was expanded.
+    expect(res.text).toContain("<!-- @include f1.md -->");
+    // Negative: the over-depth file f2 (->3 > 2) is rejected, not inlined,
+    // and the deepest LEAF body (in f4) is never reached/inlined.
+    expect(res.text).toContain("<!-- @include f2.md (rejected: max_depth");
+    expect(res.text).not.toContain("<!-- @include f2.md -->");
+    expect(res.text).not.toContain("LEAF");
   });
 
   test("@include max-bytes exceeded", async () => {
