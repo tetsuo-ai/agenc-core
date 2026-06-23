@@ -22,7 +22,8 @@ import { approvalInputText } from "./approval-input-text.js";
 import { Box, useInput } from "./ink.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
-import { ApprovalCard } from "./components/v2/primitives.js";
+import { ApprovalCard, type ApprovalDiffPreview } from "./components/v2/primitives.js";
+import { buildEditDiffPreview } from "./edit-diff-preview.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
 import { setPlanApprovalChoice } from "./plan-approval-choice.js";
@@ -388,6 +389,28 @@ function AgenCApprovalOverlay({
   readonly toolUseConfirm: ProjectedToolUseConfirm;
 }) {
   const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
+  // Build a bounded diff/content preview so a Write/Edit is not approved blind.
+  // Reuses the same diff engine + helper the post-approval DIFF card uses; it
+  // returns null for non-file-write tools (e.g. Bash), so those show no diff.
+  const diffPreview = useMemo<ApprovalDiffPreview | undefined>(() => {
+    try {
+      const built = buildEditDiffPreview(
+        toolUseConfirm.tool.name,
+        toolUseConfirm.input,
+      );
+      if (built === null) return undefined;
+      return {
+        file: built.file,
+        stats: built.stats,
+        lines: built.lines,
+        remaining: built.remaining,
+      };
+    } catch {
+      // A malformed input must never break the approval popup — degrade to the
+      // command-only card rather than throwing inside render.
+      return undefined;
+    }
+  }, [toolUseConfirm.tool.name, toolUseConfirm.input]);
   const risk = classifyApprovalRisk({
     request,
     toolName: toolUseConfirm.tool.name,
@@ -502,6 +525,7 @@ function AgenCApprovalOverlay({
           },
         ]}
         note={toolUseConfirm.description}
+        {...(diffPreview !== undefined ? { diffPreview } : {})}
         confirmLabel={
           destructive
             ? `type '${requiredWord}' to approve`
