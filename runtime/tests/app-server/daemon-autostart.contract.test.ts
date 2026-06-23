@@ -1,5 +1,6 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -64,6 +65,52 @@ async function listenUnixSocket(socketPath: string): Promise<Server> {
     });
   });
   return server;
+}
+
+/**
+ * Leaves a *stale* Unix socket inode on disk: a path that still satisfies
+ * `lstat().isSocket()` but has no listener (connect() yields ECONNREFUSED),
+ * exactly the artifact a daemon crash without unlink leaves behind. A child
+ * process binds the socket and is SIGKILLed so Node never runs its close-time
+ * unlink. Bounded by a short readiness handshake.
+ */
+async function createStaleSocketInode(socketPath: string): Promise<void> {
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const { createServer } = require("node:net");` +
+        `const s = createServer(() => {});` +
+        `s.listen(process.argv[1], () => { process.stdout.write("up\\n"); });`,
+      socketPath,
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("stale socket listener did not come up")),
+        5_000,
+      );
+      child.stdout.once("data", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+    child.kill("SIGKILL");
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  } catch (error) {
+    child.kill("SIGKILL");
+    throw error;
+  }
+  // Confirm the artifact is the stale-inode case we mean to exercise.
+  if (!(await lstat(socketPath)).isSocket()) {
+    throw new Error("expected a leftover socket inode");
+  }
 }
 
 async function closeServer(server: Server | null): Promise<void> {
@@ -218,6 +265,44 @@ port = 0
       expect(host.spawnedPids).toEqual([]);
     } finally {
       await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("does not adopt a pidless daemon whose socket inode is stale (no listener)", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    // A leftover socket inode exists (passes lstat().isSocket()) but nothing
+    // is accepting on it, plus a live orphan PID. The recovery path must
+    // probe connectability before adopting and fall through to spawning a
+    // replacement instead of writing the orphan pid.
+    await createStaleSocketInode(socketPath);
+    const terminated: number[] = [];
+    host.runningPids.add(5300);
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          findOrphanDaemonPids: () => [5300],
+          terminateOrphanDaemonPid: (pid) => {
+            terminated.push(pid);
+            host.runningPids.delete(pid);
+          },
+          isReady: ({ pid }) => host.runningPids.has(pid),
+          waitTimeoutMs: 1_000,
+        }),
+      ).resolves.toMatchObject({
+        pid: 5201,
+        status: "started",
+      });
+      expect(terminated).toEqual([5300]);
+      expect(host.spawnedPids).toEqual([5201]);
+      // The stale orphan PID must never be written as the live daemon.
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(5201);
+    } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
   });

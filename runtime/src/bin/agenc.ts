@@ -30,6 +30,7 @@ import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/ind
 import {
   classifyCLI,
   extractFlagValues,
+  isStartupValueFlagToken,
   routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
@@ -243,8 +244,44 @@ export {
   sessionConfigurationFromAgenCConfig,
 } from "./bootstrap.js";
 
-function hasArgFlag(argv: readonly string[], flag: string): boolean {
-  return argv.includes(flag);
+/**
+ * Detect whether one of the boolean short-circuit flags (`--help`, `-h`,
+ * `--version`) appears as a REAL leading flag rather than as prompt text.
+ *
+ * A token only counts when it sits in the leading option region: before the
+ * first positional/prompt token and before an end-of-options `--`. We walk
+ * argv left-to-right, skipping the value consumed by a startup value flag
+ * (e.g. the `gpt` in `--model gpt`) so it is not mistaken for a positional.
+ * The first bare token that is neither a flag, a `--flag` option, nor a
+ * value consumed by a preceding value flag ends the option region; anything
+ * at or after it (including `--`) is prompt content and never short-circuits.
+ *
+ * This mirrors the `--image`/value-flag exemption already used elsewhere so
+ * free-form prompts like `agenc what does --version mean` or
+ * `agenc explain the --help flag` run the agent instead of printing help.
+ */
+function leadingFlagBeforePrompt(
+  argv: readonly string[],
+  targets: readonly string[],
+): boolean {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    // Literal `--` ends the option region: everything after is prompt.
+    if (arg === "--") return false;
+    if (targets.includes(arg)) return true;
+    if (isStartupValueFlagToken(arg)) {
+      // `--flag value` form consumes the next token as its value, so that
+      // value is not a positional that would end the option region.
+      const next = argv[i + 1];
+      if (typeof next === "string" && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    // Any other option-looking token (`-x`, `--foo`, `--foo=bar`) stays in
+    // the option region; the first bare positional ends it.
+    if (arg.startsWith("-")) continue;
+    return false;
+  }
+  return false;
 }
 
 export function formatCliHelpText(): string {
@@ -383,10 +420,10 @@ export function detectStartupShortCircuit(
     }
     return { kind: "help", text };
   }
-  if (hasArgFlag(argv, "--help") || hasArgFlag(argv, "-h")) {
+  if (leadingFlagBeforePrompt(argv, ["--help", "-h"])) {
     return { kind: "help", text: formatCliHelpText() };
   }
-  if (hasArgFlag(argv, "--version")) {
+  if (leadingFlagBeforePrompt(argv, ["--version"])) {
     return { kind: "version", text: `agenc ${VERSION}` };
   }
   return null;

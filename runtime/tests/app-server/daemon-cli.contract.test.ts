@@ -664,20 +664,33 @@ describe("AgenC daemon CLI", () => {
     const host = createHost(agencHome);
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    // The fake host never binds a real control socket, so stub the readiness
+    // probe to report the spawned daemon as accepting; this test exercises the
+    // pid/spawn bookkeeping, not the real socket readiness gate.
+    const ready = { waitForDaemonReady: async () => true } as const;
 
     await expect(
-      runAgenCDaemonCli({ kind: "command", action: "start" }, { host, io }),
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        { host, io, ...ready },
+      ),
     ).resolves.toBe(0);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
     expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
 
     await expect(
-      runAgenCDaemonCli({ kind: "command", action: "status" }, { host, io }),
+      runAgenCDaemonCli(
+        { kind: "command", action: "status" },
+        { host, io, ...ready },
+      ),
     ).resolves.toBe(0);
     expect(io.stdoutText()).toContain("AgenC daemon running (pid 4201)");
 
     await expect(
-      runAgenCDaemonCli({ kind: "command", action: "start" }, { host, io }),
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        { host, io, ...ready },
+      ),
     ).resolves.toBe(0);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
     expect(host.runningPids).toEqual(new Set([4201]));
@@ -718,7 +731,14 @@ describe("AgenC daemon CLI", () => {
     await expect(
       runAgenCDaemonCli(
         { kind: "command", action: "status" },
-        { host, io, requestHealthStats },
+        {
+          host,
+          io,
+          requestHealthStats,
+          // Socket-ready: the fake host never binds a real socket, so stub the
+          // readiness probe to report the running daemon as accepting.
+          waitForDaemonReady: async () => true,
+        },
       ),
     ).resolves.toBe(0);
 
@@ -757,7 +777,12 @@ describe("AgenC daemon CLI", () => {
 
     expect(requestHealthStats).toHaveBeenCalledTimes(1);
     const out = io.stdoutText();
-    expect(out).toContain("AgenC daemon running (pid 4556)");
+    // The fake host never binds a real socket, so the readiness probe reports
+    // the running pid as not-yet-accepting; status stays exit-0 but no longer
+    // claims definitive readiness, and the health.stats enrichment is absent.
+    expect(out).toContain(
+      "AgenC daemon running (pid 4556, control socket not ready)",
+    );
     expect(out).not.toContain("uptime:");
     expect(out).not.toContain("rss=");
     expect(io.stderrText()).toBe("");
@@ -818,7 +843,10 @@ describe("AgenC daemon CLI", () => {
     );
 
     await expect(
-      runAgenCDaemonCli({ kind: "command", action: "start" }, { host, io }),
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        { host, io, waitForDaemonReady: async () => true },
+      ),
     ).resolves.toBe(0);
 
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
@@ -979,10 +1007,137 @@ describe("AgenC daemon CLI", () => {
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
 
     await expect(
-      runAgenCDaemonCli({ kind: "command", action: "restart" }, { host, io }),
+      runAgenCDaemonCli(
+        { kind: "command", action: "restart" },
+        // The fake host never binds a real control socket; stub readiness so
+        // restart's start phase completes (this test covers restart's
+        // tolerate-stopped + fresh-pid bookkeeping, not the socket gate).
+        { host, io, waitForDaemonReady: async () => true },
+      ),
     ).resolves.toBe(0);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
     expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("start does not report 'started' until the control socket is ready", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+
+    // Readiness never observed: pid is spawned/alive but the control socket
+    // never becomes connectable. start must surface a non-zero failure rather
+    // than the false "started" line the no-wait code printed unconditionally.
+    const probedPids: number[] = [];
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        {
+          host,
+          io,
+          waitForDaemonReady: async (probeHost) => {
+            probedPids.push(
+              (await readAgenCDaemonPid(
+                resolveAgenCDaemonPidPath(probeHost.env, probeHost.userHome),
+              )) ?? -1,
+            );
+            return false;
+          },
+        },
+      ),
+    ).resolves.toBe(1);
+
+    // The readiness probe was actually consulted against the spawned pid.
+    expect(probedPids).toEqual([4201]);
+    expect(io.stdoutText()).not.toContain("AgenC daemon started");
+    expect(io.stderrText()).toContain("control socket did not become ready");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("start reports 'started' once the control socket becomes ready", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        { host, io, waitForDaemonReady: async () => true },
+      ),
+    ).resolves.toBe(0);
+    expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+    expect(io.stderrText()).toBe("");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("status flags a live pid whose control socket is not ready", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(4600);
+    await writeAgenCDaemonPid(pidPath, 4600);
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "status" },
+        {
+          host,
+          io,
+          // pid alive, socket not connectable.
+          waitForDaemonReady: async () => false,
+          // health.stats also unreachable in this window.
+          requestHealthStats: async () => {
+            throw new Error("socket not ready");
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    const out = io.stdoutText();
+    expect(out).toContain(
+      "AgenC daemon running (pid 4600, control socket not ready)",
+    );
+    expect(out).not.toContain("uptime:");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("reload waits for control-socket connectability before connecting", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(4601);
+    await writeAgenCDaemonPid(pidPath, 4601);
+
+    // Socket never becomes connectable: reload must refuse via the readiness
+    // gate instead of racing into a connect ENOENT, and must not kill the pid.
+    let readinessProbed = false;
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "reload" },
+        {
+          host,
+          io,
+          waitForDaemonReady: async () => {
+            readinessProbed = true;
+            return false;
+          },
+        },
+      ),
+    ).resolves.toBe(1);
+
+    expect(readinessProbed).toBe(true);
+    expect(io.stderrText()).toContain(
+      "control socket did not become ready before timeout",
+    );
+    expect(host.terminatedPids).toEqual([]);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4601);
 
     await rm(agencHome, { recursive: true, force: true });
   });
@@ -1207,7 +1362,7 @@ port = 0
     }
   });
 
-  it("reload fails without a daemon cookie and leaves the daemon running", async () => {
+  it("reload fails when the control socket is not ready and leaves the daemon running", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -1216,10 +1371,18 @@ port = 0
     await writeAgenCDaemonPid(pidPath, 4400);
 
     await expect(
-      runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      runAgenCDaemonCli(
+        { kind: "command", action: "reload" },
+        // Pid is alive but the control socket never becomes connectable (no
+        // cookie/socket bound yet). Reload must refuse rather than race into a
+        // connect ENOENT, and must not terminate the running daemon.
+        { host, io, waitForDaemonReady: async () => false },
+      ),
     ).resolves.toBe(1);
 
-    expect(io.stderrText()).toContain("daemon cookie is not available");
+    expect(io.stderrText()).toContain(
+      "control socket did not become ready before timeout",
+    );
     expect(host.terminatedPids).toEqual([]);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4400);
 

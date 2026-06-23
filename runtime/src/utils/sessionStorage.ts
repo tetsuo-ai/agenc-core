@@ -288,12 +288,20 @@ export async function readAgentMetadata(
   agentId: AgentId,
 ): Promise<AgentMetadata | null> {
   const path = getAgentMetadataPath(agentId)
+  let raw: string
   try {
-    const raw = await readFile(path, 'utf-8')
-    return JSON.parse(raw) as AgentMetadata
+    raw = await readFile(path, 'utf-8')
   } catch (e) {
     if (isFsInaccessible(e)) return null
     throw e
+  }
+  try {
+    return JSON.parse(raw) as AgentMetadata
+  } catch (e) {
+    // Skip corrupt files — a partial write from a crashed fire-and-forget
+    // persist shouldn't take down the whole resume.
+    logForDebugging(`readAgentMetadata: skipping ${path}: ${String(e)}`)
+    return null
   }
 }
 
@@ -341,12 +349,20 @@ export async function readRemoteAgentMetadata(
   taskId: string,
 ): Promise<RemoteAgentMetadata | null> {
   const path = getRemoteAgentMetadataPath(taskId)
+  let raw: string
   try {
-    const raw = await readFile(path, 'utf-8')
-    return JSON.parse(raw) as RemoteAgentMetadata
+    raw = await readFile(path, 'utf-8')
   } catch (e) {
     if (isFsInaccessible(e)) return null
     throw e
+  }
+  try {
+    return JSON.parse(raw) as RemoteAgentMetadata
+  } catch (e) {
+    // Skip corrupt files — a partial write from a crashed fire-and-forget
+    // persist shouldn't take down the whole restore.
+    logForDebugging(`readRemoteAgentMetadata: skipping ${path}: ${String(e)}`)
+    return null
   }
 }
 

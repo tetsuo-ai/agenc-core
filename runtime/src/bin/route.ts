@@ -107,6 +107,20 @@ function shouldStripValueFlag(arg: string): boolean {
   );
 }
 
+/**
+ * True when `arg` is a startup flag that consumes a following value token
+ * (e.g. `--model gpt`, `-r <id>`). Exported so the short-circuit detector
+ * in `bin/agenc.ts` can walk the leading option region without mistaking a
+ * value (like the `gpt` after `--model`) for a positional prompt token.
+ *
+ * Returns false for the `--flag=value` form, which carries its own value.
+ */
+export function isStartupValueFlagToken(arg: string): boolean {
+  return STARTUP_VALUE_FLAGS.includes(
+    arg as (typeof STARTUP_VALUE_FLAGS)[number],
+  );
+}
+
 function shouldStripBooleanFlag(arg: string): boolean {
   return ROUTING_BOOLEAN_FLAGS.includes(
     arg as (typeof ROUTING_BOOLEAN_FLAGS)[number],

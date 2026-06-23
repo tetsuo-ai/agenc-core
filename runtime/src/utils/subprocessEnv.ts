@@ -1,39 +1,44 @@
 import { isEnvTruthy } from './envUtils.js'
+import { SECRET_ENV_KEYS } from './providerSecrets.js'
 
-/**
- * Env vars stripped from EVERY subprocess environment by default.
- *
- * Child processes (Bash tool, shell snapshot, MCP stdio servers, LSP servers,
- * shell hooks) are spawned with these removed so that a prompt-injected or
- * model-run command (e.g. `printenv`, or shell expansion like
- * `${ANTHROPIC_API_KEY}`) cannot exfiltrate provider keys or CI credentials.
- *
- * Provider/API calls happen IN-PROCESS — the parent agenc process re-reads
- * these per-request (lazy credential reads), so children never need them.
- *
- * This is the DEFAULT behavior (no flag required). Set
- * AGENC_SUBPROCESS_ENV_NO_SCRUB to a truthy value to opt out (e.g. for a trusted
- * local wrapper script that genuinely needs an inherited token).
- */
-const SUBPROCESS_SECRET_ENV = [
+// Names that subprocessEnv() owns directly (not derived from SECRET_ENV_KEYS).
+// SECRET_ENV_KEYS (the single source of provider-secret env names that the
+// codebase assigns to process.env in providerProfiles.ts) is unioned in below
+// so any newly-added provider key is scrubbed automatically.
+const SUBPROCESS_SECRET_ENV_BASE = [
   // provider auth — agenc re-reads these per-request, subprocesses don't need them
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_FOUNDRY_API_KEY',
   'ANTHROPIC_CUSTOM_HEADERS',
   'OPENAI_API_KEY',
+  'OPENAI_AUTH_HEADER_VALUE',
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'DEEPSEEK_API_KEY',
   'GEMINI_API_KEY',
+  'GEMINI_ACCESS_TOKEN',
   'GOOGLE_API_KEY',
   'GOOGLE_GENAI_API_KEY',
   'GOOGLE_GENERATIVE_AI_API_KEY',
   'XAI_API_KEY',
   'GROK_API_KEY',
   'AGENC_XAI_API_KEY',
+  'AGENC_API_KEY',
   'AGENC_OAUTH_TOKEN',
   'AGENC_REMOTE_AUTH_TOKEN',
+  'AGENC_SESSION_ACCESS_TOKEN',
+
+  // additional provider keys set live on process.env by provider profiles
+  // (providerProfiles.ts) — these were previously MISSING and leaked to children
+  'MISTRAL_API_KEY',
+  'MINIMAX_API_KEY',
+  'NVIDIA_API_KEY',
+  'BNKR_API_KEY',
+
+  // MCP OAuth client secret — read from process.env by services/mcp/auth.ts;
+  // an MCP stdio child must not inherit the parent's OAuth client secret
+  'MCP_CLIENT_SECRET',
 
   // OTLP exporter headers — documented to carry Authorization=Bearer tokens
   // for monitoring backends; read in-process by OTEL SDK, subprocesses never need them
@@ -72,6 +77,29 @@ const SUBPROCESS_SECRET_ENV = [
   'DEFAULT_WORKFLOW_TOKEN',
   'SSH_SIGNING_KEY',
 ] as const
+
+/**
+ * Env vars stripped from EVERY subprocess environment by default.
+ *
+ * Child processes (Bash tool, shell snapshot, MCP stdio servers, LSP servers,
+ * shell hooks) are spawned with these removed so that a prompt-injected or
+ * model-run command (e.g. `printenv`, or shell expansion like
+ * `${ANTHROPIC_API_KEY}`) cannot exfiltrate provider keys or CI credentials.
+ *
+ * Provider/API calls happen IN-PROCESS — the parent agenc process re-reads
+ * these per-request (lazy credential reads), so children never need them.
+ *
+ * Derived as the union of the curated base list above and SECRET_ENV_KEYS (the
+ * single source of provider-secret env names assigned to process.env by
+ * provider profiles), so a newly-added provider key is scrubbed automatically.
+ *
+ * This is the DEFAULT behavior (no flag required). Set
+ * AGENC_SUBPROCESS_ENV_NO_SCRUB to a truthy value to opt out (e.g. for a trusted
+ * local wrapper script that genuinely needs an inherited token).
+ */
+export const SUBPROCESS_SECRET_ENV: readonly string[] = [
+  ...new Set<string>([...SUBPROCESS_SECRET_ENV_BASE, ...SECRET_ENV_KEYS]),
+]
 
 // Registered by init.ts after the upstreamproxy module is dynamically imported
 // in CCR sessions. Stays undefined in non-CCR startups so we never pull in the
