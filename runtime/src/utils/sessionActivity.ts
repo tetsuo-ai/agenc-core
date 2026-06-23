@@ -37,6 +37,9 @@ function startHeartbeatTimer(): void {
       activityCallback?.()
     }
   }, SESSION_ACTIVITY_INTERVAL_MS)
+  // Do not let the heartbeat keep the event loop alive on its own, matching
+  // the unref convention used by other long-lived timers in the codebase.
+  heartbeatTimer.unref?.()
 }
 
 function startIdleTimer(): void {

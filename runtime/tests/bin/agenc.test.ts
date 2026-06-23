@@ -132,6 +132,18 @@ function installDaemonCliDepsForTest(
     readonly runtimeSessionId?: string;
     readonly cwd?: string;
     readonly oneShotEvents?: readonly unknown[];
+    /**
+     * Causality-faithful hook for tests that model the production daemon: the
+     * runner does NOT emit a terminal status while a tool decision is pending.
+     * Invoked when the one-shot client answers a `tool.deny`/`tool.approve`
+     * request; use `emit` to deliver the follow-up (e.g. terminal) events that
+     * the daemon would only produce once the suspended turn resumes.
+     */
+    readonly onToolDecision?: (info: {
+      readonly method: "tool.deny" | "tool.approve";
+      readonly requestId: string;
+      readonly emit: (event: unknown) => void;
+    }) => void;
     readonly createConnectedTuiClientError?: Error;
     readonly requestErrors?: Partial<Record<string, Error>>;
     readonly mcpManager?: unknown;
@@ -160,6 +172,7 @@ function installDaemonCliDepsForTest(
   const runtimeSessionId = options.runtimeSessionId ?? sessionId;
   const cwd = options.cwd ?? process.cwd();
   const requests: Array<{ method: string; params: unknown }> = [];
+  let sessionEventEmit: ((event: unknown) => void) | null = null;
   const oneShotEvents =
     options.oneShotEvents ??
     ([
@@ -223,6 +236,22 @@ function installDaemonCliDepsForTest(
       if (method === "agent.stop") {
         return { agentId, stopped: true };
       }
+      if (method === "tool.deny" || method === "tool.approve") {
+        const requestId =
+          typeof params?.requestId === "string" ? params.requestId : "";
+        if (options.onToolDecision !== undefined && sessionEventEmit !== null) {
+          const emit = sessionEventEmit;
+          options.onToolDecision({
+            method,
+            requestId,
+            emit: (event) => queueMicrotask(() => emit(event)),
+          });
+        }
+        return {
+          requestId,
+          decision: method === "tool.deny" ? "denied" : "approved",
+        };
+      }
       if (method === "message.stream") {
         return {
           messageId: "message_test",
@@ -238,6 +267,7 @@ function installDaemonCliDepsForTest(
     subscribeToSessionEvents: vi.fn(
       (targetSessionId: string, cb: (event: unknown) => void) => {
         if (targetSessionId === sessionId) {
+          sessionEventEmit = cb;
           queueMicrotask(() => {
             for (const event of oneShotEvents) cb(event);
           });
@@ -1600,6 +1630,103 @@ describe("main() smoke", () => {
       expect(
         stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
       ).toBe("daemon answer\n");
+    } finally {
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI DENIES an unanswerable permission request and terminates instead of hanging", async () => {
+    // Regression for the non-interactive one-shot deadlock: the daemon forces
+    // --autonomous, so any tool the model invokes that is not on the (empty by
+    // default) unattended allowlist becomes an unanswerable "ask". With no
+    // human attached the run used to hang in `running` forever until SIGTERM.
+    // The one-shot client must answer with tool.deny (never tool.approve) so
+    // the agent continues and produces a terminal status.
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-deny-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-deny-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const agentId = "agent_deny";
+    const sessionId = "session_deny";
+    const permissionRequestId = "req-deny-1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      // Only the permission request is delivered up front. The terminal status
+      // is withheld until the client answers the tool decision, faithfully
+      // modelling the daemon (which keeps the turn suspended while a decision
+      // is pending). Without the client-side deny, no terminal status ever
+      // arrives and the run hangs — exactly the bug under test.
+      oneShotEvents: [
+        {
+          method: "event.permission_request",
+          params: {
+            sessionId,
+            eventId: "perm_evt",
+            agentId,
+            requestId: permissionRequestId,
+            toolName: "system.bash",
+            permissions: ["tool.use"],
+          },
+        },
+      ],
+      onToolDecision: ({ method, requestId, emit }) => {
+        // The agent resumes only once the tool call is resolved; the daemon
+        // then surfaces a terminal status. A real deny lets the agent answer.
+        if (method === "tool.deny" && requestId === permissionRequestId) {
+          emit({
+            method: "event.agent_status",
+            params: {
+              sessionId,
+              eventId: "complete_after_deny",
+              agentId,
+              status: "idle",
+              runStatus: "completed",
+              message: "done after denial",
+            },
+          });
+        }
+      },
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      // Bound the run so a regression (hang) fails as a timeout rather than
+      // stalling the suite.
+      const timeout = new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 4000),
+      );
+      const result = await Promise.race([oneShotCLI("run a command"), timeout]);
+      expect(result).toBe(0);
+
+      const denyCall = daemon.requests.find((r) => r.method === "tool.deny");
+      expect(denyCall).toBeDefined();
+      expect(denyCall?.params).toEqual(
+        expect.objectContaining({
+          sessionId,
+          requestId: permissionRequestId,
+        }),
+      );
+      // Must DENY, never grant.
+      expect(
+        daemon.requests.some((r) => r.method === "tool.approve"),
+      ).toBe(false);
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {

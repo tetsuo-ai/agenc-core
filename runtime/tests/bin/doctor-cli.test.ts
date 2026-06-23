@@ -30,10 +30,36 @@ describe("parseAgenCDoctorCliArgs", () => {
   });
 
   it("parses `doctor` and the --json flag", () => {
-    expect(parseAgenCDoctorCliArgs(["doctor"])).toEqual({ json: false });
+    expect(parseAgenCDoctorCliArgs(["doctor"])).toEqual({
+      kind: "doctor",
+      json: false,
+    });
     expect(parseAgenCDoctorCliArgs(["doctor", "--json"])).toEqual({
+      kind: "doctor",
       json: true,
     });
+  });
+
+  it("rejects unknown flags instead of silently ignoring them", () => {
+    // Revert-sensitive: the old parser only checked `rest.includes('--json')`
+    // and returned a mode for any argv, so a typo'd flag ran a normal report.
+    const typo = parseAgenCDoctorCliArgs(["doctor", "--jsonn"]);
+    expect(typo).toEqual({
+      kind: "error",
+      message: "doctor command does not accept argument '--jsonn'",
+    });
+  });
+
+  it("rejects unknown positional arguments", () => {
+    const positional = parseAgenCDoctorCliArgs(["doctor", "foo"]);
+    expect(positional?.kind).toBe("error");
+  });
+
+  it("returns help for --help and -h", () => {
+    const long = parseAgenCDoctorCliArgs(["doctor", "--help"]);
+    expect(long?.kind).toBe("help");
+    const short = parseAgenCDoctorCliArgs(["doctor", "-h"]);
+    expect(short?.kind).toBe("help");
   });
 });
 
@@ -41,7 +67,7 @@ describe("runAgenCDoctorCli", () => {
   it("prints a human-readable diagnostic and returns an exit code", async () => {
     const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     try {
-      const code = await runAgenCDoctorCli({ json: false });
+      const code = await runAgenCDoctorCli({ kind: "doctor", json: false });
       const printed = out.mock.calls.map((c) => String(c[0])).join("");
       expect(printed).toContain("AgenC Doctor");
       expect(printed).toContain("ripgrep:");
@@ -55,11 +81,41 @@ describe("runAgenCDoctorCli", () => {
   it("emits valid JSON under --json", async () => {
     const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     try {
-      await runAgenCDoctorCli({ json: true });
+      await runAgenCDoctorCli({ kind: "doctor", json: true });
       const printed = out.mock.calls.map((c) => String(c[0])).join("");
       const parsed = JSON.parse(printed);
       expect(parsed).toHaveProperty("ripgrepStatus");
       expect(parsed).toHaveProperty("installationType");
+    } finally {
+      out.mockRestore();
+    }
+  });
+
+  it("writes the error to stderr and exits 1 for an unknown argument", async () => {
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const code = await runAgenCDoctorCli({
+        kind: "error",
+        message: "doctor command does not accept argument '--jsonn'",
+      });
+      const printed = err.mock.calls.map((c) => String(c[0])).join("");
+      expect(printed).toContain("--jsonn");
+      expect(code).toBe(1);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("prints help to stdout and exits 0", async () => {
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    try {
+      const code = await runAgenCDoctorCli({
+        kind: "help",
+        text: formatAgenCDoctorCliHelpText(),
+      });
+      const printed = out.mock.calls.map((c) => String(c[0])).join("");
+      expect(printed).toContain("agenc doctor");
+      expect(code).toBe(0);
     } finally {
       out.mockRestore();
     }

@@ -5,6 +5,18 @@
  * AgenC port until the transport tranche replaces it.
  */
 
+import { LLMInvalidResponseError } from "../errors.js";
+
+/**
+ * Hard cap on the un-delimited SSE remainder we will buffer waiting for a
+ * frame separator. A single SSE event from these providers is realistically
+ * well under a few MiB; this guards against a misbehaving provider/proxy that
+ * streams bytes continuously without ever emitting a `\n\n` boundary, which
+ * would otherwise grow the accumulation buffer to the full stream size in
+ * memory (unbounded heap / OOM) without ever tripping the idle watchdog.
+ */
+export const MAX_SSE_FRAME_BYTES = 16 * 1024 * 1024;
+
 export interface SSEFrame {
   event?: string;
   id?: string;
@@ -19,7 +31,10 @@ function findFrameSeparator(buffer: string, fromIndex: number): number {
   return Math.min(lf, crlf);
 }
 
-export function parseSSEFrames(buffer: string): {
+export function parseSSEFrames(
+  buffer: string,
+  providerName = "provider",
+): {
   readonly frames: SSEFrame[];
   readonly remaining: string;
 } {
@@ -29,7 +44,14 @@ export function parseSSEFrames(buffer: string): {
   while (true) {
     const separator = findFrameSeparator(buffer, position);
     if (separator === -1) {
-      return { frames, remaining: buffer.slice(position) };
+      const remaining = buffer.slice(position);
+      if (remaining.length > MAX_SSE_FRAME_BYTES) {
+        throw new LLMInvalidResponseError(
+          providerName,
+          `SSE stream exceeded ${MAX_SSE_FRAME_BYTES} bytes without a frame separator`,
+        );
+      }
+      return { frames, remaining };
     }
     const rawFrame = buffer.slice(position, separator).replace(/\r/g, "");
     position = separator + (buffer[separator] === "\r" ? 4 : 2);

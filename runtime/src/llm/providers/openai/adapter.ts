@@ -1317,7 +1317,7 @@ export class OpenAIProvider implements LLMProvider {
     let buffer = "";
     for await (const chunk of response) {
       buffer += decoder.decode(chunk.value, { stream: true });
-      const parsed = parseSSEFrames(buffer);
+      const parsed = parseSSEFrames(buffer, this.name);
       buffer = parsed.remaining;
 
       for (const frame of parsed.frames) {
@@ -1335,7 +1335,7 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     buffer += decoder.decode();
-    const parsed = parseSSEFrames(buffer);
+    const parsed = parseSSEFrames(buffer, this.name);
     for (const frame of parsed.frames) {
       if (!frame.data || frame.data === "[DONE]") {
         if (frame.data === "[DONE]") return;

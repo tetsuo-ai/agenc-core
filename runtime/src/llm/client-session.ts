@@ -22,6 +22,7 @@ import {
 import {
   LLMCaptivePortalError,
   LLMCertificateError,
+  LLMInvalidResponseError,
   extractTlsValidationDetails,
   type TlsValidationDetails,
 } from "./errors.js";
@@ -37,6 +38,14 @@ const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const MAX_RETRY_AFTER_MS = 300_000;
+/**
+ * Hard cap on the un-delimited SSE remainder buffered while waiting for a frame
+ * separator on the responses-continuation accumulation path. A single SSE event
+ * is realistically well under a few MiB; this bounds memory if a provider/proxy
+ * streams bytes continuously without ever emitting a `\n\n` boundary, which the
+ * idle watchdog (idle-only) would never catch.
+ */
+const MAX_SSE_FRAME_BYTES = 16 * 1024 * 1024;
 const DEFAULT_REQUEST_RETRY_POLICY = {
   maxRetries: DEFAULT_REQUEST_MAX_RETRIES,
   baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
@@ -771,6 +780,7 @@ function isResponsesCreateRequest(
 
 function decodeSseFrames(
   buffer: string,
+  providerName = "provider",
 ): { readonly events: ParsedSseEvent[]; readonly rest: string } {
   const events: ParsedSseEvent[] = [];
   let remaining = buffer;
@@ -778,6 +788,12 @@ function decodeSseFrames(
   while (true) {
     const separatorMatch = remaining.match(/\r?\n\r?\n/);
     if (!separatorMatch || separatorMatch.index === undefined) {
+      if (remaining.length > MAX_SSE_FRAME_BYTES) {
+        throw new LLMInvalidResponseError(
+          providerName,
+          `SSE stream exceeded ${MAX_SSE_FRAME_BYTES} bytes without a frame separator`,
+        );
+      }
       return { events, rest: remaining };
     }
     const frame = remaining.slice(0, separatorMatch.index);
@@ -1050,7 +1066,10 @@ export class ProviderHttpClientSession {
               if (prepared.continuation) {
                 const decoded = decoder.decode(next.value, { stream: true });
                 if (decoded.length > 0) {
-                  const parsed = decodeSseFrames(sseBuffer + decoded);
+                  const parsed = decodeSseFrames(
+                    sseBuffer + decoded,
+                    session.config.providerName,
+                  );
                   sseBuffer = parsed.rest;
                   for (const event of parsed.events) {
                     maybeRecordResponsesContinuationEvent(
