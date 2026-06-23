@@ -32,6 +32,7 @@ import {
   resolveMcpServeDefaults,
   type ResolvedMcpServeDefaults,
 } from "../mcp/server/start.js";
+import { canConnectToUnixSocket } from "./transport/unix-socket.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
@@ -249,7 +250,18 @@ async function recoverPidlessAgenCDaemon(params: {
     params.host.env,
     params.host.userHome,
   );
-  if (await isAgenCDaemonSocketPresent(socketPath)) {
+  // Only adopt the orphan when the leftover socket is actually accepting
+  // connections. A stale socket inode (left after a crash without unlink)
+  // passes a bare lstat()/isSocket() check but has no listener, so adopting
+  // it would make autostart wait/connect forever against a dead socket.
+  // `canConnectToUnixSocket` performs a real connect() probe (the same
+  // liveness check `prepareAgenCUnixSocketPath` uses to decide if a socket
+  // is in use). The lstat precondition keeps us from attempting a connect
+  // against a missing or non-socket path.
+  if (
+    (await isAgenCDaemonSocketPresent(socketPath)) &&
+    (await canConnectToUnixSocket(socketPath))
+  ) {
     const recoveredPid = orphanPids[0];
     if (recoveredPid === undefined) return null;
     await writeAgenCDaemonPid(params.pidPath, recoveredPid);
