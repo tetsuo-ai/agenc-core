@@ -320,11 +320,14 @@ function renderEditDiffPreview(
   if (preview === null) return null;
   const lines = [...preview.lines];
   if (preview.remaining > 0) {
+    // State the affordance so the collapsed diff is not a dead end: the full
+    // diff is reachable in the workbench via the openDiff shortcut. The count
+    // leads so it survives even if the row truncates at narrow widths.
     lines.push({
       kind: "ctx",
       code: `… +${preview.remaining} more ${
         preview.remaining === 1 ? "line" : "lines"
-      }`,
+      } · ctrl+w d for full diff`,
     });
   }
   return (
