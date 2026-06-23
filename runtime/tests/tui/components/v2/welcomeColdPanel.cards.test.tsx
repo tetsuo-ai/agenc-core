@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { ContentWidthProvider } from '../../../../src/tui/context/contentWidthContext.js'
-import { renderToString } from '../../../utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../../utils/staticRender.js'
 import { WelcomeColdPanel } from '../../../../src/tui/components/v2/primitives.js'
 
 // Regression for the cold-start workbench welcome layout: the "workspace"
@@ -97,5 +97,42 @@ describe('WelcomeColdPanel summary/recent cards', () => {
     expect(widths.length).toBe(4)
     expect(new Set(widths).size).toBe(1)
     expect(widths[0]).toBe(64)
+  })
+
+  // Dark-theme SGR truecolor sequences for the colors that meet on the summary
+  // card. The labels ("workspace"/"model"/"last session") used to render in
+  // `muted3` (rgb(64,64,70)), nearly identical to the card's `lineSoft` border
+  // (rgb(34,35,39)) — so they read as chrome. They now render in the brighter,
+  // clearly-readable `inactive` tone (rgb(139,120,157)).
+  const INACTIVE_SGR = '[38;2;139;120;157m'
+  const MUTED3_SGR = '[38;2;64;64;70m'
+  const LINESOFT_SGR = '[38;2;34;35;39m'
+
+  // The SGR escape that immediately precedes a label's text on its row.
+  function sgrBefore(out: string, label: string): string | undefined {
+    const match = out.match(new RegExp(`(\\u001b\\[[0-9;]*m)${label}`, 'u'))
+    return match?.[1]
+  }
+
+  it('styles the summary-card labels in the readable label tone, not the dim border tone', async () => {
+    const out = await renderToAnsiString(
+      <WelcomeColdPanel model="qwen3.6-27b-fp8" />,
+      { columns: 80, rows: 40, color: true },
+    )
+
+    // The box border still draws in the dim `lineSoft` tone.
+    expect(out).toContain(LINESOFT_SGR)
+
+    // Each summary-card label is now colored with the brighter, readable
+    // `inactive` tone — NOT the near-border `muted3` tone it used to use.
+    // Scoped per-label (the unrelated "recent" card legitimately still uses
+    // muted3, so a global not.toContain would over-assert). Revert-sensitive:
+    // switching the label color back to "muted3" flips each preceding SGR to
+    // MUTED3_SGR and fails these checks.
+    for (const label of ['workspace', 'model', 'last session']) {
+      const sgr = sgrBefore(out, label)
+      expect(sgr).toBe(INACTIVE_SGR)
+      expect(sgr).not.toBe(MUTED3_SGR)
+    }
   })
 })

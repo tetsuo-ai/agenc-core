@@ -476,6 +476,41 @@ describe("workbench render contract", () => {
     expect(output).not.toContain("src/stale.ts");
   });
 
+  it("gives the composer footer a readable hint that advertises / and @ and explains the surface chord", async () => {
+    // The composer-pane footer used to read "Composer: write prompt  ctrl+w k
+    // surface" — the trailing "ctrl+w k surface" was opaque (what is a
+    // surface?) and the line advertised neither the `/` command nor the `@`
+    // attach affordance. It now glosses the chord ("focus transcript") and
+    // surfaces both discoverability hints. Revert-sensitive: restoring the old
+    // string (no "/ commands", no "@ attach file", bare "ctrl+w k surface")
+    // fails the assertions below.
+    const state = {
+      ...getDefaultAppState(),
+      workbench: {
+        ...getDefaultAppState().workbench,
+        focusedPane: "composer" as const,
+      },
+    };
+    const output = await renderToString(
+      <AppStateProvider initialState={state}>
+        <WorkbenchFooter />
+      </AppStateProvider>,
+      120,
+    );
+
+    const hintLine = output
+      .split(/\r?\n/u)
+      .find((line) => line.includes("Composer: write prompt"));
+    expect(hintLine).toBeDefined();
+    // Discoverability: `/` opens commands and `@` attaches a file, advertised
+    // where the user types.
+    expect(hintLine).toContain("/ commands");
+    expect(hintLine).toContain("@ attach file");
+    // The surface chord is glossed instead of left as a bare token.
+    expect(hintLine).toContain("ctrl+w k focus transcript");
+    expect(hintLine).not.toContain("ctrl+w k surface");
+  });
+
   it("indents the surface-hint footer line to match the composer footer", async () => {
     // The composer's own "? for shortcuts" hint is rendered inside a
     // paddingX={2} box (PromptInputFooter). The workbench surface-hint line

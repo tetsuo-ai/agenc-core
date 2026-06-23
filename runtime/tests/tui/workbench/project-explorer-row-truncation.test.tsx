@@ -167,4 +167,32 @@ describe("ProjectExplorer row truncation", () => {
     expect(line).not.toContain("..…");
     expect(line).not.toContain("...");
   });
+
+  it("labels the scroll overflow indicators with a position sense (N above / N below)", async () => {
+    // useTerminalSize is mocked to 24 rows, so maxTreeRows = 24 - 8 = 16. A
+    // longer list with a selection mid-window forces both an above- and a
+    // below-overflow indicator. They now read "N above" / "N below" — a
+    // position relative to each end — instead of the prior ambiguous "N more".
+    // Revert-sensitive: restoring the "N more" wording fails the assertions.
+    const rows: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 40; i++) {
+      rows.push(fileRow(`file-${i}.ts`, `file-${i}.ts`, { selected: i === 20 }));
+    }
+    harness.snapshot = {
+      cwd: "/repo",
+      loading: false,
+      error: null,
+      cursorPath: null,
+      activePath: "file-20.ts",
+      expandedPaths: [],
+      rows,
+    };
+
+    const output = (await renderTree(40)).join("\n");
+
+    expect(output).toMatch(/\d+ above/u);
+    expect(output).toMatch(/\d+ below/u);
+    // The old ambiguous "N more" wording must be gone.
+    expect(output).not.toContain("more");
+  });
 });
