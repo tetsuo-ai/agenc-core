@@ -68,7 +68,7 @@ export function usePromptInputPlaceholder({
     // knows what to type. It disappears as soon as input is non-empty (guarded
     // above) and renders dim like every other placeholder.
     if (submitCount < 1 && !proactiveActive) {
-      return 'Describe a task, or / for commands'
+      return 'Describe a task · / for commands · @ to attach a file'
     }
   }, [
     input,

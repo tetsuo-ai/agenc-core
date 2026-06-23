@@ -429,7 +429,10 @@ describe("ProjectExplorer interactions", () => {
       expect(renderedText).toContain("1 changed");
       expect(renderedText).toContain("sync");
       expect(renderedText).toContain("tree unavailable");
-      expect(renderedText).toContain("more");
+      // Scroll-overflow indicators read as a position relative to each end
+      // ("N above" / "N below") rather than an ambiguous "N more".
+      expect(renderedText).toMatch(/\d+ above/u);
+      expect(renderedText).toMatch(/\d+ below/u);
     } finally {
       cleanupExplorer(root, stdin, stdout);
     }

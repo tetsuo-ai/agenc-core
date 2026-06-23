@@ -115,7 +115,7 @@ describe("usePromptInputPlaceholder", () => {
     // No queue/example hint applies, so the composer shows the stable
     // cold-start guidance rather than sitting blank at rest.
     await expect(renderPlaceholder()).resolves.toContain(
-      "Describe a task, or / for commands",
+      "Describe a task",
     );
   });
 
@@ -137,15 +137,20 @@ describe("usePromptInputPlaceholder", () => {
     // still surfaces the stable cold-start hint instead of a blank line.
     mocks.promptSuggestionEnabled = false;
     await expect(renderPlaceholder()).resolves.toContain(
-      "Describe a task, or / for commands",
+      "Describe a task",
     );
   });
 
   test("shows the cold-start hint when no other hint applies, and only before the first submit", async () => {
     // Default cold start: suggestions disabled, no queue, no teammate.
-    await expect(renderPlaceholder()).resolves.toContain(
-      "Describe a task, or / for commands",
-    );
+    const coldStart = await renderPlaceholder();
+    expect(coldStart).toContain("Describe a task");
+    // The cold-start hint advertises BOTH discoverability affordances right
+    // where the user types: `/` opens commands and `@` attaches a file. The
+    // `@` advert is the item-2 addition; assert it explicitly so a revert of
+    // the placeholder string (dropping `@ to attach`) fails this test.
+    expect(coldStart).toContain("/ for commands");
+    expect(coldStart).toContain("@ to attach a file");
 
     // The hint is a cold-start affordance only — it disappears once the user
     // has started the conversation.

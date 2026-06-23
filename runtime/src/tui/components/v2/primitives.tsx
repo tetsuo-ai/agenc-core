@@ -721,7 +721,12 @@ function WelcomeMetaRow({
 }): React.ReactNode {
   return (
     <Box flexDirection="row" flexWrap="wrap">
-      <ThemedText color="muted3">{label.padEnd(13)}</ThemedText>
+      {/* Labels use `inactive` (a readable secondary tone), not `muted3`. In the
+          dark themes muted3 (rgb(64,64,70)) sits almost on top of the card's
+          lineSoft border (rgb(34,35,39)), so the labels read as chrome rather
+          than text. `inactive` is clearly brighter than the border while still
+          ranking below the `text2` values. */}
+      <ThemedText color="inactive">{label.padEnd(13)}</ThemedText>
       <ThemedText color="text2" wrap="truncate-middle">
         {value}
       </ThemedText>

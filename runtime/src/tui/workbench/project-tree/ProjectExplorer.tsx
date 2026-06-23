@@ -214,13 +214,17 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {viewport.above > 0 ? (
           <Box height={1} flexShrink={0}>
-            <Text dimColor wrap="truncate-end">{glyphs.arrowUp} {viewport.above} more</Text>
+            {/* "N above" / "N below" reads as a position (how far the window
+                sits from each end) instead of an ambiguous "N more". The
+                `inactive` tone is brighter than the prior dimColor so the
+                indicator is legible against the rows. */}
+            <Text color="inactive" wrap="truncate-end">{glyphs.arrowUp} {viewport.above} above</Text>
           </Box>
         ) : null}
         {visibleRows.map((row) => <ProjectExplorerRow key={row.id} row={row} width={Math.max(8, width - 3)} />)}
         {viewport.below > 0 ? (
           <Box height={1} flexShrink={0}>
-            <Text dimColor wrap="truncate-end">{glyphs.arrowDown} {viewport.below} more</Text>
+            <Text color="inactive" wrap="truncate-end">{glyphs.arrowDown} {viewport.below} below</Text>
           </Box>
         ) : null}
       </Box>
