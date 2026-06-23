@@ -471,7 +471,11 @@ export class TextCursor {
     const lineText = this.measuredText.getWrappedText()[line] || ''
 
     const match = lineText.match(/^\s*\S/)
-    const column = match?.index ? match.index + match[0].length - 1 : 0
+    // The regex is anchored (`^`), so `match.index` is always 0 on a match;
+    // the first-non-blank column is the leading-whitespace length, which is
+    // `match[0].length - 1` (the match captures the leading whitespace plus the
+    // first non-blank char). An all-blank/empty line yields no match -> 0.
+    const column = match ? match[0].length - 1 : 0
     const offset = this.getOffset({ line, column })
 
     return new TextCursor(this.measuredText, offset, 0)

@@ -16,6 +16,7 @@ import {
   sortLogs,
 } from '../types/logs.js'
 import { CACHE_PATHS } from './cachePaths.js'
+import { logForDebugging } from './debug.js'
 import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './displayTags.js'
 import { isEnvTruthy } from './envUtils.js'
 import { toError } from './errors.js'
@@ -240,39 +241,47 @@ async function loadLogList(path: string): Promise<LogOption[]> {
   const logData = await Promise.all(
     files.map(async (file, i) => {
       const fullPath = join(path, file.name)
-      const content = await readFile(fullPath, { encoding: 'utf8' })
-      const messages = jsonParse(content) as SerializedMessage[]
-      const firstMessage = messages[0]
-      const lastMessage = messages[messages.length - 1]
-      const firstPrompt =
-        firstMessage?.type === 'user' &&
-        typeof firstMessage?.message?.content === 'string'
-          ? firstMessage?.message?.content
-          : 'No prompt'
+      try {
+        const content = await readFile(fullPath, { encoding: 'utf8' })
+        const messages = jsonParse(content) as SerializedMessage[]
+        const firstMessage = messages[0]
+        const lastMessage = messages[messages.length - 1]
+        const firstPrompt =
+          firstMessage?.type === 'user' &&
+          typeof firstMessage?.message?.content === 'string'
+            ? firstMessage?.message?.content
+            : 'No prompt'
 
-      // For new random filenames, we'll get stats from the file itself
-      const fileStats = await stat(fullPath)
+        // For new random filenames, we'll get stats from the file itself
+        const fileStats = await stat(fullPath)
 
-      // Check if it's a sidechain by looking at filename
-      const isSidechain = fullPath.includes('sidechain')
+        // Check if it's a sidechain by looking at filename
+        const isSidechain = fullPath.includes('sidechain')
 
-      // For new files, use the file modified time as date
-      const date = dateToFilename(fileStats.mtime)
+        // For new files, use the file modified time as date
+        const date = dateToFilename(fileStats.mtime)
 
-      return {
-        date,
-        fullPath,
-        messages,
-        value: i, // workaround: overwritten after sorting, right below this
-        created: parseISOString(firstMessage?.timestamp || date),
-        modified: lastMessage?.timestamp
-          ? parseISOString(lastMessage.timestamp)
-          : parseISOString(date),
-        firstPrompt:
-          firstPrompt.split('\n')[0]?.slice(0, 50) +
-            (firstPrompt.length > 50 ? '…' : '') || 'No prompt',
-        messageCount: messages.length,
-        isSidechain,
+        return {
+          date,
+          fullPath,
+          messages,
+          value: i, // workaround: overwritten after sorting, right below this
+          created: parseISOString(firstMessage?.timestamp || date),
+          modified: lastMessage?.timestamp
+            ? parseISOString(lastMessage.timestamp)
+            : parseISOString(date),
+          firstPrompt:
+            firstPrompt.split('\n')[0]?.slice(0, 50) +
+              (firstPrompt.length > 50 ? '…' : '') || 'No prompt',
+          messageCount: messages.length,
+          isSidechain,
+        }
+      } catch (e) {
+        // Skip unreadable or corrupt log files — a partial write from a
+        // crashed fire-and-forget persist shouldn't take down the whole
+        // listing; the remaining valid logs still load.
+        logForDebugging(`loadLogList: skipping ${file.name}: ${String(e)}`)
+        return null
       }
     }),
   )
@@ -281,6 +290,14 @@ async function loadLogList(path: string): Promise<LogOption[]> {
     ..._,
     value: i,
   }))
+}
+
+/**
+ * Test-only wrapper exposing the private {@link loadLogList} so tests can
+ * exercise per-file corruption tolerance against a controlled directory.
+ */
+export function _loadLogListForTesting(path: string): Promise<LogOption[]> {
+  return loadLogList(path)
 }
 
 function parseISOString(s: string): Date {

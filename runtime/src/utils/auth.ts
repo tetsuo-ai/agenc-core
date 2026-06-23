@@ -1752,6 +1752,29 @@ let cachedOtelHeaders: Record<string, string> | null = null
 let cachedOtelHeadersTimestamp = 0
 const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS = 29 * 60 * 1000 // 29 minutes
 
+/**
+ * Resolve the otelHeadersHelper debounce interval (ms) from the env override,
+ * falling back to the default when unset or invalid.
+ *
+ * A non-numeric override (e.g. "abc") parses to NaN, and a NaN debounce makes
+ * the `Date.now() - timestamp < debounceMs` comparison always false — silently
+ * disabling the debounce and re-running the helper on every call. Guard with a
+ * finite, non-negative check (matching getMaxMcpOutputTokens in mcpValidation)
+ * so bad input falls back to the intended default instead of propagating NaN.
+ *
+ * Exported for testing.
+ */
+export function resolveOtelHeadersDebounceMs(): number {
+  const envValue = process.env.AGENC_OTEL_HEADERS_HELPER_DEBOUNCE_MS
+  if (envValue) {
+    const parsed = parseInt(envValue, 10)
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed
+    }
+  }
+  return DEFAULT_OTEL_HEADERS_DEBOUNCE_MS
+}
+
 export function getOtelHeadersFromHelper(): Record<string, string> {
   const otelHeadersHelper = getConfiguredOtelHeadersHelper()
 
@@ -1760,10 +1783,7 @@ export function getOtelHeadersFromHelper(): Record<string, string> {
   }
 
   // Return cached headers if still valid (debounce)
-  const debounceMs = parseInt(
-    process.env.AGENC_OTEL_HEADERS_HELPER_DEBOUNCE_MS ||
-      DEFAULT_OTEL_HEADERS_DEBOUNCE_MS.toString(),
-  )
+  const debounceMs = resolveOtelHeadersDebounceMs()
   if (
     cachedOtelHeaders &&
     Date.now() - cachedOtelHeadersTimestamp < debounceMs

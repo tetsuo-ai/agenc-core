@@ -1713,7 +1713,11 @@ describe("main() smoke", () => {
         setTimeout(() => resolve("timeout"), 4000),
       );
       const result = await Promise.race([oneShotCLI("run a command"), timeout]);
-      expect(result).toBe(0);
+      // The run must TERMINATE (not hang as a timeout) — the original fix. With
+      // PART B the deny-then-gave-up run now also surfaces a NON-ZERO exit so a
+      // tool-blocked giveup is distinguishable from a real answer.
+      expect(result).not.toBe("timeout");
+      expect(result).not.toBe(0);
 
       const denyCall = daemon.requests.find((r) => r.method === "tool.deny");
       expect(denyCall).toBeDefined();
@@ -1728,6 +1732,303 @@ describe("main() smoke", () => {
         daemon.requests.some((r) => r.method === "tool.approve"),
       ).toBe(false);
     } finally {
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI exits NON-ZERO with a marker after a tool-blocked giveup", async () => {
+    // PART B regression: in headless --print mode a task that needs even a
+    // read-only tool dead-ends — the daemon forces --autonomous, so the model's
+    // tool call resolves to an unanswerable "ask" that the one-shot client must
+    // auto-DENY (so the run terminates instead of hanging). The model then gives
+    // up and the turn "completes". Before the fix the process exited 0 as if it
+    // produced a real answer, so callers could not tell a giveup from a real
+    // answer. A run that auto-denied a permission request and then completed
+    // must exit NON-ZERO and emit a clear stderr marker.
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-giveup-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-giveup-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const agentId = "agent_giveup";
+    const sessionId = "session_giveup";
+    const permissionRequestId = "req-giveup-1";
+    installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      // Deliver a permission request up front; the terminal "completed" status
+      // is withheld until the client answers — modelling the daemon, which keeps
+      // the turn suspended while a decision is pending. The deny resumes the
+      // turn, the model gives up, and the daemon reports completed.
+      oneShotEvents: [
+        {
+          method: "event.permission_request",
+          params: {
+            sessionId,
+            eventId: "perm_evt",
+            agentId,
+            requestId: permissionRequestId,
+            toolName: "FileRead",
+            permissions: ["tool.use"],
+          },
+        },
+      ],
+      onToolDecision: ({ method, requestId, emit }) => {
+        if (method === "tool.deny" && requestId === permissionRequestId) {
+          emit({
+            method: "event.agent_status",
+            params: {
+              sessionId,
+              eventId: "complete_after_deny",
+              agentId,
+              status: "idle",
+              runStatus: "completed",
+              message: "I could not read the file.",
+            },
+          });
+        }
+      },
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const timeout = new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 4000),
+      );
+      const result = await Promise.race([
+        oneShotCLI("read the file and summarize it"),
+        timeout,
+      ]);
+      // The tool-blocked giveup must surface as a non-zero exit, NOT 0.
+      expect(result).not.toBe(0);
+      expect(result).not.toBe("timeout");
+      // And a clear stderr marker tells the human how to grant tools.
+      const stderrText = stderrSpy.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      expect(stderrText).toContain("tool denied in non-interactive mode");
+      expect(stderrText).toContain("--permission-mode");
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI still exits 0 when no permission request was denied", async () => {
+    // PART B guard: a normal run that never auto-denied a tool must keep its
+    // success exit code. Only a denied-then-gave-up run signals failure.
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-nodeny-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-nodeny-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const agentId = "agent_nodeny";
+    const sessionId = "session_nodeny";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      // No permission request — just an answer + completed status.
+      oneShotEvents: [
+        {
+          method: "event.message_chunk",
+          params: {
+            sessionId,
+            eventId: "delta_ok",
+            agentId,
+            delta: "here is your answer",
+          },
+        },
+        {
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "complete_ok",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        },
+      ],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const timeout = new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 4000),
+      );
+      const result = await Promise.race([
+        oneShotCLI("just answer this"),
+        timeout,
+      ]);
+      expect(result).toBe(0);
+      // No deny was ever sent.
+      expect(
+        daemon.requests.some((r) => r.method === "tool.deny"),
+      ).toBe(false);
+    } finally {
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI forwards --permission-mode acceptEdits to agent.create", async () => {
+    // PART A regression: the print path previously forwarded only --yolo/bypass
+    // and silently dropped --permission-mode acceptEdits/plan/default. The
+    // validated mode must reach agent.create so the daemon honors it (the
+    // unattended policy preserves acceptEdits/plan rather than forcing
+    // unattended — see applyUnattendedPermissionPolicyToContext).
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-permmode-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-permmode-cwd-"));
+    const prevEnv = { ...process.env };
+    const prevArgv = [...process.argv];
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    process.argv = [
+      "/usr/bin/node",
+      "/opt/agenc/bin/agenc.js",
+      "--print",
+      "--permission-mode",
+      "acceptEdits",
+      "do a thing",
+    ];
+
+    const agentId = "agent_permmode";
+    const sessionId = "session_permmode";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const timeout = new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 4000),
+      );
+      const result = await Promise.race([
+        oneShotCLI("do a thing"),
+        timeout,
+      ]);
+      expect(result).toBe(0);
+      const createCall = daemon.requests.find(
+        (r) => r.method === "agent.create",
+      );
+      expect(createCall).toBeDefined();
+      expect(
+        (createCall?.params as { permissionMode?: string } | undefined)
+          ?.permissionMode,
+      ).toBe("acceptEdits");
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI keeps bypassPermissions precedence over --permission-mode", async () => {
+    // --yolo must still win: when both --yolo and --permission-mode acceptEdits
+    // are present, the forwarded mode is bypassPermissions (no posture
+    // weakening of the existing yolo path).
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-yolo-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-yolo-cwd-"));
+    const prevEnv = { ...process.env };
+    const prevArgv = [...process.argv];
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    process.argv = [
+      "/usr/bin/node",
+      "/opt/agenc/bin/agenc.js",
+      "--print",
+      "--yolo",
+      "--permission-mode",
+      "acceptEdits",
+      "do a thing",
+    ];
+
+    const agentId = "agent_yolo";
+    const sessionId = "session_yolo";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const timeout = new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 4000),
+      );
+      const result = await Promise.race([
+        oneShotCLI("do a thing"),
+        timeout,
+      ]);
+      expect(result).toBe(0);
+      const createCall = daemon.requests.find(
+        (r) => r.method === "agent.create",
+      );
+      expect(
+        (createCall?.params as { permissionMode?: string } | undefined)
+          ?.permissionMode,
+      ).toBe("bypassPermissions");
+    } finally {
+      process.argv = prevArgv;
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {
         if (!(key in prevEnv)) delete process.env[key];

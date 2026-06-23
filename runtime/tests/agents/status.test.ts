@@ -27,6 +27,7 @@ describe("AgentStatusTracker", () => {
     const t = new AgentStatusTracker();
     t.markInterrupted("turn-1", "parent_interrupt");
     const s = t.value;
+    expect(s.status).toBe("interrupted");
     if (s.status === "interrupted") expect(s.reason).toBe("parent_interrupt");
   });
 

@@ -1728,6 +1728,23 @@ function daemonOneShotPermissionRequestId(event: unknown): string | null {
     : null;
 }
 
+/**
+ * Exit code used when a non-interactive one-shot run auto-denied at least one
+ * permission request and then "completed" (the model gave up after its tool
+ * call was rejected). Distinct from a real success (0) and from a daemon error
+ * (1) so callers/scripts can tell a tool-blocked giveup from a genuine answer.
+ */
+const ONE_SHOT_TOOL_DENIED_EXIT_CODE = 2;
+
+/**
+ * Stderr marker emitted alongside {@link ONE_SHOT_TOOL_DENIED_EXIT_CODE} so a
+ * human reading the run can see why it failed and how to grant the tool.
+ */
+const ONE_SHOT_TOOL_DENIED_MARKER =
+  "agenc: tool denied in non-interactive mode; the run could not complete its " +
+  "tool call and gave up. Re-run with --permission-mode or " +
+  "--dangerously-bypass-approvals-and-sandbox to allow tools.";
+
 function daemonOneShotFinalStatus(
   event: unknown,
 ): DaemonOneShotFinalStatus | null {
@@ -1900,6 +1917,19 @@ async function runDaemonOneShotPrompt(params: {
           ) {
             process.stderr.write(`${finalStatus.message}\n`);
           }
+          // A tool-blocked giveup must NOT masquerade as a successful answer.
+          // When the run auto-denied a permission request (no human to approve;
+          // see daemonOneShotPermissionRequestId) and then "completed", the
+          // model gave up after its tool call was rejected. Override the
+          // otherwise-zero exit so callers/scripts can distinguish a real answer
+          // from a tool-blocked giveup, and surface a clear stderr marker. A run
+          // that denied nothing keeps its normal exit code, so genuine no-tool
+          // answers still exit 0 and genuine daemon errors still exit non-zero.
+          if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
+            process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
+            settle({ code: ONE_SHOT_TOOL_DENIED_EXIT_CODE });
+            return;
+          }
           settle({ code: finalStatus.code });
         },
       );
@@ -2033,6 +2063,26 @@ export async function oneShotCLI(
       oneShotArgv.includes("--yolo") ||
       oneShotArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
       oneShotArgv.includes("--allow-dangerously-skip-permissions");
+    // Honor a validated `--permission-mode <value>` in the print path. Without
+    // this, only --yolo/bypass propagated and acceptEdits/plan/default were
+    // silently dropped. readStartupCliFlags already validated the flag (throwing
+    // on a typo so a less-restrictive session can't boot silently). The daemon's
+    // forced --autonomous does NOT override a forwarded acceptEdits/plan:
+    // applyUnattendedPermissionPolicyToContext explicitly preserves the user's
+    // explicit mode (only default → unattended), so forwarding takes effect
+    // without weakening the unattended/security posture. --yolo still wins:
+    // bypassPermissions takes precedence over any other forwarded mode. Narrow
+    // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
+    // user-addressable modes fall back to the unattended default as before.
+    const startupCliFlags = readStartupCliFlags(process.argv);
+    const oneShotPermissionMode = isYoloOneShot
+      ? ("bypassPermissions" as const)
+      : startupCliFlags.permissionMode === "default" ||
+          startupCliFlags.permissionMode === "plan" ||
+          startupCliFlags.permissionMode === "acceptEdits" ||
+          startupCliFlags.permissionMode === "bypassPermissions"
+        ? startupCliFlags.permissionMode
+        : undefined;
     return await runDaemonOneShotPrompt({
       deps: daemonCliDeps(),
       prompt: daemonPrompt,
@@ -2042,8 +2092,8 @@ export async function oneShotCLI(
       provider: startup.provider,
       ...(startup.profileName !== undefined ? { profile: startup.profileName } : {}),
       ...(initialContent !== undefined ? { initialContent } : {}),
-      ...(isYoloOneShot
-        ? { permissionMode: "bypassPermissions" as const }
+      ...(oneShotPermissionMode !== undefined
+        ? { permissionMode: oneShotPermissionMode }
         : {}),
     });
   } catch (error) {
