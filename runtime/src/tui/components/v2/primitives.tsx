@@ -684,6 +684,34 @@ function defaultWorkspaceLabel(): string {
   return home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
 }
 
+// Welcome summary/recent cards used to be fixed shrink-to-content boxes, so the
+// two cards rendered at mismatched widths and left a jarring empty band on the
+// right of a wide transcript pane. They now share one width that grows with the
+// available pane up to a tasteful cap. MIN keeps the widest default recent row
+// (`[1] swap-program · 12m ago · main · clean`, plus border + padding) from
+// truncating; MAX stops them from stretching absurdly wide on a 200-col
+// terminal.
+const WELCOME_CARD_MIN_WIDTH = 46
+const WELCOME_CARD_MAX_WIDTH = 64
+// The transcript surface (ActiveWorkSurface) adds paddingX={1} around the
+// welcome panel, so reserve 2 columns from the reported content width to avoid
+// overflowing the pane.
+const WELCOME_CARD_INSET = 2
+
+function useWelcomeCardWidth(): number {
+  const contentWidth = useContentWidth()
+  const frameColumns = React.useContext(TerminalFrameColumnsContext)
+  const available = contentWidth ?? frameColumns
+  const usable = Math.max(1, available - WELCOME_CARD_INSET)
+  const capped = Math.min(
+    WELCOME_CARD_MAX_WIDTH,
+    Math.max(WELCOME_CARD_MIN_WIDTH, usable),
+  )
+  // Never exceed the usable width — on a very narrow pane the cap floor would
+  // otherwise overflow.
+  return Math.min(capped, usable)
+}
+
 function WelcomeMetaRow({
   label,
   value,
@@ -713,6 +741,7 @@ export function WelcomeColdPanel({
   readonly recentSessions?: readonly WelcomeRecentSession[]
 }): React.ReactNode {
   const visibleSessions = recentSessions.slice(0, 3)
+  const cardWidth = useWelcomeCardWidth()
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
@@ -726,6 +755,7 @@ export function WelcomeColdPanel({
 
       <ThemedBox
         flexDirection="column"
+        width={cardWidth}
         borderStyle="single"
         borderColor="lineSoft"
         paddingX={1}
@@ -751,6 +781,7 @@ export function WelcomeColdPanel({
         </Box>
         <ThemedBox
           flexDirection="column"
+          width={cardWidth}
           borderStyle="single"
           borderColor="lineSoft"
           paddingX={1}
