@@ -1100,9 +1100,32 @@ export function ApprovalCard({
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
   const primaryFact = facts[0]?.value ?? title
   const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact} · ${command} · ${confirmLabel}`
+  // The approval popup is rendered into a fixed-height slot (the workbench
+  // overlay row, or the modal context). Without a height cap the body grows
+  // past the popup's own bottom border and bleeds onto the footer below it.
+  // Cap the popup to the rows actually available and let Popup clip the body
+  // with overflow:'hidden', so the popup can never paint past its border.
+  const viewport = useModalOrTerminalSize(useTerminalSize())
+  const viewportRows = Number.isFinite(viewport.rows)
+    ? Math.max(1, Math.trunc(viewport.rows))
+    : 24
+  // Reserve rows for the status bar, the composer/footer beneath the overlay,
+  // and the overlay's own top border; never let the popup own the whole screen.
+  const reservedRows = 6
+  const popupMaxHeight = Math.max(9, viewportRows - reservedRows)
+  // The popup clips its body from the bottom, so the primary action line
+  // ([1]/[2]/[3] + confirm) is the first thing lost when the slot is tight.
+  // Popup chrome (border/header/footer) costs ~6 rows; the essential body rows
+  // are summary, command, facts, the action legend and the confirm row (5). The
+  // note is the one optional row — drop it before it can push the action out.
+  const popupBodyRows = popupMaxHeight - 6
+  const showNote = note !== undefined && note.length > 0 && popupBodyRows >= 6
+  // When the slot is extremely tight, drop the secondary facts grid so the
+  // primary action legend + confirm row are never the ones clipped away.
+  const showFacts = popupBodyRows >= 5
   return (
     <Popup
-      title={`tool · bash · ${title}`}
+      title={title}
       headerRight={
         requireTypedConfirmation
           ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
@@ -1111,7 +1134,9 @@ export function ApprovalCard({
       status={`req ${risk === 'high' ? '0x9c14' : '0x47a3'}`}
       accentColor={variantColor[variant]}
       bodyBackgroundColor={risk === 'high' ? 'errorWash' : 'successWash'}
-      minHeight={10}
+      bodyPaddingY={0}
+      maxHeight={popupMaxHeight}
+      minHeight={Math.min(9, popupMaxHeight)}
       footer={[
         {
           keyName: requireTypedConfirmation ? 'type' : 'e',
@@ -1119,51 +1144,45 @@ export function ApprovalCard({
         },
       ]}
     >
-      <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
+      <Box flexDirection="column" paddingX={1} flexShrink={0}>
         <ThemedText color="text2" wrap="truncate-end">
           {approvalSummary}
         </ThemedText>
-        <ThemedBox width="100%" minHeight={1} backgroundColor={variantColor[variant]}>
-          <ThemedText color={variantColor[variant]}> </ThemedText>
-        </ThemedBox>
-        <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
-          <ThemedText color="text2" wrap="wrap">
-            $ {command}
-          </ThemedText>
-        </ThemedBox>
-        <Box flexDirection="row" gap={2} flexWrap="wrap">
-          {facts.map(fact => (
-            <Box
-              key={fact.label}
-              flexDirection="column"
-              width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
-            >
-              <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
-              <ThemedText color={fact.color ?? 'text2'}>{fact.value}</ThemedText>
-            </Box>
-          ))}
-        </Box>
-        {note ? (
-          <ThemedText color="muted3" wrap="wrap">
+        <ThemedText color="text2" wrap="truncate-end">
+          $ {command}
+        </ThemedText>
+        {showFacts ? (
+          <Box flexDirection="row" gap={2} flexWrap="wrap">
+            {facts.map(fact => (
+              <Box
+                key={fact.label}
+                flexDirection="row"
+                gap={1}
+                width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
+              >
+                <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
+                <ThemedText color={fact.color ?? 'text2'} wrap="truncate-end">{fact.value}</ThemedText>
+              </Box>
+            ))}
+          </Box>
+        ) : null}
+        {showNote ? (
+          <ThemedText color="muted3" wrap="truncate-end">
             note · {note}
           </ThemedText>
         ) : null}
         {requireTypedConfirmation ? (
-          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
-            <Box flexDirection="row" gap={1}>
-              <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
-                {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
-              </ThemedText>
-              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
-            </Box>
-          </ThemedBox>
+          <Box flexDirection="row" gap={1}>
+            <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
+              {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
+            </ThemedText>
+            <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+          </Box>
         ) : (
-          <ThemedText color="muted3">[1] approve once · [2] approve for session · [3] deny</ThemedText>
+          <ThemedText color="muted3" wrap="truncate-end">[1] approve once · [2] approve for session · [3] deny</ThemedText>
         )}
         <Box flexDirection="row" gap={2}>
-          <ThemedBox borderStyle="single" borderColor={variantColor[variant]} paddingX={1}>
-            <ThemedText color="agenc">{confirmLabel}</ThemedText>
-          </ThemedBox>
+          <ThemedText color="agenc" wrap="truncate-end">▸ {confirmLabel}</ThemedText>
           <KeyHint k="esc" label="cancel" />
         </Box>
       </Box>
