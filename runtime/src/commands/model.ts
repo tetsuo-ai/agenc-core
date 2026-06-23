@@ -283,7 +283,7 @@ function updateModelChrome(
 
 export const modelCommand: SlashCommand = {
   name: "model",
-  description: "Switch the model for subsequent turns",
+  description: "Switch the model — opens a picker (or pass a model name)",
   supportedSurfaces: ["runtime", "daemon-tui"],
   userInvocable: true,
   immediate: true,

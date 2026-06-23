@@ -28,7 +28,13 @@ export type SuggestionType =
 export const OVERLAY_MAX_ITEMS = 5
 
 export function getSuggestionPopupWidth(columns: number, overlay?: boolean): number {
-  return overlay ? Math.max(1, columns - 2) : Math.max(1, columns - 10)
+  // In overlay (fullscreen/workbench) mode the popup floats directly above the
+  // composer box, which spans the full terminal width (width="100%"). The popup
+  // therefore takes the full width too — with no horizontal margin — so its
+  // border corners line up with the composer's border corners below it. Any
+  // inset here makes the popup look misaligned with the composer.
+  // Inline mode floats inside a paddingX={2} wrapper, so it stays narrower.
+  return overlay ? Math.max(1, columns) : Math.max(1, columns - 10)
 }
 
 function padToWidth(text: string, width: number): string {
@@ -302,7 +308,7 @@ export function PromptInputFooterSuggestions({
       flexDirection="column"
       justifyContent={overlay ? undefined : 'flex-end'}
       width={width}
-      marginX={1}
+      marginX={overlay ? 0 : 1}
       borderStyle="single"
       borderColor="agenc"
       paddingX={1}

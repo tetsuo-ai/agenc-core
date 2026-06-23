@@ -390,7 +390,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
   return {
     name: "config",
     aliases: ["settings"],
-    description: "Show or manage configuration",
+    description: "Manage configuration — opens a picker",
     immediate: true,
     userInvocable: true,
     execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
