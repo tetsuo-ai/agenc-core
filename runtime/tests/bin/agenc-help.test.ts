@@ -9,6 +9,7 @@ import {
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
 } from "../app-server/daemon-cli.js";
+import { VERSION } from "../index.js";
 
 describe("agenc CLI help", () => {
   it("formats top-level CLI help with commands and examples", () => {
@@ -86,6 +87,46 @@ describe("agenc CLI help", () => {
       kind: "error",
       message: "help accepts at most one command topic",
     });
+  });
+
+  it("honors --help/-h/--version only as real leading flags", () => {
+    // Real usages still short-circuit.
+    expect(detectStartupShortCircuit(["--version"])).toEqual({
+      kind: "version",
+      text: `agenc ${VERSION}`,
+    });
+    expect(detectStartupShortCircuit(["--help"])).toEqual({
+      kind: "help",
+      text: formatCliHelpText(),
+    });
+    expect(detectStartupShortCircuit(["-h"])).toEqual({
+      kind: "help",
+      text: formatCliHelpText(),
+    });
+    // A leading flag after other leading options still counts, including a
+    // value flag (`--model gpt`) whose value must not end the option region.
+    expect(detectStartupShortCircuit(["--no-tui", "--help"])).toEqual({
+      kind: "help",
+      text: formatCliHelpText(),
+    });
+    expect(detectStartupShortCircuit(["--model", "gpt", "--version"])).toEqual({
+      kind: "version",
+      text: `agenc ${VERSION}`,
+    });
+
+    // Prompt content that merely CONTAINS these tokens must NOT short-circuit.
+    expect(
+      detectStartupShortCircuit(["what", "does", "--version", "mean"]),
+    ).toBeNull();
+    expect(
+      detectStartupShortCircuit(["explain", "the", "--help", "flag"]),
+    ).toBeNull();
+    expect(
+      detectStartupShortCircuit(["tell", "me", "about", "-h", "usage"]),
+    ).toBeNull();
+    // Anything after an end-of-options `--` is prompt, never a flag.
+    expect(detectStartupShortCircuit(["--", "--help"])).toBeNull();
+    expect(detectStartupShortCircuit(["--", "--version"])).toBeNull();
   });
 
   it("routes nested daemon help without starting the daemon", () => {
