@@ -737,7 +737,18 @@ export function WelcomeColdPanel({
       </ThemedBox>
 
       <Box flexDirection="column">
-        <ThemedText color="muted3">recent</ThemedText>
+        <Box flexDirection="row" flexWrap="wrap">
+          <ThemedText color="muted3">recent</ThemedText>
+          {visibleSessions.length > 0 ? (
+            <ThemedText color="inactive">
+              {`  ·  press ${
+                visibleSessions.length > 1
+                  ? `1-${visibleSessions.length}`
+                  : '1'
+              } to resume`}
+            </ThemedText>
+          ) : null}
+        </Box>
         <ThemedBox
           flexDirection="column"
           borderStyle="single"
@@ -758,6 +769,10 @@ export function WelcomeColdPanel({
           )}
         </ThemedBox>
       </Box>
+
+      <ThemedText color="inactive" wrap="truncate-end">
+        type a task and press ↵  ·  / for commands  ·  @ to attach  ·  ? for shortcuts
+      </ThemedText>
     </Box>
   )
 }

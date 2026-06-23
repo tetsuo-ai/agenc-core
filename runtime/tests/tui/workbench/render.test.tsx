@@ -32,6 +32,8 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
 
 import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
 import { Text } from "../../../src/tui/ink.js";
+import type { ScrollBoxHandle } from "../../../src/tui/ink/components/ScrollBox.js";
+import { WelcomeColdPanel } from "../../../src/tui/components/v2/primitives.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import { ProjectExplorerRow, ProjectFileActionPrompt, projectTreeViewport } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 import { useWorkbenchComposerFocus } from "../../../src/tui/workbench/composerFocusContext.js";
@@ -577,6 +579,25 @@ describe("workbench render contract", () => {
 
     expect(output).toContain("TRANSCRIPT");
     expect(output).toContain("hello transcript");
+  });
+
+  it("keeps the welcome hero on screen at 80 cols when the transcript is at cold start", async () => {
+    // The cold-start clip lived in the sticky-bottom ScrollBox pinning the
+    // welcome panel to the bottom on a short viewport, scrolling the `agenc.`
+    // brand line off the top. The behaviour-determining wiring (the
+    // stickyScroll prop) is asserted in the dedicated revert-sensitive spec
+    // (TranscriptSurface.welcome.test.tsx); this smoke check just confirms the
+    // hero still renders through the surface at 80 cols.
+    const scrollRef = React.createRef<ScrollBoxHandle>();
+    const output = await renderToString(
+      <TranscriptSurface scrollRef={scrollRef} atWelcome>
+        <WelcomeColdPanel />
+      </TranscriptSurface>,
+      { columns: 80, rows: 14 },
+    );
+
+    expect(output).toContain("agenc.");
+    expect(output).toContain("a netrunner with hands on every file");
   });
 
   it("renders fullscreen slash-command suggestions from the composer overlay portal", async () => {

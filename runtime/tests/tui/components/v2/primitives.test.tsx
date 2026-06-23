@@ -108,6 +108,29 @@ describe('v2 primitives', () => {
     expect(output).not.toContain('/claim')
   })
 
+  it('tells a new user how to start and that recent sessions resume', async () => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
+
+    // First-action guidance so the cold-start screen says HOW to begin.
+    expect(output).toContain('type a task and press')
+    expect(output).toContain('/ for commands')
+    expect(output).toContain('? for shortcuts')
+    // Resume affordance on the recent box so the [1]-[3] numbers read as shortcuts.
+    expect(output).toContain('press 1-3 to resume')
+  })
+
+  it('omits the resume affordance when there are no recent sessions', async () => {
+    const output = await renderToString(
+      <WelcomeColdPanel recentSessions={[]} />,
+      { columns: 120, rows: 24 },
+    )
+
+    expect(output).toContain('no resumable sessions')
+    expect(output).not.toContain('to resume')
+    // Guidance still helps a brand-new user with no history.
+    expect(output).toContain('type a task and press')
+  })
+
   it('uses AURA lifecycle glyphs for plan rows', async () => {
     const output = await renderToString(
       <PlanList

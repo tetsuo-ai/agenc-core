@@ -200,7 +200,9 @@ describe('usePromptInputPlaceholder coverage', () => {
       () => {
         fixture.state.appState.promptSuggestionEnabled = false
       },
-      undefined,
+      // Cold start with suggestions disabled: instead of a blank composer, the
+      // hook now surfaces the stable on-brand guidance hint.
+      'Describe a task, or / for commands',
     )
 
     await expectPlaceholder(() => {}, undefined, { submitCount: 1 })

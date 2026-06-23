@@ -27,6 +27,12 @@ type Props = {
   readonly modalScrollRef?: RefObject<ScrollBoxHandle | null>;
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
+  /**
+   * Cold-start/empty transcript. Forwarded to the transcript surface so the
+   * welcome hero starts at the top instead of being pinned to the bottom on a
+   * short viewport. See TranscriptSurface for the full rationale.
+   */
+  readonly atWelcome?: boolean;
 };
 
 export function WorkbenchLayout({
@@ -37,6 +43,7 @@ export function WorkbenchLayout({
   modalScrollRef,
   pendingApproval,
   scrollRef,
+  atWelcome,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
@@ -84,7 +91,7 @@ export function WorkbenchLayout({
           </NoSelect>
         ) : null}
         <ContentWidthProvider width={surfaceContentWidth}>
-          <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} />
+          <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} atWelcome={atWelcome} />
         </ContentWidthProvider>
         {showAgents ? (
           <NoSelect flexShrink={0} width={agentsWidth} height="100%">

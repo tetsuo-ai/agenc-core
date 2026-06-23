@@ -108,11 +108,15 @@ describe("usePromptInputPlaceholder", () => {
     );
   });
 
-  test("hides the queued-message hint after it has been shown enough times", async () => {
+  test("falls back to the cold-start hint after the queued-message hint is exhausted", async () => {
     mocks.config.queuedCommandUpHintCount = 3;
     mocks.queuedCommands = [{ editable: true }];
 
-    await expect(renderPlaceholder()).resolves.toContain("none");
+    // No queue/example hint applies, so the composer shows the stable
+    // cold-start guidance rather than sitting blank at rest.
+    await expect(renderPlaceholder()).resolves.toContain(
+      "Describe a task, or / for commands",
+    );
   });
 
   test("shows an example command before the first submit when suggestions are enabled", async () => {
@@ -129,8 +133,30 @@ describe("usePromptInputPlaceholder", () => {
       "none",
     );
 
+    // Suggestions disabled at cold start: no example command, but the composer
+    // still surfaces the stable cold-start hint instead of a blank line.
     mocks.promptSuggestionEnabled = false;
-    await expect(renderPlaceholder()).resolves.toContain("none");
+    await expect(renderPlaceholder()).resolves.toContain(
+      "Describe a task, or / for commands",
+    );
+  });
+
+  test("shows the cold-start hint when no other hint applies, and only before the first submit", async () => {
+    // Default cold start: suggestions disabled, no queue, no teammate.
+    await expect(renderPlaceholder()).resolves.toContain(
+      "Describe a task, or / for commands",
+    );
+
+    // The hint is a cold-start affordance only — it disappears once the user
+    // has started the conversation.
+    await expect(renderPlaceholder({ submitCount: 1 })).resolves.toContain(
+      "none",
+    );
+
+    // And it never competes with a non-empty input.
+    await expect(
+      renderPlaceholder({ input: "x" }),
+    ).resolves.toContain("none");
   });
 
   test("suppresses examples when proactive mode is active", async () => {

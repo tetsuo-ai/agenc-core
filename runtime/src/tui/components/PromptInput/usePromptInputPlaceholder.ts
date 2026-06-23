@@ -49,18 +49,26 @@ export function usePromptInputPlaceholder({
       return 'Press up to edit queued messages'
     }
 
-    // Show example command if user has not submitted yet and suggestions are enabled.
-    // Skip in proactive mode — the model drives the conversation so onboarding
-    // examples are irrelevant and block prompt suggestions from showing.
-    if (
-      submitCount < 1 &&
-      promptSuggestionEnabled &&
-      !(
-        (feature('PROACTIVE') || feature('KAIROS')) &&
-        isPromptInputProactiveActive()
-      )
-    ) {
+    // Proactive mode: the model drives the conversation, so onboarding hints
+    // (the example command AND the cold-start fallback below) are irrelevant
+    // and would block prompt suggestions from showing.
+    const proactiveActive =
+      (feature('PROACTIVE') || feature('KAIROS')) &&
+      isPromptInputProactiveActive()
+
+    // Show an example command if the user has not submitted yet and suggestions
+    // are enabled.
+    if (submitCount < 1 && promptSuggestionEnabled && !proactiveActive) {
       return getExampleCommandFromCache()
+    }
+
+    // Cold start fallback: when no example command, teammate, or queue hint
+    // applies (e.g. prompt suggestions disabled), the composer would otherwise
+    // sit blank at rest. Surface a stable, on-brand hint so a new user always
+    // knows what to type. It disappears as soon as input is non-empty (guarded
+    // above) and renders dim like every other placeholder.
+    if (submitCount < 1 && !proactiveActive) {
+      return 'Describe a task, or / for commands'
     }
   }, [
     input,
