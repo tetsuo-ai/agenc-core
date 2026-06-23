@@ -338,6 +338,35 @@ test("uses isolated session paths for transcripts and agent metadata", async () 
   );
 });
 
+test("readAgentMetadata returns null for a corrupt sidecar instead of throwing", async () => {
+  await configureIsolatedSession();
+  const agentId = "agent-corrupt" as never;
+
+  // Simulate a partial write from a crashed fire-and-forget persist.
+  const metaPath = getAgentTranscriptPath(agentId).replace(
+    /\.jsonl$/,
+    ".meta.json",
+  );
+  await mkdir(dirname(metaPath), { recursive: true });
+  await writeFile(metaPath, "{");
+
+  await expect(readAgentMetadata(agentId)).resolves.toBeNull();
+});
+
+test("readRemoteAgentMetadata returns null for a corrupt sidecar instead of throwing", async () => {
+  const { projectDir } = await configureIsolatedSession();
+
+  // Simulate a partial write from a crashed fire-and-forget persist.
+  const remoteDir = join(projectDir, sessionId, "remote-agents");
+  await mkdir(remoteDir, { recursive: true });
+  await writeFile(
+    join(remoteDir, "remote-agent-task-corrupt.meta.json"),
+    "{",
+  );
+
+  await expect(readRemoteAgentMetadata("task-corrupt")).resolves.toBeNull();
+});
+
 test("persists, lists, and deletes remote agent metadata", async () => {
   const { projectDir } = await configureIsolatedSession();
   const metadata = {
