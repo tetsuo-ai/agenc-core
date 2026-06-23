@@ -1,4 +1,4 @@
-const SECRET_ENV_KEYS = [
+export const SECRET_ENV_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_AUTH_HEADER_VALUE',
   'AGENC_API_KEY',

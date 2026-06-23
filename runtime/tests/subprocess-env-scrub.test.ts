@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { subprocessEnv } from 'src/utils/subprocessEnv.js'
+import { SUBPROCESS_SECRET_ENV, subprocessEnv } from 'src/utils/subprocessEnv.js'
+import { SECRET_ENV_KEYS } from 'src/utils/providerSecrets.js'
 
 // Security regression: the env handed to every Bash / MCP-stdio / hook /
 // shell-snapshot / LSP child goes through subprocessEnv(). By DEFAULT (with
@@ -101,5 +102,70 @@ describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
     const childEnv = subprocessEnv()
     // Opt-out restores inheritance for trusted setups that need it.
     expect(childEnv.ANTHROPIC_API_KEY).toBe('sk-ant-secret')
+  })
+
+  // NOT name-enumerated: iterate the ACTUAL denylist so a new entry is
+  // automatically covered and a future omission in the loop is caught.
+  it('scrubs EVERY entry in SUBPROCESS_SECRET_ENV (and its INPUT_ twin)', () => {
+    const savedDenylistVals: Record<string, string | undefined> = {}
+    try {
+      for (const key of SUBPROCESS_SECRET_ENV) {
+        savedDenylistVals[key] = process.env[key]
+        savedDenylistVals[`INPUT_${key}`] = process.env[`INPUT_${key}`]
+        process.env[key] = `secret-value-for-${key}`
+        process.env[`INPUT_${key}`] = `input-secret-for-${key}`
+      }
+
+      const childEnv = subprocessEnv()
+
+      for (const key of SUBPROCESS_SECRET_ENV) {
+        expect(
+          childEnv[key],
+          `${key} (a SUBPROCESS_SECRET_ENV entry) must be scrubbed`,
+        ).toBeUndefined()
+        expect(
+          childEnv[`INPUT_${key}`],
+          `INPUT_${key} must be scrubbed`,
+        ).toBeUndefined()
+      }
+    } finally {
+      for (const [key, value] of Object.entries(savedDenylistVals)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  })
+
+  // STRUCTURAL guard (the one that catches the original gap): every provider
+  // secret env name the codebase assigns to process.env — the single source
+  // SECRET_ENV_KEYS — MUST be in the subprocess denylist. If a new provider key
+  // is added to SECRET_ENV_KEYS but not scrubbed, this fails.
+  it('SUBPROCESS_SECRET_ENV is a superset of providerSecrets.SECRET_ENV_KEYS', () => {
+    const denylist = new Set<string>(SUBPROCESS_SECRET_ENV)
+    const missing = SECRET_ENV_KEYS.filter((key) => !denylist.has(key))
+    expect(
+      missing,
+      `provider secret env names missing from SUBPROCESS_SECRET_ENV: ${missing.join(', ')}`,
+    ).toEqual([])
+  })
+
+  // Explicit lock on the provider/OAuth secrets that previously leaked, so a
+  // regression that drops any one of them goes red even if SECRET_ENV_KEYS
+  // changes shape.
+  it('scrubs the provider/OAuth secrets that previously leaked to children', () => {
+    const previouslyLeaked = [
+      'MISTRAL_API_KEY',
+      'BNKR_API_KEY',
+      'MINIMAX_API_KEY',
+      'NVIDIA_API_KEY',
+      'MCP_CLIENT_SECRET',
+    ]
+    const denylist = new Set<string>(SUBPROCESS_SECRET_ENV)
+    for (const key of previouslyLeaked) {
+      expect(
+        denylist.has(key),
+        `${key} must be in SUBPROCESS_SECRET_ENV`,
+      ).toBe(true)
+    }
   })
 })
