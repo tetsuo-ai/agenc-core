@@ -353,6 +353,9 @@ function parseSimpleOptions(
       const name = normalizeMcpOptionName(rawName);
       const inlineValue = eq === -1 ? undefined : trimmed.slice(eq + 1);
       if (booleanOptions.has(name)) {
+        if (inlineValue !== undefined) {
+          throw new Error(`Option --${name} does not take a value`);
+        }
         flags.add(name);
         continue;
       }
