@@ -8,7 +8,6 @@ import {
   USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionMode,
 } from "../permissions/types.js";
-import { AmbiguousModelError, UnknownModelError } from "../config/schema.js";
 import { BUILT_IN_PROVIDER_DEFAULT_MODELS, BUILT_IN_PROVIDER_MODEL_CATALOG, buildProviderModelCatalog, resolveProviderSelection, resolveProviderSettings } from "../config/resolve-provider.js";
 import { configuredModelForProvider, defaultModelForProvider, resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
 import { resolveProfile } from "../config/profiles.js";
@@ -158,34 +157,31 @@ function startupModelForProvider(params: {
   );
 }
 
-export function resolveModelOrExit(
+/**
+ * Resolve a model slug to a {provider, model} pair, THROWING on an ambiguous
+ * or unknown model.
+ *
+ * This is shared selection code: `resolveStartupSelection` is reached not only
+ * from the `bin/agenc.ts` CLI entrypoints but also from the daemon/TUI context
+ * (`app-server-client` `createAgenCDaemonOnlyTuiContext`). An earlier version
+ * called `process.exit(1)` here, which hard-killed the process for any caller —
+ * even ones (daemon/TUI) that want to intercept the failure for cleanup or
+ * remapping. Mirroring `resolvePermissionModeOrThrow`, this now throws a
+ * catchable error and lets each caller's existing `try/catch` decide. The CLI
+ * entrypoints already funnel thrown errors through `main()`'s top-level catch,
+ * which emits a clean `agenc: <message>` and exits 1 — so the user-visible CLI
+ * behavior for an ambiguous/unknown `--model` is unchanged (clean message, no
+ * stack trace), while non-CLI callers regain control.
+ *
+ * The original `AmbiguousModelError` / `UnknownModelError` are re-thrown
+ * unchanged so callers can `instanceof`-discriminate and their messages stay
+ * stable.
+ */
+export function resolveModelOrThrow(
   slug: string,
   catalog: Readonly<Record<string, readonly string[]>> = PROVIDER_MODEL_CATALOG,
-  exit: (code: number) => never = ((code: number) => {
-    process.exit(code);
-  }) as (code: number) => never,
-  errSink: (line: string) => void = (line) => process.stderr.write(line),
 ): { provider: string; model: string } {
-  try {
-    return resolveDisambiguatedModelSelection({ slug, catalog });
-  } catch (err) {
-    if (err instanceof AmbiguousModelError) {
-      const candidates = err.candidates
-        .map((c) => `${c.provider}:${c.model}`)
-        .join(", ");
-      errSink(
-        `agenc: ambiguous model '${slug}' — matches ${err.candidates.length} providers. ` +
-          `Use 'provider:model' form. Candidates: ${candidates}\n`,
-      );
-      exit(1);
-    }
-    if (err instanceof UnknownModelError) {
-      errSink(`agenc: ${err.message}\n`);
-      exit(1);
-    }
-    throw err;
-  }
-  throw new Error("resolveModelOrExit: unreachable");
+  return resolveDisambiguatedModelSelection({ slug, catalog });
 }
 
 export function resolveStartupSelection(params: {
@@ -209,7 +205,7 @@ export function resolveStartupSelection(params: {
   const providerCatalog = buildProviderModelCatalog(configWithProfile);
 
   if (typeof modelOverride === "string" && modelOverride.includes(":")) {
-    const resolved = resolveModelOrExit(modelOverride, providerCatalog);
+    const resolved = resolveModelOrThrow(modelOverride, providerCatalog);
     const providerSettings = resolveProviderSettings(
       resolved.provider,
       configWithProfile,
@@ -276,7 +272,7 @@ export function resolveStartupSelection(params: {
   }
 
   if (modelOverride ?? configWithProfile.model) {
-    const resolved = resolveModelOrExit(
+    const resolved = resolveModelOrThrow(
       modelOverride ?? configWithProfile.model ?? DEFAULT_MODEL,
       providerCatalog,
     );

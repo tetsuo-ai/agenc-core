@@ -98,7 +98,7 @@ import {
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
 export {
   PROVIDER_MODEL_CATALOG,
-  resolveModelOrExit,
+  resolveModelOrThrow,
 } from "./startup-selection.js";
 export type {
   StartupCliFlags,

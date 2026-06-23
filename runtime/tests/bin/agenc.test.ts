@@ -4,7 +4,7 @@
  *   - `system.agent.delegate` built-in tool
  *
  * T10 Group I integration seams:
- *   - I-60 ambiguous-model hard-fail (`resolveModelOrExit`)
+ *   - I-60 ambiguous-model hard-fail (`resolveModelOrThrow`)
  *   - I-47 between-turn config reload (`maybeReloadConfigBetweenTurns`)
  *   - AgenCConfig → SessionConfiguration bridge
  *   - Memory auto-save sidecar + per-turn attachments
@@ -38,7 +38,7 @@ import {
   oneShotCLI,
   prepareTurnRuntimeInputs,
   resolveCliCwdForStartup,
-  resolveModelOrExit,
+  resolveModelOrThrow,
   resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
@@ -47,7 +47,11 @@ import {
   type ConfigReloadLatch,
 } from "./agenc.js";
 import { ConfigStore } from "../config/store.js";
-import { defaultConfig } from "../config/schema.js";
+import {
+  AmbiguousModelError,
+  defaultConfig,
+  UnknownModelError,
+} from "../config/schema.js";
 import * as configUtils from "../config/init.js";
 import {
   assembleSystemPrompt,
@@ -551,15 +555,15 @@ describe("PROVIDER_MODEL_CATALOG", () => {
   });
 });
 
-describe("I-60: resolveModelOrExit hard-fail", () => {
+describe("I-60: resolveModelOrThrow hard-fail", () => {
   it("returns {provider, model} for an unambiguous bare slug", () => {
-    const result = resolveModelOrExit("grok-4.3", PROVIDER_MODEL_CATALOG);
+    const result = resolveModelOrThrow("grok-4.3", PROVIDER_MODEL_CATALOG);
     expect(result.provider).toBe("grok");
     expect(result.model).toBe("grok-4.3");
   });
 
   it("accepts explicit provider:model form", () => {
-    const result = resolveModelOrExit(
+    const result = resolveModelOrThrow(
       "grok:grok-4.20-0309-reasoning",
       PROVIDER_MODEL_CATALOG,
     );
@@ -567,43 +571,52 @@ describe("I-60: resolveModelOrExit hard-fail", () => {
     expect(result.model).toBe("grok-4.20-0309-reasoning");
   });
 
-  it("hard-fails with exit(1) + clear message on ambiguous bare slug", () => {
-    const exit = vi.fn() as unknown as (code: number) => never;
-    const err: string[] = [];
-    const errSink = (line: string) => {
-      err.push(line);
-    };
+  it("THROWS a catchable AmbiguousModelError on an ambiguous bare slug (no process.exit)", () => {
     const catalog = {
       grok: ["shared-model", "grok-4"] as readonly string[],
       openai: ["shared-model", "gpt-4"] as readonly string[],
     };
-    // `resolveModelOrExit` calls exit(1) on ambiguity; the mock doesn't
-    // throw, so control falls through — guard with a try/catch.
+    // Spy on process.exit so a regression to the old exit-based code is caught:
+    // shared selection code must never hard-kill the process — it must throw so
+    // daemon/TUI and CLI callers can intercept via their own try/catch.
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
     try {
-      resolveModelOrExit("shared-model", catalog, exit, errSink);
-    } catch {
-      /* reachable after the unreachable-guard throw */
+      let captured: unknown;
+      try {
+        resolveModelOrThrow("shared-model", catalog);
+      } catch (err) {
+        captured = err;
+      }
+      expect(captured).toBeInstanceOf(AmbiguousModelError);
+      const message = (captured as Error).message;
+      expect(message).toMatch(/ambiguous/i);
+      expect(message).toMatch(/grok:shared-model/);
+      expect(message).toMatch(/openai:shared-model/);
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
     }
-    expect(exit).toHaveBeenCalledWith(1);
-    const joined = err.join("");
-    expect(joined).toMatch(/ambiguous model/);
-    expect(joined).toMatch(/grok:shared-model/);
-    expect(joined).toMatch(/openai:shared-model/);
   });
 
-  it("hard-fails with exit(1) on unknown model slug", () => {
-    const exit = vi.fn() as unknown as (code: number) => never;
-    const err: string[] = [];
-    const errSink = (line: string) => {
-      err.push(line);
-    };
+  it("THROWS a catchable UnknownModelError on an unknown model slug (no process.exit)", () => {
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
     try {
-      resolveModelOrExit("nope-unknown", PROVIDER_MODEL_CATALOG, exit, errSink);
-    } catch {
-      /* expected unreachable guard */
+      let captured: unknown;
+      try {
+        resolveModelOrThrow("nope-unknown", PROVIDER_MODEL_CATALOG);
+      } catch (err) {
+        captured = err;
+      }
+      expect(captured).toBeInstanceOf(UnknownModelError);
+      expect((captured as Error).message).toMatch(/unknown model/i);
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
     }
-    expect(exit).toHaveBeenCalledWith(1);
-    expect(err.join("")).toMatch(/unknown model/);
   });
 });
 
