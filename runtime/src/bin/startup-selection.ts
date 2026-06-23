@@ -3,7 +3,9 @@ import {
   type ProviderName,
 } from "../llm/provider.js";
 import {
+  isPermissionMode,
   isUserAddressablePermissionMode,
+  USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionMode,
 } from "../permissions/types.js";
 import { AmbiguousModelError, UnknownModelError } from "../config/schema.js";
@@ -48,10 +50,12 @@ export function readStartupCliFlags(
   const profile = extractFlagValue(userArgv, "--profile") ?? undefined;
   const rawPermissionMode =
     extractFlagValue(userArgv, "--permission-mode") ?? undefined;
-  const permissionMode =
-    rawPermissionMode && isUserAddressablePermissionMode(rawPermissionMode)
-      ? rawPermissionMode
-      : undefined;
+  // Distinguish "flag absent" from "flag present but invalid". An invalid
+  // value must not be silently coerced to `undefined` (which would boot in
+  // DEFAULT mode — a silent failure toward a LESS restrictive session). Throw
+  // a helpful error mirroring `resolveProviderNameOrThrow` / `/permissions
+  // mode`, surfacing as a clean error + non-zero exit at the CLI entrypoint.
+  const permissionMode = resolvePermissionModeOrThrow(rawPermissionMode);
   const allowDangerouslySkipPermissions =
     userArgv.includes("--yolo") ||
     userArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
@@ -68,6 +72,27 @@ export function readStartupCliFlags(
       : {}),
     ...(autonomousMode ? { autonomousMode: true } : {}),
   });
+}
+
+function resolvePermissionModeOrThrow(
+  raw: string | undefined,
+): PermissionMode | undefined {
+  // Flag absent (or explicitly empty) — keep the default-mode behavior.
+  if (!raw) return undefined;
+  // A user-addressable mode — honor it.
+  if (isUserAddressablePermissionMode(raw)) return raw;
+  // A VALID permission mode that simply isn't user-addressable (e.g. the
+  // internal/daemon-only "unattended" or "bubble" modes). The existing
+  // contract is to silently IGNORE these at the startup CLI surface, not
+  // error — they are recognized, just not selectable here.
+  if (isPermissionMode(raw)) return undefined;
+  // Anything else is a genuine typo / garbage value. Throw a helpful error
+  // mirroring `resolveProviderNameOrThrow` / `/permissions mode` so a typo
+  // toward a more restrictive mode can't silently boot a LESS restrictive
+  // session.
+  throw new Error(
+    `unknown permission mode '${raw}'. Expected one of: ${USER_ADDRESSABLE_PERMISSION_MODES.join(", ")}`,
+  );
 }
 
 function resolveProviderNameOrThrow(raw: string): ProviderName {
