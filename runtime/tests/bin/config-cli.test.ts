@@ -506,4 +506,37 @@ describe("agenc config CLI", () => {
       stderrSpy.mockRestore();
     }
   });
+
+  it("does not report a contradictory hardcoded autoUpdates default on a fresh home", async () => {
+    // Cross-surface consistency guard. `agenc doctor` derives the effective
+    // auto-update state from getAutoUpdaterDisabledReason() over the GLOBAL
+    // config, which is "enabled" when the user has not explicitly disabled it
+    // (unset => null reason => "enabled"). The TOML `AgenCConfig.autoUpdates`
+    // field is not read by the auto-updater. Previously `defaultConfig()`
+    // injected a concrete `autoUpdates: false`, so on a fresh home with no
+    // config.toml `config get autoUpdates` printed "false" — directly
+    // contradicting doctor's "Auto-updates: enabled". Assert the two surfaces
+    // no longer disagree: with nothing configured, `config get autoUpdates`
+    // must NOT assert a concrete `false`; it reports "not set" instead.
+    //
+    // Revert-sensitive: restore `autoUpdates: false` in schema.ts defaultConfig()
+    // and this expectation flips to `"false\n"`, failing the test.
+    const freshHome = makeHome();
+    expect(existsSync(configPath(freshHome))).toBe(false);
+
+    const get = await run(
+      parseAgenCConfigCliArgs(["config", "get", "autoUpdates"]),
+      freshHome,
+    );
+    expect(get.code).toBe(0);
+    expect(get.io.stdoutText()).not.toBe("false\n");
+    expect(get.io.stdoutText()).toBe("not set: autoUpdates\n");
+
+    // `config show` must likewise not surface a concrete `autoUpdates` value
+    // the auto-updater never honors.
+    const show = await run(parseAgenCConfigCliArgs(["config", "show"]), freshHome);
+    expect(show.code).toBe(0);
+    const snapshot = JSON.parse(show.io.stdoutText()) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "autoUpdates")).toBe(false);
+  });
 });

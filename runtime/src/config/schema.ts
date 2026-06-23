@@ -699,7 +699,16 @@ export function defaultConfig(): AgenCConfig {
     project_doc_max_bytes: 32_768,
     stream_watchdog_timeout_ms: 30_000,
     max_turns: 50,
-    autoUpdates: false,
+    // NOTE: `autoUpdates` is intentionally NOT defaulted here. The effective
+    // auto-update state is governed solely by the global config
+    // (`GlobalConfig.autoUpdates`, default undefined = enabled-unless-disabled)
+    // and surfaced by `getAutoUpdaterDisabledReason()` / `agenc doctor`. The
+    // TOML `AgenCConfig.autoUpdates` field is not read by the auto-updater, so
+    // injecting a concrete `false` default here only made `config get
+    // autoUpdates` report a hardcoded `false` that contradicted doctor's
+    // "enabled" — see runtime/src/utils/config.ts. Leaving it unset makes
+    // `config get autoUpdates` report "not set: autoUpdates" when the user has
+    // not explicitly configured it, consistent with the effective state.
     editorMode: "default" as EditorMode,
     tuiLayout: Object.freeze({
       mode: "single",
