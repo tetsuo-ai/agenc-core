@@ -240,7 +240,7 @@ export function __setDaemonCliDepsForTest(
 
 export {
   PROVIDER_MODEL_CATALOG,
-  resolveModelOrExit,
+  resolveModelOrThrow,
   sessionConfigurationFromAgenCConfig,
 } from "./bootstrap.js";
 

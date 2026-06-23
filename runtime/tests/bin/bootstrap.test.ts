@@ -14,7 +14,12 @@ import {
   readStartupCliFlags,
   resolveStartupSelection,
 } from "../bin/startup-selection.js";
-import { defaultConfig, mergeConfigs } from "../config/schema.js";
+import {
+  AmbiguousModelError,
+  defaultConfig,
+  mergeConfigs,
+  UnknownModelError,
+} from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { AuthBackend } from "../auth/backend.js";
@@ -148,6 +153,71 @@ function rolloutEvent(
 }
 
 describe("resolveStartupSelection", () => {
+  // Regression for the shared-selection hard-exit bug. `resolveStartupSelection`
+  // is reached from the daemon/TUI context (app-server-client), not just the
+  // CLI, so an ambiguous/unknown CONFIGURED model must surface as a CATCHABLE
+  // thrown error — it must NOT call process.exit(1) from inside shared code,
+  // which would bypass every caller's try/catch. We spy on process.exit so a
+  // revert to the old exit-based behavior is caught even if it somehow also
+  // "threw".
+  it("THROWS (catchable) on an ambiguous bare CONFIGURED model — never process.exit", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      // model_provider intentionally unset → falls through to the bare-model
+      // disambiguation path (the buggy branch).
+      model_provider: "",
+      model: "shared-cfg-model",
+      providers: {
+        grok: { default_model: "shared-cfg-model" },
+        openai: { default_model: "shared-cfg-model" },
+      },
+    });
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+    try {
+      let captured: unknown;
+      try {
+        resolveStartupSelection({
+          config,
+          env: {},
+          argv: ["node", "agenc"],
+        });
+      } catch (err) {
+        captured = err;
+      }
+      expect(captured).toBeInstanceOf(AmbiguousModelError);
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("THROWS (catchable) on an unknown bare CONFIGURED model — never process.exit", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      model_provider: "",
+      model: "definitely-not-a-real-model-xyz",
+    });
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+    try {
+      let captured: unknown;
+      try {
+        resolveStartupSelection({
+          config,
+          env: {},
+          argv: ["node", "agenc"],
+        });
+      } catch (err) {
+        captured = err;
+      }
+      expect(captured).toBeInstanceOf(UnknownModelError);
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
   it("applies CLI provider/model/profile ahead of env and config", () => {
     const config = mergeConfigs(defaultConfig(), {
       model: "grok-3",

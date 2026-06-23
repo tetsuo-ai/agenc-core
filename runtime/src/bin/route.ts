@@ -107,6 +107,21 @@ function shouldStripValueFlag(arg: string): boolean {
   );
 }
 
+const RESUME_FLAGS = Object.freeze(["--resume", "-r"] as const);
+
+/**
+ * True when `arg` is an explicit resume-flag TOKEN: a bare `--resume`/`-r`,
+ * or the `--resume=`/`-r=` equals form (regardless of whether a value
+ * follows it). Used to distinguish "user asked to resume but omitted the id"
+ * from a plain prompt that merely contains the word "resume" — only a real
+ * leading flag token matches, never positional prompt text.
+ */
+function isResumeFlagToken(arg: string): boolean {
+  return RESUME_FLAGS.some(
+    (flag) => arg === flag || arg.startsWith(`${flag}=`),
+  );
+}
+
 /**
  * True when `arg` is a startup flag that consumes a following value token
  * (e.g. `--model gpt`, `-r <id>`). Exported so the short-circuit detector
@@ -218,8 +233,24 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     userArgv.includes("--continue") || userArgv.includes("-c");
   const resumeId =
     extractFlagValue(userArgv, "--resume") ?? extractFlagValue(userArgv, "-r");
+  const hasResumeFlag = userArgv.some(isResumeFlagToken);
   const prompt = stripRoutingFlags(userArgv).join(" ").trim();
   const startupImages = extractFlagValues(userArgv, "--image");
+
+  // 0. A resume flag token was supplied but with no session id (bare
+  //    `--resume`/`-r`, or the empty `--resume=`/`-r=` form). Resuming
+  //    requires an id, so error instead of silently stripping the flag and
+  //    booting a fresh TUI (which gives the user zero feedback). This must
+  //    fire for BOTH TTY and non-TTY paths, before any boot/one-shot
+  //    fall-through. Note: this only matches a real leading flag token —
+  //    a plain prompt that merely contains the word "resume" is unaffected.
+  if (hasResumeFlag && (resumeId === null || resumeId.length === 0)) {
+    return {
+      kind: "errorAndExit",
+      message: `agenc --resume requires a session id (usage: agenc --resume <session-id>)`,
+      exitCode: 2,
+    };
+  }
 
   // 1. `--resume <id>` / `-r <id>` boots through the TUI resume path. Errors
   //    inside `resumeTUI` (missing session, corrupt rollout, etc.) are
