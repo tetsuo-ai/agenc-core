@@ -1250,8 +1250,15 @@ async function runAgenCDaemonForeground(
     agencHome: authStartup.daemonHome,
   });
   const sessionManager = new AgenCDaemonSessionManager({ threadStore });
+  // Forward declaration: set once the connection registry below exists. Lets
+  // the multiplexer ask the transport to tear down a slow consumer's socket
+  // when that client's pending delivery backlog trips the per-client cap.
+  let destroyEvictedClientConnection: ((clientId: string) => void) | undefined;
   const clientMultiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
+    onClientEvicted: (clientId) => {
+      destroyEvictedClientConnection?.(clientId);
+    },
   });
   const commandExec = new AgenCCommandExecService();
   const cleanup = new AgenCCleanupRegistry();
@@ -1530,6 +1537,28 @@ async function runAgenCDaemonForeground(
     void connection?.close().catch(() => {});
     for (const clientId of connection?.trackedClientIds ?? []) {
       void clientMultiplexer.removeClient(clientId).catch(() => {});
+    }
+  };
+  // Tear down the transport for a slow consumer the multiplexer evicted for an
+  // unbounded pending delivery backlog. The multiplexer already removed the
+  // client from its routing state. A single transport connection can carry
+  // MULTIPLE tracked clients (trackedClientIds is a set keyed by the clientId a
+  // peer supplies in attach calls), so only destroy the whole connection when
+  // the evicted client is its SOLE tracked client — otherwise just stop
+  // tracking that client and leave the connection (and its other healthy
+  // co-located clients) untouched. Destroying the socket ends the backpressured
+  // peer so it stops pinning daemon heap; it can reconnect and replay through
+  // the normal detached-buffer path.
+  destroyEvictedClientConnection = (clientId: string): void => {
+    for (const [connectionKey, connection] of connections) {
+      if (!connection.trackedClientIds.includes(clientId)) {
+        continue;
+      }
+      const wasSoleClient = connection.untrackClientId(clientId);
+      if (wasSoleClient) {
+        closeConnection(connectionKey);
+      }
+      return;
     }
   };
   const socketServer = new AgenCUnixSocketServer({

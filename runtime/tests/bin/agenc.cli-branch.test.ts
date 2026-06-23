@@ -430,6 +430,165 @@ describe("classifyCLI", () => {
   });
 });
 
+describe("classifyCLI startup selection value-flag missing-value guard", () => {
+  // Regression: `--model`/`--provider`/`--profile`/`--image` were SILENTLY
+  // swallowed when their value was missing or dash-prefixed. extractFlagValue
+  // returned null (correct dash-guard), readStartupCliFlags dropped the
+  // override, and stripRoutingFlags removed the bare flag token — so the
+  // user's explicit selection vanished and the session booted on defaults
+  // with zero feedback. Each flag must now error explicitly (exit 2), mirroring
+  // the --resume guard. These tests fail against the pre-fix silent-swallow
+  // code (which routes to bootTUI/oneShotCLI on defaults) and pass with the fix.
+  const SELECTION_FLAG_CASES = [
+    [
+      "--provider",
+      "agenc --provider requires a value (usage: agenc --provider <name>)",
+    ],
+    [
+      "--model",
+      "agenc --model requires a value (usage: agenc --model <id|provider:id>)",
+    ],
+    [
+      "--profile",
+      "agenc --profile requires a value (usage: agenc --profile <name>)",
+    ],
+    ["--image", "agenc --image requires a value (usage: agenc --image <path|url>)"],
+  ] as const;
+
+  describe.each(SELECTION_FLAG_CASES)(
+    "%s with no value",
+    (flag, message) => {
+      it("errors (exit 2) when the flag is the trailing token (value absent), TTY", () => {
+        expect(
+          classifyCLI({
+            argv: [NODE, SCRIPT, flag],
+            isTTY: true,
+            isStdoutTTY: true,
+          }),
+        ).toEqual({ kind: "errorAndExit", message, exitCode: 2 });
+      });
+
+      it("errors (exit 2) when the flag is the trailing token (value absent), non-TTY", () => {
+        expect(
+          classifyCLI({
+            argv: [NODE, SCRIPT, flag],
+            isTTY: false,
+            isStdoutTTY: false,
+          }),
+        ).toEqual({ kind: "errorAndExit", message, exitCode: 2 });
+      });
+
+      it("errors (exit 2) when the next token is dash-prefixed (no value), TTY", () => {
+        // e.g. `agenc --model -p prompt` — the traced failure: print-mode
+        // booted on the DEFAULT model, silently ignoring --model.
+        expect(
+          classifyCLI({
+            argv: [NODE, SCRIPT, flag, "-p", "prompt"],
+            isTTY: true,
+            isStdoutTTY: true,
+          }),
+        ).toEqual({ kind: "errorAndExit", message, exitCode: 2 });
+      });
+
+      it("errors (exit 2) when the next token is dash-prefixed (no value), non-TTY", () => {
+        expect(
+          classifyCLI({
+            argv: [NODE, SCRIPT, flag, "-p", "prompt"],
+            isTTY: false,
+            isStdoutTTY: false,
+          }),
+        ).toEqual({ kind: "errorAndExit", message, exitCode: 2 });
+      });
+
+      it("errors (exit 2) for the empty equals form (--flag=)", () => {
+        expect(
+          classifyCLI({
+            argv: [NODE, SCRIPT, `${flag}=`],
+            isTTY: true,
+            isStdoutTTY: true,
+          }),
+        ).toEqual({ kind: "errorAndExit", message, exitCode: 2 });
+      });
+    },
+  );
+
+  it("happy path: --model <id> still selects the model and boots the TUI", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--model", "gpt-x", "build", "a", "game"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "bootTUI", args: { initialPrompt: "build a game" } });
+  });
+
+  it("happy path: --model=gpt-x (equals form) is unaffected", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--model=gpt-x", "hello"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "bootTUI", args: { initialPrompt: "hello" } });
+  });
+
+  it("happy path: --provider openai and --profile fast carry values fine", () => {
+    expect(
+      classifyCLI({
+        argv: [
+          NODE,
+          SCRIPT,
+          "--provider",
+          "openai",
+          "--profile",
+          "fast",
+          "hi",
+        ],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "bootTUI", args: { initialPrompt: "hi" } });
+  });
+
+  it("happy path: --image with a normal path is a value, not a missing-value error", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--image", "/tmp/cat.png", "describe"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "describe", startupImages: ["/tmp/cat.png"] },
+    });
+  });
+
+  it("absent flags: a plain prompt is unaffected (no selection flag present)", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "build", "a", "game"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "bootTUI", args: { initialPrompt: "build a game" } });
+  });
+
+  it("prompt text: a positional word like 'model' is not a flag token", () => {
+    // Only a real leading `--model` flag token triggers the guard — a prompt
+    // that merely contains the word must boot the TUI with that text intact.
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "pick", "a", "model", "for", "me"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "pick a model for me" },
+    });
+  });
+});
+
 describe("signal handler integration with activeInkUnmount", () => {
   afterEach(() => {
     __resetActiveInkUnmountForTest();
