@@ -1140,6 +1140,25 @@ export function DiffInline({
   )
 }
 
+/**
+ * A bounded diff/content preview shown INSIDE the approval popup so a Write/Edit
+ * is never approved blind. Shaped like the `buildEditDiffPreview` output (which
+ * the post-approval DIFF card also consumes) so the same `DiffInline` primitive
+ * and diff engine are reused — no new diff logic lives here.
+ */
+export interface ApprovalDiffPreview {
+  readonly file: string
+  readonly stats: string
+  readonly lines: readonly {
+    readonly kind: 'add' | 'rem' | 'ctx' | 'hunk'
+    readonly oldLine?: string
+    readonly newLine?: string
+    readonly code: string
+  }[]
+  /** Rows dropped past the input cap, surfaced as a "… +N more" row. */
+  readonly remaining: number
+}
+
 export function ApprovalCard({
   risk,
   title,
@@ -1147,6 +1166,7 @@ export function ApprovalCard({
   facts,
   note,
   confirmLabel,
+  diffPreview,
   requireTypedConfirmation = false,
   typedConfirmationValue = '',
   typedConfirmationTarget = 'yes',
@@ -1157,6 +1177,7 @@ export function ApprovalCard({
   readonly facts: readonly { readonly label: string; readonly value: string; readonly color?: ThemeColor }[]
   readonly note?: string
   readonly confirmLabel: string
+  readonly diffPreview?: ApprovalDiffPreview
   readonly requireTypedConfirmation?: boolean
   readonly typedConfirmationValue?: string
   readonly typedConfirmationTarget?: string
@@ -1187,6 +1208,41 @@ export function ApprovalCard({
   // When the slot is extremely tight, drop the secondary facts grid so the
   // primary action legend + confirm row are never the ones clipped away.
   const showFacts = popupBodyRows >= 5
+  // The diff/content preview is the LARGEST optional block (a bordered DiffInline
+  // box: 2 chrome rows + one row per changed line). It is the FIRST thing shed
+  // when the slot is tight — never the [1]/[2]/[3] action legend or confirm row.
+  // Gate it behind the most generous budget, then cap the number of diff rows to
+  // the rows actually left after the essential body (summary, command, facts,
+  // note, action legend, confirm). Reserve ~5 essential body rows + 2 for the
+  // preview's own border; everything beyond that is available for diff lines.
+  const previewBudgetRows = popupBodyRows - 7
+  const showPreview =
+    diffPreview !== undefined && diffPreview.lines.length > 0 && previewBudgetRows >= 2
+  // Cap the inline diff to a small, bounded window (6-8 rows of the existing
+  // preview) and never beyond what the slot can hold; the rest stays reachable
+  // via the full diff surface (ctrl+w d), surfaced as a "… +N more" row.
+  const PREVIEW_CAP = 7
+  const previewLineCap = showPreview
+    ? Math.max(1, Math.min(PREVIEW_CAP, previewBudgetRows))
+    : 0
+  let previewLines: ApprovalDiffPreview['lines'] = []
+  if (showPreview && diffPreview !== undefined) {
+    const shown = diffPreview.lines.slice(0, previewLineCap)
+    // Total rows hidden = rows dropped by THIS cap + rows the upstream builder
+    // already collapsed. Keep one continuation row to state the affordance.
+    const droppedHere = diffPreview.lines.length - shown.length
+    const hidden = droppedHere + diffPreview.remaining
+    previewLines =
+      hidden > 0
+        ? [
+            ...shown,
+            {
+              kind: 'ctx' as const,
+              code: `… +${hidden} more ${hidden === 1 ? 'line' : 'lines'} · ctrl+w d for full diff`,
+            },
+          ]
+        : shown
+  }
   return (
     <Popup
       title={title}
@@ -1215,6 +1271,15 @@ export function ApprovalCard({
         <ThemedText color="text2" wrap="truncate-end">
           $ {command}
         </ThemedText>
+        {showPreview && diffPreview !== undefined ? (
+          <Box flexShrink={1} overflow="hidden">
+            <DiffInline
+              file={diffPreview.file.length > 0 ? diffPreview.file : 'file'}
+              stats={diffPreview.stats}
+              lines={previewLines}
+            />
+          </Box>
+        ) : null}
         {showFacts ? (
           <Box flexDirection="row" gap={2} flexWrap="wrap">
             {facts.map(fact => (
