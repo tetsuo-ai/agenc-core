@@ -17,7 +17,7 @@ import { openAgentsMenu } from "./agents-menu.js";
 
 export const agentsCommand: SlashCommand = {
   name: "agents",
-  description: "Manage agent configurations",
+  description: "Manage agents — opens a picker",
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {

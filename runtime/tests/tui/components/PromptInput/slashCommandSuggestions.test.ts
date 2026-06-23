@@ -64,6 +64,35 @@ describe("slash command suggestions", () => {
     ]);
   });
 
+  it("lists every available command when only '/' is typed so they can be browsed", () => {
+    // Discoverability: typing a bare '/' must surface the full, browsable
+    // command list (not a single match), so a user who doesn't know the
+    // prefix can scroll through everything. The typeahead then narrows the
+    // same list as they keep typing.
+    const commands = [
+      localCommand({ name: "help", description: "Show help" }),
+      localCommand({ name: "clear", description: "Clear session history" }),
+      localCommand({ name: "compact", description: "Compact the conversation" }),
+      localCommand({ name: "config", description: "Manage configuration" }),
+      localCommand({ name: "model", description: "Switch the model" }),
+    ];
+
+    const all = generateCommandSuggestions("/", commands);
+    expect(all.length).toBe(commands.length);
+    const names = all.map((s) => s.displayText);
+    for (const cmd of commands) {
+      expect(names).toContain(`/${cmd.name}`);
+    }
+
+    // And the same list narrows as the user types more of a prefix.
+    const narrowed = generateCommandSuggestions("/co", commands);
+    expect(narrowed.length).toBeLessThan(all.length);
+    expect(narrowed.length).toBeGreaterThan(1);
+    expect(narrowed.map((s) => s.displayText)).toEqual(
+      expect.arrayContaining(["/compact", "/config"]),
+    );
+  });
+
   it("marks protocol extension commands with the protocol glyph", () => {
     const suggestions = generateCommandSuggestions("/", getCommandsSync());
     const byName = new Map(

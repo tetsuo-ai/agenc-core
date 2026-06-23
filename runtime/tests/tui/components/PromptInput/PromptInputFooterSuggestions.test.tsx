@@ -138,9 +138,59 @@ describe('PromptInputFooterSuggestions', () => {
     expect(output).not.toContain('SLASH COMMANDS')
   })
 
-  it('uses full overlay width so the popup background can cover the overlay row', () => {
-    expect(getSuggestionPopupWidth(80, true)).toBe(78)
-    expect(getSuggestionPopupWidth(12, true)).toBe(10)
+  it('uses the full terminal width in overlay mode so the popup aligns with the composer', () => {
+    // The overlay popup floats directly above the composer box, which is
+    // width="100%". Matching that full width (with no horizontal margin) keeps
+    // the popup border corners flush with the composer border corners below.
+    expect(getSuggestionPopupWidth(80, true)).toBe(80)
+    expect(getSuggestionPopupWidth(12, true)).toBe(12)
+  })
+
+  it('aligns the overlay popup border corners with its content rows', async () => {
+    // Revert-sensitive guard for the inset-border bug: when the overlay popup
+    // used `columns - 2` width plus `marginX={1}`, the box drew at columns 1..N-2
+    // while the composer below spanned 0..N-1, so the popup looked inset and
+    // off-centre. The corners (┌┐└┘) and the content-row bars (│) must share
+    // the same left/right columns AND span the full terminal width.
+    const columns = 80
+    const suggestions: SuggestionItem[] = [
+      {
+        id: 'command-help',
+        displayText: '/help',
+        description: 'Show help and available commands',
+      },
+    ]
+
+    const output = await renderToString(
+      <PromptInputFooterSuggestions
+        suggestions={suggestions}
+        selectedSuggestion={0}
+        overlay={true}
+      />,
+      columns,
+    )
+
+    const lines = output.split('\n').filter(line => /[┌┐└┘│]/.test(line))
+    expect(lines.length).toBeGreaterThanOrEqual(3)
+
+    const leftCols = new Set<number>()
+    const rightCols = new Set<number>()
+    for (const line of lines) {
+      // Box-drawing chars on a row: leftmost border and rightmost border.
+      const left = line.search(/[┌└│]/)
+      const right = line.length - 1 - [...line].reverse().findIndex(c => '┐┘│'.includes(c))
+      leftCols.add(left)
+      rightCols.add(right)
+    }
+
+    // Every bordered row (top corner, content bars, bottom corner) shares the
+    // same left edge and the same right edge — no inset content rows.
+    expect(leftCols.size).toBe(1)
+    expect(rightCols.size).toBe(1)
+    // And the popup spans the full terminal width so it lines up with the
+    // composer box below it (left edge at column 0).
+    expect([...leftCols][0]).toBe(0)
+    expect([...rightCols][0]).toBe(columns - 1)
   })
 
   it('clamps inline popup width to tiny terminals instead of forcing the old minimum', () => {
