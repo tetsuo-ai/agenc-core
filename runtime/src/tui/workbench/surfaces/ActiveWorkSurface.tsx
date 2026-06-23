@@ -21,6 +21,7 @@ export type WorkbenchSurfaceRenderProps = {
   readonly transcript: React.ReactNode;
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
+  readonly atWelcome?: boolean;
 };
 
 export type WorkbenchSurfaceDescriptor = {
@@ -38,7 +39,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     title: () => "TRANSCRIPT",
     keybindings: ["q"],
     footerHints: "Surface: ctrl+w h explorer  ctrl+w j composer  ctrl+w d diff",
-    renderBody: ({ transcript, scrollRef }) => <TranscriptSurface scrollRef={scrollRef}>{transcript}</TranscriptSurface>,
+    renderBody: ({ transcript, scrollRef, atWelcome }) => <TranscriptSurface scrollRef={scrollRef} atWelcome={atWelcome}>{transcript}</TranscriptSurface>,
   },
   {
     mode: "preview",
@@ -104,11 +105,13 @@ export function ActiveWorkSurface({
   transcript,
   pendingApproval,
   scrollRef,
+  atWelcome,
 }: {
   readonly focused: boolean;
   readonly transcript: React.ReactNode;
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
+  readonly atWelcome?: boolean;
 }): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -123,7 +126,7 @@ export function ActiveWorkSurface({
 
   return (
     <Box flexDirection="column" flexGrow={1} height="100%" overflow="hidden" paddingX={1}>
-      {descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef })}
+      {descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef, atWelcome })}
     </Box>
   );
 }

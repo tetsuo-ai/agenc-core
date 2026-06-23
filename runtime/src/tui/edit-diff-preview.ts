@@ -39,8 +39,12 @@ export interface EditDiffPreview {
   readonly removals: number;
 }
 
-/** Max changed rows shown inline before collapsing to "… +N more". */
-const EDIT_PREVIEW_MAX_LINES = 8;
+/**
+ * Max changed rows shown inline before collapsing to "… +N more". Kept generous
+ * so a typical small edit shows in full and only genuinely long diffs collapse;
+ * the rest stays reachable via the full diff surface (ctrl+w d).
+ */
+const EDIT_PREVIEW_MAX_LINES = 16;
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";

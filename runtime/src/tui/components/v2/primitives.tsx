@@ -737,7 +737,18 @@ export function WelcomeColdPanel({
       </ThemedBox>
 
       <Box flexDirection="column">
-        <ThemedText color="muted3">recent</ThemedText>
+        <Box flexDirection="row" flexWrap="wrap">
+          <ThemedText color="muted3">recent</ThemedText>
+          {visibleSessions.length > 0 ? (
+            <ThemedText color="inactive">
+              {`  ·  press ${
+                visibleSessions.length > 1
+                  ? `1-${visibleSessions.length}`
+                  : '1'
+              } to resume`}
+            </ThemedText>
+          ) : null}
+        </Box>
         <ThemedBox
           flexDirection="column"
           borderStyle="single"
@@ -758,6 +769,10 @@ export function WelcomeColdPanel({
           )}
         </ThemedBox>
       </Box>
+
+      <ThemedText color="inactive" wrap="truncate-end">
+        type a task and press ↵  ·  / for commands  ·  @ to attach  ·  ? for shortcuts
+      </ThemedText>
     </Box>
   )
 }
@@ -1063,11 +1078,24 @@ export function DiffInline({
                   ? 'agenc'
                   : 'text2'
           return (
+            // The gutter cells (old/new line nums + sigil) are fixed-width and
+            // must never shrink; only the code cell flexes and truncates. Without
+            // flexShrink={0} on the gutter and minWidth={0} on the code cell, a
+            // wide code line lets Yoga squeeze the gutter (eating a pad space)
+            // and wrap the row, which silently drops the truncation marker.
             <ThemedBox key={index} flexDirection="row" backgroundColor={bg} paddingX={1}>
-              <ThemedText color="muted3">{(line.oldLine ?? '').padStart(4, ' ')}</ThemedText>
-              <ThemedText color="muted3">{(line.newLine ?? '').padStart(4, ' ')}</ThemedText>
-              <ThemedText color={sigilColor}> {sigil} </ThemedText>
-              <ThemedText color={codeColor} wrap="truncate-end">{line.code}</ThemedText>
+              <Box flexShrink={0}>
+                <ThemedText color="muted3">{(line.oldLine ?? '').padStart(4, ' ')}</ThemedText>
+              </Box>
+              <Box flexShrink={0}>
+                <ThemedText color="muted3">{(line.newLine ?? '').padStart(4, ' ')}</ThemedText>
+              </Box>
+              <Box flexShrink={0}>
+                <ThemedText color={sigilColor}> {sigil} </ThemedText>
+              </Box>
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <ThemedText color={codeColor} wrap="truncate-end">{line.code}</ThemedText>
+              </Box>
             </ThemedBox>
           )
         })}

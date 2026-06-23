@@ -9,6 +9,7 @@ import { useKeybindings } from "../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../keybindings/KeybindingContext.js";
 import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/PromptOverlaySurfaces.js";
 import type { PendingRequest } from "../permission-requests.js";
+import type { SpinnerMode } from "../components/spinner/types.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
@@ -27,6 +28,17 @@ type Props = {
   readonly modalScrollRef?: RefObject<ScrollBoxHandle | null>;
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
+  /**
+   * Cold-start/empty transcript. Forwarded to the transcript surface so the
+   * welcome hero starts at the top instead of being pinned to the bottom on a
+   * short viewport. See TranscriptSurface for the full rationale.
+   */
+  readonly atWelcome?: boolean;
+  /**
+   * Current streaming phase, or null when the session is idle. Drives the
+   * always-visible "working" indicator in the status bar.
+   */
+  readonly activityMode?: SpinnerMode | null;
 };
 
 export function WorkbenchLayout({
@@ -37,6 +49,8 @@ export function WorkbenchLayout({
   modalScrollRef,
   pendingApproval,
   scrollRef,
+  atWelcome,
+  activityMode = null,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
@@ -76,7 +90,7 @@ export function WorkbenchLayout({
 
   return (
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
-      {rows >= 8 ? <WorkbenchStatusBar /> : null}
+      {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} /> : null}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         {showExplorer ? (
           <NoSelect flexShrink={0} width={explorerWidth} height="100%">
@@ -84,7 +98,7 @@ export function WorkbenchLayout({
           </NoSelect>
         ) : null}
         <ContentWidthProvider width={surfaceContentWidth}>
-          <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} />
+          <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} atWelcome={atWelcome} />
         </ContentWidthProvider>
         {showAgents ? (
           <NoSelect flexShrink={0} width={agentsWidth} height="100%">
