@@ -28,7 +28,15 @@ function getBuiltinModelStrings(provider: string): ModelStrings {
   const providerKey = provider === 'agenc' || provider === 'github' ? 'openai' : provider
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
-    out[key] = (ALL_MODEL_CONFIGS[key] as Record<string, string>)[providerKey]
+    const cfg = ALL_MODEL_CONFIGS[key]
+    // Not every ModelConfig defines every provider key (e.g. only opus46 maps
+    // xai/mistral), so the dynamic provider/openai lookups can be undefined at
+    // runtime. Cast only those dynamic lookups as possibly-undefined and end the
+    // chain on the strongly-typed `firstParty`, which ModelConfig guarantees is
+    // defined, so each ModelKey always resolves to a real, non-undefined model
+    // string regardless of provider.
+    const lookup = cfg as Record<string, string | undefined>
+    out[key] = lookup[providerKey] ?? lookup.openai ?? cfg.firstParty
   }
   return out
 }

@@ -401,6 +401,50 @@ describe("AgenC MCP management CLI parsing", () => {
       .toThrow();
   });
 
+  test("mcp add rejects value-form boolean flags instead of silently enabling them", async () => {
+    for (const flagArg of ["--client-secret=false", "--xaa=false", "--client-secret=0"]) {
+      const { io, output } = captureIo();
+
+      await expect(
+        runAgenCMcpCli(
+          {
+            kind: "management",
+            argv: ["add", flagArg, "github", "gh-mcp"],
+          },
+          { io },
+        ),
+      ).resolves.toBe(1);
+
+      const flagName = flagArg.slice(2, flagArg.indexOf("="));
+      expect(output().stderr).toContain(
+        `Option --${flagName} does not take a value`,
+      );
+      // No config should be written when parsing rejects the argument.
+      await expect(readFile(join(agencHome, "config.toml"), "utf8")).rejects
+        .toThrow();
+    }
+  });
+
+  test("mcp add still enables bare boolean flags", async () => {
+    const { io } = captureIo();
+
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: ["add", "--client-secret", "github", "gh-mcp"],
+        },
+        { io },
+      ),
+    ).resolves.toBe(0);
+
+    const loaded = await loadConfig({ home: agencHome });
+    expect(loaded.config.mcp_servers?.github).toMatchObject({
+      transport: "stdio",
+      command: "gh-mcp",
+    });
+  });
+
   test("mcp xaa setup validates issuer and secret env before writing settings", async () => {
     const { io, output } = captureIo();
 
