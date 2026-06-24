@@ -1452,14 +1452,27 @@ export function ApprovalCard({
         {showFacts ? (
           <Box flexDirection="row" gap={2} flexWrap="wrap">
             {facts.map(fact => (
+              // Mirror the DiffInline gutter/code-cell split: the LABEL is a
+              // fixed cell (flexShrink={0}) so its text + the inter-cell gap are
+              // never squeezed, and ONLY the VALUE flexes/truncates. Without the
+              // pinned label, a long value (e.g. a `call_…` request id) made Yoga
+              // eat the gap and drop the label's last char to a stray wrap row
+              // (`REQUEScall_…` + a lone `T`). truncate-middle keeps a long call
+              // id's `call_` prefix + trailing chars instead of just the head.
               <Box
                 key={fact.label}
                 flexDirection="row"
                 gap={1}
                 width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
               >
-                <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
-                <ThemedText color={fact.color ?? 'text2'} wrap="truncate-end">{fact.value}</ThemedText>
+                <Box flexShrink={0}>
+                  <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
+                </Box>
+                <Box flexShrink={1} minWidth={0}>
+                  <ThemedText color={fact.color ?? 'text2'} wrap="truncate-middle">
+                    {fact.value}
+                  </ThemedText>
+                </Box>
               </Box>
             ))}
           </Box>

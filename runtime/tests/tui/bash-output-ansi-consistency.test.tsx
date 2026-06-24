@@ -2,7 +2,8 @@ import React from 'react'
 import { describe, expect, test } from 'vitest'
 
 import { BashOutputView } from '../../src/tui/tool-rendering.js'
-import { renderToAnsiString } from '../../src/utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../src/utils/staticRender.js'
+import { selectAgenCTuiGlyphs } from '../../src/tui/glyphs.js'
 
 // BUG 2 (MEDIUM): a Run/Bash stdout line that carries the PROGRAM'S OWN SGR
 // colors used to render inconsistently. Iter-26 wrapped every stdout line in
@@ -97,5 +98,74 @@ describe('BashOutputView ANSI consistency (BUG 2: no half-dim/half-raw lines)', 
     // THEME_DIM_FG.
     expect(bodyAfterGutter(coloredRow!)).not.toContain(THEME_DIM_FG)
     expect(plainRow).toContain(THEME_DIM_FG)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// BUG 3: empty command output `(No output)` must nest under the `⎿` gutter.
+//
+// iter-26 nested NON-EMPTY Bash/Run stdout under the `● Run(...)` call row with a
+// `  ⎿  ` gutter, but the silent/empty branch still returned a BARE
+// `<Text dimColor>(No output)</Text>` with no gutter — so `(No output)` rendered
+// flush at the bullet column instead of nested at the gutter column like every
+// other tool-result body. The fix renders the silent line behind the SAME gutter
+// row layout the non-empty branch uses.
+// ---------------------------------------------------------------------------
+
+// A plain-exec trailer with NO stdout/stderr (the silent case).
+const EMPTY_EXEC = '\n\n[exec exit_code=0 wall_time=0.03s tokens=10]'
+const EMPTY_EXEC_FAILURE = '\n\n[exec exit_code=1 wall_time=0.03s tokens=10]'
+
+describe('BashOutputView empty-output gutter (BUG 3: (No output) nests under ⎿)', () => {
+  test('a silent zero-exit command nests `(No output)` under the gutter', async () => {
+    const out = await renderToString(<BashOutputView content={EMPTY_EXEC} />, {
+      columns: 120,
+      rows: 20,
+    })
+    const gutter = selectAgenCTuiGlyphs().responseGutter
+    const row = out.split('\n').find((line) => line.includes('(No output)'))
+    expect(row).toBeDefined()
+    // The line carries the `⎿` continuation gutter (it nests under `● Run(...)`).
+    // Against the pre-fix code the silent branch returned a bare `(No output)`
+    // with NO gutter glyph on its row.
+    expect(row).toContain(gutter)
+    // The gutter precedes the text — i.e. the text is nested at the gutter
+    // column, not flush before it.
+    expect(row!.indexOf(gutter)).toBeLessThan(row!.indexOf('(No output)'))
+  })
+
+  test('a silent non-zero-exit command nests its `(no output, non-zero exit)` under the gutter', async () => {
+    const out = await renderToString(<BashOutputView content={EMPTY_EXEC_FAILURE} />, {
+      columns: 120,
+      rows: 20,
+    })
+    const gutter = selectAgenCTuiGlyphs().responseGutter
+    const row = out
+      .split('\n')
+      .find((line) => line.includes('(no output, non-zero exit)'))
+    expect(row).toBeDefined()
+    expect(row).toContain(gutter)
+    expect(row!.indexOf(gutter)).toBeLessThan(
+      row!.indexOf('(no output, non-zero exit)'),
+    )
+  })
+
+  test('the empty-output gutter aligns with the non-empty-output gutter column', async () => {
+    const gutter = selectAgenCTuiGlyphs().responseGutter
+    const empty = await renderToString(<BashOutputView content={EMPTY_EXEC} />, {
+      columns: 120,
+      rows: 20,
+    })
+    const nonEmpty = await renderToString(
+      <BashOutputView content={`hello world\n\n[exec exit_code=0 wall_time=0.03s tokens=10]`} />,
+      { columns: 120, rows: 20 },
+    )
+    const emptyRow = empty.split('\n').find((l) => l.includes('(No output)'))
+    const nonEmptyRow = nonEmpty.split('\n').find((l) => l.includes('hello world'))
+    expect(emptyRow).toBeDefined()
+    expect(nonEmptyRow).toBeDefined()
+    // The gutter glyph sits at the SAME column in both — the empty line is no
+    // longer flush at the bullet column while the real output sits at the gutter.
+    expect(emptyRow!.indexOf(gutter)).toBe(nonEmptyRow!.indexOf(gutter))
   })
 })

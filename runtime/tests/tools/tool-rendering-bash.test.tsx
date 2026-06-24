@@ -134,20 +134,28 @@ function flattenBash(
 describe("BashOutputView — capped preview visual contract", () => {
   test("renders no-output indicator when both stdout and stderr are empty (zero exit)", () => {
     // Capped preview: silent success collapses to a single dim "(No output)".
+    // The line now nests behind the `⎿` continuation gutter (like the non-empty
+    // branch), so the text lives in a child <Text> under the gutter row layout
+    // rather than as the root node's direct child.
     const node = BashOutputView({
       content: "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>[exit_code=0]",
-    }) as { props: { children?: unknown; dimColor?: boolean } };
-    expect(node.props.children).toBe("(No output)");
-    expect(node.props.dimColor).toBe(true);
+    });
+    const flat = flattenBash(node);
+    const noOutput = flat.find((child) => child.props?.children === "(No output)");
+    expect(noOutput).toBeDefined();
+    expect(noOutput!.props.dimColor).toBe(true);
   });
 
   test("silent non-zero exit notes the failed exit instead of a metadata line", () => {
     // The raw [exit_code=...] metadata block is no longer surfaced; a silent
-    // failure is summarized inline instead.
+    // failure is summarized inline instead, nested behind the gutter.
     const node = BashOutputView({
       content: "<bash-stdout></bash-stdout>[exit_code=1]",
-    }) as { props: { children?: unknown } };
-    expect(node.props.children).toBe("(no output, non-zero exit)");
+    });
+    const flat = flattenBash(node);
+    expect(
+      flat.some((child) => child.props?.children === "(no output, non-zero exit)"),
+    ).toBe(true);
   });
 
   test("oversized single stdout line is width-capped with a [N chars truncated] marker", () => {
