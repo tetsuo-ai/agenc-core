@@ -55,7 +55,16 @@ export function WorkbenchActivityIndicator({
   return (
     <Box flexShrink={0} flexDirection="row">
       <Text dimColor wrap="truncate-end">{separator}</Text>
-      <Text color="agenc">{glyph}</Text>
+      {/*
+        Use the SAME color token as the composer body spinner's status glyph
+        (SpinnerAnimationRow renders its glyph in `messageColor`, which defaults
+        to "suggestion"). Both indicators describe the same in-flight turn, so a
+        clashing second purple here read as two unrelated activity signals. This
+        only unifies the COLOR — the title bar keeps its animated brand glyph
+        family while the body keeps its own glyph, so the comment no longer
+        claims a glyph match that isn't made.
+      */}
+      <Text color="suggestion">{glyph}</Text>
       {/*
         Title-case the verb so the status bar reads "✻ Working…" — matching the
         composer body spinner (which uses titleVerbForMode) for the same turn,

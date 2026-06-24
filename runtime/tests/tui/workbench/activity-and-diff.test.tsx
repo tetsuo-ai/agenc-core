@@ -7,7 +7,11 @@ import { WorkbenchActivityIndicator } from "../../../src/tui/workbench/Workbench
 import { WorkbenchStatusBar } from "../../../src/tui/workbench/WorkbenchStatusBar.js";
 import { DiffInline } from "../../../src/tui/components/v2/primitives.js";
 import { buildEditDiffPreview } from "../../../src/tui/edit-diff-preview.js";
-import { renderToString } from "../../../src/utils/staticRender.js";
+import { renderToAnsiString, renderToString } from "../../../src/utils/staticRender.js";
+import {
+  SpinnerAnimationRow,
+  type SpinnerAnimationRowProps,
+} from "../../../src/tui/components/spinner/SpinnerAnimationRow.js";
 import {
   getReducedMotionDot,
   titleVerbForMode,
@@ -129,6 +133,91 @@ describe("title bar / status line phase agreement", () => {
       // casing for the same turn.
       expect(out).toContain(titleVerbForMode(mode));
     }
+  });
+});
+
+// The title-bar activity indicator and the composer body status glyph both
+// describe the SAME in-flight turn. They must not animate in two different
+// purples at once, which read as two unrelated activity signals. The title bar
+// renders its glyph in the same color token the body spinner uses for its
+// status glyph (SpinnerAnimationRow's `messageColor`, whose production default
+// is "suggestion"). This test pins the on-screen colors so they can't silently
+// diverge again.
+describe("title bar / body spinner glyph color agreement", () => {
+  // Pull the SGR color escape that immediately precedes `glyph` in the rendered
+  // ANSI string. Returns the raw escape (e.g. "[38;2;178;95;255m").
+  function colorBefore(ansi: string, glyph: string): string | null {
+    const idx = ansi.indexOf(glyph);
+    if (idx < 0) return null;
+    const before = ansi.slice(0, idx);
+    const matches = before.match(/\[[0-9;]*m/g);
+    return matches && matches.length > 0 ? matches[matches.length - 1] : null;
+  }
+
+  function bodyProps(
+    overrides: Partial<SpinnerAnimationRowProps> = {},
+  ): SpinnerAnimationRowProps {
+    const now = Date.now();
+    return {
+      columns: 100,
+      effortSuffix: "",
+      foregroundedTeammate: undefined,
+      // hasActiveTools forces the static "◐" status glyph (statusGlyph()).
+      hasActiveTools: true,
+      hasRunningTeammates: false,
+      leaderIsIdle: false,
+      loadingStartTimeRef: { current: now - 1000 },
+      message: "Working",
+      // Production default messageColor (see Spinner.tsx: messageColor =
+      // overrideColor ?? "suggestion"). The body glyph is painted in this token.
+      messageColor: "suggestion",
+      mode: "tool-use",
+      overrideColor: null,
+      pauseStartTimeRef: { current: null },
+      reducedMotion: false,
+      responseLengthRef: { current: 0 },
+      shimmerColor: "agencShimmer",
+      spinnerSuffix: null,
+      teammateTokens: 0,
+      thinkingStatus: null,
+      totalPausedMsRef: { current: 0 },
+      verbose: false,
+      ...overrides,
+    };
+  }
+
+  it("paints the title-bar glyph in the SAME color as the body status glyph", async () => {
+    // Reduced motion pins the title-bar glyph to a single deterministic frame so
+    // the color (not the glyph) is what's asserted.
+    const state = getDefaultAppState();
+    const reduced = {
+      ...state,
+      settings: { ...state.settings, prefersReducedMotion: true },
+    };
+    const titleAnsi = await renderToAnsiString(
+      <AppStateProvider initialState={reduced as never}>
+        <WorkbenchActivityIndicator mode="requesting" />
+      </AppStateProvider>,
+      { columns: 80, color: true },
+    );
+    const bodyAnsi = await renderToAnsiString(
+      withState(<SpinnerAnimationRow {...bodyProps()} />),
+      { columns: 100, color: true },
+    );
+
+    const titleColor = colorBefore(titleAnsi, getReducedMotionDot());
+    const bodyColor = colorBefore(bodyAnsi, "◐");
+
+    expect(titleColor).not.toBeNull();
+    expect(bodyColor).not.toBeNull();
+    // Both glyphs must use the identical SGR color escape. Revert-sensitive:
+    // before unification the title bar used color="agenc" (a different purple
+    // than the body's "suggestion"), so this equality fails on the old code.
+    expect(titleColor).toBe(bodyColor);
+    // Belt-and-suspenders: in the default theme "suggestion" is rgb(178,95,255).
+    // Reverting the title bar to "agenc" (rgb(206,92,255)) changes this escape.
+    expect(titleColor).toContain("178;95;255");
+    expect(titleColor).not.toContain("206;92;255");
   });
 });
 
