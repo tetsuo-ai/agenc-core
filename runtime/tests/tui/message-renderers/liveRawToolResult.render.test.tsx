@@ -327,8 +327,9 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    // The diff stats + DIFF chrome render on the CALL ROW.
-    expect(row).toContain('DIFF')
+    // The diff stats + diff chrome render on the CALL ROW. An Edit to an
+    // existing file is labelled EDIT (distinct from a first-write CREATE).
+    expect(row).toContain('EDIT')
     expect(row).toContain('+3 -2')
     // The removed and added lines are present in the diff.
     expect(row).toContain('M0 stubs')
@@ -361,7 +362,8 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    expect(row).toContain('DIFF')
+    // A MultiEdit changes an existing file → EDIT (not a first-write CREATE).
+    expect(row).toContain('EDIT')
     expect(row).toContain('+2 -2')
     expect(row).toContain('aliasmap_alloc')
     expect(combined).not.toContain('updated successfully')
@@ -386,7 +388,9 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    expect(row).toContain('DIFF')
+    // A first Write of a new file is labelled CREATE (distinct from an EDIT to
+    // an existing file), so the user can tell "made a new file" apart.
+    expect(row).toContain('CREATE')
     // Whole-file add: 3 additions, 0 removals.
     expect(row).toContain('+3 -0')
     expect(row).toContain('int main')
@@ -406,8 +410,11 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
       isError: true,
     })
     const row = await renderCallRow(c.param, c.lookups)
-    // Failed row surfaces the friendly reason, and no diff chrome.
+    // Failed row surfaces the friendly reason, and no diff chrome at all —
+    // neither the old 'DIFF' label nor the new operation labels render.
     expect(row).toContain('File must be read first')
     expect(row).not.toContain('DIFF')
+    expect(row).not.toContain('EDIT')
+    expect(row).not.toContain('CREATE')
   })
 })

@@ -1077,6 +1077,7 @@ export function DiffInline({
   file,
   stats,
   lines,
+  op = 'DIFF',
 }: {
   readonly file: string
   readonly stats?: string
@@ -1086,11 +1087,18 @@ export function DiffInline({
     readonly newLine?: string
     readonly code: string
   }[]
+  /**
+   * Header verb. Distinguishes a first-write CREATE from an EDIT so the user can
+   * tell "made a new file" from "changed an existing one" — the diff body looks
+   * identical otherwise. Defaults to the neutral 'DIFF' for the approval-preview
+   * and any caller that doesn't know the operation.
+   */
+  readonly op?: string
 }): React.ReactNode {
   return (
     <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft">
       <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
-        <ThemedText color="subtle">DIFF</ThemedText>
+        <ThemedText color="subtle">{op}</ThemedText>
         <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
         <Box flexGrow={1} />
         {stats ? <ThemedText color="subtle">{stats}</ThemedText> : null}
