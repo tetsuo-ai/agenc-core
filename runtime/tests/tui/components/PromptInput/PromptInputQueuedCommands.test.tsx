@@ -14,6 +14,11 @@ const queueFixture = vi.hoisted(() => ({
   commands: [] as QueuedCommandFixture[],
 }))
 
+// Capture the exact args the queue passes to createUserMessage so we can
+// assert it supplies an explicit empty timestamp (never letting it default
+// to a render-time ISO clock).
+const createUserMessageSpy = vi.hoisted(() => vi.fn())
+
 vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
@@ -40,10 +45,14 @@ vi.mock('../Message.js', () => ({
 
 vi.mock('../../../utils/messages.js', () => ({
   EMPTY_LOOKUPS: {},
-  createUserMessage: ({ content }: { content: unknown }) => ({
-    type: 'user',
-    message: { content },
-  }),
+  createUserMessage: (args: { content: unknown; timestamp?: string }) => {
+    createUserMessageSpy(args)
+    return {
+      type: 'user',
+      message: { content: args.content },
+      timestamp: args.timestamp,
+    }
+  },
   normalizeMessages: (messages: unknown[]) => messages,
 }))
 
@@ -55,12 +64,32 @@ vi.mock('../../../utils/messageQueueManager.js', () => ({
 
 describe('PromptInputQueuedCommands', () => {
   beforeEach(() => {
+    createUserMessageSpy.mockClear()
     queueFixture.commands = [
       {
         value: 'Use another library',
         mode: 'prompt',
       },
     ]
+  })
+
+  it('passes an explicit empty timestamp so queued previews never default to a render-time ISO clock', async () => {
+    queueFixture.commands = [
+      { value: 'first prompt', mode: 'prompt' },
+      { value: 'second prompt', mode: 'prompt' },
+    ]
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    await renderToString(<PromptInputQueuedCommands />, 100)
+
+    expect(createUserMessageSpy).toHaveBeenCalled()
+    // Every queued preview must receive an explicit empty timestamp; a bare
+    // call (no timestamp) lets createUserMessage default to
+    // new Date().toISOString(), collapsing all previews to one identical
+    // render-time machine clock.
+    for (const call of createUserMessageSpy.mock.calls) {
+      expect(call[0]).toHaveProperty('timestamp', '')
+    }
   })
 
   it('shows a next-turn guidance banner for queued prompt messages', async () => {

@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
 import { Text } from '../../ink.js'
+import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js'
 import {
   MenuModal,
   ModeSwitcher,
+  Msg,
   PlanList,
   SlashPalette,
   StatusSegment,
@@ -181,5 +183,40 @@ describe('v2 primitives', () => {
     expect(output).toContain('scroll 16-22/30')
     expect(output).not.toContain('item-00')
     expect(output).not.toContain('item-29')
+  })
+})
+
+describe('Msg queued header marker', () => {
+  it('shows a quiet "queued" marker (not a clock) for a queued message without a time', async () => {
+    const output = await renderToString(
+      <QueuedMessageProvider isFirst>
+        <Msg role="user" label="you">
+          <Text>pending prompt body</Text>
+        </Msg>
+      </QueuedMessageProvider>,
+      { columns: 100, rows: 12 },
+    )
+
+    expect(output).toContain('YOU')
+    expect(output).toContain('pending prompt body')
+    // The neutral marker stands in for the missing per-item enqueue time.
+    // (Body text deliberately avoids the word "queued" so this assertion is
+    // revert-sensitive to the marker rendering.)
+    expect(output).toContain('queued')
+    // It must not invent a clock or leak an ISO machine timestamp.
+    expect(output).not.toMatch(/\d{1,2}:\d{2}/)
+    expect(output).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('shows the provided time (not the queued marker) when a non-queued message has a time', async () => {
+    const output = await renderToString(
+      <Msg role="user" label="you" time="1:37 AM">
+        <Text>live prompt body</Text>
+      </Msg>,
+      { columns: 100, rows: 12 },
+    )
+
+    expect(output).toContain('1:37 AM')
+    expect(output).not.toContain('queued')
   })
 })
