@@ -304,7 +304,7 @@ export function AssistantToolUseMessage({
  * there is no diffable change (so the row stays clean). Reuses the `DiffInline`
  * primitive + the shared diff engine via `buildEditDiffPreview`.
  */
-function renderEditDiffPreview(
+export function renderEditDiffPreview(
   toolName: string,
   input: unknown,
 ): React.ReactNode {
@@ -330,11 +330,16 @@ function renderEditDiffPreview(
       } · ctrl+w d for full diff`,
     });
   }
+  // Distinguish a first write from an edit in the header so the two no longer
+  // look identical. A Write produces a brand-new file (all additions, old
+  // content empty) → CREATE; Edit/MultiEdit change an existing file → EDIT.
+  const op = toolName === "Write" ? "CREATE" : "EDIT";
   return (
     <DiffInline
       file={preview.file.length > 0 ? preview.file : "file"}
       stats={preview.stats}
       lines={lines}
+      op={op}
     />
   );
 }
