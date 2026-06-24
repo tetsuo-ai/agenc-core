@@ -235,7 +235,9 @@ export function SpinnerAnimationRow({
   const status =
     foregroundedTeammate && !foregroundedTeammate.isIdle ? (
       <>
-        <Text dimColor>(esc to interrupt </Text>
+        {/* Leading space separates the verb (e.g. "Working…") from the status
+            group; without it the message and "(" run together. */}
+        <Text dimColor>{' (esc to interrupt '}</Text>
         <Text color={toInkColor(foregroundedTeammate.identity.color)}>
           {foregroundedTeammate.identity.agentName}
         </Text>
@@ -243,10 +245,15 @@ export function SpinnerAnimationRow({
       </>
     ) : !foregroundedTeammate && parts.length > 0 ? (
       thinkingOnly ? (
-        <Byline>{parts}</Byline>
+        // The thinking-only byline already carries its own "(…)"; a single
+        // leading space keeps it off the verb.
+        <>
+          <Text dimColor>{' '}</Text>
+          <Byline>{parts}</Byline>
+        </>
       ) : (
         <>
-          <Text dimColor>(</Text>
+          <Text dimColor>{' ('}</Text>
           <Byline>{parts}</Byline>
           <Text dimColor>)</Text>
         </>
