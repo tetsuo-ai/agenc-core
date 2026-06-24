@@ -380,18 +380,70 @@ function truncatePreviewWidth(line: string): string {
 }
 
 /**
+ * Result of capping a block for the `⎿`-gutter preview. `lines` is the HEAD
+ * block (rendered first), `remaining` is the count of HIDDEN middle lines
+ * surfaced as a `… +K lines` elision, and `tailLines` (when non-empty) is the
+ * TAIL block rendered AFTER the elision. For the head-only success cap
+ * `tailLines` is empty, so the elision lands after `lines` exactly as before.
+ */
+interface CappedPreview {
+  readonly lines: readonly string[];
+  readonly remaining: number;
+  readonly tailLines: readonly string[];
+}
+
+/**
  * Cap a block to the first `maxLines` non-trailing-whitespace lines (each line
  * also width-capped), appending a "… +K lines" continuation when the block is
  * longer. Matches the common CLI-agent `output_lines` convention.
  */
-function capPreviewLines(
+function capPreviewLines(value: string, maxLines: number): CappedPreview {
+  const all = value.replace(/\s+$/, "").split("\n").map(truncatePreviewWidth);
+  if (all.length <= maxLines)
+    return { lines: all, remaining: 0, tailLines: [] };
+  return {
+    lines: all.slice(0, maxLines),
+    remaining: all.length - maxLines,
+    tailLines: [],
+  };
+}
+
+/**
+ * Failure-aware cap. For a FAILED command the diagnostic payload — the
+ * `AssertionError:` / `Traceback` exception line and the
+ * `Ran N tests` / `FAILED (failures=1)` verdict — lives at the END of the
+ * output, so a head-only cap truncates exactly the lines a developer needs in
+ * an error→diagnose→fix loop. This keeps the same ~`maxLines` inline footprint
+ * but splits it into a HEAD block (early context: what ran) and a TAIL block
+ * (the exception + verdict), with the hidden middle surfaced as `… +K lines`.
+ *
+ * Reused for both the stdout failure cap (the live-daemon path folds
+ * stdout+stderr into one stream) and the stderr failure cap (the envelope path
+ * carries the traceback there). When the block already fits within `maxLines`
+ * it returns the full block head-only (no elision), identical to
+ * `capPreviewLines`.
+ */
+function capPreviewLinesHeadTail(
   value: string,
   maxLines: number,
-): { readonly lines: readonly string[]; readonly remaining: number } {
+  headLines: number,
+): CappedPreview {
   const all = value.replace(/\s+$/, "").split("\n").map(truncatePreviewWidth);
-  if (all.length <= maxLines) return { lines: all, remaining: 0 };
-  return { lines: all.slice(0, maxLines), remaining: all.length - maxLines };
+  if (all.length <= maxLines)
+    return { lines: all, remaining: 0, tailLines: [] };
+  // Clamp the head so at least one tail line always survives, then give the
+  // remainder of the budget to the tail (where the verdict/exception live).
+  const head = Math.max(1, Math.min(headLines, maxLines - 1));
+  const tail = maxLines - head;
+  return {
+    lines: all.slice(0, head),
+    remaining: all.length - head - tail,
+    tailLines: all.slice(all.length - tail),
+  };
 }
+
+/** Head lines reserved for the failure-aware head+tail cap (tail gets the rest). */
+const BASH_PREVIEW_FAILURE_HEAD_LINES = 2;
 
 /**
  * Live `exec_command` trailer line, e.g.
@@ -526,10 +578,25 @@ export function BashOutputView({
       </Box>
     );
   }
-  const stdoutCap = capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES);
+  // On a FAILED command the verdict/exception lives at the END of the output,
+  // so cap head+tail (keep early context AND the trailing reason) instead of
+  // head-only. Success stays byte-identical (head-only). This applies to BOTH
+  // the stdout cap — the live-daemon path folds stderr into stdout — and the
+  // stderr cap that carries the traceback in the envelope path.
+  const stdoutCap = isFailure
+    ? capPreviewLinesHeadTail(
+        stdoutTrimmed,
+        BASH_PREVIEW_MAX_LINES,
+        BASH_PREVIEW_FAILURE_HEAD_LINES,
+      )
+    : capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES);
   const showStderr = isFailure && stderrTrimmed.length > 0;
   const stderrCap = showStderr
-    ? capPreviewLines(stderrTrimmed, BASH_PREVIEW_MAX_LINES)
+    ? capPreviewLinesHeadTail(
+        stderrTrimmed,
+        BASH_PREVIEW_MAX_LINES,
+        BASH_PREVIEW_FAILURE_HEAD_LINES,
+      )
     : null;
   // Compact non-zero-exit indicator. The plain exec result folds stderr into
   // stdout (no separate stderr stream), so on a failed command with no tagged
@@ -550,6 +617,11 @@ export function BashOutputView({
             stdoutCap.remaining === 1 ? "line" : "lines"
           }`}</Text>
         ) : null}
+        {/* TAIL block (failure head+tail cap): the trailing verdict/exception
+            lines that survive AFTER the `… +K lines` elision. Empty on success. */}
+        {stdoutCap.tailLines.map((line, idx) =>
+          renderBashOutputLine(line, `ot${idx}`, "dim"),
+        )}
         {stderrCap
           ? stderrCap.lines.map((line, idx) =>
               // stderr: a plain line keeps the red failure tone; a line that
@@ -563,6 +635,11 @@ export function BashOutputView({
             stderrCap.remaining === 1 ? "line" : "lines"
           }`}</Text>
         ) : null}
+        {stderrCap
+          ? stderrCap.tailLines.map((line, idx) =>
+              renderBashOutputLine(line, `et${idx}`, "red" as TextColor),
+            )
+          : null}
         {showExitNote ? (
           <Text color={"red" as TextColor}>{`(exit ${exitCode})`}</Text>
         ) : null}
