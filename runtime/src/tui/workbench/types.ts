@@ -95,7 +95,7 @@ export type ProjectTreeGitState =
   | "untracked"
   | "ignored";
 
-export type ProjectTreeRowKind = "root" | "directory" | "file" | "loading" | "error";
+export type ProjectTreeRowKind = "root" | "directory" | "file" | "loading" | "empty" | "error";
 
 export type ProjectTreeRow = {
   readonly id: string;

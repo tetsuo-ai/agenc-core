@@ -5,7 +5,7 @@ import type { SpinnerMode } from "../components/spinner/types.js";
 import {
   getDefaultCharacters,
   getReducedMotionDot,
-  verbForMode,
+  titleVerbForMode,
 } from "../components/spinner/utils.js";
 import { useSettings } from "../hooks/useSettings.js";
 
@@ -56,7 +56,12 @@ export function WorkbenchActivityIndicator({
     <Box flexShrink={0} flexDirection="row">
       <Text dimColor wrap="truncate-end">{separator}</Text>
       <Text color="agenc">{glyph}</Text>
-      <Text color="text2" wrap="truncate-end"> {verbForMode(mode)}…</Text>
+      {/*
+        Title-case the verb so the status bar reads "✻ Working…" — matching the
+        composer body spinner (which uses titleVerbForMode) for the same turn,
+        instead of a lowercase "working…" wedged next to ALL-CAPS chrome.
+      */}
+      <Text color="text2" wrap="truncate-end"> {titleVerbForMode(mode)}…</Text>
     </Box>
   );
 }

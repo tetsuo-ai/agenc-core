@@ -361,6 +361,9 @@ function markerForRow(row: ProjectTreeRow, glyphs: ReturnType<typeof selectAgenC
   if (row.kind === "root") return row.expanded ? glyphs.arrowDown : glyphs.arrowRight;
   if (row.kind === "directory") return row.expanded ? glyphs.arrowDown : glyphs.arrowRight;
   if (row.kind === "loading") return glyphs.ellipsis;
+  // An empty workspace is a normal cold-start state, so its marker is a neutral
+  // space — the "!" below is reserved for genuine error rows.
+  if (row.kind === "empty") return " ";
   if (row.kind === "error") return "!";
   return " ";
 }

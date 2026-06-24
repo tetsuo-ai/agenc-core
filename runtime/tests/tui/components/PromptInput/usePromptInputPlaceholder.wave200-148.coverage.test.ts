@@ -201,9 +201,10 @@ describe('usePromptInputPlaceholder coverage', () => {
         fixture.state.appState.promptSuggestionEnabled = false
       },
       // Cold start with suggestions disabled: instead of a blank composer, the
-      // hook now surfaces the stable on-brand guidance hint, advertising both
-      // the `/` command and `@` attach affordances.
-      'Describe a task · / for commands · @ to attach a file',
+      // hook surfaces a stable on-brand guidance hint. It stays minimal — the
+      // `/` and `@` affordances are taught on the cold-start welcome card on
+      // screen at the same moment, so the placeholder no longer restates them.
+      'Describe a task…',
     )
 
     await expectPlaceholder(() => {}, undefined, { submitCount: 1 })

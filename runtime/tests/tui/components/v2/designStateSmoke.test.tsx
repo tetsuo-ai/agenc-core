@@ -2479,7 +2479,7 @@ const DESIGN_STATES: readonly DesignState[] = [
             </ThemedText>
             <Box minHeight={1} />
             <ThemedText color="text2">
-              {designBodyRow([20, '● '], [22, 'Read ( programs/swap/tests/swap.rs:42-58 ) 14:09:26'])}
+              {designBodyRow([20, '● '], [22, 'Read (programs/swap/tests/swap.rs:42-58) 14:09:26'])}
             </ThemedText>
             <Box minHeight={1} />
             <ThemedText color="subtle">{designBodyRow([21, '⎿ '], [23, 'read 17 lines'])}</ThemedText>
