@@ -139,11 +139,19 @@ describe("session transcript coverage swarm row 003", () => {
         input: { input: "{bad" },
       }),
     ]);
+    // Recovered out-of-order tool results no longer leak the raw internal
+    // callId (call_…) or the framework-internal "without matching start"
+    // phrasing into the user-facing transcript prose; the recovered RESULT
+    // payload (here empty for the empty array) is still kept visible.
     expect(systemContents(transcript)).toEqual([
-      "Tool completed before its start event was received (orphan-ok).",
-      "Tool failed before its start event was received (orphan-error).",
-      "Recovered tool result without matching start (orphan-empty-array): ",
+      "A tool result arrived before its start event and was recovered.",
+      "A tool failed and its result arrived before its start event; recovered.",
+      "A tool result arrived out of order and was recovered: ",
     ]);
+    // None of these operator-facing lines carry the opaque callId.
+    for (const text of systemContents(transcript)) {
+      expect(text).not.toMatch(/orphan-/);
+    }
   });
 
   test("formats structured tool result edge cases for MCP, Glob, and circular fallback data", () => {

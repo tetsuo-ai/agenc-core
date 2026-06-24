@@ -42,6 +42,26 @@ interface ToolUseLike {
   readonly type?: unknown;
   readonly name?: unknown;
   readonly input?: unknown;
+  readonly id?: unknown;
+}
+
+/**
+ * Resolution lookups for gating the rollup on tool completion, mirroring how the
+ * tool header glyph and the embedded diff card gate on `resolvedToolUseIDs` /
+ * `erroredToolUseIDs` (see `AssistantToolUseMessage.tsx`).
+ *
+ * The rollup must agree with the header glyph and the diff card: it should
+ * count a file op ONLY once the `◐` has flipped to a resolved success (`●`),
+ * and NEVER for a `✕` failure. Without this, the rollup would assert a file as
+ * created the instant the Write's INPUT parses — while the header still shows
+ * the in-progress glyph and the diff card is still collapsed — and would even
+ * report a FAILED write as a successful create.
+ */
+export interface TurnFileChangeResolution {
+  /** Tool-use ids whose result has arrived (the `◐` flipped to `●` or `✕`). */
+  readonly resolvedToolUseIDs: ReadonlySet<string>;
+  /** Tool-use ids whose result was an ERROR (`✕`). */
+  readonly erroredToolUseIDs: ReadonlySet<string>;
 }
 
 /**
@@ -54,9 +74,18 @@ interface ToolUseLike {
  *
  * Returns an empty array when the turn changed no files, so the caller renders
  * nothing.
+ *
+ * When `resolution` is supplied (the real caller always supplies it), a file op
+ * is accumulated ONLY when its tool-use `id` is in `resolvedToolUseIDs` AND is
+ * NOT in `erroredToolUseIDs` — so the rollup appears only once the header `◐`
+ * has flipped to a resolved success `●`, and NEVER for a `✕` failure, keeping
+ * the header glyph, the embedded diff card, and the rollup in agreement. When
+ * `resolution` is omitted, the function degrades to its prior behavior and
+ * counts every diffable op (used only where no lookups are available).
  */
 export function deriveTurnFileChanges(
   content: readonly unknown[] | undefined,
+  resolution?: TurnFileChangeResolution,
 ): readonly TurnFileChange[] {
   if (!Array.isArray(content)) return [];
 
@@ -73,6 +102,17 @@ export function deriveTurnFileChanges(
     if (block.type !== "tool_use") continue;
     const name = typeof block.name === "string" ? block.name : "";
     if (!FILE_EDIT_TOOLS.has(name)) continue;
+
+    // Gate on tool resolution the SAME way the diff card does: only count an op
+    // once its result has arrived as a success. A still-running op (id absent
+    // from resolvedToolUseIDs) or a FAILED op (id in erroredToolUseIDs) does not
+    // contribute — the header glyph / diff card render the same way for them.
+    if (resolution !== undefined) {
+      const id = typeof block.id === "string" ? block.id : "";
+      if (id.length === 0) continue;
+      if (!resolution.resolvedToolUseIDs.has(id)) continue;
+      if (resolution.erroredToolUseIDs.has(id)) continue;
+    }
 
     let preview: ReturnType<typeof buildEditDiffPreview>;
     try {

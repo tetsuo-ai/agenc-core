@@ -1636,8 +1636,49 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.messages).toHaveLength(2);
       expect(transcript.messages[0]).toMatchObject({ type: "user" });
       const allText = JSON.stringify(transcript.messages);
-      expect(allText).toContain("Recovered tool result without matching start");
+      // The recovery row no longer leaks the raw internal callId or the
+      // framework-internal "without matching start" phrasing; it uses an
+      // operator-readable lead-in and still surfaces the recovered payload.
+      expect(allText).toContain("A tool result arrived out of order and was recovered");
+      expect(allText).not.toContain("without matching start");
+      expect(allText).not.toContain("phantom-call-1");
       expect(allText).toContain("phantom result");
+    });
+
+    test("BUG 2: recovered-tool-result message does NOT leak the raw call_… id or internal phrasing", () => {
+      // A realistic out-of-order completion carrying an opaque internal
+      // correlation id (call_…) and a meaningful result payload.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "orphan",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "call_e6820ea7c28742678c811d06",
+              result: "the actual recovered payload",
+              isError: false,
+            },
+          },
+        },
+      ]);
+      const allText = JSON.stringify(transcript.messages);
+      // REVERT-SENSITIVITY: against the pre-fix code the message read
+      // "Recovered tool result without matching start (call_e6820ea7…): …",
+      // so BOTH of these absence checks fail and the test goes red. With the
+      // fix the raw call_ id and the framework-internal phrasing are gone.
+      expect(allText).not.toContain("call_e6820ea7c28742678c811d06");
+      expect(allText).not.toContain("without matching start");
+      // The operator-readable lead-in and the recovered payload remain visible.
+      expect(allText).toContain("A tool result arrived out of order and was recovered");
+      expect(allText).toContain("the actual recovered payload");
+      // The warning glyph/severity is preserved (non-error → warning level).
+      const recovered = transcript.messages.find(
+        (m) =>
+          m.type === "system" &&
+          typeof m.content === "string" &&
+          m.content.includes("arrived out of order and was recovered"),
+      );
+      expect(recovered).toMatchObject({ type: "system", level: "warning" });
     });
 
     test("denied FileRead orphan result renders a user-facing denial", () => {
@@ -1657,7 +1698,7 @@ describe("AgenC TUI session transcript", () => {
 
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("Permission request denied by user.");
-      expect(allText).not.toContain("Recovered tool result without matching start");
+      expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("{\\\"error\\\":\\\"rejected by user\\\"}");
     });
 
@@ -1678,7 +1719,7 @@ describe("AgenC TUI session transcript", () => {
 
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("Permission request denied by user.");
-      expect(allText).not.toContain("Recovered tool result without matching start");
+      expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("rejected by user");
     });
 
@@ -1699,7 +1740,7 @@ describe("AgenC TUI session transcript", () => {
 
       const allText = JSON.stringify(transcript.messages);
       expect(transcript.messages).toHaveLength(0);
-      expect(allText).not.toContain("Recovered tool result without matching start");
+      expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("1→secret");
     });
 
@@ -1730,7 +1771,8 @@ describe("AgenC TUI session transcript", () => {
       ]);
 
       expect(transcript.inProgressToolUseIDs.size).toBe(0);
-      expect(JSON.stringify(transcript.messages)).toContain("Recovered tool result without matching start");
+      expect(JSON.stringify(transcript.messages)).toContain("A tool result arrived out of order and was recovered");
+      expect(JSON.stringify(transcript.messages)).not.toContain("phantom-call-2");
       expect(JSON.stringify(transcript.messages)).not.toContain("echo late");
     });
 

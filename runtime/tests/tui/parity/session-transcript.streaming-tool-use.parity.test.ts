@@ -178,7 +178,7 @@ describe("R5 streamingToolUses accumulator (session-transcript)", () => {
     expect(t.streamingToolUses).toEqual([]);
     expect(t.inProgressToolUseIDs.size).toBe(0);
     expect(allText).toContain("read-ok");
-    expect(allText).not.toContain("Recovered tool result without matching start");
+    expect(allText).not.toContain("arrived out of order and was recovered");
   });
 
   test("E5.7 snapshot identity differs across distinct event sequences (sanity check for accumulator-immutability of element shape)", () => {
