@@ -328,3 +328,153 @@ describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary
     ).toBe(true);
   });
 });
+
+/**
+ * Failure-aware cap: when a command FAILS, the diagnostic payload (the
+ * exception line + the PASS/FAIL verdict) lives at the END of the output. A
+ * head-only cap truncates exactly those lines. The cap is split HEAD+TAIL on
+ * failure so the trailing verdict/exception survives, while SUCCESS stays
+ * head-only and byte-identical.
+ *
+ * REVERT-SENSITIVITY: against the pre-fix head-only renderer the failing-case
+ * assertions below go RED — the `AssertionError:` reason and the
+ * `FAILED (failures=1)` verdict are sliced off (only the first ~5 lines survive,
+ * with `… +K lines` swallowing the tail). The success-case assertion still
+ * passes both before and after (head-only is unchanged) and pins that the
+ * success path was NOT altered.
+ */
+describe("BashOutputView — failure cap keeps the trailing verdict/exception (head+tail)", () => {
+  // A realistic failing `python -m unittest` body: progress dots + the FAIL
+  // header + traceback at the TOP, then the test count + verdict at the BOTTOM.
+  // 11 lines total, far past the 5-line cap. With a 2-head / 3-tail failure
+  // split the bottom 3 lines (the `----` rule, the test count, and the
+  // `FAILED (failures=1)` VERDICT — the most important diagnostic) survive.
+  const FAILING_UNITTEST_BODY = [
+    "F....", // 0 — progress (head)
+    "======================================================================", // 1 — separator (head)
+    "FAIL: test_add_fractions (tests.test_fraction.FractionTest)", // 2
+    "----------------------------------------------------------------------", // 3
+    "Traceback (most recent call last):", // 4
+    '  File "tests/test_fraction.py", line 12, in test_add_fractions', // 5
+    "    self.assertEqual(result, Fraction(3, 4))", // 6
+    "AssertionError: Fraction(1, 2) != Fraction(3, 4)", // 7 (hidden middle)
+    "----------------------------------------------------------------------", // 8 — rule (tail)
+    "Ran 5 tests in 0.001s", // 9 — count (tail)
+    "FAILED (failures=1)", // 10 — verdict (tail, LAST line)
+  ].join("\n");
+
+  // A crashing script whose EXCEPTION line is the LAST line — the canonical
+  // case the head-only cap mangled: the `ZeroDivisionError` (the WHY) lives at
+  // the very bottom, so a head-only 5-line cap drops it entirely.
+  const CRASHING_SCRIPT_BODY = [
+    "starting computation", // 0 (head)
+    "loading inputs", // 1 (head)
+    "Traceback (most recent call last):", // 2
+    '  File "calc.py", line 3, in <module>', // 3
+    "    result = total / count", // 4 (hidden middle)
+    "                ~~~~~~^~~~~~~", // 5 (tail)
+    '  File "calc.py", line 1, in divide', // 6 (tail)
+    "ZeroDivisionError: division by zero", // 7 — verdict/exception (tail, LAST)
+  ].join("\n");
+
+  const findText = (
+    flat: { props: { children?: unknown } }[],
+    text: string,
+  ): boolean =>
+    flat.some(
+      (child) =>
+        typeof child.props?.children === "string" &&
+        child.props.children === text,
+    );
+
+  const findMore = (
+    flat: { props: { children?: unknown } }[],
+  ): string | undefined => {
+    const more = flat.find(
+      (child) =>
+        typeof child.props?.children === "string" &&
+        (child.props.children as string).startsWith("… +"),
+    );
+    return more ? (more.props.children as string) : undefined;
+  };
+
+  test("STDOUT failure path (live-daemon fold): trailing verdict survives the cap", () => {
+    // The live daemon folds stdout+stderr into one plain exec stream; a failing
+    // run surfaces here as a non-zero plain-exec trailer.
+    const node = BashOutputView({
+      content: `${FAILING_UNITTEST_BODY}\n\n[exec exit_code=1 wall_time=0.01s tokens=20]`,
+    });
+    const flat = flattenBash(node);
+
+    // The verdict (LAST line) and the test count must survive — a head-only cap
+    // drops both.
+    expect(findText(flat, "FAILED (failures=1)")).toBe(true);
+    expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(true);
+
+    // Early context (the head) is still shown.
+    expect(findText(flat, "F....")).toBe(true);
+
+    // The elision reports the HIDDEN MIDDLE count: 11 lines, 2 head + 3 tail
+    // visible → 11 - 5 = 6 hidden.
+    expect(findMore(flat)).toBe("… +6 lines");
+  });
+
+  test("STDOUT failure path: the bottom EXCEPTION line survives when it is the last line", () => {
+    // A crash whose `ZeroDivisionError: ...` (the WHY) is the LAST line — the
+    // case a head-only cap mangles most.
+    const node = BashOutputView({
+      content: `${CRASHING_SCRIPT_BODY}\n\n[exec exit_code=1 wall_time=0.01s tokens=20]`,
+    });
+    const flat = flattenBash(node);
+
+    expect(findText(flat, "ZeroDivisionError: division by zero")).toBe(true);
+    // Head context preserved too.
+    expect(findText(flat, "starting computation")).toBe(true);
+    // 8 lines, 2 head + 3 tail → 8 - 5 = 3 hidden.
+    expect(findMore(flat)).toBe("… +3 lines");
+  });
+
+  test("STDERR envelope path: traceback verdict survives the red cap", () => {
+    // unittest writes its report to STDERR; the envelope path carries it in
+    // <bash-stderr>. The failing cap must keep the tail there too, in red.
+    const node = BashOutputView({
+      content:
+        `<bash-stdout></bash-stdout>` +
+        `<bash-stderr>${FAILING_UNITTEST_BODY}</bash-stderr>[exit_code=1]`,
+    });
+    const flat = flattenBash(node);
+
+    // The verdict survives in the red failure tone.
+    const verdict = flat.find(
+      (child) =>
+        child.props?.children === "FAILED (failures=1)" &&
+        (child.props as { color?: string }).color === "red",
+    );
+    expect(verdict).toBeDefined();
+    expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(true);
+
+    // The stderr elision count is correct (same 11-line body → 6 hidden).
+    expect(findMore(flat)).toBe("… +6 lines");
+  });
+
+  test("SUCCESS path is unchanged: head-only cap, trailing lines truncated away", () => {
+    // Same 11-line body but exit 0 → the head-only behavior is preserved. The
+    // verdict-shaped LAST line must NOT survive (it's beyond the 5-line head),
+    // and the elision reports 11 - 5 = 6 remaining.
+    const node = BashOutputView({
+      content: `<bash-stdout>${FAILING_UNITTEST_BODY}</bash-stdout>[exit_code=0]`,
+    });
+    const flat = flattenBash(node);
+
+    // The first 5 lines survive head-only...
+    expect(findText(flat, "F....")).toBe(true);
+    expect(
+      findText(flat, "FAIL: test_add_fractions (tests.test_fraction.FractionTest)"),
+    ).toBe(true);
+    // ...and the trailing verdict is truncated away (head-only, unchanged).
+    expect(findText(flat, "FAILED (failures=1)")).toBe(false);
+    expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(false);
+    // Head-only elision: 11 - 5 = 6 remaining.
+    expect(findMore(flat)).toBe("… +6 lines");
+  });
+});
