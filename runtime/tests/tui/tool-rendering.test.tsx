@@ -140,6 +140,47 @@ describe("TUI tool rendering helpers", () => {
     expect(tool.renderToolUseMessage("raw")).toBe('{"value":"raw"}');
   });
 
+  test("BUG 3: TodoWrite header is a readable count + active item, NOT raw {\"todos\"} JSON", () => {
+    const tool = createTuiTool("TodoWrite");
+    const summary = tool.renderToolUseMessage({
+      todos: [
+        { content: "Creating package __init__.py", activeForm: "Creating package __init__.py", status: "completed" },
+        { content: "Wire the config validator", activeForm: "Wiring the config validator", status: "in_progress" },
+        { content: "Add tests", activeForm: "Adding tests", status: "pending" },
+      ],
+    });
+
+    // Human-readable: the total count + the in-progress item's name.
+    expect(summary).toContain("3 todos");
+    expect(summary).toContain("Wire the config validator");
+    // None of the garbled raw-JSON / truncation artifacts from the old generic
+    // branch (`{"todos":[{"activeForm":…__.py","status":"completed"},{…).`).
+    expect(summary).not.toContain('{"todos"');
+    expect(summary).not.toContain('"activeForm"');
+    expect(summary).not.toContain('"status"');
+    expect(summary).not.toMatch(/\.\)\.$/);
+    expect(summary).not.toContain("...");
+  });
+
+  test("BUG 3: TodoWrite header falls back to the first item when none is in progress, and pluralizes", () => {
+    const tool = createTuiTool("TodoWrite");
+    // Singular.
+    expect(
+      tool.renderToolUseMessage({ todos: [{ content: "Lone task", status: "pending" }] }),
+    ).toBe("1 todo · Lone task");
+    // No in-progress item → highlight the first todo.
+    expect(
+      tool.renderToolUseMessage({
+        todos: [
+          { content: "First", status: "pending" },
+          { content: "Second", status: "completed" },
+        ],
+      }),
+    ).toBe("2 todos · First");
+    // Empty list → just the count, no trailing separator.
+    expect(tool.renderToolUseMessage({ todos: [] })).toBe("0 todos");
+  });
+
   test("EditDiffView renders a capped (+a -r) stat line plus green/red changes", () => {
     const children = flatten(
       EditDiffView({

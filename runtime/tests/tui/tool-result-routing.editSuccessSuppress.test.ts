@@ -87,3 +87,32 @@ describe("pickToolResultDispatch — edit/write success suppression (GAP #3)", (
     ).toBe("generic");
   });
 });
+
+// BUG 3: TodoWrite has no structured renderer; its boilerplate success body
+// ("Todos have been modified successfully. Ensure that you continue…") used to
+// render verbatim. Mirror the Edit/Write success suppression so it does not.
+// The live result string is copied from
+//   runtime/src/tools/TodoWriteTool/TodoWriteTool.ts (mapToolResultToToolResultBlockParam)
+describe("pickToolResultDispatch — TodoWrite success suppression (BUG 3)", () => {
+  const TODO_SUCCESS =
+    "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable";
+
+  test("TodoWrite success boilerplate suppresses (no verbatim render alongside the call row)", () => {
+    expect(pickToolResultDispatch("TodoWrite", TODO_SUCCESS)).toBe("suppress");
+  });
+
+  test("TodoWrite success with the trailing verification nudge still suppresses", () => {
+    const withNudge = `${TODO_SUCCESS}\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step.`;
+    expect(pickToolResultDispatch("TodoWrite", withNudge)).toBe("suppress");
+  });
+
+  test("a FAILED TodoWrite (different wording) does NOT suppress — renders through generic", () => {
+    expect(
+      pickToolResultDispatch("TodoWrite", "Error: invalid todo status 'foo'"),
+    ).toBe("generic");
+  });
+
+  test("suppression is tool-name scoped — a Bash result echoing the todo phrase is not suppressed", () => {
+    expect(pickToolResultDispatch("Bash", TODO_SUCCESS)).toBe("generic");
+  });
+});

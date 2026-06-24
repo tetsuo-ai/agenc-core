@@ -1,7 +1,11 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React from "react";
+import stripAnsi from "strip-ansi";
 
 import { Box, Text } from "./ink.js";
+import { Ansi } from "./ink/Ansi.js";
+import { stringWidth } from "./ink/stringWidth.js";
+import { stripUnderlineAnsi } from "./components/shell/OutputLine.js";
 import { selectAgenCTuiGlyphs } from "./glyphs.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
@@ -350,10 +354,28 @@ const BASH_PREVIEW_MAX_LINES = 5;
 /** Width cap for an individual previewed line (keeps the gutter tidy). */
 const MAX_PREVIEW_LINE_WIDTH = 200;
 
+/**
+ * Whether a line carries its OWN ANSI SGR (program color/style). Such a line is
+ * rendered through `<Ansi>` so its program color is preserved intact (matching
+ * the live-shell `OutputLine` precedent) instead of having a `dimColor` wrapper
+ * applied OVER it — which the program's own `ESC[39m`/`ESC[0m` resets terminate
+ * mid-line, leaving the row half-dim / half-raw.
+ */
+function lineHasOwnAnsi(line: string): boolean {
+  return stripAnsi(line) !== line;
+}
+
 function truncatePreviewWidth(line: string): string {
-  if (line.length <= MAX_PREVIEW_LINE_WIDTH) return line;
-  return `${line.slice(0, MAX_PREVIEW_LINE_WIDTH - 1)}… [${
-    line.length - (MAX_PREVIEW_LINE_WIDTH - 1)
+  // Measure VISIBLE width (ANSI escapes are zero-width). Counting escape BYTES
+  // as visible characters truncated colored lines early and miscapped the
+  // gutter; `stringWidth` strips ANSI before measuring. A line that is within
+  // the visible cap is returned unchanged (escapes intact). When it overflows,
+  // strip the ANSI before slicing so the truncation marker math stays on a
+  // clean string and we never cut through the middle of an escape sequence.
+  if (stringWidth(line) <= MAX_PREVIEW_LINE_WIDTH) return line;
+  const plain = stripAnsi(line);
+  return `${plain.slice(0, MAX_PREVIEW_LINE_WIDTH - 1)}… [${
+    plain.length - (MAX_PREVIEW_LINE_WIDTH - 1)
   } chars truncated]`;
 }
 
@@ -403,6 +425,39 @@ function parsePlainExecResult(content: string): {
     }
   }
   return { stdout: lines.slice(0, end).join("\n"), exitCode };
+}
+
+/**
+ * Render one capped Run/Bash output line. Lines are nested detail under the call
+ * row, so a PLAIN line renders in the dim/secondary tone its sibling report
+ * bodies use. A line that carries its OWN program SGR (e.g. a tool that prints
+ * `ESC[31m…ESC[39m`) must NOT have a `dimColor` wrapper applied over it: the
+ * program's own resets terminate the dim mid-line, leaving the row half-dim /
+ * half-raw — visually inconsistent with its uniformly-dim siblings. For those
+ * lines, follow the live-shell `OutputLine` precedent: render through `<Ansi>` so
+ * the program color is preserved intact (intentional), stripping only leaking
+ * underline codes — never double-applying dim over program color.
+ *
+ * Inlined as a helper (not a component) so a plain line stays a direct
+ * `<Text dimColor>` element — the existing flatten-based tests walk for it.
+ */
+function renderBashOutputLine(
+  line: string,
+  key: string,
+  plainColor: "dim" | TextColor,
+): React.ReactElement {
+  if (lineHasOwnAnsi(line)) {
+    return <Ansi key={key}>{stripUnderlineAnsi(line)}</Ansi>;
+  }
+  return plainColor === "dim" ? (
+    <Text key={key} dimColor>
+      {line}
+    </Text>
+  ) : (
+    <Text key={key} color={plainColor}>
+      {line}
+    </Text>
+  );
 }
 
 export function BashOutputView({
@@ -476,22 +531,22 @@ export function BashOutputView({
         <Text dimColor>{responseGutter}</Text>
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        {stdoutCap.lines.map((line, idx) => (
-          <Text key={`o${idx}`} dimColor>
-            {line}
-          </Text>
-        ))}
+        {stdoutCap.lines.map((line, idx) =>
+          // stdout: plain lines dim; lines with their own SGR keep program color.
+          renderBashOutputLine(line, `o${idx}`, "dim"),
+        )}
         {stdoutCap.remaining > 0 ? (
           <Text dimColor>{`… +${stdoutCap.remaining} ${
             stdoutCap.remaining === 1 ? "line" : "lines"
           }`}</Text>
         ) : null}
         {stderrCap
-          ? stderrCap.lines.map((line, idx) => (
-              <Text key={`e${idx}`} color={"red" as TextColor}>
-                {line}
-              </Text>
-            ))
+          ? stderrCap.lines.map((line, idx) =>
+              // stderr: a plain line keeps the red failure tone; a line that
+              // carries its OWN program SGR is rendered via <Ansi> so its colors
+              // stay intact (and don't emit raw escape bytes inside a <Text>).
+              renderBashOutputLine(line, `e${idx}`, "red" as TextColor),
+            )
           : null}
         {stderrCap && stderrCap.remaining > 0 ? (
           <Text dimColor>{`… +${stderrCap.remaining} ${
@@ -669,6 +724,39 @@ function skillInputParts(record: Record<string, unknown>): {
   };
 }
 
+/**
+ * Readable TodoWrite/TodoRead summary from the `{ todos: [...] }` input. The
+ * generic branch would JSON-stringify the whole array and `shortJson`-truncate
+ * it to a garbled `{"todos":[{"activeForm":"…__.py","status":"completed"},{…).`
+ * header. Instead surface a `<count> todos · <active item>` line: the total
+ * count plus the name of the in-progress item (or the first todo when none is
+ * in progress). Returns null when there is no usable todos array so the caller
+ * falls through to its other branches.
+ */
+function todoSummaryForInput(record: Record<string, unknown>): string | null {
+  const todos = record.todos;
+  if (!Array.isArray(todos)) return null;
+  const total = todos.length;
+  const todoLabel = (todo: unknown): string | null => {
+    if (!isRecord(todo)) return null;
+    const content =
+      typeof todo.content === "string" && todo.content.trim().length > 0
+        ? todo.content
+        : typeof todo.activeForm === "string" && todo.activeForm.trim().length > 0
+          ? todo.activeForm
+          : null;
+    return content === null ? null : truncateInline(content, 72);
+  };
+  const inProgress = todos.find(
+    (todo) => isRecord(todo) && todo.status === "in_progress",
+  );
+  const highlightLabel =
+    (inProgress !== undefined ? todoLabel(inProgress) : null) ??
+    (total > 0 ? todoLabel(todos[0]) : null);
+  const countText = `${total} ${total === 1 ? "todo" : "todos"}`;
+  return highlightLabel !== null ? `${countText} · ${highlightLabel}` : countText;
+}
+
 function isMcpToolName(name: string): boolean {
   return name.startsWith("mcp.");
 }
@@ -714,6 +802,10 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   }
   if (name === "Bash" && typeof record.command === "string") {
     return truncateInline(record.command);
+  }
+  if (name === "TodoWrite" || name === "TodoRead") {
+    const todos = todoSummaryForInput(record);
+    if (todos !== null) return todos;
   }
   const sanitized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {

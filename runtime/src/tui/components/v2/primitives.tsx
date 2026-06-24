@@ -1251,10 +1251,71 @@ export interface ApprovalDiffPreview {
   readonly op?: string
 }
 
+/**
+ * Fixed (line-independent) rows the embedded `DiffInline` box ALWAYS draws,
+ * regardless of how many diff lines it shows:
+ *   - top border + bottom border (2)
+ *   - the `CREATE/EDIT path +N -M` header (1)
+ *   - the header's bottom separator border row (1)
+ *   - the `… +N more · ctrl+w d` continuation row that a capped (always-capped
+ *     for a real Write/Edit) diff appends (1)
+ * The box can never render in fewer than these 5 rows PLUS at least one diff
+ * body line.
+ */
+const DIFF_INLINE_FIXED_CHROME_ROWS = 5
+/** Hard cap on inline diff lines so even a huge diff stays a compact preview. */
+const APPROVAL_PREVIEW_LINE_CAP = 7
+/**
+ * Essential popup body rows that must ALWAYS survive at the bottom of the body:
+ * the summary line, the optional facts grid, the optional note, the
+ * `[1]/[2]/[3]` action legend, and the confirm row. The popup clips its body
+ * from the BOTTOM and the diff box renders ABOVE these rows, so the diff must be
+ * shed BEFORE it can push the legend/confirm off the bottom edge — reserve all
+ * of them up front.
+ */
+const APPROVAL_ESSENTIAL_BODY_ROWS = 5
+
+/**
+ * Decide whether the approval popup can show its embedded `DiffInline` preview
+ * at a given body height, and if so how many diff lines fit.
+ *
+ * Two bugs this guards (BUG 1):
+ *   1. Gating the preview on too small a budget let the popup body's
+ *      `overflow:'hidden'` clip the box right after its header, leaving an
+ *      UNTERMINATED box (top border + header, no body, no closing border).
+ *   2. Even when the box closed, an under-reserved budget let the box push the
+ *      `[1]/[2]/[3]` action legend + confirm row off the BOTTOM of the clipped
+ *      body — shedding the PRIMARY action instead of the optional diff.
+ * So the box's FULL fixed chrome (5 rows) + at least one diff line must fit
+ * AFTER the essential body is reserved, or the preview is omitted entirely — the
+ * `$ command`/path summary, `+N -M` stats, and `ctrl+w d for full diff`
+ * affordance already cover the constrained case.
+ *
+ * Pure (no React) so the height/overflow decision is unit-testable in isolation.
+ */
+export function approvalDiffPreviewBudget(
+  popupBodyRows: number,
+  availableDiffLines: number,
+): { readonly showPreview: boolean; readonly previewLineCap: number } {
+  // Rows left for actual diff LINES after reserving the essential body and the
+  // box's fixed chrome (borders + header + header separator + continuation row).
+  const lineBudget =
+    popupBodyRows - APPROVAL_ESSENTIAL_BODY_ROWS - DIFF_INLINE_FIXED_CHROME_ROWS
+  if (availableDiffLines <= 0 || lineBudget < 1) {
+    return { showPreview: false, previewLineCap: 0 }
+  }
+  const previewLineCap = Math.max(
+    1,
+    Math.min(APPROVAL_PREVIEW_LINE_CAP, lineBudget),
+  )
+  return { showPreview: true, previewLineCap }
+}
+
 export function ApprovalCard({
   risk,
   title,
   command,
+  commandIsShell = true,
   facts,
   note,
   confirmLabel,
@@ -1266,6 +1327,16 @@ export function ApprovalCard({
   readonly risk: 'low' | 'high'
   readonly title: string
   readonly command: string
+  /**
+   * Whether `command` is an actual SHELL command (Run/Bash) that should carry
+   * the `$ ` shell-prompt glyph, or a non-shell input — e.g. a Write/Edit
+   * `file_path` — where a `$ ` would misread as a runnable command AND duplicate
+   * the path already shown in the CREATE/EDIT diff header below. File tools pass
+   * `false` to drop the prompt glyph (and the redundant path line entirely when a
+   * diff header already names the file). Defaults to `true` so existing
+   * command-card callers are unchanged.
+   */
+  readonly commandIsShell?: boolean
   readonly facts: readonly { readonly label: string; readonly value: string; readonly color?: ThemeColor }[]
   readonly note?: string
   readonly confirmLabel: string
@@ -1301,22 +1372,15 @@ export function ApprovalCard({
   // primary action legend + confirm row are never the ones clipped away.
   const showFacts = popupBodyRows >= 5
   // The diff/content preview is the LARGEST optional block (a bordered DiffInline
-  // box: 2 chrome rows + one row per changed line). It is the FIRST thing shed
-  // when the slot is tight — never the [1]/[2]/[3] action legend or confirm row.
-  // Gate it behind the most generous budget, then cap the number of diff rows to
-  // the rows actually left after the essential body (summary, command, facts,
-  // note, action legend, confirm). Reserve ~5 essential body rows + 2 for the
-  // preview's own border; everything beyond that is available for diff lines.
-  const previewBudgetRows = popupBodyRows - 7
-  const showPreview =
-    diffPreview !== undefined && diffPreview.lines.length > 0 && previewBudgetRows >= 2
-  // Cap the inline diff to a small, bounded window (6-8 rows of the existing
-  // preview) and never beyond what the slot can hold; the rest stays reachable
-  // via the full diff surface (ctrl+w d), surfaced as a "… +N more" row.
-  const PREVIEW_CAP = 7
-  const previewLineCap = showPreview
-    ? Math.max(1, Math.min(PREVIEW_CAP, previewBudgetRows))
-    : 0
+  // box). The pure budget helper decides whether it fits (and how many diff
+  // lines it may show) so the same decision is unit-testable without the
+  // renderer; see `approvalDiffPreviewBudget`.
+  const budget = approvalDiffPreviewBudget(
+    popupBodyRows,
+    diffPreview?.lines.length ?? 0,
+  )
+  const showPreview = diffPreview !== undefined && budget.showPreview
+  const previewLineCap = showPreview ? budget.previewLineCap : 0
   let previewLines: ApprovalDiffPreview['lines'] = []
   if (showPreview && diffPreview !== undefined) {
     const shown = diffPreview.lines.slice(0, previewLineCap)
@@ -1360,9 +1424,21 @@ export function ApprovalCard({
         <ThemedText color="text2" wrap="truncate-end">
           {approvalSummary}
         </ThemedText>
-        <ThemedText color="text2" wrap="truncate-end">
-          $ {command}
-        </ThemedText>
+        {commandIsShell ? (
+          // A real shell command (Run/Bash): show it behind the `$ ` prompt glyph.
+          <ThemedText color="text2" wrap="truncate-end">
+            $ {command}
+          </ThemedText>
+        ) : showPreview ? null : (
+          // A non-shell input (a Write/Edit file_path). Never prefix it with the
+          // `$ ` shell-prompt marker — it would misread as a runnable command.
+          // When the embedded diff is shown its CREATE/EDIT header already names
+          // the file, so this line is redundant and omitted (the `showPreview`
+          // branch above); only surface the bare path when no diff is rendered.
+          <ThemedText color="text2" wrap="truncate-end">
+            {command}
+          </ThemedText>
+        )}
         {showPreview && diffPreview !== undefined ? (
           <Box flexShrink={1} overflow="hidden">
             <DiffInline
