@@ -67,8 +67,14 @@ export function usePromptInputPlaceholder({
     // sit blank at rest. Surface a stable, on-brand hint so a new user always
     // knows what to type. It disappears as soon as input is non-empty (guarded
     // above) and renders dim like every other placeholder.
+    //
+    // Kept deliberately minimal ("Describe a task…"): the `/` and `@`
+    // affordances are taught once on the cold-start welcome card (which is on
+    // screen at exactly this moment, since this fallback only fires before the
+    // first submit). Restating them here too made one idea appear three ways on
+    // adjacent rows, so the placeholder no longer repeats them.
     if (submitCount < 1 && !proactiveActive) {
-      return 'Describe a task · / for commands · @ to attach a file'
+      return 'Describe a task…'
     }
   }, [
     input,

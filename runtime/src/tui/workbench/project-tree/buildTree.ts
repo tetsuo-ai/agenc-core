@@ -184,9 +184,13 @@ function normalizeRelativePath(value: string): string {
 function emptyRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
   return [{
     id: "loading-empty",
+    // An empty workspace on cold start is a NORMAL state, not a fault: use the
+    // neutral "empty" kind so its marker is a space rather than the "!" the tree
+    // reserves for genuine errors (which would make a fresh project look broken).
+    // The copy stays inviting to match the welcome-screen tone.
     path: "",
-    label: options.gitStatus ? "No project files" : "Loading files",
-    kind: options.gitStatus ? "error" : "loading",
+    label: options.gitStatus ? "No files yet — describe a task to get started" : "Loading files",
+    kind: options.gitStatus ? "empty" : "loading",
     depth: 1,
     expanded: false,
     hasChildren: false,

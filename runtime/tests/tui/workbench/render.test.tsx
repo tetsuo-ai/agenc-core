@@ -165,6 +165,29 @@ describe("workbench render contract", () => {
     expect(output).toContain("clean");
   });
 
+  it("renders the empty-workspace row without the '!' error marker", async () => {
+    // An empty workspace on cold start is a normal state, so its row must NOT
+    // carry the "!" glyph the tree reserves for genuine errors — that would make
+    // a fresh project look broken on first impression. Revert-sensitive:
+    // restoring kind:"error" on the empty row re-introduces the "!" and fails
+    // the negative assertion.
+    const output = await renderToString(
+      <ProjectExplorerRow
+        width={48}
+        row={{
+          ...row("", "No files yet — describe a task to get started", "file", 1),
+          id: "loading-empty",
+          kind: "empty" as never,
+        }}
+      />,
+      48,
+    );
+
+    expect(output).toContain("No files yet");
+    // The label intentionally contains no "!" so any "!" must be the marker.
+    expect(output).not.toContain("!");
+  });
+
   it("renders loading rows, active rows, and one-column label trims", async () => {
     const loadingOutput = await renderToString(
       <ProjectExplorerRow

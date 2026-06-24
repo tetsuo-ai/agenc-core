@@ -86,6 +86,30 @@ describe("project tree helpers", () => {
     });
   });
 
+  it("renders an empty workspace as a neutral 'empty' row, not an error row", () => {
+    // Cold start in a known (git-tracked) but file-less workspace: gitStatus is
+    // present, paths are empty. The fallback row must be a neutral "empty" kind
+    // — an empty workspace is a NORMAL first-impression state, not a fault — so
+    // it never gets the alarming "!" marker the tree reserves for real errors.
+    const rows = buildProjectTreeRows({
+      cwd: "/repo",
+      paths: [],
+      expandedPaths: new Set(),
+      cursorPath: null,
+      activePath: null,
+      gitStatus: new Map(),
+    });
+
+    const emptyRow = rows.find((row) => row.id === "loading-empty");
+    expect(emptyRow).toMatchObject({
+      kind: "empty",
+      label: "No files yet — describe a task to get started",
+    });
+    // Revert-sensitive: restoring kind:"error" / "No project files" fails these.
+    expect(emptyRow?.kind).not.toBe("error");
+    expect(rows.some((row) => row.kind === "error")).toBe(false);
+  });
+
   it("parses git porcelain status", () => {
     const parsed = parseGitStatusPorcelain(
       [
@@ -287,9 +311,14 @@ describe("project tree helpers", () => {
       const snapshot = store.getSnapshot();
 
       expect(snapshot.loading).toBe(false);
+      // The genuine refresh failure is surfaced via snapshot.error (rendered as a
+      // dedicated red line), so the fallback tree row stays a neutral "empty"
+      // kind — it must NOT carry the "error" kind that paints the alarming "!"
+      // marker on a row that, on a normal cold start, just means an empty workspace.
       expect(snapshot.error).toEqual(expect.stringContaining("ENOTDIR"));
-      expect(snapshot.rows.find((row) => row.kind === "error")).toMatchObject({
-        label: "No project files",
+      expect(snapshot.rows.find((row) => row.kind === "error")).toBeUndefined();
+      expect(snapshot.rows.find((row) => row.kind === "empty")).toMatchObject({
+        label: "No files yet — describe a task to get started",
       });
     } finally {
       store.dispose();

@@ -12,6 +12,7 @@ import {
   SlashPalette,
   StatusSegment,
   TerminalFrame,
+  Tool,
   WelcomeColdPanel,
 } from './primitives.js'
 
@@ -218,6 +219,25 @@ describe('Msg queued header marker', () => {
 
     expect(output).toContain('1:37 AM')
     expect(output).not.toContain('queued')
+  })
+})
+
+describe('Tool call header paren spacing', () => {
+  it('hugs the args with parens — no space on the inside of either paren', async () => {
+    const output = await renderToString(
+      <Tool kind="edit" label="Write" args="index.html" />,
+      { columns: 100, rows: 12 },
+    )
+
+    // Industry convention: `Tool(arg)` with the parens hugging the argument.
+    // Revert-sensitive: putting the `(`, args, and `)` back as separate
+    // children of the gap={1} row re-introduces `( index.html )` and fails
+    // both assertions (the negative one most directly).
+    expect(output).toContain('(index.html)')
+    expect(output).not.toContain('( index.html )')
+    // The single space between the bold tool label and the opening paren is
+    // still supplied by the row's gap — `Write (index.html)`.
+    expect(output).toContain('Write (index.html)')
   })
 })
 

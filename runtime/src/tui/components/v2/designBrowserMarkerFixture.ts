@@ -38,8 +38,8 @@ export const BROWSER_MARKER_FIXTURE = {
   ],
   '03b': [
     { marker: 'swap_v2', row: 19, column: 31 },
-    { marker: 'Read ( programs/swap/src/lib.rs:114-130 )', row: 16, column: 21 },
-    { marker: 'Grep ( pattern: "token::transfer", path: "programs/swap/src"', row: 13, column: 21 },
+    { marker: 'Read (programs/swap/src/lib.rs:114-130)', row: 16, column: 21 },
+    { marker: 'Grep (pattern: "token::transfer", path: "programs/swap/src"', row: 13, column: 21 },
     { marker: 'token::transfer(cpi_ctx, amount_in)', row: 19, column: 44 },
   ],
   '04a': [

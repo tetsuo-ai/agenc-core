@@ -951,11 +951,20 @@ export function Tool({
         <ThemedText color={toolColor[kind]} bold>
           {label ?? capitalize(kind)}
         </ThemedText>
-        <ThemedText color="inactive">(</ThemedText>
-        <ThemedText color="text2" wrap="truncate-middle">
-          {args}
-        </ThemedText>
-        <ThemedText color="inactive">)</ThemedText>
+        {/*
+          The parenthesized args render as a single gap={0} unit so the parens
+          hug the argument (`Write (index.html)`) instead of the outer gap={1}
+          inserting a stray space on the inside of each paren (`Write ( index.html )`).
+          The single space between the bold tool label and the opening paren is
+          still supplied by the parent row's gap={1}.
+        */}
+        <Box flexDirection="row" gap={0}>
+          <ThemedText color="inactive">(</ThemedText>
+          <ThemedText color="text2" wrap="truncate-middle">
+            {args}
+          </ThemedText>
+          <ThemedText color="inactive">)</ThemedText>
+        </Box>
         {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
       </Box>
       {result != null && result !== '' ? (

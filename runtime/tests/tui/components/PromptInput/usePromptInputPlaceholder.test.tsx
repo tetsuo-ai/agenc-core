@@ -145,12 +145,12 @@ describe("usePromptInputPlaceholder", () => {
     // Default cold start: suggestions disabled, no queue, no teammate.
     const coldStart = await renderPlaceholder();
     expect(coldStart).toContain("Describe a task");
-    // The cold-start hint advertises BOTH discoverability affordances right
-    // where the user types: `/` opens commands and `@` attaches a file. The
-    // `@` advert is the item-2 addition; assert it explicitly so a revert of
-    // the placeholder string (dropping `@ to attach`) fails this test.
-    expect(coldStart).toContain("/ for commands");
-    expect(coldStart).toContain("@ to attach a file");
+    // The placeholder stays minimal: the `/` and `@` affordances are taught on
+    // the cold-start welcome card (on screen at this same moment), so the
+    // composer no longer restates them — that triplicated one idea across three
+    // adjacent rows. Revert-sensitive: re-adding the hints here fails these.
+    expect(coldStart).not.toContain("/ for commands");
+    expect(coldStart).not.toContain("@ to attach");
 
     // The hint is a cold-start affordance only — it disappears once the user
     // has started the conversation.

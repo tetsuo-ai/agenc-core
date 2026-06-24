@@ -23,20 +23,25 @@ describe("WorkbenchActivityIndicator (working / waiting-on-model signal)", () =>
   // The verb text is the load-bearing, surface-agnostic signal: the glyph is a
   // brand spinner frame that varies, but the verb is stable. Asserting on the
   // verb makes the test robust and revert-sensitive (idle renders no verb).
-  it("renders a distinct working verb while a turn is active", async () => {
+  it("renders a distinct, title-cased working verb while a turn is active", async () => {
     const out = await renderToString(
       withState(<WorkbenchActivityIndicator mode="requesting" />),
       80,
     );
-    expect(out).toContain("working");
+    // Title-cased to agree with the composer body spinner ("Working…") for the
+    // same turn, instead of a lowercase "working…" next to ALL-CAPS chrome.
+    // Revert-sensitive: reverting the indicator to verbForMode (lowercase)
+    // renders "working" and fails the title-case assertion below.
+    expect(out).toContain("Working");
+    expect(out).not.toContain("working");
   });
 
-  it("maps each streaming phase to its own verb", async () => {
+  it("maps each streaming phase to its own title-cased verb", async () => {
     const cases: ReadonlyArray<[Parameters<typeof WorkbenchActivityIndicator>[0]["mode"], string]> = [
-      ["thinking", "thinking"],
-      ["responding", "responding"],
-      ["tool-use", "running tools"],
-      ["tool-input", "preparing tools"],
+      ["thinking", "Thinking"],
+      ["responding", "Responding"],
+      ["tool-use", "Running tools"],
+      ["tool-input", "Preparing tools"],
     ];
     for (const [mode, verb] of cases) {
       const out = await renderToString(withState(<WorkbenchActivityIndicator mode={mode} />), 80);
@@ -69,7 +74,7 @@ describe("WorkbenchActivityIndicator (working / waiting-on-model signal)", () =>
       80,
     );
     expect(out).toContain(getReducedMotionDot());
-    expect(out).toContain("working");
+    expect(out).toContain("Working");
   });
 
   // #16: when the animated glyph lands on its dot frame ("·") it sits next to
@@ -113,13 +118,16 @@ describe("title bar / status line phase agreement", () => {
     }
   });
 
-  it("renders the honest phase word in the workbench title bar for each mode", async () => {
+  it("renders the honest, title-cased phase word in the workbench title bar for each mode", async () => {
     for (const mode of MODES) {
       const out = await renderToString(
         withState(<WorkbenchActivityIndicator mode={mode} />),
         80,
       );
-      expect(out).toContain(verbForMode(mode));
+      // The status-bar indicator now renders the SAME title-cased verb as the
+      // composer body spinner (titleVerbForMode), so they never disagree on
+      // casing for the same turn.
+      expect(out).toContain(titleVerbForMode(mode));
     }
   });
 });
@@ -135,7 +143,8 @@ describe("WorkbenchStatusBar working indicator", () => {
       120,
     );
     expect(busy).toContain("AgenC Workbench");
-    expect(busy).toContain("working");
+    // Title-cased verb, matching the composer body spinner for the same turn.
+    expect(busy).toContain("Working");
   });
 });
 
