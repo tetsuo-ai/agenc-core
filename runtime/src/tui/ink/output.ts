@@ -660,14 +660,20 @@ function writeLineToScreen(
     // mismatches. stringWidth treats these as width 0, but terminals may
     // move the cursor differently.
     if (codePoint !== undefined && codePoint <= 0x1f) {
-      // Tab (0x09): expand to spaces to reach next tab stop
+      // Tab (0x09): expand to spaces to reach next tab stop.
+      // The expansion cells inherit the tab character's own styleId, not
+      // stylePool.none — otherwise an active background (e.g. a diff
+      // added/removed line's green/red fill, or a syntax theme bg) is
+      // dropped over the expanded columns, leaving a default-bg "notch" in
+      // an otherwise continuous band. A leading tab on a colored line must
+      // carry that line's background exactly as leading spaces already do.
       if (codePoint === 0x09) {
         const tabWidth = 8
         const spacesToNextStop = tabWidth - (offsetX % tabWidth)
         for (let i = 0; i < spacesToNextStop && offsetX < screenWidth; i++) {
           setCellAt(screen, offsetX, y, {
             char: ' ',
-            styleId: stylePool.none,
+            styleId: character.styleId,
             width: CellWidth.Narrow,
             hyperlink: undefined,
           })
