@@ -381,6 +381,35 @@ function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
   return toolUseConfirm.tool.name;
 }
 
+/** Live shell/command tool names whose approval input IS a runnable command. */
+const SHELL_COMMAND_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "Bash",
+  "exec_command",
+  "Run",
+]);
+
+/**
+ * Whether the approval `command` string is a real SHELL command (so it earns the
+ * `$ ` prompt glyph), vs a non-shell input such as a Write/Edit `file_path` where
+ * a `$ ` would misread as runnable and duplicate the diff header's path. Decided
+ * from the tool name (the known shell tools) OR — for any other tool — from the
+ * input actually carrying a `command`/`cmd` key (the same signal
+ * `approvalInputText` uses to render a command rather than a bare path/field).
+ */
+function approvalCommandIsShell(
+  toolUseConfirm: ProjectedToolUseConfirm,
+): boolean {
+  if (SHELL_COMMAND_TOOL_NAMES.has(toolUseConfirm.tool.name)) return true;
+  const input = toolUseConfirm.input;
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>;
+    if (typeof record.command === "string" || typeof record.cmd === "string") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function AgenCApprovalOverlay({
   request,
   toolUseConfirm,
@@ -513,6 +542,7 @@ function AgenCApprovalOverlay({
         risk={destructive ? "high" : "low"}
         title={`tool · ${name} · ${title}`}
         command={command.length > 0 ? command : toolUseConfirm.description}
+        commandIsShell={approvalCommandIsShell(toolUseConfirm)}
         facts={[
           { label: "tool", value: name },
           {

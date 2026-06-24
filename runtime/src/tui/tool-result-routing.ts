@@ -106,6 +106,18 @@ const WRITE_SUCCESS_RE =
   /\bhas been (created|written) successfully\.|\bFile created successfully at:/;
 
 /**
+ * The live daemon's TodoWrite SUCCESS result is a boilerplate sentence —
+ * "Todos have been modified successfully. Ensure that you continue to use the
+ * todo list…" — that carries no information the user needs (the todo state is
+ * shown from the tool-use INPUT on the call row, the same way Edit/Write diffs
+ * are). Suppress it so the verbose boilerplate never renders, mirroring the
+ * Edit/Write success suppression. Anchored on the specific success wording so a
+ * FAILED TodoWrite (different wording, routed through the error/generic path)
+ * never matches.
+ */
+const TODO_WRITE_SUCCESS_RE = /\bTodos have been modified successfully\./;
+
+/**
  * Heuristic for a bare Grep match list with no `Found ...` summary line — every
  * non-empty line looks like `path:line:content` or `path:count` (the
  * files-with-counts and matches shapes the daemon emits). Used so a raw match
@@ -223,6 +235,15 @@ export function pickToolResultDispatch(
   ) {
     const trimmed = joinedContent.trim();
     if (EDIT_SUCCESS_RE.test(trimmed) || WRITE_SUCCESS_RE.test(trimmed)) {
+      return "suppress";
+    }
+  }
+  // TodoWrite success: the boilerplate "Todos have been modified successfully…"
+  // body is noise — the todo state is shown from the tool-use INPUT on the call
+  // row. Suppress it the same way Edit/Write success bodies are. A failed
+  // TodoWrite uses different wording and still renders through generic/error.
+  if (toolName === "TodoWrite") {
+    if (TODO_WRITE_SUCCESS_RE.test(joinedContent.trim())) {
       return "suppress";
     }
   }
