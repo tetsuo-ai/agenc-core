@@ -497,23 +497,6 @@ export function BashOutputView({
   const stderrTrimmed = stderrRaw.trim();
   // Capped stdout: first N lines + "… +K lines". On a non-zero exit the stderr
   // is appended (also capped) so the failure reason is visible inline.
-  const isSilent = stdoutTrimmed.length === 0 && stderrTrimmed.length === 0;
-  if (isSilent) {
-    return (
-      <Text dimColor>
-        {isFailure ? "(no output, non-zero exit)" : "(No output)"}
-      </Text>
-    );
-  }
-  const stdoutCap = capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES);
-  const showStderr = isFailure && stderrTrimmed.length > 0;
-  const stderrCap = showStderr
-    ? capPreviewLines(stderrTrimmed, BASH_PREVIEW_MAX_LINES)
-    : null;
-  // Compact non-zero-exit indicator. The plain exec result folds stderr into
-  // stdout (no separate stderr stream), so on a failed command with no tagged
-  // stderr we still surface the exit code as a small red note.
-  const showExitNote = isFailure && stderrCap === null;
   // The command output is rendered behind the same `⎿` continuation gutter the
   // file-changed summary, Read/Search results, and the V2Tool `ToolResultLines`
   // use, so the stdout/stderr body visually nests UNDER its `● Run(...)` call
@@ -525,6 +508,33 @@ export function BashOutputView({
   // stays red so a failure is still visually distinct.
   const glyphs = selectAgenCTuiGlyphs();
   const responseGutter = `  ${glyphs.responseGutter}  `;
+  const isSilent = stdoutTrimmed.length === 0 && stderrTrimmed.length === 0;
+  if (isSilent) {
+    // The empty `(No output)` line uses the SAME gutter row layout as the
+    // non-empty branch so it nests under the `● Run(...)` row at the gutter
+    // column too — not flush at the bullet column.
+    return (
+      <Box flexDirection="row">
+        <Box flexShrink={0}>
+          <Text dimColor>{responseGutter}</Text>
+        </Box>
+        <Box flexDirection="column" flexGrow={1}>
+          <Text dimColor>
+            {isFailure ? "(no output, non-zero exit)" : "(No output)"}
+          </Text>
+        </Box>
+      </Box>
+    );
+  }
+  const stdoutCap = capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES);
+  const showStderr = isFailure && stderrTrimmed.length > 0;
+  const stderrCap = showStderr
+    ? capPreviewLines(stderrTrimmed, BASH_PREVIEW_MAX_LINES)
+    : null;
+  // Compact non-zero-exit indicator. The plain exec result folds stderr into
+  // stdout (no separate stderr stream), so on a failed command with no tagged
+  // stderr we still surface the exit code as a small red note.
+  const showExitNote = isFailure && stderrCap === null;
   return (
     <Box flexDirection="row">
       <Box flexShrink={0}>

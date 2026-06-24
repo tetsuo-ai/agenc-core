@@ -135,6 +135,83 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     expect(out.toUpperCase()).not.toContain('BASH')
   })
 
+  // ---------------------------------------------------------------------------
+  // Meta-fact row: a long fact VALUE must never squeeze its own LABEL.
+  //
+  // The medium-risk popup shows a TOOL · SCOPE · REQUEST · CONFIRMATION fact grid.
+  // Each fact is a fixed `width={22}` row. Before the fix, the label had no
+  // flexShrink protection, so a long REQUEST value (a `call_…` id, ~15 chars)
+  // overflowed the 22-col cell and Yoga squeezed the unprotected LABEL — dropping
+  // its last char to a stray wrap row and eating the label/value gap, producing
+  // `REQUEScall_…` with a lone `T` on the next line. The fix pins the label
+  // (flexShrink={0}) and lets only the value flex/truncate (truncate-middle).
+  // ---------------------------------------------------------------------------
+  function renderLongRequestApproval(rows = 40, columns = 116): Promise<string> {
+    return renderToString(
+      <Box flexDirection="column">
+        <ApprovalCard
+          risk="low"
+          title="tool · write · medium-risk approval"
+          command="primes.ts"
+          facts={[
+            { label: 'tool', value: 'write' },
+            { label: 'scope', value: 'medium', color: 'warning' },
+            // A long opaque call id, like the real `request.id`.
+            { label: 'request', value: 'call_6d2a5e863dabc1234567890' },
+            { label: 'confirmation', value: 'enter' },
+          ]}
+          note="untrusted policy: approve every call"
+          confirmLabel="enter approve · 2 session · 3 deny"
+        />
+      </Box>,
+      { columns, rows },
+    )
+  }
+
+  test('a long REQUEST fact value keeps its label whole and separated by a gap', async () => {
+    const out = await renderLongRequestApproval()
+
+    // The literal label 'REQUEST' is present, intact (its final 'T' not dropped).
+    expect(out).toContain('REQUEST')
+
+    // The row that carries the label is found, and the label is NOT immediately
+    // jammed against the value: against the pre-fix code the label collided as
+    // `REQUEScall_…` (no 'REQUEST', no gap), with a stray lone 'T' wrap row.
+    const lines = out.split('\n')
+    const requestRow = lines.find((line) => line.includes('REQUEST'))
+    expect(requestRow).toBeDefined()
+    // The broken collision `REQUEScall` must never appear (its tell-tale shape).
+    expect(out).not.toContain('REQUEScall')
+    // There is a gap (whitespace) between the whole 'REQUEST' label and the value.
+    expect(/REQUEST\s+\S/u.test(requestRow ?? '')).toBe(true)
+
+    // Revert-sensitivity: the pre-fix bug wrapped the dropped char onto its own
+    // line — a row whose only content is a lone 'T'. That orphan must not exist.
+    const orphanCharRow = lines.find((line) => line.trim() === 'T')
+    expect(orphanCharRow).toBeUndefined()
+  })
+
+  test('the long request value is shown but middle-truncated (keeps the call_ head)', async () => {
+    const out = await renderLongRequestApproval()
+    // The value middle-truncates, so the stable `call_` prefix survives and an
+    // ellipsis marks the elision (rather than dropping the head).
+    expect(out).toContain('call_')
+    expect(out).toContain('…')
+  })
+
+  test('the other short facts (TOOL/SCOPE/CONFIRMATION) still render whole', async () => {
+    const out = await renderLongRequestApproval()
+    const upper = out.toUpperCase()
+    // All sibling labels render intact and uncollided next to their short values.
+    expect(upper).toContain('TOOL')
+    expect(upper).toContain('SCOPE')
+    expect(upper).toContain('CONFIRMATION')
+    // Their short values are present and unbroken.
+    expect(out).toContain('write')
+    expect(out).toContain('medium')
+    expect(out).toContain('enter')
+  })
+
   test('high-risk typed-confirmation variant still bounds its body and keeps the prompt', async () => {
     const out = await renderToString(
       <ApprovalCard

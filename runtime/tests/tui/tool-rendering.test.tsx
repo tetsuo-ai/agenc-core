@@ -45,6 +45,26 @@ function flatten(node: unknown): ChildElement[] {
     );
 }
 
+/** Recursive depth-first find for an element matching `pred` anywhere in the
+ * subtree — used for bodies nested several Box levels deep (e.g. the gutter row
+ * layout that wraps the silent "(No output)" line). */
+function findDeep(
+  node: unknown,
+  pred: (el: ChildElement) => boolean,
+): ChildElement | undefined {
+  if (!node || typeof node !== "object") return undefined;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findDeep(item, pred);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  const el = node as ChildElement;
+  if (el.props && pred(el)) return el;
+  return findDeep(el.props?.children, pred);
+}
+
 describe("TUI tool rendering helpers", () => {
   test("createTuiTools merges canonical tools with nonblank dynamic names, dedupes, and sorts", () => {
     const tools = createTuiTools([
@@ -204,12 +224,19 @@ describe("TUI tool rendering helpers", () => {
   test("BashOutputView marks silent (zero-exit) output as (No output)", () => {
     // Capped preview: silent success collapses to a single dim "(No output)"
     // line; the raw [duration_ms=...] metadata block is no longer surfaced.
+    // The line now nests behind the `⎿` continuation gutter (matching the
+    // non-empty branch), so the dim "(No output)" <Text> lives a couple Box
+    // levels deep rather than as the root node's direct child.
     const node = BashOutputView({
       content: "<bash-stdout></bash-stdout>[duration_ms=42]",
-    }) as { readonly props: ChildProps };
+    });
 
-    expect(node.props.children).toBe("(No output)");
-    expect(node.props.dimColor).toBe(true);
+    const noOutput = findDeep(
+      node,
+      (el) => el.props.children === "(No output)",
+    );
+    expect(noOutput).toBeDefined();
+    expect(noOutput!.props.dimColor).toBe(true);
   });
 
   test("ToolErrorView falls back to raw content when no error envelope exists", () => {
