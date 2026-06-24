@@ -109,8 +109,17 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
       }
       // [Image #N] placeholders are inline in the text value (inserted at
       // paste time), so the queue preview shows them without stub blocks.
+      //
+      // Pass an explicit empty timestamp so createUserMessage does NOT default
+      // to new Date().toISOString(): the queue is a "what's next" preview, not
+      // the live turn, and the per-item enqueue time isn't tracked. Defaulting
+      // here mints the SAME render-time clock for every queued item (the
+      // useMemo re-mints the whole list whenever one is added), so all previews
+      // would show one identical machine timestamp. A quiet "queued" marker is
+      // rendered in the header instead (see Msg / HighlightedThinkingText).
       return createUserMessage({
-        content
+        content,
+        timestamp: '',
       });
     }));
   }, [queuedCommands]);

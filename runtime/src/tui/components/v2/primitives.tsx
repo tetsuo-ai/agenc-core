@@ -3,6 +3,7 @@ import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
 import { AURA_LIFECYCLE_GLYPHS, AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
+import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
 import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
@@ -885,6 +886,10 @@ export function Msg({
   }
   const inheritedWidth = useContentWidth()
   const contentWidth = insetContentWidth(inheritedWidth, 3)
+  // Queued previews carry no real per-item enqueue time, so they pass no
+  // `time` (see PromptInputQueuedCommands). Show a quiet neutral "queued"
+  // marker in the header slot instead of a misleading render-time clock.
+  const isQueued = useQueuedMessage()?.isQueued ?? false
   return (
     <Box flexDirection="row" gap={2}>
       <ThemedText color={colors[role]}>{role === 'system' ? '∙' : '▮'}</ThemedText>
@@ -893,7 +898,11 @@ export function Msg({
           <ThemedText color={colors[role]} bold>
             {label.toUpperCase()}
           </ThemedText>
-          {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
+          {time ? (
+            <ThemedText color="inactive">{time}</ThemedText>
+          ) : isQueued ? (
+            <ThemedText color="inactive">queued</ThemedText>
+          ) : null}
         </Box>
         <ContentWidthProvider width={contentWidth}>
           <Content color="text2">{children}</Content>

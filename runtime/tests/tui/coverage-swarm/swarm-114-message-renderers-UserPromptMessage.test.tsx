@@ -88,11 +88,18 @@ vi.mock('../../../src/tui/components/v2/primitives.js', async () => {
 
 import { renderToString } from '../../../src/utils/staticRender.js'
 import { MessageActionsSelectedContext } from '../../../src/tui/components/messageActions.js'
+import { formatBriefTimestamp } from '../../../src/utils/formatBriefTimestamp.js'
 import {
   getUserPromptTruncationNotice,
   truncateUserPromptDisplayText,
   UserPromptMessage,
 } from '../../../src/tui/message-renderers/UserPromptMessage.js'
+
+// A real ISO timestamp the standard transcript path must format to a short
+// local time before handing it to <Msg>. Use the shared formatter for the
+// expected value so the assertion stays locale-robust.
+const ISO_TS = '2026-06-24T11:45:00.000Z'
+const FORMATTED_TS = formatBriefTimestamp(ISO_TS)
 
 const originalBriefEnv = process.env.AGENC_BRIEF
 
@@ -178,11 +185,16 @@ describe('UserPromptMessage swarm 114 coverage', () => {
       addMargin: true,
       isSelected: true,
       text: 'normal selected prompt',
-      timestamp: '11:45',
+      timestamp: ISO_TS,
     })
 
-    expect(output).toContain('msg role:user label:you time:11:45')
-    expect(output).toContain(
+    // The raw ISO is formatted to a short local time before reaching <Msg>.
+    // Collapse whitespace: the formatted timestamp is longer than a raw ISO and
+    // can push later content onto a wrapped terminal line.
+    const flat = output.replace(/\s+/g, ' ')
+    expect(flat).toContain(`msg role:user label:you time:${FORMATTED_TS}`)
+    expect(output).not.toContain(ISO_TS)
+    expect(flat).toContain(
       'highlight brief:undefined pointer:false time:none text:normal',
     )
     expect(output).toContain('selected prompt')
@@ -197,25 +209,34 @@ describe('UserPromptMessage swarm 114 coverage', () => {
     process.env.AGENC_BRIEF = '1'
     state.isBriefOnly = true
 
-    await expect(
-      renderPrompt({ text: 'brief prompt', timestamp: '12:00' }),
-    ).resolves.toContain(
-      'highlight brief:true pointer:undefined time:12:00 text:brief prompt',
+    const flatten = (s: string) => s.replace(/\s+/g, ' ')
+
+    // Brief path passes the raw timestamp straight to HighlightedThinkingText
+    // (which formats internally); the stub here echoes whatever it receives.
+    expect(
+      flatten(await renderPrompt({ text: 'brief prompt', timestamp: ISO_TS })),
+    ).toContain(
+      `highlight brief:true pointer:undefined time:${ISO_TS} text:brief prompt`,
     )
 
-    await expect(
-      renderPrompt({
-        isTranscriptMode: true,
-        text: 'transcript prompt',
-        timestamp: '12:01',
-      }),
-    ).resolves.toContain('msg role:user label:you time:12:01')
+    // Standard transcript path formats before <Msg>.
+    expect(
+      flatten(
+        await renderPrompt({
+          isTranscriptMode: true,
+          text: 'transcript prompt',
+          timestamp: ISO_TS,
+        }),
+      ),
+    ).toContain(`msg role:user label:you time:${FORMATTED_TS}`)
 
     state.viewingAgentTaskId = 'task-114'
 
-    await expect(
-      renderPrompt({ text: 'viewing task prompt', timestamp: '12:02' }),
-    ).resolves.toContain('msg role:user label:you time:12:02')
+    expect(
+      flatten(
+        await renderPrompt({ text: 'viewing task prompt', timestamp: ISO_TS }),
+      ),
+    ).toContain(`msg role:user label:you time:${FORMATTED_TS}`)
   })
 
   test('allows active Kairos with env opt-in to drive brief layout', async () => {
