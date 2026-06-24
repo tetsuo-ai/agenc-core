@@ -20,6 +20,7 @@ const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   cursorPath: null,
   activePath: null,
   expandedPaths: [],
+  fileCount: 0,
 });
 const DEFAULT_VIEWPORT_ROWS = 20;
 const WORKSPACE_TREE_IGNORE = [
@@ -63,6 +64,11 @@ export class ProjectTreeStore {
   #refreshVersion = 0;
   #refreshTimer: ReturnType<typeof setInterval> | null = null;
   #started = false;
+  // Directory paths known at the last successful scan, used to detect directories
+  // that newly appeared mid-session (an agent-created subpackage) so they can be
+  // auto-revealed. Stays null until the first scan establishes the baseline — the
+  // initial repo tree must NOT auto-expand (that would explode a large repo).
+  #knownDirectories: ReadonlySet<string> | null = null;
 
   constructor(cwd = process.cwd(), refreshIntervalMs = 5_000) {
     this.#cwd = cwd;
@@ -108,6 +114,7 @@ export class ProjectTreeStore {
         collectGitStatus(this.#cwd),
       ]);
       if (version !== this.#refreshVersion) return;
+      this.#autoExpandNewDirectories(paths);
       this.#paths = paths;
       this.#gitStatus = gitStatus;
       this.#cursorPath = this.#cursorPath ?? firstFilePath(paths) ?? paths[0] ?? null;
@@ -304,6 +311,32 @@ export class ProjectTreeStore {
     }
   }
 
+  /**
+   * Auto-reveal directories that appeared since the last scan. When AgenC writes
+   * files into a NEW subdirectory mid-session (e.g. a `converters/` subpackage),
+   * that directory would otherwise render collapsed and the freshly-written files
+   * would stay hidden in the tree. Expanding only the directories that newly
+   * appeared keeps this scoped to agent-created/just-modified dirs — the initial
+   * repo tree is never force-expanded (the first scan only records the baseline),
+   * so large repos do not blow up. It is a one-time reveal on appearance, not a
+   * persistent override: if the user later collapses the directory, the next scan
+   * no longer sees it as "new", so the collapse sticks.
+   */
+  #autoExpandNewDirectories(nextPaths: readonly string[]): void {
+    const nextDirectories = collectDirectoryPaths(nextPaths);
+    // First successful scan only establishes the baseline; do not auto-expand the
+    // existing repo tree.
+    if (this.#knownDirectories === null) {
+      this.#knownDirectories = nextDirectories;
+      return;
+    }
+    const known = this.#knownDirectories;
+    for (const directory of nextDirectories) {
+      if (!known.has(directory)) this.#expandedPaths.add(directory);
+    }
+    this.#knownDirectories = nextDirectories;
+  }
+
   #rowForPath(pathValue: string): ProjectTreeRow | null {
     return this.#snapshot.rows.find((row) => row.path === pathValue) ?? null;
   }
@@ -367,6 +400,10 @@ export class ProjectTreeStore {
       cursorPath: this.#cursorPath,
       activePath: this.#activePath,
       expandedPaths: [...this.#expandedPaths],
+      // Count the real project files (collapse-independent) rather than the
+      // currently-visible rows, so the WORKSPACE header never undercounts a
+      // project whose files sit inside a collapsed directory.
+      fileCount: countFilePaths(this.#paths),
     };
     for (const listener of this.#listeners) listener();
   }
@@ -416,6 +453,46 @@ function normalizedPathSet(paths: Iterable<string>): Set<string> {
 
 function firstFilePath(paths: readonly string[]): string | null {
   return paths.find((item) => item.length > 0 && !item.endsWith("/")) ?? null;
+}
+
+/**
+ * Count the file entries in a workspace path list. Directory entries carry a
+ * trailing slash (see `normalizeScannedPath`); git-tracked paths are always
+ * files. Counting files (not directories) keeps the WORKSPACE header reading as
+ * "how many files exist", which is what the at-a-glance anchor is meant to show.
+ */
+function countFilePaths(paths: readonly string[]): number {
+  let count = 0;
+  for (const item of paths) {
+    if (item.length > 0 && !item.endsWith("/")) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Derive every directory path implied by a workspace path list. Git-tracked
+ * paths are files, so a directory appears only as an ANCESTOR of a file; the
+ * recursive scanner may also list a directory explicitly with a trailing slash.
+ * Both forms collapse to the same slash-free relative directory path here, so a
+ * directory's "is it new this scan" status is stable across the git and scanner
+ * fallbacks (matching how `addPathItems` materializes directory rows).
+ */
+function collectDirectoryPaths(paths: readonly string[]): ReadonlySet<string> {
+  const directories = new Set<string>();
+  for (const rawPath of paths) {
+    if (rawPath.length === 0 || rawPath.startsWith("../")) continue;
+    const isDirectoryEntry = rawPath.endsWith("/");
+    const trimmed = rawPath.replace(/\/+$/u, "");
+    if (trimmed.length === 0) continue;
+    const segments = trimmed.split("/").filter(Boolean);
+    // For a file, every parent segment is a directory; for an explicit directory
+    // entry, the entry itself is also a directory.
+    const lastDirectoryIndex = isDirectoryEntry ? segments.length : segments.length - 1;
+    for (let index = 1; index <= lastDirectoryIndex; index += 1) {
+      directories.add(segments.slice(0, index).join("/"));
+    }
+  }
+  return directories;
 }
 
 function parentPath(value: string): string | null {
