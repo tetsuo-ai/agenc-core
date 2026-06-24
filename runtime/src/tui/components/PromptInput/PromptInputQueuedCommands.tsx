@@ -133,12 +133,17 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
       {queuedInputCount > 0 && <Box marginLeft={2} marginBottom={1}>
           <Text dimColor>
             {queuedInputCount === 1 ? '1 input queued for next turn' : `${queuedInputCount} inputs queued for next turn`}
-            {' · esc to interrupt'}
+            {/* The "esc to interrupt" affordance is NOT repeated here: a queue
+                can only exist while a turn is loading (inputs are enqueued only
+                when isLoading — see applyBusyInputSubmissionPolicy), and the
+                footer spinner hint always renders the canonical
+                "esc → interrupt" while loading (getSpinnerHintParts). Painting
+                it again on this banner doubled the same hint on screen. */}
             {/* Lowercase the rendered keycap so this inline hint reads in the
-                same lowercase style as the adjacent "esc to interrupt" (and the
-                footer's chat:cancel hint, which .toLowerCase()s its shortcut
-                too). getShortcutDisplay capitalizes named keys ("Backspace"),
-                which would otherwise mix casing within this one line. */}
+                same lowercase style as the footer's chat:cancel hint (which
+                .toLowerCase()s its shortcut too). getShortcutDisplay
+                capitalizes named keys ("Backspace"), which would otherwise mix
+                casing within this one line. */}
             {` · ${getShortcutDisplay('chat:dropQueuedInput', 'Chat', 'ctrl+x backspace').toLowerCase()} to drop last`}
           </Text>
         </Box>}

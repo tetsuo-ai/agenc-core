@@ -101,17 +101,22 @@ describe('PromptInputQueuedCommands', () => {
     expect(output).toContain('Use another library')
   })
 
-  it('describes the Esc action with the same wording as the footer hint', async () => {
+  it('does NOT repeat the "esc to interrupt" hint on the queued banner', async () => {
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
     const output = await renderToString(<PromptInputQueuedCommands />, 100)
 
-    // The queued-commands banner and the footer/spinner Esc hint must use ONE
-    // consistent phrasing so the same Esc action is not described two different
-    // ways on screen at once. Canonical wording is the footer's "esc to
-    // interrupt" (KeyboardShortcutHint shortcut="esc" action="interrupt").
-    expect(output).toContain('esc to interrupt')
-    expect(output).not.toContain('esc interrupts the current turn')
+    // A queue can only exist while a turn is loading (inputs are enqueued only
+    // when isLoading — applyBusyInputSubmissionPolicy returns false otherwise),
+    // and the footer spinner hint ALWAYS renders the canonical "esc → interrupt"
+    // while loading (getSpinnerHintParts). Painting it again on this banner
+    // doubled the same affordance on screen. The banner must NOT carry its own
+    // interrupt hint; the count and the "drop last" control stay.
+    // Revert-sensitive: the old banner appended " · esc to interrupt", so this
+    // assertion fails if that segment is restored.
+    expect(output).not.toContain('esc to interrupt')
+    expect(output).not.toContain('interrupt')
+    expect(output).toContain('1 input queued for next turn')
   })
 
   it('shows a discoverable per-item drop hint alongside the queued-input banner', async () => {
