@@ -16,12 +16,23 @@
  * card palette. Long lists wrap to additional rows and collapse past a cap to a
  * "… +N more" tail, so the block never overflows the content row.
  *
+ * Each entry's file path is wrapped in `FilePathLink`, the SAME OSC 8 hyperlink
+ * the per-file Write/Edit diff cards already render (see `FileWriteTool/UI.tsx`,
+ * `FileEditTool/UI.tsx`). So in a click-to-open terminal (iTerm2, kitty, …) the
+ * just-built file is openable straight from the rollup — the build session is no
+ * longer a dead end. No new keybinding/dispatch wiring into the static
+ * transcript and no external process spawning: it reuses the one open-file
+ * affordance the transcript already exposes. The visible label stays the short
+ * basename (so the compact row never overflows) while the link target is the
+ * full path.
+ *
  * @module
  */
 
 import React from "react";
 import Box from "../ink/components/Box.js";
 import ThemedText from "../components/design-system/ThemedText.js";
+import { FilePathLink } from "../components/FilePathLink.js";
 import type { TurnFileChange } from "../turn-file-changes.js";
 
 /**
@@ -52,9 +63,14 @@ function FileEntry({ change }: { readonly change: TurnFileChange }): React.React
   return (
     <Box flexDirection="row" flexShrink={0} gap={1}>
       <ThemedText color={markerColor}>{marker}</ThemedText>
-      <ThemedText color="text2" wrap="truncate-middle">
-        {shortenFile(change.file)}
-      </ThemedText>
+      {/* OSC 8 hyperlink to the file so it can be opened from the rollup, with
+          the short basename as the visible label and the full path as the link
+          target — same affordance the per-file diff cards already render. */}
+      <FilePathLink filePath={change.file}>
+        <ThemedText color="text2" wrap="truncate-middle">
+          {shortenFile(change.file)}
+        </ThemedText>
+      </FilePathLink>
       {isCreate ? <ThemedText color="success">(new)</ThemedText> : null}
       {showStats ? (
         <Box flexDirection="row" flexShrink={0}>

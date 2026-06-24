@@ -1,5 +1,7 @@
+import { pathToFileURL } from 'node:url'
+
 import React from 'react'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 
 import { Box } from '../../src/tui/ink.js'
 import {
@@ -7,7 +9,7 @@ import {
   type TurnFileChange,
 } from '../../src/tui/turn-file-changes.js'
 import { TurnFileChangesSummary } from '../../src/tui/message-renderers/TurnFileChangesSummary.js'
-import { renderToString } from '../../src/utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../src/utils/staticRender.js'
 
 // UX improvement coverage: a build session renders a per-file collapsed diff
 // for every Write/Edit, but had no concise "here's what THIS turn changed"
@@ -166,5 +168,74 @@ describe('TurnFileChangesSummary (compact per-turn render)', () => {
   test('an empty changes array renders nothing', async () => {
     const out = await renderSummary([])
     expect(out.trim()).toBe('')
+  })
+})
+
+// Open-from-rollup affordance: each changed-file entry is wrapped in the SAME
+// OSC 8 FilePathLink the per-file diff cards render, so in a click-to-open
+// terminal the just-built file opens straight from the summary (no new keybind
+// wiring into the static transcript, no external process). These tests force
+// hyperlink output on and assert the OSC 8 sequence targets the file's URL.
+describe('TurnFileChangesSummary (open-from-rollup OSC 8 affordance)', () => {
+  const previousForceHyperlink = process.env.FORCE_HYPERLINK
+
+  afterEach(() => {
+    if (previousForceHyperlink === undefined) {
+      delete process.env.FORCE_HYPERLINK
+    } else {
+      process.env.FORCE_HYPERLINK = previousForceHyperlink
+    }
+  })
+
+  function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  function renderAnsi(changes: readonly TurnFileChange[], columns = 100): Promise<string> {
+    return renderToAnsiString(
+      <Box flexDirection="column" width={columns}>
+        <TurnFileChangesSummary changes={changes} />
+      </Box>,
+      { columns, rows: 40 },
+    )
+  }
+
+  test('a changed file renders an OSC 8 hyperlink to its file:// URL', async () => {
+    process.env.FORCE_HYPERLINK = '1'
+    const changes = deriveTurnFileChanges([editBlock('styles.css', 'a{}\n', 'a{color:red}\n')])
+    const out = await renderAnsi(changes)
+    // The OSC 8 open sequence targets the file's resolved file:// URL.
+    const url = pathToFileURL('styles.css').href
+    expect(out).toMatch(new RegExp(`\\x1B\\]8;[^;\\x07]*;${escapeRegExp(url)}\\x07`))
+    // It still closes the hyperlink (terminator) so following text is unlinked.
+    expect(out).toContain('\x1B]8;;\x07')
+    // The compact label/stats are still present alongside the link.
+    expect(out).toContain('files changed')
+    expect(out).toContain('styles.css')
+  })
+
+  test('REVERT-SENSITIVITY: without the FilePathLink wrap, no OSC 8 link is emitted', async () => {
+    // This asserts the affordance specifically. If the FilePathLink wrap is
+    // removed from FileEntry (reverting the feature), the file path renders as
+    // plain ThemedText and this OSC 8 open sequence disappears — turning this
+    // test red. With the wrap present, the link target URL is emitted.
+    process.env.FORCE_HYPERLINK = '1'
+    const url = pathToFileURL('index.html').href
+    const withLink = await renderAnsi(
+      deriveTurnFileChanges([writeBlock('index.html', '<html></html>\n')]),
+    )
+    expect(withLink).toContain(`;${url}\x07`)
+
+    // Sanity: with hyperlinks disabled the same render emits no OSC 8 sequence
+    // (graceful degradation in non-supporting terminals), proving the link is
+    // the only source of the sequence.
+    process.env.FORCE_HYPERLINK = '0'
+    const noLink = await renderAnsi(
+      deriveTurnFileChanges([writeBlock('index.html', '<html></html>\n')]),
+    )
+    expect(noLink).not.toContain('\x1B]8;')
+    // The summary content itself is unchanged when hyperlinks are off.
+    expect(noLink).toContain('files changed')
+    expect(noLink).toContain('index.html')
   })
 })
