@@ -5,6 +5,7 @@ import type { SpinnerMode } from "../components/spinner/types.js";
 import {
   getDefaultCharacters,
   getReducedMotionDot,
+  verbForMode,
 } from "../components/spinner/utils.js";
 import { useSettings } from "../hooks/useSettings.js";
 
@@ -19,23 +20,6 @@ import { useSettings } from "../hooks/useSettings.js";
  */
 
 const FRAME_INTERVAL_MS = 120;
-
-/** Plain-language verb for each streaming phase, kept short for the status bar. */
-function verbForMode(mode: SpinnerMode): string {
-  switch (mode) {
-    case "tool-use":
-      return "running tools";
-    case "tool-input":
-      return "preparing tools";
-    case "thinking":
-      return "thinking";
-    case "responding":
-      return "responding";
-    case "requesting":
-    default:
-      return "working";
-  }
-}
 
 export function WorkbenchActivityIndicator({
   mode,
@@ -63,9 +47,14 @@ export function WorkbenchActivityIndicator({
     ? getReducedMotionDot()
     : (frames[frameIndex % frames.length] ?? frames[0] ?? "·");
 
+  // When the animated glyph lands on its dot frame ("·"), it sits right next to
+  // the leading "·" separator and reads as a doubled "· ·". Drop the separator
+  // for that frame so it renders a single dot instead.
+  const separator = glyph === "·" ? " " : " · ";
+
   return (
     <Box flexShrink={0} flexDirection="row">
-      <Text dimColor wrap="truncate-end"> · </Text>
+      <Text dimColor wrap="truncate-end">{separator}</Text>
       <Text color="agenc">{glyph}</Text>
       <Text color="text2" wrap="truncate-end"> {verbForMode(mode)}…</Text>
     </Box>

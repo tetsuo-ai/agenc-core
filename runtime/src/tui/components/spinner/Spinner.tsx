@@ -21,7 +21,7 @@ import { useAppState } from '../../state/AppState.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import type { SpinnerMode } from './types.js';
-import { computeBriefRightStatusLayout, getSpinnerEllipsis } from './utils.js';
+import { computeBriefRightStatusLayout, getSpinnerEllipsis, titleVerbForMode } from './utils.js';
 import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../../../tasks/InProcessTeammateTask/types.js';
@@ -158,11 +158,21 @@ function SpinnerWithVerbInner({
   const currentTask = tasksV2?.find(task => task.status !== 'pending' && task.status !== 'completed');
   const nextTask = findNextPendingTask(tasksV2);
 
-  // Use useState with initializer to pick a random verb once on mount
+  // Use useState with initializer to pick a random verb once on mount.
+  // Only used as a teammate-verb fallback now — the leader's own fallback is an
+  // HONEST phase label (see phaseVerb below), never a random flavor word, so a
+  // slow turn can't read as a system fault like a frozen "Booting…".
   const [randomVerb] = useState(() => sample(getSpinnerVerbs()));
 
-  // Leader's own verb (always the leader's, regardless of who is foregrounded)
-  const leaderVerb = overrideMessage ?? currentTask?.activeForm ?? currentTask?.subject ?? randomVerb;
+  // Honest phase label derived from the real streaming mode. Agrees with the
+  // workbench title-bar indicator (both call verbForMode), so the title bar and
+  // the status line never disagree about what the model is doing.
+  const phaseVerb = titleVerbForMode(mode);
+
+  // Leader's own verb (always the leader's, regardless of who is foregrounded).
+  // Prefer a real task subject/activeForm when present; otherwise show the
+  // honest phase label rather than a random flavor verb.
+  const leaderVerb = overrideMessage ?? currentTask?.activeForm ?? currentTask?.subject ?? phaseVerb;
   const effectiveVerb = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.spinnerVerb ?? randomVerb : leaderVerb;
   const message = effectiveVerb + getSpinnerEllipsis();
 

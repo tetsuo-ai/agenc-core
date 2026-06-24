@@ -16,22 +16,24 @@ export function getSpinnerVerbs(): string[] {
 // Cyberpunk-flavored: technical action verbs from compilers, networks,
 // crypto, runtime systems, and reverse engineering. No clichés.
 // Disjoint from the previous default list (no carryover).
+//
+// IMPORTANT: do NOT add words that NAME a real system/daemon/transport state
+// (e.g. "Booting", "Daemonizing", "Mounting", "Buffering", "Reconnecting",
+// "Connecting"). A frozen flavor verb that happens to spell a genuine state
+// reads as a fault — a 12-minute slow turn once showed "Booting…" and looked
+// like the daemon was hung. Keep these to harmless action flavor only.
 export const SPINNER_VERBS = [
   'Backporting',
-  'Booting',
   'Branching',
   'Bridging',
-  'Buffering',
   'Caching',
   'Chaining',
   'Checksumming',
   'Clocking',
-  'Compiling',
   'Compressing',
   'Concatenating',
   'Cracking',
   'Cross-compiling',
-  'Daemonizing',
   'Debouncing',
   'Debugging',
   'Decoding',
@@ -72,7 +74,6 @@ export const SPINNER_VERBS = [
   'Iterating',
   'Jamming',
   'Latching',
-  'Linking',
   'Lowering',
   'Mapping',
   'Marshalling',
@@ -80,7 +81,6 @@ export const SPINNER_VERBS = [
   'Memoizing',
   'Merging',
   'Mirroring',
-  'Mounting',
   'Multiplexing',
   'Negotiating',
   'Normalizing',
