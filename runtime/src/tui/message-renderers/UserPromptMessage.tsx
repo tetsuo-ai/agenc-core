@@ -99,7 +99,13 @@ export function UserPromptMessage({
     logError(new Error('No content found in user prompt message'));
     return null;
   }
-  return <Box flexDirection="column" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingRight={useBriefLayout ? 0 : 1}>
+  // width="100%" mirrors SystemTextMessage/AssistantTextMessage: without it a
+  // full-width word-wrap row renders at the viewport edge with no trailing
+  // background padding while sibling highlighted rows stop one column short, so
+  // the bg reset spills onto the next line's column 0 and the highlight box gets
+  // a ragged right edge. Pinning the width makes every wrapped row pad/clip to
+  // the same right edge and the highlight forms a clean rectangle.
+  return <Box flexDirection="column" width="100%" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingRight={useBriefLayout ? 0 : 1}>
       {useBriefLayout ? <HighlightedThinkingText text={displayText} useBriefLayout timestamp={timestamp} /> : <Msg role="user" label="you" time={displayTime}><HighlightedThinkingText text={displayText} showPointer={false} /></Msg>}
     </Box>;
 }

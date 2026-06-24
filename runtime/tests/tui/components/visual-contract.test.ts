@@ -101,6 +101,53 @@ describe("TUI visual contract", () => {
     ).toEqual([]);
   });
 
+  it("pins the highlighted YOU message box to full width like its sibling renderers", () => {
+    // BUG C regression: the YOU prompt highlight Box sets backgroundColor +
+    // paddingRight but, UNLIKE SystemTextMessage/AssistantTextMessage, used to
+    // omit width="100%". When a body/queued line word-wraps at exactly the
+    // content-width boundary, that full-width wrap row rendered one column wider
+    // than its siblings with no trailing bg pad, so the bg reset spilled onto the
+    // next line's column 0 and the purple highlight rectangle got a ragged right
+    // edge. Pinning width="100%" makes every wrapped row pad/clip to the same
+    // right edge. This invariant asserts the user box mirrors its siblings.
+    const messageRenderers = join(tuiRoot, "message-renderers");
+    const userSource = readFileSync(
+      join(messageRenderers, "UserPromptMessage.tsx"),
+      "utf8",
+    );
+
+    // The single Box that paints the user-message highlight (it is the only line
+    // carrying both the userMessageBackground token and paddingRight).
+    const highlightBoxLine = userSource
+      .split("\n")
+      .find(
+        (line) =>
+          line.includes("userMessageBackground") && line.includes("paddingRight"),
+      );
+
+    expect(highlightBoxLine).toBeDefined();
+    // Revert-sensitivity: removing width="100%" from that Box drops this match
+    // and fails the assertion. The sibling renderers below confirm the pattern
+    // this mirrors.
+    expect(highlightBoxLine).toContain('width="100%"');
+
+    // Sibling renderers pair backgroundColor with width="100%" on their text
+    // boxes; assert the pattern the user box is mirroring actually exists so this
+    // invariant cannot silently drift if the siblings change.
+    const assistantSource = readFileSync(
+      join(messageRenderers, "AssistantTextMessage.tsx"),
+      "utf8",
+    );
+    const systemSource = readFileSync(
+      join(messageRenderers, "SystemTextMessage.tsx"),
+      "utf8",
+    );
+    // AssistantTextMessage's default markdown box: backgroundColor + width="100%".
+    expect(assistantSource).toMatch(/width="100%"[^\n]*backgroundColor/u);
+    // SystemTextMessage's text boxes: backgroundColor + width="100%".
+    expect(systemSource).toMatch(/backgroundColor=\{bg\}[^\n]*width="100%"/u);
+  });
+
   it("keeps old message and permissions component trees empty", () => {
     const permissionsRoot = join(componentsRoot, "permissions");
     const messagesRoot = join(componentsRoot, "messages");

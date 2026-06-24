@@ -10,6 +10,15 @@ type Props = {
   children: string;
   /** When true, force all text to be rendered with dim styling */
   dimColor?: boolean;
+  /**
+   * Text-wrap mode forwarded to the underlying <Text>. Defaults to <Text>'s
+   * own default ("wrap"), which preserves the leftover inter-word space at a
+   * soft-wrap boundary as a leading space on the continuation line. Markdown
+   * body text passes "wrap-trim" so wrapped continuation rows share the same
+   * left edge (no one-column jitter between sibling bullets). Left undefined
+   * for code/ANSI content where a leading space is significant.
+   */
+  wrap?: import('./styles.js').Styles['textWrap'];
 };
 type SpanProps = {
   color?: Color;
@@ -31,83 +40,32 @@ type SpanProps = {
  *
  * Memoized to prevent re-renders when parent changes but children string is the same.
  */
-export const Ansi = React.memo(function Ansi(t0: Props) {
-  const $ = _c(12);
-  const {
-    children,
-    dimColor
-  } = t0;
+export const Ansi = React.memo(function Ansi({ children, dimColor, wrap }: Props) {
   if (typeof children !== "string") {
-    let t1;
-    if ($[0] !== children || $[1] !== dimColor) {
-      t1 = dimColor ? <Text dim={true}>{String(children)}</Text> : <Text>{String(children)}</Text>;
-      $[0] = children;
-      $[1] = dimColor;
-      $[2] = t1;
-    } else {
-      t1 = $[2];
-    }
-    return t1;
+    return dimColor ? <Text dim={true} wrap={wrap}>{String(children)}</Text> : <Text wrap={wrap}>{String(children)}</Text>;
   }
   if (children === "") {
     return null;
   }
-  let t1;
-  let t2;
-  if ($[3] !== children || $[4] !== dimColor) {
-    t2 = Symbol.for("react.early_return_sentinel");
-    bb0: {
-      const spans = parseToSpans(children);
-      if (spans.length === 0) {
-        t2 = null;
-        break bb0;
-      }
-      if (spans.length === 1 && !hasAnyProps(spans[0].props)) {
-        t2 = dimColor ? <Text dim={true}>{spans[0].text}</Text> : <Text>{spans[0].text}</Text>;
-        break bb0;
-      }
-      let t3;
-      if ($[7] !== dimColor) {
-        t3 = (span: Span, i: number) => {
-          const hyperlink = span.props.hyperlink;
-          if (dimColor) {
-            span.props.dim = true;
-          }
-          const hasTextProps = hasAnyTextProps(span.props);
-          if (hyperlink) {
-            return hasTextProps ? <Link key={i} url={hyperlink}><StyledText color={span.props.color} backgroundColor={span.props.backgroundColor} dim={span.props.dim} bold={span.props.bold} italic={span.props.italic} underline={span.props.underline} strikethrough={span.props.strikethrough} inverse={span.props.inverse}>{span.text}</StyledText></Link> : <Link key={i} url={hyperlink}>{span.text}</Link>;
-          }
-          return hasTextProps ? <StyledText key={i} color={span.props.color} backgroundColor={span.props.backgroundColor} dim={span.props.dim} bold={span.props.bold} italic={span.props.italic} underline={span.props.underline} strikethrough={span.props.strikethrough} inverse={span.props.inverse}>{span.text}</StyledText> : span.text;
-        };
-        $[7] = dimColor;
-        $[8] = t3;
-      } else {
-        t3 = $[8];
-      }
-      t1 = spans.map(t3);
+  const spans = parseToSpans(children);
+  if (spans.length === 0) {
+    return null;
+  }
+  if (spans.length === 1 && !hasAnyProps(spans[0].props)) {
+    return dimColor ? <Text dim={true} wrap={wrap}>{spans[0].text}</Text> : <Text wrap={wrap}>{spans[0].text}</Text>;
+  }
+  const content = spans.map((span: Span, i: number) => {
+    const hyperlink = span.props.hyperlink;
+    if (dimColor) {
+      span.props.dim = true;
     }
-    $[3] = children;
-    $[4] = dimColor;
-    $[5] = t1;
-    $[6] = t2;
-  } else {
-    t1 = $[5];
-    t2 = $[6];
-  }
-  if (t2 !== Symbol.for("react.early_return_sentinel")) {
-    return t2;
-  }
-  const content = t1;
-  let t3;
-  if ($[9] !== content || $[10] !== dimColor) {
-    t3 = dimColor ? <Text dim={true}>{content}</Text> : <Text>{content}</Text>;
-    $[9] = content;
-    $[10] = dimColor;
-    $[11] = t3;
-  } else {
-    t3 = $[11];
-  }
-  return t3;
+    const hasTextProps = hasAnyTextProps(span.props);
+    if (hyperlink) {
+      return hasTextProps ? <Link key={i} url={hyperlink}><StyledText color={span.props.color} backgroundColor={span.props.backgroundColor} dim={span.props.dim} bold={span.props.bold} italic={span.props.italic} underline={span.props.underline} strikethrough={span.props.strikethrough} inverse={span.props.inverse}>{span.text}</StyledText></Link> : <Link key={i} url={hyperlink}>{span.text}</Link>;
+    }
+    return hasTextProps ? <StyledText key={i} color={span.props.color} backgroundColor={span.props.backgroundColor} dim={span.props.dim} bold={span.props.bold} italic={span.props.italic} underline={span.props.underline} strikethrough={span.props.strikethrough} inverse={span.props.inverse}>{span.text}</StyledText> : span.text;
+  });
+  return dimColor ? <Text dim={true} wrap={wrap}>{content}</Text> : <Text wrap={wrap}>{content}</Text>;
 });
 type Span = {
   text: string;

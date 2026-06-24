@@ -132,6 +132,7 @@ function MarkdownBody(t0: Props & { highlight: CliHighlight | null }): React.Rea
   const AnsiComponent = Ansi as React.ComponentType<{
     children: string;
     dimColor?: boolean;
+    wrap?: string;
   }>;
   configureMarked();
   let elements;
@@ -141,7 +142,13 @@ function MarkdownBody(t0: Props & { highlight: CliHighlight | null }): React.Rea
     let nonTableContent = "";
     const flushNonTableContent = function flushNonTableContent() {
       if (nonTableContent) {
-        elements.push(<AnsiComponent key={elements.length} dimColor={dimColor}>{nonTableContent.trim()}</AnsiComponent>);
+        // wrap="wrap-trim" trims the leftover inter-word space at each soft-wrap
+        // boundary so wrapped continuation rows of a bullet/paragraph share the
+        // same left edge (no one-column jitter between sibling list items). This
+        // is scoped to the markdown body (non-table assistant/user text) — code
+        // blocks render via <HighlightedCode>'s own <Ansi> without this prop, so
+        // their significant leading whitespace is preserved.
+        elements.push(<AnsiComponent key={elements.length} dimColor={dimColor} wrap="wrap-trim">{nonTableContent.trim()}</AnsiComponent>);
         nonTableContent = "";
       }
     };

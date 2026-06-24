@@ -229,4 +229,44 @@ describe('markdown rendering components', () => {
     expect(output).toContain('  const value = 1')
     expect(output).not.toContain('\\tconst value = 1')
   })
+
+  test('wraps assistant bullet continuations to a uniform left edge (no stray leading space)', async () => {
+    // BUG B regression: when an assistant markdown bullet soft-wraps at a space
+    // boundary, the leftover inter-word space used to survive as a leading space
+    // on the continuation line — so sibling continuations in the same list
+    // started at different columns (a one-column jitter, e.g. "the page." at
+    // lead 0 vs " fonts." at lead 1). The markdown body now wraps with
+    // "wrap-trim", which strips that boundary whitespace so every continuation
+    // row shares the same left edge.
+    const width = 24
+    const output = await renderToString(
+      <Box width={width}>
+        <Markdown>
+          {[
+            '- Centered heading that is large and clearly centered on the page.',
+            '- Clean layout with plenty of whitespace and system fonts.',
+          ].join('\n')}
+        </Markdown>
+      </Box>,
+      width,
+    )
+
+    const lines = output.split('\n').filter((line) => line.trim().length > 0)
+    // Sanity: the content actually wrapped (more rows than the 2 source bullets).
+    expect(lines.length).toBeGreaterThan(2)
+
+    const leadingSpaces = (line: string): number =>
+      line.length - line.replace(/^ +/u, '').length
+
+    // The two bullet markers ("- ") sit flush-left (lead 0). Every other row is
+    // a soft-wrap continuation and must ALSO start at column 0 — no stray leading
+    // space. Revert-sensitivity: without "wrap-trim" the final continuation
+    // ("system fonts.") keeps the boundary space and renders at lead 1, so the
+    // uniform-edge assertion below fails.
+    const leads = lines.map(leadingSpaces)
+    expect(leads.every((lead) => lead === 0)).toBe(true)
+    // And the specific measured jitter case is gone: no continuation begins with
+    // a space.
+    expect(lines.some((line) => /^ /u.test(line))).toBe(false)
+  })
 })

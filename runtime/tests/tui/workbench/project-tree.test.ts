@@ -103,11 +103,40 @@ describe("project tree helpers", () => {
     const emptyRow = rows.find((row) => row.id === "loading-empty");
     expect(emptyRow).toMatchObject({
       kind: "empty",
-      label: "No files yet — describe a task to get started",
+      // Short, column-fitting label. The narrow tree column (truncate-end at
+      // ~17-22 cols, depth:1 4-space indent) would chop the old long copy mid-
+      // word ("No files yet — de…"); the inviting "describe a task" guidance
+      // lives on the welcome card and composer placeholder instead.
+      label: "No files yet",
     });
     // Revert-sensitive: restoring kind:"error" / "No project files" fails these.
     expect(emptyRow?.kind).not.toBe("error");
     expect(rows.some((row) => row.kind === "error")).toBe(false);
+  });
+
+  it("uses a short empty-state label that fits the narrow tree column without truncating", () => {
+    // BUG A regression: the empty-state row sits at depth:1 (4-space indent) in
+    // the narrow workspace column, which truncates to ~13-18 chars. The label
+    // must be short enough to render whole — never chopped to a dangling em-dash
+    // + half-word ("No files yet — de…"). Assert the exact short label.
+    const rows = buildProjectTreeRows({
+      cwd: "/repo",
+      paths: [],
+      expandedPaths: new Set(),
+      cursorPath: null,
+      activePath: null,
+      gitStatus: new Map(),
+    });
+
+    const emptyRow = rows.find((row) => row.id === "loading-empty");
+    expect(emptyRow?.label).toBe("No files yet");
+    // Revert-sensitivity: the long string "No files yet — describe a task to get
+    // started" is 47 cols and fails this exact-match assertion. The new label is
+    // 12 cols, well under the row's render budget (depth:1 indent + truncate at
+    // ~17-22 cols), so it never produces the ellipsis glyph from the long copy.
+    expect(emptyRow?.label.length).toBeLessThanOrEqual(13);
+    expect(emptyRow?.label).not.toContain("…");
+    expect(emptyRow?.label).not.toContain("—");
   });
 
   it("parses git porcelain status", () => {
@@ -318,7 +347,7 @@ describe("project tree helpers", () => {
       expect(snapshot.error).toEqual(expect.stringContaining("ENOTDIR"));
       expect(snapshot.rows.find((row) => row.kind === "error")).toBeUndefined();
       expect(snapshot.rows.find((row) => row.kind === "empty")).toMatchObject({
-        label: "No files yet — describe a task to get started",
+        label: "No files yet",
       });
     } finally {
       store.dispose();

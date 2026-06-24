@@ -175,7 +175,7 @@ describe("workbench render contract", () => {
       <ProjectExplorerRow
         width={48}
         row={{
-          ...row("", "No files yet — describe a task to get started", "file", 1),
+          ...row("", "No files yet", "file", 1),
           id: "loading-empty",
           kind: "empty" as never,
         }}
@@ -186,6 +186,36 @@ describe("workbench render contract", () => {
     expect(output).toContain("No files yet");
     // The label intentionally contains no "!" so any "!" must be the marker.
     expect(output).not.toContain("!");
+  });
+
+  it("renders the empty-workspace label whole in the narrow column (no mid-word truncation)", async () => {
+    // BUG A regression: in production the empty row renders at depth:1 (4-space
+    // indent) in the narrow WORKSPACE column (ProjectExplorer passes width-3,
+    // ~17-22 cols, truncate-end). The old long copy "No files yet — describe a
+    // task to get started" chopped to "No files yet — de…" — a dangling em-dash
+    // + half-word that reads as a glitch. The short label must render whole with
+    // NO trailing ellipsis at a realistic column width.
+    const output = await renderToString(
+      <ProjectExplorerRow
+        width={20}
+        row={{
+          ...row("", "No files yet", "file", 1),
+          id: "loading-empty",
+          kind: "empty" as never,
+        }}
+      />,
+      20,
+    );
+
+    // Full label present, intact.
+    expect(output).toContain("No files yet");
+    // No ellipsis glyph (unicode "…" or ASCII "...") — the label was not chopped.
+    // Revert-sensitivity: the old 47-col label overflows width=20 and trim()
+    // appends the ellipsis, so both assertions fail against the long string.
+    expect(output).not.toContain("…");
+    expect(output).not.toContain("...");
+    // And no severed em-dash tail from the old copy.
+    expect(output).not.toContain("—");
   });
 
   it("renders loading rows, active rows, and one-column label trims", async () => {
