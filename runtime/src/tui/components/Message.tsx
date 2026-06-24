@@ -32,6 +32,8 @@ import {
   UserToolResultMessage,
 } from './Message.renderers.js';
 import { SnipBoundaryMessage } from '../message-renderers/SnipBoundaryMessage.js';
+import { TurnFileChangesSummary } from '../message-renderers/TurnFileChangesSummary.js';
+import { deriveTurnFileChanges } from '../turn-file-changes.js';
 
 export function getToolResultMessageWidth(columns: number): number {
   return Math.max(1, columns - 5);
@@ -137,34 +139,43 @@ function MessageImpl({
         </ContentWidthProvider>
       );
     case "assistant":
-      return (
-        <ContentWidthProvider width={messageContentWidth}>
-          <Box flexDirection="column" width={containerWidth ?? "100%"}>
-            {message.message.content.map((param: AssistantContentBlock, index: number) => (
-              <AssistantMessageBlock
-                key={index}
-                param={param}
-                addMargin={addMargin}
-                tools={tools}
-                commands={commands}
-                verbose={verbose}
-                inProgressToolUseIDs={inProgressToolUseIDs}
-                progressMessagesForMessage={progressMessagesForMessage}
-                shouldAnimate={shouldAnimate}
-                shouldShowDot={shouldShowDot}
-                width={width}
-                inProgressToolCallCount={inProgressToolUseIDs.size}
-                isTranscriptMode={isTranscriptMode}
-                lookups={lookups}
-                onOpenRateLimitOptions={onOpenRateLimitOptions}
-                thinkingBlockId={`${message.uuid}:${index}`}
-                lastThinkingBlockId={lastThinkingBlockId}
-                advisorModel={message.advisorModel}
-              />
-            ))}
-          </Box>
-        </ContentWidthProvider>
-      );
+      {
+        // Per-turn "files changed" rollup: each Write/Edit above renders its own
+        // collapsed diff card, but there is no concise summary of WHAT this turn
+        // touched. Derive it from this message's OWN file-mutating tool uses
+        // (scoped to the turn, no global git scan) and render one compact line
+        // after the tool activity. Empty list → renders nothing.
+        const turnFileChanges = deriveTurnFileChanges(message.message.content);
+        return (
+          <ContentWidthProvider width={messageContentWidth}>
+            <Box flexDirection="column" width={containerWidth ?? "100%"}>
+              {message.message.content.map((param: AssistantContentBlock, index: number) => (
+                <AssistantMessageBlock
+                  key={index}
+                  param={param}
+                  addMargin={addMargin}
+                  tools={tools}
+                  commands={commands}
+                  verbose={verbose}
+                  inProgressToolUseIDs={inProgressToolUseIDs}
+                  progressMessagesForMessage={progressMessagesForMessage}
+                  shouldAnimate={shouldAnimate}
+                  shouldShowDot={shouldShowDot}
+                  width={width}
+                  inProgressToolCallCount={inProgressToolUseIDs.size}
+                  isTranscriptMode={isTranscriptMode}
+                  lookups={lookups}
+                  onOpenRateLimitOptions={onOpenRateLimitOptions}
+                  thinkingBlockId={`${message.uuid}:${index}`}
+                  lastThinkingBlockId={lastThinkingBlockId}
+                  advisorModel={message.advisorModel}
+                />
+              ))}
+              <TurnFileChangesSummary changes={turnFileChanges} />
+            </Box>
+          </ContentWidthProvider>
+        );
+      }
     case "user":
       {
         if (message.isCompactSummary) {
