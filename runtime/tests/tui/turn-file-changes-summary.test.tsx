@@ -93,6 +93,83 @@ describe('deriveTurnFileChanges (per-turn changed-file data source)', () => {
   })
 })
 
+// BUG 1 (HIGH): the rollup must agree with the tool header glyph and the
+// embedded diff card, both of which gate on tool RESOLUTION
+// (resolvedToolUseIDs / erroredToolUseIDs). Before this fix the rollup was
+// derived purely from the tool-use INPUT, so it asserted "+ file (new) +N" the
+// instant the Write's input parsed — while the header still showed the
+// in-progress ◐ glyph — and it even reported a FAILED Write (✕) as a successful
+// create. These tests gate the rollup the SAME way the diff card does.
+describe('deriveTurnFileChanges (gated on tool resolution)', () => {
+  const writeId = 'w-docker-compose.yml'
+  const editId = 'e-styles.css'
+  const turn = [
+    writeBlock('docker-compose.yml', 'a\nb\nc\n'),
+    editBlock('styles.css', 'a{}\n', 'a{color:red}\nb{}\n'),
+  ]
+
+  test('an UNRESOLVED Write (id absent from resolvedToolUseIDs) is NOT counted', () => {
+    // The Write input has parsed but the tool result has not arrived (still ◐).
+    // REVERT-SENSITIVITY: against the un-gated code this returned the file as
+    // "+ docker-compose.yml (new) +3"; with the fix it contributes nothing.
+    const changes = deriveTurnFileChanges(turn, {
+      resolvedToolUseIDs: new Set<string>(), // nothing resolved yet
+      erroredToolUseIDs: new Set<string>(),
+    })
+    expect(changes).toEqual([])
+    expect(changes.find(c => c.file === 'docker-compose.yml')).toBeUndefined()
+  })
+
+  test('a RESOLVED success Write IS counted (matches the ● glyph + diff card)', () => {
+    const changes = deriveTurnFileChanges(turn, {
+      resolvedToolUseIDs: new Set<string>([writeId]),
+      erroredToolUseIDs: new Set<string>(),
+    })
+    expect(changes).toHaveLength(1)
+    expect(changes[0]).toMatchObject({ file: 'docker-compose.yml', kind: 'create' })
+  })
+
+  test('a RESOLVED ERROR Write (✕) is NOT reported as created', () => {
+    // The Write resolved, but as a FAILURE. The header shows ✕ and the diff
+    // card renders nothing — so the rollup must not claim the file was created.
+    // REVERT-SENSITIVITY: against the un-gated code this still showed
+    // "+ docker-compose.yml (new) +3"; with the fix it is absent.
+    const changes = deriveTurnFileChanges(turn, {
+      resolvedToolUseIDs: new Set<string>([writeId, editId]),
+      erroredToolUseIDs: new Set<string>([writeId]),
+    })
+    expect(changes.find(c => c.file === 'docker-compose.yml')).toBeUndefined()
+    // The sibling resolved-success Edit is still counted.
+    expect(changes).toHaveLength(1)
+    expect(changes[0]).toMatchObject({ file: 'styles.css', kind: 'edit' })
+  })
+
+  test('only the resolved-success ops in a mixed turn are counted', () => {
+    // Write resolved-success, Edit still in-flight → only the Write counts.
+    const changes = deriveTurnFileChanges(turn, {
+      resolvedToolUseIDs: new Set<string>([writeId]),
+      erroredToolUseIDs: new Set<string>(),
+    })
+    expect(changes).toHaveLength(1)
+    expect(changes[0]?.file).toBe('docker-compose.yml')
+  })
+
+  test('a tool_use block missing an id is not counted when resolution gating is active', () => {
+    const noIdWrite = { type: 'tool_use', name: 'Write', input: { file_path: 'x.ts', content: 'x\n' } }
+    const changes = deriveTurnFileChanges([noIdWrite], {
+      resolvedToolUseIDs: new Set<string>(),
+      erroredToolUseIDs: new Set<string>(),
+    })
+    expect(changes).toEqual([])
+  })
+
+  test('omitting resolution preserves the prior (un-gated) behavior', () => {
+    // The function degrades sensibly where no lookups are available.
+    const changes = deriveTurnFileChanges(turn)
+    expect(changes).toHaveLength(2)
+  })
+})
+
 describe('TurnFileChangesSummary (compact per-turn render)', () => {
   test('a turn with a Write + an Edit renders a summary listing both with create/edit markers', async () => {
     const changes = deriveTurnFileChanges([

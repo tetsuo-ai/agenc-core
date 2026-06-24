@@ -760,19 +760,26 @@ function pushToolResult(
       return;
     }
     if (isStructuredContentBlocks(rawResult)) {
+      // Operator-readable: the raw internal correlation id (call_…) is
+      // meaningless to a user, so it is omitted from the visible prose rather
+      // than surfaced. The recovered result payload below is the meaningful
+      // part; these structured-block branches carry no extra payload here.
       out.push(
         makeSystemMessage(
           isError
-            ? `Tool failed before its start event was received (${callId}).`
-            : `Tool completed before its start event was received (${callId}).`,
+            ? "A tool failed and its result arrived before its start event; recovered."
+            : "A tool result arrived before its start event and was recovered.",
           isError ? "error" : "warning",
         ),
       );
       return;
     }
+    // Keep the recovered RESULT payload visible (that's what the operator needs)
+    // but drop the opaque call_… correlation id and the framework-internal
+    // "without matching start" phrasing from the user-facing lead-in.
     out.push(
       makeSystemMessage(
-        `Recovered tool result without matching start (${callId}): ${stringResult(rawResult)}`,
+        `A tool result arrived out of order and was recovered: ${stringResult(rawResult)}`,
         isError ? "error" : "warning",
       ),
     );
