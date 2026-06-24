@@ -50,6 +50,23 @@ describe('spinner primitives', () => {
     expect(getDefaultCharacters()).toEqual(['·', '✢', '✳', '✶', '✻', '*'])
   })
 
+  test('Linux/default spinner frames contain no bare ASCII "*" glyph', () => {
+    // Non-darwin, non-ghostty, unicode glyphs => the default Linux fallback.
+    // Force a generic unicode TERM so neither the ASCII nor the ghostty branch
+    // is taken; this test process is on Linux, so process.platform !== 'darwin'.
+    const env = { TERM: 'xterm-256color' }
+    const frames = getDefaultCharacters(env)
+
+    // The index-2 frame must be the flower-star `✳` (matching the macOS frame
+    // family glyphs.spinnerFrames), NOT a bare ASCII `*`. The asterisk renders
+    // as a thin glyph between the fat unicode stars and visibly flickers on
+    // every animation cycle.
+    expect(frames[2]).toBe('✳')
+    expect(frames).toEqual(['·', '✢', '✳', '✶', '✻', '✽'])
+    // No bare ASCII asterisk anywhere in the default unicode path.
+    expect(frames).not.toContain('*')
+  })
+
   test('uses ASCII spinner glyph primitives when ASCII glyphs are requested', () => {
     const env = { AGENC_TUI_GLYPHS: 'ascii' }
 

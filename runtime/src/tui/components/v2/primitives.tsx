@@ -721,16 +721,26 @@ function WelcomeMetaRow({
   readonly value: string
 }): React.ReactNode {
   return (
-    <Box flexDirection="row" flexWrap="wrap">
+    // No `flexWrap="wrap"`: the value is `truncate-middle`, so it must shrink
+    // and truncate IN PLACE on the label's row rather than wrap onto a fresh
+    // flex line under the label (which breaks the 2-column label/value grid for
+    // any long absolute path — the common workspace case). `flexShrink`/
+    // `minWidth={0}` on the value cell lets Yoga squeeze it to the truncation
+    // width while the fixed 13-col label holds its column.
+    <Box flexDirection="row">
       {/* Labels use `inactive` (a readable secondary tone), not `muted3`. In the
           dark themes muted3 (rgb(64,64,70)) sits almost on top of the card's
           lineSoft border (rgb(34,35,39)), so the labels read as chrome rather
           than text. `inactive` is clearly brighter than the border while still
           ranking below the `text2` values. */}
-      <ThemedText color="inactive">{label.padEnd(13)}</ThemedText>
-      <ThemedText color="text2" wrap="truncate-middle">
-        {value}
-      </ThemedText>
+      <Box flexShrink={0}>
+        <ThemedText color="inactive">{label.padEnd(13)}</ThemedText>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <ThemedText color="text2" wrap="truncate-middle">
+          {value}
+        </ThemedText>
+      </Box>
     </Box>
   )
 }
@@ -794,12 +804,24 @@ export function WelcomeColdPanel({
           paddingY={1}
         >
           {visibleSessions.length > 0 ? visibleSessions.map(session => (
-            <Box key={session.keyName} flexDirection="row" flexWrap="wrap">
-              <ThemedText color="muted3">[</ThemedText>
-              <ThemedText color="agenc">{session.keyName}</ThemedText>
-              <ThemedText color="muted3">] </ThemedText>
-              <ThemedText color="text2">{session.title}</ThemedText>
-              <ThemedText color="muted3"> · {session.detail}</ThemedText>
+            // No `flexWrap="wrap"`: a long title/detail must truncate in place
+            // rather than wrap the `· detail` segment onto its own flex line
+            // under the `[n]` key (the same grid-breaking pattern as
+            // WelcomeMetaRow). The flexing cell holds title + detail and
+            // truncate-ends them together; the `[n] ` key prefix stays fixed.
+            <Box key={session.keyName} flexDirection="row">
+              {/* The `[n] ` key prefix is fixed and must not be squeezed when the
+                  flexing title/detail cell shrinks (without flexShrink={0} Yoga
+                  eats the `[` bracket under pressure). */}
+              <Box flexShrink={0} flexDirection="row">
+                <ThemedText color="muted3">[</ThemedText>
+                <ThemedText color="agenc">{session.keyName}</ThemedText>
+                <ThemedText color="muted3">] </ThemedText>
+              </Box>
+              <Box flexShrink={1} minWidth={0} flexDirection="row">
+                <ThemedText color="text2" wrap="truncate-end">{session.title}</ThemedText>
+                <ThemedText color="muted3" wrap="truncate-end"> · {session.detail}</ThemedText>
+              </Box>
             </Box>
           )) : (
             <ThemedText color="muted3">no resumable sessions</ThemedText>
@@ -885,14 +907,23 @@ export function Msg({
     system: 'subtle',
   }
   const inheritedWidth = useContentWidth()
-  // The marker glyph (1 cell) + the single-space row gap below = a 2-cell inset
-  // for the content column; keep the inset in sync with the gap so wrapped body
-  // text measures against the right width.
-  const contentWidth = insetContentWidth(inheritedWidth, 2)
   // Queued previews carry no real per-item enqueue time, so they pass no
   // `time` (see PromptInputQueuedCommands). Show a quiet neutral "queued"
   // marker in the header slot instead of a misleading render-time clock.
-  const isQueued = useQueuedMessage()?.isQueued ?? false
+  const queued = useQueuedMessage()
+  const isQueued = queued?.isQueued ?? false
+  // QUEUED items are additionally wrapped by QueuedMessageProvider in a
+  // `<Box paddingX={2}>` (4 cols of horizontal padding) that the inherited
+  // ContentWidth does NOT account for. Subtract that padding (the context's
+  // already-computed `paddingWidth`, 0 for the brief layout) so the wrapped
+  // body measures against the real available width and its first wrapped line
+  // can't overshoot the highlight box by a column. Non-queued messages are
+  // unaffected: `paddingWidth` defaults to 0.
+  const queuedPaddingWidth = isQueued ? queued?.paddingWidth ?? 0 : 0
+  // The marker glyph (1 cell) + the single-space row gap below = a 2-cell inset
+  // for the content column; keep the inset in sync with the gap so wrapped body
+  // text measures against the right width.
+  const contentWidth = insetContentWidth(inheritedWidth, 2 + queuedPaddingWidth)
   return (
     // A single space after the marker glyph (gap={1}); a double gap read as a
     // layout seam between the marker and the role label.
