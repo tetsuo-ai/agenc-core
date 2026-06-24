@@ -9,6 +9,7 @@ import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js';
 import { useCommandQueue } from '../../hooks/useCommandQueue.js';
 import type { QueuedCommand } from '../../../types/textInputTypes.js';
 import { isQueuedCommandEditable, isQueuedCommandVisible } from '../../../utils/messageQueueManager.js';
+import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js';
 import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../../utils/messages.js';
 import { jsonParse } from '../../../utils/slowOperations.js';
 import { escapeXml } from '../../../utils/xml.js';
@@ -133,6 +134,7 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
           <Text dimColor>
             {queuedInputCount === 1 ? '1 input queued for next turn' : `${queuedInputCount} inputs queued for next turn`}
             {' · esc to interrupt'}
+            {` · ${getShortcutDisplay('chat:dropQueuedInput', 'Chat', 'ctrl+x backspace')} to drop last`}
           </Text>
         </Box>}
       {messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>

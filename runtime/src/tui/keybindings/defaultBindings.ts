@@ -69,6 +69,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       escape: 'chat:cancel',
       // ctrl+x chord prefix avoids shadowing readline editing keys (ctrl+a/b/e/f/...).
       'ctrl+x ctrl+k': 'chat:killAgents',
+      // Per-item queue control: drop the most recently queued input before it
+      // dispatches. ctrl+x prefix keeps it off the readline backspace inside
+      // the composer (bare backspace still deletes a char as usual).
+      'ctrl+x backspace': 'chat:dropQueuedInput',
       [MODE_CYCLE_KEY]: 'chat:cycleMode',
       'meta+p': 'chat:modelPicker',
       'meta+o': 'chat:fastMode',

@@ -114,6 +114,33 @@ describe('PromptInputQueuedCommands', () => {
     expect(output).not.toContain('esc interrupts the current turn')
   })
 
+  it('shows a discoverable per-item drop hint alongside the queued-input banner', async () => {
+    queueFixture.commands = [
+      { value: 'first prompt', mode: 'prompt' },
+      { value: 'second prompt', mode: 'prompt' },
+    ]
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+
+    // The banner advertises the per-item queue control next to the interrupt
+    // hint, so the user can discover that a queued item can be dropped.
+    expect(output).toContain('2 inputs queued for next turn')
+    expect(output).toContain('to drop last')
+  })
+
+  it('omits the drop hint entirely when nothing is queued', async () => {
+    queueFixture.commands = []
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+
+    // No queue → no affordance at all (and no empty banner).
+    expect(output).not.toContain('to drop last')
+    expect(output).not.toContain('queued for next turn')
+    expect(output.trim()).toBe('')
+  })
+
   it('shows queued bash commands as next-turn input', async () => {
     queueFixture.commands = [
       {
