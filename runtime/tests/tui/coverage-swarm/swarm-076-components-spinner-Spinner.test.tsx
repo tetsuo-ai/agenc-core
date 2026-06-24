@@ -341,7 +341,9 @@ describe("Spinner coverage swarm row 076", () => {
       />,
     );
 
-    expect(output).toContain("ROW|responding|Working");
+    // With no real task, the leader's fallback is the honest phase label
+    // ("Responding") rather than a random flavor verb.
+    expect(output).toContain("ROW|responding|Responding");
     expect(output).toContain("Indexing, Testing");
     expect(output).not.toContain("Tip: Use /clear");
   });

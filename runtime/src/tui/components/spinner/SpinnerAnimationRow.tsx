@@ -15,6 +15,72 @@ import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 const SEP_WIDTH = stringWidth(' · ');
 const THINKING_BARE_WIDTH = stringWidth('thinking');
 const SHOW_TOKENS_AFTER_MS = 30_000;
+// After this long with no new token, surface a heartbeat note so a slow model
+// reads as "alive but slow" instead of "hung". A healthy model streams tokens
+// every fraction of a second, so this only fires on genuinely slow turns.
+const STALL_NOTE_AFTER_MS = 8_000;
+// Only compute a tokens/sec rate once the turn has run long enough and produced
+// enough tokens that the figure is meaningful (mirrors the budget-path gate).
+const RATE_MIN_ELAPSED_MS = 5_000;
+const RATE_MIN_TOKENS = 20;
+
+/**
+ * Tracks token liveness across renders so the row can tell "alive but slow"
+ * from "hung". Returns ms since the token counter last moved and a tokens/sec
+ * rate once tokens are flowing. Refs (not state) — the row re-renders from its
+ * parent's wall-clock tick, so reading on render is enough and avoids extra
+ * re-renders. `firstSeenAt` lets us measure rate from when tokens started, not
+ * from a pre-stream zero.
+ *
+ * `turnStartedAt` seeds the no-token clock so a turn that has already been
+ * silent for minutes reports its real silence on the very first render (e.g.
+ * after a remount), rather than resetting to zero each mount.
+ */
+function useTokenLiveness(
+  totalTokens: number,
+  now: number,
+  turnStartedAt: number,
+): {
+  msSinceLastToken: number;
+  ratePerSec: number;
+} {
+  const state = React.useRef<{
+    firstSeenAt: number | null;
+    lastChangeAt: number;
+    lastTokens: number;
+  } | null>(null);
+  if (state.current === null) {
+    // First render of this turn. If no token has streamed yet, anchor the
+    // no-token clock at the turn start so a long pre-token silence reads as
+    // honest immediately (e.g. a remount mid-stall). If tokens are already
+    // present we don't know when the last one arrived, so treat "now" as fresh
+    // and never falsely flag a clearly-alive stream as stalled.
+    state.current = {
+      firstSeenAt: totalTokens > 0 ? now : null,
+      lastChangeAt: totalTokens > 0 ? now : Math.min(turnStartedAt, now),
+      lastTokens: totalTokens,
+    };
+  }
+  const s = state.current;
+  if (totalTokens !== s.lastTokens) {
+    if (s.firstSeenAt === null && totalTokens > 0) s.firstSeenAt = now;
+    s.lastTokens = totalTokens;
+    s.lastChangeAt = now;
+  }
+  const msSinceLastToken = Math.max(0, now - s.lastChangeAt);
+  const sinceFirst = s.firstSeenAt !== null ? now - s.firstSeenAt : 0;
+  const ratePerSec =
+    totalTokens >= RATE_MIN_TOKENS && sinceFirst >= RATE_MIN_ELAPSED_MS
+      ? (totalTokens / sinceFirst) * 1000
+      : 0;
+  return { msSinceLastToken, ratePerSec };
+}
+
+function formatRate(ratePerSec: number): string {
+  return ratePerSec >= 10
+    ? `${Math.round(ratePerSec)} tok/s`
+    : `${ratePerSec.toFixed(1)} tok/s`;
+}
 
 export type SpinnerAnimationRowProps = {
   // Kept in the public prop shape while the surrounding spinner code is
@@ -77,12 +143,39 @@ export function SpinnerAnimationRow({
       ? foregroundedTeammate.progress?.tokenCount ?? 0
       : leaderTokens + teammateTokens;
   const tokenCount = formatNumber(totalTokens);
+  // Singular when exactly one token so the counter never reads "1 tokens".
+  const tokenNoun = totalTokens === 1 ? 'token' : 'tokens';
+  const tokensLabel = `${tokenCount} ${tokenNoun}`;
   const tokensText = hasRunningTeammates
-    ? `${tokenCount} tokens`
-    : `${figures.arrowDown} ${tokenCount} tokens`;
+    ? tokensLabel
+    : `${figures.arrowDown} ${tokensLabel}`;
   const tokensWidth = stringWidth(tokensText);
   const timerText = formatDuration(elapsedTimeMs);
   const timerWidth = stringWidth(timerText);
+
+  // Liveness: distinguishes "alive but slow" from "hung". Only meaningful for
+  // the leader's own stream (a foregrounded teammate reports its own progress).
+  const trackLiveness = !(foregroundedTeammate && !foregroundedTeammate.isIdle);
+  const { msSinceLastToken, ratePerSec } = useTokenLiveness(
+    trackLiveness ? totalTokens : 0,
+    now,
+    loadingStartTimeRef.current,
+  );
+  // Show the heartbeat once the turn has been waiting on a token long enough to
+  // look stuck — but not while "thinking" is already explaining the silence.
+  const showStallNote =
+    trackLiveness &&
+    !hasRunningTeammates &&
+    thinkingStatus !== 'thinking' &&
+    elapsedTimeMs > STALL_NOTE_AFTER_MS &&
+    msSinceLastToken > STALL_NOTE_AFTER_MS;
+  const stallNoteText = showStallNote
+    ? totalTokens > 0
+      ? `slow model · last token ${formatDuration(msSinceLastToken)} ago`
+      : 'slow model · still generating'
+    : null;
+  const stallNoteWidth = stallNoteText ? stringWidth(stallNoteText) : 0;
+  const rateText = ratePerSec > 0 ? formatRate(ratePerSec) : null;
 
   let thinkingText =
     thinkingStatus === 'thinking'
@@ -94,7 +187,10 @@ export function SpinnerAnimationRow({
 
   const messageWidth = stringWidth(visibleMessage) + 2;
   const wantsThinking = thinkingStatus !== null;
-  const wantsTimerAndTokens = verbose || hasRunningTeammates || elapsedTimeMs > SHOW_TOKENS_AFTER_MS;
+  // The stall note is itself a liveness signal, so surface the timer/tokens
+  // alongside it even before the usual 30s threshold.
+  const wantsTimerAndTokens =
+    verbose || hasRunningTeammates || elapsedTimeMs > SHOW_TOKENS_AFTER_MS || showStallNote;
   const availableSpace = columns - messageWidth - 5;
   let showThinking = wantsThinking && availableSpace > thinkingWidthValue;
   if (!showThinking && wantsThinking && thinkingStatus === 'thinking' && effortSuffix) {
@@ -109,6 +205,14 @@ export function SpinnerAnimationRow({
   const showTimer = wantsTimerAndTokens && availableSpace > usedAfterThinking + timerWidth;
   const usedAfterTimer = usedAfterThinking + (showTimer ? timerWidth + SEP_WIDTH : 0);
   const showTokens = wantsTimerAndTokens && totalTokens > 0 && availableSpace > usedAfterTimer + tokensWidth;
+  // Only append the rate when it actually fits next to the token count.
+  const usedAfterTokens = usedAfterTimer + (showTokens ? tokensWidth + SEP_WIDTH : 0);
+  const rateSuffix = showTokens && rateText ? ` · ${rateText}` : '';
+  const showRate =
+    rateSuffix !== '' && availableSpace > usedAfterTokens + stringWidth(rateSuffix);
+  const usedAfterRate = usedAfterTokens + (showRate ? stringWidth(rateSuffix) : 0);
+  const fitStallNote =
+    stallNoteText !== null && availableSpace > usedAfterRate + stallNoteWidth + SEP_WIDTH;
   const thinkingOnly = showThinking && thinkingStatus === 'thinking' && !spinnerSuffix && !showTimer && !showTokens;
 
   const parts = [
@@ -117,8 +221,11 @@ export function SpinnerAnimationRow({
     ...(showTokens ? [
       <Box flexDirection="row" key="tokens">
         {!hasRunningTeammates && <SpinnerModeGlyph mode={mode} />}
-        <Text dimColor>{tokenCount} tokens</Text>
+        <Text dimColor>{tokensLabel}{showRate ? rateSuffix : ''}</Text>
       </Box>,
+    ] : []),
+    ...(fitStallNote && stallNoteText ? [
+      <Text color="warning" key="stall">{stallNoteText}</Text>,
     ] : []),
     ...(showThinking && thinkingText ? [
       <Text dimColor key="thinking">{thinkingOnly ? `(${thinkingText})` : thinkingText}</Text>,

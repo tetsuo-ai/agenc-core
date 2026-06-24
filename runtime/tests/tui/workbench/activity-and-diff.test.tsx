@@ -8,7 +8,12 @@ import { WorkbenchStatusBar } from "../../../src/tui/workbench/WorkbenchStatusBa
 import { DiffInline } from "../../../src/tui/components/v2/primitives.js";
 import { buildEditDiffPreview } from "../../../src/tui/edit-diff-preview.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
-import { getReducedMotionDot } from "../../../src/tui/components/spinner/utils.js";
+import {
+  getReducedMotionDot,
+  titleVerbForMode,
+  verbForMode,
+} from "../../../src/tui/components/spinner/utils.js";
+import type { SpinnerMode } from "../../../src/tui/components/spinner/types.js";
 
 function withState(node: React.ReactNode): React.ReactElement {
   return <AppStateProvider initialState={getDefaultAppState()}>{node}</AppStateProvider>;
@@ -65,6 +70,57 @@ describe("WorkbenchActivityIndicator (working / waiting-on-model signal)", () =>
     );
     expect(out).toContain(getReducedMotionDot());
     expect(out).toContain("working");
+  });
+
+  // #16: when the animated glyph lands on its dot frame ("·") it sits next to
+  // the leading "·" separator and reads as a doubled "· ·". The separator must
+  // collapse for that frame. reduced-motion forces a deterministic, stable
+  // glyph so the assertion is frame-independent.
+  it("never renders a doubled '· ·' next to the verb", async () => {
+    for (const mode of [
+      "requesting",
+      "responding",
+      "thinking",
+      "tool-use",
+      "tool-input",
+    ] as const) {
+      const out = await renderToString(
+        withState(<WorkbenchActivityIndicator mode={mode} />),
+        80,
+      );
+      expect(out).not.toContain("· ·");
+    }
+  });
+});
+
+// #1 / #11: the workbench title bar and the composer status line must describe
+// the SAME phase. Both derive their honest label from verbForMode, so the
+// title-bar phrasing and the status-line phrasing can never silently diverge.
+describe("title bar / status line phase agreement", () => {
+  const MODES: readonly SpinnerMode[] = [
+    "requesting",
+    "responding",
+    "thinking",
+    "tool-use",
+    "tool-input",
+  ];
+
+  it("derives the status-line title verb from the same phase as the title bar", () => {
+    for (const mode of MODES) {
+      // titleVerbForMode (status line) is just the title-cased verbForMode
+      // (title bar) — same word, never a random system-colliding flavor verb.
+      expect(titleVerbForMode(mode).toLowerCase()).toBe(verbForMode(mode));
+    }
+  });
+
+  it("renders the honest phase word in the workbench title bar for each mode", async () => {
+    for (const mode of MODES) {
+      const out = await renderToString(
+        withState(<WorkbenchActivityIndicator mode={mode} />),
+        80,
+      );
+      expect(out).toContain(verbForMode(mode));
+    }
   });
 });
 
