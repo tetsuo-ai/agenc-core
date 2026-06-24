@@ -978,23 +978,47 @@ export function Tool({
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" gap={1}>
-        <ThemedText color={color}>{toolGlyph[state]}</ThemedText>
-        <ThemedText color={toolColor[kind]} bold>
-          {label ?? capitalize(kind)}
-        </ThemedText>
+        {/*
+          The leading glyph and bold tool label must NEVER shrink: every
+          ink-text node defaults to flexShrink:1, so under arg overflow Yoga
+          would otherwise squeeze the glyph + label down too, collapsing the
+          `gap={1}` space (the glyph touches the label — `●Run`) and doubling
+          the trailing space. Pinning each in a flexShrink={0} Box keeps
+          `● Run` intact and forces all shrinkage onto the args text below.
+        */}
+        <Box flexShrink={0}>
+          <ThemedText color={color}>{toolGlyph[state]}</ThemedText>
+        </Box>
+        <Box flexShrink={0}>
+          <ThemedText color={toolColor[kind]} bold>
+            {label ?? capitalize(kind)}
+          </ThemedText>
+        </Box>
         {/*
           The parenthesized args render as a single gap={0} unit so the parens
           hug the argument (`Write (index.html)`) instead of the outer gap={1}
           inserting a stray space on the inside of each paren (`Write ( index.html )`).
           The single space between the bold tool label and the opening paren is
           still supplied by the parent row's gap={1}.
+
+          The whole group shrinks (flexShrink={1} minWidth={0}), but only the
+          inner args text gives way: both parens are pinned flexShrink={0} so
+          the opening `(` is never dropped and the closing `)` always survives,
+          while the args text truncates in the middle. Without this, Yoga shrank
+          the parens too and dropped the opening `(` while keeping the close `)`.
         */}
-        <Box flexDirection="row" gap={0}>
-          <ThemedText color="inactive">(</ThemedText>
-          <ThemedText color="text2" wrap="truncate-middle">
-            {args}
-          </ThemedText>
-          <ThemedText color="inactive">)</ThemedText>
+        <Box flexDirection="row" gap={0} flexShrink={1} minWidth={0}>
+          <Box flexShrink={0}>
+            <ThemedText color="inactive">(</ThemedText>
+          </Box>
+          <Box flexShrink={1} minWidth={0}>
+            <ThemedText color="text2" wrap="truncate-middle">
+              {args}
+            </ThemedText>
+          </Box>
+          <Box flexShrink={0}>
+            <ThemedText color="inactive">)</ThemedText>
+          </Box>
         </Box>
         {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
       </Box>
