@@ -59,7 +59,12 @@ export function getDefaultCharacters(
   }
   return process.platform === 'darwin'
     ? [...glyphs.spinnerFrames]
-    : ['·', '✢', '*', '✶', '✻', '✽']
+    : // Mirror the macOS flower-star frame family (glyphs.spinnerFrames). The
+      // index-2 frame is `✳`, NOT a bare ASCII `*`: the asterisk renders as a
+      // thin glyph between the fat unicode stars and visibly flickers each
+      // animation cycle. (The Ghostty branch above keeps a `*` deliberately,
+      // with a documented offset-rendering rationale.)
+      ['·', '✢', '✳', '✶', '✻', '✽']
 }
 
 export function getReducedMotionDot(
