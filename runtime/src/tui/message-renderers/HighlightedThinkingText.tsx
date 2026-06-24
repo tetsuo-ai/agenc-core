@@ -62,6 +62,14 @@ export function HighlightedThinkingText({
   const isSelected = useContext(MessageActionsSelectedContext);
   const pointerColor = isSelected ? 'suggestion' : 'subtle';
 
+  // Queued previews render inside QueuedMessageProvider's paddingX box; with the
+  // default no-trim wrap, the word-boundary space lands at the START of each
+  // wrapped continuation line, indenting it one column past the first body line.
+  // `wrap-trim` strips that leading boundary space so the queued body
+  // left-aligns like every other (non-queued) message. Non-queued messages keep
+  // the default wrap untouched.
+  const wrapMode = isQueued ? 'wrap-trim' : undefined;
+
   if (useBriefLayout) {
     const ts = timestamp ? formatBriefTimestamp(timestamp) : '';
     const labelColor = isQueued ? 'subtle' : 'briefLabelYou';
@@ -72,13 +80,13 @@ export function HighlightedThinkingText({
           <Text color={labelColor}>You</Text>
           {ts ? <Text dimColor> {ts}</Text> : null}
         </Box>
-        <Text color={textColor}>{text}</Text>
+        <Text color={textColor} wrap={wrapMode}>{text}</Text>
       </Box>
     );
   }
 
   return (
-    <Text>
+    <Text wrap={wrapMode}>
       {showPointer ? <Text color={pointerColor}>{figures.pointer} </Text> : null}
       <ThinkingTextParts text={text} />
     </Text>

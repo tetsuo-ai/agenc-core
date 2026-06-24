@@ -136,7 +136,10 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
           </Text>
         </Box>}
       {messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>
-          <Message message={message} lookups={EMPTY_LOOKUPS} addMargin={false} tools={[]} commands={[]} verbose={false} inProgressToolUseIDs={EMPTY_SET} progressMessagesForMessage={[]} shouldAnimate={false} shouldShowDot={false} isTranscriptMode={false} isStatic={true} />
+          {/* One blank line between consecutive queued items (none before the
+              first); without it items 2..n butt directly under the previous
+              item's last body line and read as one dense block. */}
+          <Message message={message} lookups={EMPTY_LOOKUPS} addMargin={i !== 0} tools={[]} commands={[]} verbose={false} inProgressToolUseIDs={EMPTY_SET} progressMessagesForMessage={[]} shouldAnimate={false} shouldShowDot={false} isTranscriptMode={false} isStatic={true} />
         </QueuedMessageProvider>)}
     </Box>;
 }
