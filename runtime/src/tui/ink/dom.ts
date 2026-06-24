@@ -73,6 +73,16 @@ export type DOMElement = {
   scrollViewportHeight?: number
   scrollViewportTop?: number
   stickyScroll?: boolean
+  // Set by the ScrollBox component (ref callback) to its handle's notify().
+  // render-node-to-output calls this when scrollHeight changes for a
+  // non-sticky scroll node so useSyncExternalStore subscribers (the
+  // transcript scroll-position indicator) recompute as streaming content
+  // grows the content height — geometry growth never goes through the
+  // imperative scrollMutated() notify path, so without this the indicator's
+  // below-count goes stale (and can fail to appear) mid-stream while the
+  // user is scrolled up. Sticky nodes are skipped: they follow the bottom
+  // and the indicator is suppressed there anyway.
+  notifyScrollSubscribers?: () => void
   // Set by ScrollBox.scrollToElement; render-node-to-output reads
   // el.yogaNode.getComputedTop() (FRESH — same Yoga pass as scrollHeight)
   // and sets scrollTop = top + offset, then clears this. Unlike an
