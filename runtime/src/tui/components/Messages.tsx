@@ -9,8 +9,7 @@ import type { StreamingToolUse } from '../../llm/types.js';
 import { every } from '../../utils/set.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
 import type { Command } from '../../commands.js';
-import { BLACK_CIRCLE } from '../../constants/figures.js';
-import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../context/contentWidthContext.js';
+import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
@@ -40,7 +39,7 @@ import { StreamingMarkdown } from './markdown/Markdown.js';
 import { hasContentAfterIndex, MessageRow } from './MessageRow.js';
 import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from './messageActions.js';
 import { ThinkingMessage as AssistantThinkingMessage } from './v2/messagePrimitives.js';
-import { WelcomeColdPanel } from './v2/primitives.js';
+import { Msg, WelcomeColdPanel } from './v2/primitives.js';
 import { isNullRenderingAttachment } from '../message-visibility.js';
 import { OffscreenFreeze } from './OffscreenFreeze.js';
 import type { ToolUseConfirm } from '../permission-types.js';
@@ -308,7 +307,6 @@ const MessagesImpl = ({
   } = useTerminalSize();
   const inheritedContentWidth = useContentWidth();
   const contentColumns = inheritedContentWidth ?? columns;
-  const streamingContentWidth = insetContentWidth(contentColumns, 2) ?? contentColumns;
   const toggleShowAllShortcut = useShortcutDisplay('transcript:toggleShowAll', 'Transcript', 'Ctrl+E');
   const normalizedMessages = useMemo(() => normalizeMessages(messages).filter(isNotEmptyMessage), [messages]);
   const [streamingThinkingExpiryTick, setStreamingThinkingExpiryTick] = useState(0);
@@ -640,17 +638,17 @@ const MessagesImpl = ({
           <VirtualMessageList messages={renderableMessages} scrollRef={scrollRef} columns={contentColumns} itemKey={messageKey} renderItem={renderMessageRow} onItemClick={onItemClick} isItemClickable={isItemClickable} isItemExpanded={isItemExpanded} trackStickyPrompt={trackStickyPrompt} selectedIndex={selectedIdx >= 0 ? selectedIdx : undefined} cursorNavRef={cursorNavRef} setCursor={setCursor} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} extractSearchText={extractSearchText} />
         </InVirtualListContext.Provider> : renderableMessages.flatMap(renderMessageRow)}
 
-      {streamingText && !isBriefOnly && <Box alignItems="flex-start" flexDirection="row" marginTop={1} width="100%">
-          <Box flexDirection="row">
-            <Box minWidth={2}>
-              <Text color="text">{BLACK_CIRCLE}</Text>
-            </Box>
-            <Box flexDirection="column" width={streamingContentWidth}>
-              <ContentWidthProvider width={streamingContentWidth}>
-                <StreamingMarkdown>{streamingText}</StreamingMarkdown>
-              </ContentWidthProvider>
-            </Box>
-          </Box>
+      {streamingText && !isBriefOnly && <Box flexDirection="column" marginTop={1} width="100%">
+          {/* The live (most-recent, still-streaming) assistant turn carries the
+              same `▮ AGENC` identity as historical/settled turns. Wrapping in
+              `Msg role="agenc"` (instead of a bare `●` marker) keeps the
+              marker consistent across the streaming→settled transition, so the
+              same assistant message never flips between two identity markers.
+              `Msg` derives its own content-width inset from context, matching
+              the settled AssistantTextMessage render. */}
+          <Msg role="agenc" label="agenc">
+            <StreamingMarkdown>{streamingText}</StreamingMarkdown>
+          </Msg>
         </Box>}
 
       {shouldRenderStreamingThinking(streamingThinking, screen, verbose) && streamingThinking && !isBriefOnly && <Box marginTop={1}>
