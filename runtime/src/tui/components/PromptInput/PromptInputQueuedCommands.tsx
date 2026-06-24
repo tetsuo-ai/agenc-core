@@ -132,7 +132,7 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
       {queuedInputCount > 0 && <Box marginLeft={2} marginBottom={1}>
           <Text dimColor>
             {queuedInputCount === 1 ? '1 input queued for next turn' : `${queuedInputCount} inputs queued for next turn`}
-            {' · esc interrupts the current turn'}
+            {' · esc to interrupt'}
           </Text>
         </Box>}
       {messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>

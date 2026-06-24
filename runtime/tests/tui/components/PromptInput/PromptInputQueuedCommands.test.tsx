@@ -101,6 +101,19 @@ describe('PromptInputQueuedCommands', () => {
     expect(output).toContain('Use another library')
   })
 
+  it('describes the Esc action with the same wording as the footer hint', async () => {
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+
+    // The queued-commands banner and the footer/spinner Esc hint must use ONE
+    // consistent phrasing so the same Esc action is not described two different
+    // ways on screen at once. Canonical wording is the footer's "esc to
+    // interrupt" (KeyboardShortcutHint shortcut="esc" action="interrupt").
+    expect(output).toContain('esc to interrupt')
+    expect(output).not.toContain('esc interrupts the current turn')
+  })
+
   it('shows queued bash commands as next-turn input', async () => {
     queueFixture.commands = [
       {

@@ -17,6 +17,7 @@ const harness = vi.hoisted(() => ({
   dividers: [] as string[],
   features: new Set<string>(),
   hasContentAfterIndexResult: false,
+  msgMarkers: [] as Array<{ label: string; role: string }>,
   progress: vi.fn(),
   streamingMarkdown: [] as string[],
   thinkingMessages: [] as string[],
@@ -33,6 +34,7 @@ const harness = vi.hoisted(() => ({
     harness.dividers = []
     harness.features = new Set()
     harness.hasContentAfterIndexResult = false
+    harness.msgMarkers = []
     harness.progress.mockClear()
     harness.streamingMarkdown = []
     harness.thinkingMessages = []
@@ -96,6 +98,23 @@ vi.mock('../../../src/tui/components/v2/primitives.js', async () => {
   const { Text } = await import('../../../src/tui/ink.js')
   return {
     WelcomeColdPanel: () => React.createElement(Text, null, 'welcome'),
+    Msg: ({
+      role,
+      label,
+      children,
+    }: {
+      readonly role: string
+      readonly label: string
+      readonly children?: ReactNode
+    }) => {
+      harness.msgMarkers.push({ label, role })
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(Text, null, `▮ ${label.toUpperCase()}`),
+        children,
+      )
+    },
   }
 })
 
@@ -351,6 +370,12 @@ describe('Messages coverage swarm row 005', () => {
       expect(latestVirtualCall().selectedIndex).toBe(1)
       expect(harness.dividers).toContain('1 new message')
       expect(harness.streamingMarkdown).toContain('streaming answer')
+      // The live (most-recent, still-streaming) assistant turn must carry the
+      // same `▮ AGENC` identity marker as historical/settled turns, so the same
+      // assistant message never flips between two identity markers across the
+      // streaming→settled transition. Revert-sensitive: if the streaming render
+      // falls back to a bare `●` marker (no Msg wrapper), this is empty.
+      expect(harness.msgMarkers).toContainEqual({ label: 'agenc', role: 'agenc' })
       expect(harness.thinkingMessages).toContain('still thinking')
       expect(harness.progress).toHaveBeenCalledWith('completed')
     } finally {
