@@ -9,7 +9,7 @@ import { type IDEAtMentioned, useIdeAtMentioned } from '../../hooks/useIdeAtMent
 import { type AppState, useAppState, useAppStateStore, useSetAppState } from '../../state/AppState.js';
 import type { FooterItem } from '../../state/AppStateStore.js';
 import { getCwd } from '../../../utils/cwd.js';
-import { enqueue, isQueuedCommandEditable, popAllEditable } from '../../../utils/messageQueueManager.js';
+import { enqueue, isQueuedCommandEditable, popAllEditable, removeLastQueuedInput } from '../../../utils/messageQueueManager.js';
 import stripAnsi from 'strip-ansi';
 import { type Command, hasCommand } from '../../../commands.js';
 import { useIsModalOverlayActive, useRegisterOverlay } from '../../context/overlayContext.js';
@@ -1913,6 +1913,22 @@ function PromptInput({
     }
   }, [stashedPrompt, trackAndSetInput, setStashedPrompt, setPastedContentsAndRef, setCurrentCursorOffset]);
 
+  // Handler for chat:dropQueuedInput - remove the most recently queued input
+  // before it dispatches. Per-item queue control: deletes exactly one specific
+  // queued item (the last one added) through the same store the dispatcher
+  // drains, so a dropped item truly never sends. No-op (and no notification)
+  // when nothing is queued.
+  const handleDropQueuedInput = useCallback(() => {
+    const removed = removeLastQueuedInput();
+    if (removed === undefined) return;
+    addNotification({
+      key: 'queued-input-dropped',
+      text: 'Removed last queued input',
+      priority: 'immediate',
+      timeoutMs: 3000
+    });
+  }, [addNotification]);
+
   // Handler for chat:modelPicker - toggle model picker
   const handleModelPicker = useCallback(() => {
     setShowModelPicker(prev => !prev);
@@ -2205,10 +2221,11 @@ function PromptInput({
     'chat:newline': handleNewline,
     'chat:externalEditor': handleExternalEditor,
     'chat:stash': handleStash,
+    'chat:dropQueuedInput': handleDropQueuedInput,
     'chat:modelPicker': handleModelPicker,
     'chat:thinkingToggle': handleThinkingToggle,
     'chat:imagePaste': handleImagePaste
-  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleImagePaste]);
+  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleDropQueuedInput, handleModelPicker, handleThinkingToggle, handleImagePaste]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
     isActive: promptKeyboardActive

@@ -56,6 +56,7 @@ export const KEYBINDING_ACTION_NAMES = [
   'chat:stash',
   'chat:imagePaste',
   'chat:messageActions',
+  'chat:dropQueuedInput',
   'autocomplete:accept',
   'autocomplete:confirm',
   'autocomplete:dismiss',

@@ -291,6 +291,68 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
 }
 
 /**
+ * Whether this queued command is a user-typed input awaiting dispatch
+ * (a prompt or bash command), as opposed to a system notification or a
+ * raw-XML meta command. Matches the same set the prompt's "N inputs
+ * queued for next turn" banner counts — so per-item removal only ever
+ * targets the items the user actually sees as their own queued input.
+ */
+function isQueuedUserInput(cmd: QueuedCommand): boolean {
+  return (
+    isQueuedCommandEditable(cmd) &&
+    (cmd.mode === 'prompt' || cmd.mode === 'bash')
+  )
+}
+
+/**
+ * Number of user-typed inputs currently queued for dispatch.
+ * Mirrors the prompt banner's count so a UI affordance can decide
+ * whether to show/enable a per-item removal hint without re-deriving
+ * the filter.
+ */
+export function getQueuedUserInputCount(): number {
+  let count = 0
+  for (const cmd of commandQueue) {
+    if (isQueuedUserInput(cmd)) count++
+  }
+  return count
+}
+
+/**
+ * Remove the most-recently-queued user input (prompt/bash) from the queue,
+ * returning the removed command or undefined when there is none.
+ *
+ * This is the per-item queue-control primitive: it deletes exactly one
+ * specific queued item — the last one the user added, the most common
+ * "oops, drop that" target — through the SAME module-level queue the
+ * dispatcher drains. System notifications and raw-XML meta commands are
+ * never touched.
+ *
+ * Dispatch-boundary safety: the drain in App.tsx synchronously `dequeue`s
+ * (splices) a command out of `commandQueue` before it starts running it.
+ * Because this removal also operates synchronously on that same array, the
+ * command being dispatched is, at the instant of removal, EITHER still in
+ * the queue (we remove it; the drain's later peek never finds it) OR already
+ * spliced out by the drain (we no-op — `splice` finds nothing). There is no
+ * interleaving in single-threaded JS, so a queued item can never be both
+ * removed here and dispatched, nor double-sent.
+ */
+export function removeLastQueuedInput(): QueuedCommand | undefined {
+  for (let i = commandQueue.length - 1; i >= 0; i--) {
+    if (isQueuedUserInput(commandQueue[i]!)) {
+      const [removed] = commandQueue.splice(i, 1)
+      notifySubscribers()
+      logOperation(
+        'remove',
+        typeof removed?.value === 'string' ? removed.value : undefined,
+      )
+      return removed
+    }
+  }
+  return undefined
+}
+
+/**
  * Remove commands matching a predicate.
  * Returns the removed commands.
  */
