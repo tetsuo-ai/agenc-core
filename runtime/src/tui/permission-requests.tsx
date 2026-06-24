@@ -399,11 +399,17 @@ function AgenCApprovalOverlay({
         toolUseConfirm.input,
       );
       if (built === null) return undefined;
+      // Label the inline diff the same way the post-approval TRANSCRIPT card
+      // does: a Write produces a brand-new file → CREATE; Edit/MultiEdit change
+      // an existing one → EDIT. Keeps the approval preview and the transcript in
+      // sync instead of showing a neutral DIFF here.
+      const op = toolUseConfirm.tool.name === "Write" ? "CREATE" : "EDIT";
       return {
         file: built.file,
         stats: built.stats,
         lines: built.lines,
         remaining: built.remaining,
+        op,
       };
     } catch {
       // A malformed input must never break the approval popup — degrade to the

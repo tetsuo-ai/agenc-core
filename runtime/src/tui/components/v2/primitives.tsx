@@ -885,13 +885,18 @@ export function Msg({
     system: 'subtle',
   }
   const inheritedWidth = useContentWidth()
-  const contentWidth = insetContentWidth(inheritedWidth, 3)
+  // The marker glyph (1 cell) + the single-space row gap below = a 2-cell inset
+  // for the content column; keep the inset in sync with the gap so wrapped body
+  // text measures against the right width.
+  const contentWidth = insetContentWidth(inheritedWidth, 2)
   // Queued previews carry no real per-item enqueue time, so they pass no
   // `time` (see PromptInputQueuedCommands). Show a quiet neutral "queued"
   // marker in the header slot instead of a misleading render-time clock.
   const isQueued = useQueuedMessage()?.isQueued ?? false
   return (
-    <Box flexDirection="row" gap={2}>
+    // A single space after the marker glyph (gap={1}); a double gap read as a
+    // layout seam between the marker and the role label.
+    <Box flexDirection="row" gap={1}>
       <ThemedText color={colors[role]}>{role === 'system' ? '∙' : '▮'}</ThemedText>
       <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" gap={1}>
@@ -1174,6 +1179,12 @@ export interface ApprovalDiffPreview {
   }[]
   /** Rows dropped past the input cap, surfaced as a "… +N more" row. */
   readonly remaining: number
+  /**
+   * Header verb for the inline diff, matching the post-approval TRANSCRIPT card:
+   * a first-write Write → 'CREATE', an Edit/MultiEdit → 'EDIT'. Optional so any
+   * caller that doesn't know the operation falls back to the neutral 'DIFF'.
+   */
+  readonly op?: string
 }
 
 export function ApprovalCard({
@@ -1294,6 +1305,7 @@ export function ApprovalCard({
               file={diffPreview.file.length > 0 ? diffPreview.file : 'file'}
               stats={diffPreview.stats}
               lines={previewLines}
+              {...(diffPreview.op !== undefined ? { op: diffPreview.op } : {})}
             />
           </Box>
         ) : null}

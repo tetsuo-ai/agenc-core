@@ -220,3 +220,32 @@ describe('Msg queued header marker', () => {
     expect(output).not.toContain('queued')
   })
 })
+
+describe('Msg role-marker glyph spacing', () => {
+  it('renders a SINGLE space between the marker glyph and the role label (no layout seam)', async () => {
+    const output = await renderToString(
+      <Msg role="agenc" label="agenc">
+        <Text>body</Text>
+      </Msg>,
+      { columns: 100, rows: 12 },
+    )
+
+    // The marker glyph is followed by exactly one space, then the label —
+    // a double space read as an empty layout gap (#16). Revert-sensitive:
+    // restoring gap={2} re-introduces the '▮  AGENC' double space.
+    expect(output).toContain('▮ AGENC')
+    expect(output).not.toContain('▮  AGENC')
+  })
+
+  it('keeps the single-space marker for the system role (∙)', async () => {
+    const output = await renderToString(
+      <Msg role="system" label="system">
+        <Text>body</Text>
+      </Msg>,
+      { columns: 100, rows: 12 },
+    )
+
+    expect(output).toContain('∙ SYSTEM')
+    expect(output).not.toContain('∙  SYSTEM')
+  })
+})

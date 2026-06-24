@@ -183,6 +183,78 @@ describe('ApprovalCard diff preview (in-dialog change preview)', () => {
     expect(out).toContain('[1] approve once')
   })
 
+  test('an Edit approval labels the inline diff EDIT (matching the transcript card)', async () => {
+    // The approval path passes op = (tool === 'Write' ? 'CREATE' : 'EDIT'),
+    // the SAME label the post-approval TRANSCRIPT diff card uses.
+    const preview = { ...editPreview(), op: 'EDIT' as const }
+    const out = await renderToString(
+      <Box flexDirection="column">
+        <ApprovalCard
+          risk="low"
+          title="tool · edit · medium-risk approval"
+          command="src/primes.ts"
+          facts={[{ label: 'tool', value: 'edit' }]}
+          diffPreview={preview}
+          confirmLabel="enter approve · 2 session · 3 deny"
+        />
+      </Box>,
+      { columns: 116, rows: 40 },
+    )
+    expect(out).toContain('EDIT')
+    // The neutral DIFF verb must NOT leak when the op is known.
+    expect(out).not.toContain('DIFF')
+    expect(out).toContain('primes.ts')
+  })
+
+  test('a Write approval labels the inline diff CREATE (new-file write)', async () => {
+    const preview = { ...longWritePreview(), op: 'CREATE' as const }
+    const out = await renderToString(
+      <Box flexDirection="column">
+        <ApprovalCard
+          risk="low"
+          title="tool · write · needs approval"
+          command="src/big.ts"
+          facts={[{ label: 'tool', value: 'write' }]}
+          diffPreview={preview}
+          confirmLabel="enter approve · 2 session · 3 deny"
+        />
+      </Box>,
+      { columns: 116, rows: 40 },
+    )
+    expect(out).toContain('CREATE')
+    expect(out).not.toContain('DIFF')
+    expect(out).toContain('big.ts')
+  })
+
+  test('REVERT-SENSITIVITY: the diff-box header verb falls back to DIFF only when op is absent', async () => {
+    // With op set, the inline diff header reads EDIT; without it (the old
+    // behavior), it falls back to the neutral DIFF. The card TITLE independently
+    // contains "EDIT", so assert against the diff-box header ROW specifically:
+    // the row that carries the file name + stats.
+    const diffHeaderRow = (out: string): string =>
+      out
+        .split('\n')
+        .find((line) => line.includes('primes.ts') && line.includes('+2 -1')) ?? ''
+    const withOp = await renderToString(
+      <Box flexDirection="column">
+        <ApprovalCard
+          risk="low"
+          title="tool · edit · medium-risk approval"
+          command="src/primes.ts"
+          facts={[{ label: 'tool', value: 'edit' }]}
+          diffPreview={{ ...editPreview(), op: 'EDIT' }}
+          confirmLabel="enter approve · 2 session · 3 deny"
+        />
+      </Box>,
+      { columns: 116, rows: 40 },
+    )
+    const withoutOp = await renderEditApproval(40)
+    expect(diffHeaderRow(withOp)).toContain('EDIT')
+    expect(diffHeaderRow(withOp)).not.toContain('DIFF')
+    expect(diffHeaderRow(withoutOp)).toContain('DIFF')
+    expect(diffHeaderRow(withoutOp)).not.toContain('EDIT')
+  })
+
   test('REVERT-SENSITIVITY: diff present with the prop, absent without it', async () => {
     const withPreview = await renderEditApproval(40, { withPreview: true })
     const withoutPreview = await renderEditApproval(40, { withPreview: false })
