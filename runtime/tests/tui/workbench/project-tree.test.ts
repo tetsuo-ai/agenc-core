@@ -472,6 +472,124 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("counts every project file in the WORKSPACE total even when a directory is collapsed", async () => {
+    // BUG (undercount): the WORKSPACE header used to count only the currently-
+    // VISIBLE tree rows. A collapsed directory hides its children from the rows,
+    // so a multi-file subpackage (e.g. an agent-created `converters/`) would read
+    // "WORKSPACE 1" while several files actually exist. The snapshot now carries a
+    // collapse-independent `fileCount` driven from the real path set.
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-file-count-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "converters"), { recursive: true });
+      await writeFile(join(repo, "README.md"), "readme\n", "utf8");
+      await writeFile(join(repo, "converters", "json.ts"), "json\n", "utf8");
+      await writeFile(join(repo, "converters", "yaml.ts"), "yaml\n", "utf8");
+      await writeFile(join(repo, "converters", "toml.ts"), "toml\n", "utf8");
+
+      await store.refresh();
+      // Leave `converters` collapsed: it is NOT in expandedPaths, so its three
+      // files are absent from the visible rows.
+      const snapshot = store.getSnapshot();
+      expect(snapshot.expandedPaths).not.toContain("converters");
+
+      const visibleFileRows = snapshot.rows.filter((row) => row.kind === "file").length;
+      // Only README.md is a visible file row while converters/ stays collapsed.
+      expect(visibleFileRows).toBe(1);
+
+      // The header count must reflect the 4 real files (README.md + 3 converters),
+      // not the single visible file row. Revert-sensitivity: the old behavior
+      // (counting visible file+directory rows) reported 2 here (README.md +
+      // converters/), undercounting the four-file project — this assertion fails
+      // against that code.
+      expect(snapshot.fileCount).toBe(4);
+      expect(snapshot.fileCount).toBeGreaterThan(visibleFileRows);
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-expands a directory the agent creates mid-session without disturbing pre-existing collapsed dirs", async () => {
+    // UX: when AgenC writes files into a NEW subdirectory during the session, the
+    // directory must reveal so the just-written files are visible in the tree —
+    // the user should SEE what the agent built without manually expanding. Scope:
+    // only directories that newly APPEARED since the baseline scan are revealed,
+    // so a pre-existing collapsed directory stays collapsed (no large-repo blowup).
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-auto-expand-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      // Baseline: an existing collapsed directory and a root file. The first scan
+      // only records the baseline — it must NOT auto-expand the existing tree.
+      await mkdir(join(repo, "existing"), { recursive: true });
+      await writeFile(join(repo, "existing", "old.ts"), "old\n", "utf8");
+      await writeFile(join(repo, "README.md"), "readme\n", "utf8");
+
+      await store.refresh();
+      expect(store.getSnapshot().expandedPaths).not.toContain("existing");
+
+      // The agent creates a brand-new subpackage with files mid-session.
+      await mkdir(join(repo, "converters"), { recursive: true });
+      await writeFile(join(repo, "converters", "json.ts"), "json\n", "utf8");
+      await writeFile(join(repo, "converters", "yaml.ts"), "yaml\n", "utf8");
+
+      await store.refresh();
+      const snapshot = store.getSnapshot();
+      const rowPaths = snapshot.rows.map((row) => row.path);
+
+      // The newly-created directory is auto-expanded and its new files are visible.
+      // Revert-sensitivity: without the auto-expand, `converters` defaults to
+      // collapsed, so it is absent from expandedPaths and its two files never
+      // appear as rows — these three assertions fail against that code.
+      expect(snapshot.expandedPaths).toContain("converters");
+      expect(rowPaths).toContain("converters/json.ts");
+      expect(rowPaths).toContain("converters/yaml.ts");
+
+      // User-control / scope guard: the pre-existing directory is NOT force-
+      // expanded, and its child stays hidden.
+      expect(snapshot.expandedPaths).not.toContain("existing");
+      expect(rowPaths).not.toContain("existing/old.ts");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("does not re-expand a directory the user collapsed after it was auto-revealed", async () => {
+    // Preserve user control: auto-expand is a one-time reveal on a directory's
+    // first appearance, not a persistent override. Once the user collapses an
+    // agent-created directory, a later refresh must not fight them by re-expanding.
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-auto-expand-respect-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await writeFile(join(repo, "README.md"), "readme\n", "utf8");
+      await store.refresh();
+
+      // Agent creates a new directory → auto-revealed.
+      await mkdir(join(repo, "pkg"), { recursive: true });
+      await writeFile(join(repo, "pkg", "a.ts"), "a\n", "utf8");
+      await store.refresh();
+      expect(store.getSnapshot().expandedPaths).toContain("pkg");
+
+      // User collapses it.
+      store.collapse("pkg");
+      expect(store.getSnapshot().expandedPaths).not.toContain("pkg");
+
+      // A later refresh (the directory still exists, just not "new") must respect
+      // the collapse. Revert-sensitivity: a force-expand-on-every-refresh design
+      // would re-add `pkg` here and fail this assertion.
+      await writeFile(join(repo, "pkg", "b.ts"), "b\n", "utf8");
+      await store.refresh();
+      expect(store.getSnapshot().expandedPaths).not.toContain("pkg");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("navigates, expands, collapses, and reveals project tree rows", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-navigation-"));
     const store = new ProjectTreeStore(repo, 0);

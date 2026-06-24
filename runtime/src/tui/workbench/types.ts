@@ -125,6 +125,14 @@ export type ProjectTreeSnapshot = {
   readonly cursorPath: string | null;
   readonly activePath: string | null;
   readonly expandedPaths: readonly string[];
+  /**
+   * Total number of FILES the project tree knows about, independent of which
+   * directories are currently expanded. The WORKSPACE header count is driven by
+   * this — counting only the currently-visible rows undercounts a project whose
+   * files live inside a collapsed directory (e.g. an agent-created subpackage),
+   * which is the "what exists" anchor the header is meant to convey.
+   */
+  readonly fileCount: number;
 };
 
 export type SearchMatch = {

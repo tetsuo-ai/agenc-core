@@ -185,7 +185,11 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const viewport = projectTreeViewport(snapshot.rows, maxTreeRows);
   const visibleRows = viewport.rows
     .map((row) => row.selected ? { ...row, focused } : row);
-  const itemCount = snapshot.rows.filter((row) => row.kind === "file" || row.kind === "directory").length;
+  // Drive the WORKSPACE count from the project's real file total (carried on the
+  // snapshot, collapse-independent) rather than the currently-visible rows — a
+  // collapsed directory hides its children from the rows, which would undercount
+  // a multi-file project (e.g. an agent-created subpackage showing "WORKSPACE 1").
+  const itemCount = snapshot.fileCount;
   const dirtyCount = snapshot.rows.filter((row) => row.gitState && row.gitState !== "clean").length;
   const glyphs = selectAgenCTuiGlyphs();
 

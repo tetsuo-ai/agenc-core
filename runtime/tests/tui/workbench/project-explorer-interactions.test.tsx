@@ -72,6 +72,7 @@ const explorerHarness = vi.hoisted(() => {
       cursorPath: "src",
       activePath: "src/nested/app.ts",
       expandedPaths: ["src"],
+      fileCount: 1,
       rows: [
         {
           id: "src",
@@ -361,6 +362,7 @@ describe("ProjectExplorer interactions", () => {
       cursorPath: "src",
       activePath: "src/nested/app.ts",
       expandedPaths: ["src"],
+      fileCount: 1,
       rows: [
         directoryRow("src"),
         fileRow("src/nested/app.ts", "app.ts", 3, { active: true }),
@@ -416,6 +418,7 @@ describe("ProjectExplorer interactions", () => {
       cursorPath: "src/file-20.ts",
       activePath: null,
       expandedPaths: ["src"],
+      fileCount: rows.length,
       rows,
     };
     const { output, root, stdin, stdout } = await renderExplorer({ width: 48 });
