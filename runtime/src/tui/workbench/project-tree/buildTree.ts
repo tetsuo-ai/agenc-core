@@ -187,9 +187,12 @@ function emptyRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
     // An empty workspace on cold start is a NORMAL state, not a fault: use the
     // neutral "empty" kind so its marker is a space rather than the "!" the tree
     // reserves for genuine errors (which would make a fresh project look broken).
-    // The copy stays inviting to match the welcome-screen tone.
+    // The label is kept short so it fits the narrow tree column (~17-22 cols,
+    // truncate-end) without chopping mid-word — the inviting "describe a task to
+    // get started" guidance already lives on the cold-start welcome card and the
+    // composer placeholder, so nothing is lost by keeping the tree label terse.
     path: "",
-    label: options.gitStatus ? "No files yet — describe a task to get started" : "Loading files",
+    label: options.gitStatus ? "No files yet" : "Loading files",
     kind: options.gitStatus ? "empty" : "loading",
     depth: 1,
     expanded: false,
