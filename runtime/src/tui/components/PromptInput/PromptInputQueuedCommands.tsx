@@ -134,7 +134,12 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
           <Text dimColor>
             {queuedInputCount === 1 ? '1 input queued for next turn' : `${queuedInputCount} inputs queued for next turn`}
             {' · esc to interrupt'}
-            {` · ${getShortcutDisplay('chat:dropQueuedInput', 'Chat', 'ctrl+x backspace')} to drop last`}
+            {/* Lowercase the rendered keycap so this inline hint reads in the
+                same lowercase style as the adjacent "esc to interrupt" (and the
+                footer's chat:cancel hint, which .toLowerCase()s its shortcut
+                too). getShortcutDisplay capitalizes named keys ("Backspace"),
+                which would otherwise mix casing within this one line. */}
+            {` · ${getShortcutDisplay('chat:dropQueuedInput', 'Chat', 'ctrl+x backspace').toLowerCase()} to drop last`}
           </Text>
         </Box>}
       {messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>
