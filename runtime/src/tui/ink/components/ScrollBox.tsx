@@ -217,7 +217,17 @@ function ScrollBox({
   const inkBoxProps = {
     ref: (el: DOMElement | null) => {
     domRef.current = el;
-    if (el) el.scrollTop ??= 0;
+    if (el) {
+      el.scrollTop ??= 0;
+      // Let the renderer wake useSyncExternalStore subscribers when streaming
+      // content grows scrollHeight while scrolled up — geometry growth is
+      // computed in render-node-to-output's paint pass (after React commits),
+      // outside the imperative scrollMutated() notify path. notify() only
+      // schedules React re-renders (never runs synchronously in render), so
+      // calling it from the renderer is the same safe boundary scrollMutated
+      // already relies on.
+      el.notifyScrollSubscribers = notify;
+    }
     },
     style: {
       flexWrap: 'nowrap',

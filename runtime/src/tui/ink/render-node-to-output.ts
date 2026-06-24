@@ -871,6 +871,22 @@ function renderNodeToOutput(
         if (node.pendingScrollDelta !== undefined) scrollDrainNode = node
         scrollTop = clamped
 
+        // Geometry-growth notify. When streaming appends rows while the user
+        // is scrolled up (not sticky → not following the bottom), scrollHeight
+        // grows here every frame but no imperative scroll fired, so the
+        // ScrollBox handle's notify() (only called by scrollMutated/
+        // scrollToBottom) never wakes useSyncExternalStore subscribers — the
+        // transcript scroll-position indicator's below-count would go stale
+        // and could fail to appear mid-stream. Wake them when the content
+        // height changed. notify() only schedules React re-renders (it never
+        // re-renders synchronously), so calling it from the paint pass (after
+        // React committed) is the same safe boundary scrollMutated relies on.
+        // Sticky nodes are skipped: they follow the bottom and the indicator
+        // is suppressed there anyway, so a per-frame notify would be wasted.
+        if (!sticky && scrollHeight !== prevScrollHeight) {
+          node.notifyScrollSubscribers?.()
+        }
+
         if (content && contentYoga) {
           // Compute content wrapper's absolute render position with scroll
           // offset applied, then render its children with culling.
