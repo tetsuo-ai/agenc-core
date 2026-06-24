@@ -2,6 +2,7 @@
 import React from "react";
 
 import { Box, Text } from "./ink.js";
+import { selectAgenCTuiGlyphs } from "./glyphs.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
 import { isRecord } from "../utils/record.js";
@@ -458,31 +459,49 @@ export function BashOutputView({
   // stdout (no separate stderr stream), so on a failed command with no tagged
   // stderr we still surface the exit code as a small red note.
   const showExitNote = isFailure && stderrCap === null;
+  // The command output is rendered behind the same `⎿` continuation gutter the
+  // file-changed summary, Read/Search results, and the V2Tool `ToolResultLines`
+  // use, so the stdout/stderr body visually nests UNDER its `● Run(...)` call
+  // row instead of breaking out flush at the bullet column. The gutter glyph
+  // sits on the first line; the content column aligns the rest under it.
+  // Mirrors the row layout in CollapsedReadSearchContent: a fixed-width gutter
+  // column + a flex content column. stdout uses the dim/secondary tone the
+  // sibling result bodies use (it's nested detail, not headline text); stderr
+  // stays red so a failure is still visually distinct.
+  const glyphs = selectAgenCTuiGlyphs();
+  const responseGutter = `  ${glyphs.responseGutter}  `;
   return (
-    <Box flexDirection="column">
-      {stdoutCap.lines.map((line, idx) => (
-        <Text key={`o${idx}`}>{line}</Text>
-      ))}
-      {stdoutCap.remaining > 0 ? (
-        <Text dimColor>{`… +${stdoutCap.remaining} ${
-          stdoutCap.remaining === 1 ? "line" : "lines"
-        }`}</Text>
-      ) : null}
-      {stderrCap
-        ? stderrCap.lines.map((line, idx) => (
-            <Text key={`e${idx}`} color={"red" as TextColor}>
-              {line}
-            </Text>
-          ))
-        : null}
-      {stderrCap && stderrCap.remaining > 0 ? (
-        <Text dimColor>{`… +${stderrCap.remaining} ${
-          stderrCap.remaining === 1 ? "line" : "lines"
-        }`}</Text>
-      ) : null}
-      {showExitNote ? (
-        <Text color={"red" as TextColor}>{`(exit ${exitCode})`}</Text>
-      ) : null}
+    <Box flexDirection="row">
+      <Box flexShrink={0}>
+        <Text dimColor>{responseGutter}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1}>
+        {stdoutCap.lines.map((line, idx) => (
+          <Text key={`o${idx}`} dimColor>
+            {line}
+          </Text>
+        ))}
+        {stdoutCap.remaining > 0 ? (
+          <Text dimColor>{`… +${stdoutCap.remaining} ${
+            stdoutCap.remaining === 1 ? "line" : "lines"
+          }`}</Text>
+        ) : null}
+        {stderrCap
+          ? stderrCap.lines.map((line, idx) => (
+              <Text key={`e${idx}`} color={"red" as TextColor}>
+                {line}
+              </Text>
+            ))
+          : null}
+        {stderrCap && stderrCap.remaining > 0 ? (
+          <Text dimColor>{`… +${stderrCap.remaining} ${
+            stderrCap.remaining === 1 ? "line" : "lines"
+          }`}</Text>
+        ) : null}
+        {showExitNote ? (
+          <Text color={"red" as TextColor}>{`(exit ${exitCode})`}</Text>
+        ) : null}
+      </Box>
     </Box>
   );
 }

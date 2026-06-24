@@ -18,6 +18,7 @@ vi.mock("../tui/ink.js", () => {
 });
 
 import { createTuiTool, BashOutputView } from "../tui/tool-rendering.js";
+import { selectAgenCTuiGlyphs } from "../tui/glyphs.js";
 
 describe("createTuiTool('Bash').renderToolResultMessage — end-to-end dispatch", () => {
   test("Bash content with <bash-stdout> envelope produces a React element whose type is BashOutputView", () => {
@@ -98,27 +99,36 @@ describe("createTuiTool('Bash').renderToolResultMessage — end-to-end dispatch"
 });
 
 /**
- * Flatten the children of a BashOutputView node into an array of child
- * elements. When the view returns a bare <Text> (the silent / no-output case)
- * the node itself is the only "child".
+ * Recursively collect every descendant element of a BashOutputView node into a
+ * flat array. The capped stdout/stderr lines now sit one level deeper inside the
+ * `⎿`-gutter content column (a row layout: gutter column + content column), so
+ * this walks the element tree rather than only the immediate children. When the
+ * view returns a bare <Text> (the silent / no-output case) the node itself is
+ * the only element.
  */
-function flattenBash(node: unknown): { props: { children?: unknown; color?: string } }[] {
-  const children = (node as { props?: { children?: unknown } }).props?.children;
-  const isElementWithChildrenArray =
-    children !== undefined &&
-    (Array.isArray(children) ||
-      (typeof children === "object" && children !== null));
-  const arr = isElementWithChildrenArray
-    ? Array.isArray(children)
-      ? children
-      : [children]
-    : [node];
-  return arr
-    .flat(Infinity)
-    .filter(
-      (child): child is { props: { children?: unknown; color?: string } } =>
-        typeof child === "object" && child !== null,
+function flattenBash(
+  node: unknown,
+): { props: { children?: unknown; color?: string; dimColor?: boolean } }[] {
+  const out: { props: { children?: unknown; color?: string; dimColor?: boolean } }[] =
+    [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== "object" || value === null) return;
+    const element = value as {
+      props?: { children?: unknown; color?: string; dimColor?: boolean };
+    };
+    out.push(
+      element as { props: { children?: unknown; color?: string; dimColor?: boolean } },
     );
+    if (element.props && "children" in element.props) {
+      visit(element.props.children);
+    }
+  };
+  visit(node);
+  return out;
 }
 
 describe("BashOutputView — capped preview visual contract", () => {
@@ -213,20 +223,100 @@ describe("formatStructuredToolResult ⇄ BashOutputView wire-shape lock", () => 
 
     const node = BashOutputView({ content: joined });
     expect(node).toBeDefined();
-    const children = (node as { props: { children: unknown[] } }).props.children;
-    const flat = (Array.isArray(children) ? children : [children])
-      .flat(Infinity)
-      .filter((child) => child !== null);
-    const renderedTexts = flat
+    const renderedTexts = flattenBash(node)
       .filter(
         (child): child is { props: { children: string } } =>
-          typeof child === "object" &&
-          child !== null &&
-          typeof (child as { props?: { children?: unknown } }).props
-            ?.children === "string",
+          typeof child.props.children === "string",
       )
       .map((child) => child.props.children);
     expect(renderedTexts.some((t) => t === "out")).toBe(true);
     expect(renderedTexts.some((t) => t === "err")).toBe(true);
+  });
+});
+
+/**
+ * The command stdout must nest UNDER its `● Run(...)` call row behind the same
+ * `⎿` continuation gutter the file-changed summary and the Read/Search collapsed
+ * body use — instead of breaking out flush at the bullet column — and render in
+ * the dim/secondary tone the other tool-result bodies use (so the raw output is
+ * not the loudest, full-brightness block in the transcript).
+ *
+ * REVERT-SENSITIVITY: against the pre-fix renderer the multi-line stdout was a
+ * flat list of bare `<Text>{line}</Text>` children — no gutter Text existed
+ * anywhere and the stdout lines carried no `dimColor`. Both assertions below go
+ * red if the gutter/indent + secondary-tone change is reverted.
+ */
+describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary tone", () => {
+  const gutter = selectAgenCTuiGlyphs().responseGutter;
+
+  test("multi-line stdout renders behind a single ⎿ continuation gutter, indented into a content column (not flush at the glyph column)", () => {
+    const node = BashOutputView({
+      content:
+        "<bash-stdout>INFO: 3\nWARN: 2\nERROR: 2</bash-stdout>[exit_code=0]",
+    });
+    const flat = flattenBash(node);
+
+    // A gutter Text containing the responseGutter glyph must exist. The old
+    // renderer had no gutter at all, so this find() returns undefined on revert.
+    const gutterLine = flat.find(
+      (child) =>
+        typeof child.props?.children === "string" &&
+        (child.props.children as string).includes(gutter),
+    );
+    expect(gutterLine).toBeDefined();
+    // The gutter sits in its own dimmed column.
+    expect(gutterLine!.props.dimColor).toBe(true);
+
+    // The top-level node is a ROW (gutter column + content column), so the
+    // stdout lines are NOT direct children of the returned node — they live one
+    // level deeper in the content column. The pre-fix node rendered them as
+    // immediate column children with no gutter, so this structural nesting is
+    // itself the fix.
+    const topChildren = (node as { props: { children: unknown } }).props
+      .children;
+    const topArray = Array.isArray(topChildren) ? topChildren : [topChildren];
+    const stdoutAtTopLevel = topArray
+      .flat(Infinity)
+      .some(
+        (child) =>
+          typeof child === "object" &&
+          child !== null &&
+          (child as { props?: { children?: unknown } }).props?.children ===
+            "INFO: 3",
+      );
+    expect(stdoutAtTopLevel).toBe(false);
+
+    // Each stdout line is reachable (nested) and rendered in the dim/secondary
+    // tone — never full brightness.
+    for (const expected of ["INFO: 3", "WARN: 2", "ERROR: 2"]) {
+      const line = flat.find((child) => child.props?.children === expected);
+      expect(line).toBeDefined();
+      expect(line!.props.dimColor).toBe(true);
+    }
+  });
+
+  test("the `… +N lines` truncation summary inherits the gutter/indent and stays dim", () => {
+    // 7 lines with a 5-line cap → 2 remaining, surfaced as "… +2 lines" under
+    // the same gutter. (No new interactivity is added for the truncation.)
+    const body = Array.from({ length: 7 }, (_, i) => `row ${i}`).join("\n");
+    const node = BashOutputView({
+      content: `<bash-stdout>${body}</bash-stdout>[exit_code=0]`,
+    });
+    const flat = flattenBash(node);
+    const more = flat.find(
+      (child) =>
+        typeof child.props?.children === "string" &&
+        (child.props.children as string).startsWith("… +2"),
+    );
+    expect(more).toBeDefined();
+    expect(more!.props.dimColor).toBe(true);
+    // Still behind the gutter.
+    expect(
+      flat.some(
+        (child) =>
+          typeof child.props?.children === "string" &&
+          (child.props.children as string).includes(gutter),
+      ),
+    ).toBe(true);
   });
 });

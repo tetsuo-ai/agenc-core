@@ -32,15 +32,24 @@ interface ChildElement {
 }
 
 function flatten(node: unknown): ChildElement[] {
-  if (!node || typeof node !== "object") return [];
-  const children = (node as { props?: { children?: unknown } }).props?.children;
-  const arr = Array.isArray(children) ? children : [children];
-  return arr
-    .flat(Infinity)
-    .filter(
-      (child): child is ChildElement =>
-        typeof child === "object" && child !== null,
-    );
+  // Recurse through the element tree. BashOutputView now nests its stdout/stderr
+  // lines one level deeper inside the `⎿`-gutter content column, so a shallow
+  // (immediate-children only) walk would miss them.
+  const out: ChildElement[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    out.push(value as ChildElement);
+    const children = (value as { props?: { children?: unknown } }).props
+      ?.children;
+    if (children !== undefined) visit(children);
+  };
+  const top = (node as { props?: { children?: unknown } })?.props?.children;
+  visit(top);
+  return out;
 }
 
 function textOf(child: ChildElement): string {
