@@ -43,6 +43,10 @@ import {
   createCodeModeService,
 } from "../tools/code-mode/service.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
+import {
+  ToolLatencyStore,
+  type ToolLatencyConfig,
+} from "../tools/tool-latency-store.js";
 import { initMagicDocs } from "../services/MagicDocs/magicDocs.js";
 import { configurePolicyLimitsService } from "../services/policyLimits/index.js";
 import type { RolloutItem } from "../session/rollout-item.js";
@@ -593,6 +597,47 @@ function createSessionTelemetry(opts: {
   } as SessionTelemetry;
 }
 
+/**
+ * Resolve the adaptive per-tool drain-timeout latency-store config (Goal #4a)
+ * from env. Each knob follows the `AGENC_MAX_TOOL_DRAIN_MS` precedent:
+ * a parseable, in-range positive value overrides the default; anything
+ * invalid (NaN, non-positive, out-of-range probability) falls back to the
+ * `ToolLatencyStore` default. Only knobs that are explicitly set are returned,
+ * so unset env leaves the store on `DEFAULT_TOOL_LATENCY_CONFIG`.
+ */
+function resolveToolLatencyConfig(
+  env: NodeJS.ProcessEnv,
+): Partial<ToolLatencyConfig> {
+  const cfg: { -readonly [K in keyof ToolLatencyConfig]?: number } = {};
+  const intKnob = (raw: string | undefined): number | undefined => {
+    if (raw === undefined) return undefined;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return n;
+  };
+  const probKnob = (raw: string | undefined): number | undefined => {
+    if (raw === undefined) return undefined;
+    const n = Number.parseFloat(raw);
+    if (!Number.isFinite(n) || n <= 0 || n >= 1) return undefined;
+    return n;
+  };
+  const floatKnob = (raw: string | undefined): number | undefined => {
+    if (raw === undefined) return undefined;
+    const n = Number.parseFloat(raw);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return n;
+  };
+  const minSamples = intKnob(env.AGENC_DRAIN_MIN_SAMPLES);
+  if (minSamples !== undefined) cfg.minSamples = minSamples;
+  const ringCap = intKnob(env.AGENC_DRAIN_RING_CAP);
+  if (ringCap !== undefined) cfg.ringCap = ringCap;
+  const percentile = probKnob(env.AGENC_DRAIN_PERCENTILE);
+  if (percentile !== undefined) cfg.percentile = percentile;
+  const kSigma = floatKnob(env.AGENC_DRAIN_K_SIGMA);
+  if (kSigma !== undefined) cfg.kSigma = kSigma;
+  return cfg;
+}
+
 export function buildBootstrapSessionServices(
   opts: BootstrapSessionServicesOptions,
 ): BootstrapSessionServicesHandle {
@@ -717,6 +762,7 @@ export function buildBootstrapSessionServices(
       providerName: opts.providerName,
       conversationId: opts.conversationId,
     }),
+    toolLatencyStore: new ToolLatencyStore(resolveToolLatencyConfig(opts.env)),
     modelsManager: opts.modelsManager,
     toolApprovals: {
       hasApproval: (key: string) => opts.toolApprovals.get(key) !== undefined,
