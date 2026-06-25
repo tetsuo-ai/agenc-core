@@ -11,8 +11,9 @@ import { PORTAL_DEFAULT_DAEMON_URL } from "./portal-protocol.js";
 
 export interface PortalRelayClientOptions {
   relayUrl: string; // must be wss:// (ws:// only allowed to loopback)
-  /** Host ticket presented to the relay. P2a: `dev:<account>:host:<machine>`. */
-  ticket: string;
+  /** Host ticket presented to the relay — a string, or a provider re-invoked on every (re)connect
+   *  so a short-lived signed ticket is freshly minted and never expires mid-session (token refresh). */
+  ticket: string | (() => string | Promise<string>);
   daemonUrl?: string;
   logger?: (msg: string) => void;
   reconnectDelayMs?: number;
@@ -51,7 +52,6 @@ export function startPortalRelayClient(
   const reconnectDelayMs = options.reconnectDelayMs ?? 2000;
   const keepaliveMs = options.keepaliveMs ?? 25000;
   const maxPeers = options.maxPeers ?? 32;
-  const hostUrl = `${options.relayUrl}/v1/host?ticket=${encodeURIComponent(options.ticket)}`;
 
   const peers = new Map<string, PortalConnection>();
   let relay: WebSocket | null = null;
@@ -100,8 +100,17 @@ export function startPortalRelayClient(
     peers.clear();
   }
 
-  function connect(): void {
+  async function connect(): Promise<void> {
     if (closed) return;
+    let ticket: string;
+    try {
+      ticket = typeof options.ticket === "function" ? await options.ticket() : options.ticket;
+    } catch (e) {
+      log(`[portal-relay] could not mint ticket: ${(e as Error).message}; retrying in ${reconnectDelayMs}ms`);
+      if (!closed) setTimeout(() => void connect(), reconnectDelayMs);
+      return;
+    }
+    const hostUrl = `${options.relayUrl}/v1/host?ticket=${encodeURIComponent(ticket)}`;
     relay = new WebSocket(hostUrl);
 
     relay.on("open", () => {
@@ -162,14 +171,14 @@ export function startPortalRelayClient(
       teardownAllPeers();
       if (!closed) {
         log(`[portal-relay] relay closed — reconnecting in ${reconnectDelayMs}ms`);
-        setTimeout(connect, reconnectDelayMs);
+        setTimeout(() => void connect(), reconnectDelayMs);
       }
     });
 
     relay.on("error", (err: Error) => log(`[portal-relay] relay error: ${err.message}`));
   }
 
-  connect();
+  void connect();
 
   return {
     close: () => {

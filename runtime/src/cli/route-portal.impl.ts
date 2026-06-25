@@ -1,6 +1,7 @@
 import type { CliRouteContext, CliRouteModule, RoutedStatus } from "./route-types.js";
 import { startPortalServer } from "../portal/portal-server.js";
 import { startPortalRelayClient } from "../portal/portal-relay-client.js";
+import { signRelayTicket } from "../portal/portal-ticket.js";
 import {
   PORTAL_DEFAULT_DAEMON_URL,
   PORTAL_DEFAULT_HOST,
@@ -10,7 +11,6 @@ import {
 function flagString(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
-
 function flagNumber(value: unknown, fallback: number): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -22,7 +22,9 @@ function flagNumber(value: unknown, fallback: number): number {
 
 const USAGE = [
   "usage: agenc portal serve [--host <h>] [--port <n>] [--daemon-url <ws-url>]",
-  "   or: agenc portal serve --relay --relay-url <wss-url> --ticket <ticket> [--daemon-url <ws-url>]",
+  "   or: agenc portal serve --relay --relay-url <wss-url> --account <id> [--machine <name>] [--ttl-hours <n>]   (signs a host ticket from AGENC_RELAY_TICKET_SECRET)",
+  "   or: agenc portal serve --relay --relay-url <wss-url> --ticket <signed-or-dev-ticket>",
+  "   or: agenc portal pair --account <id> [--ttl-hours <n>]   (mint a client ticket for the app; needs AGENC_RELAY_TICKET_SECRET)",
 ].join("\n");
 
 /** wss:// required; cleartext only to loopback (M6). */
@@ -30,7 +32,6 @@ function isSecureRelayUrl(url: string): boolean {
   return /^wss:\/\//.test(url) || /^ws:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(url);
 }
 
-/** Resolve only on SIGINT/SIGTERM so the long-running server stays up. */
 function waitForShutdown(close: () => void | Promise<void>): Promise<RoutedStatus> {
   return new Promise<RoutedStatus>((resolve) => {
     const shutdown = (): void => {
@@ -41,8 +42,37 @@ function waitForShutdown(close: () => void | Promise<void>): Promise<RoutedStatu
   });
 }
 
+/** `agenc portal pair` — mint a signed CLIENT ticket the user pastes into the app's relay host. */
+function runPair(
+  parsed: CliRouteContext["parsed"],
+  context: CliRouteContext["context"],
+): RoutedStatus {
+  const account = flagString(parsed.flags.account, "");
+  if (!account) {
+    context.output("usage: agenc portal pair --account <id> [--ttl-hours <n>]");
+    return 2;
+  }
+  const secret = process.env.AGENC_RELAY_TICKET_SECRET ?? "";
+  if (!secret) {
+    context.output("agenc portal pair requires AGENC_RELAY_TICKET_SECRET in the environment");
+    return 2;
+  }
+  const ttlHours = flagNumber(parsed.flags["ttl-hours"], 24);
+  const ticket = signRelayTicket({
+    secret,
+    accountId: account,
+    role: "client",
+    ttlMs: ttlHours * 3_600_000,
+  });
+  context.output(ticket);
+  context.output(`# signed client ticket for "${account}", valid ${ttlHours}h — paste as the app's relay host ticket= value`);
+  return 0;
+}
+
 async function run({ parsed, context }: CliRouteContext): Promise<RoutedStatus> {
-  if (parsed.positional[1] !== "serve") {
+  const sub = parsed.positional[1];
+  if (sub === "pair") return runPair(parsed, context);
+  if (sub !== "serve") {
     context.output(USAGE);
     return 2;
   }
@@ -61,16 +91,30 @@ async function run({ parsed, context }: CliRouteContext): Promise<RoutedStatus> 
       context.output(`agenc portal serve --relay requires a wss:// URL (got "${relayUrl}"); ws:// is only allowed to loopback`);
       return 2;
     }
-    // M4: the ticket must be a relay-verified secret token — never auto-derive a bearer from public
-    // identifiers (account id / machine name), which anyone could forge to hijack the host channel.
-    const ticket = flagString(parsed.flags.ticket, "");
-    if (!ticket) {
-      context.output("agenc portal serve --relay requires --ticket <ticket> (a relay-verified secret token; do not derive it from public identifiers)");
-      return 2;
+
+    // Prefer an explicit --ticket; otherwise sign a fresh short-lived host ticket on each (re)connect
+    // from AGENC_RELAY_TICKET_SECRET + --account (never a forgeable public-id ticket).
+    let ticket: string | (() => string);
+    const explicit = flagString(parsed.flags.ticket, "");
+    if (explicit) {
+      if (explicit.startsWith("dev:")) {
+        context.output("WARNING: a 'dev:' ticket is forgeable — local testing only. Production uses a signed ticket (AGENC_RELAY_TICKET_SECRET + --account).");
+      }
+      ticket = explicit;
+    } else {
+      const secret = process.env.AGENC_RELAY_TICKET_SECRET ?? "";
+      const account = flagString(parsed.flags.account, "");
+      if (!secret || !account) {
+        context.output("agenc portal serve --relay needs either --ticket <signed-ticket> or AGENC_RELAY_TICKET_SECRET + --account <id>");
+        return 2;
+      }
+      const hostId = flagString(parsed.flags.machine, "mac");
+      // Short TTL is fine: the host re-signs a fresh ticket on every (re)connect, so 2h only needs
+      // to cover the connect window + clock skew.
+      const ttlMs = flagNumber(parsed.flags["ttl-hours"], 2) * 3_600_000;
+      ticket = () => signRelayTicket({ secret, accountId: account, role: "host", hostId, ttlMs });
     }
-    if (ticket.startsWith("dev:")) {
-      context.output("WARNING: a 'dev:' ticket is a forgeable shared secret — use it only for local testing against a dev-mode relay. Production needs a relay-verified signed ticket (see PORTAL_SERVE_P2A_SECURITY.md M4).");
-    }
+
     const handle = startPortalRelayClient({
       relayUrl,
       ticket,
