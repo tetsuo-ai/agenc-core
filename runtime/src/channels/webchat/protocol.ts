@@ -44,6 +44,10 @@ export const WS_CHAT_SESSION_FORK = "chat.session.fork" as const;
 export const WS_CHAT_CANCELLED = "chat.cancelled" as const;
 export const WS_CHAT_CANCEL = "chat.cancel" as const;
 export const WS_CHAT_USAGE = "chat.usage" as const;
+// Guaranteed, idempotent, turn-id-stamped end-of-turn marker emitted from the turn-wrapper finally
+// (daemon.ts). Unlike agent.status phase:"idle" it carries a turnTraceId and fires exactly once per
+// turn even on crash/abort, giving portal/app clients a reliable per-turn completion contract.
+export const WS_CHAT_TURN_COMPLETE = "turn.complete" as const;
 
 // Session command bus
 export const WS_SESSION_COMMAND_CATALOG_GET =

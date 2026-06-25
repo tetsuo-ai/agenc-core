@@ -6,6 +6,7 @@ import routeDaemon from "./route-daemon.js";
 import routeFallback from "./route-fallback.js";
 import routeJobs from "./route-jobs.js";
 import routeMarket from "./route-market.js";
+import routePortal from "./route-portal.js";
 import routeSessions from "./route-sessions.js";
 import routeShell from "./route-shell.js";
 import routeSkill from "./route-skill.js";
@@ -20,6 +21,7 @@ export const CLI_ROUTES = [
   routeJobs,
   routeAgent,
   routeMarket,
+  routePortal,
   routeSkill,
   routeFallback,
 ];

@@ -7727,6 +7727,18 @@ export class DaemonManager {
         agentDefinitions: this._agentDefinitions,
       });
     } finally {
+      // Guaranteed, idempotent, turn-id-stamped end-of-turn signal for portal/app clients. This
+      // finally runs exactly once per turn (even on throw/abort), so the gaps in agent.status
+      // phase:"idle" (no finally, no turn id, possible double-emit) don't reach the client.
+      // See WS_CHAT_TURN_COMPLETE in channels/webchat/protocol.ts.
+      try {
+        webChat.pushToSession(msg.sessionId, {
+          type: "turn.complete",
+          payload: { sessionId: msg.sessionId, turnTraceId },
+        });
+      } catch {
+        /* never let the completion signal mask the turn outcome */
+      }
       this._foregroundSessionLocks.delete(msg.sessionId);
       if (this._activeSessionTraceIds.get(msg.sessionId) === turnTraceId) {
         this._activeSessionTraceIds.delete(msg.sessionId);
