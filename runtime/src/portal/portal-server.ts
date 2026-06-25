@@ -1,17 +1,14 @@
-// The portal's inbound transport (P1: loopback). A WebSocket server the AgenC iOS app connects to;
-// each app connection gets its own PortalAdapter + one loopback PortalGatewayClient to the daemon.
-// This is the in-core replacement for connector/local-translator.mjs. The relay/remote transport
-// (P2) reuses the adapter behind an outbound relay-client dialer instead of this listener.
+// The portal's inbound LOOPBACK transport (P1). A WebSocket server the AgenC iOS app connects to
+// directly; each app connection gets its own PortalConnection (adapter + daemon socket). This is
+// the in-core replacement for connector/local-translator.mjs. The relay/remote transport (P2) lives
+// in portal-relay-client.ts and reuses the same PortalConnection.
 
 import WebSocket, { WebSocketServer } from "ws";
-import { PortalAdapter } from "./portal-adapter.js";
-import { PortalGatewayClient } from "./portal-gateway-client.js";
+import { createPortalConnection } from "./portal-connection.js";
 import {
   PORTAL_DEFAULT_DAEMON_URL,
   PORTAL_DEFAULT_HOST,
   PORTAL_DEFAULT_PORT,
-  type JsonRpcNotification,
-  type JsonRpcResponse,
 } from "./portal-protocol.js";
 
 export interface PortalServerOptions {
@@ -59,38 +56,29 @@ export function startPortalServer(
         return;
       }
 
-      const sendToApp = (msg: JsonRpcResponse | JsonRpcNotification): void => {
-        try {
-          if (app.readyState === WebSocket.OPEN) app.send(JSON.stringify(msg));
-        } catch {
-          /* socket closing */
-        }
-      };
-
-      let adapter: PortalAdapter;
-      const gateway = new PortalGatewayClient({
+      const conn = createPortalConnection({
         daemonUrl,
-        onMessage: (m) => adapter.handleGatewayMessage(m),
-        onClose: () => {
-          adapter.handleGatewayClose();
+        logger: log,
+        sendToApp: (msg) => {
+          try {
+            if (app.readyState === WebSocket.OPEN) app.send(JSON.stringify(msg));
+          } catch {
+            /* socket closing */
+          }
+        },
+        onGatewayClose: () => {
           try {
             app.close();
           } catch {
             /* already closed */
           }
         },
-        onError: (e) => log(`[portal] gateway error: ${e.message}`),
-      });
-      adapter = new PortalAdapter({
-        sendToApp,
-        sendToGateway: (env) => gateway.send(env),
-        logger: log,
       });
 
-      app.on("message", (data: WebSocket.RawData) => adapter.handleAppMessage(data.toString()));
-      app.on("close", () => gateway.close());
+      app.on("message", (data: WebSocket.RawData) => conn.handleAppMessage(data.toString()));
+      app.on("close", () => conn.close());
       app.on("error", () => {
-        /* ignore; close handler cleans up */
+        /* close handler cleans up */
       });
       log("[portal] app connected");
     });

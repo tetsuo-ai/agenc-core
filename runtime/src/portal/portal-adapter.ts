@@ -19,7 +19,26 @@ import {
 export interface PortalAdapterOptions {
   sendToApp: (msg: JsonRpcResponse | JsonRpcNotification) => void;
   sendToGateway: (envelope: Record<string, unknown>) => void;
+  /** True for the relay/remote transport. Gates privileged actions the loopback path allows freely
+   *  (the adapter is the SOLE scope-enforcement point for the remote leg — the daemon treats the
+   *  loopback socket as full-privilege operator). */
+  isRemote?: boolean;
   logger?: (msg: string) => void;
+}
+
+/** Fail-closed gate: only obviously read-only actions may be approved by a REMOTE client (P2a). A
+ *  remote relay client must NOT be able to self-approve shell/wallet/destructive/file-mutating tools
+ *  — otherwise a leaked ticket runs privileged ops with no human on the device. */
+function remotelyApprovable(action: string): boolean {
+  const a = action.toLowerCase();
+  if (
+    /bash|shell|exec|command|\brun\b|spawn|write|edit|create|update|delete|remove|\brm\b|destroy|drop|wallet|transfer|\bsend\b|sign|airdrop|swap|\bpay\b|config|sudo|kill|reload|install|chmod|chown|\bmv\b|\bcp\b/.test(
+      a,
+    )
+  ) {
+    return false;
+  }
+  return /read|list|view|search|grep|glob|fetch|\bget\b|\bcat\b|show|inspect|status|browse/.test(a);
 }
 
 type RpcId = string | number | null;
@@ -60,8 +79,13 @@ export class PortalAdapter {
   private streamedThisTurn = false;
   private turnActive = false;
   private readonly turnQueue: string[] = [];
+  /** requestId -> action, captured from approval.request so tool.approve can be scope-checked. */
+  private readonly pendingApprovals = new Map<string, string>();
+  private readonly isRemote: boolean;
 
-  constructor(private readonly opts: PortalAdapterOptions) {}
+  constructor(private readonly opts: PortalAdapterOptions) {
+    this.isRemote = opts.isRemote ?? false;
+  }
 
   // ---- app JSON-RPC -> gateway {type} ----
 
@@ -113,25 +137,46 @@ export class PortalAdapter {
         this.enqueueTurn(content);
         break;
       }
-      case RPC.toolApprove:
+      case RPC.toolApprove: {
+        const requestId = asStr(params.requestId);
+        if (this.isRemote) {
+          const action = this.pendingApprovals.get(requestId) ?? "";
+          if (!remotelyApprovable(action)) {
+            // A remote client must NOT self-approve a privileged tool it just triggered (M1). Reject
+            // the tool on the gateway and tell the client a device-local human confirm is required.
+            this.opts.logger?.(`[portal] denied remote approval of "${action}" (req ${requestId})`);
+            this.replyErr(id, -32001, `remote approval not allowed for "${action || "this action"}"; requires device-local confirmation`);
+            this.sendGateway({ type: GW.approvalRespond, payload: { requestId, approved: false } });
+            this.pendingApprovals.delete(requestId);
+            break;
+          }
+        }
+        this.pendingApprovals.delete(requestId);
         this.reply(id, { ok: true });
-        this.sendGateway({
-          type: GW.approvalRespond,
-          payload: { requestId: asStr(params.requestId), approved: true },
-        });
+        this.sendGateway({ type: GW.approvalRespond, payload: { requestId, approved: true } });
         break;
-      case RPC.toolDeny:
+      }
+      case RPC.toolDeny: {
+        const requestId = asStr(params.requestId);
+        this.pendingApprovals.delete(requestId);
         this.reply(id, { ok: true });
-        this.sendGateway({
-          type: GW.approvalRespond,
-          payload: { requestId: asStr(params.requestId), approved: false },
-        });
+        this.sendGateway({ type: GW.approvalRespond, payload: { requestId, approved: false } });
         break;
-      case RPC.setPermissionMode:
-        // P1: acknowledged but not enforced server-side. P3 wires this to a per-session overlay
+      }
+      case RPC.setPermissionMode: {
+        const mode = asStr(params.permissionMode);
+        // A remote client must never be able to relax the approval mode (M3). This denylist must
+        // remain when P3 actually wires setPermissionMode, so the wiring physically can't expose
+        // yolo/bypass to the relay leg.
+        if (this.isRemote && /yolo|bypass|allow|unsafe|auto/i.test(mode)) {
+          this.replyErr(id, -32001, `permission mode "${mode}" not allowed from a remote client`);
+          break;
+        }
+        // P1/P2a: acknowledged but not enforced server-side. P3 wires this to a per-session overlay
         // on the ApprovalEngine (the elevations/denials precedent) via session.permissionMode.set.
-        this.reply(id, { ok: true, permissionMode: asStr(params.permissionMode) });
+        this.reply(id, { ok: true, permissionMode: mode });
         break;
+      }
       case RPC.agentList:
         this.reply(id, { agents: [] });
         break;
@@ -290,17 +335,21 @@ export class PortalAdapter {
           isError: Boolean(payload.isError),
         });
         break;
-      case GW.approvalRequest:
+      case GW.approvalRequest: {
+        const requestId = asStr(payload.requestId);
+        const action = asStr(payload.action) || "tool";
+        this.pendingApprovals.set(requestId, action); // so tool.approve can be scope-checked (M1)
         this.notify(NOTIFY.permissionRequest, {
           sessionId: sid,
-          requestId: asStr(payload.requestId),
-          toolName: asStr(payload.action) || "tool",
-          title: asStr(payload.action) || "Approve action",
+          requestId,
+          toolName: action,
+          title: action || "Approve action",
           detail: asStr(payload.message) || short(payload.details),
           kind: "tool",
           permissions: [],
         });
         break;
+      }
       case GW.chatMessage: {
         // The final full assistant message. If we already streamed via chat.stream this is a
         // duplicate (suppress); if the gateway one-shot the answer, THIS is the response.
