@@ -7,6 +7,7 @@ import { Ansi } from "./ink/Ansi.js";
 import { stringWidth } from "./ink/stringWidth.js";
 import { stripUnderlineAnsi } from "./components/shell/OutputLine.js";
 import { selectAgenCTuiGlyphs } from "./glyphs.js";
+import { getShortcutDisplay } from "./keybindings/shortcutFormat.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
 import { isRecord } from "../utils/record.js";
@@ -396,9 +397,22 @@ interface CappedPreview {
  * Cap a block to the first `maxLines` non-trailing-whitespace lines (each line
  * also width-capped), appending a "… +K lines" continuation when the block is
  * longer. Matches the common CLI-agent `output_lines` convention.
+ *
+ * When `verbose` is set (the transcript is expanded via `app:toggleTranscript`)
+ * the cap is lifted: every line is returned uncapped and un-width-truncated so
+ * the FULL output is reachable — the "view full output" path the `… +K lines`
+ * affordance advertises. `remaining` stays 0 so no elision marker renders.
  */
-function capPreviewLines(value: string, maxLines: number): CappedPreview {
-  const all = value.replace(/\s+$/, "").split("\n").map(truncatePreviewWidth);
+function capPreviewLines(
+  value: string,
+  maxLines: number,
+  verbose = false,
+): CappedPreview {
+  const trimmed = value.replace(/\s+$/, "");
+  if (verbose) {
+    return { lines: trimmed.split("\n"), remaining: 0, tailLines: [] };
+  }
+  const all = trimmed.split("\n").map(truncatePreviewWidth);
   if (all.length <= maxLines)
     return { lines: all, remaining: 0, tailLines: [] };
   return {
@@ -427,8 +441,14 @@ function capPreviewLinesHeadTail(
   value: string,
   maxLines: number,
   headLines: number,
+  verbose = false,
 ): CappedPreview {
-  const all = value.replace(/\s+$/, "").split("\n").map(truncatePreviewWidth);
+  const trimmed = value.replace(/\s+$/, "");
+  // Expanded transcript: lift the cap entirely (full output, un-truncated).
+  if (verbose) {
+    return { lines: trimmed.split("\n"), remaining: 0, tailLines: [] };
+  }
+  const all = trimmed.split("\n").map(truncatePreviewWidth);
   if (all.length <= maxLines)
     return { lines: all, remaining: 0, tailLines: [] };
   // Clamp the head so at least one tail line always survives, then give the
@@ -444,6 +464,28 @@ function capPreviewLinesHeadTail(
 
 /** Head lines reserved for the failure-aware head+tail cap (tail gets the rest). */
 const BASH_PREVIEW_FAILURE_HEAD_LINES = 2;
+
+/**
+ * "view full output" affordance for the `… +K lines` continuation marker.
+ *
+ * The line cap above keeps the inline footprint small, but — unlike the Edit
+ * DIFF card, whose collapsed `… +N more · ctrl+w d for full diff` marker can
+ * reach the full diff — a capped command output was a DEAD END: the hidden
+ * lines were unreachable. This wires the marker to the same transcript-expand
+ * mechanism the rest of the TUI already uses for "show the full thing": the
+ * `app:toggleTranscript` shortcut (default `ctrl+o`, the same one
+ * `CtrlOToExpand`/`AdvisorMessage` surface). When the transcript is expanded the
+ * `verbose` prop (already plumbed into BashOutputView from
+ * `UserToolSuccessMessage`) flips on and the FULL stdout/stderr is rendered
+ * uncapped and scrollable — no bespoke pager/overlay required.
+ *
+ * `getShortcutDisplay` (not a hardcoded literal) so the hint honors a user's
+ * rebind of `app:toggleTranscript`, matching `ctrlOToExpand`'s formatting.
+ */
+function fullOutputAffordance(): string {
+  const shortcut = getShortcutDisplay("app:toggleTranscript", "Global", "ctrl+o");
+  return ` · ${shortcut} for full output`;
+}
 
 /**
  * Live `exec_command` trailer line, e.g.
@@ -514,7 +556,7 @@ function renderBashOutputLine(
 
 export function BashOutputView({
   content,
-  verbose: _verbose,
+  verbose = false,
 }: {
   readonly content: string;
   readonly verbose?: boolean;
@@ -588,14 +630,16 @@ export function BashOutputView({
         stdoutTrimmed,
         BASH_PREVIEW_MAX_LINES,
         BASH_PREVIEW_FAILURE_HEAD_LINES,
+        verbose,
       )
-    : capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES);
+    : capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES, verbose);
   const showStderr = isFailure && stderrTrimmed.length > 0;
   const stderrCap = showStderr
     ? capPreviewLinesHeadTail(
         stderrTrimmed,
         BASH_PREVIEW_MAX_LINES,
         BASH_PREVIEW_FAILURE_HEAD_LINES,
+        verbose,
       )
     : null;
   // Compact non-zero-exit indicator. The plain exec result folds stderr into
@@ -615,7 +659,7 @@ export function BashOutputView({
         {stdoutCap.remaining > 0 ? (
           <Text dimColor>{`… +${stdoutCap.remaining} ${
             stdoutCap.remaining === 1 ? "line" : "lines"
-          }`}</Text>
+          }${fullOutputAffordance()}`}</Text>
         ) : null}
         {/* TAIL block (failure head+tail cap): the trailing verdict/exception
             lines that survive AFTER the `… +K lines` elision. Empty on success. */}
@@ -633,7 +677,7 @@ export function BashOutputView({
         {stderrCap && stderrCap.remaining > 0 ? (
           <Text dimColor>{`… +${stderrCap.remaining} ${
             stderrCap.remaining === 1 ? "line" : "lines"
-          }`}</Text>
+          }${fullOutputAffordance()}`}</Text>
         ) : null}
         {stderrCap
           ? stderrCap.tailLines.map((line, idx) =>
