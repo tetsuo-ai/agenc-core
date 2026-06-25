@@ -7,12 +7,72 @@ import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
 import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
+import wrapText from '../../ink/wrap-text.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
 
 type ThemeColor = keyof Theme
 
 const TerminalFrameColumnsContext = React.createContext(120)
+
+/**
+ * Fixed horizontal chrome of the `DiffInline` box, measured against the rendered
+ * output (see `diffInlineCodeCellWidth` for the exact decomposition). These are
+ * the columns that are NEVER available to the flexing code text:
+ *
+ *   - the box's `borderStyle="single"` border: 1 col on each side          → 2
+ *   - each diff row's `paddingX={1}`: 1 col on each side                    → 2
+ *   - the fixed line-number gutter on every row:
+ *       old line, `padStart(4, ' ')`                                        → 4
+ *       new line, `padStart(4, ' ')`                                        → 4
+ *       the ` {sigil} ` marker cell (space + 1-col sigil + space)           → 3
+ *
+ * Border (2) + paddingX (2) + gutter (4 + 4 + 3 = 11) = 15. The gutter is
+ * content-independent — the line numbers are always padded to 4 and the sigil
+ * cell is always 3 wide — so the chrome is a constant, which is what lets the
+ * code-cell width be deterministic.
+ */
+const DIFF_INLINE_BORDER_COLS = 2
+const DIFF_INLINE_ROW_PADDING_COLS = 2
+const DIFF_INLINE_GUTTER_COLS = 4 + 4 + 3
+const DIFF_INLINE_CHROME_COLS =
+  DIFF_INLINE_BORDER_COLS + DIFF_INLINE_ROW_PADDING_COLS + DIFF_INLINE_GUTTER_COLS
+
+/**
+ * The EXACT visible width available to a `DiffInline` code cell, given the box's
+ * total outer width. Pure + exported so the width contract is unit-testable in
+ * isolation, independent of Yoga: `codeCellWidth = boxOuterWidth − 15`.
+ *
+ * When the box is so narrow there is no room for code (≤ chrome), this clamps to
+ * a minimum of 1 so the truncate helper still emits a single-column marker
+ * rather than producing a negative/zero width.
+ */
+export function diffInlineCodeCellWidth(boxOuterWidth: number): number {
+  return Math.max(1, Math.floor(boxOuterWidth) - DIFF_INLINE_CHROME_COLS)
+}
+
+/**
+ * Carries the EXACT outer width the embedded `DiffInline` box should occupy, set
+ * ONLY by render contexts that fill a known content width (the post-approval
+ * transcript DIFF card under a tool-use row). When present, `DiffInline` sizes
+ * its code cell deterministically (`diffInlineCodeCellWidth`) and pre-truncates
+ * each line, so Yoga flex rounding can never shift the truncation point by ±1
+ * (which produced both the early-ellipsis and the spill-past-border symptoms).
+ *
+ * Deliberately separate from the general `ContentWidthContext`: a surface-wide
+ * content width (e.g. an auto-sized approval popup that does NOT fill the whole
+ * surface) is NOT the DiffInline box width, so reading the general context could
+ * feed a too-wide value and overflow. `null` → the legacy flex layout is kept.
+ */
+const DiffInlineWidthContext = React.createContext<number | null>(null)
+
+/**
+ * Horizontal chrome the `Tool` detail box adds around its content before an
+ * embedded `DiffInline`: `marginLeft={2}` + the `borderLeft` rule (1) +
+ * `paddingLeft={1}` = 4 columns. The diff's outer width is therefore the
+ * inherited content width minus this inset.
+ */
+const DIFF_INLINE_DETAIL_INSET_COLS = 2 + 1 + 1
 
 export type BadgeVariant =
   | 'neutral'
@@ -975,6 +1035,13 @@ export function Tool({
   readonly time?: string
 }): React.ReactNode {
   const color = state === 'failed' ? 'error' : state === 'queued' ? 'inactive' : toolColor[kind]
+  // The detail box below indents its content by `marginLeft={2}` + the
+  // `borderLeft` rule (1) + `paddingLeft={1}` = 4 columns. An embedded
+  // `DiffInline` therefore has exactly `inheritedContentWidth − 4` columns to
+  // fill; surface that exact width so the diff sizes its code cell
+  // deterministically instead of relying on Yoga flex rounding.
+  const inheritedWidth = useContentWidth()
+  const detailContentWidth = insetContentWidth(inheritedWidth, DIFF_INLINE_DETAIL_INSET_COLS)
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" gap={1}>
@@ -1033,7 +1100,9 @@ export function Tool({
           borderLeft
           borderLeftColor="lineSoft"
         >
-          {detail}
+          <DiffInlineWidthContext.Provider value={detailContentWidth}>
+            {detail}
+          </DiffInlineWidthContext.Provider>
         </ThemedBox>
       ) : null}
     </Box>
@@ -1164,8 +1233,23 @@ export function DiffInline({
    */
   readonly op?: string
 }): React.ReactNode {
+  // When a render context supplies the box's exact outer width (the transcript
+  // DIFF card), size the code cell deterministically instead of leaving it to
+  // Yoga flex. Yoga's flex rounding occasionally lands ±1 col off, which made an
+  // at-width code line either ellipsize one char too early OR spill its last
+  // char past the right border (two identically-sized boxes rendering the same
+  // line differently). Pinning `width={codeCellWidth}` on the code cell and
+  // pre-truncating the text to that same width removes the rounding entirely.
+  const explicitBoxWidth = React.useContext(DiffInlineWidthContext)
+  const codeCellWidth =
+    explicitBoxWidth !== null ? diffInlineCodeCellWidth(explicitBoxWidth) : null
   return (
-    <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft">
+    <ThemedBox
+      flexDirection="column"
+      borderStyle="single"
+      borderColor="lineSoft"
+      {...(explicitBoxWidth !== null ? { width: explicitBoxWidth } : {})}
+    >
       <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
         <ThemedText color="subtle">{op}</ThemedText>
         <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
@@ -1215,9 +1299,23 @@ export function DiffInline({
               <Box flexShrink={0}>
                 <ThemedText color={sigilColor}> {sigil} </ThemedText>
               </Box>
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <ThemedText color={codeColor} wrap="truncate-end">{line.code}</ThemedText>
-              </Box>
+              {codeCellWidth !== null ? (
+                // Deterministic path: the cell is a fixed `codeCellWidth` wide and
+                // never flexes, and the code is PRE-TRUNCATED to that exact width
+                // with the same `truncate-end` helper the text node would use — so
+                // the visible result cannot depend on Yoga rounding. A line at or
+                // under the width passes through unchanged (truncate is a no-op),
+                // so short lines still render in full.
+                <Box flexShrink={0} width={codeCellWidth}>
+                  <ThemedText color={codeColor} wrap="truncate-end">
+                    {wrapText(line.code, codeCellWidth, 'truncate-end')}
+                  </ThemedText>
+                </Box>
+              ) : (
+                <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                  <ThemedText color={codeColor} wrap="truncate-end">{line.code}</ThemedText>
+                </Box>
+              )}
             </ThemedBox>
           )
         })}
