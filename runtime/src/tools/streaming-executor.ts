@@ -67,6 +67,7 @@ import {
   type ToolRouter,
 } from "./router.js";
 import { canonicalModelToolName } from "./model-tool-aliases.js";
+import { resolveTimeoutMs } from "./execution.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -105,6 +106,14 @@ export interface TrackedTool {
   result?: ToolDispatchResult;
   additionalContexts?: readonly string[];
   error?: Error;
+  /**
+   * Monotonic timestamp (performance.now) captured when the tool
+   * transitioned to `executing`. Used by the drain watchdog to bound how
+   * long a single tool may sit `executing` before the executor synthesizes
+   * a terminal `timeout` result so the turn can finalize even if the tool's
+   * dispatch promise never settles.
+   */
+  executingSinceMs?: number;
   /** Progress events buffered for immediate streaming. */
   readonly pendingProgress: ProgressEvent[];
 }
@@ -157,6 +166,49 @@ function normalizeMaxConcurrency(value: number | undefined): number {
   return Math.floor(value);
 }
 
+/**
+ * Default drain FLOOR. The effective per-tool drain deadline is
+ * `max(this.maxToolDrainMs, toolEffectiveTimeoutMs + DRAIN_GRACE_MS)`, so this
+ * value is only the lower bound applied to short/default-timeout tools (e.g.
+ * Read, whose execute timeout is 30s → floor 180s catches a wedged dispatch).
+ * Tools that resolve to a LARGER own timeout (a long `bash` with
+ * `args.timeoutMs`, or a `tool.timeoutMs` > floor) raise their deadline above
+ * this floor, and tools with `timeoutBehavior:"tool"` (request-user-input,
+ * wait, monitor, background — intentionally unbounded) are EXEMPT from the
+ * backstop entirely and rely on the abort signal as their only stop.
+ *
+ * Chosen well above the default execute timeout (`execution.ts`
+ * `DEFAULT_TOOL_TIMEOUT_MS` = 30s) so the normal path is never tripped — only
+ * a dispatch that never settles. Override via env `AGENC_MAX_TOOL_DRAIN_MS`
+ * (positive integer) or the `maxToolDrainMs` constructor option. `0` /
+ * non-positive disables the backstop (restores the prior unbounded behavior).
+ */
+const DEFAULT_MAX_TOOL_DRAIN_MS = 180_000;
+
+/**
+ * Headroom added to a tool's own effective timeout when deriving its drain
+ * deadline. Covers the tool's own timeout-abort settling plus pre/post-hook,
+ * permission/guardian, and concurrency-lock latency that sit OUTSIDE the
+ * `tool.execute` timed region. So a 600s `bash` gets a 660s drain deadline,
+ * not a 600s one — the backstop only fires once the tool is past its own
+ * deadline AND the surrounding pipeline has also had time to settle.
+ */
+const DRAIN_GRACE_MS = 60_000;
+
+function normalizeMaxToolDrainMs(value: number | undefined): number {
+  if (value !== undefined) {
+    if (!Number.isFinite(value) || value <= 0) return Number.POSITIVE_INFINITY;
+    return Math.floor(value);
+  }
+  const raw = process.env.AGENC_MAX_TOOL_DRAIN_MS;
+  if (raw !== undefined) {
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return Number.POSITIVE_INFINITY;
+    return n;
+  }
+  return DEFAULT_MAX_TOOL_DRAIN_MS;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Options
 // ─────────────────────────────────────────────────────────────────────
@@ -165,6 +217,23 @@ export interface StreamingToolExecutorOptions {
   readonly registry: ToolRegistry;
   /** Maximum number of simultaneously executing tool calls. */
   readonly maxConcurrency?: number;
+  /**
+   * Hard upper bound (ms) on how long a single tool may sit `executing`
+   * inside the drain before the executor gives up waiting on it and
+   * synthesizes a terminal `timeout` result so the turn can finalize.
+   *
+   * This is a LAST-RESORT backstop for a dispatch promise that never
+   * settles — e.g. a wedged pre/post-hook, a runtime-lock that is never
+   * released, or any await OUTSIDE the per-tool `tool.execute` timeout
+   * (execution.ts `withTimeoutAndAbort`). Without it, a single hung
+   * dispatch pins `executeTools` -> `getRemainingResults` forever and the
+   * turn never emits `turn_complete` (observed: a Read `tool_call_started`
+   * with no `tool_call_completed`, the turn "still generating" for minutes).
+   *
+   * Defaults well above the per-tool execute timeout so the normal path is
+   * never affected; only a genuinely stuck tool trips it.
+   */
+  readonly maxToolDrainMs?: number;
   /** Session-scoped AbortSignal (user Ctrl+C, provider switch). */
   readonly abortSignal?: AbortSignal;
   /**
@@ -214,6 +283,7 @@ export class StreamingToolExecutor {
   private readonly onSiblingAbort?: (reason: string) => void;
   private readonly onProgress?: (event: ProgressEvent) => void;
   private readonly maxConcurrency: number;
+  private readonly maxToolDrainMs: number;
   private readonly siblingAbortController: AbortController;
   private readonly bashToolName: string;
   private readonly runtime?: ToolCallRuntime | ToolRuntimeScheduler;
@@ -259,6 +329,7 @@ export class StreamingToolExecutor {
     this.onSiblingAbort = opts.onSiblingAbort;
     this.onProgress = opts.onProgress;
     this.maxConcurrency = normalizeMaxConcurrency(opts.maxConcurrency);
+    this.maxToolDrainMs = normalizeMaxToolDrainMs(opts.maxToolDrainMs);
     this.bashToolName = opts.bashToolName ?? "system.bash";
     this.runtime = opts.runtime;
     this.runToolUseFn = opts.runToolUseFn;
@@ -750,21 +821,138 @@ export class StreamingToolExecutor {
     return this.tools.some((t) => t.pendingProgress.length > 0);
   }
 
+  /**
+   * Effective drain deadline (ms since `executingSinceMs`) for one tool, or
+   * `Infinity` when this tool is EXEMPT from the backstop and may only be
+   * stopped by the abort signal.
+   *
+   *   - backstop disabled (maxToolDrainMs non-finite) → Infinity (no bound)
+   *   - no local tool def (test override / MCP-router path) → the flat
+   *     `maxToolDrainMs` floor (preserves the never-settling-dispatch repro)
+   *   - `resolveTimeoutMs(def, args) === null` (timeoutBehavior:"tool" —
+   *     request-user-input / wait / monitor / background, intentionally
+   *     unbounded) → Infinity (EXEMPT; the abort signal is the only stop)
+   *   - finite own timeout `t` → `max(maxToolDrainMs, t + DRAIN_GRACE_MS)`
+   *     so a long bash (`args.timeoutMs`/`tool.timeoutMs` > floor) is never
+   *     killed before its own timeout + settling headroom.
+   */
+  private toolDrainDeadlineMs(tool: TrackedTool): number {
+    if (!Number.isFinite(this.maxToolDrainMs)) return Number.POSITIVE_INFINITY;
+    const resolvedName = this.resolveModelToolName(tool.toolCall.name);
+    const def = this.registry.tools.find((t) => t.name === resolvedName);
+    if (def === undefined) {
+      // No local def to read a timeout from (test concurrency-override path,
+      // or an MCP/router-only tool). Fall back to the flat floor.
+      return this.maxToolDrainMs;
+    }
+    const parsedArgs = parseToolCallArguments(tool.toolCall.arguments);
+    const own = resolveTimeoutMs(def, parsedArgs);
+    if (own === null) {
+      // timeoutBehavior:"tool" — intentionally unbounded; exempt entirely.
+      return Number.POSITIVE_INFINITY;
+    }
+    return Math.max(this.maxToolDrainMs, own + DRAIN_GRACE_MS);
+  }
+
+  /**
+   * Remaining ms until the soonest-to-expire `executing` tool crosses its own
+   * drain deadline, or `null` when nothing executing is subject to the
+   * backstop (bound disabled, no executing tools, or every executing tool is
+   * exempt). A non-null value installs a timer on the drain wait so the loop
+   * wakes to force-finalize a stuck tool even if its `promise` never settles
+   * and no progress ever arrives.
+   */
+  private nextDrainTimeoutMs(): number | null {
+    if (!Number.isFinite(this.maxToolDrainMs)) return null;
+    const now = performance.now();
+    let soonest: number | null = null;
+    for (const tool of this.tools) {
+      if (tool.status !== "executing") continue;
+      const since = tool.executingSinceMs;
+      if (since === undefined) continue;
+      const deadline = this.toolDrainDeadlineMs(tool);
+      if (!Number.isFinite(deadline)) continue; // exempt tool
+      const remaining = Math.max(0, deadline - (now - since));
+      if (soonest === null || remaining < soonest) soonest = remaining;
+    }
+    return soonest;
+  }
+
+  /**
+   * Backstop for a dispatch promise that never settles: any tool that has
+   * been `executing` longer than ITS OWN drain deadline is force-completed
+   * with a terminal `timeout` result so the drain proceeds and the turn
+   * finalizes. Returns true if it finalized at least one tool. Tools with a
+   * `timeoutBehavior:"tool"` (unbounded) deadline are exempt and never forced
+   * here. The per-tool `tool.execute` timeout (execution.ts) is the first
+   * line of defense; this only fires for hangs OUTSIDE that timed region.
+   */
+  private forceTimeoutOverdueExecutingTools(): boolean {
+    if (!Number.isFinite(this.maxToolDrainMs)) return false;
+    const now = performance.now();
+    let forced = false;
+    for (const tool of this.tools) {
+      if (tool.status !== "executing") continue;
+      const since = tool.executingSinceMs;
+      if (since === undefined) continue;
+      const deadline = this.toolDrainDeadlineMs(tool);
+      if (!Number.isFinite(deadline)) continue; // exempt tool
+      if (now - since < deadline) continue;
+      // Synthesize a terminal timeout so this tool_use block still gets a
+      // paired tool_result (conversation invariant) and the drain can end.
+      tool.error = new Error(
+        `tool ${tool.toolCall.name} drain timeout after ${Math.round(now - since)}ms`,
+      );
+      tool.result = this.createSyntheticError(tool.toolCall, "timeout");
+      tool.status = "completed";
+      forced = true;
+    }
+    if (forced) this.signalProgress();
+    return forced;
+  }
+
   private async waitForExecutingToolOrProgress(): Promise<void> {
     const executingPromises = this.tools
       .filter((t) => t.status === "executing" && t.promise)
       .map((t) => t.promise!);
+    let drainTimer: ReturnType<typeof setTimeout> | null = null;
     const progressPromise = new Promise<void>((resolve) => {
       this.wakeResolve = resolve;
+      // Last-resort drain bound: if a tool has been executing past the
+      // deadline, wake the loop so `forceTimeoutOverdueExecutingTools` can
+      // finalize it even when its `promise` never settles and no progress
+      // ever fires (the unbounded-wait that hangs the turn).
+      const timeoutMs = this.nextDrainTimeoutMs();
+      if (timeoutMs !== null) {
+        drainTimer = setTimeout(() => {
+          drainTimer = null;
+          this.signalProgress();
+        }, timeoutMs);
+        if (typeof (drainTimer as { unref?: () => void }).unref === "function") {
+          (drainTimer as { unref: () => void }).unref();
+        }
+      }
     });
-    if (executingPromises.length > 0) {
-      await Promise.race([...executingPromises, progressPromise]);
-      return;
+    const clearDrainTimer = (): void => {
+      if (drainTimer) {
+        clearTimeout(drainTimer);
+        drainTimer = null;
+      }
+    };
+    try {
+      if (executingPromises.length > 0) {
+        await Promise.race([...executingPromises, progressPromise]);
+      } else {
+        // No executing promises are attached yet: wait for a progress/close
+        // signal. signalProgress wakes us when status transitions, including
+        // on discard() and the drain-timeout above.
+        await progressPromise;
+      }
+    } finally {
+      clearDrainTimer();
     }
-    // No executing promises are attached yet: wait for a progress/close
-    // signal. signalProgress wakes us when status transitions, including
-    // on discard().
-    await progressPromise;
+    // After any wake, finalize tools that overran the drain bound.
+    this.forceTimeoutOverdueExecutingTools();
   }
 
   /**
@@ -830,6 +1018,9 @@ export class StreamingToolExecutor {
       if (this.canExecuteTool(tool)) {
         // Fire but don't await — multiple safe tools can start.
         tool.status = "executing";
+        if (tool.executingSinceMs === undefined) {
+          tool.executingSinceMs = performance.now();
+        }
         void this.executeTool(tool);
         // Track progress marker for optional fast-forward.
         if (i > this.lastDispatchedIndex) this.lastDispatchedIndex = i;
@@ -848,6 +1039,9 @@ export class StreamingToolExecutor {
   private async executeTool(tool: TrackedTool): Promise<void> {
     if (tool.status === "completed" || tool.status === "yielded") return;
     tool.status = "executing";
+    if (tool.executingSinceMs === undefined) {
+      tool.executingSinceMs = performance.now();
+    }
     tool.promise = this.runOne(tool);
     try {
       await tool.promise;
