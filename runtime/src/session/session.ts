@@ -153,6 +153,7 @@ import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
+import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type {
@@ -821,6 +822,13 @@ export interface SessionServices {
   readonly costSidecar?: CostSidecar;
   readonly hooksRuntime?: ConfiguredHooksRuntime;
   readonly policyLimits?: PolicyLimitsService;
+  /**
+   * Adaptive per-tool drain-timeout latency store (Goal #4a). In-memory,
+   * session-scoped. Optional so minimal/test SessionServices literals need not
+   * supply one; the streaming executor falls through to the flat drain
+   * deadline (and the recording site is a no-op) when this is absent.
+   */
+  readonly toolLatencyStore?: ToolLatencyStore;
 }
 
 /**

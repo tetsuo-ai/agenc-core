@@ -237,6 +237,52 @@ function normalizeMaxToolDrainMs(value: number | undefined): number {
   return DEFAULT_MAX_TOOL_DRAIN_MS;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Adaptive drain-deadline knobs (Goal #4a). All follow the
+// `normalizeMaxToolDrainMs` precedent: explicit constructor option →
+// `AGENC_*` env override → default; invalid input falls back to the default.
+// Off-by-default for the first ship (`AGENC_ADAPTIVE_DRAIN` unset == OFF), so
+// the deadline is byte-identical to today while the store warms up silently.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Master enable; OFF unless explicitly opted in. Default false. */
+const DEFAULT_ADAPTIVE_DRAIN_ENABLED = false;
+/** `candidate = estimate * margin + grace`. Default 1.5. */
+const DEFAULT_ADAPTIVE_DRAIN_MARGIN_MULT = 1.5;
+/** Absolute hard floor; `lo = max(own + grace, this)`. Default 30s. */
+const DEFAULT_ADAPTIVE_DRAIN_SAFE_MIN_MS = 30_000;
+/** Runaway-raise ceiling; `hi = max(maxDrain, own + grace) * this`. Default 4. */
+const DEFAULT_ADAPTIVE_DRAIN_RAISE_CAP = 4;
+
+function normalizeAdaptiveDrainEnabled(value: boolean | undefined): boolean {
+  if (value !== undefined) return value;
+  const raw = process.env.AGENC_ADAPTIVE_DRAIN;
+  if (raw === undefined) return DEFAULT_ADAPTIVE_DRAIN_ENABLED;
+  const t = raw.trim().toLowerCase();
+  if (t === "1" || t === "true" || t === "yes" || t === "on") return true;
+  if (t === "0" || t === "false" || t === "no" || t === "off" || t === "") {
+    return false;
+  }
+  return DEFAULT_ADAPTIVE_DRAIN_ENABLED;
+}
+
+function normalizePositiveNumber(
+  value: number | undefined,
+  envRaw: string | undefined,
+  fallback: number,
+): number {
+  if (value !== undefined) {
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return value;
+  }
+  if (envRaw !== undefined) {
+    const n = Number.parseFloat(envRaw);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return n;
+  }
+  return fallback;
+}
+
 /**
  * Reason string fired on a wedged tool's per-tool `drainCancel` when the drain
  * backstop force-finalizes it. Chosen so the EXISTING mapper resolves it to the
@@ -284,6 +330,21 @@ export interface StreamingToolExecutorOptions {
    * never affected; only a genuinely stuck tool trips it.
    */
   readonly maxToolDrainMs?: number;
+  /**
+   * Adaptive per-tool drain deadline (Goal #4a). When enabled, the drain
+   * deadline for a finite-own, locally-defined tool is derived from the
+   * session's `ToolLatencyStore` tail estimate (clamped to never drop below
+   * `own + DRAIN_GRACE_MS` / `adaptiveDrainSafeMinMs`). Default OFF: the
+   * deadline is byte-identical to today's flat formula. Mirrors env
+   * `AGENC_ADAPTIVE_DRAIN`.
+   */
+  readonly adaptiveDrainEnabled?: boolean;
+  /** `candidate = estimate * this + grace`. Default 1.5 / `AGENC_DRAIN_MARGIN_MULT`. */
+  readonly adaptiveDrainMarginMult?: number;
+  /** Absolute hard floor; `lo = max(own + grace, this)`. Default 30000 / `AGENC_DRAIN_SAFE_MIN_MS`. */
+  readonly adaptiveDrainSafeMinMs?: number;
+  /** Runaway-raise ceiling multiplier. Default 4 / `AGENC_DRAIN_RAISE_CAP`. */
+  readonly adaptiveDrainRaiseCap?: number;
   /** Session-scoped AbortSignal (user Ctrl+C, provider switch). */
   readonly abortSignal?: AbortSignal;
   /**
@@ -347,6 +408,11 @@ export class StreamingToolExecutor {
   private readonly onProgress?: (event: ProgressEvent) => void;
   private readonly maxConcurrency: number;
   private readonly maxToolDrainMs: number;
+  /** Goal #4a adaptive drain knobs (resolved once at construction). */
+  private readonly adaptiveDrainEnabled: boolean;
+  private readonly adaptiveDrainMarginMult: number;
+  private readonly adaptiveDrainSafeMinMs: number;
+  private readonly adaptiveDrainRaiseCap: number;
   private readonly siblingAbortController: AbortController;
   private readonly bashToolName: string;
   private readonly runtime?: ToolCallRuntime | ToolRuntimeScheduler;
@@ -396,6 +462,24 @@ export class StreamingToolExecutor {
     this.onProgress = opts.onProgress;
     this.maxConcurrency = normalizeMaxConcurrency(opts.maxConcurrency);
     this.maxToolDrainMs = normalizeMaxToolDrainMs(opts.maxToolDrainMs);
+    this.adaptiveDrainEnabled = normalizeAdaptiveDrainEnabled(
+      opts.adaptiveDrainEnabled,
+    );
+    this.adaptiveDrainMarginMult = normalizePositiveNumber(
+      opts.adaptiveDrainMarginMult,
+      process.env.AGENC_DRAIN_MARGIN_MULT,
+      DEFAULT_ADAPTIVE_DRAIN_MARGIN_MULT,
+    );
+    this.adaptiveDrainSafeMinMs = normalizePositiveNumber(
+      opts.adaptiveDrainSafeMinMs,
+      process.env.AGENC_DRAIN_SAFE_MIN_MS,
+      DEFAULT_ADAPTIVE_DRAIN_SAFE_MIN_MS,
+    );
+    this.adaptiveDrainRaiseCap = normalizePositiveNumber(
+      opts.adaptiveDrainRaiseCap,
+      process.env.AGENC_DRAIN_RAISE_CAP,
+      DEFAULT_ADAPTIVE_DRAIN_RAISE_CAP,
+    );
     this.bashToolName = opts.bashToolName ?? "system.bash";
     this.runtime = opts.runtime;
     this.onLeakedTool = opts.onLeakedTool;
@@ -930,7 +1014,26 @@ export class StreamingToolExecutor {
       // timeoutBehavior:"tool" — intentionally unbounded; exempt entirely.
       return Number.POSITIVE_INFINITY;
     }
-    return Math.max(this.maxToolDrainMs, own + DRAIN_GRACE_MS);
+
+    // ── adaptive refinement (Goal #4a) — reachable ONLY for a finite-own,
+    //    locally-defined, non-exempt tool. Everything above is untouched. ──
+    const flat = Math.max(this.maxToolDrainMs, own + DRAIN_GRACE_MS);
+    if (!this.adaptiveDrainEnabled) return flat; // OFF → byte-identical to today
+    const store =
+      this.liveToolDispatch?.options.session?.services.toolLatencyStore;
+    if (store === undefined) return flat; // crash-safe (minimal/test executor)
+
+    const estimate = store.estimateLatencyMs(resolvedName);
+    if (estimate === null) return flat; // cold start (per-tool < K AND global < K)
+
+    // estimate -> candidate deadline: multiplicative + additive margin.
+    const candidate = estimate * this.adaptiveDrainMarginMult + DRAIN_GRACE_MS;
+
+    // CLAMP — the SAFE-MINIMUM floor is the non-negotiable never-kill guard.
+    const ownFloor = own + DRAIN_GRACE_MS; // contractual timeout + pipeline grace
+    const lo = Math.max(ownFloor, this.adaptiveDrainSafeMinMs); // never below this
+    const hi = Math.max(this.maxToolDrainMs, ownFloor) * this.adaptiveDrainRaiseCap;
+    return Math.min(hi, Math.max(lo, candidate));
   }
 
   /**
@@ -1418,8 +1521,31 @@ export class StreamingToolExecutor {
       tool.detachAbortListeners?.();
     }
 
-    const durationMs = performance.now() - startedAtMs;
-    void durationMs;
+    // Adaptive drain latency sample (Goal #4a). Recompute against
+    // `executingSinceMs` for clock-consistency with the watchdog (which
+    // measures `now - executingSinceMs`); fall back to `startedAtMs` only if
+    // the tool was never stamped executing.
+    const since = tool.executingSinceMs ?? startedAtMs;
+    const durationMs = performance.now() - since;
+    // Record ONLY a clean completion. The two gates are the LOAD-BEARING
+    // anti-ratchet guard:
+    //   - tool.error === undefined   → no thrown / synthetic-timeout error
+    //     (finalizeOnce sets it).
+    //   - tool.outcome === undefined → not on the drain/reclaim path
+    //     (startReclaimAccounting sets it).
+    // A force-finalized late-settle has BOTH set, so it is excluded — feeding a
+    // ~deadline-ms killed run back in would ratchet the deadline up on every
+    // wedge.
+    if (
+      tool.error === undefined &&
+      tool.outcome === undefined &&
+      Number.isFinite(durationMs) &&
+      durationMs >= 0
+    ) {
+      const store =
+        this.liveToolDispatch?.options.session?.services.toolLatencyStore;
+      store?.record(this.resolveModelToolName(tool.toolCall.name), durationMs);
+    }
   }
 
   private isSiblingAbortShellTool(toolName: string): boolean {
