@@ -3769,6 +3769,13 @@ function phaseEventToProgressEvent(
           error: "Agent exceeded maxTurns",
         };
       }
+      if (event.stopReason === "no_progress") {
+        return {
+          kind: "run_error",
+          error:
+            "Agent stopped by the no-progress backstop (semantic non-termination)",
+        };
+      }
       // "completed" | "empty_response" — a per-turn completion. Emit
       // turn_complete (NOT run_complete — the session continues across
       // turns; run_complete would trigger cleanup).

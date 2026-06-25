@@ -2015,7 +2015,8 @@ export async function* runAgent(
         | "max_turns"
         | "cancelled"
         | "error"
-        | "empty_response" = "completed";
+        | "empty_response"
+        | "no_progress" = "completed";
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
@@ -2117,10 +2118,18 @@ export async function* runAgent(
         if (merged.signal.aborted) break;
       }
 
-      if (stopReason === "error" || stopReason === "max_turns") {
+      if (
+        stopReason === "error" ||
+        stopReason === "max_turns" ||
+        stopReason === "no_progress"
+      ) {
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
+        } else if (stopReason === "no_progress") {
+          message =
+            assistantText ||
+            "subagent stopped by the no-progress backstop (semantic non-termination)";
         } else if (terminalError instanceof Error) {
           message = terminalError.message;
         } else if (typeof terminalError === "string") {

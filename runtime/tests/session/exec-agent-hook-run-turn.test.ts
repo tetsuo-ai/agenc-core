@@ -216,7 +216,12 @@ describe("execAgentHook run-turn integration", () => {
     expect(result.message?.attachment.stderr).toContain("provider exploded");
   });
 
-  test("surfaces hook max-turn exhaustion as non-blocking errors", async () => {
+  test("surfaces a runaway hook (identical call+result every turn) as a non-blocking error", async () => {
+    // The hook agent emits the IDENTICAL Echo{value:"ok"} call every turn
+    // and the tool returns the identical result, i.e. a semantic runaway.
+    // The behavioral backstop (goal #3) now bounds this with an honest
+    // `no_progress` terminal at ~repeatHard (8) instead of letting it spin
+    // to maxTurns (50). Either way the hook surfaces a non-blocking error.
     const provider = providerWithResponses([
       {
         content: "checking",
@@ -250,8 +255,8 @@ describe("execAgentHook run-turn integration", () => {
 
     expect(result.outcome).toBe("non_blocking_error");
     expect(result.message?.attachment.type).toBe("hook_non_blocking_error");
-    expect(result.message?.attachment.stderr).toContain(
-      "Agent hook exceeded maxTurns (50)",
+    expect(result.message?.attachment.stderr).toMatch(
+      /no-progress backstop|exceeded maxTurns/,
     );
   });
 

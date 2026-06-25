@@ -145,6 +145,12 @@ import {
   type TurnState,
 } from "./turn-state.js";
 import {
+  evaluateBehavioralBackstop,
+  recordBehavioralStep,
+  resolveBehavioralConfig,
+  type BehavioralConfig,
+} from "./behavioral-backstop.js";
+import {
   buildAgenCToolUseContext,
   toAgenCModelContext,
   type AgenCToolUseContext,
@@ -1621,6 +1627,7 @@ function terminalToStopReason(
     case "completed":
     case "max_turns":
     case "cancelled":
+    case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
       return reason;
     default:
       return "error";
@@ -3161,6 +3168,7 @@ async function* runTurnKernelInner(
     emitTurnAborted,
     referenceContextItem,
     sessionOwner,
+    turnStartedAt,
   } = commons;
 
   // Seed the initial TurnState BEFORE pre-sampling compact so the
@@ -3419,6 +3427,13 @@ async function* runTurnKernelInner(
 
   yield { type: "turn_start", turnIndex: 0 };
 
+  // Behavioral backstop (goal #3): resolve the no-progress config once
+  // per turn so the top-of-loop evaluate site and the post-tool record
+  // site share an identical config object. Pure synchronous resolution.
+  const behavioralCfg: BehavioralConfig = resolveBehavioralConfig({
+    config: ctx.config as unknown as Record<string, unknown>,
+  });
+
   // The phase loop — agenc runtime's "while streaming & tools" outer loop.
   while (true) {
     if (signal.aborted) {
@@ -3485,6 +3500,80 @@ async function* runTurnKernelInner(
         stopReason: "max_turns",
       };
       return returnTerminal(terminal);
+    }
+
+    // Behavioral backstop (goal #3): the SECOND whole-turn backstop —
+    // a result-aware, NON-BLOCKING watchdog for semantic non-termination
+    // (every tool settles fine but the loop spins making no progress).
+    // This evaluate is a synchronous read of already-collected state; it
+    // shares the identical clean-finalize path as the `max_turns` arm two
+    // arms above. The Tier-2 observer inbox is polled here (never
+    // awaited). A `warn` injects a one-shot nudge and continues; a
+    // `terminate` finalizes the turn with the honest `no_progress`
+    // terminal — never a fabricated success.
+    {
+      const observerTrip = state.behavioralObserverTrip;
+      const decision =
+        behavioralCfg.enabled && observerTrip !== undefined
+          ? ({ kind: "terminate", trip: observerTrip } as const)
+          : evaluateBehavioralBackstop(
+              state,
+              usage,
+              turnStartedAt,
+              behavioralCfg,
+            );
+
+      if (decision.kind === "warn") {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "no_progress_warning",
+              message: decision.detail,
+            },
+          },
+        });
+        if (
+          decision.injectNudge &&
+          !state.behavioralNudgeIssued &&
+          decision.nudgeText !== undefined
+        ) {
+          state.messages.push({
+            role: "user",
+            content: `<system-reminder>${decision.nudgeText}</system-reminder>`,
+          });
+          state.behavioralNudgeIssued = true;
+        }
+        // fall through — loop continues (Wink course-correction)
+      } else if (decision.kind === "terminate") {
+        const explanation = decision.trip.userMessage; // honest, specific cause
+        state.messages.push({ role: "assistant", content: explanation });
+        lastContent = explanation;
+
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "no_progress_detected",
+              message: decision.trip.detail,
+            },
+          },
+        });
+
+        await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
+        await syncSessionState(); // persist history + rollout
+        emitTurnComplete(lastContent); // canonical lifecycle close
+        const terminal: Terminal = { reason: "no_progress" };
+        yield {
+          type: "turn_complete",
+          content: lastContent,
+          usage,
+          stopReason: "no_progress",
+        };
+        return returnTerminal(terminal);
+      }
     }
 
     // I-13: pending provider switch — complete this turn cleanly so
@@ -3824,6 +3913,18 @@ async function* runTurnKernelInner(
     if (lastAssistant) {
       const completedByCallId = new Map(
         state.completedToolResults.map((record) => [record.callId, record]),
+      );
+      // Behavioral backstop (goal #3): record this real model-action step
+      // where the action and its result are co-resident. This site is
+      // PAST every recovery/compaction `continue` arm above, so recovery
+      // re-entries and compaction iterations are never recorded — a
+      // structural false-positive guard for free. Synchronous mutation
+      // of TurnState fields; no await, no I/O.
+      recordBehavioralStep(
+        state,
+        lastAssistant,
+        completedByCallId,
+        behavioralCfg,
       );
       // Index user records by their tool-call id rather than by position:
       // results return in completion order (not toolCalls order), attachment
