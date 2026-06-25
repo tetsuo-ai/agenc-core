@@ -21,6 +21,8 @@ import { summarizeFileEditError } from '../../tools/FileEditTool/UI.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
 import { summarizeToolInput } from './toolRowPreview.js';
 import { buildEditDiffPreview } from '../edit-diff-preview.js';
+import { isFixedRerunSuccess } from './fixedRerunLink.js';
+import { AURA_LIFECYCLE_GLYPHS } from '../../utils/theme.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -241,6 +243,16 @@ export function AssistantToolUseMessage({
           : `×${retriedFailureCount} attempts failed`
         : `succeeded after ${retriedFailureCount} attempts`
       : baseReason;
+  // Cross-turn "fixed re-run" linkage: when THIS command row passes (`●`) and
+  // the identical command most-recently FAILED (`✕`) earlier in the session,
+  // annotate the passing row so the user sees the fix worked without manually
+  // scroll-matching two identical command strings across user-turn boundaries.
+  // Distinct from retriedFailureCount, which only folds AUTOMATIC same-turn
+  // retries. Mirrors the dim, inline, non-headline tone of failedReason.
+  const fixedRerunNote =
+    !verbose && toolState === "done" && isFixedRerunSuccess(param, lookups)
+      ? `now passing · was ${AURA_LIFECYCLE_GLYPHS.failed} above`
+      : undefined;
   const toolArgs =
     typeof renderedToolUseMessage === "string" &&
     renderedToolUseMessage.length > 0
@@ -253,7 +265,10 @@ export function AssistantToolUseMessage({
   // success path here, so there is no double-render and no vanish. A FAILED row
   // still surfaces its one-line reason inline (P0); the retry rollup is folded
   // into that same annotation (P1).
-  const rowResult: string | React.ReactNode | undefined = failedReason;
+  const rowResult: string | React.ReactNode | undefined =
+    failedReason && fixedRerunNote
+      ? `${failedReason} · ${fixedRerunNote}`
+      : failedReason ?? fixedRerunNote;
   const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
   // Compact green/red diff for Edit/MultiEdit/Write, rendered HERE on the call
   // row from the tool-use INPUT (old_string/new_string for Edit/MultiEdit,
