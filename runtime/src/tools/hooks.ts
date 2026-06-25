@@ -46,6 +46,150 @@ export interface HookTimingRecord {
   readonly hookIndex: number;
   readonly durationMs: number;
   readonly overThreshold: boolean;
+  /**
+   * Set when the hook's per-call `await` was cut short by an aborting
+   * signal (drain/timeout) rather than the hook producing a verdict.
+   * Distinct from a thrown hook (which is fail-open and never sets
+   * this). See `raceHookWithSignal`.
+   */
+  readonly cancelled?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Signal-aware single-hook race (mirrors execution.ts withTimeoutAndAbort
+// minus the timeout leg). On abort, resolves `cancelled` WITHOUT awaiting
+// the (possibly wedged) hook — this is what lets the surrounding loop
+// return so the lock-wrapped fn() can settle and release its guard.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Typed three-variant terminal of a single hook race. Keeping
+ * throw-vs-cancel in the type (never a cast) is load-bearing: a thrown
+ * hook had its say and is treated fail-OPEN (swallow + continue) by every
+ * runner, while a cancelled hook never produced its verdict and the
+ * security-relevant runners treat it fail-CLOSED.
+ */
+export type HookRace<T> =
+  | { readonly settled: "value"; readonly value: T }
+  | { readonly settled: "cancelled"; readonly reason: unknown }
+  | { readonly settled: "threw"; readonly error: unknown };
+
+/**
+ * Grace (ms) after a cancel before a still-pending hook is labelled an
+ * orphan. A cooperative hook that resolves in response to the abort settles
+ * within this window and is NOT counted; only a signal-blind hook is. Small
+ * enough to be observable promptly, large enough to absorb the
+ * resolve-on-abort microtask hop. The `cancelled` resolution does NOT wait
+ * for this; only the `hook_orphaned` label does.
+ */
+const ORPHAN_GRACE_MS = 10;
+
+/**
+ * Run a single hook, racing it against `signal`.
+ *
+ * - No signal → just await the hook (value/threw).
+ * - Already aborted → resolve `cancelled` immediately WITHOUT calling the
+ *   hook (the already-aborted fast path).
+ * - Otherwise → race the hook against the signal's `abort`. If the signal
+ *   fires first, resolve `cancelled` immediately, WITHOUT awaiting the
+ *   (possibly wedged) hook. The orphaned hook promise is detached and
+ *   `.catch(()=>{})`'d so a wedged hook never becomes an unhandledRejection,
+ *   and a first-settle `done` latch guarantees a late settle cannot mutate
+ *   caller state (same first-settle-wins discipline as
+ *   `finalizeOnce`/`startReclaimAccounting`).
+ *
+ * `onOrphaned` (optional) fires AT MOST ONCE if, after the race resolved
+ * `cancelled`, the hook task is STILL pending past a short cooperative
+ * grace — i.e. an uncooperative hook that ignored its signal and keeps
+ * running detached. A cooperative hook that resolves *in response to* the
+ * abort (a very common pattern: the hook itself listens on the same signal)
+ * settles within the grace and is NOT counted as an orphan, even though it
+ * is momentarily pending at the exact synchronous abort instant. This is
+ * the same reclaimed-vs-leaked grace-race discipline as
+ * `startReclaimAccounting`. `onOrphaned` is NEVER fired for the
+ * already-aborted fast path (the hook never ran). The orphan accounting is
+ * decoupled from — and never delays — the `cancelled` resolution, which
+ * still happens immediately so the lock-wrapped fn() settles at once.
+ */
+export async function raceHookWithSignal<T>(
+  call: () => Promise<T> | T,
+  signal: AbortSignal | undefined,
+  onOrphaned?: () => void,
+): Promise<HookRace<T>> {
+  if (!signal) {
+    try {
+      return { settled: "value", value: await call() };
+    } catch (error) {
+      return { settled: "threw", error };
+    }
+  }
+  if (signal.aborted) {
+    return { settled: "cancelled", reason: signal.reason };
+  }
+
+  let done = false;
+  let hookSettled = false;
+  let onAbort: (() => void) | null = null;
+  const cleanup = (): void => {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+      onAbort = null;
+    }
+  };
+  try {
+    return await new Promise<HookRace<T>>((resolve) => {
+      onAbort = (): void => {
+        if (done) return;
+        done = true;
+        cleanup();
+        // Resolve `cancelled` IMMEDIATELY — lock release must not wait for
+        // the orphan determination.
+        resolve({ settled: "cancelled", reason: signal.reason });
+        // Orphan accounting is deferred and decoupled: a cooperative hook
+        // that resolves in response to THIS abort settles within a short
+        // grace and is NOT an orphan; only a hook still pending past the
+        // grace is the uncooperative residue. Fire onOrphaned at most once.
+        if (onOrphaned) {
+          let orphanFired = false;
+          const maybeOrphan = (): void => {
+            if (orphanFired || hookSettled) return;
+            orphanFired = true;
+            try {
+              onOrphaned();
+            } catch {
+              // observability must never throw into the hook loop
+            }
+          };
+          const t = setTimeout(maybeOrphan, ORPHAN_GRACE_MS);
+          (t as { unref?: () => void }).unref?.();
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      Promise.resolve()
+        .then(call)
+        .then(
+          (value) => {
+            hookSettled = true;
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve({ settled: "value", value });
+          },
+          (error) => {
+            hookSettled = true;
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve({ settled: "threw", error });
+          },
+        )
+        // Detached orphan: a wedged/late hook must never surface as an
+        // unhandledRejection once the race has already settled.
+        .catch(() => {});
+    });
+  } finally {
+    cleanup(); // belt-and-suspenders listener removal on every path
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -110,6 +254,12 @@ export type PreToolUseHook = (input: {
   readonly invocation: ToolInvocation;
   readonly tool: Tool;
   readonly args: Record<string, unknown>;
+  /**
+   * Drain/timeout-aware abort signal. Cooperative hooks may observe it
+   * to bail early; the lock-release guarantee comes from the runner
+   * racing the signal (see `raceHookWithSignal`), not from this field.
+   */
+  readonly signal?: AbortSignal;
 }) => Promise<PreToolUseDecision> | PreToolUseDecision;
 
 export interface PreHooksResult {
@@ -145,6 +295,9 @@ export async function runPreToolUseHooks(
   },
   onError?: (err: unknown, idx: number) => void,
   onTiming?: (record: HookTimingRecord) => void,
+  signal?: AbortSignal,
+  onCancelled?: (idx: number) => void,
+  onOrphaned?: (idx: number) => void,
 ): Promise<PreHooksResult> {
   let args = base.args;
   let hookPermissionResult: HookPermissionResult | undefined;
@@ -156,10 +309,47 @@ export async function runPreToolUseHooks(
     if (!hook) continue;
     let decision: PreToolUseDecision;
     const started = Date.now();
-    try {
-      decision = await hook({ invocation: base.invocation, tool: base.tool, args });
-    } catch (err) {
-      onError?.(err, i);
+    const race = await raceHookWithSignal(
+      () =>
+        hook({
+          invocation: base.invocation,
+          tool: base.tool,
+          args,
+          ...(signal !== undefined ? { signal } : {}),
+        }),
+      signal,
+      () => onOrphaned?.(i),
+    );
+    if (race.settled === "cancelled") {
+      // FAIL-CLOSED: synthesize a deny terminal carrying everything
+      // accumulated by hooks that fully completed BEFORE this point.
+      // This makes the surrounding loop RETURN so the lock-wrapped
+      // dispatch fn() settles and its finally releases the guard. The
+      // cancelled hook produced no decision ⇒ none of its
+      // args/permission/context are applied (atomic break).
+      const durationMs = Date.now() - started;
+      onTiming?.({
+        phase: "pre",
+        toolName: base.tool.name,
+        hookIndex: i,
+        durationMs,
+        overThreshold: durationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS,
+        cancelled: true,
+      });
+      onCancelled?.(i);
+      return {
+        kind: "deny",
+        reason: `pre-hook cancelled (drain/timeout) before producing a verdict: ${base.tool.name}#${i}`,
+        args,
+        additionalContexts,
+        ...(hookPermissionResult !== undefined ? { hookPermissionResult } : {}),
+        ...(preventContinuation !== undefined ? { preventContinuation } : {}),
+      };
+    }
+    if (race.settled === "threw") {
+      // UNCHANGED existing fail-open behavior: a thrown hook is swallowed
+      // and the loop proceeds (the hook had its say; throw != cancel).
+      onError?.(race.error, i);
       const durationMs = Date.now() - started;
       onTiming?.({
         phase: "pre",
@@ -170,6 +360,7 @@ export async function runPreToolUseHooks(
       });
       continue;
     }
+    decision = race.value;
     const durationMs = Date.now() - started;
     onTiming?.({
       phase: "pre",
@@ -293,6 +484,16 @@ export type PostToolUseHook = (input: {
 /** Kinds of live-path attachments every hook pipeline can emit. */
 export type HookAttachmentKind =
   | "hook_cancelled"
+  /**
+   * Distinct from `hook_cancelled` (which fires on every drain/timeout
+   * cancellation) and from the execute-phase `leaked` count: a
+   * `hook_orphaned` event fires only when a cancelled hook's underlying
+   * task was STILL PENDING at cancel time — i.e. an uncooperative hook
+   * that ignored its signal and keeps running detached. The LOCK is
+   * already reclaimed; this honestly accounts the residual orphan task
+   * (never claimed killed).
+   */
+  | "hook_orphaned"
   | "hook_blocking_error"
   | "hook_additional_context"
   | "hook_stopped_continuation"
@@ -332,6 +533,8 @@ export async function runPostToolUseHooks(
   },
   onError?: (err: unknown, idx: number) => void,
   onTiming?: (record: HookTimingRecord) => void,
+  onCancelled?: (idx: number) => void,
+  onOrphaned?: (idx: number) => void,
 ): Promise<PostHooksResult> {
   let result = base.result;
   const additionalContexts: string[] = [];
@@ -344,15 +547,37 @@ export async function runPostToolUseHooks(
     if (!hook) continue;
     let decision: PostToolUseDecision;
     const started = Date.now();
-    try {
-      decision = await hook({
-        invocation: base.invocation,
-        tool: base.tool,
-        args: base.args,
-        result,
-        ...(base.signal !== undefined ? { signal: base.signal } : {}),
+    const race = await raceHookWithSignal(
+      () =>
+        hook({
+          invocation: base.invocation,
+          tool: base.tool,
+          args: base.args,
+          result,
+          ...(base.signal !== undefined ? { signal: base.signal } : {}),
+        }),
+      base.signal,
+      () => onOrphaned?.(i),
+    );
+    if (race.settled === "cancelled") {
+      // FAIL-SAFE-AS-CONTINUE: the tool already ran. Keep the
+      // already-rewritten result + everything accumulated and let the
+      // loop return so the lock-wrapped fn() settles. NEVER coerce to
+      // stop/preventContinuation on a cancel.
+      const durationMs = Date.now() - started;
+      onTiming?.({
+        phase: "post",
+        toolName: base.tool.name,
+        hookIndex: i,
+        durationMs,
+        overThreshold: durationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS,
+        cancelled: true,
       });
-    } catch (err) {
+      onCancelled?.(i);
+      return { kind: "continue", result, additionalContexts, blockingErrors };
+    }
+    if (race.settled === "threw") {
+      const err = race.error;
       onError?.(err, i);
       const durationMs = Date.now() - started;
       onTiming?.({
@@ -365,6 +590,7 @@ export async function runPostToolUseHooks(
       blockingErrors.push(err instanceof Error ? err.message : String(err));
       continue;
     }
+    decision = race.value;
     const durationMs = Date.now() - started;
     onTiming?.({
       phase: "post",
@@ -432,6 +658,8 @@ export interface PostToolUseFailureHookInput {
   readonly args: Record<string, unknown>;
   readonly error: unknown;
   readonly isInterrupt?: boolean;
+  /** Drain/timeout-aware abort signal (cooperative hooks may observe it). */
+  readonly signal?: AbortSignal;
 }
 
 export type PostToolUseFailureHook = (
@@ -450,16 +678,40 @@ export async function runPostToolUseFailureHooks(
   base: PostToolUseFailureHookInput,
   onError?: (err: unknown, idx: number) => void,
   onTiming?: (record: HookTimingRecord) => void,
+  signal?: AbortSignal,
+  onCancelled?: (idx: number) => void,
+  onOrphaned?: (idx: number) => void,
 ): Promise<ReadonlyArray<HookTimingRecord>> {
   const records: HookTimingRecord[] = [];
   for (let i = 0; i < hooks.length; i += 1) {
     const hook = hooks[i];
     if (!hook) continue;
     const started = Date.now();
-    try {
-      await hook(base);
-    } catch (err) {
-      onError?.(err, i);
+    const race = await raceHookWithSignal(
+      () => hook(base),
+      signal,
+      () => onOrphaned?.(i),
+    );
+    if (race.settled === "cancelled") {
+      // Drop the remaining (purely observational) failure hooks and
+      // return the records gathered so far plus a cancelled marker. The
+      // original tool error still bubbles from the caller (unchanged).
+      onCancelled?.(i);
+      const durationMs = Date.now() - started;
+      const record: HookTimingRecord = {
+        phase: "failure",
+        toolName: base.tool.name,
+        hookIndex: i,
+        durationMs,
+        overThreshold: durationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS,
+        cancelled: true,
+      };
+      records.push(record);
+      onTiming?.(record);
+      return records;
+    }
+    if (race.settled === "threw") {
+      onError?.(race.error, i);
     }
     const durationMs = Date.now() - started;
     const record: HookTimingRecord = {
@@ -594,17 +846,42 @@ export async function resolveHookPermissionDecision(
   onError?: (err: unknown, idx: number) => void,
   onTiming?: (record: HookTimingRecord) => void,
   context: Omit<PermissionDecisionHookInput, "toolName" | "args"> = {},
+  onCancelled?: (idx: number) => void,
+  onOrphaned?: (idx: number) => void,
 ): Promise<PermissionDecisionResult> {
   for (let i = 0; i < hooks.length; i += 1) {
     const hook = hooks[i];
     if (!hook) continue;
     const started = Date.now();
     let decision: PermissionDecisionResult | undefined;
-    try {
-      decision = await hook({ toolName, args, ...context });
-    } catch (err) {
-      onError?.(err, i);
+    const race = await raceHookWithSignal(
+      () => hook({ toolName, args, ...context }),
+      context.signal,
+      () => onOrphaned?.(i),
+    );
+    if (race.settled === "cancelled") {
+      // PRESERVE the documented fail-open-on-broken-hook contract: a
+      // cancelled permission hook resolves to `pass` (falls through to
+      // the next hook / the final {kind:"pass"}). The real fail-closed
+      // gate is the pre-hook deny terminal + the already-shipped
+      // execute-phase abort — NOT this runner. Do NOT flip to deny.
+      onCancelled?.(i);
+      const durationMs = Date.now() - started;
+      onTiming?.({
+        phase: "permission",
+        toolName,
+        hookIndex: i,
+        durationMs,
+        overThreshold: durationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS,
+        cancelled: true,
+      });
+      continue;
+    }
+    if (race.settled === "threw") {
+      onError?.(race.error, i);
       decision = undefined;
+    } else {
+      decision = race.value;
     }
     const durationMs = Date.now() - started;
     onTiming?.({

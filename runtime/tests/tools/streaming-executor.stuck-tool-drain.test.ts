@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { StreamingToolExecutor } from "./streaming-executor.js";
 import { SHARED_READ, EXCLUSIVE, ToolCallRuntime } from "./concurrency.js";
+import { routerFromRegistry } from "./router.js";
+import { EventLog } from "../session/event-log.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { Tool } from "./types.js";
+import type { PreToolUseHook } from "./hooks.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 
 function makeBlock(id: string, name: string): ToolUseBlock {
@@ -644,5 +647,216 @@ describe("StreamingToolExecutor cooperative cancel of wedged tools", () => {
     // buildTerminalToolResult({ cause: "timeout" }) -> "tool execution timed out".
     expect(decoded.content).toContain("tool execution timed out");
     expect(decoded.content).not.toContain("aborted before completion");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// §4.2 — Live-path integration: a wedged PRE-HOOK (router.ts:763 seam,
+// run INSIDE the ToolCallRuntime lock by router.dispatchModelToolCall)
+// flips `leaked` → `reclaimed`.
+//
+// The earlier suites drive the `runToolUseFn` shortcut, which BYPASSES the
+// router pre-hook block. To exercise the real live seam we wire a genuine
+// `liveToolDispatch` (routerFromRegistry + preHooks). A small maxToolDrainMs
+// makes drainCancel fire quickly; the drain signal flows
+// opts.signal → router.ts:763 runPreToolUseHooks → raceHookWithSignal,
+// which cancels the wedged hook in place ⇒ synthetic fail-closed deny ⇒
+// the lock-wrapped dispatch settles ⇒ the ToolCallRuntime write-lock frees
+// ⇒ a sibling EXCLUSIVE acquire resolves.
+// ──────────────────────────────────────────────────────────────────────
+describe("StreamingToolExecutor live-path wedged pre-hook (reclaimed not leaked)", () => {
+  function liveTool(name: string): Tool {
+    return testTool({
+      name,
+      concurrencyClass: EXCLUSIVE,
+      // The TOOL itself completes instantly — the wedge is the PRE-HOOK,
+      // which never reaches execute (deny short-circuits).
+      execute: async () => ({ content: "tool ran" }),
+    });
+  }
+
+  // A cooperative wedged pre-hook: resolves a deny when its signal aborts
+  // (proves the threaded signal REACHES the hook). Uncooperative variant:
+  // ignores the signal entirely (proves the RACE releases the lock anyway).
+  const cooperativePreHook: PreToolUseHook = ({ signal }) =>
+    new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve({ kind: "deny", reason: "cancelled" });
+        return;
+      }
+      signal?.addEventListener(
+        "abort",
+        () => resolve({ kind: "deny", reason: "cancelled" }),
+        { once: true },
+      );
+    });
+  const uncooperativePreHook: PreToolUseHook = () =>
+    new Promise<never>(() => {});
+
+  for (const variant of [
+    { name: "cooperative", hook: cooperativePreHook, expectOrphan: false },
+    { name: "uncooperative", hook: uncooperativePreHook, expectOrphan: true },
+  ] as const) {
+    test(`${variant.name} wedged pre-hook: turn finalizes reclaimed, no leak, sibling EXCLUSIVE acquires`, async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on("unhandledRejection", onUnhandled);
+
+      const eventLog = new EventLog();
+      const orphanedEvents: string[] = [];
+      const cancelledEvents: string[] = [];
+      const unsub = eventLog.subscribe((ev) => {
+        const msg = ev.msg as { type?: string; payload?: { cause?: string } };
+        if (msg.type === "warning" && msg.payload?.cause === "hook_orphaned") {
+          orphanedEvents.push(ev.id);
+        }
+        if (msg.type === "warning" && msg.payload?.cause === "hook_cancelled") {
+          cancelledEvents.push(ev.id);
+        }
+      });
+
+      // The ROUTER registry carries the tool so dispatchModelToolCall's
+      // findSpec resolves and the live preHooks block at router.ts:763
+      // actually runs. The EXECUTOR registry is intentionally EMPTY so the
+      // drain deadline falls back to the flat `maxToolDrainMs` floor
+      // (toolDrainDeadlineMs's def===undefined branch) rather than
+      // own-timeout + 60s grace — this is what makes the per-tool drainCancel
+      // / reclaim-accounting path fire in-test. A pre-hook wedge never reaches
+      // tool.execute, so the tool's own execute timeout is irrelevant here.
+      const routerRegistry = registryFor(
+        async () => ({ content: "registry dispatch should not run", isError: true }),
+        [liveTool("wedgehook")],
+      );
+      const executorRegistry = registryFor(
+        async () => ({ content: "registry dispatch should not run", isError: true }),
+        [],
+      );
+      const runtime = new ToolCallRuntime();
+      const exec = new StreamingToolExecutor({
+        registry: executorRegistry,
+        runtime,
+        maxToolDrainMs: 200,
+        cleanupGraceMs: 150,
+        liveToolDispatch: {
+          router: routerFromRegistry(routerRegistry),
+          options: {
+            session: { eventLog, services: {} } as never,
+            turn: { subId: "turn-wedge" } as never,
+            tracker: {
+              appendFileDiff: () => {},
+              snapshot: () => [],
+              clear: () => {},
+            },
+            approvalPolicy: "never",
+            sandboxMode: "workspace_write",
+            preHooks: [variant.hook],
+          },
+        },
+      });
+
+      exec.setConcurrencyClassFor("wedgehook", EXCLUSIVE);
+      exec.addTool(makeBlock("w1", "wedgehook"), makeCall("w1", "wedgehook"));
+      exec.dispatchPending();
+      exec.close();
+
+      const collected: Array<{ id: string; isError: boolean }> = [];
+      const outcome = await withTimeout(
+        (async () => {
+          for await (const r of exec.getRemainingResults()) {
+            collected.push({
+              id: r.toolCall.id,
+              isError: r.result.isError === true,
+            });
+          }
+        })(),
+        4000,
+        `live-wedge-${variant.name}`,
+      );
+
+      // (a) the turn finalizes with exactly one isError result (the
+      //     fail-closed deny renders a paired <tool_use_error>).
+      expect(outcome.ok).toBe(true);
+      expect(collected).toEqual([{ id: "w1", isError: true }]);
+
+      // Allow the reclaim grace race to classify.
+      await new Promise((r) => setTimeout(r, 250).unref?.());
+
+      const tracked = (
+        exec as unknown as { tools: Array<{ id: string; outcome?: string }> }
+      ).tools.find((t) => t.id === "w1");
+      // (b) outcome reclaimed and leakedToolCount did NOT increment.
+      expect(tracked?.outcome).toBe("reclaimed");
+      expect(exec.leakedTools).toBe(0);
+
+      // a hook_cancelled attachment fired on every cancellation.
+      expect(cancelledEvents.length).toBeGreaterThanOrEqual(1);
+
+      // (d) uncooperative variant: a hook_orphaned event fired exactly once.
+      if (variant.expectOrphan) {
+        expect(orphanedEvents).toHaveLength(1);
+      } else {
+        expect(orphanedEvents).toHaveLength(0);
+      }
+
+      // (c) a follow-up EXCLUSIVE acquire on the SAME runtime resolves
+      //     (the wedged-pre-hook holder released the write-lock).
+      const acquire = await withTimeout(
+        runtime.run(EXCLUSIVE, async () => "ok"),
+        1000,
+        "live-sibling-exclusive-acquire",
+      );
+      expect(acquire.ok).toBe(true);
+      if (acquire.ok) expect(acquire.value).toBe("ok");
+
+      // no unhandledRejection from the orphaned/detached hook promise.
+      await new Promise((r) => setTimeout(r, 50).unref?.());
+      unsub();
+      process.off("unhandledRejection", onUnhandled);
+      expect(unhandled).toEqual([]);
+    });
+  }
+
+  // §4.4 non-regression: the synthetic pre-hook cancel-deny renders a
+  // <tool_use_error> tool_result and is NOT misclassified as an interrupt
+  // (the router deny path returns <tool_use_error> directly, never
+  // INTERRUPT_MESSAGE_FOR_TOOL_USE). Exercised on the DIRECT router path
+  // with an already-aborted signal so the deny actually renders (the drain
+  // backstop does not race/override it here).
+  test("synthetic pre-hook cancel-deny renders <tool_use_error>, not an interrupt", async () => {
+    const eventLog = new EventLog();
+    const registry = registryFor(
+      async () => ({ content: "registry dispatch should not run", isError: true }),
+      [liveTool("wedgehook")],
+    );
+    const router = routerFromRegistry(registry);
+    const ac = new AbortController();
+    ac.abort("tool timeout: drain exceeded");
+
+    const result = await (
+      router as unknown as {
+        dispatchModelToolCall(
+          call: LLMToolCall,
+          opts: Record<string, unknown>,
+        ): Promise<ToolDispatchResult>;
+      }
+    ).dispatchModelToolCall(makeCall("w1", "wedgehook"), {
+      session: { eventLog, services: {} },
+      turn: { subId: "turn-deny" },
+      tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      preHooks: [uncooperativePreHook],
+      signal: ac.signal,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("<tool_use_error>");
+    expect(String(result.content)).toContain("pre-hook cancelled");
+    // NOT misclassified as a user interrupt.
+    expect(String(result.content)).not.toContain(
+      "[Request interrupted by user for tool use]",
+    );
   });
 });

@@ -772,6 +772,27 @@ export class ToolRouter {
             `PreToolUse:${spec.tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
           );
         },
+        undefined,
+        // Drain/timeout-aware signal: lets a wedged pre-hook be cancelled
+        // in place so this lock-wrapped dispatch settles and releases the
+        // ToolCallRuntime guard (turning `leaked` → `reclaimed`).
+        opts.signal,
+        (idx) => {
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "hook_cancelled",
+            `PreToolUse:${spec.tool.name}#${idx} cancelled (drain/timeout); fail-closed deny synthesized`,
+          );
+        },
+        (idx) => {
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "hook_orphaned",
+            `PreToolUse:${spec.tool.name}#${idx} ignored its cancel signal; lock reclaimed, hook task orphaned`,
+          );
+        },
       );
       executionArgs = preDecision.args ?? executionArgs;
       if (preDecision.hookPermissionResult) {

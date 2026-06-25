@@ -1127,6 +1127,27 @@ export async function runToolUse(
         );
       },
       opts.onHookTiming,
+      // Direct/test (non-router) pre-hook seam. Dead on the live router
+      // hot path (router passes preHooks:[] into runToolUse), but
+      // reachable by direct callers and tests — thread for coherence so
+      // a wedged pre-hook here is also bounded by the abort signal.
+      effectiveSignal,
+      (idx) => {
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_cancelled",
+          `PreToolUse:${tool.name}#${idx} cancelled (drain/timeout); fail-closed deny synthesized`,
+        );
+      },
+      (idx) => {
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_orphaned",
+          `PreToolUse:${tool.name}#${idx} ignored its cancel signal; lock reclaimed, hook task orphaned`,
+        );
+      },
     );
     args = preDecision.args ?? args;
     if (preDecision.hookPermissionResult) {
@@ -1709,6 +1730,7 @@ export async function runToolUse(
           args: inputForTool,
           error: err,
           isInterrupt: cls === "aborted" || cls === "shell_interrupted",
+          ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
         },
         (hookErr, idx) => {
           opts.onHookError?.("failure", hookErr, idx);
@@ -1720,6 +1742,26 @@ export async function runToolUse(
           );
         },
         opts.onHookTiming,
+        // Race the drain/timeout signal: a wedged failure hook is dropped
+        // (records-so-far returned) so the lock-wrapped fn() settles; the
+        // original tool error still bubbles below (unchanged).
+        effectiveSignal,
+        (idx) => {
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_cancelled",
+            `PostToolUseFailure:${tool.name}#${idx} cancelled (drain/timeout); remaining failure hooks dropped`,
+          );
+        },
+        (idx) => {
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_orphaned",
+            `PostToolUseFailure:${tool.name}#${idx} ignored its cancel signal; lock reclaimed, hook task orphaned`,
+          );
+        },
       );
     }
     cleanupModeSub();
@@ -1763,6 +1805,25 @@ export async function runToolUse(
         );
       },
       opts.onHookTiming,
+      // The signal in `base` is now RACED by the loop (not just plumbed):
+      // a wedged post-hook resolves fail-safe `continue` (the tool already
+      // ran) so this lock-wrapped fn() settles and releases the guard.
+      (idx) => {
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_cancelled",
+          `PostToolUse:${tool.name}#${idx} cancelled (drain/timeout); rewritten result preserved (continue)`,
+        );
+      },
+      (idx) => {
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_orphaned",
+          `PostToolUse:${tool.name}#${idx} ignored its cancel signal; lock reclaimed, hook task orphaned`,
+        );
+      },
     );
     finalDispatch = postDecision.result;
     for (const c of postDecision.additionalContexts) {
