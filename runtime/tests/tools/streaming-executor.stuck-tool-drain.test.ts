@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { StreamingToolExecutor } from "./streaming-executor.js";
-import { SHARED_READ, EXCLUSIVE, ToolCallRuntime } from "./concurrency.js";
+import {
+  SHARED_READ,
+  EXCLUSIVE,
+  ToolCallRuntime,
+  sharedServer,
+} from "./concurrency.js";
 import { routerFromRegistry } from "./router.js";
 import { EventLog } from "../session/event-log.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
@@ -858,5 +863,124 @@ describe("StreamingToolExecutor live-path wedged pre-hook (reclaimed not leaked)
     expect(String(result.content)).not.toContain(
       "[Request interrupted by user for tool use]",
     );
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Abort-aware acquire (GOAL ITEM #2) — executor acceptance.
+//
+// A queued tool B parked INSIDE the per-server Semaphore.acquire (behind a
+// still-holding holder A) must, when force-finalized by the drain
+// (drainCancel fires), REJECT its acquire PROMPTLY — bounded, well before A
+// releases — reclaim its outcome, and NEVER transiently run its dispatch.
+//
+// REVERT PROOF: against the pre-fix acquire (no signal threading into
+// Semaphore.acquire), B stays parked until A releases, so the bounded
+// "B reclaims before A releases" assertion times out (clean red). With the
+// signal threaded, B's parked acquire wakes on drainCancel and rejects
+// immediately → green.
+// ──────────────────────────────────────────────────────────────────────
+describe("StreamingToolExecutor abort-aware parked acquire (goal #2)", () => {
+  test("a tool parked in Semaphore.acquire is force-finalized WITHOUT waiting on the holder ahead", async () => {
+    const SERVER = "dbA";
+
+    // A's dispatch never settles on its own (it holds the only permit).
+    // B never reaches dispatch (it parks in acquire); if it ever DID, the
+    // spy below would catch the transient run.
+    let bDispatchCalls = 0;
+    let releaseA: (() => void) | undefined;
+    const aGate = new Promise<ToolDispatchResult>((resolve) => {
+      // Holder A: a controllable wedge. We never resolve until the test
+      // explicitly releases (so we can prove B reclaims BEFORE A releases).
+      releaseA = () => resolve({ content: "A done", isError: false });
+    });
+
+    const runtime = new ToolCallRuntime(); // capacity-1 per server (default)
+    // A is registered with timeoutBehavior:"tool" → drain-EXEMPT (Infinity
+    // deadline), so the holder ahead is NEVER force-finalized and keeps
+    // holding the permit. Only B (no def → flat floor) is force-finalizable.
+    const holderDef = testTool({ name: "A", timeoutBehavior: "tool" });
+    const exec = new StreamingToolExecutor({
+      registry: registryFor(
+        () => new Promise<ToolDispatchResult>(() => {}),
+        [holderDef],
+      ),
+      runtime,
+      // Tiny drain floor so B's parked acquire is force-finalized fast.
+      maxToolDrainMs: 200,
+      cleanupGraceMs: 150,
+    });
+    (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = (
+      call: LLMToolCall,
+    ): Promise<ToolDispatchResult> => {
+      if (call.id === "A") return aGate;
+      bDispatchCalls += 1; // B should NEVER reach here while parked
+      return new Promise<ToolDispatchResult>(() => {});
+    };
+
+    // Both tools target the SAME serverId → contend on one capacity-1
+    // semaphore. Both are shared_server (concurrency-safe) so they dispatch
+    // in parallel: A wins the permit, B parks in acquire.
+    exec.setConcurrencyClassFor("A", sharedServer(SERVER));
+    exec.setConcurrencyClassFor("B", sharedServer(SERVER));
+    exec.addTool(makeBlock("A", "A"), makeCall("A", "A"));
+    exec.addTool(makeBlock("B", "B"), makeCall("B", "B"));
+    exec.dispatchPending();
+    exec.close();
+
+    const collected: Array<{ id: string; isError: boolean }> = [];
+    const drainDone = (async () => {
+      for await (const r of exec.getRemainingResults()) {
+        collected.push({ id: r.toolCall.id, isError: r.result.isError === true });
+      }
+    })();
+
+    // Let A acquire the permit and B park in acquire.
+    await new Promise((r) => setTimeout(r, 30).unref?.());
+    // B must be parked behind A: B has NOT dispatched.
+    const midStates = exec.getToolStates();
+    expect(midStates.find((s) => s.id === "B")?.hasDispatched).toBe(false);
+    expect(midStates.find((s) => s.id === "A")?.hasDispatched).toBe(true);
+
+    // BOUNDED ASSERTION (the revert-sensitive one): B's force-finalized
+    // outcome must classify as reclaimed within a short window — WITHOUT A
+    // ever releasing. Against the unthreaded acquire, B stays parked and
+    // this loop never sees "reclaimed" → it exhausts and the expect fails.
+    const deadline = Date.now() + 1500;
+    let bReclaimed = false;
+    while (Date.now() < deadline) {
+      const tracked = (
+        exec as unknown as { tools: Array<{ id: string; outcome?: string }> }
+      ).tools.find((t) => t.id === "B");
+      if (tracked?.outcome === "reclaimed") {
+        bReclaimed = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 25).unref?.());
+    }
+
+    // (1) B reclaimed promptly — and A is still holding (never released).
+    expect(bReclaimed).toBe(true);
+    expect(releaseA).toBeDefined();
+    // A is STILL executing (we have not released it): proves B's reclaim did
+    // NOT wait on the holder ahead.
+    expect(exec.getToolStates().find((s) => s.id === "A")?.status).toBe(
+      "executing",
+    );
+    // (2) B NEVER ran its dispatch (no transient post-finalize acquire).
+    expect(bDispatchCalls).toBe(0);
+    expect(exec.getToolStates().find((s) => s.id === "B")?.hasDispatched).toBe(
+      false,
+    );
+
+    // Now release A so the drain terminates cleanly.
+    releaseA!();
+    const outcome = await withTimeout(drainDone, 4000, "goal2-parked-acquire");
+    expect(outcome.ok).toBe(true);
+    // B yielded a synthetic timeout; A yielded its real result.
+    expect(collected).toContainEqual({ id: "B", isError: true });
+    expect(collected).toContainEqual({ id: "A", isError: false });
+    // B still never dispatched even after A released.
+    expect(bDispatchCalls).toBe(0);
   });
 });

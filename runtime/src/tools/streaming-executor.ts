@@ -1366,7 +1366,11 @@ export class StreamingToolExecutor {
         };
       };
 
-      const runtimeContext = this.buildRuntimeCallContext(tool, startedAtMs);
+      const runtimeContext = this.buildRuntimeCallContext(
+        tool,
+        startedAtMs,
+        dispatchSignal,
+      );
       const result = this.runtime
         ? await runToolRuntimeCall(this.runtime, runtimeContext, dispatch)
         : await dispatch();
@@ -1425,6 +1429,7 @@ export class StreamingToolExecutor {
   private buildRuntimeCallContext(
     tool: TrackedTool,
     submittedAtMs: number,
+    acquireSignal?: AbortSignal,
   ): ToolRuntimeCallContext {
     const routed = toolCallFromLLMToolCall(tool.toolCall, {
       session: this.liveToolDispatch?.options.session,
@@ -1443,6 +1448,7 @@ export class StreamingToolExecutor {
       supportsParallelToolCalls,
       source: this.liveToolDispatch?.options.source ?? "direct",
       submittedAtMs,
+      ...(acquireSignal ? { acquireSignal } : {}),
     };
   }
 
