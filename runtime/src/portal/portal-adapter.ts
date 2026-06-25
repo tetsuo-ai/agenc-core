@@ -165,15 +165,23 @@ export class PortalAdapter {
       }
       case RPC.setPermissionMode: {
         const mode = asStr(params.permissionMode);
-        // A remote client must never be able to relax the approval mode (M3). This denylist must
-        // remain when P3 actually wires setPermissionMode, so the wiring physically can't expose
-        // yolo/bypass to the relay leg.
+        const validModes = ["default", "acceptEdits", "plan", "bypassPermissions"];
+        if (!validModes.includes(mode)) {
+          this.replyErr(id, -32602, `unknown permission mode "${mode}"`);
+          break;
+        }
+        // A remote client must never relax the approval mode (M3). This denylist must remain so the
+        // P3 wiring below physically can't expose yolo/bypass to the relay leg.
         if (this.isRemote && /yolo|bypass|allow|unsafe|auto/i.test(mode)) {
           this.replyErr(id, -32001, `permission mode "${mode}" not allowed from a remote client`);
           break;
         }
-        // P1/P2a: acknowledged but not enforced server-side. P3 wires this to a per-session overlay
-        // on the ApprovalEngine (the elevations/denials precedent) via session.permissionMode.set.
+        // P3: set the daemon's per-session permission mode via the /policy mode command (mode is
+        // validated to one of the four safe values above, so the command string can't be injected).
+        this.sendGateway({
+          type: GW.sessionCommandExecute,
+          payload: { content: `/policy mode ${mode}`, sessionId: this.appSessionId ?? undefined },
+        });
         this.reply(id, { ok: true, permissionMode: mode });
         break;
       }

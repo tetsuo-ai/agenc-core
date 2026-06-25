@@ -1594,6 +1594,7 @@ export interface CommandRegistryDaemonContext {
     elevatedPatterns: readonly string[];
     deniedPatterns: readonly string[];
   };
+  setSessionPermissionMode(sessionId: string, mode: string): void;
   getSubAgentRuntimeConfig(): ResolvedSubAgentRuntimeConfig | null;
   getActiveDelegationAggressiveness(
     config: ResolvedSubAgentRuntimeConfig,
@@ -4469,9 +4470,23 @@ export function createDaemonCommandRegistry(
         );
         return;
       }
+      if (subcommand === "mode") {
+        const requested = cmdCtx.argv[1]?.trim() ?? "";
+        const valid = ["default", "acceptEdits", "plan", "bypassPermissions"];
+        const mode = valid.find((m) => m.toLowerCase() === requested.toLowerCase());
+        if (!mode) {
+          await cmdCtx.reply(
+            "Usage: /policy mode <default|acceptEdits|plan|bypassPermissions>",
+          );
+          return;
+        }
+        ctx.setSessionPermissionMode(cmdCtx.sessionId, mode);
+        await cmdCtx.reply(`Permission mode set to "${mode}" for this session.`);
+        return;
+      }
       if (subcommand !== "simulate") {
         await cmdCtx.reply(
-          "Usage: /policy [status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|update <allow|deny|clear|reset> [pattern]]",
+          "Usage: /policy [status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|update <allow|deny|clear|reset> [pattern]|mode <default|acceptEdits|plan|bypassPermissions>]",
         );
         return;
       }

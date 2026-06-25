@@ -11,7 +11,10 @@
 
 import type { HookHandler, HookContext, HookResult } from "./hooks.js";
 import { createHmac } from "node:crypto";
-import type { EffectApprovalPolicy } from "./effect-approval-policy.js";
+import type {
+  EffectApprovalPolicy,
+  EffectApprovalOutcome,
+} from "./effect-approval-policy.js";
 import type { EffectFilesystemEntryType } from "../workflow/effects.js";
 import type { SessionShellProfile } from "./shell-profile.js";
 
@@ -380,6 +383,48 @@ export type ApprovalEscalationHandler = (
  * Approval engine that evaluates tool invocations against configured rules,
  * manages pending approval requests, and supports per-session elevation.
  */
+/**
+ * Per-session permission MODE (Claude-Code style) overlaid on the startup-baked GatewayApprovalMode.
+ * - default: no change (the base policy + per-session elevations/denials decide).
+ * - plan: read-only — any non-read effect is blocked (the agent plans but never mutates/executes).
+ * - acceptEdits: auto-approve workspace edits that would otherwise prompt; everything else unchanged.
+ * - bypassPermissions: auto-approve prompts — but ONLY within a local base mode, and NEVER for
+ *   financial/credential/protected/untrusted effects, and NEVER overriding a hard deny.
+ */
+export type SessionPermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "plan"
+  | "bypassPermissions";
+
+/** Effect reasonCodes (from the effect policy) classified for the permission-mode overlay. */
+const READ_ONLY_REASONS: ReadonlySet<string> = new Set([
+  "read_only_effect",
+  "shell_read_only",
+  "desktop_read_only",
+]);
+const EDIT_REASONS: ReadonlySet<string> = new Set([
+  "workspace_scaffold",
+  "workspace_write",
+]);
+/** The ONLY effects bypassPermissions may auto-approve — a FAIL-CLOSED allowlist of benign read/edit
+ *  effects. Everything else (shell mutations rm/mv, host/destructive/process/server mutations, open-
+ *  world network, financial, credential, untrusted MCP) still requires explicit human approval even
+ *  under bypass, and any future reasonCode fails closed (keeps prompting) until added here. */
+const BYPASS_APPROVABLE_REASONS: ReadonlySet<string> = new Set([
+  "read_only_effect",
+  "shell_read_only",
+  "desktop_read_only",
+  "workspace_scaffold",
+  "workspace_write",
+]);
+/** bypassPermissions only relaxes within a local base mode — never escalates above the unattended/
+ *  benchmark floor (a hardened deployment's denials must stand). */
+const LOCAL_BASE_MODES: ReadonlySet<string> = new Set([
+  "safe_local_dev",
+  "trusted_operator",
+]);
+
 export class ApprovalEngine {
   private readonly rules: readonly ApprovalRule[];
   private readonly effectPolicy?: EffectApprovalPolicy;
@@ -395,6 +440,7 @@ export class ApprovalEngine {
   private readonly escalationHandlers: ApprovalEscalationHandler[] = [];
   private readonly elevations = new Map<string, Set<string>>();
   private readonly denials = new Map<string, Set<string>>();
+  private readonly sessionModes = new Map<string, SessionPermissionMode>();
   private idCounter = 0;
 
   constructor(config?: ApprovalEngineConfig) {
@@ -656,6 +702,33 @@ export class ApprovalEngine {
         decisionSource: outcome.source,
         approvalScopeKey: outcome.approvalScopeKey,
         denyReason: outcome.message,
+      };
+    }
+
+    // Per-session permission-mode overlay (plan / acceptEdits / bypassPermissions). Runs only after
+    // a per-session denial and a hard policy deny are ruled out above, so it can restrict (plan) or
+    // relax-prompts (acceptEdits/bypass) but never override a deny.
+    const modeDecision = this.applyPermissionMode(sessionId, toolName, outcome);
+    if (modeDecision?.kind === "deny") {
+      return {
+        required: false,
+        denied: true,
+        elevated: false,
+        reasonCode: outcome.reasonCode,
+        decisionSource: outcome.source,
+        approvalScopeKey: outcome.approvalScopeKey,
+        denyReason: modeDecision.reason,
+      };
+    }
+    if (modeDecision?.kind === "allow") {
+      return {
+        required: false,
+        denied: false,
+        elevated: false,
+        reasonCode: outcome.reasonCode,
+        decisionSource: outcome.source,
+        approvalScopeKey: outcome.approvalScopeKey,
+        autoApprovedReasonCode: outcome.reasonCode,
       };
     }
 
@@ -1059,6 +1132,72 @@ export class ApprovalEngine {
     this.clearDeniedPattern(sessionId, pattern);
     this.clearElevatedPattern(sessionId, pattern);
     return this.getSessionPolicyState(sessionId);
+  }
+
+  /** Set the per-session permission mode. "default" (or any unrecognized value) clears the overlay. */
+  setSessionPermissionMode(sessionId: string, mode: SessionPermissionMode): void {
+    const id = sessionId.trim();
+    if (id.length === 0) return;
+    if (mode === "acceptEdits" || mode === "plan" || mode === "bypassPermissions") {
+      this.sessionModes.set(id, mode);
+    } else {
+      this.sessionModes.delete(id);
+    }
+  }
+
+  getSessionPermissionMode(sessionId: string): SessionPermissionMode {
+    return this.sessionModes.get(sessionId.trim()) ?? "default";
+  }
+
+  /** Clear the mode on session teardown (mirrors the elevations/denials lifecycle). */
+  clearSessionPermissionMode(sessionId: string): void {
+    this.sessionModes.delete(sessionId.trim());
+  }
+
+  /**
+   * Per-session permission-mode overlay applied to the base effect outcome. Returns a replacement
+   * decision, or null to keep the base handling. It never overrides a hard deny or a per-session
+   * denial (those are handled before this runs), and bypassPermissions only relaxes within a local
+   * base mode and never for financial/credential/protected/untrusted effects.
+   */
+  private applyPermissionMode(
+    sessionId: string,
+    toolName: string,
+    outcome: EffectApprovalOutcome,
+  ): { kind: "deny" | "allow"; reason: string } | null {
+    const mode = this.getSessionPermissionMode(sessionId);
+    if (mode === "default") return null;
+    const reason = outcome.reasonCode as string;
+
+    if (mode === "plan") {
+      if (!READ_ONLY_REASONS.has(reason)) {
+        return {
+          kind: "deny",
+          reason: `plan mode: "${toolName}" blocked (read-only mode — no mutations or execution)`,
+        };
+      }
+      return null; // read-only effects pass through unchanged
+    }
+
+    // acceptEdits / bypassPermissions only relax things that would otherwise prompt.
+    if (outcome.status !== "require_approval") return null;
+
+    if (mode === "acceptEdits") {
+      return EDIT_REASONS.has(reason)
+        ? { kind: "allow", reason: "acceptEdits: workspace edit auto-approved" }
+        : null;
+    }
+
+    if (mode === "bypassPermissions") {
+      const baseMode = this.effectPolicy?.mode ?? "safe_local_dev";
+      if (!LOCAL_BASE_MODES.has(baseMode)) return null; // never relax above the hardened floor
+      // Fail-closed: only benign read/edit effects auto-approve. Shell mutations, host/destructive/
+      // process/server/open-world, financial, credential, and untrusted MCP still require approval.
+      if (!BYPASS_APPROVABLE_REASONS.has(reason)) return null;
+      return { kind: "allow", reason: "bypassPermissions: auto-approved" };
+    }
+
+    return null;
   }
 
   /**

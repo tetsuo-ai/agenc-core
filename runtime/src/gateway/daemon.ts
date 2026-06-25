@@ -173,7 +173,7 @@ import {
   cleanupDesktopSessionResources as cleanupDesktopSession,
   type DesktopRouterFactory,
 } from "./desktop-routing-config.js";
-import { ApprovalEngine } from "./approvals.js";
+import { ApprovalEngine, type SessionPermissionMode } from "./approvals.js";
 import { resolveGatewayApprovalEngineConfig } from "./approval-runtime.js";
 import { buildToolPolicyAction } from "../policy/tool-governance.js";
 import {
@@ -4232,6 +4232,7 @@ export class DaemonManager {
     sessionMgr.reset(historySessionId);
     this._chatExecutor?.resetSessionTokens(webSessionId);
     this._sessionModelInfo.delete(webSessionId);
+    this._approvalEngine?.clearSessionPermissionMode(webSessionId);
     await progressTracker?.clear(webSessionId);
     await this._sessionCredentialBroker?.revoke({
       sessionId: webSessionId,
@@ -5043,6 +5044,11 @@ export class DaemonManager {
           elevatedPatterns: [],
           deniedPatterns: [],
         },
+      setSessionPermissionMode: (sessionId, mode) =>
+        this._approvalEngine?.setSessionPermissionMode(
+          sessionId,
+          mode as SessionPermissionMode,
+        ),
       getSubAgentRuntimeConfig: () => this._subAgentRuntimeConfig,
       getActiveDelegationAggressiveness: (config) =>
         this.getActiveDelegationAggressiveness(config),
