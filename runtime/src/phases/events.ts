@@ -49,6 +49,7 @@ export type PhaseEvent =
         | "max_turns"
         | "cancelled"
         | "error"
-        | "empty_response";
+        | "empty_response"
+        | "no_progress"; // behavioral backstop (semantic non-termination, goal #3)
       readonly error?: Error;
     };

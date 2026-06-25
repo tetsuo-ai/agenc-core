@@ -234,6 +234,11 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           if (event.stopReason === 'max_turns') {
             throw new Error(`Agent hook exceeded maxTurns (${MAX_AGENT_TURNS})`)
           }
+          if (event.stopReason === 'no_progress') {
+            throw new Error(
+              'Agent hook stopped by the no-progress backstop (semantic non-termination)',
+            )
+          }
         }
       }
 

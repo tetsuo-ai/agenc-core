@@ -26,6 +26,10 @@ import {
   provisionContentReplacementState,
   type ContentReplacementState,
 } from "./_deps/tool-result-storage.js";
+import type {
+  ProgressTrip,
+  StepRecord,
+} from "./behavioral-backstop.js";
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each
@@ -88,7 +92,8 @@ export type TerminalReason =
   | "stop_hook_prevented"
   | "hook_stopped"
   | "max_turns"
-  | "cancelled";
+  | "cancelled"
+  | "no_progress"; // behavioral backstop (semantic non-termination, goal #3)
 
 export interface Terminal {
   readonly reason: TerminalReason;
@@ -398,6 +403,21 @@ export interface TurnState {
   /** Plan-mode guard retries after a provider ignores the tool-only
    *  contract and returns plain assistant text. */
   planToolRequiredRetryCount: number;
+
+  // ── Behavioral backstop (semantic non-termination, goal #3) ───────
+  // Turn-scoped, NOT iteration-scoped: like `turnCount`, these persist
+  // across recovery/continuation iterations and are NOT cleared in
+  // `resetIterationFields`. Initialized once in `buildInitialTurnState`.
+  /** Bounded ring of recent step fingerprints (sig + resultHash). */
+  behavioralStepHistory: StepRecord[];
+  /** Consecutive low-information-gain steps. */
+  behavioralLowGainStreak: number;
+  /** One-shot soft-nudge latch (Wink >=3 course-correction reminder). */
+  behavioralNudgeIssued: boolean;
+  /** Novelty tracking — tool names seen this turn. */
+  behavioralSeenToolNames: Set<string>;
+  /** Tier-2 observer inbox (optional, polled never awaited). */
+  behavioralObserverTrip?: ProgressTrip;
 }
 
 // I-30 (per-turn config snapshot) lives on `TurnContext.configSnapshot`
@@ -470,6 +490,12 @@ export function buildInitialTurnState(
     stopHookActive: undefined,
     stopHookBlockingCount: 0,
     planToolRequiredRetryCount: 0,
+    // Behavioral backstop (goal #3) — turn-scoped accumulators.
+    behavioralStepHistory: [],
+    behavioralLowGainStreak: 0,
+    behavioralNudgeIssued: false,
+    behavioralSeenToolNames: new Set(),
+    behavioralObserverTrip: undefined,
   };
 }
 
@@ -496,4 +522,9 @@ export function resetIterationFields(state: TurnState): void {
   // pendingToolUseSummary + streamingToolExecutor intentionally NOT
   // cleared here — they are awaited in executeTools and cleared by
   // commit phase after their resolution.
+  //
+  // behavioral* fields are also intentionally NOT cleared — they are
+  // turn-scoped (like `turnCount`), not iteration-scoped. Clearing them
+  // here would reset the no-progress detector every iteration and defeat
+  // the whole backstop. (Asserted by the run-turn progress test suite.)
 }
