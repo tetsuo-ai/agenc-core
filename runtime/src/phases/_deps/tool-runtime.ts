@@ -753,6 +753,13 @@ export class StreamingToolExecutor {
             args,
           },
           onHookError ? (err, idx) => onHookError("pre", err, idx) : undefined,
+          undefined,
+          // Bound a wedged pre-hook by the executor abort signal. NOTE:
+          // this lean-rebuild StreamingToolExecutor does NOT wrap dispatch
+          // in a ToolCallRuntime lock guard (its run() just calls fn()), so
+          // this is a hang-bound, not a lock-release leg. The lock-release
+          // guarantee lives on the real router/concurrency path.
+          this.abortSignal,
         );
         if (preResult.kind === "deny") {
           denyFromPre = preResult.reason ?? "denied by pre-tool-use hook";
