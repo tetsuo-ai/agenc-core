@@ -114,6 +114,34 @@ export interface TrackedTool {
    * dispatch promise never settles.
    */
   executingSinceMs?: number;
+  /**
+   * Per-tool, listener-free cancel controller created in runOne. Composed into
+   * the dispatch signal via `AbortSignal.any`. The drain backstop fires THIS
+   * (never childAbort, never siblingAbortController) to cancel exactly one
+   * wedged tool's dispatch without bubbling to the turn or cascading to
+   * siblings. Set in runOne immediately after childAbort.
+   */
+  drainCancel?: AbortController;
+  /**
+   * First-settle-wins latch. Set true by `finalizeOnce`. Once true, every later
+   * terminal write (the wedged runOne's late settle) is a no-op: no result
+   * overwrite, no status flip-back, no sibling-cascade revival.
+   */
+  finalized?: boolean;
+  /**
+   * Reclaim outcome for a force-finalized tool. "running" until force-final;
+   * "reclaimed" if the dispatch unwound within the cleanup grace (lock/permit
+   * released by its own finally); "leaked" if the grace expired (uncooperative
+   * work — lock/permit may still be held). Observability only.
+   */
+  outcome?: "running" | "reclaimed" | "leaked";
+  /**
+   * Detach closure for this tool's onParentAbort + onChildAbort listeners.
+   * runOne's finally calls it on normal settle; force-finalize calls it on a
+   * wedged tool so a never-settling runOne does not leak its two listeners.
+   * Idempotent.
+   */
+  detachAbortListeners?: () => void;
   /** Progress events buffered for immediate streaming. */
   readonly pendingProgress: ProgressEvent[];
 }
@@ -209,6 +237,28 @@ function normalizeMaxToolDrainMs(value: number | undefined): number {
   return DEFAULT_MAX_TOOL_DRAIN_MS;
 }
 
+/**
+ * Reason string fired on a wedged tool's per-tool `drainCancel` when the drain
+ * backstop force-finalizes it. Chosen so the EXISTING mapper resolves it to the
+ * SAME terminal cause the backstop synthesizes:
+ * `terminalToolCauseFromAbortReason` (recovery/terminal-tool-result.ts) matches
+ * any reason starting with "tool timeout:" → TerminalToolCause "timeout". Keeping
+ * the cancel reason and the synthesized cause identical means the cancel-driven
+ * rejection (if it ever reached the dispatch's own catch) and the backstop's
+ * synthetic result agree on cause. A drain overrun IS a timeout — the active
+ * cancel is the mechanism, not a new cause.
+ */
+const DRAIN_CANCEL_REASON = "tool timeout: drain exceeded" as const;
+
+/**
+ * Bounded window to wait for cooperative teardown (lock/permit/hook release)
+ * AFTER firing `drainCancel`, before declaring a hard leak. DISTINCT from
+ * `maxToolDrainMs` (which decides "this tool is wedged"). Conflating them
+ * either denies cleanup a chance or re-hangs the turn. Override via the
+ * `cleanupGraceMs` constructor option.
+ */
+const DRAIN_CLEANUP_GRACE_MS = 5_000;
+
 // ─────────────────────────────────────────────────────────────────────
 // Options
 // ─────────────────────────────────────────────────────────────────────
@@ -249,6 +299,19 @@ export interface StreamingToolExecutorOptions {
   /** Optional runtime; when present, dispatch is wrapped by the
    *  per-call runtime scheduler (concurrency guard + call context). */
   readonly runtime?: ToolCallRuntime | ToolRuntimeScheduler;
+  /**
+   * Invoked once per force-finalized tool that did NOT release within the
+   * cleanup grace (outcome="leaked"). Observability only; must not throw.
+   */
+  readonly onLeakedTool?: (info: {
+    readonly toolCallId: string;
+    readonly toolName: string;
+    readonly concurrencyKind: ConcurrencyClass["kind"];
+    readonly reason: string;
+    readonly msSinceExecuting: number;
+  }) => void;
+  /** Override DRAIN_CLEANUP_GRACE_MS (ms). Non-positive falls back to the default. */
+  readonly cleanupGraceMs?: number;
   /** Fires on Bash sibling-abort cascade or other diagnostic events. */
   readonly onSiblingAbort?: (reason: string) => void;
   /** Fired per progress event (TUI rendering hook). */
@@ -287,6 +350,9 @@ export class StreamingToolExecutor {
   private readonly siblingAbortController: AbortController;
   private readonly bashToolName: string;
   private readonly runtime?: ToolCallRuntime | ToolRuntimeScheduler;
+  private readonly onLeakedTool?: StreamingToolExecutorOptions["onLeakedTool"];
+  private readonly cleanupGraceMs: number;
+  private leakedToolCount = 0;
   private readonly runToolUseFn?: (
     toolCall: LLMToolCall,
     signal: AbortSignal,
@@ -332,6 +398,11 @@ export class StreamingToolExecutor {
     this.maxToolDrainMs = normalizeMaxToolDrainMs(opts.maxToolDrainMs);
     this.bashToolName = opts.bashToolName ?? "system.bash";
     this.runtime = opts.runtime;
+    this.onLeakedTool = opts.onLeakedTool;
+    this.cleanupGraceMs =
+      opts.cleanupGraceMs && opts.cleanupGraceMs > 0
+        ? opts.cleanupGraceMs
+        : DRAIN_CLEANUP_GRACE_MS;
     this.runToolUseFn = opts.runToolUseFn;
     this.liveToolDispatch = opts.liveToolDispatch;
     this.parentAbortController = opts.parentAbortController ?? null;
@@ -711,6 +782,14 @@ export class StreamingToolExecutor {
   }
 
   /**
+   * Count of force-finalized tools whose dispatch did NOT release within the
+   * cleanup grace (outcome="leaked"). Observability/telemetry only.
+   */
+  get leakedTools(): number {
+    return this.leakedToolCount;
+  }
+
+  /**
    * Convert not-yet-dispatched queued tools into terminal errors without
    * starting them. Used when a provider stream drops after tool_use blocks
    * but before the model response is safe to replay: already-executing work
@@ -879,6 +958,76 @@ export class StreamingToolExecutor {
   }
 
   /**
+   * First-settle-wins terminal write. The SINGLE funnel for every terminal
+   * write (runOne success/catch AND the drain backstop). Returns TRUE iff THIS
+   * call is the one that transitioned the tool to its terminal state (so the
+   * caller may run one-time side effects like the sibling-abort cascade);
+   * returns FALSE if the tool was already finalized (late settle — caller must
+   * do nothing: no result overwrite, no status flip-back, no cascade revival).
+   */
+  private finalizeOnce(
+    tool: TrackedTool,
+    result: ToolDispatchResult,
+    error?: Error,
+  ): boolean {
+    if (tool.finalized) return false;
+    tool.finalized = true;
+    if (error !== undefined) tool.error = error;
+    tool.result = result;
+    tool.status = "completed";
+    return true;
+  }
+
+  /**
+   * After firing `drainCancel`, race the wedged tool's promise against an
+   * unref'd cleanup-grace timer. If the dispatch unwinds in the window, its own
+   * fn()-keyed `finally` already released the lock/permit ⇒ outcome
+   * "reclaimed". If the grace expires, the work ignored the signal (sync loop /
+   * unwired await / signal-blind hook) ⇒ outcome "leaked": count it, fire the
+   * observability callback, and swallow the orphan promise's eventual late
+   * rejection. We NEVER claim it was killed.
+   */
+  private startReclaimAccounting(
+    tool: TrackedTool,
+    msSinceExecuting: number,
+  ): void {
+    tool.outcome = "running";
+    const orphan = tool.promise ?? Promise.resolve();
+    // Prevent the eventual late rejection from becoming an unhandledRejection.
+    // (runOne never rethrows today, but this is defensive against future paths
+    // and the separately-created grace race promise.)
+    orphan.catch(() => {});
+
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const grace = new Promise<"leaked">((resolve) => {
+      graceTimer = setTimeout(() => resolve("leaked"), this.cleanupGraceMs);
+      graceTimer.unref?.();
+    });
+
+    void Promise.race([orphan.then(() => "reclaimed" as const), grace]).then(
+      (result) => {
+        if (graceTimer !== undefined) clearTimeout(graceTimer);
+        if (tool.outcome !== "running") return; // already classified
+        tool.outcome = result;
+        if (result === "leaked") {
+          this.leakedToolCount++;
+          try {
+            this.onLeakedTool?.({
+              toolCallId: tool.toolCall.id,
+              toolName: tool.toolCall.name,
+              concurrencyKind: tool.classification.kind,
+              reason: DRAIN_CANCEL_REASON,
+              msSinceExecuting,
+            });
+          } catch {
+            /* observability must never throw into the drain loop */
+          }
+        }
+      },
+    );
+  }
+
+  /**
    * Backstop for a dispatch promise that never settles: any tool that has
    * been `executing` longer than ITS OWN drain deadline is force-completed
    * with a terminal `timeout` result so the drain proceeds and the turn
@@ -886,6 +1035,13 @@ export class StreamingToolExecutor {
    * `timeoutBehavior:"tool"` (unbounded) deadline are exempt and never forced
    * here. The per-tool `tool.execute` timeout (execution.ts) is the first
    * line of defense; this only fires for hangs OUTSIDE that timed region.
+   *
+   * Beyond synthesizing the terminal result (#1318), this also actively
+   * CANCELS exactly the wedged tool's dispatch via its listener-free
+   * `drainCancel` so the underlying ToolCallRuntime lock / Semaphore permit /
+   * hook can release through its OWN existing `finally` — without aborting
+   * siblings (siblingAbortController) or bubbling to the parent turn
+   * (childAbort). It then accounts honestly for what it could not reclaim.
    */
   private forceTimeoutOverdueExecutingTools(): boolean {
     if (!Number.isFinite(this.maxToolDrainMs)) return false;
@@ -895,16 +1051,35 @@ export class StreamingToolExecutor {
       if (tool.status !== "executing") continue;
       const since = tool.executingSinceMs;
       if (since === undefined) continue;
+      // NOTE: toolDrainDeadlineMs does NOT consult interruptBehavior — a drain
+      // kill is unconditional. The only exemption is timeoutBehavior:"tool"
+      // (deadline → Infinity), filtered out below.
       const deadline = this.toolDrainDeadlineMs(tool);
       if (!Number.isFinite(deadline)) continue; // exempt tool
       if (now - since < deadline) continue;
-      // Synthesize a terminal timeout so this tool_use block still gets a
-      // paired tool_result (conversation invariant) and the drain can end.
-      tool.error = new Error(
-        `tool ${tool.toolCall.name} drain timeout after ${Math.round(now - since)}ms`,
+
+      const msSince = Math.round(now - since);
+      // (1) LATCH FIRST so any concurrent late settle becomes a no-op.
+      //     Synthesize a terminal timeout so this tool_use block still gets a
+      //     paired tool_result (conversation invariant) and the drain can end.
+      const error = new Error(
+        `tool ${tool.toolCall.name} drain timeout after ${msSince}ms`,
       );
-      tool.result = this.createSyntheticError(tool.toolCall, "timeout");
-      tool.status = "completed";
+      const synthetic = this.createSyntheticError(tool.toolCall, "timeout");
+      this.finalizeOnce(tool, synthetic, error);
+
+      // (2) Detach the wedged tool's abort listeners (runOne's finally will not
+      //     run while it stays parked).
+      tool.detachAbortListeners?.();
+
+      // (3) ACTIVELY cancel exactly this tool's dispatch. One-way into the
+      //     derived dispatch signal; does NOT touch childAbort (no turn kill)
+      //     or siblingAbortController (no sibling cascade).
+      tool.drainCancel?.abort(DRAIN_CANCEL_REASON);
+
+      // (4) Bounded reclaim accounting (reclaimed vs leaked).
+      this.startReclaimAccounting(tool, msSince);
+
       forced = true;
     }
     if (forced) this.signalProgress();
@@ -1103,6 +1278,41 @@ export class StreamingToolExecutor {
     };
     childAbort.signal.addEventListener("abort", onChildAbort, { once: true });
 
+    // Dedicated, LISTENER-FREE per-tool cancel controller. Nothing subscribes
+    // to drainCancel.signal's "abort", so firing it triggers NO bubble-up of
+    // its own and (per the WHATWG AbortSignal.any algorithm) propagates ONE-WAY
+    // into the derived dispatch signal only — never to childAbort, never upward.
+    const drainCancel = new AbortController();
+    tool.drainCancel = drainCancel;
+
+    // Idempotent listener detach so a wedged (never-settling) runOne does not
+    // leak its two abort listeners. runOne's finally and force-finalize both
+    // call it.
+    let listenersDetached = false;
+    tool.detachAbortListeners = () => {
+      if (listenersDetached) return;
+      listenersDetached = true;
+      this.siblingAbortController.signal.removeEventListener(
+        "abort",
+        onParentAbort,
+      );
+      childAbort.signal.removeEventListener("abort", onChildAbort);
+    };
+
+    // Derived dispatch signal. We use raw `AbortSignal.any` (NOT the house
+    // createCombinedAbortSignal helper) because that helper aborts its internal
+    // controller with NO reason (utils/combinedAbortSignal.ts) and would drop
+    // the "timeout" cause; AbortSignal.any PRESERVES the source reason, so the
+    // drain cancel reason maps to TerminalToolCause "timeout". Do NOT "clean
+    // this up" to the helper without re-checking the cause mapping. We DO honor
+    // the helper's Bun rationale by not using AbortSignal.timeout anywhere
+    // here. A strong ref is retained for the dispatch lifetime (it is the
+    // dispatch's `signal` arg below), avoiding the Node #57736 weak-GC pitfall.
+    const dispatchSignal = AbortSignal.any([
+      childAbort.signal,
+      drainCancel.signal,
+    ]);
+
     try {
       const dispatch = async (): Promise<ToolDispatchResult> => {
         if (tool.cancelBeforeDispatch) {
@@ -1118,7 +1328,14 @@ export class StreamingToolExecutor {
             tool.toolCall,
             {
               ...this.liveToolDispatch.options,
-              signal: childAbort.signal,
+              // Derived signal (childAbort + drainCancel). The router's
+              // forwardAbort subscribes to opts.signal and propagates its
+              // reason into its internal toolAbortController, so a drainCancel
+              // abort cancels exactly this dispatch.
+              signal: dispatchSignal,
+              // UNCHANGED — the permission-reject / ExitPlanMode bubble-up
+              // channel must stay on childAbort (router reads abortController
+              // only in the ApprovalRejectedError catch).
               abortController: childAbort,
               onProgress: (event) =>
                 this.emitProgress(tool.toolCall.id, event.chunk),
@@ -1135,7 +1352,8 @@ export class StreamingToolExecutor {
           );
         }
         if (this.runToolUseFn) {
-          return await this.runToolUseFn(tool.toolCall, childAbort.signal);
+          // Derived signal so a drainCancel abort cancels this dispatch.
+          return await this.runToolUseFn(tool.toolCall, dispatchSignal);
         }
         return {
           content: JSON.stringify({
@@ -1153,11 +1371,13 @@ export class StreamingToolExecutor {
         ? await runToolRuntimeCall(this.runtime, runtimeContext, dispatch)
         : await dispatch();
 
-      tool.result = result;
-      tool.status = "completed";
+      // Late settle of an already force-finalized tool: didFinalize === false ⇒
+      // no result overwrite, no status flip-back, no sibling cascade.
+      const didFinalize = this.finalizeOnce(tool, result);
 
       // Sibling-abort cascade for shell-style tools.
       if (
+        didFinalize &&
         result.isError === true &&
         this.isSiblingAbortShellTool(tool.toolCall.name) &&
         !this.discarded &&
@@ -1168,12 +1388,19 @@ export class StreamingToolExecutor {
         this.siblingAbortController.abort("sibling_error");
       }
     } catch (err) {
-      tool.error = err instanceof Error ? err : new Error(String(err));
-      const syntheticReason = this.resolveSyntheticErrorReason(tool.error);
-      tool.result = this.createSyntheticError(tool.toolCall, syntheticReason);
-      tool.status = "completed";
+      // The self-induced rejection from our own drainCancel.abort(...) lands
+      // here, produces a synthetic result, and is swallowed by the finalized
+      // no-op (force-finalize already latched the terminal write).
+      const error = err instanceof Error ? err : new Error(String(err));
+      const syntheticReason = this.resolveSyntheticErrorReason(error);
+      const didFinalize = this.finalizeOnce(
+        tool,
+        this.createSyntheticError(tool.toolCall, syntheticReason),
+        error,
+      );
       // Thrown shell-tool errors also trigger sibling abort.
       if (
+        didFinalize &&
         this.isSiblingAbortShellTool(tool.toolCall.name) &&
         !this.discarded &&
         !this.hasBashErrored
@@ -1183,11 +1410,8 @@ export class StreamingToolExecutor {
         this.siblingAbortController.abort("sibling_error");
       }
     } finally {
-      this.siblingAbortController.signal.removeEventListener(
-        "abort",
-        onParentAbort,
-      );
-      childAbort.signal.removeEventListener("abort", onChildAbort);
+      // Idempotent — force-finalize may have already detached on a wedged tool.
+      tool.detachAbortListeners?.();
     }
 
     const durationMs = performance.now() - startedAtMs;

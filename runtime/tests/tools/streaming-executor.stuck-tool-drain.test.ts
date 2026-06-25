@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { StreamingToolExecutor } from "./streaming-executor.js";
-import { SHARED_READ } from "./concurrency.js";
+import { SHARED_READ, EXCLUSIVE, ToolCallRuntime } from "./concurrency.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { Tool } from "./types.js";
@@ -186,5 +186,463 @@ describe("StreamingToolExecutor stuck-tool drain (turn-finalize bug)", () => {
     const finalOutcome = await withTimeout(drainDone, 4000, "longtimeout-settles");
     expect(finalOutcome.ok).toBe(true);
     expect(collected).toEqual([{ id: "b1", isError: false }]);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Cooperative cancellation of force-finalized wedged tools (release leg).
+//
+// PR #1318 force-finalizes a wedged tool (synthetic timeout) so the turn
+// ends, but never cancels the underlying dispatch — its ToolCallRuntime lock
+// / Semaphore permit / hook are abandoned (a silent cross-turn resource
+// leak). These tests prove the new release leg: the backstop cooperatively
+// CANCELS exactly that one tool's dispatch (via a per-tool listener-free
+// drainCancel composed into the dispatch signal) so the lock/permit releases
+// through its OWN existing finally — WITHOUT aborting siblings or bubbling to
+// the parent turn — and honestly accounts (reclaimed vs leaked) for residue
+// it cannot reclaim.
+// ──────────────────────────────────────────────────────────────────────
+describe("StreamingToolExecutor cooperative cancel of wedged tools", () => {
+  // Drives an executor with a single tool to completion under a hard timeout,
+  // collecting yielded results.
+  async function drainSingle(
+    exec: StreamingToolExecutor,
+    timeoutMs: number,
+    label: string,
+  ): Promise<{
+    outcome: { ok: true } | { ok: false; reason: string };
+    collected: Array<{ id: string; isError: boolean }>;
+  }> {
+    const collected: Array<{ id: string; isError: boolean }> = [];
+    const outcome = await withTimeout(
+      (async () => {
+        for await (const r of exec.getRemainingResults()) {
+          collected.push({
+            id: r.toolCall.id,
+            isError: r.result.isError === true,
+          });
+        }
+      })(),
+      timeoutMs,
+      label,
+    );
+    return { outcome: outcome.ok ? { ok: true } : outcome, collected };
+  }
+
+  // A cooperative wedged dispatch: never resolves on its own, but rejects when
+  // its signal aborts (so its fn()-keyed finally — the lock/permit release —
+  // runs). This is what a well-behaved abortable tool does.
+  function cooperativeWedge(
+    call: LLMToolCall,
+    signal: AbortSignal,
+  ): Promise<ToolDispatchResult> {
+    return new Promise<ToolDispatchResult>((_resolve, reject) => {
+      if (signal.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      signal.addEventListener(
+        "abort",
+        () => reject(new Error("aborted")),
+        { once: true },
+      );
+    });
+  }
+
+  // ── Test A — permit/lock RELEASED after force-cancel of a wedged holder.
+  //    The acceptance criterion is "a sibling EXCLUSIVE can acquire the lock",
+  //    NOT "the turn finalized". A wedged SHARED_READ holder pins readers > 0;
+  //    a wedged EXCLUSIVE holder pins the write gate. After the force-cancel,
+  //    the sibling EXCLUSIVE acquire must settle within a short timeout.
+  for (const variant of [
+    { kind: "shared_read", klass: SHARED_READ, name: "shared_read" },
+    { kind: "exclusive", klass: EXCLUSIVE, name: "exclusive" },
+  ] as const) {
+    test(`force-cancel releases the runtime lock of a wedged ${variant.name} holder (sibling EXCLUSIVE acquires)`, async () => {
+      const runtime = new ToolCallRuntime();
+      const exec = new StreamingToolExecutor({
+        registry: registryFor(() => new Promise<ToolDispatchResult>(() => {})),
+        runtime,
+        maxToolDrainMs: 200,
+        cleanupGraceMs: 150,
+      });
+      (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = (
+        call: LLMToolCall,
+        signal: AbortSignal,
+      ) => cooperativeWedge(call, signal);
+
+      exec.setConcurrencyClassFor("wedged", variant.klass);
+      exec.addTool(makeBlock("w1", "wedged"), makeCall("w1", "wedged"));
+      exec.dispatchPending();
+      exec.close();
+
+      const { outcome, collected } = await drainSingle(exec, 4000, `relA-${variant.name}`);
+
+      // (a) the turn finalizes with exactly one synthetic error result.
+      expect(outcome.ok).toBe(true);
+      expect(collected).toEqual([{ id: "w1", isError: true }]);
+
+      // (b) the tool's dispatch unwound within the grace ⇒ reclaimed, no leak.
+      const states = exec.getToolStates();
+      const tracked = (exec as unknown as { tools: Array<{ id: string; outcome?: string }> }).tools.find(
+        (t) => t.id === "w1",
+      );
+      expect(tracked?.outcome).toBe("reclaimed");
+      expect(exec.leakedTools).toBe(0);
+      expect(states.find((s) => s.id === "w1")?.status).toBe("yielded");
+
+      // (c) THE KEY ASSERTION: a sibling EXCLUSIVE acquire on the SAME runtime
+      //     resolves within a short timeout. If the wedged holder had not
+      //     released (readers-- / write gate), the writer would starve forever.
+      const acquire = await withTimeout(
+        runtime.run(EXCLUSIVE, async () => "ok"),
+        1000,
+        "sibling-exclusive-acquire",
+      );
+      expect(acquire.ok).toBe(true);
+      if (acquire.ok) expect(acquire.value).toBe("ok");
+    });
+  }
+
+  // ── Test B — siblings + parent turn NOT aborted.
+  //    One wedged cooperative tool + one healthy concurrent sibling. The
+  //    healthy sibling still completes; the parent controller stays
+  //    unaborted; onSiblingAbort was not called; and the wedged tool's
+  //    childAbort was NOT aborted (drain-cancel did not reach it — one-way
+  //    AbortSignal.any isolation).
+  test("force-cancel does not abort siblings or the parent turn", async () => {
+    const parentAbortController = new AbortController();
+    let siblingAbortCalls = 0;
+    let releaseHealthy!: (r: ToolDispatchResult) => void;
+    const healthyGate = new Promise<ToolDispatchResult>((resolve) => {
+      releaseHealthy = resolve;
+    });
+
+    const exec = new StreamingToolExecutor({
+      registry: registryFor(() => new Promise<ToolDispatchResult>(() => {})),
+      // 600ms drain floor so the healthy sibling (released at ~150ms) settles
+      // with its REAL result well before the backstop fires; only the wedged
+      // tool reaches its deadline and is force-cancelled.
+      maxToolDrainMs: 600,
+      cleanupGraceMs: 150,
+      parentAbortController,
+      onSiblingAbort: () => {
+        siblingAbortCalls += 1;
+      },
+    });
+    let wedgedSignal: AbortSignal | undefined;
+    (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = (
+      call: LLMToolCall,
+      signal: AbortSignal,
+    ) => {
+      if (call.id === "w1") {
+        wedgedSignal = signal;
+        return cooperativeWedge(call, signal);
+      }
+      return healthyGate;
+    };
+
+    // Both SHARED_READ so they run concurrently.
+    exec.setConcurrencyClassFor("wedged", SHARED_READ);
+    exec.setConcurrencyClassFor("healthy", SHARED_READ);
+    exec.addTool(makeBlock("w1", "wedged"), makeCall("w1", "wedged"));
+    exec.addTool(makeBlock("h1", "healthy"), makeCall("h1", "healthy"));
+    exec.dispatchPending();
+    exec.close();
+
+    const collected: Array<{ id: string; isError: boolean }> = [];
+    const drainDone = (async () => {
+      for await (const r of exec.getRemainingResults()) {
+        collected.push({ id: r.toolCall.id, isError: r.result.isError === true });
+      }
+    })();
+
+    // Resolve the healthy sibling EARLY (before the 600ms backstop) so it
+    // finalizes with its real result; the wedged tool keeps holding until the
+    // backstop force-cancels it.
+    await new Promise((r) => setTimeout(r, 150).unref?.());
+    releaseHealthy({ content: "healthy ok", isError: false });
+
+    const outcome = await withTimeout(drainDone, 4000, "siblings-survive");
+    expect(outcome.ok).toBe(true);
+
+    // (a) the healthy sibling completed with its real (non-error) result.
+    expect(collected).toContainEqual({ id: "h1", isError: false });
+    // the wedged tool yielded a synthetic error.
+    expect(collected).toContainEqual({ id: "w1", isError: true });
+
+    // (b) the parent turn survives (drain-cancel did not bubble up).
+    expect(parentAbortController.signal.aborted).toBe(false);
+    // (c) onSiblingAbort was NOT called.
+    expect(siblingAbortCalls).toBe(0);
+    // (d) the wedged tool's dispatch DID observe abort (drainCancel reached the
+    //     derived signal) — proving the cancel fired on the right channel — but
+    //     NOT via childAbort: the derived signal is what aborts, while the
+    //     parent/sibling controllers stay clean (asserted above).
+    expect(wedgedSignal?.aborted).toBe(true);
+  });
+
+  // ── Test C — honest uncooperative leak (does NOT pretend to release).
+  //    A wedged dispatch that IGNORES the signal cannot be reclaimed: the turn
+  //    still finalizes with one synthetic cause:"timeout" result, but the tool
+  //    is marked leaked, the counter increments, onLeakedTool fires once, and
+  //    there is no unhandledRejection. We assert NO lock release for this case.
+  test("uncooperative wedge is force-finalized and honestly marked leaked", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    const leaked: Array<{ toolName: string; concurrencyKind: string; reason: string }> = [];
+    const exec = new StreamingToolExecutor({
+      registry: registryFor(() => new Promise<ToolDispatchResult>(() => {})),
+      maxToolDrainMs: 150,
+      cleanupGraceMs: 120,
+      onLeakedTool: (info) => {
+        leaked.push({
+          toolName: info.toolName,
+          concurrencyKind: info.concurrencyKind,
+          reason: info.reason,
+        });
+      },
+    });
+    (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = () =>
+      // Signal-blind: never resolves, never observes abort.
+      new Promise<ToolDispatchResult>(() => {});
+
+    exec.setConcurrencyClassFor("stubborn", SHARED_READ);
+    exec.addTool(makeBlock("s1", "stubborn"), makeCall("s1", "stubborn"));
+    exec.dispatchPending();
+    exec.close();
+
+    const { outcome, collected } = await drainSingle(exec, 4000, "uncoop-leak");
+
+    // (a) the turn still finalizes with one synthetic timeout result.
+    expect(outcome.ok).toBe(true);
+    expect(collected).toEqual([{ id: "s1", isError: true }]);
+
+    // Allow the grace race to classify the leak.
+    await new Promise((r) => setTimeout(r, 250).unref?.());
+
+    const tracked = (exec as unknown as { tools: Array<{ id: string; outcome?: string }> }).tools.find(
+      (t) => t.id === "s1",
+    );
+    // (b) outcome leaked, (c) counter == 1.
+    expect(tracked?.outcome).toBe("leaked");
+    expect(exec.leakedTools).toBe(1);
+    // (d) onLeakedTool fired once with the right identity.
+    expect(leaked).toEqual([
+      { toolName: "stubborn", concurrencyKind: "shared_read", reason: "tool timeout: drain exceeded" },
+    ]);
+
+    // Let any stray microtasks flush, then assert (e) no unhandledRejection.
+    await new Promise((r) => setTimeout(r, 50).unref?.());
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toEqual([]);
+  });
+
+  // ── Test D — late-settle no-op (idempotency). After force-finalize, a late
+  //    dispatch resolution must be a strict no-op: exactly one result yielded,
+  //    no status flip-back, and a late bash-class error does NOT re-abort
+  //    siblings post-finalize.
+  test("late settle after force-finalize is a strict no-op (non-error + bash isError)", async () => {
+    for (const lateVariant of [
+      { name: "late-nonerror", toolName: "lateread", isError: false },
+      { name: "late-bash-error", toolName: "system.bash", isError: true },
+    ] as const) {
+      let releaseDispatch!: (r: ToolDispatchResult) => void;
+      const gate = new Promise<ToolDispatchResult>((resolve) => {
+        releaseDispatch = resolve;
+      });
+      let siblingAbortCalls = 0;
+
+      const exec = new StreamingToolExecutor({
+        registry: registryFor(() => new Promise<ToolDispatchResult>(() => {})),
+        maxToolDrainMs: 200,
+        cleanupGraceMs: 5000,
+        bashToolName: "system.bash",
+        onSiblingAbort: () => {
+          siblingAbortCalls += 1;
+        },
+      });
+      (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = () => gate;
+
+      // SHARED_READ so the timeoutBehavior path is finite (no def -> floor).
+      exec.setConcurrencyClassFor(lateVariant.toolName, SHARED_READ);
+      exec.addTool(
+        makeBlock("d1", lateVariant.toolName),
+        makeCall("d1", lateVariant.toolName),
+      );
+      exec.dispatchPending();
+      exec.close();
+
+      const collected: Array<{ id: string; isError: boolean }> = [];
+      const drainDone = (async () => {
+        for await (const r of exec.getRemainingResults()) {
+          collected.push({ id: r.toolCall.id, isError: r.result.isError === true });
+        }
+      })();
+
+      // Force-finalize fires at ~200ms; the synthetic timeout is yielded.
+      const outcome = await withTimeout(drainDone, 4000, lateVariant.name);
+      expect(outcome.ok).toBe(true);
+
+      // Now resolve the dispatch LATE (after finalize). This must be a no-op.
+      releaseDispatch({ content: "late", isError: lateVariant.isError });
+      await new Promise((r) => setTimeout(r, 100).unref?.());
+
+      // (a) exactly ONE result yielded (the synthetic timeout, isError:true).
+      expect(collected).toEqual([{ id: "d1", isError: true }]);
+      // (b) status stayed yielded (no flip-back).
+      const states = exec.getToolStates();
+      expect(states.find((s) => s.id === "d1")?.status).toBe("yielded");
+      // (c) the late bash error did NOT re-abort siblings post-finalize.
+      expect(siblingAbortCalls).toBe(0);
+    }
+  });
+
+  // ── Test E — interruptBehavior:'block' tool is still force-finalizable; a
+  //    timeoutBehavior:'tool' tool is NOT. The drain kill is unconditional and
+  //    does NOT consult getToolInterruptBehavior — it keys ONLY off
+  //    toolDrainDeadlineMs. So a block-behavior tool with a finite
+  //    (timeoutBehavior:'executor') deadline IS subject to the backstop, while
+  //    the only exemption is the unbounded timeoutBehavior:'tool' deadline
+  //    (toolDrainDeadlineMs -> Infinity). We assert this on the deadline
+  //    computation the backstop actually keys off (white-box), so the proof is
+  //    fast and exact rather than waiting out the multi-minute own+grace floor
+  //    that a real registered tool's finite deadline carries.
+  test("interruptBehavior:'block' has a finite drain deadline; timeoutBehavior:'tool' is exempt", async () => {
+    const blockTool = testTool({
+      name: "blocking-tool",
+      interruptBehavior: () => "block",
+      // timeoutBehavior defaults to "executor" -> finite deadline.
+    });
+    const exemptTool = testTool({
+      name: "request-user-input",
+      timeoutBehavior: "tool", // resolveTimeoutMs -> null -> EXEMPT (Infinity).
+    });
+    const exec = new StreamingToolExecutor({
+      registry: registryFor(() => new Promise<ToolDispatchResult>(() => {}), [
+        blockTool,
+        exemptTool,
+      ]),
+      maxToolDrainMs: 150,
+    });
+
+    const internal = exec as unknown as {
+      tools: Array<{
+        toolCall: LLMToolCall;
+        status: string;
+        executingSinceMs?: number;
+      }>;
+      toolDrainDeadlineMs(tool: {
+        toolCall: LLMToolCall;
+        executingSinceMs?: number;
+      }): number;
+    };
+
+    exec.setConcurrencyClassFor("blocking-tool", SHARED_READ);
+    exec.setConcurrencyClassFor("request-user-input", SHARED_READ);
+    exec.addTool(makeBlock("k1", "blocking-tool"), makeCall("k1", "blocking-tool"));
+    exec.addTool(
+      makeBlock("e1", "request-user-input"),
+      makeCall("e1", "request-user-input"),
+    );
+    exec.dispatchPending();
+
+    const blockTracked = internal.tools.find((t) => t.toolCall.id === "k1")!;
+    const exemptTracked = internal.tools.find((t) => t.toolCall.id === "e1")!;
+
+    // The block-behavior tool has a FINITE deadline -> subject to the backstop.
+    const blockDeadline = internal.toolDrainDeadlineMs(blockTracked);
+    expect(Number.isFinite(blockDeadline)).toBe(true);
+    // The timeoutBehavior:'tool' tool is EXEMPT -> Infinity, never force-final.
+    const exemptDeadline = internal.toolDrainDeadlineMs(exemptTracked);
+    expect(exemptDeadline).toBe(Number.POSITIVE_INFINITY);
+
+    exec.discard("teardown");
+  });
+
+  // ── Test E2 — runtime proof of the exemption: a timeoutBehavior:'tool' tool
+  //    is NOT force-finalized even well past a tiny floor (mirrors the existing
+  //    exemption test but inside the cooperative-cancel suite).
+  test("timeoutBehavior:'tool' tool is NOT force-finalized at the drain floor", async () => {
+    let releaseDispatch!: (r: ToolDispatchResult) => void;
+    const gate = new Promise<ToolDispatchResult>((resolve) => {
+      releaseDispatch = resolve;
+    });
+    const exemptTool = testTool({
+      name: "request-user-input",
+      timeoutBehavior: "tool",
+    });
+    const exec = new StreamingToolExecutor({
+      registry: registryFor(() => gate, [exemptTool]),
+      maxToolDrainMs: 150,
+      cleanupGraceMs: 120,
+    });
+    (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = (
+      call: LLMToolCall,
+    ) => (exec as any).registry.dispatch(call);
+    exec.setConcurrencyClassFor("request-user-input", SHARED_READ);
+    exec.addTool(
+      makeBlock("e1", "request-user-input"),
+      makeCall("e1", "request-user-input"),
+    );
+    exec.dispatchPending();
+    exec.close();
+
+    const collected: Array<{ id: string; isError: boolean }> = [];
+    const drainDone = (async () => {
+      for await (const r of exec.getRemainingResults()) {
+        collected.push({ id: r.toolCall.id, isError: r.result.isError === true });
+      }
+    })();
+    // Well past the tiny floor: still draining, NOT force-completed.
+    const early = await withTimeout(drainDone, 600, "exempt-not-forced");
+    expect(early.ok).toBe(false);
+    expect(collected).toEqual([]);
+    releaseDispatch({ content: "answered", isError: false });
+    const final = await withTimeout(drainDone, 4000, "exempt-settles");
+    expect(final.ok).toBe(true);
+    expect(collected).toEqual([{ id: "e1", isError: false }]);
+  });
+
+  // ── Test F — synthesized cause for a force-cancelled tool is pinned to
+  //    "timeout". The decoded <tool_use_error> text must be the timeout text,
+  //    catching any careless DRAIN_CANCEL_REASON / synthesis change.
+  test("force-cancelled tool's synthesized cause is pinned to timeout", async () => {
+    const exec = new StreamingToolExecutor({
+      registry: registryFor(() => new Promise<ToolDispatchResult>(() => {})),
+      maxToolDrainMs: 150,
+      cleanupGraceMs: 120,
+    });
+    (exec as unknown as { runToolUseFn?: unknown }).runToolUseFn = (
+      call: LLMToolCall,
+      signal: AbortSignal,
+    ) => cooperativeWedge(call, signal);
+    exec.setConcurrencyClassFor("timed", SHARED_READ);
+    exec.addTool(makeBlock("t1", "timed"), makeCall("t1", "timed"));
+    exec.dispatchPending();
+    exec.close();
+
+    const results: ToolDispatchResult[] = [];
+    const outcome = await withTimeout(
+      (async () => {
+        for await (const r of exec.getRemainingResults()) {
+          results.push(r.result);
+        }
+      })(),
+      4000,
+      "cause-pinned",
+    );
+    expect(outcome.ok).toBe(true);
+    expect(results).toHaveLength(1);
+    const result = results[0]!;
+    expect(result.isError).toBe(true);
+    const decoded = JSON.parse(result.content) as { content: string };
+    // buildTerminalToolResult({ cause: "timeout" }) -> "tool execution timed out".
+    expect(decoded.content).toContain("tool execution timed out");
+    expect(decoded.content).not.toContain("aborted before completion");
   });
 });
