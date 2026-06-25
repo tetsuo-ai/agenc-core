@@ -8,7 +8,11 @@ import {
 import type { ToolRuntimeCallContext } from "./context.js";
 
 export interface ToolRuntimeScheduler {
-  run<T>(klass: ConcurrencyClass, fn: GuardedFn<T>): Promise<T>;
+  run<T>(
+    klass: ConcurrencyClass,
+    fn: GuardedFn<T>,
+    signal?: AbortSignal,
+  ): Promise<T>;
   runToolCall<T>(
     context: ToolRuntimeCallContext,
     fn: GuardedFn<T>,
@@ -26,15 +30,23 @@ export class ToolExecutionRuntime implements ToolRuntimeScheduler {
     this.guard = options.guard ?? new ToolCallRuntime(options);
   }
 
-  async run<T>(klass: ConcurrencyClass, fn: GuardedFn<T>): Promise<T> {
-    return this.guard.run(klass, fn);
+  async run<T>(
+    klass: ConcurrencyClass,
+    fn: GuardedFn<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.guard.run(klass, fn, signal);
   }
 
   async runToolCall<T>(
     context: ToolRuntimeCallContext,
     fn: GuardedFn<T>,
   ): Promise<T> {
-    return this.guard.run(effectiveConcurrencyClass(context), fn);
+    return this.guard.run(
+      effectiveConcurrencyClass(context),
+      fn,
+      context.acquireSignal,
+    );
   }
 }
 
@@ -52,7 +64,11 @@ export async function runToolRuntimeCall<T>(
   if ("runToolCall" in runtime) {
     return runtime.runToolCall(context, fn);
   }
-  return runtime.run(effectiveConcurrencyClass(context), fn);
+  return runtime.run(
+    effectiveConcurrencyClass(context),
+    fn,
+    context.acquireSignal,
+  );
 }
 
 function effectiveConcurrencyClass(

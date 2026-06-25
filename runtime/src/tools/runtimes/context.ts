@@ -24,6 +24,14 @@ export interface ToolRuntimeCallContext {
   readonly supportsParallelToolCalls: boolean;
   readonly source: ToolCallSource;
   readonly submittedAtMs: number;
+  /**
+   * Per-call dispatch signal (childAbort ∪ drainCancel). When present, the
+   * runtime guard threads it into Semaphore.acquire / AsyncRwLock.withWrite
+   * / withRead so a PARKED waiter wakes immediately on abort, removes itself
+   * from the acquire queue atomically, and forwards any in-flight
+   * permit/turn. Optional + additive: existing callers compile unchanged.
+   */
+  readonly acquireSignal?: AbortSignal;
 }
 
 export interface ToolRuntimeAttemptContext extends ToolRuntimeCallContext {

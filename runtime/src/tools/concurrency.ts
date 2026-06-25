@@ -64,45 +64,158 @@ export function sharedServer(serverId: string): ConcurrencyClass {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal semaphore built on promise-chain serialization. Each
- * `serverId` gets its own instance so calls to `mcp.dbA.query` and
- * `mcp.dbB.query` don't block each other (I-61).
+ * Identity-carrying FIFO waiter record. The grant decision (`pumpNext`)
+ * and the cancel decision (`cancelWaiter`) both read-then-write `state`
+ * with no `await` between them, so exactly one of them claims the waiter;
+ * the loser is inert. A grant() (= resolve()) is irrevocable.
+ */
+interface SemWaiter {
+  state: "queued" | "granted" | "cancelled";
+  grant: () => void;
+  reject: (err: unknown) => void;
+}
+
+/**
+ * Minimal semaphore with abort-aware acquisition. Each `serverId` gets
+ * its own instance so calls to `mcp.dbA.query` and `mcp.dbB.query` don't
+ * block each other (I-61).
  *
  * The default capacity is 1 (strict serialization per server).
  * Callers can construct with >1 for parallel-safe servers.
+ *
+ * Permit accounting uses the DIRECT-TRANSFER model: `acquired` is
+ * incremented at grant time (fast path) and never re-touched by a woken
+ * waiter. On release the permit is either FORWARDED to a live waiter
+ * (`acquired` unchanged) or FREED (`acquired -= 1`). A queued waiter
+ * aborted before it is granted is removed from the FIFO atomically; a
+ * waiter already in the `granted` state already owns its permit and is
+ * never force-rejected here (the awaiting caller will take the permit and
+ * release normally via the signal-checked stage-2 withRead).
  */
 export class Semaphore {
   private readonly capacity: number;
   private acquired = 0;
-  private waiters: Array<() => void> = [];
+  private waiters: SemWaiter[] = [];
 
   constructor(capacity = 1) {
     if (capacity < 1) throw new RangeError("Semaphore capacity must be ≥ 1");
     this.capacity = capacity;
   }
 
-  async acquire(): Promise<() => void> {
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) throw this.abortError(signal);
+
+    // Fast path: a permit is free → take it immediately.
     if (this.acquired < this.capacity) {
       this.acquired += 1;
-      return () => this.release();
+      return this.makeRelease();
     }
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.acquired += 1;
-    return () => this.release();
+
+    // Slow path: enqueue an identity-carrying waiter.
+    const waiter: SemWaiter = {
+      state: "queued",
+      grant: () => {},
+      reject: () => {},
+    };
+    const granted = new Promise<void>((resolve, reject) => {
+      waiter.grant = () => resolve();
+      waiter.reject = reject;
+    });
+    this.waiters.push(waiter);
+
+    const onAbort = (): void => {
+      this.cancelWaiter(waiter, this.abortError(signal!));
+    };
+    if (signal) {
+      // Re-check after enqueue: the abort may have fired between the
+      // top-of-method guard and here.
+      if (signal.aborted) {
+        this.cancelWaiter(waiter, this.abortError(signal));
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
+    try {
+      await granted; // resolves only when a permit is HANDED to us
+    } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+    }
+    // The permit was already counted into `acquired` at grant time (NOT
+    // here). We just take it.
+    return this.makeRelease();
+  }
+
+  private makeRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) return; // idempotent — double-release is a no-op
+      released = true;
+      this.release();
+    };
   }
 
   private release(): void {
-    this.acquired -= 1;
-    const next = this.waiters.shift();
-    if (next) next();
+    // A real permit is being returned. Either hand it to the next live
+    // waiter (keeping `acquired` unchanged — direct permit transfer) or
+    // free it.
+    if (!this.pumpNext()) {
+      this.acquired -= 1;
+      if (this.acquired < 0) throw new Error("Semaphore acquired underflow");
+    }
+  }
+
+  /**
+   * Returns true iff the permit was forwarded to a live waiter (`acquired`
+   * stays put). Skips cancelled waiters. SINGLE synchronous critical
+   * section.
+   */
+  private pumpNext(): boolean {
+    while (this.waiters.length > 0) {
+      const next = this.waiters.shift()!;
+      if (next.state !== "queued") continue; // cancelled mid-flight → skip
+      next.state = "granted"; // SYNC claim — `acquired` already accounts for it
+      next.grant();
+      return true; // permit forwarded; acquired unchanged
+    }
+    return false; // no live waiter — caller frees the permit
+  }
+
+  /**
+   * Cancel a waiter. ONLY a still-`queued` waiter is removed from the
+   * queue here. A `granted` waiter already owns its permit
+   * (grant() = resolve() is irrevocable, so reject() would be a no-op and
+   * the caller WOULD still take the permit). Force-forwarding in that case
+   * would double-grant the permit → two holders → underflow. So the
+   * granted case is a NO-OP `return`: the waiter keeps the permit, takes
+   * it on resume, and releases normally (its stage-2 withRead rechecks the
+   * signal and frees the permit in finally). `acquired` accounting stays
+   * exact.
+   */
+  private cancelWaiter(waiter: SemWaiter, err: unknown): void {
+    if (waiter.state !== "queued") return; // granted or already-cancelled → inert
+    waiter.state = "cancelled";
+    waiter.reject(err);
+    const i = this.waiters.indexOf(waiter);
+    if (i >= 0) this.waiters.splice(i, 1); // FIFO-preserving identity splice
+    // It never held a permit → acquired untouched.
+  }
+
+  private abortError(signal: AbortSignal): unknown {
+    return signal.reason ?? new DOMException("Aborted", "AbortError");
   }
 
   get available(): number {
     return Math.max(0, this.capacity - this.acquired);
   }
 
+  get acquiredCount(): number {
+    return this.acquired;
+  }
+
   get queueDepth(): number {
-    return this.waiters.length;
+    // Only count still-live waiters (cancelled ones are spliced eagerly).
+    return this.waiters.filter((w) => w.state === "queued").length;
   }
 }
 
@@ -146,19 +259,27 @@ export class ToolCallRuntime {
    *                         tool still blocks)
    * - background_terminal → no guard (subprocess owns its lifetime)
    */
-  async run<T>(klass: ConcurrencyClass, fn: GuardedFn<T>): Promise<T> {
+  async run<T>(
+    klass: ConcurrencyClass,
+    fn: GuardedFn<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     switch (klass.kind) {
       case "exclusive":
-        return this.lock.withWrite(() => fn());
+        return this.lock.withWrite(() => fn(), signal);
       case "shared_read":
-        return this.lock.withRead(() => fn());
+        return this.lock.withRead(() => fn(), signal);
       case "shared_server": {
         const semaphore = this.getOrCreateSemaphore(klass.serverId);
-        const release = await semaphore.acquire();
+        // Stage 1 (abortable): acquire the per-server permit.
+        const release = await semaphore.acquire(signal);
         try {
-          return await this.lock.withRead(() => fn());
+          // Stage 2 (abortable): the shared read lock. If this aborts,
+          // the finally below rolls back stage 1 (the permit is forwarded
+          // to the next live waiter by pumpNext).
+          return await this.lock.withRead(() => fn(), signal);
         } finally {
-          release();
+          release(); // idempotent; releases the stage-1 permit
         }
       }
       case "background_terminal":
