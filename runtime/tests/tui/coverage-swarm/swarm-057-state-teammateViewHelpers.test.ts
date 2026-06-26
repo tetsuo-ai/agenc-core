@@ -126,7 +126,8 @@ describe("teammateViewHelpers coverage edges", () => {
       retain: false,
       diskLoaded: false,
       messages: undefined,
-      evictAfter: 31_000,
+      // Date.now()(1_000) + PANEL_GRACE_MS(1_800_000) — result-board retention
+      evictAfter: 1_801_000,
     });
     expect(next.tasks.agent_new).toMatchObject({
       retain: true,

@@ -129,7 +129,8 @@ describe("collabAgentTaskSync coverage swarm row 140", () => {
       error: "missing worker",
       notified: true,
       endTime: 10_000,
-      evictAfter: 40_000,
+      // now(10_000) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
+      evictAfter: 1_810_000,
     });
   });
 

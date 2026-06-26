@@ -5,7 +5,10 @@ import {
 } from "../../tasks/record-fields.js";
 
 // Inlined from framework.ts; importing it creates a cycle through task UI.
-const PANEL_GRACE_MS = 30_000;
+// Result-board retention for terminal local_agent rows — keep in sync with
+// PANEL_GRACE_MS in utils/task/framework.ts. A long window so a finished
+// fan-out agent's row + result survives review instead of self-erasing.
+const PANEL_GRACE_MS = 1_800_000;
 
 export type SetAppStateWithTasks = (
   updater: (prev: { readonly tasks?: Record<string, TaskState> }) => unknown,

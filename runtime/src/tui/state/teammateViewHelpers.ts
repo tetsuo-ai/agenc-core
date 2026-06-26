@@ -3,8 +3,10 @@ import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentT
 
 // Inlined from framework.ts — importing creates a cycle through
 // BackgroundTasksPanel. Keep in sync with PANEL_GRACE_MS there.
+// Result-board retention for terminal local_agent rows: a long window so a
+// finished agent's row + result survives review instead of self-erasing.
 
-const PANEL_GRACE_MS = 30_000
+const PANEL_GRACE_MS = 1_800_000
 
 import type { AppState } from './AppState.js'
 
