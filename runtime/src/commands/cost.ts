@@ -57,6 +57,13 @@ export interface CostAgentRow {
 export interface CostReport {
   /** Real session total cost (USD), when the cost sidecar is available. */
   readonly totalCostUsd?: number;
+  /**
+   * True when {@link totalCostUsd}/{@link totalTokens} are not the sidecar's
+   * real session figures but a fallback aggregated from the per-agent estimates
+   * (e.g. a local/self-hosted model with no cost sidecar). Surfaced as "est."
+   * so we never present an estimate as a measured number.
+   */
+  readonly totalIsEstimated?: boolean;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
@@ -190,19 +197,50 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
   const getAppState = ctx.appState?.getAppState;
   const agents =
     typeof getAppState === "function" ? readAgentRows(getAppState()) : [];
+
+  // Fallback session total: when the sidecar reports no real session figure
+  // (e.g. a local/self-hosted model with no cost tracking), the bulk of a
+  // fan-out's cost still lives in the per-agent rows we already estimated.
+  // Summing them answers "how much is this costing" with an explicit estimate
+  // rather than a useless "—". The real-sidecar path is left untouched.
+  const agentCostUsd = agents.reduce(
+    (sum, a) => sum + (a.estimatedCostUsd ?? 0),
+    0,
+  );
+  const anyAgentCost = agents.some((a) => a.estimatedCostUsd !== undefined);
+  const agentTokens = agents.reduce((sum, a) => sum + (a.tokenCount ?? 0), 0);
+
+  const realTotalCost = totals.totalCostUsd;
+  const realTotalTokens =
+    totals.inputTokens !== undefined && totals.outputTokens !== undefined
+      ? totals.inputTokens + totals.outputTokens
+      : undefined;
+
+  const totalCostUsd =
+    realTotalCost !== undefined
+      ? realTotalCost
+      : anyAgentCost
+        ? agentCostUsd
+        : undefined;
+  const totalTokens =
+    realTotalTokens !== undefined
+      ? realTotalTokens
+      : agentTokens > 0
+        ? agentTokens
+        : undefined;
+  const totalIsEstimated =
+    realTotalCost === undefined && (anyAgentCost || agentTokens > 0);
+
   return {
-    ...(totals.totalCostUsd !== undefined
-      ? { totalCostUsd: totals.totalCostUsd }
-      : {}),
+    ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+    ...(totalIsEstimated ? { totalIsEstimated: true } : {}),
     ...(totals.inputTokens !== undefined
       ? { inputTokens: totals.inputTokens }
       : {}),
     ...(totals.outputTokens !== undefined
       ? { outputTokens: totals.outputTokens }
       : {}),
-    ...(totals.inputTokens !== undefined && totals.outputTokens !== undefined
-      ? { totalTokens: totals.inputTokens + totals.outputTokens }
-      : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(totals.turns !== undefined ? { turns: totals.turns } : {}),
     hasUnknownCost: totals.hasUnknownCost,
     models: totals.models,
@@ -218,7 +256,10 @@ export function formatCostReport(report: CostReport): string {
   const lines: string[] = [];
   if (report.totalCostUsd !== undefined) {
     const unknown = report.hasUnknownCost ? " (some pricing unknown)" : "";
-    lines.push(`Session cost: ${formatUsdCost(report.totalCostUsd)}${unknown}`);
+    const est = report.totalIsEstimated ? " est. (from agent tokens)" : "";
+    lines.push(
+      `Session cost: ${formatUsdCost(report.totalCostUsd)}${est}${unknown}`,
+    );
   } else {
     lines.push("Session cost: — (cost tracking unavailable)");
   }
@@ -228,6 +269,10 @@ export function formatCostReport(report: CostReport): string {
     lines.push(
       `  • tokens: ${formatTokenCount(input ?? 0)} in / ${formatTokenCount(output ?? 0)} out` +
         (report.turns !== undefined ? ` · turns=${report.turns}` : ""),
+    );
+  } else if (report.totalTokens !== undefined) {
+    lines.push(
+      `  • tokens: ${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? " est." : ""}`,
     );
   }
   if (report.models.length > 0) {
