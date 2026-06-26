@@ -14,7 +14,9 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 
 import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
 import { AgentsRail } from "../../../src/tui/workbench/agents/AgentsRail.js";
-import { renderToString } from "../../../src/utils/staticRender.js";
+import { renderToAnsiString, renderToString } from "../../../src/utils/staticRender.js";
+import { ThemeProvider } from "../../../src/tui/components/design-system/ThemeProvider.js";
+import { getTheme } from "../../../src/utils/theme.js";
 
 describe("AgentsRail", () => {
   beforeEach(() => {
@@ -292,6 +294,111 @@ describe("AgentsRail", () => {
       focusedPane: "surface",
       selectedAgentTaskId: "agent-old",
     });
+  });
+});
+
+describe("AgentsRail lifecycle legibility (color + friendly label)", () => {
+  // Dark is the default render theme (ThemeProvider DEFAULT_THEME); pin it
+  // explicitly so the asserted SGR codes never drift with user settings.
+  const theme = getTheme("dark");
+
+  // Truecolor foreground SGR for a theme rgb() token, matching what chalk emits
+  // at level 3 (renderToAnsiString({ color: true })).
+  function fgSgr(rgb: string): string {
+    const m = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(rgb.replaceAll(" ", ""));
+    if (m === null) throw new Error(`not an rgb token: ${rgb}`);
+    return `[38;2;${m[1]};${m[2]};${m[3]}m`;
+  }
+
+  const RUNNING_SGR = fgSgr(theme.worker);
+  const COMPLETED_SGR = fgSgr(theme.success);
+  const FAILED_SGR = fgSgr(theme.error);
+  const KILLED_SGR = fgSgr(theme.muted3);
+  const APPROVAL_SGR = fgSgr(theme.warning);
+
+  async function renderRailAnsi(tasks: readonly any[]): Promise<string> {
+    return renderToAnsiString(
+      <ThemeProvider initialState="dark">
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: Object.fromEntries(tasks.map((t) => [t.id, t])),
+            remoteBackgroundTaskCount: 0,
+            workbench: {
+              ...getDefaultAppState().workbench,
+              selectedAgentTaskId: null,
+            },
+          }}
+        >
+          <AgentsRail focused={true} width={48} />
+        </AppStateProvider>
+      </ThemeProvider>,
+      { columns: 60, rows: 24, color: true },
+    );
+  }
+
+  it("color-codes completed vs failed vs running markers distinctly", async () => {
+    const out = await renderRailAnsi([
+      agentTask("agent-run", "running", { description: "scanning", startTime: 3_000 }),
+      agentTask("agent-ok", "completed", { description: "wrote tests", startTime: 2_000 }),
+      agentTask("agent-bad", "failed", { description: "crashed", startTime: 1_000 }),
+    ]);
+
+    // Each lifecycle state surfaces its own semantic color on the marker.
+    expect(out).toContain(RUNNING_SGR);
+    expect(out).toContain(COMPLETED_SGR);
+    expect(out).toContain(FAILED_SGR);
+    // The three colors are genuinely different (legibility at a glance).
+    expect(new Set([RUNNING_SGR, COMPLETED_SGR, FAILED_SGR]).size).toBe(3);
+  });
+
+  it("colors a stopped agent in the muted/grey state and a needs-approval agent in the warning accent", async () => {
+    const killed = await renderRailAnsi([
+      agentTask("agent-killed", "killed", { description: "stopped", startTime: 1_000 }),
+    ]);
+    expect(killed).toContain(KILLED_SGR);
+
+    const approval = await renderRailAnsi([
+      agentTask("agent-wait", "running", {
+        description: "awaiting decision",
+        pendingApproval: true,
+        startTime: 1_000,
+      }),
+    ]);
+    // Needs-input/approval overrides the run color with the warning accent so
+    // "needs you" stands out from a plain working agent.
+    expect(approval).toContain(APPROVAL_SGR);
+    expect(approval).not.toContain(RUNNING_SGR);
+  });
+
+  it("labels rows with the friendly title (+ role), never the raw prompt", async () => {
+    const out = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          tasks: {
+            nova: agentTask("nova", "running", {
+              description: "Nova",
+              agentType: "Scanner",
+              prompt:
+                "You are a research agent. Investigate the entire authentication subsystem and report every call site in exhaustive detail.",
+              startTime: 1_000,
+            }),
+          },
+          workbench: {
+            ...getDefaultAppState().workbench,
+            selectedAgentTaskId: null,
+          },
+        }}
+      >
+        <AgentsRail focused={true} width={60} />
+      </AppStateProvider>,
+      { columns: 72, rows: 24 },
+    );
+
+    // Friendly nickname + role, not the raw multi-sentence spawn prompt.
+    expect(out).toContain("Nova · Scanner");
+    expect(out).not.toContain("You are a research agent");
   });
 });
 

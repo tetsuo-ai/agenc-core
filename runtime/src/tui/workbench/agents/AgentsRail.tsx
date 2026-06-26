@@ -185,13 +185,21 @@ function AgentRailRow({
     nonBlankString(progress.lastActivity?.toolName) ??
     nonBlankString(task.status) ??
     "unknown";
-  const description = nonBlankString(task.description) ?? nonBlankString(task.id) ?? "agent";
+  const label = agentRowLabel(task);
   const stopAction = workbenchStopActionForTask(task);
   const diffCount = progress.diffCount ?? task.diffCount;
   const approvalPending = task.approvalPending === true || task.pendingApproval === true;
+  // Semantic state color (working/done/failed/stopped/idle) on the marker so a
+  // fan-out reads at a glance instead of as a wall of identical rows. When the
+  // agent is waiting on a human decision, the marker shifts to the warning
+  // accent regardless of run state so "needs you" stands out.
+  const markerColor = approvalPending ? "warning" : statusColor(task.status);
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text color={selected ? "suggestion" : undefined} wrap="truncate-end">{statusMarker(task.status)} {description}</Text>
+      <Text wrap="truncate-end">
+        <Text color={markerColor}>{statusMarker(task.status)}</Text>
+        <Text color={selected ? "suggestion" : undefined}> {label}</Text>
+      </Text>
       <Text dimColor wrap="truncate-end">{activity}</Text>
       <Text dimColor wrap="truncate-end">
         {formatTaskElapsed(task)} · tools {progress.toolUseCount ?? 0} tokens {progress.tokenCount ?? 0}
@@ -203,6 +211,27 @@ function AgentRailRow({
   );
 }
 
+/**
+ * Friendly short label for a rail row. Prefers the friendly task title the
+ * sync layer already stores on `description` (the agent nickname / path, e.g.
+ * "Nova"), appending the role when one is known so a fan-out of same-named
+ * lifecycles is still distinguishable (e.g. "Nova · Scanner"). Falls back to
+ * the id, never the raw spawn prompt, which is noisy and truncates badly.
+ */
+function agentRowLabel(task: any): string {
+  const title = nonBlankString(task.description) ?? nonBlankString(task.id) ?? "agent";
+  const role = nonBlankString(task.agentType);
+  return role && role !== "agent" && role !== title ? `${title} · ${role}` : title;
+}
+
+/**
+ * Lifecycle glyph for the rail row. Kept ASCII (not the AURA glyph set used by
+ * the wider fleet panel in CoordinatorAgentStatus) because the rail is a
+ * narrow, dense column where a single-cell ASCII marker stays legible across
+ * all terminals; the *semantic state* is now carried by color (statusColor),
+ * matching the AURA panel's color intent without a risky cross-surface glyph
+ * refactor.
+ */
 function statusMarker(status: string): string {
   switch (status) {
     case "running":
@@ -215,5 +244,27 @@ function statusMarker(status: string): string {
       return "x";
     default:
       return "-";
+  }
+}
+
+/**
+ * Theme color token for an agent lifecycle state. Mirrors the fleet panel's
+ * intent: working=accent, completed=green, failed=red, stopped=grey,
+ * pending/idle=dim. Returns a theme key (resolved by ThemedText), never a raw
+ * ANSI value.
+ */
+function statusColor(status: string): "worker" | "success" | "error" | "muted3" | "inactive" {
+  switch (status) {
+    case "running":
+      return "worker";
+    case "completed":
+      return "success";
+    case "failed":
+      return "error";
+    case "killed":
+      return "muted3";
+    default:
+      // pending / unknown / idle — dim, awaiting work.
+      return "inactive";
   }
 }
