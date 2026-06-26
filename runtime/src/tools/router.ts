@@ -43,6 +43,7 @@ import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.
 import { arbitratePermissionMode } from "../permissions/guardian/arbiter.js";
 import type { Policy } from "../sandbox/execpolicy/policy.js";
 import type { TurnContext } from "../session/turn-context.js";
+import { modelContextWindow } from "../session/turn-context.js";
 import type {
   CanUseToolFn,
   ToolEvaluatorContext,
@@ -636,6 +637,8 @@ export class ToolRouter {
           } else if (opts.signal) {
             opts.signal.addEventListener("abort", forwardAbort, { once: true });
           }
+          const directContextWindowTokens =
+            effectiveContextWindowTokens(invocation.turn);
           try {
             return await executeToolDispatch({
               rawArgs: dispatchRawArgs,
@@ -648,6 +651,9 @@ export class ToolRouter {
               approvalAlreadyResolved: dispatchContext.approvalResolved,
               runtimeAttemptContext,
               abortController: toolAbortController,
+              ...(directContextWindowTokens !== undefined
+                ? { contextWindowTokens: directContextWindowTokens }
+                : {}),
               ...(opts.permissionAuditLogger !== undefined
                 ? { permissionAuditLogger: opts.permissionAuditLogger }
                 : {}),
@@ -1370,6 +1376,29 @@ function withPlanApprovalPreview(
   };
 }
 
+/**
+ * Effective context window (tokens) for the model running this turn,
+ * threaded to `runToolUse` so the I-15 per-result cap can scale to the
+ * window. Returns `undefined` when the window is unknown so the cap
+ * falls back to its fixed 400 KB default.
+ */
+function effectiveContextWindowTokens(
+  turn: TurnContext,
+): number | undefined {
+  // Defensive: minimal turn fixtures (and any turn missing `modelInfo`)
+  // must not throw here — fall back to `undefined` so the I-15 cap uses
+  // its fixed 400 KB default.
+  let window: number | undefined;
+  try {
+    window = modelContextWindow(turn);
+  } catch {
+    return undefined;
+  }
+  return window !== undefined && Number.isFinite(window) && window > 0
+    ? window
+    : undefined;
+}
+
 function rawDispatchOptions(
   rawArgs: string,
   opts: LiveToolDispatchOptions & {
@@ -1383,6 +1412,7 @@ function rawDispatchOptions(
     readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
   },
 ) {
+  const contextWindowTokens = effectiveContextWindowTokens(opts.turn);
   return {
     rawArgs,
     signal: opts.abortController.signal,
@@ -1391,6 +1421,7 @@ function rawDispatchOptions(
     subId: opts.subId,
     tool: opts.tool,
     invocation: opts.invocation,
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(opts.preHooks !== undefined ? { preHooks: opts.preHooks } : {}),
     ...(opts.postHooks !== undefined ? { postHooks: opts.postHooks } : {}),
     ...(opts.failureHooks !== undefined ? { failureHooks: opts.failureHooks } : {}),

@@ -138,6 +138,10 @@ import {
   attachToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
+import {
+  DEFAULT_BYTES_PER_TOKEN,
+  detectContentType,
+} from "../llm/token-estimation.js";
 import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
 import {
   createTransactionGuardContextFromEnv,
@@ -158,8 +162,120 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
  * I-15: default cap on tool result size in bytes. 400 KB matches
  * donor TS `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
  * Per-tool override via `tool.maxResultBytes`.
+ *
+ * This is now used as the absolute *ceiling* for the model-aware cap
+ * (`computeEffectiveMaxResultBytes`): large-window models (≥200K tokens)
+ * meet/exceed this value and so keep the original 400 KB behavior, while
+ * small-window models get a tighter, window-relative cap so one result
+ * can never blow out the context window.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
+
+/**
+ * Floor for the model-aware per-result cap. Even on a tiny context
+ * window we never starve tools below ~16 KB (~4-8K tokens), so small
+ * configs can still read meaningful output.
+ */
+export const MIN_TOOL_RESULT_BYTES = 16_000;
+
+/**
+ * Fraction of the model's context window a single tool result may
+ * occupy by default. 0.20 keeps one result at ≤ ~20% of the window,
+ * leaving headroom for the system prompt, prior history, and a few more
+ * results before the auto-compact threshold. Tunable via
+ * `AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION`.
+ */
+export const DEFAULT_SINGLE_RESULT_WINDOW_FRACTION = 0.2;
+
+/** JSON-ish content packs ~2 bytes/token; plain text ~4 bytes/token. */
+const JSON_BYTES_PER_TOKEN = 2;
+
+/**
+ * At or above this window the fixed 400 KB ceiling is kept verbatim, so
+ * large-window models (Claude ~200K+) are entirely unaffected by the
+ * model-aware cap — no regression for their existing behavior. (Without
+ * this gate a 200K window would otherwise compute 160 KB for text.)
+ */
+export const LARGE_CONTEXT_WINDOW_TOKENS = 200_000;
+
+/**
+ * Resolve the window-fraction override from the environment, falling
+ * back to the 0.20 default. Out-of-range / unparseable values are
+ * ignored so a bad env var can never disable the guard.
+ */
+function resolveSingleResultWindowFraction(): number {
+  const raw = process.env.AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION;
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_SINGLE_RESULT_WINDOW_FRACTION;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    return DEFAULT_SINGLE_RESULT_WINDOW_FRACTION;
+  }
+  return parsed;
+}
+
+/**
+ * Pick a bytes-per-token estimate for the result content. JSON / JSONL /
+ * JSONC content is denser (~2 B/tok) than plain text (~4 B/tok), so the
+ * same token target maps to a *tighter byte cap* for JSON — this is what
+ * fixes the "400 KB of JSON ≈ 200K tokens" worst case.
+ */
+function bytesPerTokenForContent(content: string): number {
+  return detectContentType(content) === "json"
+    ? JSON_BYTES_PER_TOKEN
+    : DEFAULT_BYTES_PER_TOKEN;
+}
+
+/**
+ * Compute the effective per-result byte cap, scaled to the model's
+ * context window so a single tool result can never overflow a
+ * small-window model. Returns the fixed `DEFAULT_MAX_TOOL_RESULT_BYTES`
+ * when no window is known (preserving today's behavior) and lets a
+ * per-tool `tool.maxResultBytes` override win unconditionally.
+ *
+ *   effectiveCapBytes = clamp(
+ *     floor(window * FRACTION * bytesPerToken),
+ *     MIN_TOOL_RESULT_BYTES,            // floor
+ *     DEFAULT_MAX_TOOL_RESULT_BYTES,    // ceiling
+ *   )
+ *
+ * On a 131,072-token window: text → ~104 KB, JSON → ~52 KB.
+ * At or above `LARGE_CONTEXT_WINDOW_TOKENS` (200K) the fixed 400 KB
+ * ceiling is returned verbatim, so Claude-class models are unaffected.
+ */
+export function computeEffectiveMaxResultBytes(args: {
+  readonly content: string;
+  readonly contextWindowTokens?: number | undefined;
+  readonly toolMaxResultBytes?: number | undefined;
+}): number {
+  const { content, contextWindowTokens, toolMaxResultBytes } = args;
+  // Per-tool override always wins (preserves the I-15 branch).
+  if (toolMaxResultBytes !== undefined && toolMaxResultBytes > 0) {
+    return toolMaxResultBytes;
+  }
+  // No usable window → keep the fixed 400 KB cap (nothing breaks).
+  if (
+    contextWindowTokens === undefined ||
+    !Number.isFinite(contextWindowTokens) ||
+    contextWindowTokens <= 0
+  ) {
+    return DEFAULT_MAX_TOOL_RESULT_BYTES;
+  }
+  // Large-window models keep the fixed 400 KB ceiling — no regression.
+  if (contextWindowTokens >= LARGE_CONTEXT_WINDOW_TOKENS) {
+    return DEFAULT_MAX_TOOL_RESULT_BYTES;
+  }
+  const fraction = resolveSingleResultWindowFraction();
+  const bytesPerToken = bytesPerTokenForContent(content);
+  const windowRelative = Math.floor(
+    contextWindowTokens * fraction * bytesPerToken,
+  );
+  return Math.max(
+    MIN_TOOL_RESULT_BYTES,
+    Math.min(windowRelative, DEFAULT_MAX_TOOL_RESULT_BYTES),
+  );
+}
 const RICH_OUTPUT_CONTENT_ITEMS = new WeakMap<
   ToolOutput,
   readonly FunctionCallOutputContentItem[]
@@ -170,6 +286,36 @@ const PREVENT_CONTINUATION_OUTPUTS = new WeakSet<ToolOutput>();
 /** Appended marker when a result is truncated. */
 const TRUNCATION_MARKER_TEMPLATE =
   "\n\n[truncated: original was {ORIG} bytes, returning first {KEPT}]\n";
+
+/**
+ * Informative truncation marker. Unlike the legacy template it tells the
+ * agent how much was kept (bytes + estimated tokens), that the result was
+ * capped to fit the model's context window, and how to retrieve more —
+ * so the agent can ADAPT (narrow the query, use offset+limit, or a more
+ * specific search) instead of silently losing data.
+ */
+function buildTruncationMarker(args: {
+  readonly originalBytes: number;
+  readonly keptBytes: number;
+  readonly bytesPerToken: number;
+  readonly contextWindowTokens?: number | undefined;
+}): string {
+  const { originalBytes, keptBytes, bytesPerToken, contextWindowTokens } = args;
+  const keptTokens = Math.round(keptBytes / bytesPerToken);
+  const originalTokens = Math.round(originalBytes / bytesPerToken);
+  const windowNote =
+    contextWindowTokens !== undefined &&
+    Number.isFinite(contextWindowTokens) &&
+    contextWindowTokens > 0
+      ? ` to fit the ${contextWindowTokens}-token context window`
+      : "";
+  return (
+    `\n\n[result truncated: kept ${keptBytes} of ${originalBytes} bytes ` +
+    `(~${keptTokens} of ~${originalTokens} tokens)${windowNote}. ` +
+    `To see more, narrow the query, use offset+limit, or run a more ` +
+    `specific search.]\n`
+  );
+}
 
 /**
  * Hard cap on formatted error prose before middle-truncation. Mirrors
@@ -238,15 +384,53 @@ export function parseToolArgsWithBigInt(
 // I-15: result size cap
 // ─────────────────────────────────────────────────────────────────────
 
+export interface CapToolResultMarkerInfo {
+  /** Bytes-per-token estimate used for the ~tokens figures in the marker. */
+  readonly bytesPerToken: number;
+  /** Effective context window the cap was derived from (for the marker). */
+  readonly contextWindowTokens?: number | undefined;
+}
+
 export function capToolResult(
   content: string,
   maxBytes: number,
+  markerInfo?: CapToolResultMarkerInfo,
 ): { readonly capped: string; readonly truncated: boolean; readonly originalBytes: number } {
   const originalBytes = Buffer.byteLength(content, "utf8");
   if (originalBytes <= maxBytes) {
     return { capped: content, truncated: false, originalBytes };
   }
-  const marker = TRUNCATION_MARKER_TEMPLATE
+  // When marker info is supplied (the live cap path), emit the
+  // informative window-aware marker; otherwise keep the legacy marker
+  // so older callers/tests observe unchanged prose. The marker length
+  // is bounded by `maxBytes` either way so the result never grows past
+  // the cap.
+  let marker: string;
+  if (markerInfo !== undefined) {
+    // Provisional marker to measure its own byte cost, then recompute
+    // against the actual kept length.
+    const provisional = buildTruncationMarker({
+      originalBytes,
+      keptBytes: maxBytes,
+      bytesPerToken: markerInfo.bytesPerToken,
+      contextWindowTokens: markerInfo.contextWindowTokens,
+    });
+    const provisionalBytes = Buffer.byteLength(provisional, "utf8");
+    const keptBytes = Math.max(0, maxBytes - provisionalBytes);
+    marker = buildTruncationMarker({
+      originalBytes,
+      keptBytes,
+      bytesPerToken: markerInfo.bytesPerToken,
+      contextWindowTokens: markerInfo.contextWindowTokens,
+    });
+    const markerBytes = Buffer.byteLength(marker, "utf8");
+    const finalKeepBytes = Math.max(0, maxBytes - markerBytes);
+    const kept = Buffer.from(content, "utf8")
+      .subarray(0, finalKeepBytes)
+      .toString("utf8");
+    return { capped: `${kept}${marker}`, truncated: true, originalBytes };
+  }
+  marker = TRUNCATION_MARKER_TEMPLATE
     .replace("{ORIG}", String(originalBytes))
     .replace("{KEPT}", String(maxBytes));
   const markerBytes = Buffer.byteLength(marker, "utf8");
@@ -986,6 +1170,14 @@ export interface RunToolUseOptions {
    * from environment; null means explicitly disabled for this call.
    */
   readonly transactionGuardContext?: TransactionGuardContext | null;
+  /**
+   * Effective context window (in tokens) for the model running this
+   * turn. Threaded from the dispatch layer (`modelContextWindow(turn)`).
+   * When present, the I-15 per-result byte cap is scaled to the window
+   * so a single result can never overflow a small-window model. When
+   * absent the cap falls back to the fixed `DEFAULT_MAX_TOOL_RESULT_BYTES`.
+   */
+  readonly contextWindowTokens?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1876,12 +2068,20 @@ export async function runToolUse(
     );
   }
 
-  // Step 7: I-15 result-size cap.
-  const maxResultBytes =
-    tool.maxResultBytes !== undefined && tool.maxResultBytes > 0
-      ? tool.maxResultBytes
-      : DEFAULT_MAX_TOOL_RESULT_BYTES;
-  const capped = capToolResult(finalDispatch.content, maxResultBytes);
+  // Step 7: I-15 result-size cap — now model-aware. The effective cap
+  // scales to the dispatch layer's context window so a single result
+  // can never overflow a small-window model, while large-window models
+  // keep the fixed 400 KB ceiling. A per-tool `tool.maxResultBytes`
+  // override still wins.
+  const maxResultBytes = computeEffectiveMaxResultBytes({
+    content: finalDispatch.content,
+    contextWindowTokens: opts.contextWindowTokens,
+    toolMaxResultBytes: tool.maxResultBytes,
+  });
+  const capped = capToolResult(finalDispatch.content, maxResultBytes, {
+    bytesPerToken: bytesPerTokenForContent(finalDispatch.content),
+    contextWindowTokens: opts.contextWindowTokens,
+  });
   if (capped.truncated && opts.eventLog) {
     emitWarningEvent(
       opts.eventLog,
