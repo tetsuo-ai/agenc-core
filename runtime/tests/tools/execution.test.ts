@@ -642,7 +642,7 @@ describe("runToolUse end-to-end", () => {
     expect(warnings).toContain("stale_modal_decision");
   });
 
-  test("I-15 oversized result truncated + warning emitted", async () => {
+  test("I-15 oversized result OFFLOADED (full persisted + reference) + warning emitted", async () => {
     const big = "x".repeat(2000);
     const tool: Tool = {
       name: "big",
@@ -665,12 +665,13 @@ describe("runToolUse end-to-end", () => {
       invocation: makeInvocation("c1", "big"),
       eventLog: log,
     });
-    // The live cap path emits the informative window-aware marker so the
-    // agent can adapt (narrow query / offset+limit) instead of silently
-    // losing data. The bare `capToolResult(content, bytes)` API still
-    // emits the legacy `[truncated:` marker (covered separately).
-    expect(out.content).toContain("result truncated");
-    expect(out.content).toMatch(/offset\+limit|narrow the query|specific search/);
+    // The live cap path now OFFLOADS (Technique D): the full output is
+    // persisted to disk and the model gets an actionable REFERENCE (path
+    // + "read that file / narrow query") instead of a blind truncation,
+    // so no data is lost. The warning event still fires.
+    expect(out.content).toContain("saved to");
+    expect(out.content).toMatch(/read that file|read range|to see more/i);
+    expect(out.content).toMatch(/offset\+limit|narrow your query|specific search/);
     expect(warnings).toContain("tool_result_truncated");
   });
 

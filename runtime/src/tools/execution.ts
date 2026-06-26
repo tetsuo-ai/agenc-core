@@ -66,6 +66,11 @@ import {
 } from "../session/event-log.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import { isRecord } from "../utils/record.js";
+import {
+  isPersistError,
+  persistToolResult,
+} from "../utils/toolResultStorage.js";
+import { formatFileSize } from "../utils/format.js";
 import type {
   FunctionCallOutputContentItem,
   ToolInvocation,
@@ -438,6 +443,120 @@ export function capToolResult(
   const buf = Buffer.from(content, "utf8");
   const kept = buf.subarray(0, keepBytes).toString("utf8");
   return { capped: `${kept}${marker}`, truncated: true, originalBytes };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Technique D — model-aware OFFLOAD (persist full + reference)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the actionable reference message injected in place of a result
+ * that overflowed the model-aware cap. It carries a HEAD preview of the
+ * output, the on-disk path the FULL output was persisted to, and a
+ * concrete pointer the agent can act on (read the file, a byte/line
+ * range, or narrow the query). This is the cap done as an OFFLOAD
+ * (Technique D / MemGPT memory-pointers) rather than a blind truncation:
+ * no data is lost — the full output is recoverable from `filepath`.
+ *
+ * The whole message is byte-bounded by `maxBytes` so the reference can
+ * never itself overflow the cap.
+ */
+function buildOffloadReferenceMessage(args: {
+  readonly content: string;
+  readonly filepath: string;
+  readonly originalBytes: number;
+  readonly maxBytes: number;
+  readonly bytesPerToken: number;
+}): string {
+  const { content, filepath, originalBytes, maxBytes, bytesPerToken } = args;
+  const originalTokens = Math.round(originalBytes / bytesPerToken);
+  // Header + footer first so the head preview can be sized to the room
+  // that remains under the cap. Keep the pointer phrasing aligned with
+  // the truncation marker ("narrow the query"/"offset+limit"/"search").
+  const header =
+    `[full output (~${formatFileSize(originalBytes)} / ~${originalTokens} tokens) ` +
+    `saved to ${filepath} — read that file (or a byte/line range with ` +
+    `offset+limit) to see more, or narrow your query / run a more specific ` +
+    `search. Head preview follows:]\n`;
+  const footer = `\n[…truncated — full output at ${filepath}]\n`;
+  const headerBytes = Buffer.byteLength(header, "utf8");
+  const footerBytes = Buffer.byteLength(footer, "utf8");
+  const room = Math.max(0, maxBytes - headerBytes - footerBytes);
+  // Trim the head preview to fit, cutting on a UTF-8 boundary.
+  let head = Buffer.from(content, "utf8").subarray(0, room).toString("utf8");
+  // Prefer a clean line boundary for the preview when one is reasonably
+  // close to the end (mirrors generatePreview in toolResultStorage).
+  const lastNewline = head.lastIndexOf("\n");
+  if (lastNewline > room * 0.5) {
+    head = head.slice(0, lastNewline);
+  }
+  return `${header}${head}${footer}`;
+}
+
+/**
+ * Apply the model-aware per-result cap as an OFFLOAD (Technique D), not a
+ * guillotine. When `content` fits within `maxBytes` it is returned
+ * unchanged. When it overflows, the FULL content is persisted to disk
+ * (reusing `persistToolResult` — same session tool-results store the
+ * agent can read back with FileRead) and the model receives a REFERENCE
+ * message: a head preview + the persisted path + an actionable
+ * "read range / narrow query" pointer. If persistence fails for any
+ * reason, we fall back to the legacy blind truncation so the hard cap is
+ * still honored and the wire message can never overflow the window.
+ *
+ * The same `maxBytes` (from `computeEffectiveMaxResultBytes`) is used, so
+ * the per-tool `maxResultBytes` override and the ≥200K-window (Claude)
+ * "fixed 400 KB ceiling" behavior are unchanged — only the over-cap
+ * branch changes from truncate-and-lose to offload-and-reference.
+ */
+async function offloadOrCapToolResult(args: {
+  readonly content: string;
+  readonly toolUseId: string;
+  readonly maxBytes: number;
+  readonly bytesPerToken: number;
+  readonly contextWindowTokens?: number | undefined;
+}): Promise<{
+  readonly content: string;
+  readonly truncated: boolean;
+  readonly originalBytes: number;
+  readonly persistedPath?: string;
+}> {
+  const { content, toolUseId, maxBytes, bytesPerToken, contextWindowTokens } =
+    args;
+  const originalBytes = Buffer.byteLength(content, "utf8");
+  if (originalBytes <= maxBytes) {
+    return { content, truncated: false, originalBytes };
+  }
+
+  // Over the cap: OFFLOAD the full output, then return a reference.
+  const persisted = await persistToolResult(content, toolUseId);
+  if (!isPersistError(persisted)) {
+    const reference = buildOffloadReferenceMessage({
+      content,
+      filepath: persisted.filepath,
+      originalBytes,
+      maxBytes,
+      bytesPerToken,
+    });
+    return {
+      content: reference,
+      truncated: true,
+      originalBytes,
+      persistedPath: persisted.filepath,
+    };
+  }
+
+  // Persist failed → fall back to the legacy blind truncation so the hard
+  // model-aware cap is still enforced (the wire message can never overflow).
+  const capped = capToolResult(content, maxBytes, {
+    bytesPerToken,
+    contextWindowTokens,
+  });
+  return {
+    content: capped.capped,
+    truncated: capped.truncated,
+    originalBytes: capped.originalBytes,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2068,26 +2187,38 @@ export async function runToolUse(
     );
   }
 
-  // Step 7: I-15 result-size cap — now model-aware. The effective cap
-  // scales to the dispatch layer's context window so a single result
-  // can never overflow a small-window model, while large-window models
-  // keep the fixed 400 KB ceiling. A per-tool `tool.maxResultBytes`
-  // override still wins.
+  // Step 7: I-15 result-size cap — now model-aware AND an OFFLOAD, not a
+  // guillotine (Technique D). The effective cap scales to the dispatch
+  // layer's context window so a single result can never overflow a
+  // small-window model, while large-window models keep the fixed 400 KB
+  // ceiling; a per-tool `tool.maxResultBytes` override still wins. When a
+  // result exceeds the cap we now persist the FULL output to the session
+  // tool-results store and inject a REFERENCE (head preview + path +
+  // "read range to continue") instead of blindly truncating-and-losing —
+  // so the data is recoverable via FileRead. Persist failure falls back
+  // to the legacy truncation so the hard cap is always enforced.
   const maxResultBytes = computeEffectiveMaxResultBytes({
     content: finalDispatch.content,
     contextWindowTokens: opts.contextWindowTokens,
     toolMaxResultBytes: tool.maxResultBytes,
   });
-  const capped = capToolResult(finalDispatch.content, maxResultBytes, {
+  const capped = await offloadOrCapToolResult({
+    content: finalDispatch.content,
+    toolUseId: invocation.callId,
+    maxBytes: maxResultBytes,
     bytesPerToken: bytesPerTokenForContent(finalDispatch.content),
     contextWindowTokens: opts.contextWindowTokens,
   });
   if (capped.truncated && opts.eventLog) {
+    const disposition =
+      capped.persistedPath !== undefined
+        ? `offloaded to ${capped.persistedPath}`
+        : `truncated to ${maxResultBytes}B`;
     emitWarningEvent(
       opts.eventLog,
       subId,
       "tool_result_truncated",
-      `tool ${toolNameDisplay(invocation.toolName)} output ${capped.originalBytes}B truncated to ${maxResultBytes}B (I-15)`,
+      `tool ${toolNameDisplay(invocation.toolName)} output ${capped.originalBytes}B ${disposition} (I-15)`,
     );
   }
 
@@ -2117,7 +2248,7 @@ export async function runToolUse(
     callId: invocation.callId,
     toolName: invocation.toolName,
     payload: invocation.payload,
-    content: capped.capped,
+    content: capped.content,
     isError: finalDispatch.isError === true,
     durationMs: performance.now() - startedAt,
     ...(finalDispatch.metadata !== undefined
