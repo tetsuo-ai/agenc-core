@@ -365,6 +365,52 @@ describe("runAgent", () => {
     expect(events.filter((e) => e.kind === "message")).toHaveLength(3);
   });
 
+  // LIVE-USAGE backstop (D1/D2). The fan-out Agents rail + `/cost` BY-AGENT
+  // read `live.tokenUsage.totalTokens` (via tasks/agent-thread.ts
+  // liveAgentCounts). D2 (#1329) proved the event->rail plumbing with an
+  // INJECTED count; this proves the UPSTREAM: a real subagent turn whose
+  // provider reports usage actually populates `live.tokenUsage` (and emits a
+  // `usage_update` progress event) through the real run-turn/stream-model
+  // path — so the rail shows TRUE tokens, not the live `tokens 0` bug.
+  it("accumulates real provider usage onto live.tokenUsage for a completed subagent turn (the rail's source)", async () => {
+    const provider = makeProvider([
+      {
+        content: "subagent done",
+        finishReason: "stop",
+        usage: { promptTokens: 31, completionTokens: 11, totalTokens: 42 },
+      },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const submit = vi.fn(async () => {});
+    session.installTurnDriverHooks({ submit });
+    const { live } = await spawnLive(session);
+
+    // Pre-condition: the live handle starts at the frozen-zero state that the
+    // live bug never moved off of.
+    expect(live.tokenUsage.totalTokens).toBe(0);
+
+    const { events, result } = await collectRun(
+      runAgent({
+        live,
+        parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    // The real upstream populated the per-agent counter the rail renders.
+    expect(live.tokenUsage.totalTokens).toBe(42);
+    expect(live.tokenUsage.inputTokens).toBe(31);
+    expect(live.tokenUsage.outputTokens).toBe(11);
+    // …and surfaced it as a progress event so live snapshots refresh.
+    const usageUpdate = events.find((e) => e.kind === "usage_update");
+    expect(usageUpdate).toBeDefined();
+    expect(
+      (usageUpdate as { totalTokens?: number } | undefined)?.totalTokens,
+    ).toBe(42);
+  });
+
   it("ignores array-shaped parent services when resolving the provider", async () => {
     const provider = makeProvider([{ content: "should not run" }]);
     const session = makeStubSession();
