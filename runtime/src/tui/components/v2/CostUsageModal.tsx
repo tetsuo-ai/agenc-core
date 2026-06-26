@@ -54,20 +54,22 @@ export function CostUsageModal({
 
   const totalCost =
     report.totalCostUsd !== undefined
-      ? `${formatUsdCost(report.totalCostUsd)}${report.hasUnknownCost ? ' *' : ''}`
+      ? `${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}${report.hasUnknownCost ? ' *' : ''}`
       : '—'
   const tokenDetail =
     report.inputTokens !== undefined || report.outputTokens !== undefined
       ? `${formatTokenCount(report.inputTokens ?? 0)} in · ${formatTokenCount(report.outputTokens ?? 0)} out` +
         (report.turns !== undefined ? ` · ${report.turns} turns` : '')
-      : '—'
+      : report.totalTokens !== undefined
+        ? `${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? ' est.' : ''}`
+        : '—'
 
   return (
     <Popup
       title="cost"
       status={
         report.totalCostUsd !== undefined
-          ? `session ${formatUsdCost(report.totalCostUsd)}`
+          ? `session ${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}`
           : 'cost tracking unavailable'
       }
       minHeight={18}
