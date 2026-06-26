@@ -16,8 +16,16 @@ export const POLL_INTERVAL_MS = 1000
 // Duration to display killed tasks before eviction
 export const STOPPED_DISPLAY_MS = 3_000
 
-// Grace period for terminal local_agent tasks in the coordinator panel
-export const PANEL_GRACE_MS = 30_000
+// Result-board retention for terminal (completed/failed/killed) local_agent
+// tasks in the coordinator/fleet panel. A finished agent's row + result stays
+// visible this long so the user can review the fan-out "result board" instead
+// of having it self-erase mid-review. It is intentionally long (not a few
+// seconds): a fan-out's outcomes should survive until the user has had a chance
+// to act on them. `retain` still exempts a held/viewed agent entirely, and the
+// `x` dismiss (evictAfter:0) still clears a row immediately. NOTE: this governs
+// AGENT rows only — killed shell/in-process background tasks use the much
+// shorter STOPPED_DISPLAY_MS above and are deliberately untouched.
+export const PANEL_GRACE_MS = 1_800_000
 
 // Attachment type for task status updates
 export type TaskAttachment = {

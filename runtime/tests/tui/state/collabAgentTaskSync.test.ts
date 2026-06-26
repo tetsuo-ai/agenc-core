@@ -164,7 +164,8 @@ describe("syncCollabAgentEventToAppState", () => {
       status: "completed",
       description: "Librarian",
       endTime: 1234,
-      evictAfter: 31234,
+      // now(1234) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
+      evictAfter: 1_801_234,
       notified: true,
     });
   });
@@ -300,7 +301,8 @@ describe("syncCollabAgentEventToAppState", () => {
       status: "completed",
       description: "ChromeRider",
       endTime: 1234,
-      evictAfter: 31234,
+      // now(1234) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
+      evictAfter: 1_801_234,
       notified: true,
     });
     expect(completed.tasks.agent_2).toMatchObject({
@@ -308,7 +310,8 @@ describe("syncCollabAgentEventToAppState", () => {
       description: "Quickhack",
       error: "review failed",
       endTime: 1234,
-      evictAfter: 31234,
+      // now(1234) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
+      evictAfter: 1_801_234,
       notified: true,
     });
     expect(completed.tasks.missing).toBeUndefined();
