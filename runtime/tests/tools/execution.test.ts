@@ -665,7 +665,12 @@ describe("runToolUse end-to-end", () => {
       invocation: makeInvocation("c1", "big"),
       eventLog: log,
     });
-    expect(out.content).toContain("[truncated:");
+    // The live cap path emits the informative window-aware marker so the
+    // agent can adapt (narrow query / offset+limit) instead of silently
+    // losing data. The bare `capToolResult(content, bytes)` API still
+    // emits the legacy `[truncated:` marker (covered separately).
+    expect(out.content).toContain("result truncated");
+    expect(out.content).toMatch(/offset\+limit|narrow the query|specific search/);
     expect(warnings).toContain("tool_result_truncated");
   });
 
