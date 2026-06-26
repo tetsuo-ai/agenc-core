@@ -142,6 +142,26 @@ function normalizeSpawnTaskName(value: string | undefined): string | undefined {
   return normalized.length > 0 ? normalized : trimmed;
 }
 
+/**
+ * The short, human-readable title shown for a spawned agent on the rail /
+ * transcript / `/cost` (the task's `description`). Derived from the validated
+ * `task_name` (separators humanized) — NEVER the full prompt, which floods the
+ * rail with the agent's entire instruction block. Falls back to the first line
+ * of the prompt only when no task name is available, always length-bounded.
+ */
+export function shortAgentTaskTitle(
+  taskName: string | undefined,
+  prompt: string,
+): string {
+  const fromName = taskName?.trim().replace(/[_-]+/gu, " ").trim();
+  const base =
+    fromName && fromName.length > 0
+      ? fromName
+      : (prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ??
+        prompt.trim());
+  return base.length > 60 ? `${base.slice(0, 59).trimEnd()}…` : base;
+}
+
 function serviceTierIds(modelInfo: ModelInfo): readonly string[] {
   return (modelInfo.serviceTiers ?? []).map((tier) => tier.id);
 }
@@ -656,7 +676,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     try {
       registerAgentThreadTask(backgroundTaskLifecycle, thread, {
         toolUseId: callId,
-        description: prompt,
+        // Short title (from task_name), not the full prompt — the rail /
+        // transcript / `/cost` show this as the agent's label. The full prompt
+        // is preserved separately on the task's `prompt` field.
+        description: shortAgentTaskTitle(taskName, prompt),
+        prompt,
         onSnapshot: (snapshot) => {
           syncBackgroundTaskSnapshotToAppState(
             (
