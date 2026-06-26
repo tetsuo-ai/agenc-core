@@ -661,6 +661,17 @@ describe("assembleSystemPrompt", () => {
     expect(text).not.toContain("# Subagents");
     expect(text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(sections.length).toBeGreaterThan(8);
+
+    // Navigate-first exploration guidance (revert-sensitive): with search tools
+    // enabled the prompt tells the model to map a repo first and skip generated
+    // dirs, and with agents enabled to delegate heavy exploration to a subagent
+    // for context isolation.
+    expect(text).toContain("structural map first");
+    expect(text).toMatch(/Skip generated\/build\/vendored\/ledger dirs/);
+    expect(text).toContain(
+      "Delegate heavy or broad codebase exploration",
+    );
+    expect(text).toContain("isolated context");
   });
 
   test("permissions section is injected when a permissionContext is supplied", async () => {

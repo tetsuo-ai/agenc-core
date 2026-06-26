@@ -42,6 +42,21 @@ const VCS_DIRECTORIES_TO_EXCLUDE = [
   ".sl",
 ] as const;
 
+/**
+ * Generated/build/vendored/ledger directories excluded from a Grep walk BY
+ * DEFAULT, on top of `.gitignore` (which ripgrep already honors). Searching
+ * these surfaces noise and can be pathological on a large repo (e.g. a multi-GB
+ * `.localnet/` validator log). `includeIgnored: true` restores `--no-ignore`
+ * and drops these excludes for a power-user search of build output.
+ */
+const DEFAULT_GENERATED_DIRECTORIES_TO_EXCLUDE = [
+  "node_modules",
+  "target",
+  "dist",
+  "build",
+  ".localnet",
+] as const;
+
 const DEFAULT_HEAD_LIMIT = 250;
 const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
 const MAX_FALLBACK_FILES = 5_000;
@@ -92,6 +107,7 @@ interface GrepInput extends ToolExecutionInjectedArgs {
   readonly head_limit?: unknown;
   readonly offset?: unknown;
   readonly multiline?: unknown;
+  readonly includeIgnored?: unknown;
 }
 
 export interface GrepToolConfig {
@@ -383,6 +399,7 @@ interface RipgrepOptions {
   readonly caseInsensitive: boolean;
   readonly showLineNumbers: boolean;
   readonly multiline: boolean;
+  readonly includeIgnored: boolean;
   readonly contextBefore?: number;
   readonly contextAfter?: number;
   readonly contextBoth?: number;
@@ -394,6 +411,18 @@ function buildRipgrepArgs(opts: RipgrepOptions): string[] {
   const args: string[] = ["--hidden"];
   for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {
     args.push("--glob", `!${dir}`);
+  }
+  if (opts.includeIgnored) {
+    // Opt-in power-user walk: surface gitignored + build output (e.g. grepping
+    // inside `target/`/`dist/`). `--no-ignore` plus dropping the generated-dir
+    // excludes restores the unfiltered search.
+    args.push("--no-ignore");
+  } else {
+    // Default walk: layer generated/build/vendored/ledger excludes on top of
+    // ripgrep's `.gitignore` handling so even un-gitignored copies are skipped.
+    for (const dir of DEFAULT_GENERATED_DIRECTORIES_TO_EXCLUDE) {
+      args.push("--glob", `!${dir}`);
+    }
   }
   args.push("--max-columns", "500", "--max-columns-preview");
 
@@ -944,6 +973,7 @@ function formatFallbackContentLine(params: {
 
 async function* walkFiles(
   root: string,
+  includeIgnored: boolean,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<string> {
   const stack: string[] = [root];
@@ -962,6 +992,17 @@ async function* walkFiles(
       if ((VCS_DIRECTORIES_TO_EXCLUDE as readonly string[]).includes(name)) {
         continue;
       }
+      // Parity with the ripgrep path: skip generated/build/vendored/ledger
+      // dirs by default; `includeIgnored` opts back into walking them. (The
+      // `.gitignore` matcher in runFallbackGrep additionally filters files.)
+      if (
+        !includeIgnored &&
+        (DEFAULT_GENERATED_DIRECTORIES_TO_EXCLUDE as readonly string[]).includes(
+          name,
+        )
+      ) {
+        continue;
+      }
       const full = join(current, name);
       if (entry.isDirectory()) {
         stack.push(full);
@@ -974,10 +1015,11 @@ async function* walkFiles(
 
 async function* iterTargetFiles(
   target: ResolvedTarget,
+  includeIgnored: boolean,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<string> {
   if (target.isDirectory) {
-    yield* walkFiles(target.absolute, abortSignal);
+    yield* walkFiles(target.absolute, includeIgnored, abortSignal);
     return;
   }
   if (!abortSignal?.aborted) {
@@ -994,6 +1036,7 @@ async function runFallbackGrep(params: {
   readonly globs: readonly string[];
   readonly headLimit: number;
   readonly offset: number;
+  readonly includeIgnored: boolean;
   readonly signal?: AbortSignal;
 }): Promise<ToolResult> {
   const {
@@ -1005,6 +1048,7 @@ async function runFallbackGrep(params: {
     globs,
     headLimit,
     offset,
+    includeIgnored,
     signal,
   } = params;
   if (outputMode === "count") {
@@ -1027,7 +1071,12 @@ async function runFallbackGrep(params: {
   let fallbackSafetyCapped = false;
   let visitedFiles = 0;
   const displayRoot = displayRootForTarget(target);
-  const isIgnored = await compileFallbackIgnoreMatcher(displayRoot);
+  // `includeIgnored` restores the unfiltered fallback walk: skip the
+  // `.gitignore` matcher (the generated-dir skip is also bypassed in
+  // `iterTargetFiles`).
+  const isIgnored = includeIgnored
+    ? async (): Promise<boolean> => false
+    : await compileFallbackIgnoreMatcher(displayRoot);
   const fallbackCollectionLimit =
     headLimit === 0 ? 0 : collectionLineLimit(headLimit, offset);
   // gaphunt3 #26/#30: wall-clock deadline so an expensive scan (clamping
@@ -1036,7 +1085,7 @@ async function runFallbackGrep(params: {
   const scanDeadline = Date.now() + FALLBACK_SCAN_BUDGET_MS;
   let fallbackScanAborted = false;
 
-  for await (const filePath of iterTargetFiles(target, signal)) {
+  for await (const filePath of iterTargetFiles(target, includeIgnored, signal)) {
     if (signal?.aborted) {
       return errorResult("Search aborted");
     }
@@ -1301,6 +1350,11 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           description:
             "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false.",
         },
+        includeIgnored: {
+          type: "boolean",
+          description:
+            "Search gitignored and build/vendored output too (node_modules, target, dist, build, .localnet). Defaults to false: the search respects .gitignore and skips generated/build dirs.",
+        },
       },
       required: ["pattern"],
       additionalProperties: false,
@@ -1329,6 +1383,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
       const caseInsensitive = asBoolean(args["-i"]) ?? false;
       const showLineNumbers = asBoolean(args["-n"]) ?? true;
       const multiline = asBoolean(args.multiline) ?? false;
+      const includeIgnored = asBoolean(args.includeIgnored) ?? false;
       const contextBefore = asNonNegativeInteger(args["-B"]);
       const contextAfter = asNonNegativeInteger(args["-A"]);
       const contextBoth =
@@ -1367,6 +1422,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           globs,
           headLimit,
           offset,
+          includeIgnored,
           signal,
         });
       }
@@ -1379,6 +1435,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           caseInsensitive,
           showLineNumbers,
           multiline,
+          includeIgnored,
           contextBefore,
           contextAfter,
           contextBoth,

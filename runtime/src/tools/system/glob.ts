@@ -44,6 +44,30 @@ const TRUNCATION_NOTE =
   "(Results are truncated. Consider using a more specific path or pattern.)";
 
 /**
+ * Generated/build/vendored/ledger directories that are excluded from a Glob
+ * walk BY DEFAULT. A repo's real source surface is tiny next to these; walking
+ * them surfaces nothing useful for "what does this repo do" and can be
+ * pathological (e.g. a 26 GB `.localnet/` validator log under agenc-protocol).
+ *
+ * This explicit exclude set is the load-bearing protection: ripgrep's
+ * `--glob <pattern>` whitelist (the user's search pattern) OVERRIDES
+ * `.gitignore`, so dropping `--no-ignore` alone would not reliably skip
+ * gitignored artifacts. The negative `!<glob>` excludes below DO win over the
+ * positive pattern, so they deterministically skip these dirs. Set
+ * `includeIgnored: true` to opt back into the legacy `--no-ignore` walk that
+ * surfaces build output, `.git`, and gitignored files.
+ */
+export const DEFAULT_GLOB_EXCLUDE_GLOBS: ReadonlyArray<string> = Object.freeze([
+  "**/node_modules/**",
+  "**/target/**",
+  "**/dist/**",
+  "**/build/**",
+  "**/.localnet/**",
+  "**/.git/**",
+  "**/*.lock",
+]);
+
+/**
  * Platform-specific hint telling the user how to install ripgrep. No binary is
  * bundled, so when `rg` is missing from PATH the only fix is a system install;
  * surface the exact command instead of a bare "requires ripgrep" message.
@@ -63,12 +87,18 @@ const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any 
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths sorted by modification time
 - Use this tool when you need to find files by name patterns
+- By default skips generated/build/vendored dirs (node_modules, target, dist, build, .localnet, .git, lockfiles); pass includeIgnored: true to search those too
 - When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the spawn_agent tool instead`;
 
 interface GlobToolInput extends ToolExecutionInjectedArgs {
   readonly pattern?: unknown;
   readonly path?: unknown;
   readonly cwd?: unknown;
+  readonly includeIgnored?: unknown;
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 export interface GlobToolConfig {
@@ -257,6 +287,7 @@ function runRipgrepFiles(params: {
   readonly pattern: string;
   readonly cwd: string;
   readonly limit: number;
+  readonly includeIgnored: boolean;
   readonly signal?: AbortSignal;
 }): Promise<LimitedRipgrepResult> {
   const args = [
@@ -265,9 +296,27 @@ function runRipgrepFiles(params: {
     params.pattern,
     "--sortr",
     "modified",
-    "--no-ignore",
+    // `--hidden` keeps dotfile parity (e.g. `.gitignore`, `.github/`) which is
+    // routinely useful to find; the gating of build/vendored output is done by
+    // RESPECTING `.gitignore` (ripgrep default) plus the explicit default
+    // excludes below — NOT by hiding dotfiles.
     "--hidden",
   ];
+  if (params.includeIgnored) {
+    // Opt-in legacy walk: surface gitignored + build output (e.g. searching
+    // inside `target/`/`dist/` deliberately). `--no-ignore` restores the prior
+    // default and the default excludes are skipped.
+    args.push("--no-ignore");
+  } else {
+    // Default walk: layer the built-in generated/build/vendored/ledger excludes
+    // on top of ripgrep's ignore handling. These negative globs win over the
+    // user's positive search pattern, so the dirs are skipped deterministically
+    // even when un-gitignored or when the pattern would otherwise whitelist
+    // them.
+    for (const exclude of DEFAULT_GLOB_EXCLUDE_GLOBS) {
+      args.push("--glob", `!${exclude}`);
+    }
+  }
   return new Promise((resolveResult) => {
     const lines: string[] = [];
     let pending = "";
@@ -411,6 +460,11 @@ export function createGlobTool(
           description:
             "Optional. Directory to search in. Defaults to the workspace root.",
         },
+        includeIgnored: {
+          type: "boolean",
+          description:
+            "Optional. When true, search gitignored and build/vendored output too (node_modules, target, dist, build, .localnet, lockfiles). Defaults to false: the walk respects .gitignore and skips generated/build dirs so it never enumerates large artifacts.",
+        },
       },
       required: ["pattern"],
       additionalProperties: false,
@@ -434,6 +488,7 @@ export function createGlobTool(
       const startedAt = Date.now();
       const effectiveLimit = limit + 1;
       const signal = args.__abortSignal;
+      const includeIgnored = asBoolean(args.includeIgnored) ?? false;
       let rawMatches: readonly string[];
       let truncated = false;
       const rg = await runRipgrepFiles({
@@ -441,6 +496,7 @@ export function createGlobTool(
         pattern: target.pattern,
         cwd: target.searchRoot,
         limit: effectiveLimit,
+        includeIgnored,
         signal,
       });
       if (signal?.aborted || rg.aborted) {
@@ -495,4 +551,5 @@ export const __INTERNAL = {
   extractGlobBaseDirectory,
   toRelativeIfInside,
   ripgrepInstallHint,
+  DEFAULT_GLOB_EXCLUDE_GLOBS,
 };

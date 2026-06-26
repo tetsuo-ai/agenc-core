@@ -355,9 +355,17 @@ function getSessionGuidanceSection(
     );
   }
 
+  const hasSearch = enabledTools.has("Grep") || enabledTools.has("Glob");
+  if (hasSearch) {
+    items.push(
+      `To understand or explain a repo or large codebase, NAVIGATE — do not ingest it. Build a structural map first: read README + manifest files (package.json / Cargo.toml / Anchor.toml / pyproject.toml) + the top-level directory layout, then grep for entry points and exported symbols. Read implementation only in targeted spans (specific files, offset+limit); never bulk-read whole large or generated files. Skip generated/build/vendored/ledger dirs (target/, dist/, build/, node_modules/, .localnet/, generated/) — search tools skip these by default.`,
+    );
+  }
+
   if (agentsEnabled) {
     items.push(
       `Use subagents (via the agent/task tool) when a task matches a specialized agent's description, or to protect your main context from large exploration output.`,
+      `Delegate heavy or broad codebase exploration (e.g. "what does this repo do") to the Explore subagent so its large reads happen in an isolated context and only a compact summary returns to you — instead of flooding your own context with file contents you won't reference again.`,
     );
   }
 
