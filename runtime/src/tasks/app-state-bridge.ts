@@ -74,7 +74,7 @@ function localAgentTaskFromSnapshot(
     outputOffset: snapshot.outputOffset,
     notified: snapshot.notified,
     agentId: snapshot.id,
-    prompt: snapshot.description,
+    prompt: stringMetadata(snapshot.metadata, "taskPrompt") ?? snapshot.description,
     agentType: agentRole ?? previousAgent?.agentType ?? "agent",
     ...(cwd !== undefined ? { cwd } : {}),
     ...(worktreePath !== undefined ? { worktreePath } : {}),

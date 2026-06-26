@@ -100,7 +100,13 @@ export interface AgentThreadTaskHandle {
 
 export interface RegisterAgentThreadTaskOptions {
   readonly toolUseId?: string;
+  /** Short display label (rail/transcript/cost). Defaults to the task prompt. */
   readonly description?: string;
+  /**
+   * The agent's full task prompt, preserved on the mirrored task's `prompt`
+   * field independently of {@link description}. Defaults to `thread.taskPrompt`.
+   */
+  readonly prompt?: string;
   readonly onStop?: (thread: AgentThreadTaskHandle, reason: string) => Promise<void> | void;
   readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
   /**
@@ -127,6 +133,10 @@ export function registerAgentThreadTask(
 ): BackgroundTaskSnapshot {
   const threadId = thread.threadId ?? thread.live.agentId;
   const description = opts.description ?? thread.taskPrompt;
+  // The full task prompt, carried separately from `description` so a short
+  // display label (e.g. the humanized task_name) never erases the agent's
+  // actual instruction in the mirrored AppState task's `prompt` field.
+  const taskPromptFull = opts.prompt ?? thread.taskPrompt;
   const agentPath = thread.agentPath ?? thread.live.agentPath;
   let summaryHandle: AgentSummaryHandle | null = null;
   let unsubscribeSummaryCacheSafeParams: (() => void) | null = null;
@@ -174,6 +184,7 @@ export function registerAgentThreadTask(
       : {}),
     metadata: {
       threadName: thread.threadName ?? thread.nickname ?? thread.threadId,
+      ...(taskPromptFull !== undefined ? { taskPrompt: taskPromptFull } : {}),
       ...(agentPath !== undefined ? { agentPath } : {}),
       ...(thread.worktreePath !== undefined
         ? { worktreePath: thread.worktreePath }

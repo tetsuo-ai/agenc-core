@@ -2719,7 +2719,9 @@ describe("model-facing tools", () => {
       id: "thread-visible-1",
       type: "local_agent",
       status: "running",
-      description: "inspect visible task",
+      // description is the short humanized task_name (rail/transcript label),
+      // not the full prompt; the prompt is preserved separately.
+      description: "visible task",
       agentId: "thread-visible-1",
       prompt: "inspect visible task",
       isBackgrounded: true,
@@ -2875,7 +2877,7 @@ describe("model-facing tools", () => {
     });
     expect(stopped.isError).toBeUndefined();
     expect(stopped.content).toBe(
-      "Successfully stopped task: thread-handle-1 (inspect handle)",
+      "Successfully stopped task: thread-handle-1 (task handle)",
     );
     expect(abortController.signal.aborted).toBe(true);
   });
