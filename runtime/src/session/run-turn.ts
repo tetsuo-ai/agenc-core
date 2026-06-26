@@ -139,11 +139,19 @@ import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import {
   buildInitialTurnState,
   resetIterationFields,
+  restoreFromCheckpoint,
+  toCheckpointSlice,
   type AssistantMessage,
   type Continue,
   type Terminal,
   type TurnState,
 } from "./turn-state.js";
+import {
+  computePrefixHash,
+  currentBuildId,
+  resolveDurableTurnsConfig,
+  sideEffectHaltMessage,
+} from "./durable-turns.js";
 import {
   evaluateBehavioralBackstop,
   recordBehavioralStep,
@@ -168,6 +176,45 @@ export interface RunTurnOptions {
    * internal meta turns such as autonomous keepalive ticks.
    */
   readonly displayUserMessage?: string | null;
+  /**
+   * GOAL #4b Stage 1 — durable-turn resume. When set, the kernel re-enters
+   * the drain loop CONTINUING an interrupted turn from the last completed
+   * iteration instead of starting fresh: it restores the TurnState slice,
+   * seeds the iteration/checkpoint counters, suppresses the seed
+   * user-message re-emit, and emits a durable `turn_resumed` marker. Only
+   * supplied by `thread-manager`'s safe-policy resume path AFTER the
+   * build-pin + prefix-hash + lease gates pass.
+   */
+  readonly resume?: TurnResumeOptions;
+}
+
+/**
+ * GOAL #4b Stage 1 — the rehydrated state handed to a resumed kernel.
+ * Construction + all safety gating live in `thread-manager.ts`; the kernel
+ * trusts that the caller already validated build pin, prefix hash, lease,
+ * and the safe-by-default side-effect policy.
+ */
+export interface TurnResumeOptions {
+  readonly turnId: string;
+  readonly fromIteration: number;
+  readonly fromCheckpointSeq: number;
+  readonly persistedMessageCount: number;
+  /** Applied onto the fresh TurnState via `restoreFromCheckpoint`. */
+  readonly restoreSlice: import("./turn-state.js").TurnCheckpointSlice;
+  /** Tool names that triggered a safe-policy halt (surfaced, not retried). */
+  readonly haltedSideEffectingTools?: ReadonlyArray<string>;
+  /**
+   * Dangling `tool_use` blocks (in the resumed prefix, no persisted result)
+   * to PAIR with a synthetic `tool` result so the message thread stays valid
+   * for the first sampling request — WITHOUT re-dispatching the tool.
+   * `halt:true` ⇒ side-effecting/interactive ⇒ surfaced "not retried"; else
+   * read-only ⇒ note that re-invoking is safe.
+   */
+  readonly danglingPairings?: ReadonlyArray<{
+    readonly callId: string;
+    readonly toolName: string;
+    readonly halt: boolean;
+  }>;
 }
 
 class RegularTurnTask implements SessionTask {
@@ -3023,6 +3070,10 @@ export async function* runTurnKernel(
             ? { modelContextWindow: ctx.modelInfo.contextWindow }
             : {}),
           collaborationModeKind: ctx.collaborationMode.model,
+          // GOAL #4b Stage 1: stamp the build pin in turn_started (not the
+          // checkpoint) so resume can refuse cross-build replay BEFORE
+          // loading any checkpoint (§3.6).
+          buildId: currentBuildId(),
         },
       },
     });
@@ -3082,7 +3133,16 @@ export async function* runTurnKernel(
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
   // turn. Callers that want to force work must enqueue pending input or
   // pass a non-empty user message.
-  if (!userContentHasInput(userContent) && !session.hasPendingInput()) {
+  //
+  // GOAL #4b Stage 1 — a durable resume legitimately carries an empty
+  // `userMessage` (the real user message is already inside the reconstructed
+  // prefix): the work to do is CONTINUING the interrupted turn from its
+  // checkpoint, so the empty-input no-op guard must not short-circuit it.
+  if (
+    opts.resume === undefined &&
+    !userContentHasInput(userContent) &&
+    !session.hasPendingInput()
+  ) {
     return { reason: "completed" };
   }
 
@@ -3235,6 +3295,41 @@ async function* runTurnKernelInner(
   });
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount = priorExisting.length;
+  // GOAL #4b Stage 1 — resume-continuation. On resume the reconstructed
+  // prefix arrives via `opts.history` (→ `priorFull`); we drop the synthetic
+  // seed `user` that `buildInitialTurnState` appended (the real user message
+  // is already inside the reconstructed prefix), anchor the persist cursor at
+  // the checkpoint's count, and restore the resumable TurnState slice so
+  // recovery caps / nudge counts / the derived budget hold their pre-crash
+  // values instead of resetting. The loop then makes a fresh sampling
+  // request — a legitimately NEW model call, never a replay of a completed
+  // assistant message (§3.6).
+  if (opts.resume !== undefined) {
+    state.messages = [...priorFull];
+    // The reconstructed prefix is already on disk → anchor the persist
+    // cursor at its length so it is not re-persisted.
+    persistedMessageCount = state.messages.length;
+    // Pair any dangling tool_use (no persisted result) with a SYNTHETIC
+    // tool result so the message thread is valid for the first resumed
+    // sampling request — without ever re-dispatching the tool. Side-
+    // effecting/interactive blocks get the conservative "may have already
+    // executed; not retried" result (the on-chain-safety property);
+    // read-only blocks get a note that re-invoking is safe. These synthetic
+    // results ARE new content → persisted on the next syncSessionState so
+    // reconstruction sees a fully-paired thread.
+    for (const pairing of opts.resume.danglingPairings ?? []) {
+      const content = pairing.halt
+        ? sideEffectHaltMessage(pairing.toolName)
+        : `result not persisted before crash; the read-only tool ${pairing.toolName} was not retried automatically — safe to re-invoke if its result is needed.`;
+      state.messages.push({
+        role: "tool",
+        content,
+        toolCallId: pairing.callId,
+        toolName: pairing.toolName,
+      });
+    }
+    restoreFromCheckpoint(state, opts.resume.restoreSlice);
+  }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
   const persistTurnRolloutBaseline = (): void => {
@@ -3316,6 +3411,69 @@ async function* runTurnKernelInner(
     });
   };
 
+  // ── GOAL #4b Stage 1 — durable iteration checkpoint emit ──────────────
+  // The checkpoint promotes the already-consistent CB-Iteration boundary
+  // (assistant + all its tool results appended; message threading valid) to
+  // a durable fsync. Emitting it via `session.emit` AFTER
+  // persistNewResponseItems means the durable flush (turn_checkpoint ∈
+  // DURABLE_EVENT_TYPES → flushBatch(true) → fsync) also flushes the
+  // just-appended response_item batch, so the whole iteration becomes
+  // durable atomically. NEVER snapshots history (reconstructed from the
+  // rollout) — only the cursor + content hash + the resumable TurnState
+  // slice (incl. the DERIVED taskBudgetRemaining, never a raw clock).
+  const durableTurnsCfg = resolveDurableTurnsConfig(ctx.config);
+  let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
+  let iterationIndex = opts.resume?.fromIteration ?? 0;
+  let lastCheckpointAtMs = 0;
+  const emitTurnCheckpoint = (
+    boundary: "iteration" | "postAssistant",
+  ): void => {
+    if (!durableTurnsCfg.checkpointEnabled) return;
+    if (rolloutPersistenceSuspended()) return;
+    if (!session.rolloutStore) return;
+    if (durableTurnsCfg.checkpointMinIntervalMs > 0) {
+      const now = Date.now();
+      if (
+        lastCheckpointAtMs !== 0 &&
+        now - lastCheckpointAtMs < durableTurnsCfg.checkpointMinIntervalMs
+      ) {
+        return;
+      }
+      lastCheckpointAtMs = now;
+    }
+    checkpointSeq += 1;
+    // Hash the DURABLE-HISTORY PROJECTION of the prefix — exactly the
+    // `response_item` sequence reconstruction rebuilds — so the write-side
+    // and read-side hashes align by construction. This drops the leading
+    // seed `system` message (re-derived from instructions, never replayed)
+    // and any runtime-only messages, mirroring `syncSessionState`'s
+    // `durableHistory`. `persistedMessageCount` is the LENGTH of that
+    // projection (== reconstructed history length), NOT a `state.messages`
+    // index. The hash is bound/truncation-stable (tool-output bodies are
+    // excluded — see canonicalMessage), so in-memory bounding cannot make a
+    // resumed prefix spuriously mismatch.
+    const durablePrefix = state.messages
+      .slice(durableHistoryStartIndex(state.messages))
+      .filter((message) => !excludeFromDurableHistory(message))
+      .map((message) => toResponseItem(message));
+    const prefixHash = computePrefixHash(durablePrefix, durablePrefix.length);
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "turn_checkpoint",
+        payload: {
+          turnId: ctx.subId,
+          iterationIndex,
+          boundary,
+          checkpointSeq,
+          persistedMessageCount: durablePrefix.length,
+          prefixHash,
+          resumableState: toCheckpointSlice(state),
+        },
+      },
+    });
+  };
+
   // Upstream agenc runtime resets per-turn guardian-denial counters at the top
   // of every new turn (see `GuardianRejectionCircuitBreaker::clear_turn`
   // usage around task start in `agenc-rs/core/src/guardian/review.rs`).
@@ -3328,6 +3486,50 @@ async function* runTurnKernelInner(
   emitTurnStarted();
   persistTurnRolloutBaseline();
   session.budgetTracker?.resetForTurn();
+
+  // GOAL #4b Stage 1 — durable turn re-opened. Emit a fsync-durable
+  // `turn_resumed` marker recording which checkpoint/iteration the drain
+  // loop is re-entering at, plus any side-effecting dangling tools the
+  // safe-by-default policy halted on (surfaced, NOT retried). This re-opens
+  // the turn lifecycle so reconstruction sees an active turn again.
+  if (opts.resume !== undefined) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "turn_resumed",
+        payload: {
+          turnId: ctx.subId,
+          fromCheckpointSeq: opts.resume.fromCheckpointSeq,
+          fromIteration: opts.resume.fromIteration,
+          ...(opts.resume.haltedSideEffectingTools !== undefined &&
+          opts.resume.haltedSideEffectingTools.length > 0
+            ? {
+                haltedSideEffectingTools: [
+                  ...opts.resume.haltedSideEffectingTools,
+                ],
+              }
+            : {}),
+        },
+      },
+    });
+    if (
+      opts.resume.haltedSideEffectingTools !== undefined &&
+      opts.resume.haltedSideEffectingTools.length > 0
+    ) {
+      for (const toolName of opts.resume.haltedSideEffectingTools) {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "durable_resume_side_effect_halt",
+              message: sideEffectHaltMessage(toolName),
+            },
+          },
+        });
+      }
+    }
+  }
 
   // T6 gap #119: emit the seed user message exactly once per runTurn
   // invocation. Continuation turns (needsFollowUp=true) stay inside the
@@ -3898,6 +4100,26 @@ async function* runTurnKernelInner(
       return returnTerminal(terminal);
     }
 
+    // GOAL #4b Stage 1 — CB-PostAssistant durable checkpoint. The assistant
+    // message (with pending tool_use blocks) is consistent and nothing has
+    // dispatched yet. Persisting the assistant message here + fsyncing the
+    // checkpoint means a crash DURING tool dispatch resumes from a prefix
+    // where the pending tool_use blocks are DANGLING — at which point the
+    // safe-by-default side-effect policy halts on any side-effecting tool
+    // (never silently re-firing it) and re-runs only read-only ones. This is
+    // the boundary that makes the no-double-side-effect invariant
+    // load-bearing. It does NOT advance `iterationIndex` (the iteration
+    // hasn't completed); on resume the loop re-issues a fresh request after
+    // resolving the dangling blocks.
+    if (
+      lastAssistant &&
+      state.toolUseBlocks.length > 0 &&
+      durableTurnsCfg.checkpointEnabled
+    ) {
+      persistNewResponseItems();
+      emitTurnCheckpoint("postAssistant");
+    }
+
     // Phase 5 — execute tools. Emit tool_call / tool_result events
     // around the dispatch.
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
@@ -4038,6 +4260,15 @@ async function* runTurnKernelInner(
     // Phase 6 — commit iteration. Stop-hook may request re-entry.
     await commit(state, ctx, session, signal, { querySource: turnQuerySource });
     await syncSessionState();
+
+    // GOAL #4b Stage 1 — CB-Iteration durable checkpoint. The strongest
+    // already-reached, already-consistent boundary: assistant + all its
+    // tool results are appended and message threading is valid. Emitting
+    // here fsyncs the whole iteration's batch so a crash before the next
+    // sampling request resumes-CONTINUES from this iteration instead of
+    // discarding it.
+    iterationIndex += 1;
+    emitTurnCheckpoint("iteration");
 
     if (state.pendingBudgetDecision?.kind === "stop") {
       await applyPendingBudgetContinuation(state, ctx, session, signal);

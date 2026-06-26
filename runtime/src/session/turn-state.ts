@@ -499,6 +499,170 @@ export function buildInitialTurnState(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// GOAL #4b Stage 1 — durable-turn checkpoint slice.
+//
+// The resumable subset of TurnState: counters + tracking that are
+// turn-scoped (persist across recovery/continuation iterations) and would
+// otherwise RESET on a crash+restart, silently corrupting recovery caps,
+// nudge counts, and budget accounting. Everything reconstructable from the
+// durable rollout (messages, tool results, token usage) is deliberately
+// excluded — see the design's net-change parsimony (§3.3).
+//
+// `transition` and `pendingBudgetDecision` carry a non-serializable
+// `boundary` field on their live shapes; the kernel only reads `.reason` /
+// `.kind` from them on resume, so the slice keeps just those JSON-safe
+// fields. `taskBudgetRemaining` is the DERIVED budget, never a raw clock.
+// ─────────────────────────────────────────────────────────────────────
+
+export interface TurnCheckpointSlice {
+  readonly turnCount: number;
+  readonly recoveryReentryCount: number;
+  readonly maxOutputTokensRecoveryCount: number;
+  readonly continuationNudgeCount: number;
+  readonly stopHookBlockingCount: number;
+  readonly planToolRequiredRetryCount?: number;
+  readonly taskBudgetRemaining?: number;
+  readonly autoCompactTracking?: AutoCompactTrackingState;
+  readonly transition?: { readonly reason: ContinueReason };
+  readonly pendingBudgetDecision?:
+    | { readonly kind: "continue"; readonly remaining: number }
+    | { readonly kind: "stop"; readonly reason: string };
+}
+
+/**
+ * Project the resumable counters out of a live TurnState into a JSON-safe
+ * checkpoint slice. Pure read; does not mutate `state`.
+ */
+export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
+  const slice: {
+    turnCount: number;
+    recoveryReentryCount: number;
+    maxOutputTokensRecoveryCount: number;
+    continuationNudgeCount: number;
+    stopHookBlockingCount: number;
+    planToolRequiredRetryCount?: number;
+    taskBudgetRemaining?: number;
+    autoCompactTracking?: AutoCompactTrackingState;
+    transition?: { readonly reason: ContinueReason };
+    pendingBudgetDecision?:
+      | { readonly kind: "continue"; readonly remaining: number }
+      | { readonly kind: "stop"; readonly reason: string };
+  } = {
+    turnCount: state.turnCount,
+    recoveryReentryCount: state.recoveryReentryCount,
+    maxOutputTokensRecoveryCount: state.maxOutputTokensRecoveryCount,
+    continuationNudgeCount: state.continuationNudgeCount,
+    stopHookBlockingCount: state.stopHookBlockingCount,
+    planToolRequiredRetryCount: state.planToolRequiredRetryCount,
+  };
+  if (typeof state.taskBudgetRemaining === "number") {
+    slice.taskBudgetRemaining = state.taskBudgetRemaining;
+  }
+  if (state.autoCompactTracking !== undefined) {
+    slice.autoCompactTracking = {
+      compacted: state.autoCompactTracking.compacted,
+      turnId: state.autoCompactTracking.turnId,
+      turnCounter: state.autoCompactTracking.turnCounter,
+      consecutiveFailures: state.autoCompactTracking.consecutiveFailures,
+    };
+  }
+  if (state.transition !== undefined) {
+    slice.transition = { reason: state.transition.reason };
+  }
+  if (state.pendingBudgetDecision !== undefined) {
+    slice.pendingBudgetDecision =
+      state.pendingBudgetDecision.kind === "continue"
+        ? { kind: "continue", remaining: state.pendingBudgetDecision.remaining }
+        : { kind: "stop", reason: state.pendingBudgetDecision.reason };
+  }
+  return slice;
+}
+
+const CONTINUE_REASONS: ReadonlySet<string> = new Set<ContinueReason>([
+  "model_fallback",
+  "streaming_fallback_retry",
+  "collapse_drain_retry",
+  "reactive_compact_retry",
+  "max_output_tokens_escalate",
+  "max_output_tokens_recovery",
+  "stop_hook_blocking",
+  "token_budget_continuation",
+  "plan_tool_required",
+  "continuation_nudge",
+]);
+
+/**
+ * Apply a checkpoint slice back onto a freshly-built TurnState during
+ * resume so recovery caps, nudge counts, and the derived budget hold their
+ * pre-crash values instead of resetting. Mutates `state` in place and
+ * returns it. Unknown / malformed slice fields are ignored defensively
+ * (the slice is untrusted rollout data, I-26 spirit).
+ */
+export function restoreFromCheckpoint(
+  state: TurnState,
+  slice: TurnCheckpointSlice,
+): TurnState {
+  if (Number.isFinite(slice.turnCount)) state.turnCount = slice.turnCount;
+  if (Number.isFinite(slice.recoveryReentryCount)) {
+    state.recoveryReentryCount = slice.recoveryReentryCount;
+  }
+  if (Number.isFinite(slice.maxOutputTokensRecoveryCount)) {
+    state.maxOutputTokensRecoveryCount = slice.maxOutputTokensRecoveryCount;
+  }
+  if (Number.isFinite(slice.continuationNudgeCount)) {
+    state.continuationNudgeCount = slice.continuationNudgeCount;
+  }
+  if (Number.isFinite(slice.stopHookBlockingCount)) {
+    state.stopHookBlockingCount = slice.stopHookBlockingCount;
+  }
+  if (
+    slice.planToolRequiredRetryCount !== undefined &&
+    Number.isFinite(slice.planToolRequiredRetryCount)
+  ) {
+    state.planToolRequiredRetryCount = slice.planToolRequiredRetryCount;
+  }
+  if (
+    slice.taskBudgetRemaining !== undefined &&
+    Number.isFinite(slice.taskBudgetRemaining)
+  ) {
+    state.taskBudgetRemaining = slice.taskBudgetRemaining;
+  }
+  if (
+    slice.autoCompactTracking !== undefined &&
+    typeof slice.autoCompactTracking.turnId === "string"
+  ) {
+    state.autoCompactTracking = {
+      compacted: slice.autoCompactTracking.compacted === true,
+      turnId: slice.autoCompactTracking.turnId,
+      turnCounter: Number.isFinite(slice.autoCompactTracking.turnCounter)
+        ? slice.autoCompactTracking.turnCounter
+        : 0,
+      consecutiveFailures: Number.isFinite(
+        slice.autoCompactTracking.consecutiveFailures,
+      )
+        ? slice.autoCompactTracking.consecutiveFailures
+        : 0,
+    };
+  }
+  if (
+    slice.transition !== undefined &&
+    CONTINUE_REASONS.has(slice.transition.reason)
+  ) {
+    state.transition = { reason: slice.transition.reason };
+  }
+  if (slice.pendingBudgetDecision !== undefined) {
+    state.pendingBudgetDecision =
+      slice.pendingBudgetDecision.kind === "continue"
+        ? {
+            kind: "continue",
+            remaining: slice.pendingBudgetDecision.remaining,
+          }
+        : { kind: "stop", reason: slice.pendingBudgetDecision.reason };
+  }
+  return state;
+}
+
 /**
  * Phase entry helper: reset iteration-scoped fields that must not
  * carry into the next iteration. Called by run-turn.ts at the top of

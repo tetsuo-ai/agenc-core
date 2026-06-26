@@ -415,6 +415,50 @@ function canDirectDispatchFromCodeMode(tool: Tool): boolean {
   );
 }
 
+/**
+ * GOAL #4b Stage 1 — durable-turn resume safety classifier.
+ *
+ * Decides whether a tool whose `tool_use` block is DANGLING in a resumed
+ * prefix (a tool_use with no persisted tool_result — the crashed
+ * mid-iteration case) may be re-dispatched automatically on resume, or
+ * whether resume must HALT and surface to the human.
+ *
+ * The rule reuses the EXISTING enforced `ToolRecoveryCategory` — it does
+ * NOT add a new taxonomy field. Only provably read-only / `idempotent`
+ * tools (the same read-only seed `isReplaySafeStreamTool` uses for the
+ * in-process interrupt path) are safe to re-run. Anything `side-effecting`
+ * or `interactive`, anything that requires user interaction, and anything
+ * with a missing/unknown category (which the registry already resolves to
+ * `side-effecting`, fail-safe) is NOT replay-safe.
+ *
+ * Conservative-by-design: over-halt (refuse a tool that was actually safe)
+ * is acceptable; under-halt (silently re-run a side-effecting / on-chain
+ * tool) is NOT — that would be a duplicate-transaction / double-spend
+ * vector and a rails violation. This is the on-chain-safety property.
+ */
+export interface ResumeReplaySafetyView {
+  readonly isReadOnly?: boolean;
+  readonly recoveryCategory?: ToolRecoveryCategory;
+  readonly requiresUserInteraction?: () => boolean;
+  readonly metadata?: { readonly mutating?: boolean };
+}
+
+export function isResumeReplaySafe(tool: ResumeReplaySafetyView): boolean {
+  try {
+    if (tool.requiresUserInteraction?.() === true) return false;
+  } catch {
+    // A throwing interaction probe is treated as interactive → not safe.
+    return false;
+  }
+  if (tool.recoveryCategory === "interactive") return false;
+  if (tool.recoveryCategory === "side-effecting") return false;
+  // Only the explicitly-idempotent / read-only set is replay-safe. A
+  // missing category is NOT trusted here (the decorated registry already
+  // resolves unknown → "side-effecting"; this guards undecorated callers).
+  if (tool.recoveryCategory === "idempotent") return true;
+  return tool.isReadOnly === true || tool.metadata?.mutating === false;
+}
+
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
   readonly allowBashDelete?: boolean;
