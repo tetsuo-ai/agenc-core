@@ -18,6 +18,8 @@
  * post-fix assertion reddens (the result is ~100K tokens again).
  */
 
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import {
   capToolResult,
@@ -26,6 +28,7 @@ import {
   MIN_TOOL_RESULT_BYTES,
   runToolUse,
 } from "./execution.js";
+import { getToolResultPath } from "../utils/toolResultStorage.js";
 import type { Tool } from "./types.js";
 import type { ToolInvocation } from "./context.js";
 
@@ -265,5 +268,115 @@ describe("runToolUse — end-to-end model-aware cap", () => {
     expect(Buffer.byteLength(noWindowOut.content, "utf8")).toBeGreaterThan(
       Math.floor(LOCAL_WINDOW * 0.2 * TEXT_BYTES_PER_TOKEN),
     );
+  });
+});
+
+/**
+ * Technique D — model-aware OFFLOAD (persist full + reference), not a
+ * blind truncation. When a tool result exceeds the model-aware cap the
+ * FULL output is written to the session tool-results store and the model
+ * receives a REFERENCE (head preview + path + "read range to continue"),
+ * so no data is lost and the full output is recoverable via FileRead.
+ *
+ * REVERT PROOF: stash the `offloadOrCapToolResult` change in
+ * execution.ts so the cap site blind-truncates again → no file is
+ * persisted and the returned message contains no path / no
+ * "read … to see more" pointer → assertions (b)/(a)/(c) redden.
+ */
+describe("runToolUse — model-aware OFFLOAD (Technique D)", () => {
+  test("131K window: a 420 KB result is OFFLOADED (full persisted + reference), not blind-truncated", async () => {
+    const body = makeGenericText(420_000);
+    const callId = `c-offload-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-offload", body),
+      invocation: makeInvocation(callId, "dump-offload"),
+      contextWindowTokens: LOCAL_WINDOW,
+    });
+
+    // The wire message is bounded by the model-aware cap.
+    expect(out.isError).toBe(false);
+    expect(Buffer.byteLength(out.content, "utf8")).toBeLessThanOrEqual(
+      Math.floor(LOCAL_WINDOW * 0.2 * TEXT_BYTES_PER_TOKEN),
+    );
+
+    // (b) The message returned to the model is a REFERENCE, not a blind
+    // truncation: it names the persisted path and an actionable pointer.
+    const persistedPath = getToolResultPath(callId, false);
+    expect(out.content).toContain(persistedPath);
+    expect(out.content).toContain("saved to");
+    expect(out.content).toMatch(/read that file|read range|to see more/i);
+    // Sanity: it is NOT the legacy blind-truncation marker.
+    expect(out.content).not.toContain("[truncated: original was");
+
+    // (a) A file is PERSISTED holding the FULL original content.
+    const persisted = readFileSync(persistedPath, "utf8");
+    expect(persisted).toBe(body);
+
+    // (c) The full content is recoverable from the path (head preview is
+    // a strict prefix of the persisted full output).
+    const headStart = out.content.indexOf("\n") + 1;
+    const head = out.content.slice(headStart).split("\n[…truncated")[0];
+    expect(head.length).toBeGreaterThan(0);
+    expect(persisted.startsWith(head)).toBe(true);
+  });
+
+  test("(d) tool_use/tool_result pairing stays valid — the result keeps the callId", async () => {
+    const body = makeGenericText(420_000);
+    const callId = `c-pair-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-pair", body),
+      invocation: makeInvocation(callId, "dump-pair"),
+      contextWindowTokens: LOCAL_WINDOW,
+    });
+    // The output is the tool_result for this exact tool_use id — offload
+    // replaces the CONTENT only, never the pairing.
+    expect(out.callId).toBe(callId);
+    expect(out.isError).toBe(false);
+  });
+
+  test("(e) under the cap → returned unchanged, nothing persisted", async () => {
+    const body = makeGenericText(1_000);
+    const callId = `c-small-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-small", body),
+      invocation: makeInvocation(callId, "dump-small"),
+      contextWindowTokens: LOCAL_WINDOW,
+    });
+    expect(out.content).toBe(body);
+    // No reference message, no persisted-output pointer.
+    expect(out.content).not.toContain("saved to");
+    expect(() => readFileSync(getToolResultPath(callId, false), "utf8")).toThrow();
+  });
+
+  test("Claude / ≥200K window: a 420 KB result is NOT offloaded (fixed 400 KB ceiling, unaffected)", async () => {
+    const body = makeGenericText(420_000);
+    const callId = `c-claude-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-claude", body),
+      invocation: makeInvocation(callId, "dump-claude"),
+      contextWindowTokens: LARGE_WINDOW,
+    });
+    // 420 KB > 400 KB ceiling, so it still offloads at 400 KB — but the
+    // KEY invariant is that the cap value is the fixed ceiling, NOT the
+    // window-relative value, i.e. Claude's threshold is untouched.
+    expect(Buffer.byteLength(out.content, "utf8")).toBeLessThanOrEqual(
+      DEFAULT_MAX_TOOL_RESULT_BYTES,
+    );
+    // Below the 400 KB ceiling a large-window result is returned verbatim
+    // (no offload, no reference) — proving Claude's behavior is unchanged.
+    const underCeiling = makeGenericText(300_000);
+    const callId2 = `c-claude-under-${randomUUID()}`;
+    const out2 = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-claude-under", underCeiling),
+      invocation: makeInvocation(callId2, "dump-claude-under"),
+      contextWindowTokens: LARGE_WINDOW,
+    });
+    expect(out2.content).toBe(underCeiling);
+    expect(out2.content).not.toContain("saved to");
   });
 });
