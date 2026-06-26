@@ -117,7 +117,7 @@ interface ResolvedGlobTarget {
   readonly allowedPaths: readonly string[];
 }
 
-interface LimitedRipgrepResult {
+export interface LimitedRipgrepResult {
   readonly lines: readonly string[];
   readonly stderr: string;
   readonly exitCode: number | null;
@@ -282,7 +282,7 @@ function appendBoundedText(current: string, chunk: string): string {
     : next;
 }
 
-function runRipgrepFiles(params: {
+export function runRipgrepFiles(params: {
   readonly command: string;
   readonly pattern: string;
   readonly cwd: string;

@@ -47,6 +47,7 @@ import { createFileEditTool, createFileMultiEditTool, FILE_EDIT_TOOL_NAME, FILE_
 import { createFileWriteTool, FILE_WRITE_TOOL_NAME } from "./tools/system/file-write.js";
 import { createGlobTool, GLOB_TOOL_NAME } from "./tools/system/glob.js";
 import { createGrepTool, GREP_TOOL_NAME } from "./tools/system/grep.js";
+import { createOrientTool, ORIENT_TOOL_NAME } from "./tools/system/orient.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/planning.js";
 import { UnifiedExecProcessManager } from "./unified-exec/process-manager.js";
@@ -612,6 +613,9 @@ export function buildToolRegistry(
     createGrepTool({
       allowedPaths: [options.workspaceRoot],
     }),
+    createOrientTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
     createApplyPatchTool({
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
@@ -624,6 +628,7 @@ export function buildToolRegistry(
     "multiEdit": FILE_MULTI_EDIT_TOOL_NAME,
     "grep": GREP_TOOL_NAME,
     "glob": GLOB_TOOL_NAME,
+    "orient": ORIENT_TOOL_NAME,
   } as const;
   const interactionTools = [
     createAskUserQuestionTool(),
@@ -723,6 +728,7 @@ export function buildToolRegistry(
         firstClassFileSurface.write,
         firstClassFileSurface.glob,
         firstClassFileSurface.grep,
+        firstClassFileSurface.orient,
       ],
       stringArgumentFields: {
         [firstClassFileSurface.read]: "file_path",
@@ -731,6 +737,7 @@ export function buildToolRegistry(
         [firstClassFileSurface.multiEdit]: "file_path",
         [firstClassFileSurface.glob]: "pattern",
         [firstClassFileSurface.grep]: "pattern",
+        [firstClassFileSurface.orient]: "query",
         [APPLY_PATCH_TOOL_NAME]: "input",
       },
     },

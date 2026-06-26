@@ -67,6 +67,7 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     // Search / read-only
     "Grep",
     "Glob",
+    "Orient",
     "LSP",
     "ToolSearch",
     // gaphunt3 #9: WebFetch/WebSearch removed from the safe allowlist. They

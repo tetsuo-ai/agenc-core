@@ -24,6 +24,7 @@ import { FILE_READ_TOOL_NAME } from "../tools/FileReadTool/prompt.js";
 import { FILE_WRITE_TOOL_NAME } from "../tools/FileWriteTool/prompt.js";
 import { GLOB_TOOL_NAME } from "../tools/GlobTool/prompt.js";
 import { GREP_TOOL_NAME } from "../tools/GrepTool/prompt.js";
+import { ORIENT_TOOL_NAME } from "../tools/system/orient.js";
 import { NOTEBOOK_EDIT_TOOL_NAME } from "../tools/NotebookEditTool/constants.js";
 import { WEB_FETCH_TOOL_NAME } from "../tools/WebFetchTool/prompt.js";
 import { AGENT_TOOL_NAME } from "../tools/AgentTool/constants.js";
@@ -96,6 +97,7 @@ ${grepGuidance}
 - NEVER use ${BASH_TOOL_NAME} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
 - Adapt your search approach based on the thoroughness level specified by the caller
 - To understand or explain a repo/codebase, build a structural map FIRST: read README + manifests (package.json / Cargo.toml / Anchor.toml / pyproject.toml) + the top-level directory layout, then grep for entry points and exported symbols. Read implementation only in targeted spans (specific files, offset+limit) — never bulk-cat whole large or generated files.
+- To LOCATE where something lives ("where is X handled", "what touches Y"), prefer the ${ORIENT_TOOL_NAME} tool: it builds an on-the-fly structural map and returns a ranked shortlist of the most relevant files (plus their key symbols), so you read those few instead of grepping blindly or bulk-scanning. Use ${GREP_TOOL_NAME} for exact-string/regex matches and ${ORIENT_TOOL_NAME} for "where should I look".
 - Skip generated/build/vendored/ledger dirs (target/, dist/, build/, node_modules/, .localnet/, generated/). Search tools skip these by default; do not walk them.
 - Communicate your final report directly as a regular message - do NOT attempt to create files
 
