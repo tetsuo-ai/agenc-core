@@ -351,6 +351,90 @@ describe("registerAgentThreadTask", () => {
     });
   });
 
+  it("plumbs live tokenUsage and tool-use counts into the emitted snapshot progress", async () => {
+    const lifecycle = new BackgroundTaskLifecycle();
+    const status = new FakeStatus();
+    const joined = deferred<RunAgentResult>();
+    // A live handle whose accumulated counters look like a substantial run:
+    // 51000 cumulative tokens and 3 tool calls across the transcript.
+    const live = {
+      agentId: "agent-counts",
+      abortController: new AbortController(),
+      status,
+      tokenUsage: { totalTokens: 51000 },
+      messages: [
+        { role: "user", content: "build it" },
+        {
+          role: "assistant",
+          content: "running tools",
+          toolCalls: [
+            { id: "c1", name: "Bash", arguments: "{}" },
+            { id: "c2", name: "Edit", arguments: "{}" },
+          ],
+        },
+        { role: "tool", toolCallId: "c1", toolName: "Bash", content: "ok" },
+        {
+          role: "assistant",
+          content: "one more",
+          toolCalls: [{ id: "c3", name: "Read", arguments: "{}" }],
+        },
+      ],
+    };
+    const snapshots: Array<{
+      readonly status: string;
+      readonly toolUseCount?: number;
+      readonly tokenCount?: number;
+    }> = [];
+    const thread: AgentThreadTaskHandle = {
+      threadId: "agent-counts",
+      taskPrompt: "build a CLI",
+      live: live as unknown as AgentThreadTaskHandle["live"],
+      join: () => joined.promise,
+    };
+
+    registerAgentThreadTask(lifecycle, thread, {
+      // Disable the poller; drive snapshots through status transitions so the
+      // assertions are deterministic.
+      progressIntervalMs: 0,
+      onSnapshot: (snapshot) => {
+        snapshots.push({
+          status: snapshot.status,
+          toolUseCount: snapshot.progress?.toolUseCount,
+          tokenCount: snapshot.progress?.tokenCount,
+        });
+      },
+    });
+
+    status.set({ status: "running", turnId: "turn-1", startedAtMs: 10 });
+
+    // The running snapshot must carry the REAL live counts, not 0.
+    const running = lifecycle.get("agent-counts");
+    expect(running?.status).toBe("running");
+    expect(running?.progress?.toolUseCount).toBe(3);
+    expect(running?.progress?.tokenCount).toBe(51000);
+
+    // The registration snapshot fires before the first progress refresh, so
+    // assert on the LATEST running snapshot the subscriber observed.
+    const runningSnapshots = snapshots.filter((s) => s.status === "running");
+    const latestRunning = runningSnapshots.at(-1);
+    expect(latestRunning?.toolUseCount).toBe(3);
+    expect(latestRunning?.tokenCount).toBe(51000);
+
+    joined.resolve({
+      threadId: "agent-counts",
+      durationMs: 10,
+      outcome: "completed",
+      finalMessage: "done",
+    });
+    await flush();
+
+    // The terminal snapshot must preserve the final counts, never reset to 0.
+    const completed = lifecycle.get("agent-counts");
+    expect(completed?.status).toBe("completed");
+    expect(completed?.progress?.toolUseCount).toBe(3);
+    expect(completed?.progress?.tokenCount).toBe(51000);
+  });
+
   it("starts AgentSummary for registered threads and writes progress summaries", async () => {
     vi.useFakeTimers();
     try {

@@ -639,6 +639,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             reasoningEffort ??
             session.sessionConfiguration.collaborationMode.reasoningEffort,
           status: snapshot.status,
+          // Forward the live per-agent tool-use + token counts so the fan-out
+          // rail / fleet panel show real activity for collab-spawned agents
+          // instead of a frozen `tools 0 tokens 0`. The snapshot's progress is
+          // refreshed from the live handle by registerAgentThreadTask.
+          ...(snapshot.progress?.toolUseCount !== undefined
+            ? { toolUseCount: snapshot.progress.toolUseCount }
+            : {}),
+          ...(snapshot.progress?.tokenCount !== undefined
+            ? { tokenCount: snapshot.progress.tokenCount }
+            : {}),
           ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
         },
       });

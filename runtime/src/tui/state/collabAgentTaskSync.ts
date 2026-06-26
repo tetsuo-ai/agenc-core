@@ -1,6 +1,7 @@
 import type { LocalAgentTaskState, TaskState, TaskStatus } from "../../tasks/types.js";
 import {
   isTaskRecord,
+  taskNumberField,
   taskStringField,
 } from "../../tasks/record-fields.js";
 
@@ -28,6 +29,8 @@ type CollabAgentTaskPatch = {
   readonly role?: string;
   readonly model?: string;
   readonly error?: string;
+  readonly toolUseCount?: number;
+  readonly tokenCount?: number;
 };
 
 function collabStatusToTaskStatus(status: unknown): TaskStatus {
@@ -134,6 +137,8 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
     const id = taskStringField(payload, "threadId");
     if (!id) return null;
     const status = collabStatusToTaskStatus(payload.status);
+    const toolUseCount = taskNumberField(payload, "toolUseCount");
+    const tokenCount = taskNumberField(payload, "tokenCount");
     return {
       id,
       status,
@@ -146,6 +151,11 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
         taskStringField(payload, "agentRoleDisplayName") ??
         taskStringField(payload, "agentRole"),
       model: taskStringField(payload, "model"),
+      // Live per-agent activity counts forwarded by the daemon collab event
+      // (spawn.ts emitTaskStatus). These are what make the fan-out rail show
+      // real `tools N tokens N` for a daemon-spawned agent instead of 0.
+      ...(toolUseCount !== undefined ? { toolUseCount } : {}),
+      ...(tokenCount !== undefined ? { tokenCount } : {}),
       error:
         collabStatusError(payload.status) ??
         (status === "failed" ? taskStringField(payload, "error") : undefined),
@@ -231,6 +241,22 @@ function applyPatch(
     patch.status === "completed" ||
     patch.status === "failed" ||
     patch.status === "killed";
+  // Merge live tool-use/token counts (forwarded by the daemon collab status
+  // event) into the task's progress so AgentsRail renders real per-agent
+  // activity. Carry the latest non-undefined count forward; never regress a
+  // known count back to 0 when a later patch omits it.
+  const nextToolUseCount =
+    patch.toolUseCount ?? previousAgent?.progress?.toolUseCount;
+  const nextTokenCount =
+    patch.tokenCount ?? previousAgent?.progress?.tokenCount;
+  const progress =
+    nextToolUseCount !== undefined || nextTokenCount !== undefined
+      ? {
+          ...previousAgent?.progress,
+          toolUseCount: nextToolUseCount ?? 0,
+          tokenCount: nextTokenCount ?? 0,
+        }
+      : previousAgent?.progress;
   const evictAfter =
     ended && previousAgent?.retain !== true
       ? previousAgent?.evictAfter ?? now + PANEL_GRACE_MS
@@ -251,14 +277,16 @@ function applyPatch(
     ...(patch.error !== undefined ? { error: patch.error } : {}),
     retrieved: previousAgent?.retrieved ?? false,
     ...(previousAgent?.messages !== undefined ? { messages: previousAgent.messages } : {}),
-    lastReportedToolCount: previousAgent?.lastReportedToolCount ?? 0,
-    lastReportedTokenCount: previousAgent?.lastReportedTokenCount ?? 0,
+    lastReportedToolCount:
+      progress?.toolUseCount ?? previousAgent?.lastReportedToolCount ?? 0,
+    lastReportedTokenCount:
+      progress?.tokenCount ?? previousAgent?.lastReportedTokenCount ?? 0,
     isBackgrounded: true,
     pendingMessages: previousAgent?.pendingMessages ?? [],
     retain: previousAgent?.retain ?? false,
     diskLoaded: previousAgent?.diskLoaded ?? false,
     selectedAgent: previousAgent?.selectedAgent ?? { name: title },
-    ...(previousAgent?.progress !== undefined ? { progress: previousAgent.progress } : {}),
+    ...(progress !== undefined ? { progress } : {}),
     ...(ended ? { endTime: previousAgent?.endTime ?? now } : {}),
     ...(previousAgent?.abortController !== undefined
       ? { abortController: previousAgent.abortController }

@@ -170,6 +170,71 @@ describe("syncCollabAgentEventToAppState", () => {
     });
   });
 
+  it("plumbs live tool-use and token counts from collab status events into task progress", () => {
+    const spawned = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "Builder",
+        newAgentRoleDisplayName: "Default",
+        prompt: "build a CLI",
+        status: { status: "pending_init" },
+      },
+    });
+
+    // First live status update carries real, nonzero per-agent activity —
+    // the exact data the live run showed as `tools 0 tokens 0`.
+    const running = applyEvent(spawned, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        agentNickname: "Builder",
+        status: "running",
+        toolUseCount: 7,
+        tokenCount: 48213,
+      },
+    });
+
+    // The rail reads task.progress.{toolUseCount,tokenCount}; assert the REAL
+    // values landed there (nonzero), not the default 0.
+    expect(running.tasks.agent_1?.progress?.toolUseCount).toBe(7);
+    expect(running.tasks.agent_1?.progress?.tokenCount).toBe(48213);
+    // The "last reported" mirrors used by the rail/notifier must follow too.
+    expect(running.tasks.agent_1?.lastReportedToolCount).toBe(7);
+    expect(running.tasks.agent_1?.lastReportedTokenCount).toBe(48213);
+
+    // A later update advances the counts...
+    const advanced = applyEvent(running, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        status: "running",
+        toolUseCount: 12,
+        tokenCount: 91044,
+      },
+    });
+    expect(advanced.tasks.agent_1?.progress?.toolUseCount).toBe(12);
+    expect(advanced.tasks.agent_1?.progress?.tokenCount).toBe(91044);
+
+    // ...and a terminal update that omits the counts must NOT regress them to 0.
+    const completed = applyEvent(advanced, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        status: "completed",
+      },
+    });
+    expect(completed.tasks.agent_1?.status).toBe("completed");
+    expect(completed.tasks.agent_1?.progress?.toolUseCount).toBe(12);
+    expect(completed.tasks.agent_1?.progress?.tokenCount).toBe(91044);
+  });
+
   it("keeps terminal retained agent tasks visible until the view releases them", () => {
     const spawned = applyEvent(baseState(), {
       type: "collab_agent_spawn_end",
