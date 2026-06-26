@@ -18,6 +18,7 @@ import {
 const MINIMAL_TUI_NAMES = [
   "help",
   "status",
+  "cost",
   "model",
   "provider",
   "permissions",
@@ -46,6 +47,7 @@ const MINIMAL_TUI_NAMES = [
 const DAEMON_TUI_NAMES = [
   "help",
   "status",
+  "cost",
   "model",
   "provider",
   "permissions",
@@ -77,7 +79,6 @@ const REMOVED_TUI_NAMES = [
   "color",
   "commit",
   "copy",
-  "cost",
   "doctor",
   "export",
   "files",
@@ -93,10 +94,8 @@ const REMOVED_TUI_NAMES = [
   "review",
   "rewind",
   "sandbox",
-  "stats",
   "terminal-setup",
   "theme",
-  "usage",
   "wiki",
 ] as const;
 

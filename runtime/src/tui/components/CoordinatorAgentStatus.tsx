@@ -11,9 +11,10 @@ import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box } from '../ink.js';
 import { type AppState, useAppState, useSetAppState } from '../state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../state/teammateViewHelpers';
-import { isPanelAgentTask, type LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask';
+import { isLocalAgentTask, isPanelAgentTask, type LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask';
 import { agentRolePresentation } from '../../agents/role-presentation.js';
 import { formatDuration, formatNumber } from '../../utils/format';
+import { estimateAgentCostUsd, formatUsdCost } from '../../session/cost.js';
 import { evictTerminalTask } from '../../utils/task/framework';
 import { isTerminalStatus } from './tasks/taskStatusUtils';
 import { AURA_LIFECYCLE_GLYPHS } from '../../utils/theme.js';
@@ -150,7 +151,7 @@ export function CoordinatorTaskPanel(): React.ReactNode {
         <ThemedText color="text2">{visibleTasks.length} active</ThemedText>
       </Box>
       <FleetHeader />
-      <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} onClick={() => exitTeammateView(setAppState)} />
+      <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} tokens={orchestratorTokenLabel(tasks)} onClick={() => exitTeammateView(setAppState)} />
       {visibleTasks.map((task, i) => <AgentLine key={task.id} task={task} name={nameByAgentId.get(task.id)} isSelected={selectedIndex === i + 1} isViewed={viewingAgentTaskId === task.id} onClick={() => enterTeammateView(task.id, setAppState)} />)}
       {focusedTask ? <FocusedAgentBlock task={focusedTask} name={nameByAgentId.get(focusedTask.id)} /> : null}
     </ThemedBox>;
@@ -206,6 +207,42 @@ function taskLastAction(task: LocalAgentTaskState): string {
 function taskTokenLabel(task: LocalAgentTaskState): string {
   const tokenCount = task.progress?.tokenCount;
   return tokenCount !== undefined && tokenCount > 0 ? `${formatNumber(tokenCount)} tokens` : '—';
+}
+
+/**
+ * Per-agent spend label for the focused-agent block. The TUI surfaces a per-
+ * agent TOTAL token count (progress.tokenCount) and the agent's model, but no
+ * input/output split — so this is an ESTIMATE (suffixed "est.") derived via
+ * the same cost registry the live sidecar uses. Returns "—" when no real
+ * token count / resolvable model is available; never fabricates "$0.00".
+ */
+export function taskSpendLabel(task: LocalAgentTaskState): string {
+  const estimate = estimateAgentCostUsd({
+    totalTokens: task.progress?.tokenCount,
+    model: task.model,
+  });
+  if (estimate === null) return '—';
+  return `${formatUsdCost(estimate.costUsd)} est.`;
+}
+
+/**
+ * Token label for the orchestrator (main-session) row. Reads the live
+ * main-session task's accumulated token count from AppState so the row shows
+ * real usage instead of a hardcoded dash. "—" only when no main-session task
+ * has reported a token count yet.
+ */
+export function orchestratorTokenLabel(tasks: AppState['tasks']): string {
+  let total = 0;
+  for (const task of Object.values(tasks)) {
+    if (
+      isLocalAgentTask(task) &&
+      task.agentType === 'main-session' &&
+      typeof task.progress?.tokenCount === 'number'
+    ) {
+      total += task.progress.tokenCount;
+    }
+  }
+  return total > 0 ? `${formatNumber(total)} tokens` : '—';
 }
 
 function taskScopeLabel(task: LocalAgentTaskState): string {
@@ -302,7 +339,7 @@ function FocusedAgentBlock({
       </Box>
       <Box flexDirection="row">
         <ThemedText color="muted3">progress </ThemedText><ThemedText color="worker">{progressGlyph} {task.progress?.toolUseCount ?? 0} tools</ThemedText>
-        <ThemedText color="muted3"> · spend —</ThemedText>
+        <ThemedText color="muted3"> · spend </ThemedText><ThemedText color="text2">{taskSpendLabel(task)}</ThemedText>
       </Box>
       {queuedCount > 0 ? (
         <Box flexDirection="row">
@@ -320,13 +357,19 @@ function FocusedAgentBlock({
   );
 }
 
-function MainLine(t0) {
+function MainLine(t0: {
+  isSelected?: boolean;
+  isViewed?: boolean;
+  tokens?: string;
+  onClick: () => void;
+}) {
   const {
     isSelected,
     isViewed,
+    tokens,
     onClick
   } = t0;
-  return <FleetRow nameRole="orchestrator · Orchestrator" status={`${AURA_LIFECYCLE_GLYPHS.done} active`} statusColor="agenc" lastAction="main session" tokens="—" age="now" selected={isSelected || isViewed} onClick={onClick} />;
+  return <FleetRow nameRole="orchestrator · Orchestrator" status={`${AURA_LIFECYCLE_GLYPHS.done} active`} statusColor="agenc" lastAction="main session" tokens={tokens ?? "—"} age="now" selected={isSelected || isViewed} onClick={onClick} />;
 }
 type AgentLineProps = {
   task: LocalAgentTaskState;

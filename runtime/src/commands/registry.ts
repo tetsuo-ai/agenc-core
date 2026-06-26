@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import { helpCommand } from "./help.js";
 import { statusCommand } from "./status.js";
+import { costCommand } from "./cost.js";
 import { diffCommand } from "./diff.js";
 import { exitCommand } from "./exit.js";
 import { clearCommand } from "./clear.js";
@@ -127,8 +128,8 @@ function commandSupportsSurface(
  * Build the default user-invocable slash registry.
  *
  * Presentation order matches the runtime stabilization minimal surface:
- * /help, /status, /model, /provider, /permissions, /plan, /agents, /tasks,
- * /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
+ * /help, /status, /cost, /model, /provider, /permissions, /plan, /agents,
+ * /tasks, /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
  * /clear, /compact, /context, /diff, protocol commands, /exit.
  */
 export function buildDefaultRegistry(
@@ -137,6 +138,7 @@ export function buildDefaultRegistry(
   return CommandRegistry.fromCommands([
     helpCommand,
     statusCommand,
+    costCommand,
     modelCommand,
     providerCommand,
     permissionsCommand,

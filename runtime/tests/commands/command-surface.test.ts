@@ -28,6 +28,7 @@ import type { SlashCommandContext } from "./types.js";
 const MINIMAL_NAMES = [
   "help",
   "status",
+  "cost",
   "model",
   "provider",
   "permissions",

@@ -572,6 +572,70 @@ function costLookupKeys(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Per-agent cost estimation (D7 fleet-panel spend column)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Default split assumption used when only a TOTAL token count is known for a
+ * spawned agent. The TUI fan-out rail surfaces `progress.tokenCount`
+ * (= `live.tokenUsage.totalTokens`) but NOT the input/output breakdown, so a
+ * single rate can't be applied directly. A 3:1 input:output ratio is the
+ * conventional shape of a tool-using coding turn (large prompt + context,
+ * smaller completion). The resulting figure is always surfaced as an
+ * ESTIMATE — never presented as a billed amount.
+ */
+const AGENT_COST_ESTIMATE_INPUT_SHARE = 0.75;
+
+export interface AgentCostEstimate {
+  readonly costUsd: number;
+  /** True only when the model resolved to a known registry entry. */
+  readonly known: boolean;
+}
+
+/**
+ * Estimate the USD cost of a spawned agent from its total token count and
+ * model slug, reusing the same {@link computeUsdCostWithResolution} machinery
+ * the live cost sidecar and per-agent dollar caps use. Returns `null` when no
+ * usable token count is available (so the caller renders a dash rather than a
+ * fabricated `$0.00`).
+ *
+ * The split between input/output tokens is unknown on the TUI side, so this
+ * applies {@link AGENT_COST_ESTIMATE_INPUT_SHARE} and flags the result as an
+ * estimate. Honesty contract: callers MUST label the output (e.g. trailing
+ * "est.") and MUST dash when this returns `null`.
+ */
+export function estimateAgentCostUsd(params: {
+  readonly totalTokens: number | undefined;
+  readonly model: string | undefined;
+  readonly provider?: string;
+  readonly registry?: Readonly<Record<string, ModelCostEntry>>;
+}): AgentCostEstimate | null {
+  const total = params.totalTokens;
+  if (total === undefined || !Number.isFinite(total) || total <= 0) return null;
+  const model = params.model?.trim();
+  if (model === undefined || model.length === 0) return null;
+  const inputTokens = Math.round(total * AGENT_COST_ESTIMATE_INPUT_SHARE);
+  const outputTokens = Math.max(0, total - inputTokens);
+  const usage: ModelUsage = {
+    model,
+    ...(params.provider !== undefined ? { provider: params.provider } : {}),
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    webSearchRequests: 0,
+    totalTokens: total,
+    turns: 0,
+  };
+  const resolved = computeUsdCostWithResolution(
+    usage,
+    params.registry ?? DEFAULT_MODEL_COSTS,
+  );
+  return { costUsd: resolved.costUsd, known: resolved.known };
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Formatting helpers
 // ─────────────────────────────────────────────────────────────────────
 
