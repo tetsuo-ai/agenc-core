@@ -34,6 +34,32 @@ function finalMessageMetadata(
   return { finalMessage };
 }
 
+/**
+ * Derive the live per-agent tool-use + token counts for a spawned
+ * subagent. For DAEMON/collab-spawned agents the runner accumulates token
+ * usage on `live.tokenUsage` and records tool calls in the live transcript;
+ * this reads both so the fan-out rail reflects real activity instead of 0.
+ * Returns `undefined` when neither signal is available (so we don't clobber
+ * a previously-recorded progress with zeros).
+ */
+function liveAgentCounts(
+  thread: AgentThreadTaskHandle,
+): { readonly toolUseCount: number; readonly tokenCount: number } | undefined {
+  const tokenCount = thread.live.tokenUsage?.totalTokens;
+  const messages = thread.live.messages;
+  let toolUseCount = 0;
+  let sawMessages = false;
+  if (messages !== undefined) {
+    sawMessages = true;
+    for (const message of messages) {
+      const calls = message.toolCalls;
+      if (calls !== undefined) toolUseCount += calls.length;
+    }
+  }
+  if (tokenCount === undefined && !sawMessages) return undefined;
+  return { toolUseCount, tokenCount: tokenCount ?? 0 };
+}
+
 export interface AgentThreadTaskHandle {
   readonly threadId?: string;
   readonly threadName?: string;
@@ -56,6 +82,18 @@ export interface AgentThreadTaskHandle {
       readonly value: AgentStatus;
       subscribe?: (listener: (status: AgentStatus) => void) => () => void;
     };
+    /**
+     * Cumulative token usage for this live subagent. Populated by the
+     * runner's per-turn `usage_update` accumulation (run-agent.ts). Read
+     * each time a status snapshot is emitted so the fan-out rail shows
+     * real per-agent token counts for DAEMON/collab-spawned agents, not 0.
+     */
+    readonly tokenUsage?: { readonly totalTokens?: number };
+    /**
+     * Live child transcript. Assistant messages carry `toolCalls`; their
+     * total length is the per-agent tool-use count surfaced on the rail.
+     */
+    readonly messages?: ReadonlyArray<LLMMessage>;
   };
   join(): Promise<RunAgentResult>;
 }
@@ -65,6 +103,12 @@ export interface RegisterAgentThreadTaskOptions {
   readonly description?: string;
   readonly onStop?: (thread: AgentThreadTaskHandle, reason: string) => Promise<void> | void;
   readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
+  /**
+   * Cadence (ms) for polling the live subagent's accumulated token/tool
+   * counters and emitting refreshed progress snapshots. Defaults to 1000ms.
+   * Set to `0` to disable the poller (tests that drive snapshots manually).
+   */
+  readonly progressIntervalMs?: number;
   readonly summary?: {
     readonly cacheSafeParams?: CacheSafeParams;
     readonly intervalMs?: number;
@@ -92,6 +136,28 @@ export function registerAgentThreadTask(
     unsubscribeSummaryCacheSafeParams?.();
     unsubscribeSummaryCacheSafeParams = null;
   };
+  // Refresh the lifecycle record's progress from the live subagent's
+  // accumulated counters before a snapshot is emitted. This is the hop that
+  // was missing for DAEMON/collab-spawned agents: their token usage + tool
+  // calls accumulate on the live handle, but nothing copied them into the
+  // task progress the fan-out rail reads — so every row showed `tools 0
+  // tokens 0`. `updateAgentProgress` is a no-op on terminal records, so the
+  // final counts captured on the last running snapshot survive into the
+  // completion snapshot.
+  const refreshLiveProgress = (): BackgroundTaskSnapshot | undefined => {
+    const counts = liveAgentCounts(thread);
+    if (counts === undefined) return undefined;
+    try {
+      return lifecycle.updateAgentProgress(threadId, {
+        toolUseCount: counts.toolUseCount,
+        tokenCount: counts.tokenCount,
+      });
+    } catch {
+      // The record may already be removed/terminal when a late status
+      // transition arrives; dropping the progress update is harmless.
+      return undefined;
+    }
+  };
   const notifySnapshot = (snapshot: BackgroundTaskSnapshot): BackgroundTaskSnapshot => {
     opts.onSnapshot?.(snapshot);
     return snapshot;
@@ -117,6 +183,7 @@ export function registerAgentThreadTask(
         : {}),
     },
     onStop: async (reason) => {
+      stopProgressTimer();
       stopSummary();
       if (opts.onStop) {
         await opts.onStop(thread, reason);
@@ -176,12 +243,53 @@ export function registerAgentThreadTask(
     );
   }
 
+  // Status transitions alone are too coarse to surface live progress: a
+  // collab/daemon subagent stays "running" for its whole turn, so without a
+  // periodic refresh the rail would hold `tools 0 tokens 0` until completion.
+  // Poll the live handle's accumulated counters on a modest cadence and emit
+  // a refreshed snapshot whenever they advance, mirroring how the in-process
+  // AgentTool path emits progress per assistant message.
+  let lastEmittedToolUse = -1;
+  let lastEmittedTokens = -1;
+  const progressTimer: ReturnType<typeof setInterval> | undefined =
+    opts.progressIntervalMs === 0
+      ? undefined
+      : setInterval(() => {
+          if (isTerminalAgentStatus(thread.live.status.value)) return;
+          const counts = liveAgentCounts(thread);
+          if (counts === undefined) return;
+          if (
+            counts.toolUseCount === lastEmittedToolUse &&
+            counts.tokenCount === lastEmittedTokens
+          ) {
+            return;
+          }
+          lastEmittedToolUse = counts.toolUseCount;
+          lastEmittedTokens = counts.tokenCount;
+          const snapshot = refreshLiveProgress();
+          if (snapshot !== undefined) notifySnapshot(snapshot);
+        }, opts.progressIntervalMs ?? 1_000);
+  if (progressTimer !== undefined && typeof progressTimer.unref === "function") {
+    progressTimer.unref();
+  }
+  const stopProgressTimer = (): void => {
+    if (progressTimer !== undefined) clearInterval(progressTimer);
+  };
+
   const unsubscribe =
     typeof thread.live.status.subscribe === "function"
       ? thread.live.status.subscribe((status) => {
+          // Refresh live token/tool counts before mapping the status so the
+          // resulting snapshot (markRunning/complete/fail) carries them. Runs
+          // while the record is still non-terminal so the final counts land
+          // on the record before a terminal transition freezes progress.
+          refreshLiveProgress();
           const snapshot = mapAgentStatus(lifecycle, threadId, status);
           if (snapshot !== undefined) notifySnapshot(snapshot);
-          if (isTerminalAgentStatus(status)) stopSummary();
+          if (isTerminalAgentStatus(status)) {
+            stopProgressTimer();
+            stopSummary();
+          }
         })
       : () => {};
 
@@ -189,6 +297,10 @@ export function registerAgentThreadTask(
   if (joinPromise && typeof joinPromise.then === "function") {
     lifecycle.bindPromise(threadId, joinPromise, {
       onFulfilled: (result) => {
+        // Capture the final live counts while the record is still
+        // non-terminal; the imminent complete/fail transition freezes them.
+        refreshLiveProgress();
+        stopProgressTimer();
         stopSummary();
         unsubscribe();
         switch (result.outcome) {
@@ -236,6 +348,8 @@ export function registerAgentThreadTask(
         }
       },
       onRejected: (error) => {
+        refreshLiveProgress();
+        stopProgressTimer();
         stopSummary();
         unsubscribe();
         return { error: error instanceof Error ? error.message : String(error) };
@@ -244,9 +358,13 @@ export function registerAgentThreadTask(
     });
   }
 
+  refreshLiveProgress();
   const snapshot = mapAgentStatus(lifecycle, threadId, thread.live.status.value);
   if (snapshot !== undefined) notifySnapshot(snapshot);
-  if (isTerminalAgentStatus(thread.live.status.value)) stopSummary();
+  if (isTerminalAgentStatus(thread.live.status.value)) {
+    stopProgressTimer();
+    stopSummary();
+  }
   return task;
 }
 

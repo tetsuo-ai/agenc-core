@@ -13,6 +13,7 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import { syncCollabAgentEventToAppState } from "../../../src/tui/state/collabAgentTaskSync.js";
 import { AgentsRail } from "../../../src/tui/workbench/agents/AgentsRail.js";
 import { renderToAnsiString, renderToString } from "../../../src/utils/staticRender.js";
 import { ThemeProvider } from "../../../src/tui/components/design-system/ThemeProvider.js";
@@ -189,6 +190,54 @@ describe("AgentsRail", () => {
     expect(output).toContain("ok completed agent");
     expect(output).toContain("x killed agent");
     expect(output).not.toContain("hidden shell");
+  });
+
+  it("renders the real per-agent tool/token counts for a daemon-spawned collab agent", async () => {
+    // Build the task the same way the live daemon path does: a collab_agent_status
+    // event carrying nonzero tool-use + token counts flows through the sync layer.
+    let synced: AppState = { tasks: {} } as AppState;
+    syncCollabAgentEventToAppState(
+      {
+        type: "collab_agent_spawn_end",
+        payload: {
+          newThreadId: "fleet-agent",
+          newAgentNickname: "Compiler",
+          prompt: "compile and run the CLI",
+          status: { status: "running" },
+        },
+      },
+      (updater) => {
+        synced = updater(synced as never) as AppState;
+      },
+    );
+    syncCollabAgentEventToAppState(
+      {
+        type: "collab_agent_status",
+        payload: {
+          callId: "c1",
+          senderThreadId: "root",
+          threadId: "fleet-agent",
+          status: "running",
+          toolUseCount: 9,
+          tokenCount: 73210,
+        },
+      },
+      (updater) => {
+        synced = updater(synced as never) as AppState;
+      },
+    );
+
+    const railTask = (synced.tasks as Record<string, any>)["fleet-agent"];
+    const output = (await renderAgentsRail({
+      tasks: [railTask],
+      selectedAgentTaskId: "fleet-agent",
+      width: 90,
+    })).output;
+
+    // The exact bug was a frozen `tools 0 tokens 0`; the rail must now show the
+    // real values plumbed through the daemon collab status event.
+    expect(output).toContain("tools 9 tokens 73210");
+    expect(output).not.toContain("tools 0 tokens 0");
   });
 
   it("does not advertise stop shortcuts for remote agents that cannot be stopped locally", async () => {

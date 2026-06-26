@@ -489,6 +489,18 @@ export interface CollabAgentStatusEvent {
   readonly model?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus | CollabAgentTaskStatus;
+  /**
+   * Live per-agent tool-use count (cumulative tool calls observed on the
+   * spawned subagent's transcript). Forwarded to the fan-out rail so a
+   * collab-spawned agent shows real activity instead of `tools 0`.
+   */
+  readonly toolUseCount?: number;
+  /**
+   * Live per-agent cumulative token usage for the spawned subagent.
+   * Forwarded to the fan-out rail so a collab-spawned agent shows real
+   * token consumption instead of `tokens 0` — the prerequisite for cost.
+   */
+  readonly tokenCount?: number;
   readonly error?: string;
 }
 
