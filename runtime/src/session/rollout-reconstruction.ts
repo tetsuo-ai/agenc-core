@@ -51,6 +51,16 @@ import {
   DEFAULT_MAX_TOOL_RESULT_BYTES,
 } from "./_deps/tool-execution.js";
 import {
+  computePrefixHash,
+  currentBuildId,
+  findDanglingToolUses,
+  type ResumableTurn,
+} from "./durable-turns.js";
+import type {
+  TurnCheckpointEvent,
+  TurnCheckpointSliceLine,
+} from "./event-log.js";
+import {
   startsWithRealtimeConversationOpenTag,
 } from "../conversation/realtime/instructions/markers.js";
 import {
@@ -107,6 +117,15 @@ export interface RolloutReconstruction {
   readonly referenceContextItem?: TurnContextItem;
   /** Orphaned TurnStarted events that got synthetic TurnAborted. */
   readonly orphanedTurnIds: ReadonlyArray<string>;
+  /**
+   * GOAL #4b Stage 1 — durable resume descriptors. For each orphaned turn
+   * that carried a durable `turn_checkpoint`, the highest-seq checkpoint
+   * surfaced with its build-pin + prefix-hash validation results. The
+   * resume path consumes these; an orphan with NO checkpoint produces NO
+   * descriptor and falls back to EXACTLY today's process_killed + fresh
+   * turn (backward compat). Always non-undefined (empty when none).
+   */
+  readonly resumableTurns: ReadonlyArray<ResumableTurn>;
   /** Any synthesized events (I-48, I-25 snapshot-mismatch). Callers
    *  emit these warnings into the live event log. */
   readonly synthesizedEvents: ReadonlyArray<RolloutItem>;
@@ -680,14 +699,79 @@ export function reconstructFromRollout(
     processed: rolloutSuffix.length,
   };
 
+  // GOAL #4b Stage 1 — collect per-turn build pin + highest-seq durable
+  // checkpoint via a dedicated forward pass over ALL rollout items (the
+  // reverse scan above early-terminates, so it is NOT a reliable place to
+  // gather every checkpoint). A turn with NO checkpoint contributes nothing
+  // here → it falls back to EXACTLY today's process_killed path below.
+  const turnBuildIds = new Map<string, string | undefined>();
+  const highestCheckpointByTurn = new Map<string, TurnCheckpointEvent>();
+  for (const item of rolloutItems) {
+    if (item.type !== "event_msg") continue;
+    const inner = item.payload.msg as { type?: string; payload?: unknown };
+    if (inner.type === "turn_started") {
+      const p = inner.payload as { turnId?: string; buildId?: string };
+      if (typeof p?.turnId === "string") {
+        turnBuildIds.set(p.turnId, p.buildId);
+      }
+    } else if (inner.type === "turn_checkpoint") {
+      const p = inner.payload as TurnCheckpointEvent | undefined;
+      if (p === undefined || typeof p.turnId !== "string") continue;
+      const prev = highestCheckpointByTurn.get(p.turnId);
+      if (prev === undefined || p.checkpointSeq > prev.checkpointSeq) {
+        highestCheckpointByTurn.set(p.turnId, p);
+      }
+    }
+  }
+
   // I-48: orphan-TurnStarted recovery. For each started-but-not-terminated
   // turn, synthesize a TurnAborted{reason:'process_killed'} event so
   // reducers downstream see a consistent turn lifecycle.
   const orphanedTurnIds: string[] = [];
+  const resumableTurns: ResumableTurn[] = [];
+  const expectedBuildId = currentBuildId();
   const synthesized: RolloutItem[] = [];
   for (const turnId of seenStarted) {
     if (!seenTerminated.has(turnId)) {
       orphanedTurnIds.push(turnId);
+
+      // GOAL #4b Stage 1 — surface a resume descriptor when this orphan
+      // carried a durable checkpoint. Validate the build pin (§3.6) and the
+      // content prefix hash (§5) against the reconstructed history. The
+      // descriptor is ALWAYS additive — the process_killed synthesis below
+      // is still emitted, so an orphan with no checkpoint (or a failing
+      // gate) is byte-identical to today; only the resume CONSUMER acts on
+      // a descriptor whose gates pass.
+      const checkpoint = highestCheckpointByTurn.get(turnId);
+      if (checkpoint !== undefined) {
+        const buildId = turnBuildIds.get(turnId);
+        const buildMatches = buildId === expectedBuildId;
+        const reconstructedPrefix = state.history.slice(
+          0,
+          checkpoint.persistedMessageCount,
+        );
+        const historyPrefixValid =
+          reconstructedPrefix.length === checkpoint.persistedMessageCount &&
+          computePrefixHash(
+            reconstructedPrefix,
+            checkpoint.persistedMessageCount,
+          ) === checkpoint.prefixHash;
+        resumableTurns.push({
+          turnId,
+          ...(buildId !== undefined ? { buildId } : {}),
+          buildMatches,
+          historyPrefixValid,
+          lastCheckpoint: {
+            iterationIndex: checkpoint.iterationIndex,
+            checkpointSeq: checkpoint.checkpointSeq,
+            persistedMessageCount: checkpoint.persistedMessageCount,
+            prefixHash: checkpoint.prefixHash,
+            resumableState:
+              checkpoint.resumableState as TurnCheckpointSliceLine,
+          },
+          danglingToolUses: findDanglingToolUses(reconstructedPrefix),
+        });
+      }
       synthesized.push({
         type: "event_msg",
         payload: {
@@ -756,6 +840,7 @@ export function reconstructFromRollout(
   const result: RolloutReconstruction = {
     history: state.history,
     orphanedTurnIds,
+    resumableTurns,
     synthesizedEvents: synthesized,
     state,
     rolledBackTurnsConsumed: state.rolledBackTurns,

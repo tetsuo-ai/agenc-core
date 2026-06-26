@@ -36,6 +36,7 @@ import { forkSnapshotRollout } from "../agents/thread-rollout-truncation.js";
 import { maybePrewarmAgentTaskRegistration } from "../session/agent-task-lifecycle.js";
 import { scheduleProviderStartupPrewarm } from "../session/startup-prewarm.js";
 import type { IndexSnapshot } from "../session/session-store.js";
+import { SessionLock } from "../session/session-store.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { LLMContentPart } from "../llm/types.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
@@ -44,6 +45,12 @@ import {
   reconstructFromRollout,
   type RolloutReconstruction,
 } from "../session/rollout-reconstruction.js";
+import {
+  classifyDanglingToolUses,
+  resolveDurableTurnsConfig,
+  type ResumableTurn,
+} from "../session/durable-turns.js";
+import { isResumeReplaySafe } from "../tool-registry.js";
 import type { Session, SessionState } from "../session/session.js";
 
 export type ConversationPrewarmState =
@@ -330,6 +337,11 @@ export class ConversationThreadManager extends ThreadManager {
       session,
       reconstruction,
     );
+
+    // GOAL #4b Stage 1 — stash the reconstruction so the prewarm hook can
+    // consult its `resumableTurns` and resume-continue an orphaned in-flight
+    // turn instead of discarding it.
+    lastReconstructionBySession.set(session, reconstruction);
 
     if (opts.emitSynthesized === true) {
       emitSynthesizedEvents(session, reconstruction.synthesizedEvents, opts);
@@ -647,10 +659,194 @@ function emitSynthesizedEvents(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// GOAL #4b Stage 1 — durable-turn resume.
+//
+// The reconstruction surfaces `ResumableTurn` descriptors; the live session
+// they belong to is matched here. We stash the reconstruction per-session so
+// the lightweight prewarm hook can consult it without changing its public
+// signature.
+// ─────────────────────────────────────────────────────────────────────
+
+const lastReconstructionBySession = new WeakMap<Session, RolloutReconstruction>();
+
+export interface DurableResumeAttempt {
+  /** True when the turn was resumed-continued (vs left for a fresh turn). */
+  readonly resumed: boolean;
+  /** When not resumed, why — for telemetry / tests. */
+  readonly reason?:
+    | "disabled"
+    | "no-checkpoint"
+    | "build-mismatch"
+    | "prefix-mismatch"
+    | "lease-unavailable";
+  /** Tool names the safe policy halted on (surfaced, not retried). */
+  readonly halted?: ReadonlyArray<string>;
+}
+
+/**
+ * Pick the orphaned turn (if any) that is eligible to resume-continue.
+ * Stage 1 resumes at most ONE turn (the orphaned in-flight one). Returns
+ * the descriptor plus the gating outcome.
+ */
+function selectResumableTurn(
+  reconstruction: RolloutReconstruction,
+  cfg: ReturnType<typeof resolveDurableTurnsConfig>,
+): { turn?: ResumableTurn; reason?: DurableResumeAttempt["reason"] } {
+  if (!cfg.resumeOnRestart) return { reason: "disabled" };
+  const candidates = reconstruction.resumableTurns;
+  if (candidates.length === 0) return { reason: "no-checkpoint" };
+  // The orphaned in-flight turn is the highest-checkpointSeq descriptor.
+  const turn = candidates.reduce((a, b) =>
+    b.lastCheckpoint.checkpointSeq > a.lastCheckpoint.checkpointSeq ? b : a,
+  );
+  if (cfg.buildPinning && !turn.buildMatches) {
+    return { turn, reason: "build-mismatch" };
+  }
+  if (!turn.historyPrefixValid) {
+    return { turn, reason: "prefix-mismatch" };
+  }
+  return { turn };
+}
+
+/**
+ * Attempt to resume-CONTINUE an interrupted turn from its last durable
+ * checkpoint instead of discarding it and starting fresh.
+ *
+ * Safety gates (ALL must hold; any failure → caller falls back to today's
+ * fresh turn): config enables resume, the build pin matches (§3.6), the
+ * content prefix hash matches (§5), and the single-writer resume lease is
+ * acquired (§3.5). Dangling `tool_use` blocks are classified by the
+ * EXISTING `recoveryCategory` via `isResumeReplaySafe`: side-effecting /
+ * interactive dangling tools HALT and surface (never auto-re-dispatch) —
+ * the on-chain-safety property — while read-only ones re-run on the fresh
+ * sampling request.
+ *
+ * Drives the resumed turn to completion. Returns the attempt outcome.
+ */
+export async function resumeTurnFromCheckpoint(
+  session: Session,
+  reconstruction: RolloutReconstruction,
+): Promise<DurableResumeAttempt> {
+  const cfg = resolveDurableTurnsConfig(
+    (session as { readonly config?: unknown }).config,
+  );
+  const { turn, reason } = selectResumableTurn(reconstruction, cfg);
+  if (turn === undefined || reason !== undefined) {
+    return reason !== undefined ? { resumed: false, reason } : { resumed: false };
+  }
+
+  // Single-writer resume lease — reuse the SessionLock flock keyed per
+  // turnId so two concurrent resumers cannot both re-drive the turn. The
+  // lease path is distinct from the session-store rollout lock and from the
+  // /resume cold-rollout handoff (a session-id slot), so it composes with
+  // both rather than fighting them.
+  let lease: SessionLock | undefined;
+  if (cfg.requireLease) {
+    const rolloutPath = session.rolloutStore?.rolloutPath;
+    if (rolloutPath !== undefined) {
+      lease = new SessionLock(`${rolloutPath}.resume-${turn.turnId}.lock`);
+      try {
+        lease.acquire();
+      } catch {
+        return { resumed: false, reason: "lease-unavailable" };
+      }
+    }
+  }
+
+  try {
+    // Classify dangling tool_use blocks (no persisted result) under the
+    // safe-by-default policy. Over-halt is acceptable; under-halt is NOT.
+    const toolByName = new Map(
+      session.services.registry.tools.map((t) => [t.name, t] as const),
+    );
+    const { replaySafe, mustHalt } = classifyDanglingToolUses(
+      turn.danglingToolUses,
+      (toolName) => {
+        const tool = toolByName.get(toolName);
+        if (tool === undefined) return false; // unknown → side-effecting → halt
+        return isResumeReplaySafe(tool as Parameters<typeof isResumeReplaySafe>[0]);
+      },
+    );
+    const haltedSideEffectingTools = [
+      ...new Set(mustHalt.map((d) => d.toolName)),
+    ];
+    const danglingPairings = [
+      ...mustHalt.map((d) => ({
+        callId: d.callId,
+        toolName: d.toolName,
+        halt: true,
+      })),
+      ...replaySafe.map((d) => ({
+        callId: d.callId,
+        toolName: d.toolName,
+        halt: false,
+      })),
+    ];
+
+    const reconstructedPrefix = reconstruction.history.slice(
+      0,
+      turn.lastCheckpoint.persistedMessageCount,
+    );
+    const history = reconstructedPrefix.map((item) =>
+      responseItemToLlmMessage(item),
+    );
+
+    const iter = session.runTurn("", {
+      subId: turn.turnId,
+      history,
+      displayUserMessage: null,
+      resume: {
+        turnId: turn.turnId,
+        fromIteration: turn.lastCheckpoint.iterationIndex,
+        fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
+        persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
+        restoreSlice: turn.lastCheckpoint
+          .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,
+        ...(haltedSideEffectingTools.length > 0
+          ? { haltedSideEffectingTools }
+          : {}),
+        ...(danglingPairings.length > 0 ? { danglingPairings } : {}),
+      },
+    });
+    // Drive the resumed turn to completion.
+    while (true) {
+      const next = await iter.next();
+      if (next.done) break;
+    }
+    return {
+      resumed: true,
+      ...(haltedSideEffectingTools.length > 0
+        ? { halted: haltedSideEffectingTools }
+        : {}),
+    };
+  } finally {
+    lease?.release();
+  }
+}
+
 async function defaultStartupPrewarm({
   session,
   threadId,
 }: ConversationStartupPrewarmParams): Promise<void> {
+  // GOAL #4b Stage 1 — if reconstruction surfaced an orphaned in-flight turn
+  // with a valid durable checkpoint (and the build/prefix/lease gates pass),
+  // resume-CONTINUE it instead of discarding it for a fresh default turn.
+  // Any failure or absence falls through to EXACTLY today's behavior —
+  // byte-identical for sessions with no checkpoint (backward compat).
+  const reconstruction = lastReconstructionBySession.get(session);
+  if (reconstruction !== undefined) {
+    try {
+      const attempt = await resumeTurnFromCheckpoint(session, reconstruction);
+      if (attempt.resumed) {
+        await scheduleProviderStartupPrewarm(session, threadId);
+        return;
+      }
+    } catch {
+      // Resume is strictly best-effort; never let it block boot. Fall
+      // through to the legacy fresh-turn prewarm.
+    }
+  }
   session.newDefaultTurn();
   await scheduleProviderStartupPrewarm(session, threadId);
   try {

@@ -92,6 +92,15 @@ export interface TurnStartedEvent {
   readonly startedAt?: number;
   readonly modelContextWindow?: number;
   readonly collaborationModeKind?: string;
+  /**
+   * GOAL #4b Stage 1 — durable turns. The runtime build identifier active
+   * when this turn started, stamped here (NOT in the checkpoint) so resume
+   * can refuse cross-build replay BEFORE loading any checkpoint. Older
+   * rollouts predating durable-turns omit this; resume treats a missing
+   * `buildId` as "no build pin available" and falls back to today's
+   * process_killed + fresh turn (never a silent cross-build resume).
+   */
+  readonly buildId?: string;
 }
 
 export interface TurnCompleteEvent {
@@ -104,6 +113,81 @@ export interface TurnCompleteEvent {
 export interface TurnAbortedEvent {
   readonly turnId?: string;
   readonly reason: string;
+}
+
+/**
+ * GOAL #4b Stage 1 — durable iteration checkpoint.
+ *
+ * Emitted (fsync-durable — see `DURABLE_EVENT_TYPES`) at each consistent
+ * iteration boundary (CB-Iteration / CB-PostAssistant) so a daemon crash
+ * mid-turn can resume-CONTINUE from the last completed iteration instead of
+ * discarding the turn. Carries only what cannot be reconstructed from the
+ * durable rollout: a cursor + content hash of the persisted prefix and the
+ * in-memory TurnState slice that would otherwise reset on restart.
+ *
+ * Determinism note (§3.6): `resumableState.taskBudgetRemaining` is the
+ * DERIVED budget, never a raw turn-start clock — restoring a stale clock
+ * would silently corrupt budget accounting on resume.
+ */
+export interface TurnCheckpointEvent {
+  readonly turnId: string;
+  /** Monotonic per-turn iteration index this checkpoint closes. */
+  readonly iterationIndex: number;
+  /** Which loop boundary emitted it (telemetry / debugging only). */
+  readonly boundary: "iteration" | "postAssistant";
+  /** Monotonic across a turn; resume restores from the HIGHEST valid one. */
+  readonly checkpointSeq: number;
+  /** Exact replay-prefix length (`persistedMessageCount`). */
+  readonly persistedMessageCount: number;
+  /**
+   * CONTENT hash (sha256 of the canonicalized persisted prefix), NOT a
+   * length — torn-prefix / divergence gate (§5). Resume refuses a
+   * checkpoint whose hash != the reconstructed prefix's hash.
+   */
+  readonly prefixHash: string;
+  /** The TurnState subset that is lost today and must survive a crash. */
+  readonly resumableState: TurnCheckpointSliceLine;
+}
+
+/**
+ * Serialized, JSON-safe projection of the resumable `TurnState` counters.
+ * The authoritative shape + (de)serialization live in `turn-state.ts`
+ * (`toCheckpointSlice` / `restoreFromCheckpoint`). Declared structurally
+ * here so the rollout line is self-describing without importing TurnState
+ * into the event-log module.
+ */
+export interface TurnCheckpointSliceLine {
+  readonly turnCount: number;
+  readonly recoveryReentryCount: number;
+  readonly maxOutputTokensRecoveryCount: number;
+  readonly continuationNudgeCount: number;
+  readonly stopHookBlockingCount: number;
+  readonly planToolRequiredRetryCount?: number;
+  readonly taskBudgetRemaining?: number;
+  readonly autoCompactTracking?: {
+    readonly compacted: boolean;
+    readonly turnId: string;
+    readonly turnCounter: number;
+    readonly consecutiveFailures: number;
+  };
+  readonly transition?: { readonly reason: string };
+  readonly pendingBudgetDecision?:
+    | { readonly kind: "continue"; readonly remaining: number }
+    | { readonly kind: "stop"; readonly reason: string };
+}
+
+/**
+ * GOAL #4b Stage 1 — emitted (fsync-durable) when a turn is resumed from a
+ * checkpoint after a crash, instead of the legacy discard-and-restart.
+ * Records which checkpoint/iteration the drain loop re-entered at so the
+ * rollout shows a closed-then-reopened turn lifecycle.
+ */
+export interface TurnResumedEvent {
+  readonly turnId: string;
+  readonly fromCheckpointSeq: number;
+  readonly fromIteration: number;
+  /** Tool names whose dangling tool_use forced a safe-policy halt (if any). */
+  readonly haltedSideEffectingTools?: ReadonlyArray<string>;
 }
 
 export interface AgentMessageEvent {
@@ -676,6 +760,11 @@ export type EventMsg =
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
   | {
+      readonly type: "turn_checkpoint";
+      readonly payload: TurnCheckpointEvent;
+    }
+  | { readonly type: "turn_resumed"; readonly payload: TurnResumedEvent }
+  | {
       readonly type: "thread_rolled_back";
       readonly payload: ThreadRolledBackEvent;
     }
@@ -884,6 +973,8 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "context_compacted",
     "turn_complete",
     "turn_aborted",
+    "turn_checkpoint",
+    "turn_resumed",
     "thread_rolled_back",
     "error",
     "stream_error",
@@ -937,6 +1028,11 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "protocol_settle",
     "protocol_slash",
     "protocol_stake",
+    // GOAL #4b Stage 1: the iteration checkpoint and the resume marker
+    // MUST fsync — a checkpoint written <100ms before a crash that rode
+    // the 100ms batch path would be lost, defeating resume-continuation.
+    "turn_checkpoint",
+    "turn_resumed",
   ]),
 );
 

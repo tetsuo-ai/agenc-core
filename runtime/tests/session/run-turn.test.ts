@@ -4943,3 +4943,275 @@ describe("runTurn — runAutoCompact dispatcher", () => {
   });
 
 });
+
+describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
+  test("THE HEADLINE SAFETY TEST: a side-effecting dangling tool_use is NOT re-dispatched on resume (no double side effect)", async () => {
+    const executeSpy = vi.fn(async () => ({
+      content: "SIDE EFFECT FIRED",
+      isError: false,
+    }));
+    const dispatchSpy = vi.fn(async () => ({
+      content: "SIDE EFFECT FIRED",
+      isError: false,
+    }));
+    const sideEffectTool: Tool = {
+      name: "settle",
+      description: "on-chain settlement (side-effecting)",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: true,
+      recoveryCategory: "side-effecting",
+      execute: executeSpy,
+    } as unknown as Tool;
+    const registry: ToolRegistry = {
+      tools: [sideEffectTool],
+      toLLMTools: () => [],
+      dispatch: dispatchSpy,
+    } as unknown as ToolRegistry;
+    // Provider returns a terminal answer so the resumed turn completes
+    // without issuing any new tool calls.
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "acknowledged, not retrying", toolCalls: [] }),
+      registry,
+    });
+    session.rolloutStore = {
+      append: vi.fn(),
+      appendRollout: vi.fn(),
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+
+    // Resume prefix: an assistant message with a DANGLING side-effecting
+    // tool_use (no recorded result).
+    const history: LLMMessage[] = [
+      { role: "user", content: "settle the task" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "settle-1", name: "settle", arguments: "{}" }],
+      },
+    ];
+
+    await drain(
+      session.runTurn("", {
+        subId: "turn-resumed-1",
+        history,
+        displayUserMessage: null,
+        resume: {
+          turnId: "turn-resumed-1",
+          fromIteration: 1,
+          fromCheckpointSeq: 1,
+          persistedMessageCount: history.length,
+          restoreSlice: {
+            turnCount: 2,
+            recoveryReentryCount: 0,
+            maxOutputTokensRecoveryCount: 0,
+            continuationNudgeCount: 0,
+            stopHookBlockingCount: 0,
+          },
+          haltedSideEffectingTools: ["settle"],
+          danglingPairings: [
+            { callId: "settle-1", toolName: "settle", halt: true },
+          ],
+        },
+      }),
+    );
+
+    // The on-chain-safety property: the side-effecting tool is NEVER
+    // re-dispatched on resume.
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    // The halt is surfaced to the human.
+    const haltWarning = events.find(
+      (e) =>
+        e.msg.type === "warning" &&
+        e.msg.payload.cause === "durable_resume_side_effect_halt",
+    );
+    expect(haltWarning).toBeDefined();
+    expect(
+      haltWarning?.msg.type === "warning" ? haltWarning.msg.payload.message : "",
+    ).toContain("settle");
+    // The turn re-opened durably.
+    expect(events.some((e) => e.msg.type === "turn_resumed")).toBe(true);
+    expect(events.some((e) => e.msg.type === "turn_complete")).toBe(true);
+  });
+
+  test("crash mid-drain → resume CONTINUES (restored counters hold pre-crash values, not reset)", async () => {
+    const observedCheckpoints: Array<{
+      turnCount?: number;
+      recoveryReentryCount?: number;
+      taskBudgetRemaining?: number;
+    }> = [];
+    const append = vi.fn((event: unknown) => {
+      const ev = event as { msg?: { type?: string; payload?: unknown } };
+      if (ev.msg?.type === "turn_checkpoint") {
+        const p = ev.msg.payload as {
+          resumableState?: {
+            turnCount?: number;
+            recoveryReentryCount?: number;
+            taskBudgetRemaining?: number;
+          };
+        };
+        if (p.resumableState) observedCheckpoints.push(p.resumableState);
+      }
+    });
+    // Provider drives one tool iteration (so a CB-Iteration checkpoint
+    // fires) then terminates.
+    let requestCount = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return {
+            content: "",
+            toolCalls: [{ id: "k1", name: "keepgoing", arguments: "{}" }],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        return {
+          content: "continued and finished",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const tool: Tool = {
+      name: "keepgoing",
+      description: "read-only no-op",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false,
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      execute: async () => ({ content: "ok", isError: false }),
+    } as unknown as Tool;
+    const registry: ToolRegistry = {
+      tools: [tool],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "ok", isError: false }),
+    } as unknown as ToolRegistry;
+    const { session, events } = mkSession({ provider, registry });
+    session.rolloutStore = {
+      append,
+      appendRollout: vi.fn(),
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+
+    const history: LLMMessage[] = [
+      { role: "user", content: "long task" },
+      { role: "assistant", content: "iteration 1 done" },
+    ];
+
+    await drain(
+      session.runTurn("", {
+        subId: "turn-resumed-2",
+        history,
+        displayUserMessage: null,
+        resume: {
+          turnId: "turn-resumed-2",
+          fromIteration: 1,
+          fromCheckpointSeq: 1,
+          persistedMessageCount: history.length,
+          restoreSlice: {
+            // Pre-crash values that MUST survive resume (not reset to 0/1).
+            turnCount: 5,
+            recoveryReentryCount: 3,
+            maxOutputTokensRecoveryCount: 0,
+            continuationNudgeCount: 0,
+            stopHookBlockingCount: 0,
+            taskBudgetRemaining: 9999,
+          },
+        },
+      }),
+    );
+
+    // The turn was resumed-continued (turn_resumed emitted), not discarded.
+    expect(events.some((e) => e.msg.type === "turn_resumed")).toBe(true);
+    // A checkpoint emitted during the resumed iteration carries the RESTORED
+    // counters (proves they held their pre-crash values through resume; a
+    // fresh turn would show turnCount=1, recoveryReentryCount=0,
+    // taskBudgetRemaining=undefined).
+    expect(observedCheckpoints.length).toBeGreaterThan(0);
+    const cp = observedCheckpoints[observedCheckpoints.length - 1]!;
+    // `turnCount` CONTINUED from the restored 5 (commit advances it during
+    // the resumed iteration → ≥5). A DISCARDED/fresh turn would show 1→2.
+    // This is the load-bearing reset-bug guard.
+    expect(cp.turnCount).toBeGreaterThanOrEqual(5);
+    // Non-per-iteration counters hold their EXACT restored pre-crash values.
+    expect(cp.recoveryReentryCount).toBe(3);
+    expect(cp.taskBudgetRemaining).toBe(9999);
+  });
+
+  test("idempotent re-run: a read-only dangling tool is paired and the resumed turn completes cleanly", async () => {
+    const executeSpy = vi.fn(async () => ({ content: "read", isError: false }));
+    const readTool: Tool = {
+      name: "read",
+      description: "read-only",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false,
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      execute: executeSpy,
+    } as unknown as Tool;
+    const registry: ToolRegistry = {
+      tools: [readTool],
+      toLLMTools: () => [],
+      dispatch: vi.fn(async () => ({ content: "read", isError: false })),
+    } as unknown as ToolRegistry;
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "done", toolCalls: [] }),
+      registry,
+    });
+    session.rolloutStore = {
+      append: vi.fn(),
+      appendRollout: vi.fn(),
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+
+    const history: LLMMessage[] = [
+      { role: "user", content: "read the file" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "read-1", name: "read", arguments: "{}" }],
+      },
+    ];
+
+    await drain(
+      session.runTurn("", {
+        subId: "turn-resumed-3",
+        history,
+        displayUserMessage: null,
+        resume: {
+          turnId: "turn-resumed-3",
+          fromIteration: 1,
+          fromCheckpointSeq: 1,
+          persistedMessageCount: history.length,
+          restoreSlice: {
+            turnCount: 2,
+            recoveryReentryCount: 0,
+            maxOutputTokensRecoveryCount: 0,
+            continuationNudgeCount: 0,
+            stopHookBlockingCount: 0,
+          },
+          danglingPairings: [
+            { callId: "read-1", toolName: "read", halt: false },
+          ],
+        },
+      }),
+    );
+
+    // Read-only dangling tools do NOT halt; the turn completes cleanly. No
+    // side-effect halt warning is surfaced.
+    expect(
+      events.some(
+        (e) =>
+          e.msg.type === "warning" &&
+          e.msg.payload.cause === "durable_resume_side_effect_halt",
+      ),
+    ).toBe(false);
+    expect(events.some((e) => e.msg.type === "turn_complete")).toBe(true);
+  });
+});

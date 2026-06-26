@@ -171,6 +171,41 @@ export interface AgentConfig {
   readonly retention?: AgentRunRetentionConfig;
 }
 
+/**
+ * GOAL #4b Stage 1 — durable / checkpointed turns.
+ *
+ * Conservative defaults: the checkpoint WRITE is cheap and on; the
+ * behavior-changing RESUME is gated to the safe-by-default policy.
+ * `resume.policy` is NEVER `"idempotent"` in Stage 1 — auto-replay of
+ * side-effecting tools (Stage 2, gated on the ACRFence effect log) must not
+ * ship before its anti-rollback guard does.
+ */
+export interface DurableTurnsCheckpointConfig {
+  /** Emit fsync-durable `turn_checkpoint` at CB-Iteration / CB-PostAssistant. */
+  readonly enabled?: boolean;
+  /** Optional throttle for very fast iterations (0 = every boundary). */
+  readonly minIntervalMs?: number;
+}
+
+export interface DurableTurnsResumeConfig {
+  /** Attempt resume-continuation on restart vs today's abort+restart. */
+  readonly onRestart?: boolean;
+  /**
+   * "safe" = re-run only read-only/idempotent dangling tools; HALT on any
+   * ambiguous side-effecting/interactive step. Stage 1 supports only "safe".
+   */
+  readonly policy?: "safe";
+  /** Single-writer resume lease (per-turnId flock). */
+  readonly requireLease?: boolean;
+  /** Refuse cross-build resume (determinism guard via `turn_started.buildId`). */
+  readonly buildPinning?: boolean;
+}
+
+export interface DurableTurnsConfig {
+  readonly checkpoint?: DurableTurnsCheckpointConfig;
+  readonly resume?: DurableTurnsResumeConfig;
+}
+
 export interface HookCommand {
   readonly type: "command";
   readonly command: string;
@@ -504,6 +539,7 @@ export interface AgenCConfig {
 
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly agent?: AgentConfig;
+  readonly durableTurns?: DurableTurnsConfig;
   readonly toolBudget?: ToolBudget;
   readonly stream_watchdog_timeout_ms?: number;
   readonly max_output_tokens?: number;
