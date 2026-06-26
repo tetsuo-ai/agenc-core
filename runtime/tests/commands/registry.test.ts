@@ -10,6 +10,7 @@ import type { SlashCommand, SlashCommandResult } from "./types.js";
 const MINIMAL_REGISTRY_NAMES = [
   "help",
   "status",
+  "cost",
   "model",
   "provider",
   "permissions",
@@ -38,6 +39,7 @@ const MINIMAL_REGISTRY_NAMES = [
 const DAEMON_TUI_REGISTRY_NAMES = [
   "help",
   "status",
+  "cost",
   "model",
   "provider",
   "permissions",
@@ -71,7 +73,6 @@ const REMOVED_TUI_COMMANDS = [
   "color",
   "commit",
   "copy",
-  "cost",
   "doctor",
   "effort",
   "enter-worktree",
@@ -94,10 +95,8 @@ const REMOVED_TUI_COMMANDS = [
   "review",
   "rewind",
   "sandbox",
-  "stats",
   "terminal-setup",
   "theme",
-  "usage",
   "vim",
   "wiki",
 ] as const;
