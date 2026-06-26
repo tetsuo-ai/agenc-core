@@ -80,6 +80,11 @@ describe("role registry", () => {
     expect(explorer.config.disallowlist).toContain("spawn_agent");
     expect(explorer.config.disallowlist).toContain("Edit");
     expect(explorer.config.disallowlist).toContain("Write");
+    // Navigate-first guidance (revert-sensitive): structural-map-first, read
+    // spans not whole files, and skip generated/build dirs.
+    expect(explorer.config.systemPrompt).toContain("structural map FIRST");
+    expect(explorer.config.systemPrompt).toContain("targeted spans");
+    expect(explorer.config.systemPrompt).toMatch(/Skip generated\/build\/vendored/);
 
     const plan = requireAgentRole("Plan");
     expect(plan.config.systemPrompt).toContain("software architect");

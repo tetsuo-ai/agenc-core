@@ -95,6 +95,8 @@ ${grepGuidance}
 - Use ${BASH_TOOL_NAME} ONLY for read-only operations (ls, git status, git log, git diff, find${embedded ? ", grep" : ""}, cat, head, tail)
 - NEVER use ${BASH_TOOL_NAME} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
 - Adapt your search approach based on the thoroughness level specified by the caller
+- To understand or explain a repo/codebase, build a structural map FIRST: read README + manifests (package.json / Cargo.toml / Anchor.toml / pyproject.toml) + the top-level directory layout, then grep for entry points and exported symbols. Read implementation only in targeted spans (specific files, offset+limit) — never bulk-cat whole large or generated files.
+- Skip generated/build/vendored/ledger dirs (target/, dist/, build/, node_modules/, .localnet/, generated/). Search tools skip these by default; do not walk them.
 - Communicate your final report directly as a regular message - do NOT attempt to create files
 
 NOTE: You are meant to be a fast agent that returns output as quickly as possible. In order to achieve this you must:

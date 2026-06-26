@@ -286,28 +286,87 @@ describe("Glob tool", () => {
     expect(result.content).toBe("a.txt");
   });
 
-  test("primary search includes hidden and ignored files", async () => {
+  test("default search still includes ordinary hidden (dotfile) content", async () => {
+    // Dotfiles are still surfaced by default (`.gitignore`/`.github` are
+    // routinely useful to find) — the fix gates build/vendored/ledger dirs via
+    // an explicit exclude set, NOT by hiding dotfiles.
     await mkdir(join(root, ".hidden-dir"), { recursive: true });
-    await writeFile(join(root, ".gitignore"), "ignored.txt\n", "utf8");
-    await writeFile(join(root, "ignored.txt"), "ignored\n", "utf8");
     await writeFile(join(root, ".hidden.txt"), "hidden\n", "utf8");
     await writeFile(join(root, ".hidden-dir", "nested.txt"), "nested\n", "utf8");
 
     const tool = createGlobTool({ allowedPaths: [root] });
-    const result = await tool.execute({
-      pattern: "*.txt",
-      path: root,
-    });
+    const result = await tool.execute({ pattern: "*.txt", path: root });
 
     expect(result.isError).toBeUndefined();
     const lines = result.content.split("\n").filter(Boolean);
     expect(lines).toEqual(
-      expect.arrayContaining([
-        "ignored.txt",
-        ".hidden.txt",
-        ".hidden-dir/nested.txt",
-      ]),
+      expect.arrayContaining([".hidden.txt", ".hidden-dir/nested.txt"]),
     );
+  });
+
+  test("default walk skips generated/build/ledger dirs and .git", async () => {
+    // The built-in default-exclude set must skip these dirs regardless of
+    // .gitignore. This is the agenc-protocol 26 GB `.localnet/` ledger /
+    // `target/` blowout the navigate-first fix prevents. NOTE: ripgrep's
+    // `--glob <pattern>` whitelist overrides `.gitignore`, so the EXPLICIT
+    // exclude set (not gitignore) is the load-bearing protection here.
+    await mkdir(join(root, "target"), { recursive: true });
+    await mkdir(join(root, ".localnet"), { recursive: true });
+    await mkdir(join(root, "node_modules", "pkg"), { recursive: true });
+    await mkdir(join(root, "dist"), { recursive: true });
+    await mkdir(join(root, "build"), { recursive: true });
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "target", "huge.bin"), "x".repeat(4096), "utf8");
+    await writeFile(join(root, ".localnet", "validator.log"), "y".repeat(4096), "utf8");
+    await writeFile(join(root, "node_modules", "pkg", "dep.js"), "z\n", "utf8");
+    await writeFile(join(root, "dist", "bundle.js"), "z\n", "utf8");
+    await writeFile(join(root, "build", "artifact.o"), "z\n", "utf8");
+    await writeFile(join(root, ".git", "HEAD"), "ref\n", "utf8");
+    // `**/*.lock` covers Cargo.lock / yarn.lock (the .lock-suffixed lockfiles).
+    await writeFile(join(root, "Cargo.lock"), "lock\n", "utf8");
+    await writeFile(join(root, "src", "main.ts"), "ok\n", "utf8");
+
+    const tool = createGlobTool({ allowedPaths: [root] });
+    const result = await tool.execute({ pattern: "**/*", path: root });
+
+    expect(result.isError).toBeUndefined();
+    const lines = result.content.split("\n").filter(Boolean);
+    // The real source surface is found...
+    expect(lines).toContain("src/main.ts");
+    // ...and the generated/build/ledger/VCS dirs + lockfiles are NOT walked.
+    expect(lines).not.toContain("target/huge.bin");
+    expect(lines).not.toContain(".localnet/validator.log");
+    expect(lines).not.toContain("node_modules/pkg/dep.js");
+    expect(lines).not.toContain("dist/bundle.js");
+    expect(lines).not.toContain("build/artifact.o");
+    expect(lines).not.toContain(".git/HEAD");
+    expect(lines).not.toContain("Cargo.lock");
+  });
+
+  test("includeIgnored restores walking generated/build dirs and ignored files", async () => {
+    await mkdir(join(root, "target"), { recursive: true });
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "target", "out.bin"), "x\n", "utf8");
+    await writeFile(join(root, ".git", "HEAD"), "ref\n", "utf8");
+    await writeFile(join(root, "src", "main.ts"), "ok\n", "utf8");
+
+    const tool = createGlobTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      pattern: "**/*",
+      path: root,
+      includeIgnored: true,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const lines = result.content.split("\n").filter(Boolean);
+    // Revert-sensitive: with the opt-in, build output + .git ARE reachable
+    // again. The post-fix default (above) excludes them; this restores the
+    // legacy `--no-ignore` walk.
+    expect(lines).toContain("target/out.bin");
+    expect(lines).toContain(".git/HEAD");
+    expect(lines).toContain("src/main.ts");
   });
 
   test("returns relative paths under allowed root", async () => {
