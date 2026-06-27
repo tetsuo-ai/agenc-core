@@ -51,6 +51,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.terminate",
   "session.clear",
   "session.snapshot",
+  "session.transcript",
   "session.cancelTurn",
   "session.mcp.addServer",
   "message.send",
@@ -283,6 +284,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read live counters (turn count, token usage, cache stats) for a daemon-owned session so the TUI's /status, /usage, /cache-stats can surface real numbers.",
+  },
+  "session.transcript": {
+    method: "session.transcript",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Read a daemon-owned session's conversation history (user/assistant messages) so a client joining an existing session (e.g. one started in another client) can render the prior transcript.",
   },
   "session.cancelTurn": {
     method: "session.cancelTurn",
@@ -1360,6 +1369,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
+  | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
@@ -1570,6 +1580,20 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly cacheTotalInputTokens: number;
     readonly hitRate: number | null;
   };
+}
+
+export interface SessionTranscriptParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+export interface SessionTranscriptMessage extends JsonObject {
+  readonly role: string; // "user" | "assistant"
+  readonly text: string;
+}
+
+export interface SessionTranscriptResult extends JsonObject {
+  readonly sessionId: string;
+  readonly messages: readonly SessionTranscriptMessage[];
 }
 
 export interface SessionCancelTurnResult extends JsonObject {
@@ -1808,6 +1832,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
   readonly "session.snapshot": SessionSnapshotResult;
+  readonly "session.transcript": SessionTranscriptResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;

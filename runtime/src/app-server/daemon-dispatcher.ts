@@ -78,6 +78,7 @@ import {
   type SessionMcpAddServerParams,
   type SessionMcpServerByNameParams,
   type SessionSnapshotParams,
+  type SessionTranscriptParams,
   type SessionCreateParams,
   type SessionDetachParams,
   type SessionListParams,
@@ -168,6 +169,7 @@ function buildServerCapabilities(
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
+    "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
@@ -264,6 +266,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "denyTool"
     | "clearSessionHistory"
     | "snapshotSession"
+    | "getSessionTranscript"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -335,6 +338,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "denyTool"
     | "clearSessionHistory"
     | "snapshotSession"
+    | "getSessionTranscript"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -621,6 +625,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.snapshotSession(
             validateSessionSnapshotParams(params),
+          ),
+        );
+      case "session.transcript":
+        return successResponse(
+          id,
+          await this.#agentManager.getSessionTranscript(
+            validateSessionTranscriptParams(params),
           ),
         );
       case "session.cancelTurn":
@@ -1571,6 +1582,17 @@ function validateSessionSnapshotParams(
   });
   validateRequiredString(validated, "session.snapshot", "sessionId");
   return validated as SessionSnapshotParams;
+}
+
+function validateSessionTranscriptParams(
+  params: JsonObject,
+): SessionTranscriptParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.transcript",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.transcript", "sessionId");
+  return validated as SessionTranscriptParams;
 }
 
 function validateSessionCancelTurnParams(

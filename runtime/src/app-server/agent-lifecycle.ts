@@ -45,6 +45,8 @@ import type {
   SessionMcpServerMutationResult,
   SessionSnapshotParams,
   SessionSnapshotResult,
+  SessionTranscriptParams,
+  SessionTranscriptResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
@@ -1466,6 +1468,30 @@ export class AgenCDaemonAgentManager {
       { allowSnapshot: true },
     );
     return this.#runner.snapshotAgentSession(agentId, {
+      sessionId: params.sessionId,
+    });
+  }
+
+  async getSessionTranscript(
+    params: SessionTranscriptParams,
+  ): Promise<SessionTranscriptResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.transcript requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.getAgentSessionTranscript === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.transcript requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowSnapshot: true },
+    );
+    return this.#runner.getAgentSessionTranscript(agentId, {
       sessionId: params.sessionId,
     });
   }
