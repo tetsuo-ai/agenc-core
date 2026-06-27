@@ -1170,12 +1170,22 @@ function renderNodeToOutput(
             // bandwidth crosses the chunk boundary and the frame tears.
             const scrolled = contentCached && contentCached.y !== contentY
             if (scrolled && y1 !== undefined && y2 !== undefined) {
-              output.clear({
-                x: Math.floor(x),
-                y: Math.floor(y1),
-                width: Math.floor(width),
-                height: Math.floor(y2 - y1),
-              })
+              // fromAbsolute=true: this scrolled viewport is VACATED — its
+              // prevScreen cells are the pre-scroll content. Mark it like an
+              // absolute clear so a clean-subtree blit from an ancestor/sibling
+              // whose cached rect overlaps these rows can't re-paint that stale
+              // content back (damage-only clear + identical blit = diff sees no
+              // change = ghost glyphs that survive scrolling). The scrollbox's
+              // own children don't blit here (prevScreen is undefined below).
+              output.clear(
+                {
+                  x: Math.floor(x),
+                  y: Math.floor(y1),
+                  width: Math.floor(width),
+                  height: Math.floor(y2 - y1),
+                },
+                true,
+              )
             }
             // positionChanged (ScrollBox height shrunk — pill mount) means a
             // child spanning the old bottom edge would blit its full cached
