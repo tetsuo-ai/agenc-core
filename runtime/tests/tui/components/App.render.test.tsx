@@ -543,6 +543,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setPastedContents,
       mode,
       onModeChange,
+      setToolPermissionContext,
     }: {
       input: string;
       onSubmit: (input: string, helpers: {
@@ -566,6 +567,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setPastedContents?: unknown;
       mode?: unknown;
       onModeChange?: unknown;
+      setToolPermissionContext?: unknown;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
       providerProbe.promptProps.push({
@@ -587,6 +589,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         setPastedContents,
         mode,
         onModeChange,
+        setToolPermissionContext,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -748,13 +751,23 @@ async function withRenderedApp(
   }
 }
 
-function createSession(): AgenCBridgeSession {
+function createSession(opts: {
+  readonly permissionContext?: ToolPermissionContext;
+  readonly updatePermissionContext?: (next: ToolPermissionContext) => Promise<void> | void;
+  readonly setDaemonPermissionMode?: (mode: ToolPermissionContext["mode"]) => Promise<unknown>;
+  readonly emit?: AgenCBridgeSession["emit"];
+  readonly nextInternalSubId?: AgenCBridgeSession["nextInternalSubId"];
+} = {}): AgenCBridgeSession {
   const modeSubscribers: Array<() => void> = [];
+  const permissionContext = opts.permissionContext ?? PERMISSION_CONTEXT;
   return {
     conversationId: "conversation-app-smoke",
     services: {
       permissionModeRegistry: {
-        current: () => PERMISSION_CONTEXT,
+        current: () => permissionContext,
+        ...(opts.updatePermissionContext !== undefined
+          ? { update: opts.updatePermissionContext }
+          : {}),
         subscribeToModeChange: (cb) => {
           modeSubscribers.push(cb);
           return () => {
@@ -764,6 +777,13 @@ function createSession(): AgenCBridgeSession {
         },
       },
     },
+    ...(opts.setDaemonPermissionMode !== undefined
+      ? { setDaemonPermissionMode: opts.setDaemonPermissionMode }
+      : {}),
+    ...(opts.emit !== undefined ? { emit: opts.emit } : {}),
+    ...(opts.nextInternalSubId !== undefined
+      ? { nextInternalSubId: opts.nextInternalSubId }
+      : {}),
     eventLog: {
       subscribe: () => () => {},
     },
@@ -1176,6 +1196,92 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         input: "draft",
         vimMode: "INSERT",
         setVimMode: expect.any(Function),
+      }),
+    );
+  });
+
+  test("syncs PromptInput permission mode changes through the daemon before the local shim", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const calls: string[] = [];
+    const modeContext = {
+      ...PERMISSION_CONTEXT,
+      mode: "plan" as const,
+    };
+    const setDaemonPermissionMode = vi.fn(async (mode: ToolPermissionContext["mode"]) => {
+      calls.push(`daemon:${mode}`);
+      return { applied: true, previousMode: "default", mode };
+    });
+    const updatePermissionContext = vi.fn(async (next: ToolPermissionContext) => {
+      calls.push(`local:${next.mode}`);
+    });
+    providerProbe.promptProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession({
+          updatePermissionContext,
+          setDaemonPermissionMode,
+        })}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (promptProps.setToolPermissionContext as (next: ToolPermissionContext) => void)(
+          modeContext,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    );
+
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("plan");
+    expect(updatePermissionContext).toHaveBeenCalledWith(modeContext);
+    expect(calls).toEqual(["daemon:plan", "local:plan"]);
+  });
+
+  test("rolls PromptInput permission mode changes back when daemon sync fails", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const warningEvents: unknown[] = [];
+    const setDaemonPermissionMode = vi.fn(async () => {
+      throw new Error("daemon refused mode");
+    });
+    const updatePermissionContext = vi.fn();
+    providerProbe.promptProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession({
+          updatePermissionContext,
+          setDaemonPermissionMode,
+          emit: (event) => {
+            warningEvents.push(event);
+          },
+          nextInternalSubId: () => "permission-sync-warning",
+        })}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (promptProps.setToolPermissionContext as (next: ToolPermissionContext) => void)({
+          ...PERMISSION_CONTEXT,
+          mode: "plan",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    );
+
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("plan");
+    expect(updatePermissionContext).not.toHaveBeenCalled();
+    expect(warningEvents).toContainEqual(
+      expect.objectContaining({
+        id: "permission-sync-warning",
+        msg: expect.objectContaining({
+          type: "warning",
+          payload: expect.objectContaining({
+            cause: "permission_mode_sync_failed",
+          }),
+        }),
       }),
     );
   });

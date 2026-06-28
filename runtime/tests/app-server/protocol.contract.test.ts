@@ -73,6 +73,7 @@ const expectedMethods = [
   "session.terminate",
   "session.clear",
   "session.snapshot",
+  "session.transcript",
   "session.cancelTurn",
   "session.mcp.addServer",
   "message.send",

@@ -38,6 +38,7 @@ function mkHarness(opts: {
   readonly argsRaw?: string;
   readonly withoutRegistry?: boolean;
   readonly appState?: SlashCommandContext["appState"];
+  readonly setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
 } = {}): Harness {
   const cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), "agenc-plan-cwd-"));
   const agencHome = mkdtempSync(join(tmpdir(), "agenc-plan-home-"));
@@ -60,6 +61,9 @@ function mkHarness(opts: {
     emit: (event: Event) => {
       events.push(event);
     },
+    ...(opts.setDaemonPermissionMode !== undefined
+      ? { setDaemonPermissionMode: opts.setDaemonPermissionMode }
+      : {}),
   } as unknown as Session;
 
   const ctx: SlashCommandContext = {
@@ -199,6 +203,32 @@ describe("planCommand.execute", () => {
     if (warn && warn.msg.type === "warning") {
       expect(warn.msg.payload.cause).toBe("mode_changed_to_plan");
     }
+  });
+
+  it("does not update the local shim when daemon plan-mode transition fails", async () => {
+    const setDaemonPermissionMode = vi.fn(async () => {
+      throw new Error("daemon refused plan");
+    });
+    const h = mkHarness({
+      initialMode: "default",
+      setDaemonPermissionMode,
+    });
+
+    const res = await planCommand.execute(h.ctx);
+
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("plan");
+    expect(res.kind).toBe("error");
+    if (res.kind !== "error") throw new Error("expected error");
+    expect(res.message).toContain("daemon refused plan");
+    expect(h.registry.current().mode).toBe("default");
+    expect(h.events).not.toContainEqual(
+      expect.objectContaining({
+        msg: expect.objectContaining({
+          type: "warning",
+          payload: expect.objectContaining({ cause: "mode_changed_to_plan" }),
+        }),
+      }),
+    );
   });
 
   it("transitions default -> plan and opens v2 dashboard when TUI app state is wired", async () => {
