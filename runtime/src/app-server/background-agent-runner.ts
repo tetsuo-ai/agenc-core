@@ -99,6 +99,7 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageResult,
   SessionSnapshotResult,
+  SessionTranscriptResult,
   SessionHookConfigShape,
   SessionHookValidationIssueShape,
   SessionHookRunDiagnosticShape,
@@ -325,6 +326,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentSnapshotSessionParams,
   ): Promise<SessionSnapshotResult>;
+  getAgentSessionTranscript?(
+    agentId: string,
+    params: { readonly sessionId: string },
+  ): Promise<SessionTranscriptResult>;
   addMcpServer?(
     agentId: string,
     params: AgenCBackgroundAgentMcpAddServerParams,
@@ -1267,6 +1272,46 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       },
       cacheStats: cache,
     };
+  }
+
+  async getAgentSessionTranscript(
+    agentId: string,
+    params: { readonly sessionId: string },
+  ): Promise<SessionTranscriptResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    // The session's conversation history (ResponseItem[]: { role, content }). content is a string or
+    // an array of blocks; we surface user/assistant text so a joining client can render the transcript.
+    const state = active.bootstrap.session.state?.unsafePeek?.();
+    const history = Array.isArray(
+      (state as { history?: unknown[] } | undefined)?.history,
+    )
+      ? ((state as { history: unknown[] }).history as unknown[])
+      : [];
+    const messages: { role: string; text: string }[] = [];
+    for (const raw of history) {
+      const item = raw as { role?: string; content?: unknown };
+      if (item.role !== "user" && item.role !== "assistant") continue;
+      let text = "";
+      if (typeof item.content === "string") {
+        text = item.content;
+      } else if (Array.isArray(item.content)) {
+        text = item.content
+          .map((b) =>
+            b &&
+            typeof b === "object" &&
+            typeof (b as { text?: unknown }).text === "string"
+              ? (b as { text: string }).text
+              : "",
+          )
+          .filter((s) => s.length > 0)
+          .join("");
+      }
+      if (text.length > 0) messages.push({ role: item.role, text });
+    }
+    return { sessionId: params.sessionId, messages };
   }
 
   // Read the global session-level cache stats tracker (lives in the
