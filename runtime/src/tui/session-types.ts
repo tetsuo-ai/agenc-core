@@ -154,6 +154,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     event: Event | { readonly kind: string; readonly [key: string]: unknown },
   ): void;
   nextInternalSubId?(): string;
+  setDaemonPermissionMode?(mode: ToolPermissionContext["mode"]): Promise<unknown>;
   readonly sessionConfiguration?: {
     readonly cwd?: string;
     readonly collaborationMode?: { readonly model?: string };

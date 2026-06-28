@@ -1029,61 +1029,77 @@ function initialState(props: AgenCTuiProps): any {
     }
   };
 }
-function useSyncedPermissionContext(session) {
-  const $ = _c(12);
-  const toolPermissionContext = useAppState(_temp2);
+
+type SetToolPermissionContext = (next: ToolPermissionContext) => void;
+
+function daemonPermissionModeFn(
+  session: AgenCTuiProps["session"],
+): ((mode: ToolPermissionContext["mode"]) => Promise<unknown>) | null {
+  const fn = session.setDaemonPermissionMode;
+  return typeof fn === "function" ? fn.bind(session) : null;
+}
+
+function emitPermissionModeSyncWarning(
+  session: AgenCTuiProps["session"],
+  mode: ToolPermissionContext["mode"],
+  err: unknown,
+): void {
+  if (typeof session.emit !== "function" || typeof session.nextInternalSubId !== "function") {
+    return;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "permission_mode_sync_failed",
+        message: `Failed to change daemon permission mode to ${mode}: ${message}`,
+      },
+    },
+  });
+}
+
+function useSyncedPermissionContext(
+  session: AgenCTuiProps["session"],
+): readonly [ToolPermissionContext, SetToolPermissionContext] {
+  const toolPermissionContext = useAppState(_temp2) as ToolPermissionContext;
   const setAppState = useSetAppState();
-  let t0;
-  if ($[0] !== session.services.permissionModeRegistry || $[1] !== setAppState) {
-    t0 = () => session.services.permissionModeRegistry.subscribeToModeChange?.(() => {
+  useEffect(() => {
+    return session.services.permissionModeRegistry.subscribeToModeChange?.(() => {
       const next = session.services.permissionModeRegistry.current();
       setAppState(prev => ({
         ...prev,
         toolPermissionContext: next
       }));
     });
-    $[0] = session.services.permissionModeRegistry;
-    $[1] = setAppState;
-    $[2] = t0;
-  } else {
-    t0 = $[2];
-  }
-  let t1;
-  if ($[3] !== session || $[4] !== setAppState) {
-    t1 = [session, setAppState];
-    $[3] = session;
-    $[4] = setAppState;
-    $[5] = t1;
-  } else {
-    t1 = $[5];
-  }
-  useEffect(t0, t1);
-  let t2;
-  if ($[6] !== session.services.permissionModeRegistry || $[7] !== setAppState) {
-    t2 = next_0 => {
-      setAppState(prev_0 => ({
-        ...prev_0,
-        toolPermissionContext: next_0
+  }, [session, setAppState]);
+  const setToolPermissionContext = useCallback((next: ToolPermissionContext) => {
+    const registry = session.services.permissionModeRegistry;
+    const daemonSetMode = daemonPermissionModeFn(session);
+    const applyLocal = async (): Promise<void> => {
+      setAppState(prev => ({
+        ...prev,
+        toolPermissionContext: next
       }));
-      Promise.resolve(session.services.permissionModeRegistry.update?.(next_0)).catch(_temp3);
+      await registry.update?.(next);
     };
-    $[6] = session.services.permissionModeRegistry;
-    $[7] = setAppState;
-    $[8] = t2;
-  } else {
-    t2 = $[8];
-  }
-  const setToolPermissionContext = t2;
-  let t3;
-  if ($[9] !== setToolPermissionContext || $[10] !== toolPermissionContext) {
-    t3 = [toolPermissionContext, setToolPermissionContext];
-    $[9] = setToolPermissionContext;
-    $[10] = toolPermissionContext;
-    $[11] = t3;
-  } else {
-    t3 = $[11];
-  }
-  return t3 as const;
+    if (daemonSetMode === null || next.mode === registry.current().mode) {
+      void applyLocal().catch(_temp3);
+      return;
+    }
+    const previous = registry.current();
+    void daemonSetMode(next.mode)
+      .then(() => applyLocal())
+      .catch(err => {
+        setAppState(prev => ({
+          ...prev,
+          toolPermissionContext: previous
+        }));
+        emitPermissionModeSyncWarning(session, next.mode, err);
+      });
+  }, [session, setAppState]);
+  return [toolPermissionContext, setToolPermissionContext] as const;
 }
 function _temp3() {}
 function _temp2(s) {

@@ -206,15 +206,17 @@ export const planCommand: SlashCommand = {
         };
         // Daemon-backed TUI: the local `registry` is a client-side shim the
         // daemon's tool evaluator never reads. Route the plan-mode switch to
-        // the daemon's REAL registry via session.setPermissionMode so the
-        // mode actually gates tool use. Best-effort: a failure leaves the
-        // local registry updated so the chrome still reflects plan mode.
+        // the daemon's REAL registry via session.setPermissionMode first; if
+        // the RPC fails, do not let the local chrome claim plan mode.
         const daemonSetMode = daemonPermissionModeFn(ctx);
         if (daemonSetMode !== null) {
           try {
             await daemonSetMode("plan");
-          } catch {
-            // best-effort; fall through to local update + warning.
+          } catch (err) {
+            return {
+              kind: "error",
+              message: err instanceof Error ? err.message : String(err),
+            };
           }
         }
         await registry.update(nextCtx);

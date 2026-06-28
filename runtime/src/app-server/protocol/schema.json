@@ -22,6 +22,7 @@
     "session.terminate",
     "session.clear",
     "session.snapshot",
+    "session.transcript",
     "session.cancelTurn",
     "session.mcp.addServer",
     "message.send",
@@ -393,6 +394,17 @@
       "required": ["sessionId"]
     },
     "SessionSnapshotParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionTranscriptParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -1621,6 +1633,9 @@
           "$ref": "#/definitions/SessionSnapshotRequest"
         },
         {
+          "$ref": "#/definitions/SessionTranscriptRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCancelTurnRequest"
         },
         {
@@ -2270,6 +2285,25 @@
         },
         "params": {
           "$ref": "#/definitions/SessionSnapshotParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionTranscriptRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.transcript"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTranscriptParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
