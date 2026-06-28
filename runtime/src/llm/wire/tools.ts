@@ -13,6 +13,7 @@
 
 import type { LLMTool } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
+import { normalizeToolParamSchema } from "../../utils/toolParamSchema.js";
 
 type FunctionTool = {
   readonly type: "function";
@@ -51,7 +52,12 @@ function toolDescription(tool: LLMTool): string {
 }
 
 function toolParameters(tool: LLMTool): Record<string, unknown> {
-  return tool.function.parameters ?? { type: "object", properties: {} };
+  // Guarantee an object root. Strict OpenAI-compatible providers (x.ai grok,
+  // deepseek) reject a root-level anyOf/oneOf union with "tool parameter root
+  // must be an object type". This only reshapes the schema sent on the wire;
+  // tool execution keeps the original conditional input schema.
+  const raw = tool.function.parameters ?? { type: "object", properties: {} };
+  return normalizeToolParamSchema(raw).schema;
 }
 
 export function toChatCompletionsTools(

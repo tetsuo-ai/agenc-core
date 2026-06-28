@@ -292,6 +292,126 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("serves session.transcript from the persisted thread when no live agent exists", async () => {
+    // A `conv-*` terminal session (source "cli_main") persists a thread but
+    // runs its agent in its OWN process, so the daemon has no live agent for
+    // it. session.transcript must fall back to the persisted thread store
+    // instead of throwing "AgenC daemon agent not found/not running".
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "conv-terminal-fallback");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "conv-terminal-fallback",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+      });
+      // response_item history (the same shape the live-agent path reads).
+      rollout.appendRollout({
+        type: "response_item",
+        payload: { role: "user", content: "build the parser" },
+      });
+      rollout.appendRollout({
+        type: "response_item",
+        payload: {
+          role: "assistant",
+          content: [{ type: "text", text: "parser done" }],
+        },
+      });
+      // event_msg user/agent messages (the persisted-event equivalents a
+      // terminal session emits) must also surface.
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "user-event",
+          msg: {
+            type: "user_message",
+            payload: { message: "and add tests", displayText: "and add tests" },
+          },
+        },
+      });
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "agent-event",
+          msg: { type: "agent_message", payload: { message: "tests added" } },
+        },
+      });
+      threadStore.shutdownThread("conv-terminal-fallback");
+
+      // No live agent: the session materializes from the thread store with
+      // agentId "agent_default" but nothing is running for it.
+      const sessions = new AgenCDaemonSessionManager({ threadStore });
+
+      // Case A: a runner WITHOUT getAgentSessionTranscript (the
+      // BACKGROUND_RUNNER_UNAVAILABLE branch) still serves the persisted
+      // transcript instead of throwing.
+      const noTranscriptRunner = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager: sessions,
+        runner: {
+          startAgent: async () => ({
+            agentId: "unused",
+            startedAt: "2026-05-01T12:00:00.000Z",
+            status: "running",
+          }),
+        },
+      });
+      await expect(
+        noTranscriptRunner.getSessionTranscript({
+          sessionId: "conv-terminal-fallback",
+        }),
+      ).resolves.toEqual({
+        sessionId: "conv-terminal-fallback",
+        messages: [
+          { role: "user", text: "build the parser" },
+          { role: "assistant", text: "parser done" },
+          { role: "user", text: "and add tests" },
+          { role: "assistant", text: "tests added" },
+        ],
+      });
+
+      // Case B: a runner WITH getAgentSessionTranscript that throws the
+      // "not running" error because the lifecycle map has no live agent for
+      // the session — the resolve fails with AGENT_NOT_FOUND and we still
+      // fall back to the persisted thread.
+      const liveCapableRunner = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager: sessions,
+        runner: {
+          startAgent: async () => ({
+            agentId: "unused",
+            startedAt: "2026-05-01T12:00:00.000Z",
+            status: "running",
+          }),
+          getAgentSessionTranscript: async () => {
+            throw new Error(
+              "AgenC daemon agent not running: agent_default",
+            );
+          },
+        },
+      });
+      await expect(
+        liveCapableRunner.getSessionTranscript({
+          sessionId: "conv-terminal-fallback",
+        }),
+      ).resolves.toMatchObject({
+        sessionId: "conv-terminal-fallback",
+        messages: expect.arrayContaining([
+          { role: "user", text: "build the parser" },
+          { role: "assistant", text: "parser done" },
+        ]),
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("reads persisted agent logs when source agent id differs from thread id", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const rollout = openRollout(cwd, "thread-distinct-agent-log");

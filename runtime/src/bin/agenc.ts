@@ -96,6 +96,11 @@ import {
   runAgenCDaemonCli,
 } from "../app-server/daemon-cli.js";
 import {
+  formatAgenCRemoteCliHelpText,
+  parseAgenCRemoteCliArgs,
+  runAgenCRemoteCli,
+} from "./remote-cli.js";
+import {
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
   formatAgenCAgentCliHelpText,
@@ -372,6 +377,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCAuthCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
+    case "remote":
+      return formatAgenCRemoteCliHelpText();
     case "mcp":
       return formatAgenCMcpCliHelpText();
     case "doctor":
@@ -3651,6 +3658,10 @@ export async function main(): Promise<number> {
   const daemonCommand = parseAgenCDaemonCliArgs(argv);
   if (daemonCommand !== null) {
     return runAgenCDaemonCli(daemonCommand);
+  }
+  const remoteCommand = parseAgenCRemoteCliArgs(argv);
+  if (remoteCommand !== null) {
+    return runAgenCRemoteCli(remoteCommand);
   }
   const agentCommand = parseAgenCAgentCliArgs(argv);
   if (agentCommand !== null) {

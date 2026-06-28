@@ -9,6 +9,7 @@ import type {
   ResolvedProviderRequest,
 } from './providerConfig.js'
 import { sanitizeSchemaForOpenAiCompat } from '../../utils/schemaSanitizer.js'
+import { normalizeToolParamSchema } from '../../utils/toolParamSchema.js'
 import {
   createThinkTagFilter,
   stripThinkTags,
@@ -437,8 +438,26 @@ export function convertToolsToResponsesTools(
     .filter(tool => tool.name && tool.name !== 'ToolSearchTool')
     .map(tool => {
       const rawParameters = tool.input_schema ?? { type: 'object', properties: {} }
+      // Guarantee an object root before strict enforcement. Strict
+      // OpenAI-compatible providers reject a root-level anyOf/oneOf union with
+      // "tool parameter root must be an object type". A union/non-object root
+      // is rewritten into a permissive object and sent with strict: false,
+      // since its fields are conditional and cannot all be required.
+      const { schema: objectRootSchema, strictEligible } =
+        normalizeToolParamSchema(rawParameters)
+
+      if (!strictEligible) {
+        return {
+          type: 'function',
+          name: tool.name ?? 'tool',
+          description: tool.description ?? '',
+          parameters: sanitizeSchemaForOpenAiCompat(objectRootSchema),
+          strict: false,
+        }
+      }
+
       // Strict response schemas require all properties to be required.
-      const parameters = enforceStrictSchema(rawParameters)
+      const parameters = enforceStrictSchema(objectRootSchema)
 
       return {
         type: 'function',
