@@ -66,6 +66,7 @@ import {
   classifyOpenAiNetworkFailure,
 } from './openaiErrorClassification.js'
 import { sanitizeSchemaForOpenAiCompat } from '../../utils/schemaSanitizer.js'
+import { normalizeToolParamSchema } from '../../utils/toolParamSchema.js'
 import { redactSecretValueForDisplay } from '../../utils/providerProfile.js'
 import { isZaiBaseUrl } from '../../utils/zaiProvider.js'
 import {
@@ -987,7 +988,14 @@ function convertTools(
   return tools
     .filter(t => t.name !== 'ToolSearchTool') // Not relevant for OpenAi
     .map(t => {
-      const schema = { ...(t.input_schema ?? { type: 'object', properties: {} }) } as Record<string, unknown>
+      // Guarantee an object root. Strict OpenAI-compatible providers (x.ai
+      // grok, deepseek) reject a root-level anyOf/oneOf union with "tool
+      // parameter root must be an object type". A union/non-object root is
+      // rewritten into a permissive object; its fields are conditional, so
+      // strict required-superset enforcement is skipped for that tool.
+      const { schema: objectRootSchema, strictEligible } =
+        normalizeToolParamSchema(t.input_schema ?? { type: 'object', properties: {} })
+      const schema = { ...objectRootSchema } as Record<string, unknown>
 
       // For ProviderCode/OpenAi: promote known Agent sub-fields into required[] only if
       // they actually exist in properties (Gemini rejects required keys absent from properties).
@@ -1000,15 +1008,17 @@ function convertTools(
         }
       }
 
+      const strict =
+        strictEligible &&
+        !isGemini &&
+        !isEnvTruthy(process.env.AGENC_DISABLE_STRICT_TOOLS)
+
       return {
         type: 'function' as const,
         function: {
           name: t.name,
           description: t.description ?? '',
-          parameters: normalizeSchemaForOpenAi(
-            schema,
-            !isGemini && !isEnvTruthy(process.env.AGENC_DISABLE_STRICT_TOOLS),
-          ),
+          parameters: normalizeSchemaForOpenAi(schema, strict),
         },
       }
     })
