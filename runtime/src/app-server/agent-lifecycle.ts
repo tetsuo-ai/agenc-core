@@ -1481,19 +1481,81 @@ export class AgenCDaemonAgentManager {
         "session.transcript requires a daemon session manager",
       );
     }
+    // A persisted "terminal" session (created by `agenc` running in its own
+    // process) leaves a thread in the store but no live agent in this daemon.
+    // A joining client (e.g. the iOS app) still needs the conversation
+    // history. When no live agent is available, fall back to reading the
+    // persisted thread from the same thread store `agenc agent logs` uses,
+    // rather than throwing. The live-agent path below is unchanged.
     if (this.#runner?.getAgentSessionTranscript === undefined) {
+      const persisted = this.#readPersistedSessionTranscript(params.sessionId);
+      if (persisted !== undefined) return persisted;
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "session.transcript requires a background runner",
       );
     }
-    const agentId = await this.#resolveActiveAgentIdForSession(
-      params.sessionId,
-      { allowSnapshot: true },
+    let agentId: string;
+    try {
+      agentId = await this.#resolveActiveAgentIdForSession(params.sessionId, {
+        allowSnapshot: true,
+      });
+    } catch (error) {
+      if (isNoLiveAgentError(error)) {
+        const persisted = this.#readPersistedSessionTranscript(
+          params.sessionId,
+        );
+        if (persisted !== undefined) return persisted;
+      }
+      throw error;
+    }
+    try {
+      return await this.#runner.getAgentSessionTranscript(agentId, {
+        sessionId: params.sessionId,
+      });
+    } catch (error) {
+      // The lifecycle map can still consider the agent "active" while the
+      // runner has no live in-memory agent for it (e.g. a recovered terminal
+      // session). Fall back to the persisted thread for the same reason.
+      if (isNoLiveAgentRunnerError(error)) {
+        const persisted = this.#readPersistedSessionTranscript(
+          params.sessionId,
+        );
+        if (persisted !== undefined) return persisted;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Read the persisted conversation for a session straight from the thread
+   * store (the same source `agenc agent logs <id>` prints via
+   * {@link storedThreadToAgentLogSession}). Returns the user/assistant text
+   * in {@link SessionTranscriptResult} shape, matching the extraction the
+   * live-agent transcript path performs over the in-memory history. Returns
+   * `undefined` when there is no persisted thread to read so callers can
+   * decide whether to surface the original no-live-agent error.
+   */
+  #readPersistedSessionTranscript(
+    sessionId: string,
+  ): SessionTranscriptResult | undefined {
+    const threadStore = this.#threadStore;
+    if (threadStore === undefined) return undefined;
+    let thread: StoredThread;
+    try {
+      thread = threadStore.readThread({
+        threadId: sessionId,
+        includeArchived: true,
+        includeHistory: true,
+      });
+    } catch (error) {
+      if (isThreadLogReadMiss(error)) return undefined;
+      throw error;
+    }
+    const messages = transcriptMessagesFromRolloutItems(
+      thread.history?.items ?? [],
     );
-    return this.#runner.getAgentSessionTranscript(agentId, {
-      sessionId: params.sessionId,
-    });
+    return { sessionId, messages };
   }
 
   async partialCompactFromMessage(
@@ -1734,6 +1796,17 @@ export class AgenCDaemonAgentManager {
       );
     }
 
+    // NOTE (persisted terminal sessions): a `conv-*` session created by a
+    // separate `agenc` terminal process leaves a thread in the store but no
+    // live agent here, so the lookup below throws AGENT_NOT_FOUND. We do NOT
+    // resume it into a daemon agent for message.send: the originating terminal
+    // process holds an exclusive PID-flock on the rollout for its entire
+    // lifetime (SessionStore.acquire → SessionLockedError; see
+    // session/session-store.ts), so a second appender in this process would
+    // either fail to acquire the lock or race/corrupt the shared rollout.
+    // Resume only becomes safe once that terminal process has exited (its lock
+    // is released and reclaimable as stale). Read-only history is still served
+    // via getSessionTranscript's thread-store fallback. Keep the throw.
     const messageTarget = await this.#state.with(async (state) => {
       const agent = state.agents.get(session.agentId);
       if (agent !== undefined) {
@@ -2742,6 +2815,93 @@ function isThreadLogReadMiss(error: unknown): boolean {
     error instanceof ThreadNotFoundError ||
     error instanceof ThreadStoreInvalidRequestError
   );
+}
+
+/**
+ * Whether a lifecycle-level resolve error means "there is no live agent for
+ * this session" (so a persisted-thread transcript fallback is appropriate).
+ * Both codes are raised by {@link AgenCDaemonAgentManager.#resolveActiveAgentIdForSession}
+ * when the agent is absent from, or recovered-without-a-runtime in, the
+ * lifecycle map.
+ */
+function isNoLiveAgentError(error: unknown): boolean {
+  return (
+    error instanceof AgenCDaemonAgentLifecycleError &&
+    (error.code === "AGENT_NOT_FOUND" ||
+      error.code === "BACKGROUND_RUNNER_UNAVAILABLE")
+  );
+}
+
+/**
+ * Whether the runner's `getAgentSessionTranscript` threw because it has no
+ * live in-memory agent for the resolved id. The runner reports this with a
+ * plain Error (`AgenC daemon agent not found/not running: <agentId>`); the
+ * lifecycle map can still hold the agent as "active" for a recovered terminal
+ * session, so this fallback covers that gap.
+ */
+function isNoLiveAgentRunnerError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    /AgenC daemon agent not (found|running):/.test(error.message) &&
+    !(error instanceof AgenCDaemonAgentLifecycleError)
+  );
+}
+
+/**
+ * Extract the user/assistant text transcript from a persisted thread's
+ * rollout items. Mirrors the live-agent extraction in
+ * `BackgroundAgentRunner.getAgentSessionTranscript` (which reads the
+ * in-memory `ResponseItem[]` history): only user/assistant turns with
+ * non-empty text are surfaced. `response_item` rollout entries carry the same
+ * `{ role, content }` history the live path reads; `user_message` /
+ * `agent_message` events are the persisted-event equivalents emitted by a
+ * terminal session, so both sources are honored.
+ */
+function transcriptMessagesFromRolloutItems(
+  items: readonly RolloutItem[],
+): { role: string; text: string }[] {
+  const fromItems: { role: string; text: string }[] = [];
+  const fromEvents: { role: string; text: string }[] = [];
+  const push = (
+    into: { role: string; text: string }[],
+    role: string,
+    text: string,
+  ): void => {
+    if ((role === "user" || role === "assistant") && text.length > 0) {
+      into.push({ role, text });
+    }
+  };
+  for (const item of items) {
+    if (item.type === "response_item") {
+      push(fromItems, item.payload.role, messageContentText(item.payload.content));
+    } else if (item.type === "event_msg") {
+      const transcribed = transcriptMessageFromEvent(item.payload);
+      if (transcribed !== undefined) {
+        push(fromEvents, transcribed.role, transcribed.text);
+      }
+    }
+  }
+  // A terminal rollout carries BOTH `response_item` entries AND their `user_message`/`agent_message`
+  // event duplicates for the same turns, which would double every message. The response_item entries
+  // are the canonical history (same source the live path reads), so prefer them; fall back to events
+  // only for a rollout that recorded events alone.
+  return fromItems.length > 0 ? fromItems : fromEvents;
+}
+
+function transcriptMessageFromEvent(
+  event: Event,
+): { role: string; text: string } | undefined {
+  const msg = event.msg;
+  if (msg.type === "user_message") {
+    return {
+      role: "user",
+      text: messageContentText(msg.payload.displayText ?? msg.payload.message),
+    };
+  }
+  if (msg.type === "agent_message") {
+    return { role: "assistant", text: messageContentText(msg.payload.message) };
+  }
+  return undefined;
 }
 
 /**
