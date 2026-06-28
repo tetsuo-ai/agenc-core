@@ -31,6 +31,7 @@ import { memorySlashCommand } from "./memory/slash.js";
 import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
 import { compactCommand, contextCommand } from "./session-compact.js";
+import { remoteCommand } from "./remote.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`.
@@ -147,6 +148,7 @@ export function buildDefaultRegistry(
     hooksCommand,
     skillsCommand,
     mcpCommand,
+    remoteCommand,
     pluginsCommand,
     memorySlashCommand,
     resumeCommand,
