@@ -46,7 +46,7 @@ import {
   type BuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "./registry/provider-info.js";
-import { getGeminiProjectIdHint } from "../utils/geminiAuth.js";
+import { getGeminiAuthMode, getGeminiProjectIdHint } from "../utils/geminiAuth.js";
 
 export type ProviderName = BuiltInProviderSlug;
 
@@ -1451,10 +1451,15 @@ export function createProvider(
       });
     case "gemini": {
       const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
-      const apiKey = resolveFactoryApiKey(
-        opts,
-        firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_API_KEY),
-      );
+      const geminiAuthMode = getGeminiAuthMode();
+      const shouldUseApiKey =
+        geminiAuthMode !== "access-token" && geminiAuthMode !== "adc";
+      const apiKey = shouldUseApiKey
+        ? resolveFactoryApiKey(
+            opts,
+            firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_API_KEY),
+          )
+        : undefined;
       const model = requireModel(
         "gemini",
         opts.model,

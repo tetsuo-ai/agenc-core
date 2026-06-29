@@ -1560,6 +1560,68 @@ describe("createProvider", () => {
     );
   });
 
+  test("honors Gemini access-token auth mode even when GOOGLE_API_KEY is present", () => {
+    const provider = withEnv(
+      {
+        GEMINI_AUTH_MODE: "access-token",
+        GOOGLE_API_KEY: "google-test",
+        GEMINI_API_KEY: undefined,
+        GEMINI_ACCESS_TOKEN: "ya29-env-token",
+        GOOGLE_CLOUD_PROJECT: "project-1",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+        GOOGLE_CLOUD_REGION: undefined,
+        GEMINI_VERTEX_LOCATION: undefined,
+        GEMINI_BASE_URL: undefined,
+        GEMINI_MODEL: "gemini-2.5-pro",
+      },
+      () => createProvider("gemini", {}),
+    );
+
+    expect(provider).toBeInstanceOf(GeminiProvider);
+    const config = (provider as unknown as {
+      config: {
+        apiKey?: string;
+        accessToken?: string;
+        baseURL?: string;
+        project?: string;
+      };
+    }).config;
+    expect(config.apiKey).toBeUndefined();
+    expect(config.accessToken).toBe("ya29-env-token");
+    expect(config.project).toBe("project-1");
+    expect(config.baseURL).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
+    );
+  });
+
+  test("honors Gemini ADC auth mode even when GOOGLE_API_KEY is present", () => {
+    const provider = withEnv(
+      {
+        GEMINI_AUTH_MODE: "adc",
+        GOOGLE_API_KEY: "google-test",
+        GEMINI_API_KEY: undefined,
+        GEMINI_ACCESS_TOKEN: undefined,
+        GOOGLE_CLOUD_PROJECT: "project-1",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+        GOOGLE_CLOUD_REGION: undefined,
+        GEMINI_VERTEX_LOCATION: undefined,
+        GEMINI_BASE_URL: undefined,
+        GEMINI_MODEL: "gemini-2.5-pro",
+      },
+      () => createProvider("gemini", {}),
+    );
+
+    expect(provider).toBeInstanceOf(GeminiProvider);
+    const config = (provider as unknown as {
+      config: { apiKey?: string; baseURL?: string; project?: string };
+    }).config;
+    expect(config.apiKey).toBeUndefined();
+    expect(config.project).toBe("project-1");
+    expect(config.baseURL).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
+    );
+  });
+
   test("tracks the canonical provider identity and rebuild options on openai-compatible providers", () => {
     const provider = withEnv(
       {

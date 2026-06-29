@@ -112,7 +112,11 @@ function stubSession() {
   const emit = vi.fn();
   const nextInternalSubId = vi.fn(() => "sub-0");
   return {
-    session: { emit, nextInternalSubId } as unknown as Session,
+    session: {
+      emit,
+      nextInternalSubId,
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
+    } as unknown as Session,
     emit,
   };
 }
@@ -183,6 +187,9 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       provider: {
         chat: providerChat,
       },
+      emit: vi.fn(),
+      nextInternalSubId: vi.fn(() => "sub-0"),
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
     } as unknown as Session;
     const handlers = createSessionMcpSamplingHandlers(session);
 
@@ -209,6 +216,14 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       [{ role: "user", content: "Summarize this" }],
       { systemPrompt: "Be brief", maxOutputTokens: 32 },
     );
+    const emittedTypes = (
+      session.emit as ReturnType<typeof vi.fn>
+    ).mock.calls.map((call) => call[0].msg.type);
+    expect(emittedTypes).toEqual([
+      "mcp_tool_call_begin",
+      "token_count",
+      "mcp_tool_call_end",
+    ]);
     expect(result).toEqual({
       role: "assistant",
       model: "grok-4.3",
@@ -216,6 +231,48 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       content: {
         type: "text",
         text: "sampled response",
+      },
+    });
+  });
+
+  it("denies MCP sampling unless the session allows unattended provider calls", async () => {
+    const providerChat = vi.fn();
+    const session = {
+      provider: {
+        chat: providerChat,
+      },
+      emit: vi.fn(),
+      nextInternalSubId: vi.fn(() => "sub-0"),
+      sessionConfiguration: { approvalPolicy: { value: "on_request" } },
+    } as unknown as Session;
+    const handlers = createSessionMcpSamplingHandlers(session);
+
+    const result = await handlers.createMessage({
+      serverName: "srv",
+      requestId: 7,
+      request: {
+        id: 7,
+        method: "sampling/createMessage",
+        params: {
+          messages: [
+            {
+              role: "user",
+              content: { type: "text", text: "Summarize this" },
+            },
+          ],
+          maxTokens: 32,
+        },
+      } as never,
+    });
+
+    expect(providerChat).not.toHaveBeenCalled();
+    expect(result.model).toBe("agenc-host");
+    expect(
+      (session.emit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].msg,
+    ).toMatchObject({
+      type: "warning",
+      payload: {
+        cause: "mcp_sampling_denied",
       },
     });
   });
