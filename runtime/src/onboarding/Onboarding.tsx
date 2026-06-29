@@ -152,8 +152,8 @@ const FIRST_RUN_STEP_ORDER: readonly FirstRunOnboardingStepId[] = Object.freeze(
   "preflight",
   "theme",
   "provider",
-  "connection-test",
   "api-key",
+  "connection-test",
   "security",
   "terminal-setup",
 ]);
@@ -283,6 +283,21 @@ function withCompletedStep(
   };
 }
 
+function withCompletedSteps(
+  state: FirstRunOnboardingState,
+  ids: readonly FirstRunOnboardingStepId[],
+  next: FirstRunOnboardingStepId | null,
+): FirstRunOnboardingState {
+  const completed = new Set(state.completedStepIds);
+  for (const id of ids) completed.add(id);
+  return {
+    ...state,
+    completedStepIds: [...completed],
+    ...(next !== null ? { currentStepId: next } : {}),
+    error: null,
+  };
+}
+
 function parseTheme(raw: string, current: string): string | null {
   const input = raw.trim().toLowerCase();
   if (input === "" || input === "next") return current;
@@ -382,6 +397,20 @@ function onboardingSlashCommandError(raw: string): string | null {
 function apiKeyVerificationErrorMessage(error: string | undefined): string {
   const base = error?.trim() || "API key verification failed.";
   return `${base} Type next or skip to continue without saving, or paste a replacement key.`;
+}
+
+function verifiedApiKeyConnection(
+  provider: BuiltInProviderSlug,
+  model: string,
+): ProviderConnectionCheck {
+  return {
+    provider,
+    model,
+    status: "ready",
+    ok: true,
+    detail: "Provider API key verified.",
+    keyEnvVar: BUILT_IN_PROVIDER_API_KEY_ENVS[provider],
+  };
 }
 
 function captureApiKeyPaste(
@@ -752,7 +781,7 @@ export async function submitFirstRunOnboardingInput(
             pendingApiKeyApproval: null,
           },
           "provider",
-          "connection-test",
+          "api-key",
         ),
         completed: false,
       };
@@ -774,7 +803,7 @@ export async function submitFirstRunOnboardingInput(
         state: withCompletedStep(
           { ...state, connection },
           "connection-test",
-          "api-key",
+          "security",
         ),
         completed: false,
       };
@@ -796,7 +825,7 @@ export async function submitFirstRunOnboardingInput(
             state: withCompletedStep(
               { ...state, pendingApiKeyApproval: null },
               "api-key",
-              "security",
+              "connection-test",
             ),
             completed: false,
           };
@@ -835,9 +864,16 @@ export async function submitFirstRunOnboardingInput(
           };
         }
         return {
-          state: withCompletedStep(
-            { ...state, pendingApiKeyApproval: null },
-            "api-key",
+          state: withCompletedSteps(
+            {
+              ...state,
+              pendingApiKeyApproval: null,
+              connection: verifiedApiKeyConnection(
+                state.selectedProvider,
+                state.selectedModel,
+              ),
+            },
+            ["api-key", "connection-test"],
             "security",
           ),
           completed: false,
@@ -854,7 +890,7 @@ export async function submitFirstRunOnboardingInput(
             };
           }
           return {
-            state: withCompletedStep(state, "api-key", "security"),
+            state: withCompletedStep(state, "api-key", "connection-test"),
             completed: false,
           };
         }
@@ -1067,6 +1103,17 @@ function apiKeyInstructionForConnection(
   return `Paste ${connection.keyEnvVar} to verify it, or type next or skip to add it later.`;
 }
 
+function apiKeyInstructionForProvider(provider: BuiltInProviderSlug): string {
+  const keyEnvVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
+  if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
+    return "This provider can continue without a BYOK API key. Type next to continue.";
+  }
+  if (keyEnvVar === undefined) {
+    return "Paste an API key to verify it, or type next or skip to add it later.";
+  }
+  return `Paste ${keyEnvVar} to verify it, or type next or skip to add it later.`;
+}
+
 function securityLinesForContext(
   context: FirstRunOnboardingContext,
 ): readonly string[] {
@@ -1128,8 +1175,8 @@ export function detailLinesForStep(
       const connection = state.connection;
       if (connection === null) {
         return [
-          "Connection check has not run yet.",
-          "Paste an API key to verify it, or type next to continue without saving.",
+          `Provider: ${state.selectedProvider}`,
+          apiKeyInstructionForProvider(state.selectedProvider),
         ];
       }
       return [
