@@ -20,6 +20,17 @@ the advertised event-export surface rather than wiring it. AgenC keeps local
 diagnostics local; trajectory export is explicit opt-in to caller-selected
 JSONL files.
 
+**Follow-up completion note — 2026-06-29:** the current remediation branch also
+closes the verifier follow-ups found after the first merge: native Gemini now
+uses the shared Google credential resolver path (`GEMINI_API_KEY`,
+`GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, or ADC), can infer Vertex Gemini
+endpoints from project/location settings, and preserves request-scoped
+`cachedContents` hints; MCP host sampling now routes `sampling/createMessage`
+through the session provider when a session owns the connection, with the old
+graceful unavailable response retained only for sessionless compatibility
+paths; daemon overload coverage now includes the token-bucket rate-limit branch.
+The original ranked findings below are retained as audit context.
+
 ---
 
 ## Bottom line
@@ -164,7 +175,7 @@ that returned nothing; this branch resolves that by deleting the advertised expo
 1. **Gemini native provider** (#1) — correctness + cost, real capability hole
 2. **`stream-json` headless I/O** (#2) — cheapest high-leverage; unlocks SDK/CI integration
 3. **Bedrock streaming** (#3) — enterprise UX parity, reuses existing SSE
-4. **OTel: wire it or remove the config** (#4) — stop advertising a dead feature
+4. **Export surface removal** (#4) — stop advertising a dead feature
 5. **Eval harness** (#5) — so quality regressions become detectable
 6. Then the parity/hardening band: MCP sampling (#6), daemon rate-limiting (#7, before relay hardens),
    analyzed `/init` (#8), `/output-style` menu (#9), SBOM/provenance (#10)

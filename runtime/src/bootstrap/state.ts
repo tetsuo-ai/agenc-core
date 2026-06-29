@@ -220,7 +220,7 @@ type State = {
   // benefit to keeping thinking). Once latched, stays on so the newly-warmed
   // thinking-cleared cache isn't busted by flipping back to keep:'all'.
   thinkingClearLatched: boolean | null
-  // Current prompt ID (UUID) correlating a user prompt with subsequent OTel events
+  // Current prompt ID (UUID) correlating a user prompt with subsequent local events.
   promptId: string | null
   // Last API requestId for the main conversation chain (not subagents).
   // Updated after each successful API response for main-session queries.

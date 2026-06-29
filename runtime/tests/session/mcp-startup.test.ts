@@ -26,6 +26,7 @@ import {
   createSessionMcpManagerFromConfig,
   createSessionMcpManagerFromEnv,
   createSessionMcpManagerFromSources,
+  createSessionMcpSamplingHandlers,
   createSessionMcpService,
   getMcpConfigFromConfig,
   getMcpConfigFromEnv,
@@ -58,10 +59,16 @@ const mockCreatePromptBridge = vi.mocked(createPromptBridge);
 function stubManager() {
   const setCallObserver = vi.fn();
   const setElicitationHandlers = vi.fn();
+  const setSamplingHandlers = vi.fn();
   return {
-    manager: { setCallObserver, setElicitationHandlers } as unknown as MCPManager,
+    manager: {
+      setCallObserver,
+      setElicitationHandlers,
+      setSamplingHandlers,
+    } as unknown as MCPManager,
     setCallObserver,
     setElicitationHandlers,
+    setSamplingHandlers,
   };
 }
 
@@ -146,16 +153,71 @@ beforeEach(() => {
 
 describe("mcp-startup.attachMcpManagerToSession", () => {
   it("installs a call observer on the manager", () => {
-    const { manager, setCallObserver, setElicitationHandlers } = stubManager();
+    const {
+      manager,
+      setCallObserver,
+      setElicitationHandlers,
+      setSamplingHandlers,
+    } = stubManager();
     const { session } = stubSession();
 
     attachMcpManagerToSession(manager, session);
 
     expect(setCallObserver).toHaveBeenCalledOnce();
     expect(setElicitationHandlers).toHaveBeenCalledOnce();
+    expect(setSamplingHandlers).toHaveBeenCalledOnce();
     const observer = setCallObserver.mock.calls[0]![0]!;
     expect(typeof observer.onBegin).toBe("function");
     expect(typeof observer.onEnd).toBe("function");
+  });
+
+  it("routes MCP sampling requests through the session provider", async () => {
+    const providerChat = vi.fn(async () => ({
+      content: "sampled response",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "grok-4.3",
+      finishReason: "stop" as const,
+    }));
+    const session = {
+      provider: {
+        chat: providerChat,
+      },
+    } as unknown as Session;
+    const handlers = createSessionMcpSamplingHandlers(session);
+
+    const result = await handlers.createMessage({
+      serverName: "srv",
+      requestId: 7,
+      request: {
+        id: 7,
+        method: "sampling/createMessage",
+        params: {
+          messages: [
+            {
+              role: "user",
+              content: { type: "text", text: "Summarize this" },
+            },
+          ],
+          systemPrompt: "Be brief",
+          maxTokens: 32,
+        },
+      } as never,
+    });
+
+    expect(providerChat).toHaveBeenCalledWith(
+      [{ role: "user", content: "Summarize this" }],
+      { systemPrompt: "Be brief", maxOutputTokens: 32 },
+    );
+    expect(result).toEqual({
+      role: "assistant",
+      model: "grok-4.3",
+      stopReason: "endTurn",
+      content: {
+        type: "text",
+        text: "sampled response",
+      },
+    });
   });
 
   it("passes session granular MCP elicitation policy into handlers", async () => {

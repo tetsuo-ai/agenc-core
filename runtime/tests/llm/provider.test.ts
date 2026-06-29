@@ -1442,6 +1442,7 @@ describe("createProvider", () => {
       name: "gemini",
       env: {
         GEMINI_API_KEY: undefined,
+        GOOGLE_API_KEY: undefined,
         GEMINI_BASE_URL: undefined,
       },
       apiKey: "gemini-test",
@@ -1457,6 +1458,7 @@ describe("createProvider", () => {
       name: "gemini",
       env: {
         GEMINI_API_KEY: undefined,
+        GOOGLE_API_KEY: undefined,
         GEMINI_BASE_URL:
           "https://generativelanguage.googleapis.com/v1beta/openai",
       },
@@ -1511,6 +1513,52 @@ describe("createProvider", () => {
       }
     },
   );
+
+  test("accepts GOOGLE_API_KEY as a Gemini API key", () => {
+    const provider = withEnv(
+      {
+        GOOGLE_API_KEY: "google-test",
+        GEMINI_API_KEY: undefined,
+        GEMINI_BASE_URL: undefined,
+        GEMINI_MODEL: "gemini-2.5-pro",
+      },
+      () => createProvider("gemini", {}),
+    );
+
+    expect(provider).toBeInstanceOf(GeminiProvider);
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      apiKey: "google-test",
+      baseURL: "https://generativelanguage.googleapis.com/v1beta",
+      model: "gemini-2.5-pro",
+    });
+  });
+
+  test("infers a Vertex Gemini base URL from bearer env credentials", () => {
+    const provider = withEnv(
+      {
+        GOOGLE_API_KEY: undefined,
+        GEMINI_API_KEY: undefined,
+        GEMINI_ACCESS_TOKEN: "ya29-env-token",
+        GOOGLE_CLOUD_PROJECT: "project-1",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+        GOOGLE_CLOUD_REGION: undefined,
+        GEMINI_VERTEX_LOCATION: undefined,
+        GEMINI_BASE_URL: undefined,
+        GEMINI_MODEL: "gemini-2.5-pro",
+      },
+      () => createProvider("gemini", {}),
+    );
+
+    expect(provider).toBeInstanceOf(GeminiProvider);
+    const config = (provider as unknown as {
+      config: { accessToken?: string; baseURL?: string; project?: string };
+    }).config;
+    expect(config.accessToken).toBe("ya29-env-token");
+    expect(config.project).toBe("project-1");
+    expect(config.baseURL).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
+    );
+  });
 
   test("tracks the canonical provider identity and rebuild options on openai-compatible providers", () => {
     const provider = withEnv(
@@ -1653,15 +1701,6 @@ describe("createProvider", () => {
         DEEPSEEK_MODEL: "deepseek-reasoner",
       },
       expected: /DEEPSEEK_API_KEY|apiKey/i,
-    },
-    {
-      name: "gemini",
-      env: {
-        GOOGLE_API_KEY: "google-test",
-        GEMINI_API_KEY: undefined,
-        GEMINI_MODEL: "gemini-2.5-pro",
-      },
-      expected: /GEMINI_API_KEY|apiKey/i,
     },
     {
       name: "mistral",

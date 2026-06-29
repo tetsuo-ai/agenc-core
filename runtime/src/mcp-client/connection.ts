@@ -17,6 +17,7 @@ import { createStdioMCPConnection } from "./transports/stdio.js";
 import { createSseMCPConnection } from "./transports/sse.js";
 import { createHttpMCPConnection } from "./transports/http.js";
 import { createWebSocketMCPConnection } from "./transports/websocket.js";
+import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 
 /**
  * Create an MCP client connection to an external server.
@@ -30,6 +31,7 @@ export async function createMCPConnection(
   config: MCPServerConfig,
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
+  samplingHandlers?: McpSamplingHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const transportKind = config.transport ?? "stdio";
@@ -52,6 +54,7 @@ export async function createMCPConnection(
       },
       logger,
       elicitationHandlers,
+      samplingHandlers,
     );
   }
 
@@ -73,15 +76,26 @@ export async function createMCPConnection(
       ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
     };
     if (transportKind === "sse") {
-      return createSseMCPConnection(remoteConfig, logger, elicitationHandlers);
+      return createSseMCPConnection(
+        remoteConfig,
+        logger,
+        elicitationHandlers,
+        samplingHandlers,
+      );
     }
     if (transportKind === "http") {
-      return createHttpMCPConnection(remoteConfig, logger, elicitationHandlers);
+      return createHttpMCPConnection(
+        remoteConfig,
+        logger,
+        elicitationHandlers,
+        samplingHandlers,
+      );
     }
     return createWebSocketMCPConnection(
       remoteConfig,
       logger,
       elicitationHandlers,
+      samplingHandlers,
     );
   }
 

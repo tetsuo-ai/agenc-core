@@ -13,6 +13,7 @@ import type {
   MCPServerConfig,
   MCPToolBridge,
 } from "./types.js";
+import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type {
   MCPCallObserver,
   MCPToolBridgePermissionOptions,
@@ -96,11 +97,9 @@ const BACKOFF_MULTIPLIER = 2;
 interface ResilientMCPBridgeOptions {
   readonly permissions?: MCPToolBridgePermissionOptions;
   /**
-   * Telemetry plumbing forwarded to the inner bridge on reconnect so a
-   * rebuilt bridge keeps emitting the same `mcp_tool_call_*` events and
-   * span origin the initial connect set up. Telemetry-only (not a security
-   * control); kept at parity with the initial-connect `createToolBridge`
-   * call in `manager.ts`.
+   * Local event observer forwarded to the inner bridge on reconnect so a
+   * rebuilt bridge keeps emitting the same `mcp_tool_call_*` events the
+   * initial connect set up.
    */
   readonly callObserver?: MCPCallObserver;
   readonly serverOrigin?: string;
@@ -128,6 +127,8 @@ interface ResilientMCPBridgeOptions {
    * bridge for this to take effect.
    */
   readonly elicitationHandlers?: MCPElicitationHandlers;
+  /** Session-provided MCP sampling handler, re-registered on reconnect. */
+  readonly samplingHandlers?: McpSamplingHandlers;
 }
 
 /**
@@ -264,6 +265,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.config,
         this.logger,
         this.options.elicitationHandlers,
+        this.options.samplingHandlers,
       );
       // A `dispose()` racing this reconnect already cleared `reconnectTimer`
       // and disposed `this.inner`, but it cannot see the client we just
@@ -291,8 +293,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
           ...(this.options.permissions !== undefined
             ? { permissions: this.options.permissions }
             : {}),
-          // Telemetry parity with the initial connect (manager.ts): keep the
-          // rebuilt bridge emitting the same call events / span origin.
+          // Keep the rebuilt bridge emitting the same local call events.
           ...(this.options.callObserver !== undefined
             ? { callObserver: this.options.callObserver }
             : {}),

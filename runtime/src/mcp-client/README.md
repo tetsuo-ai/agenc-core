@@ -17,6 +17,9 @@ without knowing the underlying transport.
   per-read byte cap (I-76, see `resources.ts`).
 - Bridge MCP **prompts** (parameterized server-side templates) into
   user/assistant message pairs.
+- Advertise MCP host roots and sampling; session-owned managers route
+  `sampling/createMessage` through the active runtime provider, while
+  sessionless compatibility connections return a graceful unavailable result.
 - Detect dead connections on tool calls and reconnect with exponential
   backoff via `ResilientMCPBridge`.
 

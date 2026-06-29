@@ -43,6 +43,7 @@ import {
   type MCPPromptDescriptor,
   type MCPPromptRendered,
 } from "./prompts.js";
+import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -198,6 +199,7 @@ export class MCPManager {
   private callObserver: MCPCallObserver | undefined;
   private permissionOptions: MCPToolBridgePermissionOptions | undefined;
   private elicitationHandlers: MCPElicitationHandlers | undefined;
+  private samplingHandlers: McpSamplingHandlers | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
@@ -225,6 +227,10 @@ export class MCPManager {
     handlers: MCPElicitationHandlers | undefined,
   ): void {
     this.elicitationHandlers = handlers;
+  }
+
+  setSamplingHandlers(handlers: McpSamplingHandlers | undefined): void {
+    this.samplingHandlers = handlers;
   }
 
   getConnectionState(name: string): MCPConnectionState | undefined {
@@ -774,6 +780,7 @@ export class MCPManager {
       config,
       this.logger,
       this.elicitationHandlers,
+      this.samplingHandlers,
     );
     try {
       if (startupGate?.isCancelled()) {
@@ -823,11 +830,9 @@ export class MCPManager {
           ...(this.permissionOptions !== undefined
             ? { permissions: this.permissionOptions }
             : {}),
-          // Telemetry parity: forward the same call observer the initial
+          // Reconnect parity: forward the same call observer the initial
           // `createToolBridge` above received so reconnected bridges keep
-          // emitting `mcp_tool_call_*` events. `serverOrigin` is not derived
-          // here yet; when it is, pass it both here and to `createToolBridge`
-          // so the two connect paths stay in lockstep.
+          // emitting local `mcp_tool_call_*` events.
           ...(this.callObserver !== undefined
             ? { callObserver: this.callObserver }
             : {}),
@@ -837,6 +842,9 @@ export class MCPManager {
           // silently after a transient drop.
           ...(this.elicitationHandlers !== undefined
             ? { elicitationHandlers: this.elicitationHandlers }
+            : {}),
+          ...(this.samplingHandlers !== undefined
+            ? { samplingHandlers: this.samplingHandlers }
             : {}),
           // On automatic reconnect the resilient bridge rebuilds only the
           // tool surface and spawns a fresh client. Rebuild the resource +

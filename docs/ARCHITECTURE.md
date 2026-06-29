@@ -114,5 +114,5 @@ and the daemon/persistence/permission cores are mature (WAL SQLite, atomic
 rollout writes, an AST-backed Bash permission layer, transactional file edits).
 The public launcher package is published, the repository has a top-level MIT
 license, and known pre-GA gaps are tracked separately: cross-platform runtime
-artifacts, observability wiring, release hardening, and deciding whether hosted
-CI is worth re-enabling.
+artifacts, release hardening, and deciding whether hosted CI is worth
+re-enabling.

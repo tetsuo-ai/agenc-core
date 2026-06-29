@@ -2,6 +2,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import {
   CreateMessageRequestSchema,
   ListRootsRequestSchema,
+  type CreateMessageRequest,
   type CreateMessageResult,
   type ListRootsResult,
 } from '@modelcontextprotocol/sdk/types.js'
@@ -10,6 +11,27 @@ import { getOriginalCwd } from '../../bootstrap/state.js'
 import { logMCPDebug } from '../../utils/log.js'
 
 export type McpHostElicitationCapabilityMode = 'none' | 'empty' | 'form-url'
+
+export interface McpSamplingHandlers {
+  createMessage(params: {
+    readonly serverName: string
+    readonly requestId: string | number | undefined
+    readonly request: CreateMessageRequest
+    readonly contextMeta?: unknown
+    readonly signal?: AbortSignal
+  }): Promise<CreateMessageResult>
+}
+
+export interface McpHostRequestHandlerOptions {
+  readonly rootPath?: string
+  readonly samplingHandlers?: McpSamplingHandlers
+}
+
+interface McpRequestHandlerExtra {
+  readonly signal?: AbortSignal
+  readonly requestId?: unknown
+  readonly _meta?: unknown
+}
 
 export function getMcpRootUriForPath(path: string): string {
   return pathToFileURL(path).href
@@ -42,11 +64,30 @@ export function createUnavailableSamplingResult(): CreateMessageResult {
   }
 }
 
+function requestIdFromMcpRequest(
+  request: CreateMessageRequest,
+): string | number | undefined {
+  const id = (request as { readonly id?: unknown }).id
+  return typeof id === 'string' || typeof id === 'number' ? id : undefined
+}
+
+function requestIdFromMcpExtra(
+  extra: McpRequestHandlerExtra | undefined,
+): string | number | undefined {
+  const id = extra?.requestId
+  return typeof id === 'string' || typeof id === 'number' ? id : undefined
+}
+
 export function configureMcpHostRequestHandlers(
   client: Client,
   serverName: string,
-  rootPath: string = getOriginalCwd(),
+  rootPathOrOptions: string | McpHostRequestHandlerOptions = getOriginalCwd(),
 ): void {
+  const options =
+    typeof rootPathOrOptions === 'string'
+      ? { rootPath: rootPathOrOptions }
+      : rootPathOrOptions
+  const rootPath = options.rootPath ?? getOriginalCwd()
   client.setRequestHandler(ListRootsRequestSchema, async (): Promise<ListRootsResult> => {
     logMCPDebug(serverName, `Received ListRoots request from server`)
     return {
@@ -60,8 +101,22 @@ export function configureMcpHostRequestHandlers(
 
   client.setRequestHandler(
     CreateMessageRequestSchema,
-    async (): Promise<CreateMessageResult> => {
+    async (
+      request: CreateMessageRequest,
+      extra?: McpRequestHandlerExtra,
+    ): Promise<CreateMessageResult> => {
       logMCPDebug(serverName, `Received sampling/createMessage request from server`)
+      if (options.samplingHandlers !== undefined) {
+        const contextMeta = request.params?._meta ?? extra?._meta
+        return options.samplingHandlers.createMessage({
+          serverName,
+          requestId:
+            requestIdFromMcpExtra(extra) ?? requestIdFromMcpRequest(request),
+          request,
+          ...(contextMeta !== undefined ? { contextMeta } : {}),
+          ...(extra?.signal !== undefined ? { signal: extra.signal } : {}),
+        })
+      }
       return createUnavailableSamplingResult()
     },
   )
