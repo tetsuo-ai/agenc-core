@@ -57,6 +57,12 @@ export function hasRemoteAuthSessionSync(
   return readRemoteAuthSessionSync(env) !== null;
 }
 
+export function remoteAuthSessionTokenSync(
+  env: EnvSnapshot = process.env,
+): string | undefined {
+  return readRemoteAuthSessionSync(env)?.token as string | undefined;
+}
+
 export function remoteAuthSessionSubscriptionTierSync(
   env: EnvSnapshot = process.env,
 ): AuthSubscriptionTier | undefined {

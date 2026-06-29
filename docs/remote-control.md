@@ -12,14 +12,22 @@ Drive AgenC coding sessions running on your computer from the [AgenC iOS app](ht
 
 ## Device pairing
 
-Production account identity is a shared mock, so routing by account would put every phone in the same room. Instead we pair by *device*:
+Remote pairing requires a signed-in AgenC account. If the TUI/CLI does not have
+a valid remote login session, `/remote on` and `agenc remote on` stop before
+creating a code, calling the backend, or opening the relay.
 
-1. On the computer: `agenc remote on` prints an 8-char code and a QR encoding `agenc://pair?c=<code>`.
-2. The connector registers the pairing with the backend (a random 128-bit `pairingId` + a hashed host secret) and starts bridging on the room `pairingId`.
-3. In the app: scan the QR or type the code → the app calls `/v1/pair/claim` (bearer-gated) → the backend marks the pairing active and issues the app a signed *client ticket* for the same room.
-4. Both sides now share one isolated relay room. The QR surface auto-closes the moment the phone connects.
+Production routing still pairs by *device*, not by account room:
 
-**Security:** the backend mints every ticket; the host is gated by its secret, the claim by the app's bearer; the code is single-use; rooms are 128-bit and isolated; there is no server-side pairing list to enumerate.
+1. On the computer: sign in with `/login` or `AGENC_AUTH_BACKEND=remote agenc login`.
+2. Run `agenc remote on`; it sends the remote auth bearer to the backend, prints an 8-char code, and shows a QR encoding `agenc://pair?c=<code>`.
+3. The connector registers the pairing with the backend (a random 128-bit `pairingId` + a hashed host secret) and starts bridging on the room `pairingId`.
+4. In the app: scan the QR or type the code → the app calls `/v1/pair/claim` (bearer-gated) → the backend marks the pairing active and issues the app a signed *client ticket* for the same room.
+5. Both sides now share one isolated relay room. The QR surface auto-closes the moment the phone connects.
+
+**Security:** the backend mints every ticket; pair creation requires the
+computer's remote auth bearer, the host is gated by its secret, the claim by the
+app's bearer; the code is single-use; rooms are 128-bit and isolated; there is
+no server-side pairing list to enumerate.
 
 ## The `/remote` command
 
