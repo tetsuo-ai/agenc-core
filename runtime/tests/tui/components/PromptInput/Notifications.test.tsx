@@ -31,6 +31,14 @@ const harness = vi.hoisted(() => ({
   mcpClientsSeen: undefined as unknown,
   model: 'gpt-5.4',
   removeNotification: vi.fn(),
+  remoteAuthSession: false,
+  remoteManagedKeys: false,
+  remoteSubscriptionTier: undefined as
+    | undefined
+    | 'enterprise'
+    | 'free'
+    | 'pro'
+    | 'team',
   subscriptionType: 'pro' as 'enterprise' | 'pro' | 'team',
   tokenUsage: 1234,
   usesAnthropicAccountFlow: true,
@@ -47,6 +55,12 @@ vi.mock('../../../services/compact/autoCompact.js', () => ({
     model,
     tokenUsage,
   }),
+}))
+
+vi.mock('../../../auth/session-state.js', () => ({
+  hasEntitledRemoteAuthSessionSync: () => harness.remoteManagedKeys,
+  hasRemoteAuthSessionSync: () => harness.remoteAuthSession,
+  remoteAuthSessionSubscriptionTierSync: () => harness.remoteSubscriptionTier,
 }))
 
 vi.mock('../../../utils/auth.js', () => ({
@@ -236,6 +250,9 @@ function resetHarness() {
   harness.mcpClientsSeen = undefined
   harness.model = 'gpt-5.4'
   harness.removeNotification.mockClear()
+  harness.remoteAuthSession = false
+  harness.remoteManagedKeys = false
+  harness.remoteSubscriptionTier = undefined
   harness.subscriptionType = 'pro'
   harness.tokenUsage = 1234
   harness.usesAnthropicAccountFlow = true
@@ -455,6 +472,41 @@ describe('Notifications', () => {
 
     try {
       expect(rendered.output()).toContain('Not logged in · Run /login')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('renders remote free-plan upgrade copy when managed keys are unavailable', async () => {
+    harness.remoteAuthSession = true
+    harness.remoteSubscriptionTier = 'free'
+    const rendered = await renderNotifications({
+      apiKeyStatus: 'missing',
+    })
+
+    try {
+      expect(rendered.output()).toContain(
+        'AgenC free plan · upgrade at https://id.agenc.ag/pricing or add a BYOK key',
+      )
+      expect(rendered.output()).not.toContain('Not logged in · Run /login')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('renders remote paid-plan managed-key status', async () => {
+    harness.remoteAuthSession = true
+    harness.remoteManagedKeys = true
+    harness.remoteSubscriptionTier = 'pro'
+    const rendered = await renderNotifications({
+      apiKeyStatus: 'missing',
+    })
+
+    try {
+      expect(rendered.output()).toContain(
+        'AgenC pro plan · managed model keys available',
+      )
+      expect(rendered.output()).not.toContain('Not logged in · Run /login')
     } finally {
       await rendered.dispose()
     }

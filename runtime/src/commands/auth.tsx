@@ -94,9 +94,7 @@ async function executeAuthCommand(
     const tier = await resolveSubscriptionTier(backend);
     return {
       kind: "text",
-      text: `${formatAgenCAuthIdentity(result.identity)}${
-        tier ? ` · tier=${tier}` : ""
-      }`,
+      text: `${formatAgenCAuthIdentity(result.identity)}${formatSubscriptionStatus(tier)}`,
     };
   });
 }
@@ -218,4 +216,12 @@ function formatAgenCAuthIdentity(identity: AuthIdentity | undefined): string {
     identity.plan?.trim() ? `plan=${identity.plan.trim()}` : undefined,
   ].filter((value): value is string => value !== undefined);
   return detail.length > 0 ? `${name} (${detail.join(", ")})` : name;
+}
+
+function formatSubscriptionStatus(tier: string | undefined): string {
+  if (tier === undefined) return "";
+  if (tier === "pro" || tier === "team" || tier === "enterprise") {
+    return ` · plan=${tier} · managed keys available`;
+  }
+  return ` · plan=${tier} · managed keys require Pro (https://id.agenc.ag/pricing)`;
 }
