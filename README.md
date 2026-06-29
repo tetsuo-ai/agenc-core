@@ -107,6 +107,19 @@ Start the interactive TUI:
 npm run start
 ```
 
+### First-run onboarding
+
+On a clean `AGENC_HOME`, the TUI walks new users through:
+
+```text
+Preflight -> Theme -> Provider -> API key -> Connection check -> Security -> Terminal setup
+```
+
+The API key step verifies and saves a BYOK provider key before the connection
+check runs. If the user skips the key, the connection check still runs next and
+reports whether the selected provider is ready, local-only, managed by the
+AgenC account, or missing credentials.
+
 Run a one-shot prompt without the TUI:
 
 ```bash

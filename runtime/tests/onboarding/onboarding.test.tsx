@@ -130,11 +130,10 @@ describe("first-run onboarding wizard", () => {
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
     return state;
   }
 
-  test("advances through provider selection, connection check, and completion", async () => {
+  test("advances through provider selection, API key, connection check, and completion", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
     let state = createInitialFirstRunOnboardingState(context);
@@ -151,15 +150,16 @@ describe("first-run onboarding wizard", () => {
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     expect(state.selectedProvider).toBe("grok");
+    expect(state.currentStepId).toBe("api-key");
+
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     expect(state.currentStepId).toBe("connection-test");
 
     state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
-    expect(state.currentStepId).toBe("api-key");
+    expect(state.currentStepId).toBe("security");
     expect(state.connection?.status).toBe("needs-key");
     expect(state.connection?.keyEnvVar).toBe("XAI_API_KEY");
 
-    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
-    expect(state.currentStepId).toBe("security");
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     expect(state.currentStepId).toBe("terminal-setup");
     const result = await submitFirstRunOnboardingInput(state, "done", context);
@@ -403,7 +403,7 @@ describe("first-run onboarding wizard", () => {
     );
   });
 
-  test("rejects invalid theme, provider, and connection-test input", async () => {
+  test("rejects invalid theme, provider, API-key, and connection-test input", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
     let state = createInitialFirstRunOnboardingState(context);
@@ -419,6 +419,11 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.error).toContain("provider");
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    result = await submitFirstRunOnboardingInput(state, "later", context);
+    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.error).toContain("next or skip");
+
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     result = await submitFirstRunOnboardingInput(state, "later", context);
     expect(result.state.currentStepId).toBe("connection-test");
     expect(result.state.error).toContain("connection check");
@@ -521,13 +526,8 @@ describe("first-run onboarding wizard", () => {
     };
     let state = await advanceToApiKey(context);
 
-    expect(state.connection).toMatchObject({
-      ok: false,
-      status: "provider-unreachable",
-      keyEnvVar: "XAI_API_KEY",
-    });
     expect(detailLinesForStep(state, context).join("\n")).toContain(
-      "Type next or skip",
+      "Paste XAI_API_KEY",
     );
 
     let result = await submitFirstRunOnboardingInput(
@@ -543,7 +543,19 @@ describe("first-run onboarding wizard", () => {
       "/skip",
       context,
     );
+    expect(result.state.currentStepId).toBe("connection-test");
+
+    result = await submitFirstRunOnboardingInput(
+      result.state,
+      "test",
+      context,
+    );
     expect(result.state.currentStepId).toBe("security");
+    expect(result.state.connection).toMatchObject({
+      ok: false,
+      status: "provider-unreachable",
+      keyEnvVar: "XAI_API_KEY",
+    });
   });
 
   test("accepts slash aliases for onboarding navigation", async () => {
@@ -558,9 +570,12 @@ describe("first-run onboarding wizard", () => {
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
     state = (
       await submitFirstRunOnboardingInput(state, "/skip", context)
+    ).state;
+    expect(state.currentStepId).toBe("connection-test");
+    state = (
+      await submitFirstRunOnboardingInput(state, "/test", context)
     ).state;
     expect(state.currentStepId).toBe("security");
   });
@@ -594,7 +609,7 @@ describe("first-run onboarding wizard", () => {
       });
 
       state = (await submitFirstRunOnboardingInput(state, "no", context)).state;
-      expect(state.currentStepId).toBe("security");
+      expect(state.currentStepId).toBe("connection-test");
       await expect(
         new LocalAuthBackend({ agencHome }).readByokKey("grok"),
       ).resolves.toBeUndefined();
@@ -679,7 +694,7 @@ describe("first-run onboarding wizard", () => {
         "no",
         validContext,
       );
-      expect(declined.state.currentStepId).toBe("security");
+      expect(declined.state.currentStepId).toBe("connection-test");
       await expect(
         retrievePastedText({ agencHome, hash: omittedHash }),
       ).resolves.toBeNull();
@@ -765,7 +780,6 @@ describe("first-run onboarding wizard", () => {
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
     expect(state.currentStepId).toBe("api-key");
 
     result = await submitFirstRunOnboardingInput(
@@ -782,9 +796,11 @@ describe("first-run onboarding wizard", () => {
       "disable sandbox",
       context,
     );
-    expect(result.state.currentStepId).toBe("security");
-    expect(result.state.error).toContain("Type next");
+    expect(result.state.currentStepId).toBe("connection-test");
+    expect(result.state.error).toContain("connection check");
 
+    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
+    expect(state.currentStepId).toBe("security");
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     result = await submitFirstRunOnboardingInput(
       state,
