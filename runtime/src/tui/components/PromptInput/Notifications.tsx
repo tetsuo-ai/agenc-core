@@ -5,7 +5,11 @@ import * as React from 'react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { type Notification, useNotifications } from '../../context/notifications.js';
 import { type AppState, useAppState } from '../../state/AppState.js';
-import { hasRemoteAuthSessionSync } from '../../../auth/session-state.js';
+import {
+  hasEntitledRemoteAuthSessionSync,
+  hasRemoteAuthSessionSync,
+  remoteAuthSessionSubscriptionTierSync,
+} from '../../../auth/session-state.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
@@ -134,6 +138,11 @@ export function Notifications(t0: Props) {
   }
   const subscriptionType = t7;
   const isTeamOrEnterprise = subscriptionType === "team" || subscriptionType === "enterprise";
+  const remoteAuthEnv = authSessionEnv(agencHome);
+  const hasRemoteAuthSession = hasRemoteAuthSessionSync(remoteAuthEnv);
+  const remoteSubscriptionTier = remoteAuthSessionSubscriptionTierSync(remoteAuthEnv);
+  const hasRemoteManagedKeys = hasEntitledRemoteAuthSessionSync(remoteAuthEnv);
+  const shouldShowRemoteAuthPlan = usesAnthropicAccountFlow() && hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing');
   let t8;
   if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
     t8 = getExternalEditor();
@@ -171,29 +180,7 @@ export function Notifications(t0: Props) {
   useEffect(t9, t10);
   const t11 = isNarrow ? "flex-start" : "flex-end";
   const t12 = isInOverageMode ?? false;
-  let t13;
-  if ($[15] !== agencHome || $[16] !== apiKeyStatus || $[17] !== autoUpdaterResult || $[18] !== debug || $[19] !== ideSelection || $[20] !== isAutoUpdating || $[21] !== isShowingCompactMessage || $[22] !== mainLoopModel || $[23] !== mcpClients || $[24] !== notifications || $[25] !== onAutoUpdaterResult || $[26] !== onChangeIsUpdating || $[27] !== shouldShowAutoUpdater || $[28] !== t12 || $[29] !== tokenUsage || $[30] !== verbose) {
-    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} />;
-    $[15] = agencHome;
-    $[16] = apiKeyStatus;
-    $[17] = autoUpdaterResult;
-    $[18] = debug;
-    $[19] = ideSelection;
-    $[20] = isAutoUpdating;
-    $[21] = isShowingCompactMessage;
-    $[22] = mainLoopModel;
-    $[23] = mcpClients;
-    $[24] = notifications;
-    $[25] = onAutoUpdaterResult;
-    $[26] = onChangeIsUpdating;
-    $[27] = shouldShowAutoUpdater;
-    $[28] = t12;
-    $[29] = tokenUsage;
-    $[30] = verbose;
-    $[34] = t13;
-  } else {
-    t13 = $[34];
-  }
+  const t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} hasRemoteAuthSession={hasRemoteAuthSession} remoteSubscriptionTier={remoteSubscriptionTier} hasRemoteManagedKeys={hasRemoteManagedKeys} shouldShowRemoteAuthPlan={shouldShowRemoteAuthPlan} />;
   let t14;
   if ($[31] !== t11 || $[32] !== t13) {
     t14 = <TuiErrorBoundary><Box flexDirection="column" alignItems={t11} flexShrink={0} overflowX="hidden">{t13}</Box></TuiErrorBoundary>;
@@ -214,7 +201,6 @@ function _temp(s: AppState) {
 function NotificationContent({
   ideSelection,
   mcpClients,
-  agencHome,
   notifications,
   isInOverageMode,
   isTeamOrEnterprise,
@@ -228,11 +214,14 @@ function NotificationContent({
   isAutoUpdating,
   isShowingCompactMessage,
   onAutoUpdaterResult,
-  onChangeIsUpdating
+  onChangeIsUpdating,
+  hasRemoteAuthSession,
+  remoteSubscriptionTier,
+  hasRemoteManagedKeys,
+  shouldShowRemoteAuthPlan
 }: {
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
-  agencHome?: string;
   notifications: {
     current: Notification | null;
     queue: Notification[];
@@ -250,6 +239,10 @@ function NotificationContent({
   isShowingCompactMessage: boolean;
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
   onChangeIsUpdating: (isUpdating: boolean) => void;
+  hasRemoteAuthSession: boolean;
+  remoteSubscriptionTier: string | undefined;
+  hasRemoteManagedKeys: boolean;
+  shouldShowRemoteAuthPlan: boolean;
 }): ReactNode {
   // Poll apiKeyHelper inflight state to show slow-helper notice.
   // Gated on configuration — most users never set apiKeyHelper, so the
@@ -289,9 +282,14 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {usesAnthropicAccountFlow() && !hasRemoteAuthSessionSync(authSessionEnv(agencHome)) && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
+      {usesAnthropicAccountFlow() && !hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.AGENC_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
+          </Text>
+        </Box>}
+      {shouldShowRemoteAuthPlan && <Box>
+          <Text color={hasRemoteManagedKeys ? "success" : "warning"} wrap="truncate">
+            {remoteAuthPlanNotice(remoteSubscriptionTier, hasRemoteManagedKeys)}
           </Text>
         </Box>}
       {debug && <Box>
@@ -318,4 +316,15 @@ function authSessionEnv(agencHome: string | undefined): NodeJS.ProcessEnv {
         ...process.env,
         AGENC_HOME: agencHome,
       };
+}
+
+function remoteAuthPlanNotice(
+  tier: string | undefined,
+  hasManagedKeys: boolean,
+): string {
+  const label = tier ?? "unknown";
+  if (hasManagedKeys) {
+    return `AgenC ${label} plan · managed model keys available`;
+  }
+  return `AgenC ${label} plan · upgrade at https://id.agenc.ag/pricing or add a BYOK key`;
 }
