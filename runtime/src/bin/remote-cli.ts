@@ -20,7 +20,11 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import WebSocket from "ws";
 
+import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
+
 const DEFAULT_BACKEND = "https://id.agenc.ag";
+const REMOTE_LOGIN_REQUIRED_MESSAGE =
+  "Not logged in. Run `/login` in the TUI or `AGENC_AUTH_BACKEND=remote agenc login` before using remote pairing.";
 
 export interface RemoteCliCommand {
   readonly kind: "on" | "off" | "status" | "help";
@@ -112,10 +116,14 @@ interface PostResult {
 async function postJson(
   url: string,
   body: Record<string, unknown>,
+  authToken?: string,
 ): Promise<PostResult> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authToken !== undefined ? { authorization: `Bearer ${authToken}` } : {}),
+    },
     body: JSON.stringify(body),
   });
   let json: Record<string, unknown> = {};
@@ -218,6 +226,12 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
   }
 
   // command.kind === "on"
+  const authToken = remoteAuthSessionTokenSync();
+  if (authToken === undefined) {
+    process.stderr.write(`${REMOTE_LOGIN_REQUIRED_MESSAGE}\n`);
+    return 1;
+  }
+
   let pair = readPairFile();
   let pairingId: string;
   let hostSecret: string;
@@ -230,7 +244,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
     const { status, json } = await postJson(`${backend}/v1/pair/host-poll`, {
       pairingId: pair.pairingId,
       hostSecret: pair.hostSecret,
-    });
+    }, authToken);
     if (status === 410) {
       rmSync(pairPath(), { force: true });
       process.stdout.write("This Mac was unlinked from the phone — re-pairing.\n");
@@ -250,7 +264,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
 
   if (!pair) {
     const name = hostname() || "A Mac";
-    const { status, json } = await postJson(`${backend}/v1/pair/start`, { machineName: name });
+    const { status, json } = await postJson(`${backend}/v1/pair/start`, { machineName: name }, authToken);
     if (status !== 200 || typeof json.pairingId !== "string") {
       process.stderr.write(`Could not start pairing (${status}).\n`);
       return 1;
@@ -274,7 +288,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
     // Wait for the phone to redeem the code.
     for (;;) {
       await sleep(2000);
-      const poll = await postJson(`${backend}/v1/pair/host-poll`, { pairingId, hostSecret });
+      const poll = await postJson(`${backend}/v1/pair/host-poll`, { pairingId, hostSecret }, authToken);
       if (poll.status === 410) {
         process.stderr.write("Pairing was revoked. Run `agenc remote on` to try again.\n");
         return 1;
@@ -293,7 +307,15 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
     }
   }
 
-  return runConnector({ relayUrl: relayUrl!, pairingId: pairingId!, hostSecret: hostSecret!, backend, initialHostTicket: hostTicket!, machineName: machineName! });
+  return runConnector({
+    relayUrl: relayUrl!,
+    pairingId: pairingId!,
+    hostSecret: hostSecret!,
+    backend,
+    initialHostTicket: hostTicket!,
+    machineName: machineName!,
+    authToken,
+  });
 }
 
 interface ConnectorArgs {
@@ -303,6 +325,7 @@ interface ConnectorArgs {
   backend: string;
   initialHostTicket: string;
   machineName: string;
+  authToken: string;
   /** True when run inside the agent TUI (the /remote surface): suppress all stdout/stderr (raw
    *  writes corrupt the Ink render) and never process.exit (it would kill the session). */
   quiet?: boolean;
@@ -313,7 +336,7 @@ interface ConnectorArgs {
  *  hostSecret) on every reconnect, so it stays short-lived and this Mac never signs its own.
  *  Fire-and-forget: starts the relay connection + reconnect loop and returns immediately. */
 function startBridge(args: ConnectorArgs): void {
-  const { relayUrl, pairingId, hostSecret, backend, machineName } = args;
+  const { relayUrl, pairingId, hostSecret, backend, machineName, authToken } = args;
   const DAEMON = daemonUrl();
   const out = (msg: string) => { if (!args.quiet) process.stdout.write(msg); };
   const dbg = (msg: string) => { if (!args.quiet && process.env.AGENC_REMOTE_DEBUG) process.stderr.write(msg); };
@@ -387,7 +410,7 @@ function startBridge(args: ConnectorArgs): void {
       const { status, json } = await postJson(`${backend}/v1/pair/host-poll`, {
         pairingId,
         hostSecret,
-      });
+      }, authToken);
       if (status === 410) return null; // unlinked
       if (status === 200 && typeof json.hostTicket === "string") return json.hostTicket;
     } catch {
@@ -512,13 +535,17 @@ export interface RemoteOnStarted {
  */
 export async function startRemoteOn(): Promise<RemoteOnStarted | { message: string }> {
   const backend = backendUrl();
+  const authToken = remoteAuthSessionTokenSync();
+  if (authToken === undefined) {
+    return { message: REMOTE_LOGIN_REQUIRED_MESSAGE };
+  }
 
   const existing = readPairFile();
   if (existing) {
     const { status, json } = await postJson(`${backend}/v1/pair/host-poll`, {
       pairingId: existing.pairingId,
       hostSecret: existing.hostSecret,
-    });
+    }, authToken);
     if (status === 200 && typeof json.hostTicket === "string") {
       startBridge({
         relayUrl: (json.relayUrl as string) ?? existing.relayUrl,
@@ -527,6 +554,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
         backend,
         initialHostTicket: json.hostTicket,
         machineName: existing.machineName,
+        authToken,
         quiet: true,
       });
       return { message: `● Remote access ON — already linked to “${existing.machineName}”. Drive this Mac from your phone.` };
@@ -535,7 +563,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
   }
 
   const name = hostname() || "A Mac";
-  const { status, json } = await postJson(`${backend}/v1/pair/start`, { machineName: name });
+  const { status, json } = await postJson(`${backend}/v1/pair/start`, { machineName: name }, authToken);
   if (status !== 200 || typeof json.pairingId !== "string") {
     return { message: `Could not start pairing (${status}). Check your connection.` };
   }
@@ -551,7 +579,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
     backendUrl: backend,
     createdAt: new Date().toISOString(),
   });
-  startBridge({ relayUrl, pairingId, hostSecret, backend, initialHostTicket: hostTicket, machineName: name, quiet: true });
+  startBridge({ relayUrl, pairingId, hostSecret, backend, initialHostTicket: hostTicket, machineName: name, authToken, quiet: true });
 
   const code = String(json.code ?? "");
   const box = await renderCodeBox(code, pairingDeepLink(code), json.expiresAt as string | undefined, {
@@ -564,7 +592,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
     for (let i = 0; i < 90; i += 1) {
       await sleep(2000);
       try {
-        const poll = await postJson(`${backend}/v1/pair/host-poll`, { pairingId, hostSecret });
+        const poll = await postJson(`${backend}/v1/pair/host-poll`, { pairingId, hostSecret }, authToken);
         if (poll.status === 200 && poll.json.status === "active") {
           return (poll.json.appLabel as string) || "your phone";
         }
