@@ -1,5 +1,5 @@
 /**
- * Agent context for analytics attribution using AsyncLocalStorage.
+ * Agent context for request attribution using AsyncLocalStorage.
  *
  * This module provides a way to track agent identity across async operations
  * without parameter drilling. Supports two agent types:
@@ -130,11 +130,11 @@ export function isTeammateAgentContext(
 }
 
 /**
- * Get the subagent name suitable for analytics logging.
+ * Get the subagent name suitable for request logging.
  * Returns the agent type name for built-in agents, "user-defined" for custom agents,
  * or undefined if not running within a subagent context.
  *
- * Safe for analytics metadata: built-in agent names are code constants,
+ * Safe for request metadata: built-in agent names are code constants,
  * and custom agents are always mapped to the literal "user-defined".
  */
 export function getSubagentLogName(): string | undefined {

@@ -115,7 +115,7 @@ export async function getproviderClient({
     ...(remoteSessionId
       ? { 'x-agenc-remote-session-id': remoteSessionId }
       : {}),
-    // SDK consumers can identify their app/library for backend analytics
+    // SDK consumers can identify their app/library in provider-side request metadata.
     ...(clientApp ? { 'x-client-app': clientApp } : {}),
   }
 

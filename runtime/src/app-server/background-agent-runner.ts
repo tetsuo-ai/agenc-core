@@ -3357,7 +3357,6 @@ function buildReplayTurnContext(
     provider: (sessionRecord.provider ?? {}) as TurnContext["provider"],
     cwd: typeof sessionRecord.cwd === "string" ? sessionRecord.cwd : "/tmp",
     realtimeActive: false,
-    sessionTelemetry: {} as TurnContext["sessionTelemetry"],
     modelProviderId: "background-replay",
     reasoningSummary: "auto",
     sessionSource: "sdk",

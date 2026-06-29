@@ -19,11 +19,6 @@ import {
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import type { Message } from '../../types/message.js'
 
-export type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS = never
-
-type AnalyticsValue = boolean | number | undefined
-type AnalyticsMetadata = Record<string, AnalyticsValue>
-
 type ToolDecision =
   | {
       behavior: 'allow'
@@ -181,15 +176,7 @@ type ForkedAgentModule = {
   readonly runForkedAgent: (params: Record<string, unknown>) => Promise<unknown>
 }
 
-type AnalyticsModule = {
-  readonly logEvent: (
-    eventName: string,
-    metadata: AnalyticsMetadata,
-  ) => void
-}
-
 const forkedAgentModulePath = '../../utils/forkedAgent.js'
-const analyticsModulePath = '../analytics/index.js'
 
 export type PromptSuggestionSettings = {
   readonly promptSuggestionEnabled?: boolean
@@ -211,20 +198,6 @@ const INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT =
 export const INTERRUPT_MESSAGE = INTERRUPT_MESSAGE_TEXT
 export const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT
-
-export function logEvent(
-  eventName: string,
-  metadata: AnalyticsMetadata,
-): void {
-  void import(analyticsModulePath)
-    .then(module =>
-      (module as AnalyticsModule).logEvent(eventName, metadata),
-    )
-    .catch(error => logForDebugging(`[PromptSuggestion] analytics failed: ${errorMessage(error)}`))
-  logForDebugging(
-    `[PromptSuggestion] event ${eventName}: ${JSON.stringify(metadata)}`,
-  )
-}
 
 export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
   feature: string,

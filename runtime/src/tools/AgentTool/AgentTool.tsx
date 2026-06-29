@@ -723,7 +723,7 @@ export const AgentTool = buildTool({
         });
       }
 
-      // Wrap async agent execution in agent context for analytics attribution
+      // Wrap async agent execution in agent context for request attribution.
       const asyncAgentContext = {
         agentId: asyncAgentId,
         // For subagents from teammates: use team lead's session
@@ -778,7 +778,7 @@ export const AgentTool = buildTool({
       // Create an explicit agentId for sync agents
       const syncAgentId = asAgentId(earlyAgentId);
 
-      // Set up agent context for sync execution (for analytics attribution)
+      // Set up agent context for sync execution (for request attribution).
       const syncAgentContext = {
         agentId: syncAgentId,
         // For subagents from teammates: use team lead's session
@@ -792,7 +792,7 @@ export const AgentTool = buildTool({
         invocationEmitted: false
       };
 
-      // Wrap entire sync agent execution in context for analytics attribution
+      // Wrap entire sync agent execution in context for request attribution
       // and optionally in a worktree cwd override for filesystem isolation
       return runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
         const agentMessages: MessageType[] = [];
@@ -1348,8 +1348,8 @@ The agent is now running and will receive instructions via mailbox.`
       }];
       // One-shot built-ins (Explore, Plan) are never continued via SendMessage
       // — the agentId hint and <usage> block are dead weight (~135 chars ×
-      // 34M Explore runs/week ≈ 1-2 Gtok/week). Telemetry doesn't parse this
-      // block (it uses logEvent in finalizeAgentTool), so dropping is safe.
+      // 34M Explore runs/week ≈ 1-2 Gtok/week). The trailer is only useful for
+      // resumable agents, so dropping it here is safe.
       // agentType is optional for resume compat — missing means show trailer.
       if (data.agentType && ONE_SHOT_BUILTIN_AGENT_TYPES.has(canonicalAgentRoleName(data.agentType)) && !worktreeInfoText) {
         return {

@@ -28,7 +28,7 @@ import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { IdeStatusIndicator } from '../IdeStatusIndicator.js';
 import { MemoryUsageIndicator } from '../../cost/MemoryUsageIndicator.js';
-import { SentryErrorBoundary } from '../SentryErrorBoundary.js';
+import { TuiErrorBoundary } from '../TuiErrorBoundary.js';
 import { TokenWarning } from '../../cost/TokenWarning.js';
 import { SandboxPromptFooterHint } from './SandboxPromptFooterHint.js';
 
@@ -192,7 +192,7 @@ export function Notifications(t0: Props) {
   }
   let t14;
   if ($[31] !== t11 || $[32] !== t13) {
-    t14 = <SentryErrorBoundary><Box flexDirection="column" alignItems={t11} flexShrink={0} overflowX="hidden">{t13}</Box></SentryErrorBoundary>;
+    t14 = <TuiErrorBoundary><Box flexDirection="column" alignItems={t11} flexShrink={0} overflowX="hidden">{t13}</Box></TuiErrorBoundary>;
     $[31] = t11;
     $[32] = t13;
     $[33] = t14;

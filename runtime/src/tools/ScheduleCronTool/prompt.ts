@@ -37,9 +37,8 @@ export function isKairosCronEnabled(): boolean {
  * {@link isKairosCronEnabled} — flipping this off forces `durable: false` at
  * the call() site, leaving session-only cron (in-memory, GA) untouched.
  *
- * Defaults to `true` so Bedrock/Vertex/Foundry and DISABLE_TELEMETRY users get
- * durable cron. Does NOT consult AGENC_DISABLE_CRON (that kills the whole
- * scheduler via isKairosCronEnabled).
+ * Defaults to `true`. Does NOT consult AGENC_DISABLE_CRON (that kills the
+ * whole scheduler via isKairosCronEnabled).
  */
 export function isDurableCronEnabled(): boolean {
   return true

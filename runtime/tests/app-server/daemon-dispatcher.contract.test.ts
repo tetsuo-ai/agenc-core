@@ -137,6 +137,87 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
   });
 
+  it("rejects normal requests over the in-flight limit while allowing request.cancel", async () => {
+    let releaseSearch: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const searchStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const fuzzyFileSearch = {
+      search: vi.fn(async (_params: unknown, options?: { signal?: AbortSignal }) => {
+        resolveStarted();
+        await new Promise<void>((resolve, reject) => {
+          releaseSearch = resolve;
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(options.signal?.reason ?? new Error("cancelled")),
+            { once: true },
+          );
+        });
+        return { files: [] };
+      }),
+    };
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      fuzzyFileSearch,
+    });
+    const connection = dispatcher.createConnection({
+      overloadLimits: {
+        maxInFlightRequests: 1,
+        requestRatePerSecond: 100,
+        requestBurst: 100,
+      },
+    });
+    await initialize(connection);
+
+    const first = connection.dispatch(
+      request("search-1", "fs.fuzzy_search", {
+        query: "package",
+        roots: ["."],
+      }),
+    );
+    await searchStarted;
+
+    await expect(
+      connection.dispatch(request("ping", "health.ping")),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32000,
+        data: {
+          code: "TOO_MANY_IN_FLIGHT_REQUESTS",
+          maxInFlightRequests: 1,
+        },
+      },
+    });
+
+    await expect(
+      connection.dispatch(
+        request("cancel", "request.cancel", {
+          requestId: "search-1",
+          reason: "test cancel",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        requestId: "search-1",
+        cancelled: true,
+        reason: "test cancel",
+      },
+    });
+    await expect(first).resolves.toMatchObject({
+      error: {
+        code: -32000,
+        data: {
+          code: "REQUEST_CANCELLED",
+          requestId: "search-1",
+          reason: "test cancel",
+        },
+      },
+    });
+
+    releaseSearch?.();
+  });
+
   it("untrackClientId removes one co-located client without dropping the others", () => {
     // A single connection can track MULTIPLE clients (trackedClientIds is a set
     // keyed by the clientId a peer supplies). When one co-located client is

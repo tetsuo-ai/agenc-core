@@ -82,7 +82,6 @@ function fakeCtx(overrides?: Partial<TurnContext>): TurnContext {
       truncationPolicy: "head",
       usedFallbackModelMetadata: false,
     },
-    sessionTelemetry: {},
     provider: {} as unknown,
     reasoningSummary: "auto",
     sessionSource: "cli_main",

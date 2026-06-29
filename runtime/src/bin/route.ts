@@ -19,6 +19,8 @@
  * without touching Ink, the session subsystem, or the provider layer.
  */
 
+import { formatMessage } from "../i18n/messages.js";
+
 /**
  * Parse a `--flag <value>` or `--flag=<value>` pair out of an argv
  * vector. Returns `null` when the flag is absent or has no value. When
@@ -98,6 +100,8 @@ const STARTUP_VALUE_FLAGS = Object.freeze([
   "--model",
   "--profile",
   "--permission-mode",
+  "--output-format",
+  "--input-format",
   "--image",
 ] as const);
 
@@ -165,6 +169,21 @@ const STARTUP_SELECTION_FLAG_USAGE: Readonly<
   "--image": "agenc --image requires a value (usage: agenc --image <path|url>)",
 });
 
+const HEADLESS_FORMAT_VALUE_FLAGS = Object.freeze([
+  "--output-format",
+  "--input-format",
+] as const);
+
+type HeadlessFormatValueFlag =
+  (typeof HEADLESS_FORMAT_VALUE_FLAGS)[number];
+
+const HEADLESS_FORMAT_FLAG_USAGE: Readonly<
+  Record<HeadlessFormatValueFlag, string>
+> = Object.freeze({
+  "--output-format": formatMessage("cli.outputFormat.requiresValue"),
+  "--input-format": formatMessage("cli.inputFormat.requiresValue"),
+});
+
 /**
  * Detect a selection value-flag (`--provider`/`--model`/`--profile`/`--image`)
  * that was supplied as a real leading flag token but with no usable value —
@@ -185,6 +204,22 @@ function findMissingValueSelectionFlag(
       // Bare flag token (`--model`): missing when the next token is absent
       // or a dash-prefixed flag (the same condition that makes
       // extractFlagValue/extractFlagValues yield null/empty).
+      if (arg === flag) {
+        const next = userArgv[i + 1];
+        if (typeof next !== "string" || next.startsWith("-")) return flag;
+      }
+    }
+  }
+  return null;
+}
+
+function findMissingHeadlessFormatValueFlag(
+  userArgv: readonly string[],
+): HeadlessFormatValueFlag | null {
+  for (let i = 0; i < userArgv.length; i += 1) {
+    const arg = userArgv[i]!;
+    for (const flag of HEADLESS_FORMAT_VALUE_FLAGS) {
+      if (arg === `${flag}=`) return flag;
       if (arg === flag) {
         const next = userArgv[i + 1];
         if (typeof next !== "string" || next.startsWith("-")) return flag;
@@ -326,6 +361,14 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return {
       kind: "errorAndExit",
       message: STARTUP_SELECTION_FLAG_USAGE[missingSelectionFlag],
+      exitCode: 2,
+    };
+  }
+  const missingHeadlessFormatFlag = findMissingHeadlessFormatValueFlag(userArgv);
+  if (missingHeadlessFormatFlag !== null) {
+    return {
+      kind: "errorAndExit",
+      message: HEADLESS_FORMAT_FLAG_USAGE[missingHeadlessFormatFlag],
       exitCode: 2,
     };
   }

@@ -399,6 +399,42 @@ function buildChatCompletionsPayload(
   };
 }
 
+function buildGeminiPayload(
+  model: string,
+  parityCase: CanonicalPromptCase,
+): Record<string, unknown> {
+  const parts: Array<Record<string, unknown>> = [];
+  if (parityCase.expected.content.length > 0) {
+    parts.push({ text: parityCase.expected.content });
+  }
+  parts.push(
+    ...parityCase.expected.toolCalls.map((toolCall) => ({
+      functionCall: {
+        name: toolCall.name,
+        args: JSON.parse(toolCall.arguments) as Record<string, unknown>,
+      },
+    })),
+  );
+
+  return {
+    model,
+    candidates: [
+      {
+        content: {
+          role: "model",
+          parts,
+        },
+        finishReason: "STOP",
+      },
+    ],
+    usageMetadata: {
+      promptTokenCount: BASE_USAGE.promptTokens,
+      candidatesTokenCount: BASE_USAGE.completionTokens,
+      totalTokenCount: BASE_USAGE.totalTokens,
+    },
+  };
+}
+
 function buildAnthropicPayload(
   model: string,
   parityCase: CanonicalPromptCase,
@@ -728,7 +764,7 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
             tools: parityCase.tools ? [...parityCase.tools] : [],
             fetchImpl,
           }),
-        payload: buildChatCompletionsPayload("gemini-2.5-pro", parityCase),
+        payload: buildGeminiPayload("gemini-2.5-pro", parityCase),
       }),
   },
   {

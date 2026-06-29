@@ -67,4 +67,49 @@ describe("gaphunt3 #37: unconsumed value flags are no longer silently swallowed"
     expect(stripRoutingFlags(["--provider", "openai", "hi"])).toEqual(["hi"]);
     expect(stripRoutingFlags(["--resume", "id123", "go"])).toEqual(["go"]);
   });
+
+  it("strips consumed headless I/O format flags so they do not leak into prompt text", () => {
+    expect(
+      stripRoutingFlags([
+        "--output-format",
+        "stream-json",
+        "--input-format=stream-json",
+        "hello",
+      ]),
+    ).toEqual(["hello"]);
+    expect(
+      stripRoutingFlags([
+        "--output-format=json",
+        "--input-format",
+        "stream-json",
+        "hello",
+      ]),
+    ).toEqual(["hello"]);
+  });
+
+  it("errors when a headless I/O format flag is missing its value", () => {
+    const plan = classifyCLI({
+      argv: [NODE, SCRIPT, "-p", "--output-format"],
+      isTTY: true,
+      isStdoutTTY: true,
+    });
+    expect(plan).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --output-format requires a value (usage: agenc -p --output-format <text|json|stream-json>)",
+      exitCode: 2,
+    });
+
+    const inputPlan = classifyCLI({
+      argv: [NODE, SCRIPT, "-p", "--input-format"],
+      isTTY: true,
+      isStdoutTTY: true,
+    });
+    expect(inputPlan).toEqual({
+      kind: "errorAndExit",
+      message:
+        "agenc --input-format requires a value (usage: agenc -p --input-format <stream-json>)",
+      exitCode: 2,
+    });
+  });
 });

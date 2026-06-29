@@ -90,6 +90,27 @@ describe("agenc init CLI", () => {
 
   it("creates .agenc/config.json and AGENC.md in the current project", async () => {
     const cwd = tempProject();
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(
+      join(cwd, "README.md"),
+      "# Init Fixture\n\nUses FIXTURE_API_KEY for local integration checks.\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(cwd, "package.json"),
+      JSON.stringify({
+        name: "init-fixture",
+        packageManager: "npm@11.0.0",
+        scripts: {
+          build: "tsc",
+          test: "vitest run",
+        },
+        devDependencies: {
+          vitest: "^3.0.0",
+        },
+      }),
+      "utf8",
+    );
     const io = createIo();
 
     const code = await runAgenCInitCli(
@@ -113,6 +134,18 @@ describe("agenc init CLI", () => {
     expect(config.sandbox?.mode).toBe("workspace-write");
     expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
       "# Repository Guidelines",
+    );
+    expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
+      "Project/package name: init-fixture",
+    );
+    expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
+      "`npm run build`",
+    );
+    expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
+      "`FIXTURE_API_KEY`",
+    );
+    expect(readFileSync(instructionsPath(cwd), "utf8")).not.toContain(
+      "Fill this file",
     );
   });
 

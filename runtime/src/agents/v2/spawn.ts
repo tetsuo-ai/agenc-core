@@ -33,7 +33,6 @@ import {
   getSessionOrError,
   hideSpawnAgentMetadata,
   json,
-  recordAgentCounter,
   strictArgs,
   stringValue,
   toolMetadata,
@@ -721,10 +720,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         status: live.status.value,
       },
     });
-    recordAgentCounter(session, "agenc.multi_agent.spawn", [
-      ["role", live.role.name],
-    ]);
-
     return json({
       task_name: live.agentPath,
       ...(!hideSpawnAgentMetadata(session)

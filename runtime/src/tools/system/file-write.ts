@@ -30,7 +30,6 @@
  *   - Errors are returned as plain text (runtime envelope), not JSON.
  *
  * Source couplings intentionally not carried:
- *   - analytics / growthbook / `logEvent` calls
  *   - VS Code MCP file-update notifications
  *   - `lazySchema` / Zod (AgenC tools use plain JSON Schema POJOs)
  *   - Skill-discovery side effects from the written path

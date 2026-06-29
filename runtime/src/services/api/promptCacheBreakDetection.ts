@@ -139,7 +139,7 @@ function isExcludedModel(model: string): boolean {
  * are short-lived forked agents where cache break detection provides no
  * value — they run 1-3 turns with a fresh agentId each time, so there's
  * nothing meaningful to compare against. Their cache metrics are still
- * logged via tengu_api_success for analytics.
+ * logged for prompt-cache diagnostics.
  */
 function getTrackingKey(
   querySource: QuerySource,
@@ -578,7 +578,7 @@ export async function checkResponseForCacheBreak(
 
     // Write diff file for ant debugging via --debug. The path is included in
     // the summary log so ants can find it (DevBar UI removed — event data
-    // flows reliably to BQ for analytics).
+    // flows reliably to local cache diagnostics).
     let diffPath: string | undefined
     if (changes?.buildPrevDiffableContent) {
       diffPath = await writeCacheBreakDiff(

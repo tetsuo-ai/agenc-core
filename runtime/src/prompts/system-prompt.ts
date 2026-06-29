@@ -617,6 +617,7 @@ export interface AssembleSystemPromptInputs {
   readonly provider: string;
   readonly permissionContext: ToolPermissionContext | null;
   readonly autonomousMode: boolean;
+  readonly outputStyle: OutputStyleInput | null;
 }
 
 /**
@@ -641,6 +642,7 @@ export function buildAssembleSystemPromptOpts(
     provider: inputs.provider,
     permissionContext: inputs.permissionContext,
     autonomousMode: inputs.autonomousMode,
+    outputStyle: inputs.outputStyle,
   };
 }
 

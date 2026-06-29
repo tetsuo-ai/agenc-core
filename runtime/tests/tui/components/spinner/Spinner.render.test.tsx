@@ -22,7 +22,6 @@ const harness = vi.hoisted(() => ({
   features: new Set<string>(),
   getKairosActive: false,
   getUserMsgOptIn: false,
-  growthbookValue: false,
   localAgents: [] as Array<{ name: string; status?: string }>,
   settings: {
     prefersReducedMotion: false,
@@ -56,7 +55,6 @@ const harness = vi.hoisted(() => ({
     harness.features = new Set();
     harness.getKairosActive = false;
     harness.getUserMsgOptIn = false;
-    harness.growthbookValue = false;
     harness.localAgents = [];
     harness.settings = {
       prefersReducedMotion: false,
@@ -80,10 +78,6 @@ vi.mock("../../../bootstrap/state.js", () => ({
   getKairosActive: () => harness.getKairosActive,
   getTurnOutputTokens: () => harness.turnOutputTokens,
   getUserMsgOptIn: () => harness.getUserMsgOptIn,
-}));
-
-vi.mock("../../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => harness.growthbookValue,
 }));
 
 vi.mock("../../../utils/envUtils.js", () => ({

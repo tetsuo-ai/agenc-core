@@ -86,7 +86,6 @@ import { SettingsSchema } from '../settings/types.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getAddDirEnabledPlugins } from './addDirPluginSettings.js'
 import { verifyAndDemote } from './dependencyResolver.js'
-import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
 import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
 import { getManagedPluginNames } from './managedPlugins.js'
@@ -560,17 +559,9 @@ export async function gitClone(
 
   args.push(gitUrl, targetPath)
 
-  const cloneStarted = performance.now()
   const cloneResult = await execFileNoThrow(gitExe(), args)
 
   if (cloneResult.code !== 0) {
-    logPluginFetch(
-      'plugin_clone',
-      gitUrl,
-      'failure',
-      performance.now() - cloneStarted,
-      classifyFetchError(cloneResult.stderr),
-    )
     throw new Error(`Failed to clone repository: ${cloneResult.stderr}`)
   }
 
@@ -596,13 +587,6 @@ export async function gitClone(
       )
 
       if (unshallowResult.code !== 0) {
-        logPluginFetch(
-          'plugin_clone',
-          gitUrl,
-          'failure',
-          performance.now() - cloneStarted,
-          classifyFetchError(unshallowResult.stderr),
-        )
         throw new Error(
           `Failed to fetch commit ${sha}: ${unshallowResult.stderr}`,
         )
@@ -617,27 +601,12 @@ export async function gitClone(
     )
 
     if (checkoutResult.code !== 0) {
-      logPluginFetch(
-        'plugin_clone',
-        gitUrl,
-        'failure',
-        performance.now() - cloneStarted,
-        classifyFetchError(checkoutResult.stderr),
-      )
       throw new Error(
         `Failed to checkout commit ${sha}: ${checkoutResult.stderr}`,
       )
     }
   }
 
-  // Fire success only after ALL network ops (clone + optional SHA fetch)
-  // complete — same telemetry-scope discipline as mcpb and marketplace_url.
-  logPluginFetch(
-    'plugin_clone',
-    gitUrl,
-    'success',
-    performance.now() - cloneStarted,
-  )
 }
 
 /**

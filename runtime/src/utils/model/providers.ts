@@ -73,10 +73,6 @@ function isAgenCShortcutAlias(model: string): boolean {
   return base === 'agencplan' || base === 'agencspark'
 }
 
-export function getAPIProviderForStatsig(): string {
-  return getAPIProvider()
-}
-
 /**
  * Check if ANTHROPIC_BASE_URL is a first-party provider API URL.
  * Returns true if not set (default API) or points to api.anthropic.com

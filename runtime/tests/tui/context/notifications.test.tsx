@@ -37,9 +37,6 @@ vi.mock("../../bootstrap/state.js", () => ({
   markScrollActivity: () => {},
   updateLastInteractionTime: () => {},
 }));
-vi.mock("../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => false,
-}));
 vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
 }));

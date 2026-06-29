@@ -26,6 +26,11 @@ import {
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
+import {
+  daemonOverloadErrorResponse,
+  isDaemonControlMessage,
+  maxQueuedRequestsFromOptions,
+} from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 
 export const AGENC_WEBSOCKET_DEFAULT_HOST = "127.0.0.1";
@@ -75,6 +80,7 @@ export interface AgenCWebSocketServerOptions {
     context: AgenCWebSocketMessageContext,
   ) => boolean | Promise<boolean>;
   readonly acceptAuthenticationTimeoutMs?: number;
+  readonly maxQueuedRequests?: number;
   readonly onAuthenticationFailed?: (
     message: JsonObject,
     context: AgenCWebSocketMessageContext,
@@ -106,6 +112,7 @@ interface ActiveWebSocketConnection {
   // Serializes the auth decision across line-batched messages that race the
   // dispatch chain, mirroring the Unix socket transport.
   authResolution: Promise<void>;
+  queuedNormalMessages: number;
 }
 
 // gaphunt3 #47: sentinel for "no auth decision in flight" on a connection.
@@ -289,6 +296,7 @@ export class AgenCWebSocketServer {
       closingUnauthenticated: false,
       authTimeout: undefined,
       authResolution: resolvedWebSocketAuth,
+      queuedNormalMessages: 0,
     };
     this.#connections.set(connectionId, active);
 
@@ -414,7 +422,7 @@ export class AgenCWebSocketServer {
       return;
     }
 
-    if (isControlMessage(message)) {
+    if (isDaemonControlMessage(message)) {
       // Control messages (request.cancel) must NOT queue behind the in-flight
       // long request they target, or cancellation can never run. They carry no
       // ordering dependency on normal requests (they reference a target by
@@ -440,13 +448,37 @@ export class AgenCWebSocketServer {
       return;
     }
 
+    const maxQueuedRequests = maxQueuedRequestsFromOptions({
+      maxQueuedRequests: this.#options.maxQueuedRequests,
+    });
+    if (active.queuedNormalMessages >= maxQueuedRequests) {
+      void context
+        .send(
+          daemonOverloadErrorResponse(message, "TOO_MANY_QUEUED_REQUESTS", {
+            maxQueuedRequests,
+          }),
+        )
+        .catch((error) => {
+          this.#options.onError?.(asError(error), context.connectionId);
+        });
+      return;
+    }
+    active.queuedNormalMessages += 1;
+
     const pending = (active.dispatchChain = active.dispatchChain.then(
       async () => {
-        // gaphunt3 #47: gate dispatch on the accept-auth decision so an
-        // accepted-but-unauthenticated connection cannot drive the dispatcher.
-        const proceed = await this.#resolveAcceptance(message, active, context);
-        if (!proceed) return;
-        await this.#options.onMessage(message, context);
+        try {
+          // gaphunt3 #47: gate dispatch on the accept-auth decision so an
+          // accepted-but-unauthenticated connection cannot drive the dispatcher.
+          const proceed = await this.#resolveAcceptance(message, active, context);
+          if (!proceed) return;
+          await this.#options.onMessage(message, context);
+        } finally {
+          active.queuedNormalMessages = Math.max(
+            0,
+            active.queuedNormalMessages - 1,
+          );
+        }
       },
     ).catch((error) => {
       this.#options.onError?.(asError(error), context.connectionId);
@@ -635,10 +667,6 @@ function closeHttpServer(server: HttpServer): Promise<void> {
  * only if they prove starved as well — never to anything with ordering or
  * mutating side effects, which must stay strictly FIFO.
  */
-function isControlMessage(message: JsonObject): boolean {
-  return message.method === "request.cancel";
-}
-
 /**
  * gaphunt3 #47: a socket that can be force-closed after the accept-auth window
  * lapses. Structural so the teardown path is unit-testable without a live ws.

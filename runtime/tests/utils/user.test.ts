@@ -47,7 +47,7 @@ function installCommonMocks(options?: {
 
   vi.doMock(envModulePath, () => ({
     env: { platform: 'windows' },
-    getHostPlatformForAnalytics: () => 'windows',
+    getHostPlatform: () => 'windows',
   }))
 
   vi.doMock(envUtilsModulePath, () => ({

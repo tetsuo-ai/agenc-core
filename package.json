@@ -19,6 +19,8 @@
     "validate:tui-core-parity": "npm --workspace=@tetsuo-ai/runtime run validate:tui-core-parity",
     "check:agent-surface-contract": "node scripts/check-agent-surface-contract.mjs",
     "check:agent-surface-contract:reviewed": "node scripts/check-agent-surface-contract.mjs --require-reviews",
+    "sbom": "node scripts/generate-spdx-sbom.mjs",
+    "check:sbom": "node scripts/check-spdx-sbom.mjs",
     "check:local-vllm": "npm --workspace=@tetsuo-ai/runtime run check:local-vllm --",
     "check:tui-v2-design-audit": "npm run check:tui-v2-design-audit --workspace=@tetsuo-ai/runtime",
     "test": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run test --workspace=@tetsuo-ai/runtime",

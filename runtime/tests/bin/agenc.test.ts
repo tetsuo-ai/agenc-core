@@ -36,6 +36,7 @@ import {
   main,
   maybeReloadConfigBetweenTurns,
   oneShotCLI,
+  parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
   resolveCliCwdForStartup,
   resolveModelOrThrow,
@@ -235,6 +236,25 @@ function installDaemonCliDepsForTest(
           attachmentId: "attachment_test",
           sessionIds: [sessionId],
           runtimeSessionId,
+        };
+      }
+      if (method === "session.snapshot") {
+        return {
+          sessionId: typeof params?.sessionId === "string" ? params.sessionId : sessionId,
+          turnCount: 1,
+          tokenUsage: {
+            inputTokens: 10,
+            outputTokens: 3,
+            totalTokens: 13,
+            costUsd: 0.001,
+          },
+          cacheStats: {
+            requestCount: 1,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheTotalInputTokens: 0,
+            hitRate: null,
+          },
         };
       }
       if (method === "agent.stop") {
@@ -1913,6 +1933,296 @@ describe("main() smoke", () => {
       ).toBe(false);
     } finally {
       stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI writes a single final JSON object for --output-format json", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-json-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-json-cwd-"));
+    const prevEnv = { ...process.env };
+    const prevArgv = [...process.argv];
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    process.argv = [
+      "/usr/bin/node",
+      "/opt/agenc/bin/agenc.js",
+      "--print",
+      "--output-format",
+      "json",
+      "just answer this",
+    ];
+
+    const agentId = "agent_json";
+    const sessionId = "session_json";
+    installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      oneShotEvents: [
+        {
+          method: "event.message_chunk",
+          params: {
+            sessionId,
+            eventId: "delta_json",
+            agentId,
+            delta: "json answer",
+          },
+        },
+        {
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "complete_json",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        },
+      ],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const code = await oneShotCLI("just answer this");
+      expect(code).toBe(0);
+      const stdoutText = stdoutSpy.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      const result = JSON.parse(stdoutText.trim()) as {
+        type: string;
+        sessionId: string;
+        agentId: string;
+        exitCode: number;
+        finalMessage: string;
+        deniedPermissionRequestIds: unknown[];
+        tokenUsage: unknown;
+        cacheStats: unknown;
+        events: unknown[];
+      };
+      expect(result).toMatchObject({
+        type: "result",
+        sessionId,
+        agentId,
+        exitCode: 0,
+        finalMessage: "json answer",
+        deniedPermissionRequestIds: [],
+      });
+      expect(result.tokenUsage).toMatchObject({
+        inputTokens: 10,
+        outputTokens: 3,
+        totalTokens: 13,
+        costUsd: 0.001,
+      });
+      expect(result.cacheStats).toMatchObject({
+        requestCount: 1,
+        hitRate: null,
+      });
+      expect(result.events).toHaveLength(2);
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI writes daemon events and final result as JSONL for --output-format stream-json", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-jsonl-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-jsonl-cwd-"));
+    const prevEnv = { ...process.env };
+    const prevArgv = [...process.argv];
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    process.argv = [
+      "/usr/bin/node",
+      "/opt/agenc/bin/agenc.js",
+      "--print",
+      "--output-format=stream-json",
+      "just answer this",
+    ];
+
+    const agentId = "agent_jsonl";
+    const sessionId = "session_jsonl";
+    installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      oneShotEvents: [
+        {
+          method: "event.message_chunk",
+          params: {
+            sessionId,
+            eventId: "delta_jsonl_1",
+            agentId,
+            delta: "stream",
+          },
+        },
+        {
+          method: "event.message_chunk",
+          params: {
+            sessionId,
+            eventId: "delta_jsonl_2",
+            agentId,
+            delta: " answer",
+          },
+        },
+        {
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "complete_jsonl",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        },
+      ],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const code = await oneShotCLI("just answer this");
+      expect(code).toBe(0);
+      const lines = stdoutSpy.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines).toHaveLength(4);
+      expect(lines[0]).toMatchObject({
+        type: "event",
+        sessionId,
+        agentId,
+      });
+      expect(lines[0]?.event).toMatchObject({
+        method: "event.message_chunk",
+      });
+      expect(lines.at(-1)).toMatchObject({
+        type: "result",
+        sessionId,
+        agentId,
+        exitCode: 0,
+        finalMessage: "stream answer",
+        deniedPermissionRequestIds: [],
+        tokenUsage: {
+          inputTokens: 10,
+          outputTokens: 3,
+          totalTokens: 13,
+          costUsd: 0.001,
+        },
+        cacheStats: {
+          requestCount: 1,
+          hitRate: null,
+        },
+      });
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("parseStreamJsonPrompt extracts user prompts from JSONL records", () => {
+    expect(
+      parseStreamJsonPrompt(
+        [
+          JSON.stringify({
+            type: "message",
+            role: "user",
+            content: [{ type: "text", text: "first prompt" }],
+          }),
+          JSON.stringify({ type: "input_text", text: "second prompt" }),
+        ].join("\n"),
+      ),
+    ).toBe("first prompt\n\nsecond prompt");
+    expect(() => parseStreamJsonPrompt("{not json}\n")).toThrow(
+      "invalid stream-json input on line 1",
+    );
+  });
+
+  it("oneShotCLI rejects invalid structured I/O format values before daemon startup", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-format-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-format-cwd-"));
+    const prevEnv = { ...process.env };
+    const prevArgv = [...process.argv];
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_format",
+      sessionId: "session_format",
+      cwd: tmpCwd,
+    });
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      process.argv = [
+        "/usr/bin/node",
+        "/opt/agenc/bin/agenc.js",
+        "--print",
+        "--output-format",
+        "yaml",
+        "just answer this",
+      ];
+      await expect(oneShotCLI("just answer this")).resolves.toBe(1);
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain("unknown output format 'yaml'");
+      expect(daemon.createConnectedTuiClient).not.toHaveBeenCalled();
+
+      stderrSpy.mockClear();
+      process.argv = [
+        "/usr/bin/node",
+        "/opt/agenc/bin/agenc.js",
+        "--print",
+        "--input-format",
+        "json",
+        "just answer this",
+      ];
+      await expect(oneShotCLI("just answer this")).resolves.toBe(1);
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain("unknown input format 'json'");
+      expect(daemon.createConnectedTuiClient).not.toHaveBeenCalled();
+    } finally {
+      process.argv = prevArgv;
+      stderrSpy.mockRestore();
       for (const key of Object.keys(process.env)) {
         if (!(key in prevEnv)) delete process.env[key];
       }

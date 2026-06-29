@@ -8,10 +8,6 @@ const state = vi.hoisted(() => ({
   config: {} as Record<string, unknown>,
 }));
 
-vi.mock("../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: vi.fn(() => true),
-}));
-
 vi.mock("../utils/config.js", () => ({
   getGlobalConfig: () => state.config,
   saveGlobalConfig: (

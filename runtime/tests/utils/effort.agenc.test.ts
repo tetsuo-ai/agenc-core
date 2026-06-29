@@ -17,7 +17,6 @@ async function importFreshEffortModule(options: {
   vi.resetModules()
   vi.doMock(providersModulePath, () => ({
     getAPIProvider: () => options.provider,
-    getAPIProviderForStatsig: () => options.provider,
     isFirstPartyAnthropicBaseUrl: () => options.provider === 'agenc',
     isFirstPartyproviderBaseUrl: () => options.provider === 'agenc',
     isGithubNativeAnthropicMode: () => false,

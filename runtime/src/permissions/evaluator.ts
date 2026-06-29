@@ -123,7 +123,7 @@ export interface ToolEvaluatorContext {
   readonly executionSurface?: "cli" | "headless";
   /**
    * Pluggable hook for subclasses of the evaluator context (e.g. tests
-   * or the W3 tool wrapper) to attach analytics without touching the
+   * or the W3 tool wrapper) to attach request metadata without touching the
    * pure evaluator code. Called exactly once per completed evaluation
    * with the final result.
    */

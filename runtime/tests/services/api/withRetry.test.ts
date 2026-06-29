@@ -56,7 +56,6 @@ async function importFreshWithRetryModule(
   mock.restore()
   mock.module('src/utils/model/providers.js', () => ({
     getAPIProvider: () => provider,
-    getAPIProviderForStatsig: () => provider,
     isFirstPartyAnthropicBaseUrl: () => provider === 'firstParty',
     isFirstPartyproviderBaseUrl: () => provider === 'firstParty',
     isGithubNativeAnthropicMode: () => provider === 'github',

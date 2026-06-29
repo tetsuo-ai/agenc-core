@@ -215,7 +215,7 @@ export interface HookPermissionResult {
    * and the tool's `execute()` both see the rewritten values.
    */
   readonly updatedInput?: Record<string, unknown>;
-  /** Donor `decisionReason.hookName` passthrough for analytics. */
+  /** Donor `decisionReason.hookName` passthrough for hook result metadata. */
   readonly hookName?: string;
 }
 
@@ -246,7 +246,7 @@ export type PreToolUseDecision =
   /**
    * Stop the turn entirely — AgenC PreToolUse `stop` (CANCEL_MESSAGE
    * tool_result, turn concluded). `stopReason` is surfaced as the
-   * toolUseResult for analytics.
+   * toolUseResult for downstream consumers.
    */
   | { readonly kind: "stop"; readonly stopReason?: string };
 

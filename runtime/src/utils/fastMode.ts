@@ -76,11 +76,11 @@ export function getFastModeUnavailableReason(): string | null {
     return 'Fast mode is not available'
   }
 
-  const statigReason: string | null = null
-  // Statsig reason has priority over other reasons.
-  if (statigReason !== null) {
-    logForDebugging(`Fast mode unavailable: ${statigReason}`)
-    return statigReason
+  const remoteConfigReason: string | null = null
+  // Remote-config reason has priority over other reasons.
+  if (remoteConfigReason !== null) {
+    logForDebugging(`Fast mode unavailable: ${remoteConfigReason}`)
+    return remoteConfigReason
   }
 
   // Previously, fast mode required the native binary (bun build). This is no

@@ -392,7 +392,7 @@ export type YoloClassifierResult = {
   stage1RequestId?: string
   /**
    * API message id (msg_xxx) for stage 1. Enables joining the
-   * tengu_auto_mode_decision analytics event to the classifier's actual
+   * auto-mode decision metadata to the classifier's actual
    * prompt/completion in post-analysis.
    */
   stage1MsgId?: string

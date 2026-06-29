@@ -5,11 +5,11 @@
  *
  * Why this lives here / shape difference from upstream:
  *   - Upstream gates fallback on a product-specific model family and emits
- *     analytics. AgenC keeps the ladder explicit and config-driven so any
+ *     reporting. AgenC keeps the ladder explicit and config-driven so any
  *     provider can declare ordered fallback targets.
  *
  * Cross-cuts deliberately NOT carried:
- *   - Subscriber gates, internal-user analytics, and fast-mode cooldowns.
+ *   - Subscriber gates, internal-user reporting, and fast-mode cooldowns.
  */
 
 import { FallbackTriggeredError } from "../../recovery/api-errors.js";

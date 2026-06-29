@@ -17,7 +17,6 @@ import {
   resolvePluginDependencyClosure,
   verifyResolvedPluginSignature,
   verifyPluginDependencyState,
-  type PluginFetchTelemetry,
   type PluginProcessRunner,
 } from "./resolution.js";
 import { installPluginOp, updatePluginOp } from "./cli/pluginOperations.js";
@@ -54,20 +53,17 @@ describe("plugin source resolution", () => {
         throw new Error(`unexpected process: ${command}`);
       };
 
-      const events: PluginFetchTelemetry[] = [];
       const resolved = await resolvePluginSource("@tetsuo-ai/demo-plugin", {
         agencHome,
         workspaceRoot: root,
         runProcess,
         requireSignature: false,
-        onTelemetry: (event) => events.push(event),
       });
 
       expect(resolved.kind).toBe("npm");
       expect(calls[0]).toMatch(/^npm pack --json --pack-destination .+ -- @tetsuo-ai\/demo-plugin$/u);
       expect(calls.some((call) => call.startsWith("tar -xzf"))).toBe(true);
       await expect(access(join(resolved.pluginRoot, ".agenc-plugin", "plugin.json"))).resolves.toBeUndefined();
-      expect(events.at(-1)).toMatchObject({ kind: "npm", outcome: "success" });
       await resolved.cleanup();
     });
   });
@@ -305,11 +301,10 @@ describe("plugin source resolution", () => {
     });
   });
 
-  test("redacts credential-bearing remote sources from metadata, telemetry, and errors", async () => {
+  test("redacts credential-bearing remote sources from metadata and errors", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const credentialSource = "https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue";
-      const events: PluginFetchTelemetry[] = [];
       const runProcess: PluginProcessRunner = async (command, args) => {
         if (command === "tar") {
           if (args[0] === "-tzf") return { stdout: safeTarListing("package"), stderr: "" };
@@ -327,7 +322,6 @@ describe("plugin source resolution", () => {
         workspaceRoot: root,
         runResolutionProcess: runProcess,
         fetchResolutionBytes: async () => Buffer.from("fixture"),
-        onPluginFetchTelemetry: (event) => events.push(event),
         requireSignature: false,
       });
       const metadata = await readFile(
@@ -340,7 +334,6 @@ describe("plugin source resolution", () => {
       expect(metadata).toContain('"source": "https://redacted@agenc.tech/plugins/private.tgz?redacted=1"');
       expect(metadata).not.toContain("opaque-token");
       expect(metadata).not.toContain("secretvalue");
-      expect(events.at(-1)?.source).toBe("https://redacted@agenc.tech/plugins/private.tgz?redacted=1");
       await expect(
         updatePluginOp({
           pluginId: "private-demo",
@@ -350,7 +343,6 @@ describe("plugin source resolution", () => {
         }),
       ).rejects.toThrow(/no recorded source/u);
 
-      const failingEvents: PluginFetchTelemetry[] = [];
       let errorMessage = "";
       try {
         await resolvePluginSource("git+https://opaque-token@agenc.tech/private/repo.git?access_token=secretvalue", {
@@ -359,7 +351,6 @@ describe("plugin source resolution", () => {
           runProcess: async () => {
             throw new Error("fatal: https://opaque-token@agenc.tech/private/repo.git?access_token=secretvalue denied");
           },
-          onTelemetry: (event) => failingEvents.push(event),
         });
       } catch (error) {
         errorMessage = String((error as Error).message);
@@ -367,7 +358,6 @@ describe("plugin source resolution", () => {
       expect(errorMessage).toContain("https://redacted@agenc.tech/private/repo.git?redacted=1");
       expect(errorMessage).not.toContain("opaque-token");
       expect(errorMessage).not.toContain("secretvalue");
-      expect(failingEvents.at(-1)?.source).toBe("git+https://redacted@agenc.tech/private/repo.git?redacted=1");
     });
   });
 
@@ -430,20 +420,17 @@ describe("plugin source resolution", () => {
         requireSignature: false,
       });
       await first.cleanup();
-      const events: PluginFetchTelemetry[] = [];
       const second = await resolvePluginSource("git@github.com:tetsuo-ai/plugin.git", {
         agencHome,
         workspaceRoot: root,
         runProcess,
         requireSignature: false,
-        onTelemetry: (event) => events.push(event),
       });
 
       expect(first.pluginRoot).toBe(pluginSourceCacheRoot(agencHome, "git@github.com:tetsuo-ai/plugin.git"));
       expect(second.pluginRoot).toBe(first.pluginRoot);
       expect(runs).toBe(1);
       expect(calls[0]).toMatch(/^git clone --depth 1 -- git@github.com:tetsuo-ai\/plugin.git /u);
-      expect(events.at(-1)).toMatchObject({ kind: "git", outcome: "cache_hit" });
       await second.cleanup();
     });
   });
@@ -456,7 +443,6 @@ describe("plugin source resolution", () => {
       await mkdir(cacheRoot, { recursive: true });
       await writeFile(join(cacheRoot, "stale.txt"), "not a plugin");
       let runs = 0;
-      const events: PluginFetchTelemetry[] = [];
       const runProcess: PluginProcessRunner = async (command, args) => {
         if (command === "git") {
           runs += 1;
@@ -471,12 +457,10 @@ describe("plugin source resolution", () => {
         workspaceRoot: root,
         runProcess,
         requireSignature: false,
-        onTelemetry: (event) => events.push(event),
       });
 
       expect(resolved.pluginRoot).toBe(cacheRoot);
       expect(runs).toBe(1);
-      expect(events.at(-1)).toMatchObject({ kind: "git", outcome: "success" });
       await expect(access(join(cacheRoot, ".agenc-plugin", "plugin.json"))).resolves.toBeUndefined();
       await expect(access(join(cacheRoot, "stale.txt"))).rejects.toThrow();
       await resolved.cleanup();
@@ -1307,13 +1291,11 @@ describe("plugin source resolution", () => {
         requireSignature: false,
       });
       await cloneStarted;
-      const events: PluginFetchTelemetry[] = [];
       const secondPromise = resolvePluginSource(source, {
         agencHome,
         workspaceRoot: root,
         runProcess,
         requireSignature: false,
-        onTelemetry: (event) => events.push(event),
       });
       releaseClone();
       const [first, second] = await Promise.all([firstPromise, secondPromise]);
@@ -1321,7 +1303,6 @@ describe("plugin source resolution", () => {
       expect(first.pluginRoot).toBe(cacheRoot);
       expect(second.pluginRoot).toBe(cacheRoot);
       expect(runs).toBe(1);
-      expect(events.at(-1)).toMatchObject({ kind: "git", outcome: "cache_hit" });
       await first.cleanup();
       await second.cleanup();
     });

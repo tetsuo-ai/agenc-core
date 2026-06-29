@@ -2579,10 +2579,6 @@ describe("model-facing tools", () => {
 
   it("launches strict spawn_agent through the delegate runner and stores a joinable thread", async () => {
     const session = fakeSession();
-    const counter = vi.fn();
-    (session.services as unknown as { sessionTelemetry: unknown }).sessionTelemetry = {
-      counter,
-    };
     let status:
       | {
           status: "running";
@@ -2654,9 +2650,6 @@ describe("model-facing tools", () => {
         runInBackground: true,
       }),
     );
-    expect(counter).toHaveBeenCalledWith("agenc.multi_agent.spawn", 1, [
-      ["role", "worker"],
-    ]);
 
     expect(byName.has("TaskOutput")).toBe(true);
     expect(join).toHaveBeenCalledTimes(1);

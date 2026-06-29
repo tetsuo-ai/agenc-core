@@ -3,8 +3,8 @@
  * 0ca43335375beec6e58711b797d5b0c4bb5019b8.
  *
  * Shape differences:
- *   - AgenC receives config, hook execution, and analytics sinks from the
- *     caller instead of importing process-global donor services.
+ *   - AgenC receives config and hook execution from the caller instead of
+ *     importing process-global donor services.
  *   - Apple Terminal profile inspection uses a tiny local parser for the
  *     specific Bell setting instead of adding an eager plist dependency.
  */
@@ -38,18 +38,9 @@ export type NotificationOptions = {
   readonly notificationType: string;
 };
 
-export type NotificationAnalyticsMetadata = Readonly<
-  Record<string, string | number | boolean | undefined>
->;
-
 export type NotificationHooks = (
   notification: NotificationOptions,
 ) => void | Promise<void>;
-
-export type NotificationAnalyticsLogger = (
-  eventName: string,
-  metadata: NotificationAnalyticsMetadata,
-) => void;
 
 export type ExecFileNoThrow = (
   command: string,
@@ -60,14 +51,12 @@ export interface NotificationRuntime {
   readonly preferredChannel?: NotificationChannel;
   readonly terminalName?: string;
   readonly executeNotificationHooks?: NotificationHooks;
-  readonly logEvent?: NotificationAnalyticsLogger;
   readonly execFileNoThrow?: ExecFileNoThrow;
   readonly generateKittyId?: () => number;
   readonly logError?: (error: unknown) => void;
 }
 
 const DEFAULT_TITLE = "AgenC";
-const NOTIFICATION_ANALYTICS_EVENT = "agenc_notification_method_used";
 
 export async function sendNotification(
   notification: NotificationOptions,
@@ -78,13 +67,7 @@ export async function sendNotification(
 
   await runtime.executeNotificationHooks?.(notification);
 
-  const methodUsed = await sendToChannel(channel, notification, terminal, runtime);
-
-  runtime.logEvent?.(NOTIFICATION_ANALYTICS_EVENT, {
-    configured_channel: channel,
-    method_used: methodUsed,
-    term: resolveTerminalName(runtime),
-  });
+  await sendToChannel(channel, notification, terminal, runtime);
 }
 
 export async function sendToChannel(

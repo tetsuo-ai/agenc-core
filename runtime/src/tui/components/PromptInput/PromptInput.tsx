@@ -34,9 +34,8 @@ import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import { abortPromptSuggestion, logSuggestionSuppressed } from '../../../services/PromptSuggestion/promptSuggestion.js';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS as PromptSuggestionAnalyticsMetadata, logEvent as logPromptSuggestionEvent } from '../../../services/PromptSuggestion/runtime.js';
 import { type ActiveSpeculationState, abortSpeculation } from '../../../services/PromptSuggestion/speculation.js';
-import { computePromptSuggestionOutcome, getVisiblePromptSuggestion, shouldShowPromptSuggestionPlaceholder, shouldSuppressPromptSuggestionForTiming } from './promptSuggestionControl.js';
+import { getVisiblePromptSuggestion, shouldShowPromptSuggestionPlaceholder, shouldSuppressPromptSuggestionForTiming } from './promptSuggestionControl.js';
 import { getActiveAgentForInput, getViewedTeammateTask } from '../../state/selectors.js';
 import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from '../../state/teammateViewHelpers.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
@@ -277,10 +276,7 @@ function usePromptSuggestion({
   const isTerminalFocused = useTerminalFocus();
   const {
     text: suggestionText,
-    promptId,
     shownAt,
-    acceptedAt,
-    generationRequestId,
   } = promptSuggestion;
 
   const suggestion = getVisiblePromptSuggestion({
@@ -351,56 +347,12 @@ function usePromptSuggestion({
   }, [setAppState]);
 
   const logOutcomeAtSubmission = useCallback(
-    (finalInput: string, opts?: { skipReset: boolean }) => {
+    (_finalInput: string, opts?: { skipReset: boolean }) => {
       if (!isValidSuggestion) return;
-
-      const outcome = computePromptSuggestionOutcome({
-        acceptedAt,
-        finalInput,
-        now: Date.now(),
-        shownAt,
-        suggestionText,
-      });
-      if (!outcome) return;
-
-      logPromptSuggestionEvent('agenc_prompt_suggestion', {
-        source: 'cli' as PromptSuggestionAnalyticsMetadata,
-        outcome: (outcome.wasAccepted ? 'accepted' : 'ignored') as PromptSuggestionAnalyticsMetadata,
-        prompt_id: promptId as PromptSuggestionAnalyticsMetadata,
-        ...(generationRequestId && {
-          generationRequestId:
-            generationRequestId as PromptSuggestionAnalyticsMetadata,
-        }),
-        ...(outcome.wasAccepted && {
-          acceptMethod: (outcome.tabWasPressed
-            ? 'tab'
-            : 'enter') as PromptSuggestionAnalyticsMetadata,
-        }),
-        ...(outcome.wasAccepted && {
-          timeToAcceptMs: outcome.timeMs - shownAt,
-        }),
-        ...(!outcome.wasAccepted && {
-          timeToIgnoreMs: outcome.timeMs - shownAt,
-        }),
-        ...(firstKeystrokeAt.current > 0 && {
-          timeToFirstKeystrokeMs: firstKeystrokeAt.current - shownAt,
-        }),
-        wasFocusedWhenShown: wasFocusedWhenShown.current,
-        similarity: outcome.similarity,
-        ...(process.env.USER_TYPE === 'ant' && {
-          suggestion: suggestionText as PromptSuggestionAnalyticsMetadata,
-          userInput: finalInput as PromptSuggestionAnalyticsMetadata,
-        }),
-      });
       if (!opts?.skipReset) resetSuggestion();
     },
     [
       isValidSuggestion,
-      acceptedAt,
-      shownAt,
-      suggestionText,
-      promptId,
-      generationRequestId,
       resetSuggestion,
     ],
   );

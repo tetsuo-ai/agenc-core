@@ -267,9 +267,9 @@ export function parsePluginId(
   }
 }
 
-/**
+ /**
  * Structured result from the install core. Wrappers format messages and
- * handle analytics/error-catching around this.
+ * handle error-catching around this.
  */
 export type InstallCoreResult =
   | { ok: true; closure: string[]; depNote: string }
@@ -331,7 +331,7 @@ export function formatResolutionError(
  *   4. Caches each closure member (downloads/copies sources as needed).
  *   5. Clears memoization caches.
  *
- * Returns a structured result. Message formatting, analytics, and top-level
+ * Returns a structured result. Message formatting and top-level
  * error wrapping stay in the caller-specific wrappers.
  *
  * @param marketplaceInstallLocation Pass this if the caller already has it
@@ -490,10 +490,10 @@ export type InstallPluginParams = {
   trigger?: 'hint' | 'user'
 }
 
-/**
+ /**
  * Install a single plugin from a marketplace with the specified scope.
  * Interactive-UI wrapper around `installResolvedPlugin` — adds try/catch,
- * analytics, and UI-style message formatting.
+ * and UI-style message formatting.
  */
 export async function installPluginFromMarketplace({
   pluginId,

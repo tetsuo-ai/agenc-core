@@ -62,7 +62,6 @@ const harness = vi.hoisted(() => {
     nonStreamingResponse: undefined,
     logAPIError: vi.fn(),
     logAPISuccessAndDuration: vi.fn(),
-    logAPIQuery: vi.fn(),
     logForDebugging: vi.fn(),
     captureAPIRequest: vi.fn(),
     recordUsageCacheStats: vi.fn(),
@@ -258,7 +257,6 @@ vi.mock('../../../src/tools/ToolSearchTool/prompt.js', () => ({
 }))
 
 vi.mock('../../../src/utils/api.js', () => ({
-  logAPIPrefix: vi.fn(),
   splitSysPromptPrefix: (systemPrompt: readonly string[]) =>
     systemPrompt.map(text => ({ text, cacheScope: null })),
   toolToAPISchema: async (tool: AnyRecord) => ({
@@ -333,7 +331,6 @@ vi.mock('../../../src/utils/log.js', () => ({
 vi.mock('../../../src/services/api/logging.js', () => ({
   EMPTY_USAGE: harness.usage(),
   logAPIError: harness.logAPIError,
-  logAPIQuery: harness.logAPIQuery,
   logAPISuccessAndDuration: harness.logAPISuccessAndDuration,
 }))
 
@@ -422,7 +419,6 @@ function resetHarness(): void {
   harness.client.beta.messages.create.mockClear()
   harness.logAPIError.mockClear()
   harness.logAPISuccessAndDuration.mockClear()
-  harness.logAPIQuery.mockClear()
   harness.logForDebugging.mockClear()
   harness.captureAPIRequest.mockClear()
   harness.recordUsageCacheStats.mockClear()

@@ -52,7 +52,7 @@ export function isForkSubagentEnabled(): boolean {
   return false
 }
 
-/** Synthetic agent type name used for analytics when the fork path fires. */
+/** Synthetic agent type name used when the fork path fires. */
 export const FORK_SUBAGENT_TYPE = 'fork'
 
 /**

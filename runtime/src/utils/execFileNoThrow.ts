@@ -19,7 +19,7 @@ type ExecFileOptions = {
   timeout?: number
   preserveOutputOnError?: boolean
   // Setting useCwd=false avoids circular dependencies during initialization
-  // getCwd() -> PersistentShell -> logEvent() -> execFileNoThrow
+  // getCwd() -> PersistentShell -> execFileNoThrow
   useCwd?: boolean
   env?: NodeJS.ProcessEnv
   stdin?: 'ignore' | 'inherit' | 'pipe'

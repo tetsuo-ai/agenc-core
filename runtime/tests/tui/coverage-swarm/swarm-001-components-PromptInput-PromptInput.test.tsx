@@ -107,7 +107,6 @@ const harness = vi.hoisted(() => {
     platform: 'linux',
     promptInputFooterProps: undefined as undefined | Record<string, unknown>,
     promptOverlayDialog: undefined as unknown,
-    promptSuggestionLogEvent: vi.fn(),
     pushToBuffer: vi.fn(),
     quickOpenProps: undefined as undefined | Record<string, unknown>,
     removeNotification: vi.fn(),
@@ -206,7 +205,6 @@ const harness = vi.hoisted(() => {
       harness.platform = 'linux'
       harness.promptInputFooterProps = undefined
       harness.promptOverlayDialog = undefined
-      harness.promptSuggestionLogEvent.mockClear()
       harness.pushToBuffer.mockClear()
       harness.quickOpenProps = undefined
       harness.removeNotification.mockClear()
@@ -292,17 +290,9 @@ vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features[name] === true,
 }))
 
-vi.mock('../../services/analytics/growthbook.js', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => null,
-}))
-
 vi.mock('../../services/PromptSuggestion/promptSuggestion.js', () => ({
   abortPromptSuggestion: vi.fn(),
   logSuggestionSuppressed: vi.fn(),
-}))
-
-vi.mock('../../services/PromptSuggestion/runtime.js', () => ({
-  logEvent: harness.promptSuggestionLogEvent,
 }))
 
 vi.mock('../../services/PromptSuggestion/speculation.js', () => ({

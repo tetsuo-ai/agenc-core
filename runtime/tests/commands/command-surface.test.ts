@@ -39,9 +39,13 @@ const MINIMAL_NAMES = [
   "hooks",
   "skills",
   "mcp",
+  "remote",
   "plugins",
   "memory",
   "resume",
+  "init",
+  "output-style",
+  "output-style:new",
   "clear",
   "compact",
   "context",
@@ -121,6 +125,9 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("plan")).toBe(true);
     expect(names.has("ctx")).toBe(true);
     expect(names.has("plugins")).toBe(true);
+    expect(names.has("init")).toBe(true);
+    expect(names.has("output-style")).toBe(true);
+    expect(names.has("style")).toBe(true);
     expect(names.has("claim")).toBe(true);
     expect(names.has("files")).toBe(false);
     expect(names.has("reload-plugins")).toBe(false);

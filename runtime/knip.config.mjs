@@ -66,8 +66,6 @@ const servicePublicContractExportFiles = [
   // optional provider paths, or external/manual harnesses outside the
   // production-only Knip graph.
   "src/services/agencAiLimits.ts",
-  "src/services/analytics/firstPartyEventLogger.ts",
-  "src/services/analytics/index.ts",
   "src/services/api/anthropic.ts",
   "src/services/api/cacheMetrics.ts",
   "src/services/api/compressToolHistory.ts",
@@ -555,7 +553,6 @@ const remainingRuntimeContractExportFiles = [
   "src/mcp-server/stdio.ts",
   "src/mcp-server/tools.ts",
   "src/mcp/server/start.ts",
-  "src/observability/telemetry.ts",
   "src/personality/migration.ts",
   "src/phases/_deps/tool-runtime.ts",
   "src/phases/post-sample-recovery.ts",

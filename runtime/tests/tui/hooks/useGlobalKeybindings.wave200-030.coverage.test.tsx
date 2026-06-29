@@ -56,10 +56,6 @@ vi.mock("../state/AppState.js", () => ({
   useSetAppState: () => harness.setAppState,
 }));
 
-vi.mock("../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => true,
-}));
-
 vi.mock("../../utils/terminalPanel.js", () => ({
   getTerminalPanel: () => ({
     toggle: harness.terminalToggle,

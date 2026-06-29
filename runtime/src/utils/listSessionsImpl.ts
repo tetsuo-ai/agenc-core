@@ -2,7 +2,7 @@
  * Standalone implementation of listSessions for the Agent SDK.
  *
  * Dependencies are kept minimal and portable — no bootstrap/state.ts,
- * no analytics, no bun:bundle, no module-scope mutable state. This module
+ * no remote reporting, no bun:bundle, no module-scope mutable state. This module
  * can be imported safely from the SDK entrypoint without triggering CLI
  * initialization or pulling in expensive dependency chains.
  */

@@ -728,11 +728,21 @@ test('connectToServer creates stdio clients with lifecycle handlers and cleanup'
     version: '1.0.0',
   })
   assert.equal(result.instructions, 'instructions for stdio-demo')
-  assert.equal(fakeClients[0]?.handlers.length, 2)
+  assert.equal(fakeClients[0]?.handlers.length, 3)
   assert.deepEqual(await fakeClients[0]!.handlers[0]!.handler(), {
     roots: [{ uri: `file://${process.cwd()}` }],
   })
   assert.deepEqual(await fakeClients[0]!.handlers[1]!.handler({}), {
+    role: 'assistant',
+    model: 'agenc-host',
+    stopReason: 'endTurn',
+    content: {
+      type: 'text',
+      text:
+        'MCP sampling is not available for this AgenC connection. Ask the user to run the request directly in the main conversation.',
+    },
+  })
+  assert.deepEqual(await fakeClients[0]!.handlers[2]!.handler({}), {
     action: 'cancel',
   })
   for (const message of [
@@ -1610,7 +1620,7 @@ test('connectToServer creates in-process Chrome MCP clients without spawning std
     env: { PROFILE: 'default' },
   })
   assert.equal(fakeChromeMcpServers[0]?.connectedTransport, linkedServerTransport)
-  assert.equal(fakeClients[0]?.handlers.length, 2)
+  assert.equal(fakeClients[0]?.handlers.length, 3)
 
   if (result.type === 'connected') {
     await result.cleanup()

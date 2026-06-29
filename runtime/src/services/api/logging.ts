@@ -14,7 +14,6 @@ import { addToTotalDurationState } from 'src/cost/tracker.js'
 import type { QueryChainTracking } from 'src/tools/Tool.js'
 import type { AssistantMessage } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import type { EffortLevel } from 'src/utils/effort.js'
 import { logError } from 'src/utils/log.js'
 import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js'
 import type { NonNullableUsage } from '../../entrypoints/sdk/sdkUtilityTypes.js'
@@ -110,45 +109,6 @@ function detectGateway({
   }
 
   return undefined
-}
-
-export function logAPIQuery({
-  model,
-  messagesLength,
-  temperature,
-  betas,
-  permissionMode,
-  querySource,
-  queryTracking,
-  thinkingType,
-  effortValue,
-  fastMode,
-  previousRequestId,
-}: {
-  model: string
-  messagesLength: number
-  temperature: number
-  betas?: string[]
-  permissionMode?: PermissionMode
-  querySource: string
-  queryTracking?: QueryChainTracking
-  thinkingType?: 'adaptive' | 'enabled' | 'disabled'
-  effortValue?: EffortLevel | null
-  fastMode?: boolean
-  previousRequestId?: string | null
-}): void {
-  // Analytics removed — fields retained in the signature for callers.
-  void model
-  void messagesLength
-  void temperature
-  void betas
-  void permissionMode
-  void querySource
-  void queryTracking
-  void thinkingType
-  void effortValue
-  void fastMode
-  void previousRequestId
 }
 
 export function logAPIError({

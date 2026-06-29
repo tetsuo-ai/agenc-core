@@ -81,6 +81,10 @@ import {
   type RolloutItem,
 } from "./rollout-item.js";
 import { DegradedStore } from "./degraded-store.js";
+import {
+  createTrajectoryExportSink,
+  type TrajectoryExportSink,
+} from "./trajectory-export.js";
 
 export const I4_FSYNC_RETRY_MS = 100;
 const I83_SUSPEND_DETECTION_MS = 10_000;
@@ -856,6 +860,7 @@ export class SessionStore {
    * transient and persistent fsync failures.
    */
   private fsyncImpl: (fd: number) => void = fsyncSync;
+  private readonly trajectoryExport: TrajectoryExportSink;
 
   constructor(opts: SessionStoreOpts) {
     this.cwd = opts.cwd;
@@ -884,6 +889,10 @@ export class SessionStore {
     this.lockPath = `${this.rolloutPath}.lock`;
     this.indexPath = join(this.sessionDir, "index.json");
     this.lock = new SessionLock(this.lockPath);
+    this.trajectoryExport = createTrajectoryExportSink({
+      sessionId: this.sessionId,
+      rolloutPath: this.rolloutPath,
+    });
 
     this.degraded = new DegradedStore<RolloutItem>({
       flushFn: async (events) => this.flushDegradedBuffer(events),
@@ -960,10 +969,11 @@ export class SessionStore {
           ...meta,
           rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
         };
-        const line = serializeRolloutItem({
+        const item: RolloutItem = {
           type: "session_meta",
           payload: sessionMeta,
-        });
+        };
+        const line = serializeRolloutItem(item);
         this.writeBytesWithFsync(line, (err) => {
           // I-38: persistent fsync failure on the initial session_meta
           // write — enter degraded mode so subsequent durable appends
@@ -977,6 +987,7 @@ export class SessionStore {
           }
         });
         this.fileSize = Buffer.byteLength(line, "utf8");
+        this.trajectoryExport.writeItems([item]);
         this.lastSessionMeta = sessionMeta;
       }
       this.degraded.start();
@@ -1256,6 +1267,7 @@ export class SessionStore {
         this.writeBytesAppendOnly(lines);
       }
       this.fileSize += Buffer.byteLength(lines, "utf8");
+      this.trajectoryExport.writeItems(toWrite);
     } catch (err) {
       // writeSync threw — bytes never landed; re-queue for re-append.
       if (!routeToDegraded(err, /*requeue*/ true)) {
@@ -1467,6 +1479,7 @@ export class SessionStore {
         routeToDegraded(err, /*requeue*/ false);
       });
       this.fileSize += Buffer.byteLength(line, "utf8");
+      this.trajectoryExport.writeItems([item]);
     } catch (err) {
       if (!routeToDegraded(err, /*requeue*/ true)) throw err;
     }
@@ -1494,6 +1507,7 @@ export class SessionStore {
       // still re-trips degraded mode via the retry callback, but without
       // re-queueing these already-persisted items.
       this.fileSize += Buffer.byteLength(lines, "utf8");
+      this.trajectoryExport.writeItems(events);
       // Settle any deferred I-38 fsync retry before returning so the
       // fsync_failed / fsync_retry_succeeded diagnostics are observable
       // to callers (and tests) at the point the drain reports success.
@@ -1580,6 +1594,7 @@ export class SessionStore {
           const lines = remaining.map(serializeRolloutItem).join("");
           this.writeBytesWithFsync(lines);
           this.fileSize += Buffer.byteLength(lines, "utf8");
+          this.trajectoryExport.writeItems(remaining);
         } catch (err) {
           this.emitDiagnostic({
             at: Date.now(),
@@ -1596,6 +1611,7 @@ export class SessionStore {
     // truncation). I-25 says snapshot is advisory; we still emit it
     // as a reconstruction speedup.
     this.writeIndexSnapshot();
+    this.trajectoryExport.close();
     this.lock.release();
   }
 

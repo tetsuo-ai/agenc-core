@@ -44,7 +44,7 @@ Everything past the launcher lives in the single runtime workspace
 | `config/`, `state/`, `secrets/` | Config schema/store/migrations, on-disk SQLite project state, secret handling. |
 | `transaction-guard/` | Opt-in local SLM transaction guard for Solana-like mutating tool calls. |
 | `unified-exec/`, `pty/` | Process execution, command monitoring, and PTY helpers. |
-| `eval/` | Local agent-evaluation report schema and validator. |
+| `eval/` | Local agent-evaluation runner, report schema, and validator. |
 | `tui/` | The terminal UI. |
 | `utils/` | Shared utilities: messages, bash parsing, model tables, file persistence, plugin helpers, sandbox helpers, and compatibility shims. |
 
@@ -54,8 +54,10 @@ The daemon and runtime persist everything under one home: the daemon pid file,
 auth cookie, and socket; config (`config.toml`) and credentials (`auth.json`,
 plus the global `.agenc*.json`); per-project SQLite state; per-session rollout
 logs (append-only JSONL + an advisory `index.json` snapshot, written atomically
-via tmp+fsync+rename); and logs. `AGENC_HOME=/custom` relocates all of it
-consistently.
+via tmp+fsync+rename); and logs. Optional trajectory export writes redacted
+rollout items to caller-selected local JSONL files via
+`AGENC_TRAJECTORY_EXPORT_PATH` or `AGENC_TRAJECTORY_EXPORT_DIR`. `AGENC_HOME=/custom`
+relocates runtime-owned state consistently.
 
 ## TUI
 

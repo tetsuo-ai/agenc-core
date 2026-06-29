@@ -25,11 +25,9 @@ import {
 import type {
   AuthManager,
   SessionConfiguration,
-  SessionTelemetry,
 } from "../session/turn-context.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type {
-  AnalyticsEventsClient,
   ExecPolicyManager,
   Hooks,
   LocalThreadStore,
@@ -139,7 +137,6 @@ export interface BootstrapRolloutBinding {
 
 export interface BootstrapSessionServicesHandle {
   readonly services: SessionServices;
-  readonly analyticsEventsClient: BootstrapAnalyticsEventsClient;
   readonly execPolicy: BootstrapExecPolicyManager;
   readonly modelClient: BootstrapModelClient;
   readonly rolloutRecorder: BootstrapRolloutRecorderFacade;
@@ -148,28 +145,6 @@ export interface BootstrapSessionServicesHandle {
   bindSession(session: Session): void;
   bindRolloutStore(binding: BootstrapRolloutBinding): LiveThread;
   shutdown(): Promise<void>;
-}
-
-export class BootstrapAnalyticsEventsClient
-  implements AnalyticsEventsClient
-{
-  private readonly records: Array<{
-    readonly atUnixMs: number;
-    readonly event: unknown;
-  }> = [];
-
-  constructor(private readonly maxRecords = 1_000) {}
-
-  async emit(event: unknown): Promise<void> {
-    this.records.push({ atUnixMs: Date.now(), event });
-    if (this.records.length > this.maxRecords) {
-      this.records.splice(0, this.records.length - this.maxRecords);
-    }
-  }
-
-  events(): ReadonlyArray<{ readonly atUnixMs: number; readonly event: unknown }> {
-    return [...this.records];
-  }
 }
 
 export class BootstrapRolloutRecorderFacade implements RolloutRecorder {
@@ -584,19 +559,6 @@ function authProviderFor(providerName: string): AuthManager["authProvider"] {
   }
 }
 
-function createSessionTelemetry(opts: {
-  readonly model: string;
-  readonly providerName: string;
-  readonly conversationId: string;
-}): SessionTelemetry {
-  return {
-    modelSlug: opts.model,
-    providerName: opts.providerName,
-    conversationId: opts.conversationId,
-    startedAtUnixMs: Date.now(),
-  } as SessionTelemetry;
-}
-
 /**
  * Resolve the adaptive per-tool drain-timeout latency-store config (Goal #4a)
  * from env. Each knob follows the `AGENC_MAX_TOOL_DRAIN_MS` precedent:
@@ -650,7 +612,6 @@ export function buildBootstrapSessionServices(
       AGENC_MANAGED_HOME: opts.env.AGENC_MANAGED_HOME,
     },
   });
-  const analyticsEventsClient = new BootstrapAnalyticsEventsClient();
   const execPolicy = new BootstrapExecPolicyManager(
     opts.permissionModeRegistry,
     opts.sessionConfiguration,
@@ -733,7 +694,6 @@ export function buildBootstrapSessionServices(
     mcpConnectionManager,
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     unifiedExecManager: opts.unifiedExecManager,
-    analyticsEventsClient,
     hooks: hooksService,
     hooksRuntime,
     rollout: rolloutRecorder,
@@ -757,11 +717,6 @@ export function buildBootstrapSessionServices(
     ...(opts.authSubscriptionTier !== undefined
       ? { authSubscriptionTier: opts.authSubscriptionTier }
       : {}),
-    sessionTelemetry: createSessionTelemetry({
-      model: opts.model,
-      providerName: opts.providerName,
-      conversationId: opts.conversationId,
-    }),
     toolLatencyStore: new ToolLatencyStore(resolveToolLatencyConfig(opts.env)),
     modelsManager: opts.modelsManager,
     toolApprovals: {
@@ -821,7 +776,6 @@ export function buildBootstrapSessionServices(
 
   return {
     services,
-    analyticsEventsClient,
     execPolicy,
     modelClient,
     rolloutRecorder,

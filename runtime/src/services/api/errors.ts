@@ -872,7 +872,7 @@ function get3PModelFallbackSuggestion(model: string): string | undefined {
 }
 
 /**
- * Classifies an API error into a specific error type for analytics tracking.
+ * Classifies an API error into a specific error type for structured handling.
  * Returns a standardized error type string suitable for Datadog tagging.
  */
 export function classifyAPIError(error: unknown): string {

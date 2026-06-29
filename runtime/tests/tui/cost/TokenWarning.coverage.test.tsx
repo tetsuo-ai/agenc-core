@@ -14,10 +14,6 @@ vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
 
-vi.mock("../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => false,
-}));
-
 vi.mock("../../services/compact/autoCompact.js", () => ({
   calculateTokenWarningState: () => ({
     isAboveAutoCompactThreshold: false,

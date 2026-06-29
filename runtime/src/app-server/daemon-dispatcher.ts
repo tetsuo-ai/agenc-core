@@ -36,6 +36,10 @@ import {
   AgenCRealtimeRpcService,
   type AgenCRealtimeRpcHandlers,
 } from "./realtime.js";
+import {
+  AgenCDaemonConnectionLimiter,
+  type AgenCDaemonOverloadLimitOptions,
+} from "./overload.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
@@ -1097,6 +1101,7 @@ export class AgenCDaemonJsonRpcDispatcher {
 
 export interface AgenCDaemonJsonRpcConnectionOptions {
   readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
+  readonly overloadLimits?: AgenCDaemonOverloadLimitOptions;
 }
 
 let nextConnectionId = 0;
@@ -1109,6 +1114,7 @@ export class AgenCDaemonJsonRpcConnection {
   readonly #cancellationScope: string;
   readonly #clientIds = new Set<string>();
   readonly #inFlightRequests = new Map<string, AbortController>();
+  readonly #limiter: AgenCDaemonConnectionLimiter;
   #initializeState: AgenCDaemonConnectionInitializeState | undefined;
   #daemonSocketIdentity: AuthDaemonSocketIdentity | undefined;
 
@@ -1118,6 +1124,7 @@ export class AgenCDaemonJsonRpcConnection {
   ) {
     this.#dispatcher = dispatcher;
     this.#sendNotification = options.sendNotification;
+    this.#limiter = new AgenCDaemonConnectionLimiter(options.overloadLimits);
     nextConnectionId += 1;
     this.#cancellationScope = `connection_${nextConnectionId.toString(36)}`;
   }
@@ -1245,7 +1252,15 @@ export class AgenCDaemonJsonRpcConnection {
   }
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
-    return this.#dispatcher.dispatchForConnection(this, message);
+    const admission = this.#limiter.tryStart(message);
+    if (!admission.admitted) {
+      return admission.response!;
+    }
+    try {
+      return await this.#dispatcher.dispatchForConnection(this, message);
+    } finally {
+      admission.release();
+    }
   }
 
   async close(): Promise<void> {

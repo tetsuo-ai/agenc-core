@@ -181,7 +181,7 @@ export type ToolUseContext = {
     customSystemPrompt?: string
     /** Additional system prompt appended after the main system prompt */
     appendSystemPrompt?: string
-    /** Override querySource for analytics tracking */
+    /** Override querySource for request attribution */
     querySource?: QuerySource
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools

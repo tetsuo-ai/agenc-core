@@ -48,7 +48,7 @@ export type MaxVersionConfig = {
 }
 
 /**
- * Checks if the current version meets the minimum required version from Statsig config
+ * Checks if the current version meets the minimum required version from remote config
  * Terminates the process with an error message if the version is too old
  *
  * NOTE ON SHA-BASED VERSIONING:

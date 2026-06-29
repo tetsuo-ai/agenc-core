@@ -295,7 +295,7 @@ function persistCrashLocally(error: unknown): void {
  */
 export const installGlobalErrorNet = memoize(
   (proc: Pick<NodeJS.Process, 'on'> = process): void => {
-    // Log uncaught exceptions for container observability and analytics.
+    // Log uncaught exceptions for container observability.
     // Error names (e.g., "TypeError") are not sensitive - safe to log.
     proc.on('uncaughtException', error => {
       logForDiagnosticsNoPII('error', 'uncaught_exception', {
@@ -306,7 +306,7 @@ export const installGlobalErrorNet = memoize(
       // file is set (the common local daemon/TUI case).
       persistCrashLocally(error)
     })
-    // Log unhandled promise rejections for container observability and analytics.
+    // Log unhandled promise rejections for container observability.
     proc.on('unhandledRejection', reason => {
       const errorInfo =
         reason instanceof Error
@@ -497,13 +497,13 @@ export async function gracefulShutdown(
   // Exit alt screen and print resume hint FIRST, before any async operations.
   // This ensures the hint is visible even if the process is killed during
   // cleanup (e.g., SIGKILL during macOS reboot). Without this, the resume
-  // hint would only appear after cleanup functions, hooks, and analytics
+  // hint would only appear after cleanup functions and hooks
   // flush — which can take several seconds.
   cleanupTerminalModes(true)
   printResumeHint()
 
   // Flush session data first — this is the most critical cleanup. If the
-  // terminal is dead (SIGHUP, SSH disconnect), hooks and analytics may hang
+  // terminal is dead (SIGHUP, SSH disconnect), hooks may hang
   // on I/O to a dead TTY or unreachable network, eating into the
   // failsafe budget. Session persistence must complete before anything else.
   let cleanupTimeoutId: ReturnType<typeof setTimeout> | undefined

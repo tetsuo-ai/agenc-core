@@ -2860,32 +2860,41 @@ function isNoLiveAgentRunnerError(error: unknown): boolean {
 function transcriptMessagesFromRolloutItems(
   items: readonly RolloutItem[],
 ): { role: string; text: string }[] {
-  const fromItems: { role: string; text: string }[] = [];
-  const fromEvents: { role: string; text: string }[] = [];
+  const responseItemKeys = new Set<string>();
+  for (const item of items) {
+    if (item.type !== "response_item") continue;
+    const role = item.payload.role;
+    const text = messageContentText(item.payload.content);
+    if ((role === "user" || role === "assistant") && text.length > 0) {
+      responseItemKeys.add(`${role}\u0000${text}`);
+    }
+  }
+  const messages: { role: string; text: string }[] = [];
   const push = (
-    into: { role: string; text: string }[],
     role: string,
     text: string,
   ): void => {
     if ((role === "user" || role === "assistant") && text.length > 0) {
-      into.push({ role, text });
+      messages.push({ role, text });
     }
   };
   for (const item of items) {
     if (item.type === "response_item") {
-      push(fromItems, item.payload.role, messageContentText(item.payload.content));
+      push(item.payload.role, messageContentText(item.payload.content));
     } else if (item.type === "event_msg") {
       const transcribed = transcriptMessageFromEvent(item.payload);
       if (transcribed !== undefined) {
-        push(fromEvents, transcribed.role, transcribed.text);
+        const key = `${transcribed.role}\u0000${transcribed.text}`;
+        if (!responseItemKeys.has(key)) {
+          push(transcribed.role, transcribed.text);
+        }
       }
     }
   }
-  // A terminal rollout carries BOTH `response_item` entries AND their `user_message`/`agent_message`
-  // event duplicates for the same turns, which would double every message. The response_item entries
-  // are the canonical history (same source the live path reads), so prefer them; fall back to events
-  // only for a rollout that recorded events alone.
-  return fromItems.length > 0 ? fromItems : fromEvents;
+  // Terminal rollouts can carry both canonical `response_item` entries and
+  // exact `user_message`/`agent_message` event duplicates. Keep response items
+  // as the canonical copy, but still retain event-only turns.
+  return messages;
 }
 
 function transcriptMessageFromEvent(

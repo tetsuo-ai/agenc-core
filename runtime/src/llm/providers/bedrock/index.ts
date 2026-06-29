@@ -111,6 +111,12 @@ interface BedrockResponse {
   };
 }
 
+type BedrockStreamToolBlock = {
+  readonly id: string;
+  readonly name: string;
+  arguments: string;
+};
+
 interface SignedRequest {
   readonly url: URL;
   readonly headers: Readonly<Record<string, string>>;
@@ -200,8 +206,10 @@ function signRequest(params: {
   readonly body: string;
   readonly credentials: BedrockCredentials;
   readonly now: Date;
+  readonly operation?: "converse" | "converse-stream";
 }): SignedRequest {
-  const path = `/model/${encodeURIComponent(params.model)}/converse`;
+  const operation = params.operation ?? "converse";
+  const path = `/model/${encodeURIComponent(params.model)}/${operation}`;
   const url = new URL(path, params.baseURL);
   const payloadHash = sha256Hex(params.body);
   const { dateStamp, amzDate } = formatAmzDate(params.now);
@@ -451,6 +459,7 @@ function requestMetrics(
   messages: readonly LLMMessage[],
   tools: readonly LLMTool[],
   serializedRequest: string,
+  stream = false,
 ): LLMRequestMetrics {
   const contentLengths = messages.map((message) => messageText(message).length);
   const textParts = messages.reduce((count, message) => {
@@ -481,7 +490,7 @@ function requestMetrics(
     toolNames: tools.map((tool) => tool.function.name),
     toolSchemaChars,
     serializedChars: serializedRequest.length,
-    stream: false,
+    stream,
   };
 }
 
@@ -554,6 +563,283 @@ function parseResponse(
         ? "tool_calls"
         : finishReasonFromStopReason(response.stopReason),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function numericField(
+  record: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  const value = record[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function streamUsageFromRecord(
+  value: unknown,
+): BedrockResponse["usage"] | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    ...(numericField(value, "inputTokens") !== undefined
+      ? { inputTokens: numericField(value, "inputTokens") }
+      : {}),
+    ...(numericField(value, "outputTokens") !== undefined
+      ? { outputTokens: numericField(value, "outputTokens") }
+      : {}),
+    ...(numericField(value, "totalTokens") !== undefined
+      ? { totalTokens: numericField(value, "totalTokens") }
+      : {}),
+    ...(numericField(value, "cacheReadInputTokens") !== undefined
+      ? { cacheReadInputTokens: numericField(value, "cacheReadInputTokens") }
+      : {}),
+    ...(numericField(value, "cacheWriteInputTokens") !== undefined
+      ? { cacheWriteInputTokens: numericField(value, "cacheWriteInputTokens") }
+      : {}),
+  };
+}
+
+function concatBytes(
+  left: Uint8Array<ArrayBufferLike>,
+  right: Uint8Array<ArrayBufferLike>,
+): Uint8Array {
+  if (left.length === 0) return right;
+  if (right.length === 0) return left;
+  const combined = new Uint8Array(left.length + right.length);
+  combined.set(left, 0);
+  combined.set(right, left.length);
+  return combined;
+}
+
+async function* responseByteChunks(
+  body: ReadableStream<Uint8Array> | null,
+): AsyncGenerator<Uint8Array<ArrayBufferLike>> {
+  if (body === null) return;
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value !== undefined && value.length > 0) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function readUint32(
+  bytes: Uint8Array<ArrayBufferLike>,
+  offset: number,
+): number {
+  return new DataView(
+    bytes.buffer,
+    bytes.byteOffset + offset,
+    4,
+  ).getUint32(0, false);
+}
+
+function eventStreamPayload(
+  message: Uint8Array<ArrayBufferLike>,
+): Uint8Array {
+  if (message.length < 16) {
+    throw new Error("Amazon Bedrock stream emitted a truncated event frame");
+  }
+  const totalLength = readUint32(message, 0);
+  const headersLength = readUint32(message, 4);
+  const payloadStart = 12 + headersLength;
+  const payloadEnd = totalLength - 4;
+  if (
+    totalLength !== message.length ||
+    payloadStart > payloadEnd ||
+    payloadEnd > message.length
+  ) {
+    throw new Error("Amazon Bedrock stream emitted an invalid event frame");
+  }
+  return message.slice(payloadStart, payloadEnd);
+}
+
+async function* bedrockEventStreamPayloads(
+  body: ReadableStream<Uint8Array> | null,
+): AsyncGenerator<unknown> {
+  const decoder = new TextDecoder();
+  let pending: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  for await (const chunk of responseByteChunks(body)) {
+    pending = concatBytes(pending, chunk);
+    while (pending.length >= 12) {
+      const totalLength = readUint32(pending, 0);
+      if (totalLength < 16) {
+        throw new Error("Amazon Bedrock stream emitted an invalid event length");
+      }
+      if (pending.length < totalLength) break;
+      const frame = pending.slice(0, totalLength);
+      pending = pending.slice(totalLength);
+      const payload = eventStreamPayload(frame);
+      if (payload.length === 0) {
+        yield {};
+        continue;
+      }
+      const text = decoder.decode(payload).trim();
+      yield text.length === 0 ? {} : JSON.parse(text);
+    }
+  }
+  if (pending.length > 0) {
+    throw new Error("Amazon Bedrock stream ended with a partial event frame");
+  }
+}
+
+function streamEventError(event: Record<string, unknown>): string | null {
+  for (const [key, value] of Object.entries(event)) {
+    if (!key.endsWith("Exception")) continue;
+    return errorMessageFromBody(value);
+  }
+  return null;
+}
+
+function parseCompletedToolCall(block: BedrockStreamToolBlock): LLMToolCall {
+  const rawArguments = block.arguments.length > 0 ? block.arguments : "{}";
+  try {
+    const parsed = JSON.parse(rawArguments) as unknown;
+    if (!isRecord(parsed)) {
+      throw new Error("tool input is not an object");
+    }
+  } catch {
+    throw new Error(
+      `Amazon Bedrock stream emitted invalid tool_use JSON for ${block.name || block.id}`,
+    );
+  }
+  return {
+    id: block.id,
+    name: block.name,
+    arguments: rawArguments,
+  };
+}
+
+async function parseStreamResponse(params: {
+  readonly body: ReadableStream<Uint8Array> | null;
+  readonly model: string;
+  readonly metrics: LLMRequestMetrics;
+  readonly onChunk: StreamProgressCallback;
+}): Promise<LLMResponse> {
+  let content = "";
+  let stopReason: string | undefined;
+  let usage: BedrockResponse["usage"] | undefined;
+  const toolBlocks = new Map<number, BedrockStreamToolBlock>();
+  const toolCalls: LLMToolCall[] = [];
+
+  for await (const rawEvent of bedrockEventStreamPayloads(params.body)) {
+    if (!isRecord(rawEvent)) continue;
+    const errorMessage = streamEventError(rawEvent);
+    if (errorMessage !== null) {
+      throw new Error(`Amazon Bedrock stream failed: ${errorMessage}`);
+    }
+
+    const startEvent = isRecord(rawEvent.contentBlockStart)
+      ? rawEvent.contentBlockStart
+      : null;
+    if (startEvent !== null) {
+      const index = numericField(startEvent, "contentBlockIndex") ?? -1;
+      const start = isRecord(startEvent.start) ? startEvent.start : {};
+      const toolUse = isRecord(start.toolUse) ? start.toolUse : null;
+      if (index >= 0 && toolUse !== null) {
+        const id = String(toolUse.toolUseId ?? "");
+        const name = String(toolUse.name ?? "");
+        toolBlocks.set(index, { id, name, arguments: "" });
+        params.onChunk({
+          content: "",
+          done: false,
+          toolInputBlockStart: {
+            callId: id,
+            index,
+            contentBlock: {
+              type: "tool_use",
+              id,
+              name,
+              input: {},
+            },
+          },
+        });
+      }
+      continue;
+    }
+
+    const deltaEvent = isRecord(rawEvent.contentBlockDelta)
+      ? rawEvent.contentBlockDelta
+      : null;
+    if (deltaEvent !== null) {
+      const index = numericField(deltaEvent, "contentBlockIndex") ?? -1;
+      const delta = isRecord(deltaEvent.delta) ? deltaEvent.delta : {};
+      if (typeof delta.text === "string" && delta.text.length > 0) {
+        content += delta.text;
+        params.onChunk({ content: delta.text, done: false });
+        continue;
+      }
+      const toolUse = isRecord(delta.toolUse) ? delta.toolUse : null;
+      if (index >= 0 && toolUse !== null && typeof toolUse.input === "string") {
+        const block = toolBlocks.get(index);
+        if (block !== undefined) {
+          block.arguments += toolUse.input;
+          params.onChunk({
+            content: "",
+            done: false,
+            toolInputDelta: {
+              callId: block.id,
+              index,
+              partialJson: toolUse.input,
+            },
+          });
+        }
+      }
+      continue;
+    }
+
+    const stopEvent = isRecord(rawEvent.contentBlockStop)
+      ? rawEvent.contentBlockStop
+      : null;
+    if (stopEvent !== null) {
+      const index = numericField(stopEvent, "contentBlockIndex") ?? -1;
+      const block = toolBlocks.get(index);
+      if (block !== undefined) {
+        const toolCall = parseCompletedToolCall(block);
+        toolCalls.push(toolCall);
+        params.onChunk({ content: "", done: false, toolCalls: [toolCall] });
+        toolBlocks.delete(index);
+      }
+      continue;
+    }
+
+    const messageStop = isRecord(rawEvent.messageStop)
+      ? rawEvent.messageStop
+      : null;
+    if (messageStop !== null) {
+      stopReason =
+        typeof messageStop.stopReason === "string"
+          ? messageStop.stopReason
+          : stopReason;
+      continue;
+    }
+
+    const metadata = isRecord(rawEvent.metadata) ? rawEvent.metadata : null;
+    if (metadata !== null) {
+      usage = streamUsageFromRecord(metadata.usage) ?? usage;
+    }
+  }
+
+  const response: LLMResponse = {
+    content,
+    toolCalls,
+    usage: usageFromResponse({ usage }),
+    model: params.model,
+    requestMetrics: params.metrics,
+    finishReason:
+      toolCalls.length > 0 ? "tool_calls" : finishReasonFromStopReason(stopReason),
+  };
+  params.onChunk({
+    content: "",
+    done: true,
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
+  });
+  return response;
 }
 
 async function readJsonResponse(response: Response): Promise<unknown> {
@@ -695,16 +981,52 @@ export class BedrockProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    const response = await this.chat(messages, options);
-    if (response.content.length > 0) {
-      onChunk({ content: response.content, done: false });
+    const model = firstNonEmpty(options?.model, this.config.model);
+    if (!model) {
+      throw new Error("amazon-bedrock provider requires a model identifier");
     }
-    onChunk({
-      content: "",
-      done: true,
-      ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}),
+    const request = buildRequest(this.config, messages, options);
+    const body = JSON.stringify(request);
+    const metrics = requestMetrics(
+      messages,
+      requestTools(this.config, options),
+      body,
+      true,
+    );
+    const signed = signRequest({
+      baseURL: this.baseURL,
+      region: this.region,
+      model,
+      body,
+      credentials: resolveCredentials(this.config),
+      now: this.config.now?.() ?? new Date(),
+      operation: "converse-stream",
     });
-    return response;
+    const timeoutMs = positiveInteger(options?.timeoutMs) ??
+      positiveInteger(this.config.timeoutMs);
+    const signalState = requestSignal(options?.signal, timeoutMs);
+    try {
+      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+        method: "POST",
+        headers: signed.headers,
+        body: signed.body,
+        signal: signalState.signal,
+      });
+      if (!response.ok) {
+        const parsed = await readJsonResponse(response);
+        throw new Error(
+          `Amazon Bedrock stream request failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
+        );
+      }
+      return await parseStreamResponse({
+        body: response.body,
+        model,
+        metrics,
+        onChunk,
+      });
+    } finally {
+      signalState.cleanup();
+    }
   }
 
   async healthCheck(): Promise<boolean> {

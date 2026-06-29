@@ -15,6 +15,11 @@ import { Buffer } from "node:buffer";
 import { createInterface, type Interface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
+import {
+  daemonOverloadErrorResponse,
+  isDaemonControlMessage,
+  maxQueuedRequestsFromOptions,
+} from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 
 /**
@@ -34,6 +39,7 @@ export interface AgenCStdioTransportOptions {
   readonly onError?: (error: Error, line: string) => void;
   readonly onClose?: () => void;
   readonly maxLineBytes?: number;
+  readonly maxQueuedRequests?: number;
 }
 
 export class AgenCStdioTransport {
@@ -45,6 +51,7 @@ export class AgenCStdioTransport {
   // promises). Cross-connection concurrency is preserved because each
   // transport instance owns its own chain.
   #dispatchChain: Promise<void> = Promise.resolve();
+  #queuedNormalMessages = 0;
   #reader: Interface | null = null;
 
   constructor(options: AgenCStdioTransportOptions) {
@@ -122,7 +129,7 @@ export class AgenCStdioTransport {
       return;
     }
 
-    if (isControlMessage(message)) {
+    if (isDaemonControlMessage(message)) {
       // Control messages (request.cancel) must NOT queue behind the in-flight
       // long request they target, or cancellation can never run. They carry no
       // ordering dependency on normal requests (they reference a target by
@@ -140,14 +147,38 @@ export class AgenCStdioTransport {
       return;
     }
 
+    const maxQueuedRequests = maxQueuedRequestsFromOptions({
+      maxQueuedRequests: this.#options.maxQueuedRequests,
+    });
+    if (this.#queuedNormalMessages >= maxQueuedRequests) {
+      void this.send(
+        daemonOverloadErrorResponse(message, "TOO_MANY_QUEUED_REQUESTS", {
+          maxQueuedRequests,
+        }),
+      ).catch((error) => {
+        this.#options.onError?.(asError(error), line);
+      });
+      return;
+    }
+    this.#queuedNormalMessages += 1;
+
     // Chain dispatch on a per-connection promise so pipelined,
     // order-dependent requests are handed to onMessage in arrival order
     // instead of racing. A handler rejection is caught here so it cannot
     // break the chain for subsequent messages.
-    const pending = (this.#dispatchChain = this.#dispatchChain.then(() =>
-      Promise.resolve(this.#options.onMessage(message)).catch((error) => {
-        this.#options.onError?.(asError(error), line);
-      }),
+    const pending = (this.#dispatchChain = this.#dispatchChain.then(
+      async () => {
+        try {
+          await this.#options.onMessage(message);
+        } catch (error) {
+          this.#options.onError?.(asError(error), line);
+        } finally {
+          this.#queuedNormalMessages = Math.max(
+            0,
+            this.#queuedNormalMessages - 1,
+          );
+        }
+      },
     ));
     this.#pendingMessages.add(pending);
     pending.finally(() => {
@@ -203,10 +234,6 @@ export function writeJsonLine(
  * only if they prove starved as well — never to anything with ordering or
  * mutating side effects, which must stay strictly FIFO.
  */
-function isControlMessage(message: JsonObject): boolean {
-  return message.method === "request.cancel";
-}
-
 function isJsonObject(value: JsonValue): value is JsonObject {
   return isRecord(value);
 }

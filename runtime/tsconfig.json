@@ -390,8 +390,6 @@
     "src/utils/status.tsx",
     "src/utils/streamlinedTransform.ts",
     "src/utils/suggestions/commandSuggestions.ts",
-    "src/utils/telemetry/bigqueryExporter.ts",
-    "src/utils/telemetry/instrumentation.ts",
     // Z-PURGEC verified temporary baseline boundary end.
     "src/constants/**/*",
     "src/utils/**/*",

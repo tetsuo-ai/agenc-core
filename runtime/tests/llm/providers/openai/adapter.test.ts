@@ -1416,25 +1416,24 @@ describe("OpenAIProvider", () => {
     expect(headers.get("authorization")).toBeNull();
   });
 
-  test("uses bearer headers and the /openai path prefix for Gemini", async () => {
+  test("normalizes Gemini /openai base URLs to native generateContent", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          id: "chatcmpl_1",
           model: "gemini-2.5-pro",
-          choices: [
+          candidates: [
             {
-              message: {
-                role: "assistant",
-                content: "ok",
+              content: {
+                role: "model",
+                parts: [{ text: "ok" }],
               },
-              finish_reason: "stop",
+              finishReason: "STOP",
             },
           ],
-          usage: {
-            prompt_tokens: 4,
-            completion_tokens: 1,
-            total_tokens: 5,
+          usageMetadata: {
+            promptTokenCount: 4,
+            candidatesTokenCount: 1,
+            totalTokenCount: 5,
           },
         }),
         {
@@ -1454,11 +1453,11 @@ describe("OpenAIProvider", () => {
 
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
     );
     const headers = init?.headers as Headers;
-    expect(headers.get("authorization")).toBe("Bearer gemini-test");
-    expect(headers.get("x-goog-api-key")).toBeNull();
+    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
+    expect(headers.get("authorization")).toBeNull();
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect("store" in requestBody).toBe(false);
   });

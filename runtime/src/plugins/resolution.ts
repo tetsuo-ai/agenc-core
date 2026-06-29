@@ -34,8 +34,6 @@ export type PluginResolutionKind =
   | "tarball"
   | "mcpb";
 
-export type PluginFetchOutcome = "success" | "failure" | "cache_hit";
-
 export interface PluginProcessResult {
   readonly stdout: string;
   readonly stderr: string;
@@ -51,15 +49,6 @@ export type PluginProcessRunner = (
   },
 ) => Promise<PluginProcessResult>;
 
-export interface PluginFetchTelemetry {
-  readonly kind: PluginResolutionKind;
-  readonly source: string;
-  readonly host: string;
-  readonly outcome: PluginFetchOutcome;
-  readonly durationMs: number;
-  readonly errorKind?: string;
-}
-
 export interface PluginResolverOptions {
   readonly agencHome: string;
   readonly workspaceRoot?: string;
@@ -74,7 +63,6 @@ export interface PluginResolverOptions {
   readonly maxExtractedBytes?: number;
   readonly maxExtractedFiles?: number;
   readonly maxExtractDepth?: number;
-  readonly onTelemetry?: (event: PluginFetchTelemetry) => void;
 }
 
 export interface ResolvedPluginSource {
@@ -152,20 +140,6 @@ const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_ARCHIVE_REDIRECTS = 5;
 const PLUGIN_INSTALL_METADATA_RELATIVE_PATH = ".agenc-plugin/agenc-install.json";
 const PLUGIN_DEPENDENCY_IDENTITY_PATTERN = /^[a-z0-9][-a-z0-9._]*(?:@[a-z][a-z0-9._-]*)?$/iu;
-const KNOWN_PUBLIC_HOSTS = new Set([
-  "github.com",
-  "raw.githubusercontent.com",
-  "objects.githubusercontent.com",
-  "gist.githubusercontent.com",
-  "gitlab.com",
-  "bitbucket.org",
-  "codeberg.org",
-  "dev.azure.com",
-  "ssh.dev.azure.com",
-  "registry.npmjs.org",
-  "npm.pkg.github.com",
-  "agenc.tech",
-]);
 const KNOWN_GIT_HOSTS = new Set([
   "github.com",
   "gitlab.com",
@@ -178,7 +152,6 @@ export async function resolvePluginSource(
   source: string,
   options: PluginResolverOptions,
 ): Promise<ResolvedPluginSource> {
-  const startedAt = Date.now();
   const kind = await classifyPluginSource(source, options.workspaceRoot ?? process.cwd());
   const signatureOptions = {
     ...options,
@@ -198,13 +171,6 @@ export async function resolvePluginSource(
       const cleanupRoot = tempRoot;
       if (cleanupRoot === undefined) throw new Error("plugin resolver temp root was not initialized");
       tempRoot = undefined;
-      emitTelemetry(options, {
-        kind,
-        source: safeSource,
-        host: telemetryHost(source),
-        outcome: "success",
-        durationMs: Date.now() - startedAt,
-      });
       return {
         kind,
         requestedSource: safeSource,
@@ -221,13 +187,6 @@ export async function resolvePluginSource(
       if (options.refreshCache !== true && await pathIsDirectory(cacheRoot)) {
         if (await cachedPluginRootHasManifest(cacheRoot)) {
           const signature = await verifyResolvedPluginSignature(cacheRoot, signatureOptions);
-          emitTelemetry(options, {
-            kind,
-            source: safeSource,
-            host: telemetryHost(source),
-            outcome: "cache_hit",
-            durationMs: Date.now() - startedAt,
-          });
           return {
             kind,
             requestedSource: safeSource,
@@ -245,14 +204,6 @@ export async function resolvePluginSource(
     if (tempRoot !== undefined) {
       await rm(tempRoot, { recursive: true, force: true });
     }
-    emitTelemetry(options, {
-      kind,
-      source: safeSource,
-      host: telemetryHost(source),
-      outcome: "failure",
-      durationMs: Date.now() - startedAt,
-      errorKind: classifyPluginFetchError(error),
-    });
     throw error;
   }
 }
@@ -819,24 +770,6 @@ export function pluginSourceCacheRoot(agencHome: string, source: string): string
     "cache",
     sanitizePluginId(cacheKeyForSource(source)),
   );
-}
-
-function classifyPluginFetchError(error: unknown): string {
-  const msg = String((error as { message?: unknown })?.message ?? error);
-  if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|Could not resolve host|Connection refused/iu.test(msg)) {
-    return "dns_or_refused";
-  }
-  if (/ETIMEDOUT|timed out|timeout/iu.test(msg)) return "timeout";
-  if (/ECONNRESET|socket hang up|Connection reset by peer|remote end hung up/iu.test(msg)) {
-    return "conn_reset";
-  }
-  if (/403|401|authentication|permission denied/iu.test(msg)) return "auth";
-  if (/404|not found|repository not found/iu.test(msg)) return "not_found";
-  if (/certificate|SSL|TLS|unable to get local issuer/iu.test(msg)) return "tls";
-  if (/Invalid response format|Invalid marketplace schema|invalid JSON/iu.test(msg)) {
-    return "invalid_schema";
-  }
-  return "other";
 }
 
 async function materializePluginSource(
@@ -1696,28 +1629,4 @@ async function pathIsFile(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function telemetryHost(source: string): string {
-  if (isGitSource(source)) {
-    const scp = /^[^@/]+@([^:/]+):/u.exec(source);
-    if (scp) return knownOrOtherHost(scp[1]!);
-  }
-  try {
-    return knownOrOtherHost(new URL(source).hostname);
-  } catch {
-    return "unknown";
-  }
-}
-
-function knownOrOtherHost(host: string): string {
-  const normalized = host.toLowerCase();
-  return KNOWN_PUBLIC_HOSTS.has(normalized) ? normalized : "other";
-}
-
-function emitTelemetry(
-  options: PluginResolverOptions,
-  event: PluginFetchTelemetry,
-): void {
-  options.onTelemetry?.(event);
 }

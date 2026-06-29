@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import { SentryErrorBoundary } from '../../components/SentryErrorBoundary.js';
+import { TuiErrorBoundary } from '../../components/TuiErrorBoundary.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../tools/Tool';
@@ -105,9 +105,9 @@ export function UserToolSuccessMessage({
                     <Text dimColor>Allowed by auto mode classifier</Text>
                   </MessageResponse> : null}
           </Box>
-          <SentryErrorBoundary>
+          <TuiErrorBoundary>
             <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
-          </SentryErrorBoundary>
+          </TuiErrorBoundary>
         </Box> : null;
   }
 
@@ -131,9 +131,9 @@ export function UserToolSuccessMessage({
                     <Text dimColor>Allowed by auto mode classifier</Text>
                   </MessageResponse> : null}
           </Box>
-          <SentryErrorBoundary>
+          <TuiErrorBoundary>
             <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
-          </SentryErrorBoundary>
+          </TuiErrorBoundary>
         </Box> : null;
   }
   const toolResult = parsedOutput?.data ?? message.toolUseResult;
@@ -177,8 +177,8 @@ export function UserToolSuccessMessage({
                 <Text dimColor>Allowed by auto mode classifier</Text>
               </MessageResponse> : null}
       </Box>
-      <SentryErrorBoundary>
+      <TuiErrorBoundary>
         <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
-      </SentryErrorBoundary>
+      </TuiErrorBoundary>
     </Box>;
 }

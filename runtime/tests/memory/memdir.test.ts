@@ -30,9 +30,6 @@ vi.mock("../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({ autoMemoryEnabled: true }),
   getSettingsForSource: () => undefined,
 }));
-vi.mock("../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: <T>(_key: string, fallback: T) => fallback,
-}));
 
 let memory: typeof import("./memdir.js");
 let agencmd: typeof import("./agencmd.js");

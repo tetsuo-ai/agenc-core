@@ -151,7 +151,7 @@ export type ModeEntry = {
  * Worktree session state persisted to the transcript for resume.
  * Subset of WorktreeSession from utils/worktree.ts — excludes ephemeral
  * fields (creationDurationMs, usedSparsePaths) that are only used for
- * first-run analytics.
+ * first-run reporting.
  */
 export type PersistedWorktreeSession = {
   originalCwd: string
@@ -234,7 +234,7 @@ export type TranscriptMessage = SerializedMessage & {
   teamName?: string // Team name if this is a spawned agent session
   agentName?: string // Agent's custom name (from /rename or swarm)
   agentColor?: string // Agent's color (from /rename or swarm)
-  promptId?: string // Correlates with OTel prompt.id for user prompt messages
+  promptId?: string // Local prompt-input identifier for user prompt messages
 }
 
 export type SpeculationAcceptMessage = {

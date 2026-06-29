@@ -32,6 +32,10 @@ import {
 } from "./session-store.js";
 import { RolloutStore } from "./rollout-store.js";
 import { Session } from "./session.js";
+import {
+  AGENC_TRAJECTORY_EXPORT_PATH_ENV,
+  TRAJECTORY_EXPORT_SCHEMA_VERSION,
+} from "./trajectory-export.js";
 
 describe("session-store", () => {
   let home = "";
@@ -803,6 +807,69 @@ describe("session-store", () => {
       ),
     ).toBe(true);
     store.close();
+  });
+
+  test("opt-in trajectory export mirrors redacted rollout rows", () => {
+    const previousExportPath = process.env[AGENC_TRAJECTORY_EXPORT_PATH_ENV];
+    const exportPath = join(home, "trajectory.jsonl");
+    process.env[AGENC_TRAJECTORY_EXPORT_PATH_ENV] = exportPath;
+    const store = new SessionStore({
+      cwd: "/home/test-trajectory-export",
+      sessionId: "sess-trajectory-export",
+      agencVersion: "0.2.0",
+    });
+    const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+
+    try {
+      store.open({
+        sessionId: "sess-trajectory-export",
+        timestamp: new Date().toISOString(),
+        cwd: "/home/test-trajectory-export",
+        originator: "agenc-cli",
+        agencVersion: "0.2.0",
+      });
+
+      store.appendRollout(
+        {
+          type: "response_item",
+          payload: {
+            role: "user",
+            content: `Authorization: Bearer abcdefghijklmnop= ${rawSecret}`,
+          },
+        },
+        { durable: true },
+      );
+      store.close();
+
+      const raw = readFileSync(exportPath, "utf8");
+      expect(raw).not.toContain(rawSecret);
+      const records = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as {
+          schemaVersion: number;
+          sessionId: string;
+          rolloutPath: string;
+          item: { type: string; payload?: unknown };
+        });
+      expect(records.map((record) => record.schemaVersion)).toEqual([
+        TRAJECTORY_EXPORT_SCHEMA_VERSION,
+        TRAJECTORY_EXPORT_SCHEMA_VERSION,
+      ]);
+      expect(records.map((record) => record.item.type)).toEqual([
+        "session_meta",
+        "response_item",
+      ]);
+      expect(records.every((record) => record.sessionId === "sess-trajectory-export")).toBe(true);
+      expect(records.every((record) => record.rolloutPath === store.rolloutPath)).toBe(true);
+    } finally {
+      store.close();
+      if (previousExportPath === undefined) {
+        delete process.env[AGENC_TRAJECTORY_EXPORT_PATH_ENV];
+      } else {
+        process.env[AGENC_TRAJECTORY_EXPORT_PATH_ENV] = previousExportPath;
+      }
+    }
   });
 
   test("I-38 fsync retry: both attempts fail — emits fsync_failed + routes to degraded", async () => {

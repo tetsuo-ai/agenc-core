@@ -76,10 +76,7 @@ export interface AuthRefreshCallbacks {
 
 export interface RetryWithAuthRefreshOptions {
   readonly maxAttempts?: number;
-  /**
-   * Optional hook invoked before each retry. Used for telemetry /
-   * `analyticsEventsClient.emit(auth_refresh_attempt)`.
-   */
+  /** Optional hook invoked before each retry. */
   readonly onRefresh?: (info: {
     readonly attempt: number;
     readonly outcome: AuthRefreshOutcome;

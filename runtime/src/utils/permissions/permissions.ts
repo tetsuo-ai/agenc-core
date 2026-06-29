@@ -885,7 +885,7 @@ function handleDenialLimitExceeded(
   }
 
   // Preserve the original classifier value (e.g. 'dangerous-agent-action')
-  // so downstream analytics in interactiveHandler can log the correct
+  // so downstream interactiveHandler code can log the correct
   // user override event.
   const originalClassifier =
     result.decisionReason?.type === 'classifier'

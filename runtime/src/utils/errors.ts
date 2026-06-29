@@ -71,32 +71,32 @@ export class TeleportOperationError extends Error {
 }
 
 /**
- * Error with a message that is safe to log to telemetry.
+ * Error with a message that is safe to write to logs.
  * Use the long name to confirm you've verified the message contains no
  * sensitive data (file paths, URLs, code snippets).
  *
- * Single-arg: same message for user and telemetry
- * Two-arg: different messages (e.g., full message has file path, telemetry doesn't)
+ * Single-arg: same message for user and logs.
+ * Two-arg: different messages (e.g., full message has file path, safe log message doesn't).
  *
  * @example
  * // Same message for both
- * throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+ * throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
  *   'MCP server "slack" connection timed out'
  * )
  *
  * // Different messages
- * throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+ * throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
  *   `MCP tool timed out after ${ms}ms`,  // Full message for logs/user
- *   'MCP tool timed out'                  // Telemetry message
+ *   'MCP tool timed out'                  // Safe log message
  * )
  */
-export class TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends Error {
-  readonly telemetryMessage: string
+export class LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends Error {
+  readonly safeLogMessage: string
 
-  constructor(message: string, telemetryMessage?: string) {
+  constructor(message: string, safeLogMessage?: string) {
     super(message)
-    this.name = 'TelemetrySafeError'
-    this.telemetryMessage = telemetryMessage ?? message
+    this.name = 'LogSafeError'
+    this.safeLogMessage = safeLogMessage ?? message
   }
 }
 

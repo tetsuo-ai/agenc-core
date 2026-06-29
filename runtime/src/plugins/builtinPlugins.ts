@@ -145,7 +145,7 @@ function skillDefinitionToCommand(definition: BundledSkillDefinition): Command {
     contentLength: 0,
     // 'bundled' not 'builtin' — 'builtin' in Command.source means hardcoded
     // slash commands (/help, /clear). Using 'bundled' keeps these skills in
-    // the Skill tool's listing, analytics name logging, and prompt-truncation
+    // the Skill tool's listing, name logging, and prompt-truncation
     // exemption. The user-toggleable aspect is tracked on LoadedPlugin.isBuiltin.
     source: 'bundled',
     loadedFrom: 'bundled',

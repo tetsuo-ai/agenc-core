@@ -32,9 +32,7 @@ const fixture = vi.hoisted(() => ({
   } as AppState,
   briefEnabled: false,
   features: new Set<string>(),
-  growthbookCalls: [] as Array<{ fallback: boolean; key: string }>,
   keybindings: new Map<string, CapturedKeybinding>(),
-  terminalAllowed: false,
   terminalToggle: vi.fn(),
 }))
 
@@ -60,13 +58,6 @@ vi.mock('src/tui/state/AppState.js', () => ({
   ) => {
     fixture.appState =
       typeof update === 'function' ? update(fixture.appState) : update
-  },
-}))
-
-vi.mock('src/services/analytics/growthbook.js', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: (key: string, fallback: boolean) => {
-    fixture.growthbookCalls.push({ fallback, key })
-    return key === 'agenc_terminal_panel' ? fixture.terminalAllowed : fallback
   },
 }))
 
@@ -167,9 +158,7 @@ describe('GlobalKeybindingHandlers coverage swarm 172', () => {
     }
     fixture.briefEnabled = false
     fixture.features = new Set()
-    fixture.growthbookCalls = []
     fixture.keybindings = new Map()
-    fixture.terminalAllowed = false
     vi.clearAllMocks()
   })
 
@@ -196,11 +185,10 @@ describe('GlobalKeybindingHandlers coverage swarm 172', () => {
     })
   })
 
-  test('does not query terminal-panel gates when the feature is disabled and redraw tolerates a missing stdout instance', async () => {
+  test('does not toggle the terminal panel when the feature is disabled and redraw tolerates a missing stdout instance', async () => {
     await renderHandlers()
 
     keybinding('app:toggleTerminal').handler()
-    expect(fixture.growthbookCalls).toEqual([])
     expect(fixture.terminalToggle).not.toHaveBeenCalled()
 
     expect(() => keybinding('app:redraw').handler()).not.toThrow()

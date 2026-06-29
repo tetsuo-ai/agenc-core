@@ -158,7 +158,7 @@ export async function resumeAgentBackground({
     }
   }
 
-  // Resolve model for analytics metadata (runAgent resolves its own internally)
+  // Resolve model for request metadata (runAgent resolves its own internally).
   const resolvedAgentModel = getAgentModel(
     selectedAgent.model,
     toolUseContext.options.mainLoopModel,

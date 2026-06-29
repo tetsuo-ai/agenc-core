@@ -22,7 +22,6 @@ describe("memory prompt feature branches", () => {
   it("keeps D-13 layers and save destinations when TEAMMEM is enabled", async () => {
     const { memory, paths } = await loadMemoryHarness({
       features: ["TEAMMEM"],
-      searchEnabled: true,
     });
 
     const prompt = await memory.loadMemoryPrompt();
@@ -78,7 +77,6 @@ describe("memory prompt feature branches", () => {
     const { memory, paths } = await loadMemoryHarness({
       features: ["KAIROS"],
       kairosActive: true,
-      searchEnabled: true,
     });
 
     const prompt = await memory.loadMemoryPrompt();
@@ -96,9 +94,7 @@ describe("memory prompt feature branches", () => {
   });
 
   it("includes global and project durable roots in manual search guidance", async () => {
-    const { memory, paths } = await loadMemoryHarness({
-      searchEnabled: true,
-    });
+    const { memory, paths } = await loadMemoryHarness();
 
     const prompt = memory
       .buildMemoryLines("auto memory", paths.getProjectMemoryPath())
@@ -114,7 +110,6 @@ async function loadMemoryHarness(options: {
   readonly features?: readonly string[];
   readonly kairosActive?: boolean;
   readonly loadAgencmd?: boolean;
-  readonly searchEnabled?: boolean;
 } = {}): Promise<{
   agencmd?: typeof import("./agencmd.js");
   memory: typeof import("./memdir.js");
@@ -144,21 +139,6 @@ async function loadMemoryHarness(options: {
     getInitialSettings: () => ({ autoMemoryEnabled: true }),
     getSettingsForSource: () => undefined,
   }));
-  vi.doMock("../services/analytics/index.js", () => ({
-    logEvent: () => undefined,
-  }));
-  vi.doMock("../services/analytics/growthbook.js", () => ({
-    getFeatureValue_CACHED_MAY_BE_STALE: <T>(key: string, fallback: T) => {
-      if (key === "tengu_coral_fern") {
-        return (options.searchEnabled ?? false) as T;
-      }
-      if (key === "tengu_herring_clock") {
-        return true as T;
-      }
-      return fallback;
-    },
-  }));
-
   tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-feature-prompt-"));
   oldConfigDir = process.env.AGENC_CONFIG_DIR;
   oldDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;

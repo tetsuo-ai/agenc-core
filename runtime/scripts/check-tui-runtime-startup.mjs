@@ -156,10 +156,10 @@ async function ptyStartupSmoke(label, args, viewport) {
     cwd: RUNTIME_DIR,
     env: {
       ...process.env,
-      // Keep the smoke deterministic: disable telemetry, force one-shot
-      // exit-friendly env, and leave the PTY queries answerable so the
+      // Keep the smoke deterministic: force one-shot exit-friendly env,
+      // and leave the PTY queries answerable so the
       // post-reply async path actually fires.
-      AGENC_DISABLE_TELEMETRY: "1",
+      AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     },
   });
 
