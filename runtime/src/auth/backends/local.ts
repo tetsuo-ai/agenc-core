@@ -119,7 +119,6 @@ export class LocalAuthBackend implements AuthBackend {
 
   async logout(_params: AuthLogoutParams = {}): Promise<AuthLogoutResult> {
     await rm(this.authFilePath, { force: true });
-    await rm(this.byokFilePath, { force: true });
     return { authenticated: false };
   }
 

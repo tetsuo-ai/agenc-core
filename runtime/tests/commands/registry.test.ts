@@ -10,6 +10,9 @@ import type { SlashCommand, SlashCommandResult } from "./types.js";
 const MINIMAL_REGISTRY_NAMES = [
   "help",
   "status",
+  "login",
+  "logout",
+  "whoami",
   "cost",
   "model",
   "provider",
@@ -43,6 +46,9 @@ const MINIMAL_REGISTRY_NAMES = [
 const DAEMON_TUI_REGISTRY_NAMES = [
   "help",
   "status",
+  "login",
+  "logout",
+  "whoami",
   "cost",
   "model",
   "provider",
@@ -214,6 +220,9 @@ describe("CommandRegistry", () => {
     const registry = buildDefaultRegistry();
 
     expect(registry.has("provider")).toBe(true);
+    expect(registry.has("login")).toBe(true);
+    expect(registry.has("logout")).toBe(true);
+    expect(registry.find("account")?.name).toBe("whoami");
     expect(registry.find("provider")?.name).toBe("provider");
     expect(registry.has("quit")).toBe(true);
     expect(registry.has("reset")).toBe(true);

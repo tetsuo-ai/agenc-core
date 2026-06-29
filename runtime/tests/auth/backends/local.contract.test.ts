@@ -226,6 +226,22 @@ describe("LocalAuthBackend", () => {
     await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
   });
 
+  it("preserves saved BYOK keys when logging out", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const backend = new LocalAuthBackend({
+      agencHome,
+      randomUUID: () => TEST_TOKEN,
+      now: () => TEST_TIME,
+    });
+
+    await backend.saveByokKey({ provider: "grok", apiKey: "xai-test-key" });
+    await backend.login();
+    await backend.logout();
+
+    await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
+  });
+
   it("rejects blank or whitespace BYOK key values", async () => {
     const agencHome = await makeTempHome();
     homes.push(agencHome);

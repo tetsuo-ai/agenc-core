@@ -18,6 +18,9 @@ import {
 const MINIMAL_TUI_NAMES = [
   "help",
   "status",
+  "login",
+  "logout",
+  "whoami",
   "cost",
   "model",
   "provider",
@@ -51,6 +54,9 @@ const MINIMAL_TUI_NAMES = [
 const DAEMON_TUI_NAMES = [
   "help",
   "status",
+  "login",
+  "logout",
+  "whoami",
   "cost",
   "model",
   "provider",
@@ -149,6 +155,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     const projected = new Map(listTuiCommandList().map((cmd) => [cmd.name, cmd]));
 
     expect(projected.get("provider")?.aliases).toBeUndefined();
+    expect(projected.get("whoami")?.aliases).toEqual(["account"]);
     expect(projected.get("permissions")?.aliases).toEqual([
       "approvals",
       "allowed-tools",
@@ -176,6 +183,10 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
 
     for (const name of MINIMAL_TUI_NAMES) expect(names.has(name)).toBe(true);
     expect(names.has("provider")).toBe(true);
+    expect(names.has("login")).toBe(true);
+    expect(names.has("logout")).toBe(true);
+    expect(names.has("whoami")).toBe(true);
+    expect(names.has("account")).toBe(true);
     expect(names.has("quit")).toBe(true);
     expect(names.has("reload-plugins")).toBe(false);
     expect(names.has("history")).toBe(false);

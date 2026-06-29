@@ -38,6 +38,7 @@ import {
   outputStyleCommand,
   outputStyleNewCommand,
 } from "./output-style.js";
+import { authCommands } from "./auth.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`.
@@ -145,6 +146,7 @@ export function buildDefaultRegistry(
   return CommandRegistry.fromCommands([
     helpCommand,
     statusCommand,
+    ...authCommands,
     costCommand,
     modelCommand,
     providerCommand,
