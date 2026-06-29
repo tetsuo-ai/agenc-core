@@ -218,6 +218,52 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     releaseSearch?.();
   });
 
+  it("rate-limits requests after the burst is exhausted while allowing request.cancel", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const connection = dispatcher.createConnection({
+      overloadLimits: {
+        maxInFlightRequests: 10,
+        requestRatePerSecond: 1,
+        requestBurst: 2,
+      },
+    });
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch(request("ping-1", "health.ping")),
+    ).resolves.toMatchObject({
+      result: { ok: true },
+    });
+
+    await expect(
+      connection.dispatch(request("ping-2", "health.ping")),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32000,
+        data: {
+          code: "RATE_LIMITED",
+          requestRatePerSecond: 1,
+          requestBurst: 2,
+        },
+      },
+    });
+
+    await expect(
+      connection.dispatch(
+        request("cancel", "request.cancel", {
+          requestId: "missing",
+          reason: "test cancel",
+        }),
+      ),
+    ).resolves.not.toMatchObject({
+      error: {
+        data: { code: "RATE_LIMITED" },
+      },
+    });
+  });
+
   it("untrackClientId removes one co-located client without dropping the others", () => {
     // A single connection can track MULTIPLE clients (trackedClientIds is a set
     // keyed by the clientId a peer supplies). When one co-located client is

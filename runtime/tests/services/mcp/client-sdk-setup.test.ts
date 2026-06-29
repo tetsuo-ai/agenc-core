@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, test, vi } from 'vitest'
+import type { McpSamplingHandlers } from './hostCapabilities.js'
 
 type FakeTransport = {
   serverName: string
@@ -22,7 +23,7 @@ type FakeSdkTransport =
 
 type FakeRequestHandler = {
   schema: unknown
-  handler: (request?: unknown) => unknown
+  handler: (request?: unknown, extra?: unknown) => unknown
 }
 
 const fakeClients: FakeClient[] = []
@@ -148,7 +149,7 @@ class FakeClient {
 
   setRequestHandler(
     schema: unknown,
-    handler: (request?: unknown) => unknown,
+    handler: (request?: unknown, extra?: unknown) => unknown,
   ): void {
     this.handlers.push({ schema, handler })
   }
@@ -380,6 +381,81 @@ test('setupSdkMcpClients connects SDK clients, fetches tools, and reports failed
     await connected.cleanup()
   }
   assert.equal(fakeClients[0]?.closed, true)
+})
+
+test('setupSdkMcpClients routes sampling requests through supplied handlers', async () => {
+  vi.resetModules()
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
+    Client: FakeClient,
+  }))
+
+  const { setupSdkMcpClients } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
+    { VERSION: 'test' }
+
+  let captured: unknown
+  const samplingHandlers: McpSamplingHandlers = {
+    async createMessage(params) {
+      captured = params
+      return {
+        role: 'assistant',
+        model: 'sdk-sampler',
+        stopReason: 'endTurn',
+        content: { type: 'text', text: 'sampled via sdk stack' },
+      }
+    },
+  }
+
+  const result = await setupSdkMcpClients(
+    {
+      tooling: { type: 'sdk', name: 'tooling' },
+    },
+    async (_serverName, message) => message,
+    { samplingHandlers },
+  )
+
+  assert.deepEqual(
+    result.clients.map(client => `${client.name}:${client.type}`),
+    ['tooling:connected'],
+  )
+
+  const abort = new AbortController()
+  const request = {
+    method: 'sampling/createMessage',
+    params: {
+      messages: [
+        {
+          role: 'user',
+          content: { type: 'text', text: 'sdk sample' },
+        },
+      ],
+      maxTokens: 8,
+    },
+  }
+  const response = await fakeClients[0]!.handlers[1]!.handler(request, {
+    requestId: 'sdk-sampling-request',
+    signal: abort.signal,
+    _meta: { origin: 'sdk-control' },
+  })
+
+  assert.deepEqual(response, {
+    role: 'assistant',
+    model: 'sdk-sampler',
+    stopReason: 'endTurn',
+    content: { type: 'text', text: 'sampled via sdk stack' },
+  })
+  assert.deepEqual(captured, {
+    serverName: 'tooling',
+    requestId: 'sdk-sampling-request',
+    request,
+    contextMeta: { origin: 'sdk-control' },
+    signal: abort.signal,
+  })
+
+  const connected = result.clients[0]
+  if (connected?.type === 'connected') {
+    await connected.cleanup()
+  }
 })
 
 test('prefetchAllMcpResources includes MCP skill commands when feature enabled', async () => {
@@ -769,6 +845,86 @@ test('connectToServer creates stdio clients with lifecycle handlers and cleanup'
     await reconnected.cleanup()
   }
   assert.equal(fakeClients[1]?.closed, true)
+})
+
+test('connectToServer routes sampling requests through supplied handlers', async () => {
+  vi.resetModules()
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
+    Client: FakeClient,
+  }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+    StdioClientTransport: FakeStdioTransport,
+  }))
+
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
+    { VERSION: 'test' }
+
+  let captured: unknown
+  const samplingHandlers: McpSamplingHandlers = {
+    async createMessage(params) {
+      captured = params
+      return {
+        role: 'assistant',
+        model: 'legacy-sampler',
+        stopReason: 'endTurn',
+        content: { type: 'text', text: 'sampled via legacy stack' },
+      }
+    },
+  }
+  const config = {
+    type: 'stdio',
+    command: 'demo-server',
+    args: ['--flag'],
+    env: { DEMO: '1' },
+    scope: 'local',
+  } as const
+
+  const result = await connectToServer('sampling-stdio', config, undefined, {
+    samplingHandlers,
+    samplingCacheKey: 'test-session',
+  })
+
+  assert.equal(result.type, 'connected')
+  if (result.type !== 'connected') {
+    assert.fail(result.error)
+  }
+  assert.equal(fakeClients[0]?.handlers.length, 3)
+
+  const abort = new AbortController()
+  const request = {
+    method: 'sampling/createMessage',
+    params: {
+      messages: [
+        {
+          role: 'user',
+          content: { type: 'text', text: 'sample this' },
+        },
+      ],
+      maxTokens: 8,
+    },
+  }
+  const response = await fakeClients[0]!.handlers[1]!.handler(request, {
+    requestId: 'sampling-request',
+    signal: abort.signal,
+    _meta: { origin: 'legacy' },
+  })
+
+  assert.deepEqual(response, {
+    role: 'assistant',
+    model: 'legacy-sampler',
+    stopReason: 'endTurn',
+    content: { type: 'text', text: 'sampled via legacy stack' },
+  })
+  assert.deepEqual(captured, {
+    serverName: 'sampling-stdio',
+    requestId: 'sampling-request',
+    request,
+    contextMeta: { origin: 'legacy' },
+    signal: abort.signal,
+  })
+
+  await result.cleanup()
 })
 
 test('connectToServer quotes stdio argv when a shell prefix is configured', async () => {

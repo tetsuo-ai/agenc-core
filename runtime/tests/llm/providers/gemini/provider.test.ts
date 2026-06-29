@@ -89,6 +89,70 @@ describe("GeminiProvider", () => {
     expect("store" in requestBody).toBe(false);
   });
 
+  test("uses Gemini credential resolver bearer auth with user project", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "bearer" }] },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+
+    const provider = new GeminiProvider({
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      resolveCredential: async () => ({
+        kind: "access-token",
+        credential: "ya29-token",
+        projectId: "project-1",
+      }),
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("bearer");
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const headers = init?.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer ya29-token");
+    expect(headers.get("x-goog-api-key")).toBeNull();
+    expect(headers.get("x-goog-user-project")).toBe("project-1");
+  });
+
+  test("uses Vertex Gemini publisher paths with bearer auth", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "vertex" }] },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      model: "gemini-2.5-pro",
+      baseURL:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
+      accessToken: "vertex-token",
+      project: "project-1",
+      fetchImpl,
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("vertex");
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
+    );
+    const headers = init?.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer vertex-token");
+    expect(headers.get("x-goog-user-project")).toBe("project-1");
+  });
+
   test("sends tools as Gemini function declarations and parses function calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -263,6 +327,33 @@ describe("GeminiProvider", () => {
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(requestBody.cachedContent).toBe("cachedContents/project-context");
+  });
+
+  test("uses request prompt-cache hints before configured cachedContents", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "request cache" }] },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      cachedContent: "cachedContents/project-context",
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }], {
+      promptCacheKey: "cachedContents/request-context",
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(requestBody.cachedContent).toBe("cachedContents/request-context");
   });
 
   test("preserves Gemini thought signatures through history and response thinking", async () => {

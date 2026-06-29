@@ -8,7 +8,7 @@
  *     current turn/conversation key, matching the donor loop guard.
  *
  * Cross-cuts deliberately NOT carried:
- *   - Analytics/logging events; hook failures are contained locally so
+ *   - Donor product events; hook failures are contained locally so
  *     a broken lint command cannot fail the original tool call.
  */
 

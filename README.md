@@ -51,8 +51,9 @@ For the subsystem map and how the pieces fit together, see
   (bubblewrap/Landlock on Linux, Seatbelt on macOS) for shell execution.
 - **In-terminal workbench** — project explorer, code preview, and an editable
   `BUFFER` surface that prefers an embedded `nvim --embed`.
-- **Provider-neutral** — defaults to xAI (`grok-4.3`); also speaks the Anthropic
-  SDK, the OpenAI-compatible HTTP protocol, and local Ollama.
+- **Provider-neutral** — defaults to xAI (`grok-4.3`); also speaks native
+  Gemini, Amazon Bedrock, the Anthropic SDK, OpenAI-compatible HTTP, and local
+  Ollama.
 - **Durable sessions** — append-only rollout logs + SQLite state written
   atomically, with `--continue` / `--resume`.
 
@@ -78,8 +79,10 @@ licensed; see [`LICENSE`](LICENSE).
   pure-JS fallback; `agenc doctor` reports the status with a fix hint.
 - **A provider** before real model calls. The default is **xAI**
   (`XAI_API_KEY`, also accepts `GROK_API_KEY`); the default model is `grok-4.3`
-  (`AGENC_MODEL` overrides). Inspect setup with `agenc providers`,
-  `agenc login`, and `agenc config`.
+  (`AGENC_MODEL` overrides). Gemini accepts `GEMINI_API_KEY`,
+  `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, or Google ADC credentials; Vertex
+  Gemini can be selected with project/location settings. Inspect setup with
+  `agenc providers`, `agenc login`, and `agenc config`.
 
 ## Quick start
 
@@ -245,6 +248,9 @@ that home. Key knobs:
 | --- | --- |
 | `AGENC_HOME` | Root for all on-disk state (default `~/.agenc`). |
 | `XAI_API_KEY` / `GROK_API_KEY` | xAI credentials (default provider). |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini API-key credentials. |
+| `GEMINI_ACCESS_TOKEN` | Gemini bearer token credential; Google ADC is also supported. |
+| `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` | Optional Vertex Gemini project/location inference. |
 | `AGENC_MODEL` | Override the default model (`grok-4.3`). |
 | `AGENC_LOCAL_VLLM_BASE_URL` | Local vLLM/OpenAI-compatible smoke endpoint (default `http://127.0.0.1:8000/v1`). |
 | `AGENC_LOCAL_VLLM_MODEL` | Optional model override for `npm run check:local-vllm`. |

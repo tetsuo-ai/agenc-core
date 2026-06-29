@@ -25,11 +25,18 @@ import type {
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
 import { coerceUsage } from "../../wire/shared.js";
-import { OpenAIAuthSession } from "../openai/auth.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
+import {
+  resolveGeminiCredential,
+  type GeminiResolvedCredential,
+} from "../../../utils/geminiAuth.js";
 
 export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly cachedContent?: string;
+  readonly accessToken?: string;
+  readonly resolveCredential?: (
+    env?: NodeJS.ProcessEnv,
+  ) => Promise<GeminiResolvedCredential>;
 }
 
 const DEFAULT_GEMINI_BASE_URL =
@@ -64,14 +71,115 @@ function normalizeGeminiModel(model: string): string {
   return model.trim().replace(/^models\//iu, "");
 }
 
-function modelPath(model: string, operation: "generateContent" | "streamGenerateContent"): string {
-  return `/models/${encodeURIComponent(normalizeGeminiModel(model))}:${operation}`;
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isVertexGeminiBaseURL(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
+  try {
+    return new URL(baseURL).hostname.endsWith("aiplatform.googleapis.com");
+  } catch {
+    return false;
+  }
+}
+
+function hasVertexGooglePublisherBasePath(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
+  try {
+    return /\/publishers\/google\/?$/iu.test(new URL(baseURL).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function geminiModelName(model: string): string {
+  return normalizeGeminiModel(model).replace(
+    /^publishers\/google\/models\//iu,
+    "",
+  );
+}
+
+function modelPath(
+  baseURL: string | undefined,
+  model: string,
+  operation: "generateContent" | "streamGenerateContent",
+): string {
+  const encodedModel = encodeURIComponent(geminiModelName(model));
+  if (isVertexGeminiBaseURL(baseURL) && !hasVertexGooglePublisherBasePath(baseURL)) {
+    return `/publishers/google/models/${encodedModel}:${operation}`;
+  }
+  return `/models/${encodedModel}:${operation}`;
+}
+
+function modelsListPath(baseURL: string | undefined): string {
+  return isVertexGeminiBaseURL(baseURL) && !hasVertexGooglePublisherBasePath(baseURL)
+    ? "/publishers/google/models"
+    : "/models";
+}
+
+function googleProjectHeaders(project: string | undefined): Record<string, string> {
+  const normalized = nonEmptyString(project);
+  return normalized ? { "x-goog-user-project": normalized } : {};
+}
+
+function authHeadersForCredential(
+  credential: GeminiResolvedCredential,
+  project: string | undefined,
+): Record<string, string> | undefined {
+  switch (credential.kind) {
+    case "api-key":
+      return {
+        "x-goog-api-key": credential.credential,
+        ...googleProjectHeaders(project),
+      };
+    case "access-token":
+    case "adc":
+      return {
+        authorization: `Bearer ${credential.credential}`,
+        ...googleProjectHeaders(project ?? credential.projectId),
+      };
+    case "none":
+      return undefined;
+  }
+}
+
+async function resolveGeminiAuthHeaders(
+  config: GeminiProviderConfig,
+): Promise<Record<string, string>> {
+  const apiKey = nonEmptyString(config.apiKey);
+  if (apiKey) {
+    return {
+      "x-goog-api-key": apiKey,
+      ...googleProjectHeaders(config.project),
+    };
+  }
+
+  const explicitAccessToken =
+    nonEmptyString(config.accessToken) ??
+    (config.authMode === "oauth"
+      ? nonEmptyString(config.oauth?.accessToken)
+      : undefined);
+  if (explicitAccessToken) {
+    return {
+      authorization: `Bearer ${explicitAccessToken}`,
+      ...googleProjectHeaders(config.project),
+    };
+  }
+
+  const resolved = await (config.resolveCredential ?? resolveGeminiCredential)(
+    process.env,
+  );
+  const headers = authHeadersForCredential(resolved, config.project);
+  if (headers) return headers;
+
+  throw new LLMProviderError(
+    "gemini",
+    "Gemini provider requires credentials: set GEMINI_API_KEY, GOOGLE_API_KEY, GEMINI_ACCESS_TOKEN, or Google ADC credentials",
+    401,
+  );
 }
 
 function finiteInteger(value: unknown): number | undefined {
@@ -721,24 +829,21 @@ export class GeminiProvider implements LLMProvider {
 
   private readonly config: GeminiProviderConfig;
   private readonly client: ProviderHttpClient;
-  private readonly auth: OpenAIAuthSession;
 
   constructor(config: GeminiProviderConfig) {
     this.config = {
       ...config,
       providerName: "gemini",
       apiKeyEnvLabel: "GEMINI_API_KEY",
-      authStrategy: config.authStrategy ?? "google_api_key",
       useResponsesApi: false,
       baseURL: normalizeGeminiBaseURL(config.baseURL),
     };
-    this.auth = new OpenAIAuthSession(this.config);
     this.client = new ProviderHttpClient({
       providerName: this.name,
       baseURL: this.config.baseURL ?? DEFAULT_GEMINI_BASE_URL,
       model: this.config.model,
       defaultHeaders: this.config.defaultHeaders,
-      resolveAuthHeaders: (context) => this.auth.resolveHeaders(context),
+      resolveAuthHeaders: () => resolveGeminiAuthHeaders(this.config),
       timeoutMs: this.config.timeoutMs,
       fetchImpl: this.config.fetchImpl,
       providerFallback: this.config.providerFallback,
@@ -764,18 +869,16 @@ export class GeminiProvider implements LLMProvider {
     const metrics = requestMetrics({ messages, tools, body, stream: false });
 
     try {
-      return await this.auth.withAuthorizedOperation(async () => {
-        const session = this.client.createTurnSession({ wireApi: "custom" });
-        const response = await session.requestJson<Record<string, unknown>>({
-          path: modelPath(model, "generateContent"),
-          method: "POST",
-          body,
-          timeoutMs: options?.timeoutMs,
-          signal: options?.signal,
-          providerFallback: this.config.providerFallback,
-        });
-        return withMetrics(parseGeminiResponse(model, response.data), metrics);
+      const session = this.client.createTurnSession({ wireApi: "custom" });
+      const response = await session.requestJson<Record<string, unknown>>({
+        path: modelPath(this.config.baseURL, model, "generateContent"),
+        method: "POST",
+        body,
+        timeoutMs: options?.timeoutMs,
+        signal: options?.signal,
+        providerFallback: this.config.providerFallback,
       });
+      return withMetrics(parseGeminiResponse(model, response.data), metrics);
     } catch (error) {
       mapProviderError(error);
     }
@@ -798,28 +901,26 @@ export class GeminiProvider implements LLMProvider {
     const metrics = requestMetrics({ messages, tools, body, stream: true });
 
     try {
-      return await this.auth.withAuthorizedOperation(async () => {
-        const session = this.client.createTurnSession({ wireApi: "custom" });
-        const response = await session.requestStream({
-          path: modelPath(model, "streamGenerateContent"),
-          method: "POST",
-          headers: { accept: "text/event-stream" },
-          query: { alt: "sse" },
-          body,
-          timeoutMs: options?.timeoutMs,
-          signal: options?.signal,
-          providerFallback: this.config.providerFallback,
-          retryBudget: { maxRetries: 0 },
-        });
-        const state = new GeminiStreamState(model);
-        for await (const event of readGeminiSseEvents(response)) {
-          state.consumeResponse(event.data, onChunk);
-        }
-        return {
-          ...state.finalize(onChunk),
-          requestMetrics: metrics,
-        };
+      const session = this.client.createTurnSession({ wireApi: "custom" });
+      const response = await session.requestStream({
+        path: modelPath(this.config.baseURL, model, "streamGenerateContent"),
+        method: "POST",
+        headers: { accept: "text/event-stream" },
+        query: { alt: "sse" },
+        body,
+        timeoutMs: options?.timeoutMs,
+        signal: options?.signal,
+        providerFallback: this.config.providerFallback,
+        retryBudget: { maxRetries: 0 },
       });
+      const state = new GeminiStreamState(model);
+      for await (const event of readGeminiSseEvents(response)) {
+        state.consumeResponse(event.data, onChunk);
+      }
+      return {
+        ...state.finalize(onChunk),
+        requestMetrics: metrics,
+      };
     } catch (error) {
       mapProviderError(error);
     }
@@ -827,12 +928,10 @@ export class GeminiProvider implements LLMProvider {
 
   async healthCheck(): Promise<boolean> {
     try {
-      await this.auth.withAuthorizedOperation(async () => {
-        const session = this.client.createTurnSession({ wireApi: "custom" });
-        await session.requestJson<Record<string, unknown>>({
-          path: "/models",
-          method: "GET",
-        });
+      const session = this.client.createTurnSession({ wireApi: "custom" });
+      await session.requestJson<Record<string, unknown>>({
+        path: modelsListPath(this.config.baseURL),
+        method: "GET",
       });
       return true;
     } catch {

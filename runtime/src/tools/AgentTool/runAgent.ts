@@ -21,6 +21,7 @@ import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import { createSessionMcpSamplingHandlers } from '../../session/mcp-startup.js'
 import { runTurnCompat } from '../../session/turn-compat.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
@@ -33,6 +34,7 @@ import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
+import type { McpSamplingHandlers } from '../../services/mcp/hostCapabilities.js'
 import type { Tool, Tools, ToolUseContext } from '../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { AgentId } from '../../types/ids.js'
@@ -112,6 +114,10 @@ function formatSkillLoadingMetadata(skillName: string): string {
 async function initializeAgentMcpServers(
   agentDefinition: AgentDefinition,
   parentClients: MCPServerConnection[],
+  sampling?: {
+    readonly handlers: McpSamplingHandlers
+    readonly cacheKey: string
+  },
 ): Promise<{
   clients: MCPServerConnection[]
   tools: Tools
@@ -186,8 +192,19 @@ async function initializeAgentMcpServers(
       isNewlyCreated = true
     }
 
-    // Connect to the server
-    const client = await connectToServer(name, config)
+    // Connect to the server. Inline frontmatter MCP servers are owned by this
+    // agent run, so they can safely use the active session sampler.
+    const client = await connectToServer(
+      name,
+      config,
+      undefined,
+      isNewlyCreated && sampling !== undefined
+        ? {
+            samplingHandlers: sampling.handlers,
+            samplingCacheKey: `${sampling.cacheKey}:${name}`,
+          }
+        : undefined,
+    )
     agentClients.push(client)
     if (isNewlyCreated) {
       newlyCreatedClients.push(client)
@@ -703,6 +720,10 @@ export async function* runAgent({
   } = await initializeAgentMcpServers(
     agentDefinition,
     toolUseContext.options.mcpClients,
+    {
+      handlers: createSessionMcpSamplingHandlers(parentSession),
+      cacheKey: `${parentSession.conversationId}:${agentId}`,
+    },
   )
 
   // Merge agent MCP tools with resolved agent tools, deduplicating by name.

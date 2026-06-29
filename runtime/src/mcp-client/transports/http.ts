@@ -16,6 +16,7 @@ import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
   buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
+  type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
 
 export interface MCPServerHttpConfig {
@@ -33,6 +34,7 @@ export async function createHttpMCPConnection(
   config: MCPServerHttpConfig,
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
+  samplingHandlers?: McpSamplingHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -61,7 +63,11 @@ export async function createHttpMCPConnection(
       ),
     },
   );
-  configureMcpHostRequestHandlers(client, config.name);
+  configureMcpHostRequestHandlers(
+    client,
+    config.name,
+    samplingHandlers === undefined ? undefined : { samplingHandlers },
+  );
   await configureMcpElicitationClient(
     client,
     config.name,

@@ -85,7 +85,12 @@ describe("ResilientMCPBridge", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(initialBridge.dispose).toHaveBeenCalledOnce();
-    expect(mockCreateMCPConnection).toHaveBeenCalledWith(config, logger, undefined);
+    expect(mockCreateMCPConnection).toHaveBeenCalledWith(
+      config,
+      logger,
+      undefined,
+      undefined,
+    );
     expect(mockCreateToolBridge).toHaveBeenCalledWith(
       "client2",
       "srv1",
@@ -95,6 +100,50 @@ describe("ResilientMCPBridge", () => {
         listToolsTimeoutMs: 123,
         permissions: permissionOptions,
       }),
+    );
+
+    await bridge.dispose();
+  });
+
+  it("passes sampling handlers to automatically reconnected clients", async () => {
+    vi.useFakeTimers();
+    const config: MCPServerConfig = {
+      name: "srv1",
+      command: "npx",
+      timeout: 123,
+    };
+    const initialBridge = makeBridge(
+      "srv1",
+      vi.fn().mockResolvedValue({
+        content: "transport closed",
+        isError: true,
+      }),
+    );
+    const reconnectedBridge = makeBridge("srv1");
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const samplingHandlers = {
+      createMessage: vi.fn(),
+    };
+
+    mockCreateMCPConnection.mockResolvedValueOnce("client2");
+    mockCreateToolBridge.mockResolvedValueOnce(reconnectedBridge);
+
+    const bridge = new ResilientMCPBridge(config, initialBridge, logger, {
+      samplingHandlers,
+    });
+
+    await bridge.tools[0]!.execute({});
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledWith(
+      config,
+      logger,
+      undefined,
+      samplingHandlers,
     );
 
     await bridge.dispose();

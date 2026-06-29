@@ -125,6 +125,7 @@ import { SdkControlClientTransport } from './SdkControlTransport.js'
 import {
   buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
+  type McpSamplingHandlers,
 } from './hostCapabilities.js'
 import type {
   ConnectedMCPServer,
@@ -755,8 +756,19 @@ function isIncludedMcpTool(tool: Tool): boolean {
 function getServerCacheKey(
   name: string,
   serverRef: ScopedMcpServerConfig,
+  _serverStats?: unknown,
+  options?: ConnectToServerOptions,
 ): string {
-  return `${name}-${jsonStringify(serverRef)}`
+  const baseKey = `${name}-${jsonStringify(serverRef)}`
+  if (options?.samplingHandlers === undefined) {
+    return baseKey
+  }
+  return `${baseKey}-sampling-${options.samplingCacheKey ?? 'anonymous'}`
+}
+
+interface ConnectToServerOptions {
+  readonly samplingHandlers?: McpSamplingHandlers
+  readonly samplingCacheKey?: string
 }
 
 /**
@@ -778,6 +790,7 @@ export const connectToServer = memoize(
       sseIdeCount: number
       wsIdeCount: number
     },
+    options?: ConnectToServerOptions,
   ): Promise<MCPServerConnection> => {
     const connectStartTime = Date.now()
     let inProcessServer: InProcessMcpServer | undefined
@@ -1159,7 +1172,12 @@ export const connectToServer = memoize(
         logMCPDebug(name, `Client created, setting up request handler`)
       }
 
-      configureMcpHostRequestHandlers(client, name, getOriginalCwd())
+      configureMcpHostRequestHandlers(client, name, {
+        rootPath: getOriginalCwd(),
+        ...(options?.samplingHandlers !== undefined
+          ? { samplingHandlers: options.samplingHandlers }
+          : {}),
+      })
 
       // Add a timeout to connection attempts to prevent tests from hanging indefinitely
       logMCPDebug(
@@ -3392,6 +3410,9 @@ export async function setupSdkMcpClients(
     serverName: string,
     message: JSONRPCMessage,
   ) => Promise<JSONRPCMessage>,
+  options: {
+    readonly samplingHandlers?: McpSamplingHandlers
+  } = {},
 ): Promise<{
   clients: MCPServerConnection[]
   tools: Tool[]
@@ -3418,7 +3439,12 @@ export async function setupSdkMcpClients(
           capabilities: buildMcpHostClientCapabilities('none'),
         },
       )
-      configureMcpHostRequestHandlers(client, name, getOriginalCwd())
+      configureMcpHostRequestHandlers(client, name, {
+        rootPath: getOriginalCwd(),
+        ...(options.samplingHandlers !== undefined
+          ? { samplingHandlers: options.samplingHandlers }
+          : {}),
+      })
 
       try {
         // Connect the client

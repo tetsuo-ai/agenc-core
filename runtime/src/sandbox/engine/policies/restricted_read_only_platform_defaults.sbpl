@@ -116,10 +116,8 @@
 ; macOS Standard library queries opendirectoryd at startup
 (allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))
 
-; Allow IPC to analytics, logging, trust, and other system agents.
+; Allow IPC to logging, trust, and other system agents.
 (allow mach-lookup
-  (global-name "com.apple.analyticsd")
-  (global-name "com.apple.analyticsd.messagetracer")
   (global-name "com.apple.appsleep")
   (global-name "com.apple.bsd.dirhelper")
   (global-name "com.apple.cfprefsd.agent")

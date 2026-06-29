@@ -448,7 +448,6 @@ const ANT_ONLY_SAFE_ENV_VARS = new Set([
   'HARNESS_QUIET', // quiet mode flag
   'TEST_CROSSCHECK_LISTS_MATCH_UPDATE', // test update flag
   'DBT_PER_DEVELOPER_ENVIRONMENTS', // DBT config
-  'STATSIG_FORD_DB_CHECKS', // statsig DB check flag
 
   // Build configuration
   'ANT_ENVIRONMENT', // provider environment name

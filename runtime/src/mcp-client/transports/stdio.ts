@@ -27,6 +27,7 @@ import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
   buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
+  type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
@@ -337,6 +338,7 @@ export async function createStdioMCPConnection(
   config: MCPServerStdioConfig,
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
+  samplingHandlers?: McpSamplingHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -350,7 +352,11 @@ export async function createStdioMCPConnection(
       ),
     },
   );
-  configureMcpHostRequestHandlers(client, config.name);
+  configureMcpHostRequestHandlers(
+    client,
+    config.name,
+    samplingHandlers === undefined ? undefined : { samplingHandlers },
+  );
   await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP stdio server "${config.name}"...`, {

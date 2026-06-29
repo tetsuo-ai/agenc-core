@@ -46,6 +46,7 @@ import {
   type BuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "./registry/provider-info.js";
+import { getGeminiProjectIdHint } from "../utils/geminiAuth.js";
 
 export type ProviderName = BuiltInProviderSlug;
 
@@ -683,6 +684,16 @@ function normalizeOllamaHost(baseURL: string | undefined): string | undefined {
   const normalized = normalizeBaseURL(baseURL);
   if (!normalized) return undefined;
   return normalized.replace(/\/v1\/?$/i, "");
+}
+
+function geminiVertexBaseURL(
+  project: string | undefined,
+  location: string | undefined,
+): string | undefined {
+  const normalizedProject = firstNonEmpty(project);
+  const normalizedLocation = firstNonEmpty(location);
+  if (!normalizedProject || !normalizedLocation) return undefined;
+  return `https://${encodeURIComponent(normalizedLocation)}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(normalizedProject)}/locations/${encodeURIComponent(normalizedLocation)}`;
 }
 
 function cloneExtraValue(value: unknown): unknown {
@@ -1440,7 +1451,10 @@ export function createProvider(
       });
     case "gemini": {
       const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
-      const apiKey = requireFactoryApiKey("gemini", opts);
+      const apiKey = resolveFactoryApiKey(
+        opts,
+        firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_API_KEY),
+      );
       const model = requireModel(
         "gemini",
         opts.model,
@@ -1448,31 +1462,49 @@ export function createProvider(
         "GEMINI_MODEL",
         defaultModelFor("gemini"),
       );
+      const project = firstNonEmpty(extra.project, getGeminiProjectIdHint());
+      const location = firstNonEmpty(
+        readString(opts.extra, "location"),
+        readString(opts.extra, "geminiLocation"),
+        extra.region,
+        process.env.GEMINI_VERTEX_LOCATION,
+        process.env.GOOGLE_CLOUD_LOCATION,
+        process.env.GOOGLE_CLOUD_REGION,
+        process.env.CLOUD_ML_REGION,
+      );
+      const explicitAccessToken = firstNonEmpty(
+        readString(opts.extra, "accessToken"),
+        readString(readRecord(opts.extra, "oauth"), "accessToken"),
+        process.env.GEMINI_ACCESS_TOKEN,
+      );
+      const configuredBaseURL =
+        normalizeBaseURL(opts.baseURL) ??
+        normalizeBaseURL(process.env.GEMINI_BASE_URL);
+      const inferredVertexBaseURL = apiKey === undefined
+        ? geminiVertexBaseURL(project, location)
+        : undefined;
       const cfg: GeminiProviderConfig = {
         ...buildCommonConfig(extra),
-        apiKey,
+        ...(apiKey !== undefined ? { apiKey } : {}),
         model,
         providerName: "gemini",
         apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
-        baseURL:
-          normalizeBaseURL(opts.baseURL) ??
-          normalizeBaseURL(process.env.GEMINI_BASE_URL) ??
-          defaultBaseURLFor("gemini"),
+        baseURL: configuredBaseURL ?? inferredVertexBaseURL ?? defaultBaseURLFor("gemini"),
         useResponsesApi: false,
-        authStrategy: "google_api_key",
         ...(firstNonEmpty(process.env.GEMINI_CACHED_CONTENT)
           ? { cachedContent: firstNonEmpty(process.env.GEMINI_CACHED_CONTENT) }
           : {}),
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
-        ...(extra.project ? { project: extra.project } : {}),
+        ...(project ? { project } : {}),
+        ...(explicitAccessToken ? { accessToken: explicitAccessToken } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
       return markFactoryProvider(new GeminiProvider(cfg), {
         provider: "gemini",
         options: {
-          apiKey,
+          ...(apiKey !== undefined ? { apiKey } : {}),
           baseURL: cfg.baseURL,
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),

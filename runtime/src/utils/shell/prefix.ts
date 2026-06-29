@@ -62,7 +62,7 @@ export type PrefixExtractorConfig = {
 
   /** The policy spec containing examples for Haiku */
   policySpec: string
-  /** Analytics event name for logging */
+  /** Local event name for logging */
   eventName: string
 
   /** Query source identifier for the API call */

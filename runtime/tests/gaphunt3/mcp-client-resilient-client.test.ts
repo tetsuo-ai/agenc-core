@@ -115,6 +115,7 @@ describe("ResilientMCPBridge gaphunt3 fixes", () => {
       config,
       logger,
       elicitationHandlers,
+      undefined,
     );
     expect(registered).toBe(elicitationHandlers);
 
@@ -155,6 +156,7 @@ describe("ResilientMCPBridge gaphunt3 fixes", () => {
     expect(mockCreateMCPConnection).toHaveBeenCalledWith(
       config,
       logger,
+      undefined,
       undefined,
     );
 

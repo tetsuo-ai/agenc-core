@@ -22,13 +22,20 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
+import type {
+  CreateMessageRequest,
+  CreateMessageResult,
+  SamplingMessageContentBlock,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
 import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
 import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
+import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
   attachContextDefaults,
@@ -153,6 +160,132 @@ export function createSessionMcpManager(
   configs: ReadonlyArray<MCPServerConfig>,
 ): MCPManager {
   return new LiveMCPManager([...configs]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asSamplingContentBlocks(
+  content: unknown,
+): SamplingMessageContentBlock[] {
+  if (Array.isArray(content)) {
+    return content.filter(isRecord) as SamplingMessageContentBlock[];
+  }
+  return isRecord(content) ? [content as SamplingMessageContentBlock] : [];
+}
+
+function textBlockFromUnknown(value: unknown): LLMContentPart | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return { type: "text", text: value };
+}
+
+function fallbackTextForSamplingBlock(
+  block: Record<string, unknown>,
+): string | undefined {
+  switch (block.type) {
+    case "text":
+      return typeof block.text === "string" ? block.text : undefined;
+    case "tool_use":
+      return JSON.stringify({
+        toolUse: {
+          name: block.name,
+          input: block.input,
+        },
+      });
+    case "tool_result":
+      return JSON.stringify({ toolResult: block });
+    case "audio":
+      return "[MCP sampling audio content omitted]";
+    default:
+      return undefined;
+  }
+}
+
+function samplingContentToLlmContent(
+  content: unknown,
+): string | LLMContentPart[] {
+  const blocks = asSamplingContentBlocks(content);
+  const parts: LLMContentPart[] = [];
+  for (const block of blocks) {
+    if (
+      block.type === "image" &&
+      typeof block.data === "string" &&
+      typeof block.mimeType === "string"
+    ) {
+      parts.push({
+        type: "image_url",
+        image_url: {
+          url: `data:${block.mimeType};base64,${block.data}`,
+        },
+      });
+      continue;
+    }
+    const textPart = textBlockFromUnknown(fallbackTextForSamplingBlock(block));
+    if (textPart !== undefined) {
+      parts.push(textPart);
+    }
+  }
+
+  if (parts.length === 0) return "";
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => part.text).join("\n");
+  }
+  return parts;
+}
+
+function samplingRequestToLlmMessages(
+  request: CreateMessageRequest,
+): LLMMessage[] {
+  return request.params.messages.map((message) => ({
+    role: message.role === "assistant" ? "assistant" : "user",
+    content: samplingContentToLlmContent(message.content),
+  }));
+}
+
+function mcpSamplingStopReason(
+  finishReason: Awaited<ReturnType<Session["provider"]["chat"]>>["finishReason"],
+): CreateMessageResult["stopReason"] {
+  switch (finishReason) {
+    case "length":
+      return "maxTokens";
+    case "tool_calls":
+      return "toolUse";
+    case "error":
+      return "error";
+    case "stop":
+    case "content_filter":
+    default:
+      return "endTurn";
+  }
+}
+
+export function createSessionMcpSamplingHandlers(
+  session: Session,
+): McpSamplingHandlers {
+  return {
+    async createMessage({ request, signal }) {
+      const response = await session.provider.chat(
+        samplingRequestToLlmMessages(request),
+        {
+          ...(request.params.systemPrompt !== undefined
+            ? { systemPrompt: request.params.systemPrompt }
+            : {}),
+          maxOutputTokens: request.params.maxTokens,
+          ...(signal !== undefined ? { signal } : {}),
+        },
+      );
+      return {
+        role: "assistant",
+        model: response.model,
+        stopReason: mcpSamplingStopReason(response.finishReason),
+        content: {
+          type: "text",
+          text: response.content,
+        },
+      };
+    },
+  };
 }
 
 function cloneRecord<T>(
@@ -503,10 +636,15 @@ export function attachMcpManagerToSession(
         granularElicitationPolicyForSession(session),
       ),
     );
+    const samplingManager = manager as MCPManager & {
+      setSamplingHandlers?: MCPManager["setSamplingHandlers"];
+    };
+    samplingManager.setSamplingHandlers?.(
+      createSessionMcpSamplingHandlers(session),
+    );
   } catch (err) {
-    // Surface the failure through the session's event log so ops
-    // can see that MCP telemetry is missing rather than silently
-    // dropping events.
+    // Surface the failure through the session's event log rather than
+    // silently running MCP with partial session wiring.
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
