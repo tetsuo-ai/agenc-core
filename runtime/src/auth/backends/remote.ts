@@ -43,7 +43,7 @@ const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
 const REMOTE_AUTH_STATE_VERSION = 1 as const;
 const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
-const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
+const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
 
 interface RemoteAuthDiskState {
   readonly version: typeof REMOTE_AUTH_STATE_VERSION;
@@ -414,18 +414,20 @@ function createHttpRemoteAuthLoginFlow(
           sessionId: request.sessionId,
         }),
       });
+      const polled = await readRemoteAuthPollResponse(pollResponse);
       if (pollResponse.status === 202) {
+        intervalMs = remoteAuthPollIntervalMs(polled, intervalMs);
         await sleep(intervalMs);
         continue;
       }
-      const polled = await readRemoteAuthPollResponse(pollResponse);
       if (!pollResponse.ok) {
         if (isRemoteAuthPendingLoginResponse(polled)) {
+          intervalMs = remoteAuthPollIntervalMs(polled, intervalMs);
           await sleep(intervalMs);
           continue;
         }
         if (isRemoteAuthSlowDownLoginResponse(polled)) {
-          intervalMs += 5_000;
+          intervalMs = remoteAuthPollIntervalMs(polled, intervalMs + 5_000);
           await sleep(intervalMs);
           continue;
         }
@@ -440,6 +442,7 @@ function createHttpRemoteAuthLoginFlow(
         );
       }
       if (isRemoteAuthPendingLoginResponse(polled)) {
+        intervalMs = remoteAuthPollIntervalMs(polled, intervalMs);
         await sleep(intervalMs);
         continue;
       }
@@ -696,6 +699,26 @@ function isRemoteAuthPendingLoginResponse(value: unknown): boolean {
 
 function isRemoteAuthSlowDownLoginResponse(value: unknown): boolean {
   return remoteAuthLoginResponseState(value) === "slow_down";
+}
+
+function remoteAuthPollIntervalMs(value: unknown, fallbackMs: number): number {
+  const intervalSeconds = remoteAuthLoginResponseIntervalSeconds(value);
+  if (intervalSeconds === undefined) return fallbackMs;
+  return Math.max(
+    REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS,
+    intervalSeconds * 1000,
+  );
+}
+
+function remoteAuthLoginResponseIntervalSeconds(
+  value: unknown,
+): number | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { readonly intervalSeconds?: unknown; readonly interval?: unknown };
+  const intervalSeconds = readFiniteNumber(
+    record.intervalSeconds ?? record.interval,
+  );
+  return intervalSeconds === undefined ? undefined : Math.max(0, intervalSeconds);
 }
 
 function isRemoteAuthExpiredLoginResponse(value: unknown): boolean {

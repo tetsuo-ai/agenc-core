@@ -6,7 +6,7 @@ import { RemoteAuthBackend } from "./remote.js";
 
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_POLL_URL";
 const REMOTE_AUTH_LOGIN_START_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_START_URL";
-const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
+const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
 const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL";
 const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL";
 const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
@@ -253,6 +253,105 @@ describe("RemoteAuthBackend", () => {
           }),
         },
       );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("honors interval hints on pending device-code poll responses", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const sleepMs = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 1,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "pending",
+            error: "authorization_pending",
+            intervalSeconds: 4,
+          }),
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "remote-token" }), {
+          status: 200,
+        }),
+      );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+      loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+      sleepMs,
+    });
+
+    try {
+      await expect(backend.login({ sessionId: "cli" })).resolves.toMatchObject({
+        authenticated: true,
+        provider: "remote",
+        token: "remote-token",
+      });
+      expect(sleepMs).toHaveBeenCalledWith(REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("honors interval hints on slow_down device-code poll responses", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const sleepMs = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 1,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "slow_down",
+            intervalSeconds: 7,
+          }),
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "remote-token" }), {
+          status: 200,
+        }),
+      );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+      loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+      sleepMs,
+    });
+
+    try {
+      await expect(backend.login({ sessionId: "cli" })).resolves.toMatchObject({
+        authenticated: true,
+        provider: "remote",
+        token: "remote-token",
+      });
+      expect(sleepMs).toHaveBeenCalledWith(7_000);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

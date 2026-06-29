@@ -50,6 +50,7 @@ type Props = {
   teammateFooterIndex?: number;
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
+  agencHome?: string;
   isPasting?: boolean;
   isInputWrapped?: boolean;
   messages: Message[];
@@ -83,6 +84,7 @@ function PromptInputFooter({
   teammateFooterIndex,
   ideSelection,
   mcpClients,
+  agencHome,
   isPasting = false,
   isInputWrapped = false,
   messages,
@@ -144,7 +146,7 @@ function PromptInputFooter({
           <PromptInputFooterLeftSide exitMessage={exitMessage} vimMode={showStatusLine ? undefined : vimMode} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
         </Box>
         <Box flexShrink={1} gap={1}>
-          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} messages={messages} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
+          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} messages={messages} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
         </Box>
       </Box>
     </>;

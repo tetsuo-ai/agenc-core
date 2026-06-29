@@ -63,7 +63,12 @@ async function executeAuthCommand(
     const backend = createSlashAuthBackend(ctx);
 
     if (action === "login") {
-      const result = await backend.login({ sessionId: TUI_AUTH_SESSION_ID });
+      let result: Awaited<ReturnType<AuthBackend["login"]>>;
+      try {
+        result = await backend.login({ sessionId: TUI_AUTH_SESSION_ID });
+      } finally {
+        clearLocalAuthNotice(ctx);
+      }
       return {
         kind: "text",
         text: `Logged in as ${formatAgenCAuthIdentity(result.identity)}`,
@@ -103,13 +108,13 @@ function createSlashAuthBackend(ctx: SlashCommandContext): AuthBackend {
     agencHome,
     env: process.env,
     remote: {
-      onDeviceCode: async ({ verificationUri }) => {
+      onDeviceCode: async ({ verificationUri, userCode }) => {
         if (verificationUri === undefined) return;
-        showBrowserLoginNotice(ctx, verificationUri);
+        showBrowserLoginNotice(ctx, verificationUri, userCode);
         try {
           await openUrlInBrowser(verificationUri);
         } catch {
-          showCopyUrlLoginNotice(ctx, verificationUri);
+          showCopyUrlLoginNotice(ctx, verificationUri, userCode);
         }
       },
     },
@@ -126,36 +131,50 @@ async function resolveSubscriptionTier(
   }
 }
 
-function showBrowserLoginNotice(ctx: SlashCommandContext, url: string): void {
+function showBrowserLoginNotice(
+  ctx: SlashCommandContext,
+  url: string,
+  userCode: string | undefined,
+): void {
   openLocalJsxCommand(
     ctx,
     () => (
       <Box flexDirection="column" paddingX={1} borderStyle="round">
         <Text>Sign in with Google to continue.</Text>
         <Text dimColor>Browser opened. Finish sign in there, then return here.</Text>
-        <Text dimColor wrap="truncate">
-          {url}
-        </Text>
+        {userCode ? <Text dimColor>Code: {userCode}</Text> : null}
+        <Text dimColor>URL: {url}</Text>
       </Box>
     ),
     { shouldHidePromptInput: false },
   );
 }
 
-function showCopyUrlLoginNotice(ctx: SlashCommandContext, url: string): void {
+function showCopyUrlLoginNotice(
+  ctx: SlashCommandContext,
+  url: string,
+  userCode: string | undefined,
+): void {
   openLocalJsxCommand(
     ctx,
     () => (
       <Box flexDirection="column" paddingX={1} borderStyle="round">
         <Text>Sign in with Google to continue.</Text>
         <Text dimColor>Open this URL in your browser:</Text>
-        <Text dimColor wrap="truncate">
-          {url}
-        </Text>
+        {userCode ? <Text dimColor>Code: {userCode}</Text> : null}
+        <Text dimColor>URL: {url}</Text>
       </Box>
     ),
     { shouldHidePromptInput: false },
   );
+}
+
+function clearLocalAuthNotice(ctx: SlashCommandContext): void {
+  ctx.appState?.setToolJSX?.({
+    jsx: null,
+    shouldHidePromptInput: false,
+    clearLocalJSX: true,
+  });
 }
 
 async function openUrlInBrowser(url: string): Promise<void> {

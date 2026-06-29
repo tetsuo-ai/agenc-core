@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import {
@@ -76,6 +76,22 @@ describe("auth slash commands", () => {
     await logoutCommand.execute(localAuthCtx(agencHome));
 
     await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
+  });
+
+  it("clears the local auth notice after login completes", async () => {
+    const agencHome = await makeHome();
+    const setToolJSX = vi.fn();
+
+    await loginCommand.execute({
+      ...localAuthCtx(agencHome),
+      appState: { setToolJSX },
+    });
+
+    expect(setToolJSX).toHaveBeenCalledWith({
+      jsx: null,
+      shouldHidePromptInput: false,
+      clearLocalJSX: true,
+    });
   });
 
   it("registers account as an alias for whoami", () => {
