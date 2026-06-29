@@ -469,7 +469,7 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
-  it("uses the configured HTTP key vending endpoint by default", async () => {
+  it("uses the configured HTTP key vending endpoint", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -499,6 +499,47 @@ describe("RemoteAuthBackend", () => {
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://api.agenc.tech/test/vend-key",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer remote-token",
+        },
+        body: JSON.stringify({
+          provider: "grok",
+          sessionId: "session-1",
+        }),
+      },
+    );
+  });
+
+  it("accepts the current backend LiteLLM credential response shape", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          litellmKey: " hosted-litellm-key ",
+          baseUrl: " https://llm.agenc.tech ",
+          expiresAt: "2026-05-01T12:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl,
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "hosted-litellm-key",
+      baseUrl: "https://llm.agenc.tech",
+      expiresAt: "2026-05-01T12:00:00.000Z",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://id.agenc.ag/v1/auth/llm-credential",
       {
         method: "POST",
         headers: {
@@ -797,6 +838,46 @@ describe("RemoteAuthBackend", () => {
         }),
       },
     );
+  });
+
+  it("treats missing remote auth token as free subscription tier", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ subscriptionTier: "pro" }), { status: 200 }),
+    );
+    const backend = new RemoteAuthBackend({ agencHome, fetchImpl });
+
+    try {
+      await expect(backend.getSubscriptionTier()).resolves.toBe("free");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("treats rejected remote auth token as free subscription tier", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "authentication_required",
+          },
+        }),
+        { status: 401 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "stale-token" },
+      fetchImpl,
+    });
+
+    try {
+      await expect(backend.getSubscriptionTier()).resolves.toBe("free");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("rejects invalid subscription tier responses", async () => {

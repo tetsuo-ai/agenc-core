@@ -13,6 +13,7 @@
 //   AGENC_MAX_OUTPUT_TOKENS                       → global output budget
 //   AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS        → 8k default + retry mode
 //   AGENC_MAX_BUDGET_USD                           → session cost budget
+//   AGENC_AUTH_BACKEND                             → auth.backend
 //   AGENC_AUTH_MANAGED_KEYS_ENABLED               → auth.managedKeys.enabled
 //
 // `applyEnvOverrides(config)` layers env values onto a base config and
@@ -36,6 +37,7 @@ export interface EnvSnapshot {
   readonly AGENC_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_MAX_BUDGET_USD?: string;
+  readonly AGENC_AUTH_BACKEND?: string;
   readonly AGENC_AUTH_MANAGED_KEYS_ENABLED?: string;
   readonly XAI_API_KEY?: string;
   readonly GROK_API_KEY?: string;
@@ -318,13 +320,28 @@ export function applyEnvOverrides(
   if (maxBudgetUsd !== undefined) {
     override.max_budget_usd = maxBudgetUsd;
   }
+  if (e.AGENC_AUTH_BACKEND !== undefined) {
+    const backend = readNonEmpty(e.AGENC_AUTH_BACKEND)?.toLowerCase();
+    if (backend === "local" || backend === "remote") {
+      override.auth = {
+        ...(config.auth ?? {}),
+        backend,
+      };
+    } else if (e.AGENC_AUTH_BACKEND.trim().length > 0) {
+      onWarn?.(
+        `[agenc:config] invalid AGENC_AUTH_BACKEND="${e.AGENC_AUTH_BACKEND}"; expected "local" or "remote"`,
+      );
+    }
+  }
   if (e.AGENC_AUTH_MANAGED_KEYS_ENABLED !== undefined) {
     const enabled = readBoolean(e.AGENC_AUTH_MANAGED_KEYS_ENABLED);
     if (enabled !== undefined) {
       override.auth = {
         ...(config.auth ?? {}),
+        ...(override.auth ?? {}),
         managedKeys: {
           ...(config.auth?.managedKeys ?? {}),
+          ...(override.auth?.managedKeys ?? {}),
           enabled,
         },
       };

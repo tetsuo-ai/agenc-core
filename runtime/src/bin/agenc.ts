@@ -3918,7 +3918,15 @@ export async function main(): Promise<number> {
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
-    return runAgenCAuthCli(authCommand);
+    const code = await runAgenCAuthCli(authCommand);
+    if (
+      code !== 0 ||
+      authCommand.kind !== "login" ||
+      !shouldLaunchTuiAfterLogin()
+    ) {
+      return code;
+    }
+    return runDefaultAgenCCliRoute(process.argv.slice(0, 2));
   }
   const mcpConfig = shouldLoadMcpCliConfig(argv)
     ? await loadMcpCliConfig()
@@ -3961,8 +3969,18 @@ export async function main(): Promise<number> {
     process.stdout.write(`${startupShortCircuit.text}\n`);
     return 0;
   }
+  return runDefaultAgenCCliRoute(process.argv);
+}
+
+function shouldLaunchTuiAfterLogin(): boolean {
+  return process.env.AGENC_LOGIN_NO_TUI !== "1" &&
+    Boolean(process.stdin.isTTY) &&
+    Boolean(process.stdout.isTTY);
+}
+
+async function runDefaultAgenCCliRoute(argv: readonly string[]): Promise<number> {
   const routePlan = classifyCLI({
-    argv: process.argv,
+    argv,
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
   });
@@ -3980,7 +3998,7 @@ export async function main(): Promise<number> {
     }
     if (!(await requireProjectTrustForTui({
       env: process.env,
-      argv: process.argv,
+      argv,
       cwd: routeCwd.cwd,
     }))) {
       return 1;
@@ -3997,7 +4015,7 @@ export async function main(): Promise<number> {
     }
   }
   return routeCLI({
-    argv: process.argv,
+    argv,
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
     bootTUI: (args: BootTUIArgs) => bootTUIEntry(args),

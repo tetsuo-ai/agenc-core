@@ -377,6 +377,7 @@ describe("createProvider", () => {
       provider,
       sessionId,
       apiKey: "vended-openrouter-key",
+      baseUrl: "https://llm.agenc.tech/v1",
     }));
     const vendingAuthBackend: AuthBackend = {
       ...authBackend,
@@ -395,6 +396,8 @@ describe("createProvider", () => {
 
     expect(response.content).toBe("delegated");
     expect(vendKey).toHaveBeenCalledWith("openrouter", "session-chat");
+    const [url] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://llm.agenc.tech/v1/chat/completions");
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer vended-openrouter-key");

@@ -68,10 +68,10 @@ function resolveAuthBackendKind(
   config: Pick<AgenCConfig, "auth">,
 ): AuthBackendConfigKind {
   const auth = readAuthConfig(config);
-  if (auth === undefined) return "local";
+  if (auth === undefined) return "remote";
   resolveAuthManagedKeysEnabled(config);
   const backend = auth.backend;
-  if (backend === undefined) return "local";
+  if (backend === undefined) return "remote";
   if (backend === "local" || backend === "remote") return backend;
   throw new InvalidAuthBackendConfigError(backend);
 }

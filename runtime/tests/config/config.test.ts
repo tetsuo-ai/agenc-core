@@ -93,8 +93,8 @@ describe("schema: defaultConfig", () => {
     expect(cfg.max_turns).toBeGreaterThan(0);
     expect(cfg.agent_max_threads).toBeUndefined();
     expect(cfg.agent_max_depth).toBe(1);
-    expect(cfg.auth?.backend).toBe("local");
-    expect(cfg.auth?.managedKeys?.enabled).toBe(false);
+    expect(cfg.auth?.backend).toBe("remote");
+    expect(cfg.auth?.managedKeys?.enabled).toBe(true);
     expect(cfg.plugins?.enabled).toBe(false);
     expect(cfg.plugins?.allowlist).toEqual([]);
     expect(cfg.mcp?.server).toEqual({
@@ -1777,7 +1777,7 @@ extra = true
     });
     expect(out.exists).toBe(true);
     expect(out.parseError).toContain("Invalid auth.extra");
-    expect(out.config.auth?.backend).toBe("local");
+    expect(out.config.auth?.backend).toBe("remote");
     expect(
       warnings.some((warning) => warning.includes("Invalid auth.extra")),
     ).toBe(true);
@@ -2137,8 +2137,36 @@ describe("env: resolvers", () => {
     const out = applyEnvOverrides(base, {
       AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
     });
-    expect(out.auth?.backend).toBe("local");
+    expect(out.auth?.backend).toBe("remote");
     expect(out.auth?.managedKeys?.enabled).toBe(false);
+  });
+
+  test("applyEnvOverrides — AGENC_AUTH_BACKEND selects remote auth", () => {
+    const base = defaultConfig();
+    const warnings: string[] = [];
+    const out = applyEnvOverrides(base, {
+      AGENC_AUTH_BACKEND: " remote ",
+      AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+    }, (warning) => warnings.push(warning));
+
+    expect(out.auth?.backend).toBe("remote");
+    expect(out.auth?.managedKeys?.enabled).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test("applyEnvOverrides — invalid AGENC_AUTH_BACKEND warns and preserves config", () => {
+    const base = mergeConfigs(defaultConfig(), {
+      auth: { backend: "local", managedKeys: { enabled: false } },
+    });
+    const warnings: string[] = [];
+    const out = applyEnvOverrides(base, {
+      AGENC_AUTH_BACKEND: "google",
+    }, (warning) => warnings.push(warning));
+
+    expect(out.auth?.backend).toBe("local");
+    expect(warnings).toEqual([
+      '[agenc:config] invalid AGENC_AUTH_BACKEND="google"; expected "local" or "remote"',
+    ]);
   });
 
   test("applyEnvOverrides is a no-op when no overrides set", () => {
@@ -2190,7 +2218,7 @@ describe("env: resolvers", () => {
     );
     expect(out.max_output_tokens).toBeUndefined();
     expect(out.capped_default_max_output_tokens).toBeUndefined();
-    expect(out.auth?.managedKeys?.enabled).toBe(false);
+    expect(out.auth?.managedKeys?.enabled).toBe(true);
     expect(warnings).toEqual([
       '[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="bogus"; expected a positive integer',
       '[agenc:config] invalid AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS="maybe"; expected boolean-like value',

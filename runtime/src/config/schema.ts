@@ -700,9 +700,9 @@ export function defaultConfig(): AgenCConfig {
     approvals_reviewer: "user" as ApprovalsReviewer,
     agent_max_depth: 1,
     auth: Object.freeze({
-      backend: "local",
+      backend: "remote",
       managedKeys: Object.freeze({
-        enabled: false,
+        enabled: true,
       }) as AuthManagedKeysConfig,
     }) as AuthConfig,
     plugins: Object.freeze({

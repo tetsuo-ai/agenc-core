@@ -11,6 +11,12 @@ import {
   resolveProviderSettings,
 } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
+import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
+import {
+  hasEntitledRemoteAuthSessionSync,
+  hasRemoteAuthSessionSync,
+  remoteAuthSessionSubscriptionTierSync,
+} from "../auth/session-state.js";
 import {
   BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -75,6 +81,7 @@ export interface ProviderConnectionCheck {
   readonly detail: string;
   readonly keyEnvVar?: string;
   readonly baseURL?: string;
+  readonly canSkip?: boolean;
 }
 
 export interface PendingApiKeyApproval {
@@ -172,6 +179,14 @@ const KEY_REQUIRED_PROVIDERS = new Set<BuiltInProviderSlug>([
   "grok",
   "openai",
   "anthropic",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "gemini",
+]);
+const MANAGED_KEY_PROVIDERS = new Set<BuiltInProviderSlug>([
+  "grok",
+  "openai",
   "openrouter",
   "groq",
   "deepseek",
@@ -328,6 +343,16 @@ function lowerCommand(raw: string): string {
 
 function isSkipApiKeyCommand(command: string): boolean {
   return command === "" || command === "next" || command === "skip";
+}
+
+function apiKeySkipError(
+  connection: ProviderConnectionCheck | null,
+): string | null {
+  if (connection?.canSkip !== false) return null;
+  return (
+    `${connection.keyEnvVar ?? "A provider API key"} is required before continuing ` +
+    `with ${connection.provider}. Paste a BYOK key or choose another provider.`
+  );
 }
 
 function normalizeOnboardingCommand(raw: string): string {
@@ -579,6 +604,38 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
+  if (
+    MANAGED_KEY_PROVIDERS.has(provider) &&
+    resolveAuthManagedKeysEnabled(context.config) &&
+    hasRemoteAuthSessionSync(context.env)
+  ) {
+    if (!hasEntitledRemoteAuthSessionSync(context.env)) {
+      const tier =
+        remoteAuthSessionSubscriptionTierSync(context.env) ?? "unknown";
+      const keyLabel = keyEnvVar ?? "a BYOK API key";
+      return {
+        provider,
+        model,
+        status: "needs-key",
+        ok: false,
+        detail:
+          `AgenC account is signed in on the ${tier} plan. ` +
+          `Managed provider keys require an active AgenC subscription; paste ${keyLabel} to continue.`,
+        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        baseURL,
+        canSkip: false,
+      };
+    }
+    return {
+      provider,
+      model,
+      status: "ready",
+      ok: true,
+      detail: "AgenC account is signed in and can provide managed provider credentials.",
+      baseURL,
+    };
+  }
+
   const apiKey = settings?.apiKey?.trim();
   if (apiKey !== undefined && apiKey.length > 0) {
     const remote = await probeRemoteProvider({
@@ -789,6 +846,13 @@ export async function submitFirstRunOnboardingInput(
       {
         const command = lowerCommand(raw);
         if (isSkipApiKeyCommand(command)) {
+          const skipError = apiKeySkipError(state.connection);
+          if (skipError !== null) {
+            return {
+              state: { ...state, error: skipError },
+              completed: false,
+            };
+          }
           return {
             state: withCompletedStep(state, "api-key", "security"),
             completed: false,
@@ -990,6 +1054,9 @@ function apiKeyInstructionForConnection(
   }
   if (connection.keyEnvVar === undefined) {
     return "Paste an API key to verify it, or type next or skip to continue.";
+  }
+  if (connection.canSkip === false) {
+    return `Paste ${connection.keyEnvVar} to verify it before continuing.`;
   }
   if (
     connection.status === "auth-failed" ||

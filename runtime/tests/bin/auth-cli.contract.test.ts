@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   formatAgenCAuthCliHelpText,
@@ -55,12 +56,19 @@ describe("AgenC auth CLI", () => {
     expect(formatAgenCAuthCliHelpText()).toContain(
       "agenc <login|logout|whoami>",
     );
+    expect(formatAgenCAuthCliHelpText()).toContain(
+      "AGENC_AUTH_BACKEND=remote agenc login",
+    );
   });
 
   it("persists login state through LocalAuthBackend and clears it on logout", async () => {
     const agencHome = await tempAgencHome();
     const env = { ...process.env, AGENC_HOME: agencHome, HOME: agencHome };
     try {
+      await writeFile(
+        join(agencHome, "config.toml"),
+        "[auth]\nbackend = \"local\"\n",
+      );
       const whoamiBefore = createIo();
       await expect(
         runAgenCAuthCli({ kind: "whoami" }, { env, io: whoamiBefore }),
@@ -195,8 +203,83 @@ describe("AgenC auth CLI", () => {
       ).resolves.toBe(0);
       expect(io.stdoutText()).toBe(
         [
-          "Open this URL in your browser: https://agenc.tech/login",
+          "Open this URL in your browser to sign in: https://agenc.tech/login",
           "Enter code: USER-1",
+          "Logged in as Remote User (id=acct-1)",
+          "",
+        ].join("\n"),
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("opens the remote login URL after Enter in an interactive terminal", async () => {
+    const agencHome = await tempAgencHome();
+    const env = { ...process.env, AGENC_HOME: agencHome, HOME: agencHome };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            userCode: "USER-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 0,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: "remote-token",
+            identity: {
+              accountId: "acct-1",
+              displayName: "Remote User",
+            },
+            subscriptionTier: "pro",
+          }),
+          { status: 200 },
+        ),
+      );
+    const stdin = new PassThrough() as PassThrough & { isTTY: boolean };
+    stdin.isTTY = true;
+    const openUrl = vi.fn();
+
+    await writeFile(
+      join(agencHome, "config.toml"),
+      "[auth]\nbackend = \"remote\"\n",
+    );
+    try {
+      const io = { ...createIo(), stdin, openUrl };
+      const login = runAgenCAuthCli(
+        { kind: "login" },
+        {
+          env,
+          io,
+          remote: {
+            fetchImpl,
+            loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+            loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+          },
+        },
+      );
+
+      await vi.waitFor(() => {
+        expect(io.stdoutText()).toContain("Press Enter to open the browser.");
+      });
+      stdin.write("\n");
+
+      await expect(login).resolves.toBe(0);
+      expect(openUrl).toHaveBeenCalledWith("https://agenc.tech/login");
+      expect(io.stdoutText()).toBe(
+        [
+          "Sign in with Google to continue.",
+          "Press Enter to open the browser.",
+          "If it does not open, copy this URL:",
+          "https://agenc.tech/login",
+          "Browser opened. Complete sign in there, then return here.",
           "Logged in as Remote User (id=acct-1)",
           "",
         ].join("\n"),

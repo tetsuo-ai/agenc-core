@@ -5,6 +5,7 @@ import * as React from 'react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { type Notification, useNotifications } from '../../context/notifications.js';
 import { type AppState, useAppState } from '../../state/AppState.js';
+import { hasRemoteAuthSessionSync } from '../../../auth/session-state.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
@@ -283,7 +284,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {usesAnthropicAccountFlow() && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
+      {usesAnthropicAccountFlow() && !hasRemoteAuthSessionSync() && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.AGENC_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
           </Text>

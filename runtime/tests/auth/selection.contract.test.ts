@@ -23,10 +23,21 @@ describe("auth backend selection", () => {
     );
   });
 
-  it("defaults auth.backend to local and creates LocalAuthBackend", async () => {
+  it("defaults auth.backend to remote and creates RemoteAuthBackend", () => {
+    const config = defaultConfig();
+
+    const backend = createAuthBackend(config);
+
+    expect(backend).toBeInstanceOf(RemoteAuthBackend);
+    expect(resolveAuthManagedKeysEnabled(config)).toBe(true);
+  });
+
+  it("honors auth.backend = local and creates LocalAuthBackend", async () => {
     const agencHome = await makeTempHome();
     homes.push(agencHome);
-    const config = defaultConfig();
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "local", managedKeys: { enabled: false } },
+    });
 
     const backend = createAuthBackend(config, { agencHome });
 
@@ -60,15 +71,15 @@ describe("auth backend selection", () => {
     });
   });
 
-  it("defaults auth.managedKeys.enabled to false for backend selection", () => {
+  it("defaults auth.managedKeys.enabled to true for backend selection", () => {
     const config = defaultConfig();
 
-    expect(resolveAuthManagedKeysEnabled(config)).toBe(false);
+    expect(resolveAuthManagedKeysEnabled(config)).toBe(true);
   });
 
   it("passes disabled managed-key config through remote backend selection", async () => {
     const config = mergeConfigs(defaultConfig(), {
-      auth: { backend: "remote" },
+      auth: { backend: "remote", managedKeys: { enabled: false } },
     });
     const keyVendor = vi.fn(() => ({
       provider: "grok",

@@ -830,7 +830,12 @@ describe("Session.consumePendingProviderSwitch", () => {
           whoami: () => ({ authenticated: true, provider: "remote" }),
           vendKey: (provider, sessionId) => {
             calls.push(`vendKey:${provider}:${sessionId}`);
-            return { provider, sessionId, apiKey: "managed-openai-key" };
+            return {
+              provider,
+              sessionId,
+              apiKey: "managed-openai-key",
+              baseUrl: "https://llm.agenc.tech",
+            };
           },
           inferAgencModel: () => ({
             provider: "openai",
@@ -868,6 +873,7 @@ describe("Session.consumePendingProviderSwitch", () => {
         expect(calls).toEqual(["vendKey:openai:conv-test"]);
         expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
           apiKey: "managed-openai-key",
+          baseURL: "https://llm.agenc.tech",
           model: "gpt-5",
         });
       },

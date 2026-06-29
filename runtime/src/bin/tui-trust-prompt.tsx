@@ -2,6 +2,7 @@ import React, { useCallback } from "react";
 
 import { TrustDialog } from "../permissions/trust/TrustDialog.js";
 import { render as renderInk } from "../tui/ink.js";
+import { CURSOR_HOME, ERASE_SCREEN } from "../tui/ink/termio/csi.js";
 
 export interface RenderProjectTrustPromptOptions {
   readonly workspaceRoot: string;
@@ -55,12 +56,17 @@ export async function renderProjectTrustPrompt(
       exitOnCtrlC: true,
     },
   );
+  let result = false;
   try {
-    return await Promise.race([
+    result = await Promise.race([
       accepted,
       instance.waitUntilExit().then(() => false),
     ]);
+    return result;
   } finally {
     instance.unmount();
+    if (result && (options.stdout ?? process.stdout).isTTY) {
+      (options.stdout ?? process.stdout).write(ERASE_SCREEN + CURSOR_HOME);
+    }
   }
 }

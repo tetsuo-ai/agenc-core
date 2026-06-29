@@ -256,6 +256,96 @@ describe("first-run onboarding wizard", () => {
     });
   });
 
+  test("treats signed-in remote auth as managed provider readiness", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-remote-auth-"));
+    try {
+      writeFileSync(
+        join(agencHome, "auth.json"),
+        JSON.stringify({
+          version: 1,
+          provider: "remote",
+          token: "remote-session-token",
+          subscriptionTier: "pro",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+
+      await expect(
+        checkOnboardingProviderConnection(
+          {
+            config: defaultConfig(),
+            env: { AGENC_HOME: agencHome },
+          },
+          "grok",
+          "grok-4.3",
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "ready",
+        detail: "AgenC account is signed in and can provide managed provider credentials.",
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("requires BYOK during onboarding when remote auth is free", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-free-auth-"));
+    try {
+      writeFileSync(
+        join(agencHome, "auth.json"),
+        JSON.stringify({
+          version: 1,
+          provider: "remote",
+          token: "remote-session-token",
+          subscriptionTier: "free",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+
+      const context = {
+        config: defaultConfig(),
+        env: { AGENC_HOME: agencHome },
+      };
+      await expect(
+        checkOnboardingProviderConnection(
+          context,
+          "grok",
+          "grok-4.3",
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        status: "needs-key",
+        keyEnvVar: "XAI_API_KEY",
+        canSkip: false,
+      });
+
+      const state = {
+        ...createInitialFirstRunOnboardingState(context),
+        currentStepId: "api-key" as const,
+        selectedProvider: "grok" as const,
+        selectedModel: "grok-4.3",
+        connection: {
+          provider: "grok",
+          model: "grok-4.3",
+          status: "needs-key" as const,
+          ok: false,
+          detail: "AgenC account is signed in on the free plan.",
+          keyEnvVar: "XAI_API_KEY",
+          canSkip: false,
+        },
+      };
+
+      const result = await submitFirstRunOnboardingInput(state, "next", context);
+
+      expect(result.completed).toBe(false);
+      expect(result.state.currentStepId).toBe("api-key");
+      expect(result.state.error).toContain("XAI_API_KEY is required");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("describes verified provider credentials without asking users to add them later", () => {
     const config = defaultConfig();
     const context = {

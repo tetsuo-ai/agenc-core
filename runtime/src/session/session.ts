@@ -906,7 +906,7 @@ async function vendManagedProviderKey(params: {
   readonly provider: ProviderName;
   readonly authBackend: AuthBackend | undefined;
   readonly sessionId: string;
-}): Promise<string | undefined> {
+}): Promise<{ readonly apiKey: string; readonly baseURL?: string } | undefined> {
   if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
     return undefined;
   }
@@ -914,7 +914,13 @@ async function vendManagedProviderKey(params: {
     params.provider,
     params.sessionId,
   );
-  return firstNonEmpty(key.apiKey);
+  const apiKey = firstNonEmpty(key.apiKey);
+  if (apiKey === undefined) return undefined;
+  const baseURL = firstNonEmpty(key.baseUrl);
+  return {
+    apiKey,
+    ...(baseURL !== undefined ? { baseURL } : {}),
+  };
 }
 
 async function providerFactoryOptionsFromSettings(params: {
@@ -967,7 +973,7 @@ async function providerFactoryOptionsFromSettings(params: {
       );
     }
   }
-  const managedApiKey =
+  const managedCredential =
     byokApiKey === undefined &&
     params.managedKeysEnabled &&
     normalizedProvider !== null
@@ -977,10 +983,11 @@ async function providerFactoryOptionsFromSettings(params: {
           sessionId: params.sessionId,
         })
       : undefined;
-  const apiKey = params.settings?.apiKey ?? managedApiKey;
+  const apiKey = params.settings?.apiKey ?? managedCredential?.apiKey;
+  const baseURL = params.settings?.baseURL ?? managedCredential?.baseURL;
   return {
     ...(apiKey ? { apiKey } : {}),
-    ...(params.settings?.baseURL ? { baseURL: params.settings.baseURL } : {}),
+    ...(baseURL ? { baseURL } : {}),
     ...(Object.keys(extra).length > 0 ? { extra } : {}),
   };
 }
