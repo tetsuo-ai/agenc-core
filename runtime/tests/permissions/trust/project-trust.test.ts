@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +16,16 @@ import {
   readTrustedProjects,
   resolveProjectTrustRootSync,
   trustProject,
+  trustProjectSync,
   trustedProjectsPath,
 } from "./project-trust.js";
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), "agenc-project-trust-"));
+}
+
+function deadPid(): number {
+  return 2_147_483_647;
 }
 
 describe("project trust store", () => {
@@ -110,6 +121,40 @@ describe("project trust store", () => {
     expect(
       (await readTrustedProjects({ agencHome: home })).trustedProjects,
     ).toHaveLength(1);
+  });
+
+  test("stale async trust locks from dead processes are recovered", async () => {
+    const path = trustedProjectsPath({ agencHome: home });
+    const lockPath = `${path}.lock`;
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: deadPid(),
+        acquiredAt: "2026-05-04T00:00:00.000Z",
+      }) + "\n",
+    );
+
+    await trustProject({ agencHome: home, cwd: repo });
+
+    expect(existsSync(lockPath)).toBe(false);
+    expect(isProjectTrustedSync({ agencHome: home, cwd: repo })).toBe(true);
+  });
+
+  test("stale sync trust locks from dead processes are recovered", () => {
+    const path = trustedProjectsPath({ agencHome: home });
+    const lockPath = `${path}.lock`;
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: deadPid(),
+        acquiredAt: "2026-05-04T00:00:00.000Z",
+      }) + "\n",
+    );
+
+    trustProjectSync({ agencHome: home, cwd: repo });
+
+    expect(existsSync(lockPath)).toBe(false);
+    expect(isProjectTrustedSync({ agencHome: home, cwd: repo })).toBe(true);
   });
 
   test("HOME workspace trust is persisted like any other project", async () => {

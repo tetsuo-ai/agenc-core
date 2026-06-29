@@ -466,10 +466,16 @@ class AuthVendedProvider implements LLMProvider {
       options.extra,
       vended as Record<string, unknown>,
     );
+    const baseURL = firstNonEmpty(
+      options.baseURL,
+      readString(vended as Record<string, unknown>, "baseURL"),
+      readString(vended as Record<string, unknown>, "baseUrl"),
+    );
     return {
       instance: createProvider(this.#provider, {
         ...options,
         apiKey,
+        ...(baseURL !== undefined ? { baseURL } : {}),
         ...(extra !== undefined ? { extra } : {}),
       }),
       expiresAtMs:

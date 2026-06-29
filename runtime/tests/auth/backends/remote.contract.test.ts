@@ -6,7 +6,7 @@ import { RemoteAuthBackend } from "./remote.js";
 
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_POLL_URL";
 const REMOTE_AUTH_LOGIN_START_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_START_URL";
-const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
+const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
 const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL";
 const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL";
 const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
@@ -258,6 +258,105 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
+  it("honors interval hints on pending device-code poll responses", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const sleepMs = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 1,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "pending",
+            error: "authorization_pending",
+            intervalSeconds: 4,
+          }),
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "remote-token" }), {
+          status: 200,
+        }),
+      );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+      loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+      sleepMs,
+    });
+
+    try {
+      await expect(backend.login({ sessionId: "cli" })).resolves.toMatchObject({
+        authenticated: true,
+        provider: "remote",
+        token: "remote-token",
+      });
+      expect(sleepMs).toHaveBeenCalledWith(REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("honors interval hints on slow_down device-code poll responses", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const sleepMs = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 1,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "slow_down",
+            intervalSeconds: 7,
+          }),
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "remote-token" }), {
+          status: 200,
+        }),
+      );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+      loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+      sleepMs,
+    });
+
+    try {
+      await expect(backend.login({ sessionId: "cli" })).resolves.toMatchObject({
+        authenticated: true,
+        provider: "remote",
+        token: "remote-token",
+      });
+      expect(sleepMs).toHaveBeenCalledWith(7_000);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("clears managed-key cache across remote login state changes", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     let loginCount = 0;
@@ -469,7 +568,7 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
-  it("uses the configured HTTP key vending endpoint by default", async () => {
+  it("uses the configured HTTP key vending endpoint", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -499,6 +598,47 @@ describe("RemoteAuthBackend", () => {
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://api.agenc.tech/test/vend-key",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer remote-token",
+        },
+        body: JSON.stringify({
+          provider: "grok",
+          sessionId: "session-1",
+        }),
+      },
+    );
+  });
+
+  it("accepts the current backend LiteLLM credential response shape", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          litellmKey: " hosted-litellm-key ",
+          baseUrl: " https://llm.agenc.tech ",
+          expiresAt: "2026-05-01T12:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl,
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "hosted-litellm-key",
+      baseUrl: "https://llm.agenc.tech",
+      expiresAt: "2026-05-01T12:00:00.000Z",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://id.agenc.ag/v1/auth/llm-credential",
       {
         method: "POST",
         headers: {
@@ -797,6 +937,46 @@ describe("RemoteAuthBackend", () => {
         }),
       },
     );
+  });
+
+  it("treats missing remote auth token as free subscription tier", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ subscriptionTier: "pro" }), { status: 200 }),
+    );
+    const backend = new RemoteAuthBackend({ agencHome, fetchImpl });
+
+    try {
+      await expect(backend.getSubscriptionTier()).resolves.toBe("free");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("treats rejected remote auth token as free subscription tier", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "authentication_required",
+          },
+        }),
+        { status: 401 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "stale-token" },
+      fetchImpl,
+    });
+
+    try {
+      await expect(backend.getSubscriptionTier()).resolves.toBe("free");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("rejects invalid subscription tier responses", async () => {

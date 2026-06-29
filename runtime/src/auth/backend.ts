@@ -75,6 +75,7 @@ export interface AuthVendedKey extends AuthJsonObject {
   readonly provider: string;
   readonly sessionId: AuthSessionId;
   readonly apiKey: string;
+  readonly baseUrl?: string;
   readonly expiresAt?: string;
   readonly secretAccessKey?: string;
   readonly sessionToken?: string;

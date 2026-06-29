@@ -5,6 +5,7 @@ import * as React from 'react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { type Notification, useNotifications } from '../../context/notifications.js';
 import { type AppState, useAppState } from '../../state/AppState.js';
+import { hasRemoteAuthSessionSync } from '../../../auth/session-state.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
@@ -44,11 +45,12 @@ type Props = {
   onChangeIsUpdating: (isUpdating: boolean) => void;
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
+  agencHome?: string;
   isInputWrapped?: boolean;
   isNarrow?: boolean;
 };
 export function Notifications(t0: Props) {
-  const $ = _c(34);
+  const $ = _c(35);
   const {
     apiKeyStatus,
     autoUpdaterResult,
@@ -60,6 +62,7 @@ export function Notifications(t0: Props) {
     onChangeIsUpdating,
     ideSelection,
     mcpClients,
+    agencHome,
     isInputWrapped: t1,
     isNarrow: t2
   } = t0;
@@ -169,26 +172,27 @@ export function Notifications(t0: Props) {
   const t11 = isNarrow ? "flex-start" : "flex-end";
   const t12 = isInOverageMode ?? false;
   let t13;
-  if ($[15] !== apiKeyStatus || $[16] !== autoUpdaterResult || $[17] !== debug || $[18] !== ideSelection || $[19] !== isAutoUpdating || $[20] !== isShowingCompactMessage || $[21] !== mainLoopModel || $[22] !== mcpClients || $[23] !== notifications || $[24] !== onAutoUpdaterResult || $[25] !== onChangeIsUpdating || $[26] !== shouldShowAutoUpdater || $[27] !== t12 || $[28] !== tokenUsage || $[29] !== verbose) {
-    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} />;
-    $[15] = apiKeyStatus;
-    $[16] = autoUpdaterResult;
-    $[17] = debug;
-    $[18] = ideSelection;
-    $[19] = isAutoUpdating;
-    $[20] = isShowingCompactMessage;
-    $[21] = mainLoopModel;
-    $[22] = mcpClients;
-    $[23] = notifications;
-    $[24] = onAutoUpdaterResult;
-    $[25] = onChangeIsUpdating;
-    $[26] = shouldShowAutoUpdater;
-    $[27] = t12;
-    $[28] = tokenUsage;
-    $[29] = verbose;
-    $[30] = t13;
+  if ($[15] !== agencHome || $[16] !== apiKeyStatus || $[17] !== autoUpdaterResult || $[18] !== debug || $[19] !== ideSelection || $[20] !== isAutoUpdating || $[21] !== isShowingCompactMessage || $[22] !== mainLoopModel || $[23] !== mcpClients || $[24] !== notifications || $[25] !== onAutoUpdaterResult || $[26] !== onChangeIsUpdating || $[27] !== shouldShowAutoUpdater || $[28] !== t12 || $[29] !== tokenUsage || $[30] !== verbose) {
+    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} />;
+    $[15] = agencHome;
+    $[16] = apiKeyStatus;
+    $[17] = autoUpdaterResult;
+    $[18] = debug;
+    $[19] = ideSelection;
+    $[20] = isAutoUpdating;
+    $[21] = isShowingCompactMessage;
+    $[22] = mainLoopModel;
+    $[23] = mcpClients;
+    $[24] = notifications;
+    $[25] = onAutoUpdaterResult;
+    $[26] = onChangeIsUpdating;
+    $[27] = shouldShowAutoUpdater;
+    $[28] = t12;
+    $[29] = tokenUsage;
+    $[30] = verbose;
+    $[34] = t13;
   } else {
-    t13 = $[30];
+    t13 = $[34];
   }
   let t14;
   if ($[31] !== t11 || $[32] !== t13) {
@@ -210,6 +214,7 @@ function _temp(s: AppState) {
 function NotificationContent({
   ideSelection,
   mcpClients,
+  agencHome,
   notifications,
   isInOverageMode,
   isTeamOrEnterprise,
@@ -227,6 +232,7 @@ function NotificationContent({
 }: {
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
+  agencHome?: string;
   notifications: {
     current: Notification | null;
     queue: Notification[];
@@ -283,7 +289,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {usesAnthropicAccountFlow() && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
+      {usesAnthropicAccountFlow() && !hasRemoteAuthSessionSync(authSessionEnv(agencHome)) && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.AGENC_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
           </Text>
@@ -303,4 +309,13 @@ function NotificationContent({
       <MemoryUsageIndicator />
       <SandboxPromptFooterHint />
     </>;
+}
+
+function authSessionEnv(agencHome: string | undefined): NodeJS.ProcessEnv {
+  return agencHome === undefined
+    ? process.env
+    : {
+        ...process.env,
+        AGENC_HOME: agencHome,
+      };
 }

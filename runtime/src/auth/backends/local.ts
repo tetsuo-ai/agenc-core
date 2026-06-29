@@ -23,6 +23,7 @@ import type {
 } from "../backend.js";
 
 const LOCAL_AUTH_STATE_FILENAME = "auth.json" as const;
+const LOCAL_BYOK_STATE_FILENAME = "byok-keys.json" as const;
 const LOCAL_AUTH_STATE_VERSION = 1 as const;
 
 interface LocalAuthDiskState {
@@ -36,6 +37,11 @@ interface LocalAuthDiskState {
     readonly plan: AuthSubscriptionTier;
   };
   readonly byokKeys?: Readonly<Record<string, LocalByokKeyRecord>>;
+}
+
+interface LocalByokDiskState {
+  readonly version: typeof LOCAL_AUTH_STATE_VERSION;
+  readonly byokKeys: Readonly<Record<string, LocalByokKeyRecord>>;
 }
 
 export interface LocalAuthBackendOptions {
@@ -71,6 +77,7 @@ export class LocalAuthBackend implements AuthBackend {
   readonly kind = "local";
 
   private readonly authFilePath: string;
+  private readonly byokFilePath: string;
   private readonly now: () => Date;
   private readonly randomUUID: () => string;
 
@@ -78,6 +85,7 @@ export class LocalAuthBackend implements AuthBackend {
     const agencHome =
       options.agencHome ?? resolveAgencHome(options.env ?? process.env);
     this.authFilePath = join(agencHome, LOCAL_AUTH_STATE_FILENAME);
+    this.byokFilePath = join(agencHome, LOCAL_BYOK_STATE_FILENAME);
     this.now = options.now ?? (() => new Date());
     this.randomUUID = options.randomUUID ?? cryptoRandomUUID;
   }
@@ -88,9 +96,17 @@ export class LocalAuthBackend implements AuthBackend {
 
   async login(_params: AuthLoginParams = {}): Promise<LocalAuthLoginResult> {
     const current = await readLocalAuthState(this.authFilePath);
+    const byok = await readLocalByokState(this.byokFilePath);
     const state: LocalAuthDiskState = {
       ...this.createDiskState(),
-      ...(current?.byokKeys !== undefined ? { byokKeys: current.byokKeys } : {}),
+      ...(current?.byokKeys !== undefined || byok?.byokKeys !== undefined
+        ? {
+            byokKeys: {
+              ...(current?.byokKeys ?? {}),
+              ...(byok?.byokKeys ?? {}),
+            },
+          }
+        : {}),
     };
     await writeLocalAuthState(this.authFilePath, state);
     return {
@@ -126,19 +142,27 @@ export class LocalAuthBackend implements AuthBackend {
     const provider = normalizeProviderKey(params.provider);
     const apiKey = normalizeApiKey(params.apiKey);
     const current = await readLocalAuthState(this.authFilePath);
-    const state = current ?? this.createDiskState();
+    const currentByok = await readLocalByokState(this.byokFilePath);
     const record: LocalByokKeyRecord = {
       provider,
       apiKey,
       savedAt: this.now().toISOString(),
     };
-    await writeLocalAuthState(this.authFilePath, {
-      ...state,
-      byokKeys: {
-        ...(state.byokKeys ?? {}),
-        [provider]: record,
-      },
+    const byokKeys = {
+      ...(current?.byokKeys ?? {}),
+      ...(currentByok?.byokKeys ?? {}),
+      [provider]: record,
+    };
+    await writeLocalByokState(this.byokFilePath, {
+      version: LOCAL_AUTH_STATE_VERSION,
+      byokKeys,
     });
+    if (current !== null) {
+      await writeLocalAuthState(this.authFilePath, {
+        ...current,
+        byokKeys,
+      });
+    }
     return record;
   }
 
@@ -146,6 +170,11 @@ export class LocalAuthBackend implements AuthBackend {
     provider: AuthProviderSlug | string,
   ): Promise<string | undefined> {
     const normalizedProvider = normalizeProviderKey(provider);
+    const byokState = await readLocalByokState(this.byokFilePath);
+    const byokApiKey = byokState?.byokKeys?.[normalizedProvider]?.apiKey;
+    if (typeof byokApiKey === "string" && byokApiKey.trim().length > 0) {
+      return byokApiKey;
+    }
     const state = await readLocalAuthState(this.authFilePath);
     const apiKey = state?.byokKeys?.[normalizedProvider]?.apiKey;
     return typeof apiKey === "string" && apiKey.trim().length > 0
@@ -189,6 +218,16 @@ export class LocalAuthBackend implements AuthBackend {
       },
     };
   }
+}
+
+function isLocalByokDiskState(value: unknown): value is LocalByokDiskState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<LocalByokDiskState>;
+  return (
+    state.version === LOCAL_AUTH_STATE_VERSION &&
+    state.byokKeys !== undefined &&
+    isLocalByokKeys(state.byokKeys)
+  );
 }
 
 function isLocalAuthDiskState(value: unknown): value is LocalAuthDiskState {
@@ -266,6 +305,24 @@ async function readLocalAuthState(
   }
 }
 
+async function readLocalByokState(
+  path: string,
+): Promise<LocalByokDiskState | null> {
+  try {
+    const raw = await readFile(path, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return isLocalByokDiskState(parsed) ? parsed : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    if (error instanceof SyntaxError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 function normalizeProviderKey(provider: AuthProviderSlug | string): string {
   const normalized = provider.trim().toLowerCase();
   if (normalized.length === 0) {
@@ -288,6 +345,19 @@ function normalizeApiKey(apiKey: string): string {
 async function writeLocalAuthState(
   path: string,
   state: LocalAuthDiskState,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await rename(tmp, path);
+}
+
+async function writeLocalByokState(
+  path: string,
+  state: LocalByokDiskState,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;

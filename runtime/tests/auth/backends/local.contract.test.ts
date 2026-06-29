@@ -158,11 +158,10 @@ describe("LocalAuthBackend", () => {
     await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
 
     const parsed = JSON.parse(
-      await readFile(join(agencHome, "auth.json"), "utf8"),
+      await readFile(join(agencHome, "byok-keys.json"), "utf8"),
     ) as Record<string, unknown>;
     expect(parsed).toMatchObject({
-      provider: "local",
-      token: TEST_TOKEN,
+      version: 1,
       byokKeys: {
         grok: {
           provider: "grok",
@@ -171,7 +170,45 @@ describe("LocalAuthBackend", () => {
         },
       },
     });
-    expect((await stat(join(agencHome, "auth.json"))).mode & 0o777).toBe(0o600);
+    await expect(
+      readFile(join(agencHome, "auth.json"), "utf8"),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await stat(join(agencHome, "byok-keys.json"))).mode & 0o777).toBe(
+      0o600,
+    );
+  });
+
+  it("does not clobber a remote auth session when saving BYOK keys", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const authFile = join(agencHome, "auth.json");
+    const remoteAuth = {
+      version: 1,
+      provider: "remote",
+      token: "remote-token",
+      createdAt: TEST_TIME.toISOString(),
+      identity: {
+        accountId: "acct-1",
+        email: "user@example.com",
+      },
+      subscriptionTier: "free",
+    };
+    await writeFile(authFile, `${JSON.stringify(remoteAuth, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    const backend = new LocalAuthBackend({
+      agencHome,
+      now: () => TEST_TIME,
+    });
+
+    await backend.saveByokKey({ provider: "grok", apiKey: "xai-test-key" });
+
+    await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
+    await expect(readFile(authFile, "utf8")).resolves.toBe(
+      `${JSON.stringify(remoteAuth, null, 2)}\n`,
+    );
   });
 
   it("preserves saved BYOK keys when local login refreshes the token", async () => {
@@ -185,6 +222,22 @@ describe("LocalAuthBackend", () => {
 
     await backend.saveByokKey({ provider: "grok", apiKey: "xai-test-key" });
     await backend.login();
+
+    await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
+  });
+
+  it("preserves saved BYOK keys when logging out", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const backend = new LocalAuthBackend({
+      agencHome,
+      randomUUID: () => TEST_TOKEN,
+      now: () => TEST_TIME,
+    });
+
+    await backend.saveByokKey({ provider: "grok", apiKey: "xai-test-key" });
+    await backend.login();
+    await backend.logout();
 
     await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
   });

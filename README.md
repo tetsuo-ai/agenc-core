@@ -158,6 +158,20 @@ checks, and `agenc mcp xaa` (`setup|login|show|clear`) drives the Cross-App
 Access / Enterprise Managed Authorization flow (SEP-990) for enterprise-managed
 MCP servers.
 
+Remote account login uses the hosted AgenC backend at `https://id.agenc.ag`.
+Set the backend to `remote` to sign in through the hosted browser flow:
+
+```bash
+AGENC_AUTH_BACKEND=remote agenc login
+```
+
+If managed model keys are enabled for the account, also enable managed key
+vending locally:
+
+```bash
+AGENC_AUTH_BACKEND=remote AGENC_AUTH_MANAGED_KEYS_ENABLED=true agenc login
+```
+
 Common flags:
 
 ```text

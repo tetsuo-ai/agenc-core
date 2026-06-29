@@ -21,9 +21,13 @@ import type { VerificationStatus } from "../../src/tui/hooks/useApiKeyVerificati
 
 // Mirrors the render-gate condition in
 // src/tui/components/PromptInput/Notifications.tsx
-function loginNoticeVisible(apiKeyStatus: VerificationStatus): boolean {
+function loginNoticeVisible(
+  apiKeyStatus: VerificationStatus,
+  hasRemoteAuthSession = false,
+): boolean {
   return (
     usesAnthropicAccountFlow() &&
+    !hasRemoteAuthSession &&
     (apiKeyStatus === "invalid" || apiKeyStatus === "missing")
   );
 }
@@ -101,5 +105,12 @@ describe("byok-login-notice", () => {
   test("firstParty with a valid credential: login notice is not shown", () => {
     expect(getAPIProvider()).toBe("firstParty");
     expect(loginNoticeVisible("valid")).toBe(false);
+  });
+
+  test("firstParty with remote AgenC auth: login notice is suppressed", () => {
+    expect(getAPIProvider()).toBe("firstParty");
+    expect(usesAnthropicAccountFlow()).toBe(true);
+    expect(loginNoticeVisible("missing", true)).toBe(false);
+    expect(loginNoticeVisible("invalid", true)).toBe(false);
   });
 });

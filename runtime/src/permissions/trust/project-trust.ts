@@ -270,6 +270,9 @@ async function withTrustedProjectsLock<T>(
       break;
     } catch (error) {
       if (isFileExistsError(error)) {
+        if (await removeStaleTrustedProjectsLock(lockPath)) {
+          continue;
+        }
         if (Date.now() - startedAt > TRUSTED_PROJECTS_LOCK_TIMEOUT_MS) {
           throw new Error(
             `Timed out waiting for project trust lock at ${lockPath}. ` +
@@ -332,6 +335,9 @@ function withTrustedProjectsLockSync<T>(path: string, fn: () => T): T {
       break;
     } catch (error) {
       if (isFileExistsError(error)) {
+        if (removeStaleTrustedProjectsLockSync(lockPath)) {
+          continue;
+        }
         if (Date.now() - startedAt > TRUSTED_PROJECTS_LOCK_TIMEOUT_MS) {
           throw new Error(
             `Timed out waiting for project trust lock at ${lockPath}. ` +
@@ -369,6 +375,70 @@ function isFileExistsError(error: unknown): boolean {
     error !== null &&
     (error as { readonly code?: unknown }).code === "EEXIST"
   );
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { readonly code?: unknown }).code === "ENOENT"
+  );
+}
+
+function parseLockPid(raw: string): number | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isTrustRecord(parsed)) return null;
+    const pid = parsed.pid;
+    return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0
+      ? pid
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { readonly code?: unknown }).code !== "ESRCH";
+  }
+}
+
+async function removeStaleTrustedProjectsLock(lockPath: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, "utf8");
+  } catch (error) {
+    return isFileNotFoundError(error);
+  }
+  const pid = parseLockPid(raw);
+  if (pid === null || isProcessAlive(pid)) return false;
+  try {
+    await unlink(lockPath);
+    return true;
+  } catch (error) {
+    return isFileNotFoundError(error);
+  }
+}
+
+function removeStaleTrustedProjectsLockSync(lockPath: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(lockPath, "utf8");
+  } catch (error) {
+    return isFileNotFoundError(error);
+  }
+  const pid = parseLockPid(raw);
+  if (pid === null || isProcessAlive(pid)) return false;
+  try {
+    unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    return isFileNotFoundError(error);
+  }
 }
 
 function writeTrustedProjectsFileSync(

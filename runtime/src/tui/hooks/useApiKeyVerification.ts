@@ -1,6 +1,7 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { hasRemoteAuthSessionSync } from '../../auth/session-state.js'
 import { verifyApiKey } from '../../services/api/anthropic.js' // branding-scan: allow upstream mirror import path pending purge
 import {
   getAnthropicApiKeyWithSource,
@@ -37,6 +38,9 @@ function readApiKeyWithSource(
 }
 
 function getInitialVerificationStatus(): VerificationStatus {
+  if (hasRemoteAuthSessionSync()) {
+    return 'valid'
+  }
   if (!isAnthropicAuthEnabled() || isAgenCAISubscriber()) {
     return 'valid'
   }
@@ -60,7 +64,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
   const [error, setError] = useState<Error | null>(null)
   const verificationRequestIdRef = useRef(0)
   const anthropicVerificationEnabled =
-    isAnthropicAuthEnabled() && !isAgenCAISubscriber()
+    isAnthropicAuthEnabled() && !isAgenCAISubscriber() && !hasRemoteAuthSessionSync()
 
   useEffect(() => {
     verificationRequestIdRef.current += 1
@@ -88,7 +92,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
     const isCurrentRequest = () =>
       requestId === verificationRequestIdRef.current
 
-    if (!isAnthropicAuthEnabled() || isAgenCAISubscriber()) {
+    if (!isAnthropicAuthEnabled() || isAgenCAISubscriber() || hasRemoteAuthSessionSync()) {
       setError(null)
       setStatus('valid')
       return

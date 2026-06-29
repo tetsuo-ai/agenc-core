@@ -6,6 +6,8 @@
  * persistence path.
  */
 
+import { spawn } from "node:child_process";
+
 import { createAuthBackend } from "../auth/selection.js";
 import type { AuthBackend, AuthIdentity } from "../auth/backend.js";
 import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
@@ -22,6 +24,11 @@ export type AgenCAuthCliCommand =
 export interface AgenCAuthCliIo {
   readonly stdout: Pick<NodeJS.WriteStream, "write">;
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
+  readonly stdin?: Pick<
+    NodeJS.ReadStream,
+    "isTTY" | "once" | "pause" | "resume"
+  >;
+  readonly openUrl?: (url: string) => void | Promise<void>;
 }
 
 export interface AgenCAuthCliOptions {
@@ -43,6 +50,7 @@ export function formatAgenCAuthCliHelpText(): string {
     "",
     "Examples:",
     "  agenc login",
+    "  AGENC_AUTH_BACKEND=remote agenc login",
     "  agenc whoami",
     "  agenc logout",
   ].join("\n");
@@ -72,7 +80,12 @@ export async function runAgenCAuthCli(
   command: AgenCAuthCliCommand,
   options: AgenCAuthCliOptions = {},
 ): Promise<number> {
-  const io = options.io ?? { stdout: process.stdout, stderr: process.stderr };
+  const io = options.io ?? {
+    stdout: process.stdout,
+    stderr: process.stderr,
+    stdin: process.stdin,
+    openUrl: openUrlInBrowser,
+  };
   switch (command.kind) {
     case "help":
       io.stdout.write(`${command.text}\n`);
@@ -148,15 +161,75 @@ function remoteAuthCliOptions(
   io: AgenCAuthCliIo,
 ): Pick<RemoteAuthBackendOptions, "onDeviceCode"> {
   return {
-    onDeviceCode: ({ verificationUri, userCode }) => {
+    onDeviceCode: async ({ verificationUri, userCode }) => {
       if (verificationUri !== undefined) {
-        io.stdout.write(`Open this URL in your browser: ${verificationUri}\n`);
+        if (io.stdin?.isTTY === true) {
+          io.stdout.write("Sign in with Google to continue.\n");
+          io.stdout.write("Press Enter to open the browser.\n");
+          io.stdout.write("If it does not open, copy this URL:\n");
+          io.stdout.write(`${verificationUri}\n`);
+          await waitForEnter(io.stdin);
+          try {
+            await (io.openUrl ?? openUrlInBrowser)(verificationUri);
+            io.stdout.write(
+              "Browser opened. Complete sign in there, then return here.\n",
+            );
+          } catch {
+            io.stdout.write(
+              `Could not open the browser automatically. Open this URL: ${verificationUri}\n`,
+            );
+          }
+          return;
+        }
+        io.stdout.write(
+          `Open this URL in your browser to sign in: ${verificationUri}\n`,
+        );
       }
       if (userCode !== undefined) {
         io.stdout.write(`Enter code: ${userCode}\n`);
       }
     },
   };
+}
+
+async function waitForEnter(
+  stdin: Pick<NodeJS.ReadStream, "once" | "pause" | "resume">,
+): Promise<void> {
+  await new Promise<void>((resolve) => {
+    stdin.resume();
+    stdin.once("data", () => {
+      stdin.pause();
+      resolve();
+    });
+  });
+}
+
+async function openUrlInBrowser(url: string): Promise<void> {
+  const { command, args } = browserOpenCommand(url);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function browserOpenCommand(url: string): {
+  readonly command: string;
+  readonly args: readonly string[];
+} {
+  if (process.platform === "darwin") {
+    return { command: "open", args: [url] };
+  }
+  if (process.platform === "win32") {
+    return { command: "cmd", args: ["/c", "start", "", url] };
+  }
+  return { command: "xdg-open", args: [url] };
 }
 
 function formatAgenCAuthIdentity(
