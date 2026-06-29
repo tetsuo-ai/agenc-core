@@ -143,7 +143,6 @@ import {
   ModelInfo,
   NetworkProxy,
   SessionConfiguration,
-  SessionTelemetry,
   SkillLoadOutcome,
   type Personality,
   type TurnContext,
@@ -638,11 +637,6 @@ export interface ExecPolicyManager {
   current(): unknown;
 }
 
-/** agenc runtime `AnalyticsEventsClient`. T-future (telemetry). */
-export interface AnalyticsEventsClient {
-  emit(event: unknown): Promise<void>;
-}
-
 /** agenc runtime `ApprovalStore`. */
 export interface ApprovalStore {
   hasApproval(key: string): boolean;
@@ -698,7 +692,6 @@ export interface SessionServices {
   readonly unifiedExecManager: UnifiedExecProcessManager;
   readonly shellZshPath?: string;
   readonly mainExecveWrapperExe?: string;
-  readonly analyticsEventsClient: AnalyticsEventsClient;
   readonly hooks: Hooks;
   readonly rollout: RolloutRecorder | undefined;
   /**
@@ -723,7 +716,6 @@ export interface SessionServices {
   readonly authManager: AuthManager;
   readonly authBackend?: AuthBackend;
   readonly authSubscriptionTier?: AuthSubscriptionTier;
-  readonly sessionTelemetry: SessionTelemetry;
   readonly modelsManager: ModelsManager;
   readonly toolApprovals: ApprovalStore;
   readonly guardianRejections: Map<string, unknown>;

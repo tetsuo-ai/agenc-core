@@ -23,6 +23,10 @@ import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import {
+  buildMcpHostClientCapabilities,
+  configureMcpHostRequestHandlers,
+} from "../../services/mcp/hostCapabilities.js";
 
 const MCP_WEBSOCKET_SUBPROTOCOL = "mcp";
 export const WEBSOCKET_CLOSE_WAIT_MS = 1_000;
@@ -178,12 +182,12 @@ export async function createWebSocketMCPConnection(
   const client = new Client(
     { name: "agenc-runtime", version: "0.2.0" },
     {
-      capabilities:
-        elicitationHandlers === undefined
-          ? {}
-          : { elicitation: { form: {}, url: {} } },
+      capabilities: buildMcpHostClientCapabilities(
+        elicitationHandlers === undefined ? "none" : "form-url",
+      ),
     },
   );
+  configureMcpHostRequestHandlers(client, config.name);
   await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP WebSocket server "${config.name}"...`, {

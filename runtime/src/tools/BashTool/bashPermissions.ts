@@ -86,7 +86,7 @@ const ENV_VAR_ASSIGN_RE = /^[A-Za-z_]\w*=/
 // CC-643: On complex compound commands, splitCommand_DEPRECATED can produce a
 // very large subcommands array (possible exponential growth; #21405's ReDoS fix
 // may have been incomplete). Each subcommand then runs tree-sitter parse +
-// ~20 validators + logEvent (bashSecurity.ts), and with memoized metadata the
+// ~20 validators, and with memoized metadata the
 // resulting microtask chain starves the event loop — REPL freeze at 100% CPU,
 // strace showed /proc/self/stat reads at ~127Hz with no epoll_wait. Fifty is
 // generous: legitimate user commands don't split that wide. Above the cap we

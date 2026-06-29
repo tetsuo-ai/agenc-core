@@ -4,10 +4,6 @@
  * made strict.
  */
 
-declare module "@opentelemetry/sdk-metrics" {
-  export type MeterProvider = unknown;
-}
-
 // Optional runtime dep — only needed when the user provisions Bedrock
 // for token-counting via tokenEstimation.ts. The literal-import gives
 // esbuild a chance to bundle it, but the package is not in our

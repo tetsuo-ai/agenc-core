@@ -32,7 +32,6 @@ import {
   getProjectRoot,
   getIsNonInteractiveSession,
   getRegisteredHooks,
-  getStatsStore,
   addToTurnHookDuration,
   getOriginalCwd,
   getMainThreadAgentType,
@@ -2196,7 +2195,6 @@ async function* executeHooks({
       }
     }
     const totalDurationMs = Date.now() - batchStartTime
-    getStatsStore()?.observe('hook_duration_ms', totalDurationMs)
     addToTurnHookDuration(totalDurationMs)
     return
   }
@@ -3040,7 +3038,6 @@ async function* executeHooks({
   }
 
   const totalDurationMs = Date.now() - batchStartTime
-  getStatsStore()?.observe('hook_duration_ms', totalDurationMs)
   addToTurnHookDuration(totalDurationMs)
 
 }

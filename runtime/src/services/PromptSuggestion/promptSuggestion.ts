@@ -5,14 +5,11 @@
  * Shape differences:
  *   - Uses AgenC env naming and a local rate-limit view instead of importing
  *     source-reference API limit modules.
- *   - Keeps upstream analytics event names because downstream datasets key on
- *     those event identifiers.
  */
 
 import type { Message } from '../../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type CacheSafeParams,
   type PromptSuggestionAppState,
   type PromptSuggestionRuntimeOptions,
@@ -25,8 +22,8 @@ import {
   getInitialPromptSuggestionSettings,
   getLastAssistantMessage,
   isAgentSwarmsEnabled,
+  logForDebugging,
   logError,
-  logEvent,
   runForkedAgent,
   toError,
 } from './runtime.js'
@@ -47,19 +44,9 @@ export function shouldEnablePromptSuggestion(
   // Env var overrides everything (for testing)
   const envOverride = process.env.AGENC_ENABLE_PROMPT_SUGGESTION
   if (isEnvDefinedFalsy(envOverride)) {
-    logEvent('tengu_prompt_suggestion_init', {
-      enabled: false,
-      source:
-        'env' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     return false
   }
   if (isEnvTruthy(envOverride)) {
-    logEvent('tengu_prompt_suggestion_init', {
-      enabled: true,
-      source:
-        'env' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     return true
   }
 
@@ -68,21 +55,11 @@ export function shouldEnablePromptSuggestion(
     settings?.promptSuggestionFeatureEnabled ??
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false)
   if (!promptSuggestionFeatureEnabled) {
-    logEvent('tengu_prompt_suggestion_init', {
-      enabled: false,
-      source:
-        'growthbook' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     return false
   }
 
   // Disable in non-interactive mode (print mode, piped input, SDK)
   if (settings?.isNonInteractiveSession) {
-    logEvent('tengu_prompt_suggestion_init', {
-      enabled: false,
-      source:
-        'non_interactive' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     return false
   }
 
@@ -90,23 +67,13 @@ export function shouldEnablePromptSuggestion(
   const agentSwarmsEnabled =
     settings?.agentSwarmsEnabled ?? isAgentSwarmsEnabled()
   if (agentSwarmsEnabled && settings?.isTeammateSession) {
-    logEvent('tengu_prompt_suggestion_init', {
-      enabled: false,
-      source:
-        'swarm_teammate' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
     return false
   }
 
-  const enabled =
+  return (
     getInitialPromptSuggestionSettings(settings).promptSuggestionEnabled !==
     false
-  logEvent('tengu_prompt_suggestion_init', {
-    enabled,
-    source:
-      'setting' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
-  return enabled
+  )
 }
 
 export function abortPromptSuggestion(): void {
@@ -493,21 +460,9 @@ export function logSuggestionSuppressed(
   source?: 'cli' | 'sdk',
 ): void {
   const resolvedPromptId = promptId ?? getPromptVariant()
-  logEvent('tengu_prompt_suggestion', {
-    ...(source && {
-      source:
-        source as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    }),
-    outcome:
-      'suppressed' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    reason:
-      reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    prompt_id:
-      resolvedPromptId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    ...(process.env.USER_TYPE === 'ant' &&
-      suggestion && {
-        suggestion:
-          suggestion as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      }),
-  })
+  logForDebugging(
+    `[PromptSuggestion] suppressed ${resolvedPromptId}: ${reason}` +
+      `${source ? ` (${source})` : ''}` +
+      `${suggestion ? `; suggestion=${JSON.stringify(suggestion)}` : ''}`,
+  )
 }

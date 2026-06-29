@@ -10,6 +10,40 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   });
 }
 
+function concatBytes(...chunks: readonly Uint8Array[]): Uint8Array {
+  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function eventStreamFrame(payload: Record<string, unknown>): Uint8Array {
+  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
+  const totalLength = 16 + payloadBytes.length;
+  const frame = new Uint8Array(totalLength);
+  const view = new DataView(frame.buffer);
+  view.setUint32(0, totalLength, false);
+  view.setUint32(4, 0, false);
+  view.setUint32(8, 0, false);
+  frame.set(payloadBytes, 12);
+  view.setUint32(totalLength - 4, 0, false);
+  return frame;
+}
+
+function eventStreamResponse(
+  events: readonly Record<string, unknown>[],
+  status = 200,
+): Response {
+  return new Response(concatBytes(...events.map(eventStreamFrame)), {
+    status,
+    headers: { "content-type": "application/vnd.amazon.eventstream" },
+  });
+}
+
 function payloadHash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -475,31 +509,59 @@ describe("providers/bedrock", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("parses toolUse responses and exposes chatStream as a non-streaming fallback", async () => {
+  it("streams ConverseStream text, tool input, final tool calls, and usage", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        output: {
-          message: {
-            role: "assistant",
-            content: [
-              { text: "Need a lookup." },
-              {
-                toolUse: {
-                  toolUseId: "toolu-1",
-                  name: "lookup",
-                  input: { query: "status" },
-                },
-              },
-            ],
+      eventStreamResponse([
+        { messageStart: { role: "assistant" } },
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 0,
+            delta: { text: "Need " },
           },
         },
-        stopReason: "tool_use",
-        usage: {
-          inputTokens: 3,
-          outputTokens: 2,
-          totalTokens: 5,
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 0,
+            delta: { text: "a lookup." },
+          },
         },
-      }),
+        {
+          contentBlockStart: {
+            contentBlockIndex: 1,
+            start: {
+              toolUse: {
+                toolUseId: "toolu-1",
+                name: "lookup",
+              },
+            },
+          },
+        },
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 1,
+            delta: { toolUse: { input: "{\"query\"" } },
+          },
+        },
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 1,
+            delta: { toolUse: { input: ":\"status\"}" } },
+          },
+        },
+        { contentBlockStop: { contentBlockIndex: 1 } },
+        { messageStop: { stopReason: "tool_use" } },
+        {
+          metadata: {
+            usage: {
+              inputTokens: 3,
+              outputTokens: 2,
+              totalTokens: 5,
+              cacheReadInputTokens: 1,
+              cacheWriteInputTokens: 1,
+            },
+          },
+        },
+      ]),
     );
     const provider = new BedrockProvider({
       accessKeyId: "AKIDEXAMPLE",
@@ -516,6 +578,15 @@ describe("providers/bedrock", () => {
     );
 
     expect(response.finishReason).toBe("tool_calls");
+    expect(response.content).toBe("Need a lookup.");
+    expect(response.usage).toMatchObject({
+      promptTokens: 3,
+      completionTokens: 2,
+      totalTokens: 5,
+      cachedInputTokens: 1,
+      cacheCreationInputTokens: 1,
+    });
+    expect(response.requestMetrics.stream).toBe(true);
     expect(response.toolCalls).toEqual([
       {
         id: "toolu-1",
@@ -523,8 +594,52 @@ describe("providers/bedrock", () => {
         arguments: "{\"query\":\"status\"}",
       },
     ]);
-    expect(chunks).toEqual([
-      { content: "Need a lookup.", done: false },
+    expect(chunks).toMatchObject([
+      { content: "Need ", done: false },
+      { content: "a lookup.", done: false },
+      {
+        content: "",
+        done: false,
+        toolInputBlockStart: {
+          callId: "toolu-1",
+          index: 1,
+          contentBlock: {
+            type: "tool_use",
+            id: "toolu-1",
+            name: "lookup",
+            input: {},
+          },
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolInputDelta: {
+          callId: "toolu-1",
+          index: 1,
+          partialJson: "{\"query\"",
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolInputDelta: {
+          callId: "toolu-1",
+          index: 1,
+          partialJson: ":\"status\"}",
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolCalls: [
+          {
+            id: "toolu-1",
+            name: "lookup",
+            arguments: "{\"query\":\"status\"}",
+          },
+        ],
+      },
       {
         content: "",
         done: true,
@@ -537,27 +652,35 @@ describe("providers/bedrock", () => {
         ],
       },
     ]);
+    const [requestUrl] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse-stream",
+    );
   });
 
   it("emits only the done chunk for tool-call-only stream responses", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        output: {
-          message: {
-            role: "assistant",
-            content: [
-              {
-                toolUse: {
-                  toolUseId: "toolu-1",
-                  name: "lookup",
-                  input: { query: "status" },
-                },
+      eventStreamResponse([
+        {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: {
+              toolUse: {
+                toolUseId: "toolu-1",
+                name: "lookup",
               },
-            ],
+            },
           },
         },
-        stopReason: "tool_use",
-      }),
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 0,
+            delta: { toolUse: { input: "{\"query\":\"status\"}" } },
+          },
+        },
+        { contentBlockStop: { contentBlockIndex: 0 } },
+        { messageStop: { stopReason: "tool_use" } },
+      ]),
     );
     const provider = new BedrockProvider({
       accessKeyId: "AKIDEXAMPLE",
@@ -573,7 +696,35 @@ describe("providers/bedrock", () => {
     );
 
     expect(response.content).toBe("");
-    expect(chunks).toEqual([
+    expect(chunks).toMatchObject([
+      {
+        content: "",
+        done: false,
+        toolInputBlockStart: {
+          callId: "toolu-1",
+          index: 0,
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolInputDelta: {
+          callId: "toolu-1",
+          index: 0,
+          partialJson: "{\"query\":\"status\"}",
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolCalls: [
+          {
+            id: "toolu-1",
+            name: "lookup",
+            arguments: "{\"query\":\"status\"}",
+          },
+        ],
+      },
       {
         content: "",
         done: true,
@@ -586,6 +737,28 @@ describe("providers/bedrock", () => {
         ],
       },
     ]);
+  });
+
+  it("surfaces ConverseStream event errors", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      eventStreamResponse([
+        {
+          modelStreamErrorException: {
+            message: "model stream broke",
+          },
+        },
+      ]),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chatStream([{ role: "user", content: "hello" }], () => {}),
+    ).rejects.toThrow(/model stream broke/);
   });
 
   it("surfaces Bedrock HTTP errors with the provider message", async () => {

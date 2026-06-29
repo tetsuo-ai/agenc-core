@@ -204,6 +204,50 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
+  it("rejects normal requests beyond the per-connection queue cap", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let releaseFirst: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      maxQueuedRequests: 1,
+      onMessage: async (message) => {
+        if (message.id === 1) {
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+      },
+    });
+    transport.start();
+
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session.clear"}\n');
+    await firstStarted;
+    input.write('{"jsonrpc":"2.0","id":2,"method":"message.send"}\n');
+
+    const rejected = JSON.parse(await nextChunk(output));
+    expect(rejected).toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: 2,
+      error: {
+        code: -32000,
+        data: {
+          code: "TOO_MANY_QUEUED_REQUESTS",
+          maxQueuedRequests: 1,
+        },
+      },
+    });
+
+    releaseFirst?.();
+    await transport.close();
+  });
+
   it("tears down the connection when an unterminated line exceeds the cap", async () => {
     // Regression for audit #14: readline imposes no max line length, so a
     // peer streaming bytes without a newline grew daemon memory unbounded.

@@ -29,9 +29,6 @@
  *        is the turn stamp callers validate against the current turn.
  *
  * Explicitly deferred vs donor runtime:
- *   - OTEL `tool_decision` emission: T7 has no otel bridge yet; we
- *     emit a session event via the caller-supplied hook instead of
- *     spawning a SessionTelemetry call at this layer.
  *   - Deferred network approval workflow (`DeferredNetworkApproval`)
  *     is out of scope — covered by the network-approval tranche.
  *

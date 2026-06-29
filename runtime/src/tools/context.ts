@@ -138,14 +138,13 @@ export function createTurnDiffTracker(): SharedTurnDiffTracker {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Telemetry preview — byte-boundary + line-limit truncation with a
+// Log preview — byte-boundary + line-limit truncation with a
 // trailing notice marker.
 // ─────────────────────────────────────────────────────────────────────
 
-export const TELEMETRY_PREVIEW_MAX_BYTES = 2 * 1024; // 2 KiB
-export const TELEMETRY_PREVIEW_MAX_LINES = 64;
-export const TELEMETRY_PREVIEW_TRUNCATION_NOTICE =
-  "[... telemetry preview truncated ...]";
+export const LOG_PREVIEW_MAX_BYTES = 2 * 1024; // 2 KiB
+export const LOG_PREVIEW_MAX_LINES = 64;
+export const LOG_PREVIEW_TRUNCATION_NOTICE = "[... log preview truncated ...]";
 
 /**
  * Take up to `maxBytes` bytes from `s` respecting UTF-8 character
@@ -168,16 +167,16 @@ function takeBytesAtCharBoundary(s: string, maxBytes: number): string {
  * truncation notice only when truncation occurred. Byte boundary is
  * UTF-8 safe.
  */
-export function telemetryPreview(content: string): string {
-  return telemetryPreviewWith(
+export function boundedLogPreview(content: string): string {
+  return boundedLogPreviewWith(
     content,
-    TELEMETRY_PREVIEW_MAX_BYTES,
-    TELEMETRY_PREVIEW_MAX_LINES,
+    LOG_PREVIEW_MAX_BYTES,
+    LOG_PREVIEW_MAX_LINES,
   );
 }
 
 /** Test-visible parameterized variant. */
-export function telemetryPreviewWith(
+export function boundedLogPreviewWith(
   content: string,
   byteLimit: number,
   lineLimit: number,
@@ -226,7 +225,7 @@ export function telemetryPreviewWith(
   if (preview.length > 0 && !preview.endsWith("\n")) {
     preview += "\n";
   }
-  preview += TELEMETRY_PREVIEW_TRUNCATION_NOTICE;
+  preview += LOG_PREVIEW_TRUNCATION_NOTICE;
   return preview;
 }
 
@@ -775,10 +774,10 @@ export function toText(output: ToolOutput): string {
 }
 
 /**
- * Render a telemetry-safe log preview.
+ * Render a bounded local log preview.
  */
 export function logPreview(output: ToolOutput): string {
-  return telemetryPreview(toText(output));
+  return boundedLogPreview(toText(output));
 }
 
 /**

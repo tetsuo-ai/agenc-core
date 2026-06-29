@@ -70,8 +70,7 @@ function withoutHostManagedProviderVars(
 /**
  * Snapshot of env keys present before any settings.env is applied — for CCD,
  * these are the keys the desktop host set to orchestrate the subprocess.
- * Settings must not override them (OTEL_LOGS_EXPORTER=console would corrupt
- * the stdio JSON-RPC transport). Keys added LATER by user/project settings
+ * Settings must not override them. Keys added LATER by user/project settings
  * are not in this set, so mid-session settings.json changes still apply.
  * Lazy-captured on first applySafeConfigEnvironmentVariables() call.
  */
@@ -141,7 +140,7 @@ export function applySafeConfigEnvironmentVariables(): void {
 
   // Global config (~/.agenc.json) is user-controlled. In CCD mode,
   // filterSettingsEnv strips keys that were in the spawn env snapshot so
-  // the desktop host's operational vars (OTEL, etc.) are not overridden.
+  // the desktop host's operational vars are not overridden.
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
   // Apply ALL env vars from trusted setting sources, policySettings last.

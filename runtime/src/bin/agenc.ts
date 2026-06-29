@@ -82,6 +82,7 @@ import {
   buildAssembleSystemPromptOpts,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
+import { getOutputStyleConfig } from "../constants/outputStyles.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
@@ -328,6 +329,8 @@ export function formatCliHelpText(): string {
     "  -h, --help                              Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  -p, --print                             Run in headless one-shot print mode",
+    "  --output-format <format>                 Print mode output: text, json, or stream-json",
+    "  --input-format <format>                  Print mode input: stream-json",
     "  --no-tui                                 Force one-shot CLI mode",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
@@ -453,6 +456,107 @@ async function readStdin(signal: AbortSignal): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
+type OneShotOutputFormat = "text" | "json" | "stream-json";
+type OneShotInputFormat = "stream-json";
+
+function firstFlagValue(
+  argv: readonly string[],
+  flag: string,
+): string | undefined {
+  return extractFlagValues(argv, flag)[0];
+}
+
+function readOneShotOutputFormat(
+  argv: readonly string[] = process.argv.slice(2),
+): OneShotOutputFormat {
+  const raw = firstFlagValue(argv, "--output-format");
+  if (raw === undefined || raw === "text") return "text";
+  if (raw === "json" || raw === "stream-json") return raw;
+  throw new Error(
+    `unknown output format '${raw}'. Expected one of: text, json, stream-json`,
+  );
+}
+
+function readOneShotInputFormat(
+  argv: readonly string[] = process.argv.slice(2),
+): OneShotInputFormat | undefined {
+  const raw = firstFlagValue(argv, "--input-format");
+  if (raw === undefined) return undefined;
+  if (raw === "stream-json") return raw;
+  throw new Error(
+    `unknown input format '${raw}'. Expected one of: stream-json`,
+  );
+}
+
+function contentTextFromStreamJsonValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return null;
+  const parts: string[] = [];
+  for (const part of value) {
+    if (
+      isRecord(part) &&
+      part.type === "text" &&
+      typeof part.text === "string"
+    ) {
+      parts.push(part.text);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+function promptTextFromStreamJsonRecord(record: unknown): string | null {
+  if (typeof record === "string") return record;
+  if (!isRecord(record)) return null;
+  if (record.type === "prompt" && typeof record.prompt === "string") {
+    return record.prompt;
+  }
+  if (record.type === "input_text" && typeof record.text === "string") {
+    return record.text;
+  }
+  if (
+    record.type === "message" &&
+    (record.role === undefined || record.role === "user")
+  ) {
+    return contentTextFromStreamJsonValue(record.content);
+  }
+  if (record.role === "user") {
+    return (
+      contentTextFromStreamJsonValue(record.content) ??
+      (typeof record.text === "string" ? record.text : null) ??
+      (typeof record.message === "string" ? record.message : null)
+    );
+  }
+  return null;
+}
+
+export function parseStreamJsonPrompt(input: string): string {
+  const messages: string[] = [];
+  const lines = input.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!.trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      throw new Error(
+        `invalid stream-json input on line ${index + 1}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const text = promptTextFromStreamJsonRecord(parsed);
+    if (text !== null && text.length > 0) {
+      messages.push(text);
+    }
+  }
+  if (messages.length === 0) {
+    throw new Error(
+      "stream-json input did not contain a prompt or user message",
+    );
+  }
+  return messages.join("\n\n");
+}
+
 async function resolveUserMessage(signal: AbortSignal): Promise<string> {
   // Strip routing-level flags (--no-tui, --resume) before treating the
   // residue as the prompt; T12 routing peels these off upstream but
@@ -463,7 +567,11 @@ async function resolveUserMessage(signal: AbortSignal): Promise<string> {
     return argv.join(" ").trim();
   }
   const piped = await readStdin(signal);
-  if (piped) return piped;
+  if (piped) {
+    return readOneShotInputFormat(userArgv) === "stream-json"
+      ? parseStreamJsonPrompt(piped)
+      : piped;
+  }
   if (extractFlagValues(userArgv, "--image").length > 0) return "";
   throw new Error(
     "no prompt provided — pass as argv (`agenc ...`) or pipe via stdin",
@@ -851,6 +959,7 @@ export async function* runSingleTurn(
       memoryPrompt: turnInputs.memoryPromptText,
       mcpServers: turnInputs.mcpServers,
       enabledToolNames: turnInputs.enabledToolNames,
+      outputStyle: await getOutputStyleConfig(),
       provider: opts.provider,
       permissionContext,
       autonomousMode:
@@ -1661,6 +1770,18 @@ type DaemonOneShotFinalStatus = {
   readonly message?: string;
 };
 
+type OneShotJsonResult = {
+  readonly type: "result";
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly exitCode: number;
+  readonly finalMessage: string;
+  readonly deniedPermissionRequestIds: readonly string[];
+  readonly tokenUsage?: unknown;
+  readonly cacheStats?: unknown;
+  readonly events?: readonly unknown[];
+};
+
 function isJsonRecord(value: unknown): value is JsonObject {
   return isRecord(value);
 }
@@ -1708,6 +1829,25 @@ function daemonOneShotMessageChunk(event: unknown): string | null {
     return `${payload.message}\n`;
   }
   return null;
+}
+
+function writeOneShotJsonLine(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function oneShotSnapshotFields(snapshot: unknown): Pick<
+  OneShotJsonResult,
+  "tokenUsage" | "cacheStats"
+> {
+  if (!isJsonRecord(snapshot)) return {};
+  return {
+    ...(isJsonRecord(snapshot.tokenUsage)
+      ? { tokenUsage: snapshot.tokenUsage }
+      : {}),
+    ...(isJsonRecord(snapshot.cacheStats)
+      ? { cacheStats: snapshot.cacheStats }
+      : {}),
+  };
 }
 
 /**
@@ -1799,6 +1939,7 @@ async function runDaemonOneShotPrompt(params: {
   readonly prompt: string;
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
+  readonly outputFormat?: OneShotOutputFormat;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
@@ -1818,7 +1959,10 @@ async function runDaemonOneShotPrompt(params: {
   let unsubscribeConnection: (() => void) | null = null;
   let completed = false;
   let printedAssistantOutput = false;
+  let assistantOutput = "";
   let lastPrintedChar = "";
+  const outputFormat = params.outputFormat ?? "text";
+  const collectedEvents: unknown[] = [];
 
   try {
     const createParams: AgentCreateParams = {
@@ -1854,6 +1998,7 @@ async function runDaemonOneShotPrompt(params: {
     const deniedPermissionRequestIds = new Set<string>();
     const code = await new Promise<number>((resolve, reject) => {
       let settled = false;
+      let finalizing = false;
       const settle = (next: { readonly code: number } | { readonly error: Error }) => {
         if (settled) return;
         settled = true;
@@ -1863,6 +2008,38 @@ async function runDaemonOneShotPrompt(params: {
           reject(next.error);
         } else {
           resolve(next.code);
+        }
+      };
+      const snapshotFieldsForStructuredOutput =
+        async (): Promise<Pick<OneShotJsonResult, "tokenUsage" | "cacheStats">> => {
+          if (outputFormat === "text") return {};
+          try {
+            return oneShotSnapshotFields(
+              await daemonClient.request("session.snapshot", { sessionId }),
+            );
+          } catch {
+            return {};
+          }
+        };
+      const writeFinalResult = async (result: {
+        readonly exitCode: number;
+        readonly finalMessage: string;
+      }): Promise<void> => {
+        if (outputFormat === "text") return;
+        const jsonResult: OneShotJsonResult = {
+          type: "result",
+          sessionId,
+          agentId: started.agentId,
+          exitCode: result.exitCode,
+          finalMessage: result.finalMessage,
+          deniedPermissionRequestIds: [...deniedPermissionRequestIds],
+          ...(await snapshotFieldsForStructuredOutput()),
+          ...(outputFormat === "json" ? { events: collectedEvents } : {}),
+        };
+        if (outputFormat === "json") {
+          process.stdout.write(`${JSON.stringify(jsonResult)}\n`);
+        } else if (outputFormat === "stream-json") {
+          writeOneShotJsonLine(jsonResult);
         }
       };
 
@@ -1877,6 +2054,16 @@ async function runDaemonOneShotPrompt(params: {
       unsubscribeEvents = daemonClient.subscribeToSessionEvents(
         sessionId,
         (event) => {
+          if (outputFormat === "json") {
+            collectedEvents.push(event);
+          } else if (outputFormat === "stream-json") {
+            writeOneShotJsonLine({
+              type: "event",
+              sessionId,
+              agentId: started.agentId,
+              event,
+            });
+          }
           // Non-interactive one-shot has no human to answer a permission
           // request, so an unanswered "ask"/"pause" suspends the turn and the
           // run hangs forever. DENY it (never grant) so the agent continues and
@@ -1901,43 +2088,66 @@ async function runDaemonOneShotPrompt(params: {
 
           const chunk = daemonOneShotMessageChunk(event);
           if (chunk !== null && chunk.length > 0) {
-            process.stdout.write(chunk);
+            assistantOutput += chunk;
+            if (outputFormat === "text") {
+              process.stdout.write(chunk);
+            }
             printedAssistantOutput = true;
             lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
           }
 
           const finalStatus = daemonOneShotFinalStatus(event);
           if (finalStatus === null) return;
-          if (printedAssistantOutput) {
-            if (lastPrintedChar !== "\n") process.stdout.write("\n");
-          } else if (
-            finalStatus.code === 0 &&
-            finalStatus.message !== undefined &&
-            finalStatus.message.length > 0
-          ) {
-            process.stdout.write(`${finalStatus.message}\n`);
-          }
-          if (
-            finalStatus.code !== 0 &&
-            finalStatus.message !== undefined &&
-            finalStatus.message.length > 0
-          ) {
-            process.stderr.write(`${finalStatus.message}\n`);
-          }
-          // A tool-blocked giveup must NOT masquerade as a successful answer.
-          // When the run auto-denied a permission request (no human to approve;
-          // see daemonOneShotPermissionRequestId) and then "completed", the
-          // model gave up after its tool call was rejected. Override the
-          // otherwise-zero exit so callers/scripts can distinguish a real answer
-          // from a tool-blocked giveup, and surface a clear stderr marker. A run
-          // that denied nothing keeps its normal exit code, so genuine no-tool
-          // answers still exit 0 and genuine daemon errors still exit non-zero.
-          if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
-            process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
-            settle({ code: ONE_SHOT_TOOL_DENIED_EXIT_CODE });
-            return;
-          }
-          settle({ code: finalStatus.code });
+          if (finalizing) return;
+          finalizing = true;
+          void (async () => {
+            const finalMessage =
+              finalStatus.message ?? assistantOutput.trimEnd();
+            if (outputFormat === "text" && printedAssistantOutput) {
+              if (lastPrintedChar !== "\n") process.stdout.write("\n");
+            } else if (
+              outputFormat === "text" &&
+              finalStatus.code === 0 &&
+              finalStatus.message !== undefined &&
+              finalStatus.message.length > 0
+            ) {
+              process.stdout.write(`${finalStatus.message}\n`);
+            }
+            if (
+              finalStatus.code !== 0 &&
+              finalStatus.message !== undefined &&
+              finalStatus.message.length > 0
+            ) {
+              process.stderr.write(`${finalStatus.message}\n`);
+            }
+            // A tool-blocked giveup must NOT masquerade as a successful answer.
+            // When the run auto-denied a permission request (no human to approve;
+            // see daemonOneShotPermissionRequestId) and then "completed", the
+            // model gave up after its tool call was rejected. Override the
+            // otherwise-zero exit so callers/scripts can distinguish a real answer
+            // from a tool-blocked giveup, and surface a clear stderr marker. A run
+            // that denied nothing keeps its normal exit code, so genuine no-tool
+            // answers still exit 0 and genuine daemon errors still exit non-zero.
+            if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
+              process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
+              await writeFinalResult({
+                exitCode: ONE_SHOT_TOOL_DENIED_EXIT_CODE,
+                finalMessage,
+              });
+              settle({ code: ONE_SHOT_TOOL_DENIED_EXIT_CODE });
+              return;
+            }
+            await writeFinalResult({
+              exitCode: finalStatus.code,
+              finalMessage,
+            });
+            settle({ code: finalStatus.code });
+          })().catch((error: unknown) => {
+            settle({
+              error:
+                error instanceof Error ? error : new Error(String(error)),
+            });
+          });
         },
       );
     });
@@ -1996,6 +2206,9 @@ export async function oneShotCLI(
     validateAgencHome();
     throwIfAborted("validateAgencHome");
     const agencHome = resolveAgencHome(process.env);
+    const oneShotArgv = process.argv.slice(2);
+    const outputFormat = readOneShotOutputFormat(oneShotArgv);
+    readOneShotInputFormat(oneShotArgv);
 
     const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
@@ -2065,7 +2278,6 @@ export async function oneShotCLI(
     // Forward --yolo / dangerously-skip flags to the daemon so the
     // print-mode oneShot agent runs under bypassPermissions, matching
     // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
-    const oneShotArgv = process.argv.slice(2);
     const isYoloOneShot =
       oneShotArgv.includes("--yolo") ||
       oneShotArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
@@ -2095,6 +2307,7 @@ export async function oneShotCLI(
       prompt: daemonPrompt,
       env: process.env,
       cwd: daemonCwd,
+      outputFormat,
       model: startup.model,
       provider: startup.provider,
       ...(startup.profileName !== undefined ? { profile: startup.profileName } : {}),

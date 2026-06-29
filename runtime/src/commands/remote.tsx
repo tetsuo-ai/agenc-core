@@ -65,7 +65,7 @@ function RemotePairModal(props: {
  */
 export const remoteCommand: SlashCommand = {
   name: "remote",
-  description: "Link this Mac to the AgenC phone app (code/QR) — control it from anywhere",
+  description: "Link this Mac to the AgenC phone app",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx: SlashCommandContext): Promise<SlashCommandResult> => {

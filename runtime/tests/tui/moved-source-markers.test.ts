@@ -37,7 +37,7 @@ describe("moved-source marker cleanup", () => {
     }
   });
 
-  test("owned live TUI files do not keep donor import or analytics residue", () => {
+  test("owned live TUI files do not keep donor import or obsolete runtime residue", () => {
     for (const file of [
       "runtime/src/tui/components/AutoModeOptInDialog.tsx",
       "runtime/src/tui/components/IdeOnboardingDialog.tsx",

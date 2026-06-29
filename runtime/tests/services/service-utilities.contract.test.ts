@@ -19,7 +19,6 @@ describe("service utility behavior anchors", () => {
 
     expect(notifier).toContain("sendNotification");
     expect(notifier).toContain("executeNotificationHooks");
-    expect(notifier).toContain("agenc_notification_method_used");
     expect(tokenEstimation).toContain("countMessagesTokensWithAPI");
     expect(tokenEstimation).toContain("VERTEX_COUNT_TOKENS_ALLOWED_BETAS");
     expect(tokenEstimation).toContain("CountTokensCommand");

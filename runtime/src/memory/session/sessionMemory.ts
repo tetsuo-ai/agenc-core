@@ -42,7 +42,6 @@ import { buildSessionMemoryUpdatePrompt, loadSessionMemoryTemplate } from "./pro
 import {
   createSessionMemoryState,
   getLastSummarizedMessageCount,
-  getSessionMemoryConfig,
   getToolCallsBetweenUpdates,
   hasMetInitializationThreshold,
   hasMetUpdateThreshold,
@@ -500,26 +499,6 @@ async function extractSessionMemory(
     recordExtractionTokenCount(tokenCountWithEstimation(context.messages), lane.state);
     setLastSummarizedMessageCount(context.messages.length, lane.state);
     setLastSummarizedMessageId(messageCountMarker(context.messages), lane.state);
-
-    const config = getSessionMemoryConfig(lane.state);
-    const analytics = (
-      context.session.services as {
-        readonly analyticsEventsClient?: {
-          emit(event: unknown): Promise<void>;
-        };
-      }
-    ).analyticsEventsClient;
-    if (typeof analytics?.emit === "function") {
-      await analytics
-        .emit({
-        type: "session_memory_extraction",
-        inputTokens: tokenCountWithEstimation(context.messages),
-        configMinimumMessageTokensToInit: config.minimumMessageTokensToInit,
-        configMinimumTokensBetweenUpdate: config.minimumTokensBetweenUpdate,
-        configToolCallsBetweenUpdates: config.toolCallsBetweenUpdates,
-        })
-        .catch(() => {});
-    }
 
     return { success: true, memoryPath: setup.memoryPath };
   } catch (error) {

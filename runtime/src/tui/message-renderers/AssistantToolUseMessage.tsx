@@ -13,7 +13,7 @@ import type { buildMessageLookups } from '../../utils/messages.js';
 import type { AgenCToolUseBlockParam } from '../../types/message.js';
 import { MessageResponse } from '../components/MessageResponse';
 import { useSelectedMessageBg } from '../components/messageActions';
-import { SentryErrorBoundary } from '../components/SentryErrorBoundary';
+import { TuiErrorBoundary } from '../components/TuiErrorBoundary';
 import { HookProgressMessage } from './HookProgressMessage';
 import { Tool as V2Tool, DiffInline, type ToolKind, type ToolState } from '../components/v2/primitives.js';
 import { extractTag } from '../../utils/messages.js';
@@ -504,9 +504,9 @@ function renderToolUseProgressMessage(tool: Tool, tools: Tools, lookups: ReturnT
       isTranscriptMode
     }) ?? null;
     return <>
-        <SentryErrorBoundary>
+        <TuiErrorBoundary>
           <HookProgressMessage hookEvent="PreToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
-        </SentryErrorBoundary>
+        </TuiErrorBoundary>
         {toolMessages}
       </>;
   } catch (error) {

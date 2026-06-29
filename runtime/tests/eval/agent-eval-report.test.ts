@@ -11,6 +11,11 @@ const scriptPath = resolve(
   "scripts",
   "check-agent-eval-report.mjs",
 );
+const runnerScriptPath = resolve(
+  runtimeRootPath,
+  "scripts",
+  "run-agent-eval.mjs",
+);
 const schemaPath = sourcePath("eval", "agent-eval-report.schema.json");
 
 function writeTempReport(report: unknown): string {
@@ -18,6 +23,10 @@ function writeTempReport(report: unknown): string {
   const reportPath = join(dir, "report.json");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   return reportPath;
+}
+
+function quoteArg(value: string): string {
+  return JSON.stringify(value);
 }
 
 function validReport() {
@@ -196,5 +205,132 @@ describe("check-agent-eval-report script", () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("expected exactly one report path");
     expect(result.stderr).toContain("Usage:");
+  });
+});
+
+describe("run-agent-eval script", () => {
+  test("runs a local manifest and writes a schema-valid eval report", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-eval-runner-"));
+    const agentPassPath = join(dir, "agent-pass.mjs");
+    const agentFailPath = join(dir, "agent-fail.mjs");
+    const verifierPassPath = join(dir, "verifier-pass.mjs");
+    const verifierFailPath = join(dir, "verifier-fail.mjs");
+    const manifestPath = join(dir, "tasks.json");
+    const reportPath = join(dir, "report.json");
+
+    writeFileSync(
+      agentPassPath,
+      "console.log(JSON.stringify({ tokenUsage: { input: 3, output: 2, total: 5 } }));\n",
+    );
+    writeFileSync(agentFailPath, "process.exit(2);\n");
+    writeFileSync(verifierPassPath, "process.exit(0);\n");
+    writeFileSync(
+      verifierFailPath,
+      "console.error('assertion failed'); process.exit(1);\n",
+    );
+
+    const node = quoteArg(process.execPath);
+    const manifest = {
+      benchmark: "runner-smoke",
+      agentCommand: `${node} ${quoteArg(agentPassPath)}`,
+      tasks: [
+        {
+          id: "pass",
+          prompt: "pass",
+          verifiers: [
+            {
+              name: "unit",
+              command: `${node} ${quoteArg(verifierPassPath)}`,
+            },
+          ],
+        },
+        {
+          id: "verifier-fail",
+          prompt: "fail verifier",
+          verifiers: [
+            {
+              name: "unit",
+              command: `${node} ${quoteArg(verifierFailPath)}`,
+            },
+          ],
+        },
+        {
+          id: "agent-error",
+          prompt: "agent fails",
+          agentCommand: `${node} ${quoteArg(agentFailPath)}`,
+          verifiers: [
+            {
+              name: "unit",
+              command: `${node} ${quoteArg(verifierPassPath)}`,
+            },
+          ],
+        },
+        {
+          id: "skip",
+          skip: true,
+          prompt: "skip",
+          verifiers: [
+            {
+              name: "unit",
+              command: `${node} ${quoteArg(verifierPassPath)}`,
+            },
+          ],
+        },
+      ],
+    };
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        runnerScriptPath,
+        "--tasks",
+        manifestPath,
+        "--output",
+        reportPath,
+        "--run-id",
+        "runner-test",
+        "--agent-name",
+        "agenc-test",
+        "--provider",
+        "local",
+        "--model",
+        "mock",
+      ],
+      {
+        cwd: runtimeRootPath,
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Wrote eval report:");
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    const validate = ajv.compile(schema);
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+
+    expect(report.run).toMatchObject({
+      id: "runner-test",
+      benchmark: "runner-smoke",
+      agent: {
+        name: "agenc-test",
+        provider: "local",
+        model: "mock",
+      },
+    });
+    expect(report.tasks.map((task: { status: string }) => task.status)).toEqual([
+      "passed",
+      "failed",
+      "error",
+      "skipped",
+    ]);
+    expect(report.tasks[0].tokens).toEqual({ input: 3, output: 2, total: 5 });
+    expect(report.tasks[1].riskFlags).toContain("verifier_failed");
+    expect(report.tasks[2].riskFlags).toContain("agent_command_failed");
+    expect(report.tasks[3].verifiers).toEqual([]);
   });
 });

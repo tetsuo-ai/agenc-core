@@ -205,7 +205,7 @@ const DANGEROUS_TYPES = new Set([
 ])
 
 /**
- * Numeric IDs for analytics (logEvent doesn't accept strings). Index into
+ * Numeric IDs for stable dangerous-node classification. Index into
  * DANGEROUS_TYPES. Append new entries at the end to keep IDs stable.
  * 0 = unknown/other, -1 = ERROR (parse failure), -2 = pre-check.
  */

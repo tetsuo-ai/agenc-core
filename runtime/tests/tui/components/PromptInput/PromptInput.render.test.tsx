@@ -52,7 +52,6 @@ const harness = vi.hoisted(() => {
       handler: (input: string, key: Record<string, boolean>, event?: unknown) => unknown
       options?: Record<string, unknown>
     }>,
-    promptSuggestionLogEvent: vi.fn(),
     promptInputFooterProps: undefined as undefined | Record<string, unknown>,
     processBashCommand: vi.fn(async () => ({
       messages: [],
@@ -151,7 +150,6 @@ const harness = vi.hoisted(() => {
     reset: () => {
       harness.addNotification.mockClear()
       harness.clearBuffer.mockClear()
-      harness.promptSuggestionLogEvent.mockClear()
       harness.promptInputFooterProps = undefined
       harness.processBashCommand.mockReset()
       harness.processBashCommand.mockResolvedValue({
@@ -270,10 +268,6 @@ vi.mock('bun:bundle', () => ({
 vi.mock('../../../services/PromptSuggestion/promptSuggestion.js', () => ({
   abortPromptSuggestion: vi.fn(),
   logSuggestionSuppressed: vi.fn(),
-}))
-
-vi.mock('../../../services/PromptSuggestion/runtime.js', () => ({
-  logEvent: harness.promptSuggestionLogEvent,
 }))
 
 vi.mock('../../../services/PromptSuggestion/speculation.js', () => ({
@@ -2003,15 +1997,6 @@ describe('PromptInput render surface', () => {
           vimRoutingState: expect.objectContaining({ enabled: false }),
         }),
       )
-      expect(harness.promptSuggestionLogEvent).toHaveBeenCalledWith(
-        'agenc_prompt_suggestion',
-        expect.objectContaining({
-          generationRequestId: 'generation-1',
-          outcome: 'accepted',
-          prompt_id: 'prompt-1',
-          source: 'cli',
-        }),
-      )
       expect(harness.appState.promptSuggestion).toEqual({
         acceptedAt: 0,
         generationRequestId: null,
@@ -2063,14 +2048,6 @@ describe('PromptInput render surface', () => {
           vimRoutingState: expect.objectContaining({ enabled: false }),
         }),
       )
-      expect(harness.promptSuggestionLogEvent).toHaveBeenCalledWith(
-        'agenc_prompt_suggestion',
-        expect.objectContaining({
-          outcome: 'accepted',
-          prompt_id: 'prompt-spec',
-          source: 'cli',
-        }),
-      )
       expect(harness.appState.promptSuggestion.text).toBe('finish via speculation')
       expect(harness.appState.promptSuggestion.acceptedAt).toBeGreaterThan(0)
     } finally {
@@ -2117,19 +2094,19 @@ describe('PromptInput render surface', () => {
           mode: 'prompt',
         }),
       )
-      expect(harness.promptSuggestionLogEvent).toHaveBeenCalledWith(
-        'agenc_prompt_suggestion',
-        expect.objectContaining({
-          outcome: 'ignored',
-          prompt_id: 'prompt-attachments',
-        }),
-      )
       expect(harness.appState.workbench).toEqual(
         expect.objectContaining({
           attachments: [],
           composerAttachmentIds: [],
         }),
       )
+      expect(harness.appState.promptSuggestion).toEqual({
+        acceptedAt: 0,
+        generationRequestId: null,
+        promptId: null,
+        shownAt: 0,
+        text: null,
+      })
     } finally {
       await rendered.dispose()
     }

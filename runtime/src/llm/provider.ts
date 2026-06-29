@@ -20,7 +20,10 @@ import { OpenAIProvider } from "./providers/openai/adapter.js";
 import type { OpenAIProviderConfig } from "./providers/openai/types.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import type { AnthropicProviderConfig } from "./providers/anthropic/types.js";
-import { GeminiProvider } from "./providers/gemini/index.js";
+import {
+  GeminiProvider,
+  type GeminiProviderConfig,
+} from "./providers/gemini/index.js";
 import {
   BedrockProvider,
   bedrockBaseURLForRegion,
@@ -1445,7 +1448,7 @@ export function createProvider(
         "GEMINI_MODEL",
         defaultModelFor("gemini"),
       );
-      const cfg: OpenAIProviderConfig = {
+      const cfg: GeminiProviderConfig = {
         ...buildCommonConfig(extra),
         apiKey,
         model,
@@ -1457,7 +1460,10 @@ export function createProvider(
           normalizeBaseURL(process.env.GEMINI_BASE_URL) ??
           defaultBaseURLFor("gemini"),
         useResponsesApi: false,
-        authStrategy: "bearer",
+        authStrategy: "google_api_key",
+        ...(firstNonEmpty(process.env.GEMINI_CACHED_CONTENT)
+          ? { cachedContent: firstNonEmpty(process.env.GEMINI_CACHED_CONTENT) }
+          : {}),
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(extra.project ? { project: extra.project } : {}),

@@ -74,10 +74,6 @@ vi.mock('../../../bootstrap/state.js', () => ({
   getUserMsgOptIn: () => false,
 }))
 
-vi.mock('../../../services/analytics/growthbook.js', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => false,
-}))
-
 vi.mock('../../../utils/envUtils.js', () => ({
   isEnvTruthy: (value: string | undefined) => value === '1' || value === 'true',
 }))

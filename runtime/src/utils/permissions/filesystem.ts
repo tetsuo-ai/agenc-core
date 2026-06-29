@@ -307,7 +307,7 @@ function isProjectDirPath(absolutePath: string): boolean {
 /**
  * Checks if the scratchpad directory feature is enabled.
  * The scratchpad is a per-session directory for AgenC to write short-lived files.
- * Controlled by the tengu_scratch Statsig gate.
+ * Disabled in this open build; retained as a compatibility hook.
  */
 export function isScratchpadEnabled(): boolean {
   return false

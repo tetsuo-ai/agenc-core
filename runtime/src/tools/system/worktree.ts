@@ -540,7 +540,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         }
       }
 
-      // Re-count for accurate analytics (matches AgenC
+      // Re-count for accurate usage reporting (matches AgenC
       // `ExitWorktreeTool.call:256-259`). Null falls back to 0/0.
       const finalSummary =
         (await countWorktreeChanges(

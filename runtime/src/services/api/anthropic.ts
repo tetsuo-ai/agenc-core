@@ -54,7 +54,6 @@ import type {
 } from '../../types/message.js'
 import {
   type CacheScope,
-  logAPIPrefix,
   splitSysPromptPrefix,
   toolToAPISchema,
 } from '../../utils/api.js'
@@ -174,7 +173,6 @@ import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 import {
-  type EffortLevel,
   type EffortValue,
   modelSupportsEffort,
 } from 'src/utils/effort.js'
@@ -240,7 +238,6 @@ import {
   EMPTY_USAGE,
   type GlobalCacheStrategy,
   logAPIError,
-  logAPIQuery,
   logAPISuccessAndDuration,
   type NonNullableUsage,
 } from './logging.js'
@@ -1099,7 +1096,7 @@ async function* executeNonStreamingRequest(
 
 /**
  * Extracts the request ID from the most recent assistant message in the
- * conversation. Used to link consecutive API requests in analytics so we can
+ * conversation. Used to link consecutive API requests so we can
  * join them for cache-hit-rate analysis and incremental token tracking.
  *
  * Deriving this from the message array (rather than global state) ensures each
@@ -1459,7 +1456,7 @@ async function* queryModel(
   //
   // Why is this needed in addition to normalizeMessagesForAPI?
   // - normalizeMessagesForAPI uses isToolSearchEnabledNoModelCheck() because it's
-  //   called from ~20 places (analytics, feedback, sharing, etc.), many of which
+  //   called from ~20 places (feedback, sharing, etc.), many of which
   //   don't have model context. Adding model to its signature would be a large refactor.
   // - This post-processing uses the model-aware isToolSearchEnabled() check
   // - This handles mid-conversation model switching (e.g., Sonnet → Haiku) where
@@ -1550,9 +1547,6 @@ async function* queryModel(
       ...(injectChromeHere ? [CHROME_TOOL_SEARCH_INSTRUCTIONS] : []),
     ].filter(Boolean),
   )
-
-  // Prepend system prompt block for easy API identification
-  logAPIPrefix(systemPrompt)
 
   const enablePromptCaching =
     options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
@@ -1707,7 +1701,7 @@ async function* queryModel(
     : []
 
   // Capture the betas sent in the last API request, including the ones that
-  // were dynamically added, so we can log and send it to telemetry.
+  // were dynamically added, so retry handling can preserve request metadata.
   let lastRequestBetas: string[] | undefined
 
   const paramsFromContext = (retryContext: RetryContext) => {
@@ -1828,42 +1822,6 @@ async function* queryModel(
       }),
       ...(speed !== undefined && { speed }),
     }
-  }
-
-  // Compute log scalars synchronously so the fire-and-forget .then() closure
-  // captures only primitives instead of paramsFromContext's full closure scope
-  // (messagesForAPI, system, allTools, betas — the entire request-building
-  // context), which would otherwise be pinned until the promise resolves.
-  {
-    const queryParams = paramsFromContext({
-      model: options.model,
-      thinkingConfig,
-    })
-    const logMessagesLength = queryParams.messages.length
-    const logBetas = useBetas ? (queryParams.betas ?? []) : []
-    const logThinkingType = queryParams.thinking?.type ?? 'disabled'
-    // output_config.effort widens to include 'xhigh' (SDK), which is outside
-    // logAPIQuery's EffortLevel param; the value is only logged (discarded), so
-    // cast to the narrower union without changing the value.
-    const logEffortValue = queryParams.output_config?.effort as
-      | EffortLevel
-      | null
-      | undefined
-    void options.getToolPermissionContext().then(permissionContext => {
-      logAPIQuery({
-        model: options.model,
-        messagesLength: logMessagesLength,
-        temperature: options.temperatureOverride ?? 1,
-        betas: logBetas,
-        permissionMode: permissionContext.mode,
-        querySource: options.querySource,
-        queryTracking: options.queryTracking,
-        thinkingType: logThinkingType,
-        effortValue: logEffortValue,
-        fastMode: isFastMode,
-        previousRequestId,
-      })
-    })
   }
 
   const newMessages: AssistantMessage[] = []

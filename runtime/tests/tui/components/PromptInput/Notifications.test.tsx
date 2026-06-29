@@ -179,8 +179,8 @@ vi.mock('../../cost/MemoryUsageIndicator.js', async () => {
   }
 })
 
-vi.mock('../SentryErrorBoundary.js', () => ({
-  SentryErrorBoundary: ({ children }: { children: React.ReactNode }) =>
+vi.mock('../TuiErrorBoundary.js', () => ({
+  TuiErrorBoundary: ({ children }: { children: React.ReactNode }) =>
     React.createElement(React.Fragment, null, children),
 }))
 

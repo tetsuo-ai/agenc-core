@@ -57,11 +57,6 @@ vi.mock("../../keybindings/loadUserBindings.js", () => ({
   isKeybindingCustomizationEnabled: () => false,
 }));
 
-vi.mock("../../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: (_key: string, fallback: unknown) =>
-    fallback,
-}));
-
 vi.mock("../../../utils/fastMode.js", () => ({
   isFastModeAvailable: () => false,
   isFastModeEnabled: () => false,

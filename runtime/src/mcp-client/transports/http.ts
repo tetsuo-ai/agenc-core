@@ -13,6 +13,10 @@ import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import {
+  buildMcpHostClientCapabilities,
+  configureMcpHostRequestHandlers,
+} from "../../services/mcp/hostCapabilities.js";
 
 export interface MCPServerHttpConfig {
   readonly name: string;
@@ -52,11 +56,12 @@ export async function createHttpMCPConnection(
   const client = new Client(
     { name: "agenc-runtime", version: "0.2.0" },
     {
-      capabilities: elicitationHandlers === undefined
-        ? {}
-        : { elicitation: { form: {}, url: {} } },
+      capabilities: buildMcpHostClientCapabilities(
+        elicitationHandlers === undefined ? "none" : "form-url",
+      ),
     },
   );
+  configureMcpHostRequestHandlers(client, config.name);
   await configureMcpElicitationClient(
     client,
     config.name,

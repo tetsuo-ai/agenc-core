@@ -10,7 +10,7 @@
  *     store and dependency graph.
  *
  * Cross-cuts deliberately NOT carried:
- *   - Donor analytics/feature-flag nudges.
+ *   - Donor feature-flag nudges.
  *   - Donor teammate mailbox notifications.
  */
 

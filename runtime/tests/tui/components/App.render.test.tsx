@@ -831,7 +831,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     expect(animatedTerminalTitlePrefix(true, 1, { AGENC_TUI_GLYPHS: "ascii" })).toBe("+");
   });
 
-  test("cancel analytics stream mode follows the visible spinner mode", () => {
+  test("cancel stream mode follows the visible spinner mode", () => {
     for (const mode of [
       "requesting",
       "responding",

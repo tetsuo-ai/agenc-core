@@ -232,7 +232,7 @@ export type PermissionUpdate = ({
   destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
 })
 
-/** Classification of this permission decision for telemetry. SDK hosts that prompt users (desktop apps, IDEs) should set this to reflect what actually happened: user_temporary for allow-once, user_permanent for always-allow (both the click and later cache hits), user_reject for deny. If unset, the CLI infers conservatively (short-lived for allow, reject for deny). The vocabulary matches tool_decision OTel events (monitoring-usage docs). */
+/** Classification of this permission decision. SDK hosts that prompt users (desktop apps, IDEs) should set this to reflect what actually happened: user_temporary for allow-once, user_permanent for always-allow (both the click and later cache hits), user_reject for deny. If unset, the CLI infers conservatively (short-lived for allow, reject for deny). */
 export type PermissionDecisionClassification = "user_temporary" | "user_permanent" | "user_reject"
 
 export type PermissionResult = ({

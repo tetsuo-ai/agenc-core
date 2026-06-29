@@ -41,6 +41,7 @@ import {
   assembleTieredInstructions,
   loadTieredInstructions,
 } from "../prompts/agenc-md.js";
+import { getOutputStyleConfig } from "../constants/outputStyles.js";
 import { openCompactStatusModal } from "./compact-menu.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 
@@ -945,6 +946,7 @@ async function buildSyntheticSystemMessage(opts: {
       (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
         ?.autonomousMode === true;
     const provider = opts.ctx.modelProviderId;
+    const outputStyle = await getOutputStyleConfig();
     const assembled = await assembleSystemPrompt(
       buildAssembleSystemPromptOpts({
         session: opts.session,
@@ -960,6 +962,7 @@ async function buildSyntheticSystemMessage(opts: {
         provider,
         permissionContext,
         autonomousMode,
+        outputStyle,
       }),
     );
     return {

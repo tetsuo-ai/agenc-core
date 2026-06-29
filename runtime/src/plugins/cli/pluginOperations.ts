@@ -15,7 +15,6 @@ import {
   redactPluginSource,
   resolvePluginSource,
   shouldCopyPluginPayloadPath,
-  type PluginFetchTelemetry,
   type PluginProcessRunner,
   type PluginResolutionKind,
   type ResolvedPluginSource,
@@ -60,7 +59,6 @@ export interface InstallPluginInput extends PluginOperationOptions {
   readonly publishersPath?: string;
   readonly runResolutionProcess?: PluginProcessRunner;
   readonly fetchResolutionBytes?: (url: string) => Promise<Uint8Array>;
-  readonly onPluginFetchTelemetry?: (event: PluginFetchTelemetry) => void;
 }
 
 export interface InstallPluginResult {
@@ -109,7 +107,6 @@ export interface UpdatePluginInput extends PluginOperationOptions {
   readonly publishersPath?: string;
   readonly runResolutionProcess?: PluginProcessRunner;
   readonly fetchResolutionBytes?: (url: string) => Promise<Uint8Array>;
-  readonly onPluginFetchTelemetry?: (event: PluginFetchTelemetry) => void;
 }
 
 export interface UpdatePluginResult extends InstallPluginResult {
@@ -250,7 +247,6 @@ export async function installPluginOp(
       publishersPath: input.publishersPath,
       runProcess: input.runResolutionProcess,
       fetchBytes: input.fetchResolutionBytes,
-      onTelemetry: input.onPluginFetchTelemetry,
     });
     source = resolved.pluginRoot;
     resolutionKind = resolved.kind;

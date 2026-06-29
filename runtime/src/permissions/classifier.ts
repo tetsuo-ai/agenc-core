@@ -11,7 +11,7 @@
  *     xAI/Grok provider path for Bash actions, with manual-approval fallback
  *     for tools without a live local classifier path.
  *   - `formatActionForClassifier` — deterministic one-line summary of the
- *     action for the classifier prompt (also used in analytics).
+ *     action for the classifier prompt.
  *   - `isAutoModeGateEnabled` — local circuit breaker. Default on only when
  *     the xAI-backed classifier is reachable; tests can override it.
  *
@@ -863,7 +863,7 @@ function normalizeRuntimeBashInput(
 
 /**
  * Deterministic one-line summary of a tool invocation. Used by the
- * classifier prompt and by analytics. Intentionally simple:
+ * classifier prompt. Intentionally simple:
  *
  *   - Tool name
  *   - Compact JSON of the input (stable key order is the caller's

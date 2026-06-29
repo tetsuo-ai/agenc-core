@@ -22,6 +22,41 @@ Print a machine-readable summary:
 npm --workspace=@tetsuo-ai/runtime run check:agent-eval-report -- path/to/report.json --json
 ```
 
+Run a local task manifest and emit a report:
+
+```bash
+npm --workspace=@tetsuo-ai/runtime run eval:agent -- \
+  --tasks path/to/tasks.json \
+  --output path/to/report.json \
+  --agent-command 'agenc --output-format json {prompt}'
+```
+
+Minimal manifest:
+
+```json
+{
+  "benchmark": "local-smoke",
+  "tasks": [
+    {
+      "id": "task-001",
+      "prompt": "Fix the failing test.",
+      "verifiers": [
+        {
+          "name": "unit-tests",
+          "command": "npm test"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Task-level `agentCommand` overrides the manifest or CLI `--agent-command`.
+Commands run locally with placeholders `{prompt}`, `{promptJson}`, `{taskId}`,
+and `{cwd}` shell-quoted into the command string. The runner records command
+exit codes, verifier status, token usage when structured agent stdout exposes
+`tokenUsage` or `usage`, and validates the generated report against the schema.
+
 Minimal report:
 
 ```json

@@ -108,7 +108,7 @@ import {
 } from "./schema-errors.js";
 import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
 // Inline copies of donor TS `utils/messages.ts` constants. The full
-// messages.ts is a heavy port that pulls in `bun:bundle`, analytics,
+// messages.ts is a heavy port that pulls in `bun:bundle`,
 // and the entire session service graph; importing two constants from
 // it bricks the whole tools/ test surface. The canonical strings are
 // authored once here and mirrored by the UI surface (T7 wires the

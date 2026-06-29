@@ -2,13 +2,11 @@
  * Shell-agnostic git operation tracking for usage metrics.
  *
  * Detects `git commit`, `git push`, `gh pr create`, `glab mr create`, and
- * curl-based PR creation in command strings, then increments OTLP counters.
+ * curl-based PR creation in command strings.
  * The regexes operate on raw command text so they
  * work identically for Bash and PowerShell (both invoke git/gh/glab/curl as
  * external binaries with the same argv syntax).
  */
-
-import { getCommitCounter, getPrCounter } from '../../bootstrap/state.js'
 
 /**
  * Build a regex that matches `git <subcmd>` while tolerating git's global
@@ -191,12 +189,8 @@ export function trackGitOperations(
     return
   }
 
-  if (GIT_COMMIT_RE.test(command)) {
-    getCommitCounter()?.add(1)
-  }
   const prHit = GH_PR_ACTIONS.find(a => a.re.test(command))
   if (prHit?.action === 'created') {
-    getPrCounter()?.add(1)
     // Auto-link session to PR if we can extract PR URL from stdout
     if (stdout) {
       const prInfo = findPrInStdout(stdout)
@@ -219,24 +213,5 @@ export function trackGitOperations(
         )
       }
     }
-  }
-  if (command.match(/\bglab\s+mr\s+create\b/)) {
-    getPrCounter()?.add(1)
-  }
-  // Detect PR creation via curl to REST APIs (Bitbucket, GitHub API, GitLab API)
-  // Check for POST method and PR endpoint separately to handle any argument order
-  // Also detect implicit POST when -d is used (curl defaults to POST with data)
-  const isCurlPost =
-    command.match(/\bcurl\b/) &&
-    (command.match(/-X\s*POST\b/i) ||
-      command.match(/--request\s*=?\s*POST\b/i) ||
-      command.match(/\s-d\s/))
-  // Match PR endpoints in URLs, but not sub-resources like /pulls/123/comments
-  // Require https?:// prefix to avoid matching text in POST body or other params
-  const isPrEndpoint = command.match(
-    /https?:\/\/[^\s'"]*\/(pulls|pull-requests|merge[-_]requests)(?!\/\d)/i,
-  )
-  if (isCurlPost && isPrEndpoint) {
-    getPrCounter()?.add(1)
   }
 }

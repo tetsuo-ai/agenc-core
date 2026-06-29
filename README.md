@@ -110,12 +110,22 @@ Run a one-shot prompt without the TUI:
 node runtime/bin/agenc --no-tui "summarize this repository"
 ```
 
+Emit structured output from print mode for scripts/CI:
+
+```bash
+node runtime/bin/agenc --print --output-format stream-json "summarize this repository"
+```
+
 Initialize local project config:
 
 ```bash
 node runtime/bin/agenc init
 node runtime/bin/agenc config validate
 ```
+
+`agenc init` scans the current repository before writing `AGENC.md`, using
+README files, manifests, scripts, and top-level structure to seed project
+instructions. Use `agenc init --force` to replace an existing file.
 
 ## Usage
 
@@ -149,6 +159,8 @@ Common flags:
 
 ```text
 -p, --print                                   headless one-shot mode
+--output-format <text|json|stream-json>       set print-mode output format
+--input-format <stream-json>                  read print-mode JSONL input
 --no-tui                                       run without the TUI
 --continue                                     continue the latest session
 --resume <session-id>                          resume a specific session
@@ -164,6 +176,11 @@ Common flags:
 ```
 
 Use `agenc help <command>` for command-specific help.
+
+Slash commands in the TUI include `/init`, which runs the same analyzed project
+instruction generator, and `/output-style` / `/style`, which lists or switches
+the active output style for the current project. `/output-style:new <name>`
+starts an agent-authored style file under `.agenc/output-styles/`.
 
 ### Daemon
 
@@ -233,7 +250,14 @@ that home. Key knobs:
 | `AGENC_LOCAL_VLLM_MODEL` | Optional model override for `npm run check:local-vllm`. |
 | `AGENC_DAEMON_AUTOSTART=0` | Disable launcher daemon autostart. |
 | `AGENC_DAEMON_READY_TIMEOUT_MS` | Launcher daemon-ready timeout. |
+| `AGENC_TRAJECTORY_EXPORT_PATH` | Opt-in local JSONL trajectory export file, or a directory for per-session files. |
+| `AGENC_TRAJECTORY_EXPORT_DIR` | Opt-in local JSONL trajectory export directory. |
 | `config.toml` (via `agenc config`) | Persisted config: providers, MCP servers, permissions, profiles. |
+
+AgenC does not emit product event streams or hosted trace exports. Diagnostics
+are local, and trajectory export is off by default; when enabled with the
+environment variables above it writes redacted rollout items to local JSONL
+after the primary session log has been durably written.
 
 ## Architecture
 
@@ -329,6 +353,12 @@ an explicit DevNet live-validation path. See
 > (`systemd/agenc-daemon.service`, `launchd/dev.agenc.daemon.plist`,
 > `windows/agenc-daemon.xml`); each runs `agenc daemon start --foreground`.
 
+Release supply-chain artifacts are generated from the committed npm lockfile:
+`npm run sbom -- --output dist/agenc-core.spdx.json` writes an SPDX 2.3 SBOM,
+and `npm run check:sbom` validates the generated document shape. The launcher
+release workflow uploads that SBOM next to the runtime tarballs and publishes
+`@tetsuo-ai/agenc` with npm provenance enabled.
+
 ## Contributing
 
 1. **Branch off `main`** (never commit directly to it).
@@ -341,6 +371,11 @@ an explicit DevNet live-validation path. See
      TUI/daemon/entrypoint changes.
 4. Use **conventional commits** (`fix(runtime): …`); open a PR and squash-merge.
    Don't bypass git hooks (`--no-verify`).
+
+For new or moved user-facing strings, prefer the lightweight English-default
+message seam in `runtime/src/i18n/messages.ts` when the string belongs to a
+shared CLI/runtime boundary. Keep extraction narrow; this is a future l10n seam,
+not a full translation layer.
 
 A pre-commit hook is provided in `.githooks/` (build + PTY startup smoke); enable
 it with `git config core.hooksPath .githooks`.

@@ -924,7 +924,7 @@ export async function runInProcessTeammate(
     `[inProcessRunner] Starting agent loop for ${identity.agentId}`,
   )
 
-  // Create AgentContext for analytics attribution
+  // Create AgentContext for request attribution.
   const agentContext: AgentContext = {
     agentId: identity.agentId,
     parentSessionId: identity.parentSessionId,

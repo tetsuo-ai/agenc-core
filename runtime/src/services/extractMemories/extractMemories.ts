@@ -11,7 +11,7 @@
  *     `run-agent.ts`, not by the older `canUseTool` hook.
  *
  * Scope boundaries:
- *   - analytics, feature service lookups, team-memory routing, and shell access.
+ *   - remote feature-service lookups, team-memory routing, and shell access.
  */
 
 import { basename, isAbsolute, normalize, resolve } from "node:path";

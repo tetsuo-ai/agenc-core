@@ -694,7 +694,7 @@ export function initialPermissionModeFromCLI({
   const settingsDisableBypassPermissionsMode =
     settings.permissions?.disableBypassPermissionsMode === 'disable'
 
-  // Statsig gate takes precedence over settings
+  // Organization policy takes precedence over settings.
   const disableBypassPermissionsMode =
     growthBookDisableBypassPermissionsMode ||
     settingsDisableBypassPermissionsMode
@@ -763,7 +763,7 @@ export function initialPermissionModeFromCLI({
   for (const mode of orderedModes) {
     if (mode === 'bypassPermissions' && disableBypassPermissionsMode) {
       if (growthBookDisableBypassPermissionsMode) {
-        logForDebugging('bypassPermissions mode is disabled by Statsig gate', {
+        logForDebugging('bypassPermissions mode is disabled by organization policy', {
           level: 'warn',
         })
         notification =
@@ -856,7 +856,7 @@ export async function initializeToolPermissionContext({
     })
   }
 
-  // Check if bypassPermissions mode is available (not disabled by Statsig gate or settings)
+  // Check if bypassPermissions mode is available (not disabled by policy or settings).
   // Use cached values to avoid blocking on startup
   const growthBookDisableBypassPermissionsMode = false
   const settings = getSettings_DEPRECATED() || {}
@@ -1188,7 +1188,7 @@ export async function verifyAutoModeGateAccess(
 }
 
 /**
- * Core logic to check if bypassPermissions should be disabled based on Statsig gate
+ * Core logic to check if bypassPermissions should be disabled by policy.
  */
 export function shouldDisableBypassPermissions(): Promise<boolean> {
   // Open-build: the GrowthBook security gate resolved to false (the remote
@@ -1292,8 +1292,7 @@ export function hasAutoModeOptInAnySource(): boolean {
 }
 
 /**
- * Checks if bypassPermissions mode is currently disabled by Statsig gate or settings.
- * This is a synchronous version that uses cached Statsig values.
+ * Checks if bypassPermissions mode is currently disabled by policy or settings.
  */
 export function isBypassPermissionsModeDisabled(): boolean {
   const growthBookDisableBypassPermissionsMode = false
@@ -1329,7 +1328,7 @@ export function createDisabledBypassPermissionsContext(
 }
 
 /**
- * Asynchronously checks if the bypassPermissions mode should be disabled based on Statsig gate
+ * Asynchronously checks if bypassPermissions mode should be disabled by policy
  * and returns an updated toolPermissionContext if needed
  */
 export async function checkAndDisableBypassPermissions(
@@ -1345,9 +1344,9 @@ export async function checkAndDisableBypassPermissions(
     return
   }
 
-  // Gate is enabled, need to disable bypassPermissions mode
+  // Policy is enabled, need to disable bypassPermissions mode.
   logForDebugging(
-    'bypassPermissions mode is being disabled by Statsig gate (async check)',
+    'bypassPermissions mode is being disabled by organization policy (async check)',
     { level: 'warn' },
   )
 

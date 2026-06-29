@@ -103,12 +103,18 @@ jobs:
             -exec cp {} packages/agenc/release-artifacts/ \;
           ls -la packages/agenc/release-artifacts
 
+      - name: Generate SPDX SBOM
+        run: |
+          npm run sbom -- \
+            --output "packages/agenc/release-artifacts/agenc-core-${{ steps.tag.outputs.tag }}.spdx.json"
+
       - name: Create GitHub Release with runtime assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
             packages/agenc/release-artifacts/*.tar.gz \
+            packages/agenc/release-artifacts/*.spdx.json \
             --title "${{ steps.tag.outputs.tag }}" \
             --generate-notes
 
@@ -125,4 +131,4 @@ jobs:
           # CI guard in postinstall keeps `npm publish`'s local pack step from
           # trying to download the runtime on the publish runner.
           CI: "true"
-        run: npm publish --access public
+        run: npm publish --access public --provenance

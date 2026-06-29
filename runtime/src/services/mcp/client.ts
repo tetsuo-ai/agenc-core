@@ -29,7 +29,6 @@ import {
   type ListPromptsResult,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
-  ListRootsRequestSchema,
   type ListToolsResult,
   ListToolsResultSchema,
   McpError,
@@ -38,7 +37,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
-import { pathToFileURL } from 'node:url'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
@@ -68,7 +66,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import {
   errorMessage,
-  TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
 import { quote as quoteShellArgs } from '../../utils/bash/shellQuote.js'
 import { getMCPUserAgent } from '../../utils/http.js'
@@ -124,6 +122,10 @@ import { markAgenCAiMcpConnected } from './agencai.js'
 import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
+import {
+  buildMcpHostClientCapabilities,
+  configureMcpHostRequestHandlers,
+} from './hostCapabilities.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
@@ -201,13 +203,13 @@ class McpSessionExpiredError extends Error {
  * so SDK consumers can still receive it — per the MCP spec, `_meta` is on the
  * base Result type and is valid on error results.
  */
-export class McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
+export class McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
   constructor(
     message: string,
-    telemetryMessage: string,
+    safeLogMessage: string,
     readonly mcpMeta?: { _meta?: Record<string, unknown> },
   ) {
-    super(message, telemetryMessage)
+    super(message, safeLogMessage)
     this.name = 'McpToolCallError'
   }
 }
@@ -617,9 +619,7 @@ const MCP_REQUEST_TIMEOUT_MS = 60000
  */
 const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream'
 
-export function getMcpRootUriForPath(path: string): string {
-  return pathToFileURL(path).href
-}
+export { getMcpRootUriForPath } from './hostCapabilities.js'
 
 export function formatMcpShellPrefixCommand(
   command: string,
@@ -1147,13 +1147,10 @@ export const connectToServer = memoize(
           websiteUrl: PRODUCT_URL,
         },
         {
-          capabilities: {
-            roots: {},
-            // Empty object declares the capability. Sending {form:{},url:{}}
-            // breaks Java MCP SDK servers (Spring AI) whose Elicitation class
-            // has zero fields and fails on unknown properties.
-            elicitation: {},
-          },
+          // Empty elicitation object declares the capability. Sending
+          // {form:{},url:{}} breaks Java MCP SDK servers (Spring AI) whose
+          // Elicitation class has zero fields and fails on unknown properties.
+          capabilities: buildMcpHostClientCapabilities('empty'),
         },
       )
 
@@ -1162,16 +1159,7 @@ export const connectToServer = memoize(
         logMCPDebug(name, `Client created, setting up request handler`)
       }
 
-      client.setRequestHandler(ListRootsRequestSchema, async () => {
-        logMCPDebug(name, `Received ListRoots request from server`)
-        return {
-          roots: [
-            {
-              uri: getMcpRootUriForPath(getOriginalCwd()),
-            },
-          ],
-        }
-      })
+      configureMcpHostRequestHandlers(client, name, getOriginalCwd())
 
       // Add a timeout to connection attempts to prevent tests from hanging indefinitely
       logMCPDebug(
@@ -1214,7 +1202,7 @@ export const connectToServer = memoize(
           }
           transport.close().catch(() => { })
           reject(
-            new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+            new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
               `MCP server "${name}" connection timed out after ${getConnectionTimeoutMs()}ms`,
               'MCP connection timeout',
             ),
@@ -1805,7 +1793,7 @@ export async function ensureConnectedClient(
 
   const connectedClient = await connectToServer(client.name, client.config)
   if (connectedClient.type !== 'connected') {
-    throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+    throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
       `MCP server "${client.name}" is not connected`,
       'MCP server not connected',
     )
@@ -2051,7 +2039,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                       },
                     })
                   }
-                  // Wrap MCP SDK errors so telemetry gets useful context
+                  // Wrap MCP SDK errors so logs get useful context
                   // instead of just "Error" or "McpError" (the constructor
                   // name). MCP SDK errors are protocol-level messages and
                   // don't contain user file paths or code.
@@ -2059,12 +2047,12 @@ export const fetchToolsForClient = memoizeWithLRU(
                     error instanceof Error &&
                     !(
                       error instanceof
-                      TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+                      LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
                     )
                   ) {
                     const name = error.constructor.name
                     if (name === 'Error') {
-                      throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+                      throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
                         error.message,
                         error.message.slice(0, 200),
                       )
@@ -2076,7 +2064,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                       'code' in error &&
                       typeof error.code === 'number'
                     ) {
-                      throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+                      throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
                         error.message,
                         `McpError ${error.code}`,
                       )
@@ -2860,7 +2848,7 @@ async function transformMCPResult(
 
   const errorMessage = `MCP server "${name}" tool "${tool}": unexpected response format`
   logMCPError(name, errorMessage)
-  throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+  throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
     errorMessage,
     'MCP tool unexpected response format',
   )
@@ -3216,7 +3204,7 @@ async function callMCPTool({
       timeoutId = setTimeout(
         (reject, name, tool, timeoutMs) => {
           reject(
-            new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+            new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
               `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
               'MCP tool timeout',
             ),
@@ -3283,7 +3271,7 @@ async function callMCPTool({
         errorDetails = String(result.error)
       }
       logMCPError(name, errorDetails)
-      // Include server and tool name in telemetry for debugging, but keep
+      // Include server and tool name in logs for debugging, but keep
       // the human-readable message unchanged to avoid breaking error consumers
       // that parse the message string.
       throw new McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
@@ -3427,9 +3415,10 @@ export async function setupSdkMcpClients(
           websiteUrl: PRODUCT_URL,
         },
         {
-          capabilities: {},
+          capabilities: buildMcpHostClientCapabilities('none'),
         },
       )
+      configureMcpHostRequestHandlers(client, name, getOriginalCwd())
 
       try {
         // Connect the client

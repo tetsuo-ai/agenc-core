@@ -7,7 +7,6 @@
  * - Time to first API response (TTFT)
  *
  * Uses Node.js built-in performance hooks API for standard timing measurement.
- * Sampled logging: 100% of ant users, 5% of external users.
  *
  * Set AGENC_PROFILE_STARTUP=1 for detailed logging output.
  */
@@ -22,15 +21,7 @@ import { jsonStringify } from './slowOperations.js'
 // eslint-disable-next-line custom-rules/no-process-env-top-level
 const DETAILED_PROFILING = isEnvTruthy(process.env.AGENC_PROFILE_STARTUP)
 
-// Sampling for Statsig logging: 100% ant, 5% external
-// Decision made once at module load - non-sampled users pay no profiling cost
-const STATSIG_SAMPLE_RATE = 0.05
-// eslint-disable-next-line custom-rules/no-process-env-top-level
-const STATSIG_LOGGING_SAMPLED =
-  process.env.USER_TYPE === 'ant' || Math.random() < STATSIG_SAMPLE_RATE
-
-// Enable profiling if either detailed mode OR sampled for Statsig
-const SHOULD_PROFILE = DETAILED_PROFILING || STATSIG_LOGGING_SAMPLED
+const SHOULD_PROFILE = DETAILED_PROFILING
 
 // Use a unique prefix to avoid conflicts with other profiler marks
 const MARK_PREFIX = 'headless_'
@@ -93,7 +84,7 @@ export function headlessProfilerCheckpoint(name: string): void {
 }
 
 /**
- * Log headless latency metrics for the current turn to Statsig.
+ * Log headless latency metrics for the current turn to local debug output.
  * Call this at the end of each turn (before processing next user message).
  */
 export function logHeadlessProfilerTurn(): void {

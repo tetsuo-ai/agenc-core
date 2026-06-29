@@ -3,7 +3,7 @@
  *
  * Covers the 5 variants (function / mcp / exec / tool_search /
  * aborted), the variant → text flattener (`toText`), the variant →
- * LLMMessage projector (`toResponseItem`), the telemetry preview
+ * LLMMessage projector (`toResponseItem`), the bounded log preview
  * helper, the image-detail sanitizer, and the exec-variant 400KB
  * truncation cap.
  *
@@ -29,11 +29,11 @@ import {
   parseToolName,
   sanitizeOriginalImageDetail,
   successForLogging,
-  telemetryPreview,
-  telemetryPreviewWith,
-  TELEMETRY_PREVIEW_MAX_BYTES,
-  TELEMETRY_PREVIEW_MAX_LINES,
-  TELEMETRY_PREVIEW_TRUNCATION_NOTICE,
+  boundedLogPreview,
+  boundedLogPreviewWith,
+  LOG_PREVIEW_MAX_BYTES,
+  LOG_PREVIEW_MAX_LINES,
+  LOG_PREVIEW_TRUNCATION_NOTICE,
   responseInputToCodeModeResult,
   toolSearchToolOutput,
   toResponseItem,
@@ -283,53 +283,53 @@ describe("toResponseItem projection", () => {
 
 });
 
-describe("telemetryPreview", () => {
+describe("boundedLogPreview", () => {
   test("short input returns unchanged", () => {
-    expect(telemetryPreview("hello")).toBe("hello");
-    expect(telemetryPreview("")).toBe("");
+    expect(boundedLogPreview("hello")).toBe("hello");
+    expect(boundedLogPreview("")).toBe("");
   });
 
   test("byte-boundary truncation appends notice", () => {
-    const big = "x".repeat(TELEMETRY_PREVIEW_MAX_BYTES + 8);
-    const preview = telemetryPreview(big);
-    expect(preview.endsWith(TELEMETRY_PREVIEW_TRUNCATION_NOTICE)).toBe(true);
+    const big = "x".repeat(LOG_PREVIEW_MAX_BYTES + 8);
+    const preview = boundedLogPreview(big);
+    expect(preview.endsWith(LOG_PREVIEW_TRUNCATION_NOTICE)).toBe(true);
     expect(Buffer.byteLength(preview, "utf8")).toBeLessThanOrEqual(
-      TELEMETRY_PREVIEW_MAX_BYTES +
-        TELEMETRY_PREVIEW_TRUNCATION_NOTICE.length +
+      LOG_PREVIEW_MAX_BYTES +
+        LOG_PREVIEW_TRUNCATION_NOTICE.length +
         1,
     );
   });
 
   test("line-limit truncation appends notice and respects line cap", () => {
     const many = Array.from(
-      { length: TELEMETRY_PREVIEW_MAX_LINES + 5 },
+      { length: LOG_PREVIEW_MAX_LINES + 5 },
       (_unused, i) => `line-${i}`,
     ).join("\n");
-    const preview = telemetryPreview(many);
-    expect(preview.endsWith(TELEMETRY_PREVIEW_TRUNCATION_NOTICE)).toBe(true);
+    const preview = boundedLogPreview(many);
+    expect(preview.endsWith(LOG_PREVIEW_TRUNCATION_NOTICE)).toBe(true);
     const lines = preview.split("\n");
     // At most maxLines + 1 (the notice line).
-    expect(lines.length).toBeLessThanOrEqual(TELEMETRY_PREVIEW_MAX_LINES + 1);
+    expect(lines.length).toBeLessThanOrEqual(LOG_PREVIEW_MAX_LINES + 1);
   });
 
   test("parameterized variant respects both byte and line caps", () => {
     const short = "a\nb\nc\nd\ne";
-    const preview = telemetryPreviewWith(short, 100, 2);
-    expect(preview).toContain(TELEMETRY_PREVIEW_TRUNCATION_NOTICE);
+    const preview = boundedLogPreviewWith(short, 100, 2);
+    expect(preview).toContain(LOG_PREVIEW_TRUNCATION_NOTICE);
     expect(preview.startsWith("a\nb")).toBe(true);
   });
 
-  test("logPreview flows through telemetryPreview", () => {
+  test("logPreview flows through boundedLogPreview", () => {
     const out = functionToolOutputFromText({
       callId: "c1",
       toolName,
       payload,
-      text: "x".repeat(TELEMETRY_PREVIEW_MAX_BYTES + 8),
+      text: "x".repeat(LOG_PREVIEW_MAX_BYTES + 8),
       isError: false,
       durationMs: 0,
     });
     const p = logPreview(out);
-    expect(p.endsWith(TELEMETRY_PREVIEW_TRUNCATION_NOTICE)).toBe(true);
+    expect(p.endsWith(LOG_PREVIEW_TRUNCATION_NOTICE)).toBe(true);
   });
 });
 

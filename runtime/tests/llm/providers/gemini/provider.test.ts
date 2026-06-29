@@ -3,6 +3,13 @@ import { describe, expect, test, vi } from "vitest";
 import type { LLMTool } from "../../types.js";
 import { GeminiProvider } from "./index.js";
 
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function sseResponse(frames: string[]): Response {
   const encoder = new TextEncoder();
   const body = new ReadableStream<Uint8Array>({
@@ -36,32 +43,24 @@ const echoTool: LLMTool = {
 };
 
 describe("GeminiProvider", () => {
-  test("uses the Gemini v1beta chat shim with bearer auth", async () => {
+  test("uses native generateContent with x-goog-api-key auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "chatcmpl_gemini",
-          model: "gemini-2.5-pro",
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: "ok",
-              },
-              finish_reason: "stop",
+      jsonResponse({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "ok" }],
             },
-          ],
-          usage: {
-            prompt_tokens: 4,
-            completion_tokens: 1,
-            total_tokens: 5,
+            finishReason: "STOP",
           },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 1,
+          totalTokenCount: 5,
         },
-      ),
+      }),
     );
 
     const provider = new GeminiProvider({
@@ -76,51 +75,45 @@ describe("GeminiProvider", () => {
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
     );
     const headers = init?.headers as Headers;
-    expect(headers.get("authorization")).toBe("Bearer gemini-test");
-    expect(headers.get("x-goog-api-key")).toBeNull();
+    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
+    expect(headers.get("authorization")).toBeNull();
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(requestBody).toMatchObject({
+      contents: [{ role: "user", parts: [{ text: "hello" }] }],
+      generationConfig: { maxOutputTokens: 4096 },
+    });
+    expect("model" in requestBody).toBe(false);
     expect("store" in requestBody).toBe(false);
   });
 
-  test("sends tools through the Gemini compatible route and parses tool calls", async () => {
+  test("sends tools as Gemini function declarations and parses function calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "chatcmpl_gemini_tool",
-          model: "gemini-2.5-pro",
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: "",
-                tool_calls: [
-                  {
-                    id: "call_1",
-                    type: "function",
-                    function: {
-                      name: "system.echo",
-                      arguments: "{\"text\":\"hi\"}",
-                    },
+      jsonResponse({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: {
+                    name: "system.echo",
+                    args: { text: "hi" },
                   },
-                ],
-              },
-              finish_reason: "tool_calls",
+                },
+              ],
             },
-          ],
-          usage: {
-            prompt_tokens: 4,
-            completion_tokens: 1,
-            total_tokens: 5,
+            finishReason: "STOP",
           },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 1,
+          totalTokenCount: 5,
         },
-      ),
+      }),
     );
 
     const provider = new GeminiProvider({
@@ -136,33 +129,33 @@ describe("GeminiProvider", () => {
 
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "call_1", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
+      { id: "gemini_call_0", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 4,
       completionTokens: 1,
       totalTokens: 5,
     });
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    );
-    const headers = init?.headers as Headers;
-    expect(headers.get("authorization")).toBe("Bearer gemini-test");
-    expect(headers.get("x-goog-api-key")).toBeNull();
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.tools).toEqual([echoTool]);
-    expect("store" in requestBody).toBe(false);
+    expect(requestBody.tools).toEqual([
+      {
+        functionDeclarations: [
+          {
+            name: "system.echo",
+            description: "Echo text",
+            parameters: echoTool.function.parameters,
+          },
+        ],
+      },
+    ]);
   });
 
-  test("streams Gemini chat-completions deltas and accumulates tool calls", async () => {
+  test("streams Gemini text, function calls, and usage from streamGenerateContent", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'data: {"id":"chatcmpl_gemini_stream","model":"gemini-2.5-pro","choices":[{"index":0,"delta":{"content":"Hi "}}]}\n\n',
-        'data: {"id":"chatcmpl_gemini_stream","model":"gemini-2.5-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"system.echo","arguments":"{\\"text\\":"}}]}}]}\n\n',
-        'data: {"id":"chatcmpl_gemini_stream","model":"gemini-2.5-pro","choices":[{"index":0,"delta":{"content":"there","tool_calls":[{"index":0,"function":{"arguments":"\\"hi\\"}"}}]}}]}\n\n',
-        'data: {"id":"chatcmpl_gemini_stream","model":"gemini-2.5-pro","choices":[{"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}\n\n',
-        "data: [DONE]\n\n",
+        'data: {"candidates":[{"content":{"parts":[{"text":"Hi "}]},"finishReason":"STOP"}]}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":"there"},{"functionCall":{"name":"system.echo","args":{"text":"hi"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":4,"totalTokenCount":11}}\n\n',
       ]),
     );
     const provider = new GeminiProvider({
@@ -170,11 +163,7 @@ describe("GeminiProvider", () => {
       model: "gemini-2.5-pro",
       fetchImpl,
     });
-    const chunks: Array<{
-      content: string;
-      done: boolean;
-      toolCalls?: Array<{ id: string; name: string; arguments: string }>;
-    }> = [];
+    const chunks: unknown[] = [];
 
     const response = await provider.chatStream(
       [{ role: "user", content: "call echo" }],
@@ -187,16 +176,43 @@ describe("GeminiProvider", () => {
       { content: "there", done: false },
       {
         content: "",
+        done: false,
+        toolInputBlockStart: {
+          callId: "gemini_call_0",
+          index: 0,
+          contentBlock: {
+            type: "tool_use",
+            id: "gemini_call_0",
+            name: "system.echo",
+            input: { text: "hi" },
+          },
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolInputDelta: {
+          callId: "gemini_call_0",
+          index: 0,
+          partialJson: "{\"text\":\"hi\"}",
+        },
+      },
+      {
+        content: "",
         done: true,
         toolCalls: [
-          { id: "call_1", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
+          {
+            id: "gemini_call_0",
+            name: "system.echo",
+            arguments: "{\"text\":\"hi\"}",
+          },
         ],
       },
     ]);
     expect(response.content).toBe("Hi there");
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "call_1", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
+      { id: "gemini_call_0", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 7,
@@ -206,41 +222,147 @@ describe("GeminiProvider", () => {
 
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
     );
     const headers = init?.headers as Headers;
     expect(headers.get("accept")).toBe("text/event-stream");
-    expect(headers.get("authorization")).toBe("Bearer gemini-test");
-    expect(headers.get("x-goog-api-key")).toBeNull();
+    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.stream).toBe(true);
-    expect(requestBody.stream_options).toEqual({ include_usage: true });
-    expect(requestBody.tools).toEqual([echoTool]);
-    expect("store" in requestBody).toBe(false);
+    expect(requestBody.tools).toBeDefined();
+    expect("stream" in requestBody).toBe(false);
+    expect("stream_options" in requestBody).toBe(false);
   });
 
-  test("rejects malformed streamed Gemini tool calls", async () => {
+  test("uses cachedContents prompt-cache hints and maps cached usage", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      sseResponse([
-        'data: {"id":"chatcmpl_gemini_bad","model":"gemini-2.5-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"system.echo","arguments":"not-json"}}]}}]}\n\n',
-        'data: {"id":"chatcmpl_gemini_bad","model":"gemini-2.5-pro","choices":[{"index":0,"finish_reason":"tool_calls"}]}\n\n',
-        "data: [DONE]\n\n",
-      ]),
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "cached" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 20,
+          candidatesTokenCount: 2,
+          totalTokenCount: 22,
+          cachedContentTokenCount: 16,
+        },
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      cachedContent: "cachedContents/project-context",
+      fetchImpl,
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.usage.cachedInputTokens).toBe(16);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(requestBody.cachedContent).toBe("cachedContents/project-context");
+  });
+
+  test("preserves Gemini thought signatures through history and response thinking", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  thought: true,
+                  text: "reasoning",
+                  thoughtSignature: "sig-2",
+                },
+                { text: "done" },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 2,
+          totalTokenCount: 6,
+          thoughtsTokenCount: 1,
+        },
+      }),
     );
     const provider = new GeminiProvider({
       apiKey: "gemini-test",
       model: "gemini-2.5-pro",
       fetchImpl,
     });
-    const chunks: unknown[] = [];
+
+    const response = await provider.chat([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "previous reasoning",
+            signature: "sig-1",
+          },
+          { type: "text", text: "previous answer" },
+        ] as never,
+      },
+      { role: "user", content: "continue" },
+    ]);
+
+    expect(response.thinking).toEqual([
+      {
+        text: "reasoning",
+        redacted: false,
+        signature: "sig-2",
+        kind: "thinking",
+      },
+    ]);
+    expect(response.usage.reasoningOutputTokens).toBe(1);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      contents: Array<{ role: string; parts: unknown[] }>;
+    };
+    expect(requestBody.contents[0]).toEqual({
+      role: "model",
+      parts: [
+        {
+          text: "previous reasoning",
+          thought: true,
+          thoughtSignature: "sig-1",
+        },
+        { text: "previous answer" },
+      ],
+    });
+  });
+
+  test("rejects malformed Gemini function calls", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ functionCall: { args: { text: "hi" } } }],
+            },
+            finishReason: "MALFORMED_FUNCTION_CALL",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
 
     await expect(
-      provider.chatStream(
-        [{ role: "user", content: "call echo" }],
-        (chunk) => chunks.push(chunk),
-        { tools: [echoTool] },
-      ),
-    ).rejects.toThrow("chat-completions stream emitted invalid tool_call");
-    expect(chunks).toEqual([]);
+      provider.chat([{ role: "user", content: "call echo" }], {
+        tools: [echoTool],
+      }),
+    ).rejects.toThrow("Gemini response emitted invalid functionCall");
   });
 });

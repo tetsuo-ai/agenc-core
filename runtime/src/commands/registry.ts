@@ -33,6 +33,11 @@ import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
 import { compactCommand, contextCommand } from "./session-compact.js";
 import { remoteCommand } from "./remote.js";
+import { initCommand } from "./init.js";
+import {
+  outputStyleCommand,
+  outputStyleNewCommand,
+} from "./output-style.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`.
@@ -131,7 +136,8 @@ function commandSupportsSurface(
  * Presentation order matches the runtime stabilization minimal surface:
  * /help, /status, /cost, /model, /provider, /permissions, /plan, /agents,
  * /tasks, /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
- * /clear, /compact, /context, /diff, protocol commands, /exit.
+ * /init, /output-style, /clear, /compact, /context, /diff, protocol commands,
+ * /exit.
  */
 export function buildDefaultRegistry(
   options: BuildDefaultRegistryOptions = {},
@@ -154,6 +160,9 @@ export function buildDefaultRegistry(
     pluginsCommand,
     memorySlashCommand,
     resumeCommand,
+    initCommand,
+    outputStyleCommand,
+    outputStyleNewCommand,
     clearCommand,
     compactCommand,
     contextCommand,

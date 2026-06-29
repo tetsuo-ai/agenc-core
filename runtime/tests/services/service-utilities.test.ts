@@ -35,10 +35,9 @@ function createTerminal(): TerminalNotification & { readonly calls: string[] } {
 }
 
 describe("notifier service", () => {
-  test("dispatches hooks, the configured channel, and analytics metadata", async () => {
+  test("dispatches hooks and the configured channel", async () => {
     const terminal = createTerminal();
     const hook = vi.fn();
-    const logEvent = vi.fn();
 
     await sendNotification(
       {
@@ -50,7 +49,6 @@ describe("notifier service", () => {
         preferredChannel: "kitty",
         terminalName: "kitty",
         executeNotificationHooks: hook,
-        logEvent,
         generateKittyId: () => 42,
       },
     );
@@ -60,11 +58,6 @@ describe("notifier service", () => {
       notificationType: "turn_complete",
     });
     expect(terminal.calls).toEqual(["kitty:AgenC:42"]);
-    expect(logEvent).toHaveBeenCalledWith("agenc_notification_method_used", {
-      configured_channel: "kitty",
-      method_used: "kitty",
-      term: "kitty",
-    });
   });
 
   test("auto channel selects supported terminal mechanisms", async () => {
@@ -197,12 +190,11 @@ describe("notifier service", () => {
     ).toBe(true);
   });
 
-  test("channel exceptions still produce analytics with error method", async () => {
+  test("channel exceptions are swallowed", async () => {
     const terminal = createTerminal();
     terminal.notifyGhostty = () => {
       throw new Error("terminal write failed");
     };
-    const logEvent = vi.fn();
 
     await sendNotification(
       { message: "done", notificationType: "status" },
@@ -210,15 +202,10 @@ describe("notifier service", () => {
       {
         preferredChannel: "ghostty",
         terminalName: "ghostty",
-        logEvent,
       },
     );
 
-    expect(logEvent).toHaveBeenCalledWith("agenc_notification_method_used", {
-      configured_channel: "ghostty",
-      method_used: "error",
-      term: "ghostty",
-    });
+    expect(terminal.calls).toEqual([]);
   });
 });
 

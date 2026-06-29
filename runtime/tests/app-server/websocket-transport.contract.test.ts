@@ -194,6 +194,50 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it("rejects normal requests beyond the per-connection queue cap", async () => {
+    let releaseFirst: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const server = new AgenCWebSocketServer({
+      maxQueuedRequests: 1,
+      onMessage: async (message) => {
+        if (message.id === 1) {
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+      },
+    });
+
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.send('{"jsonrpc":"2.0","id":1,"method":"session.clear"}');
+    await firstStarted;
+    client.send('{"jsonrpc":"2.0","id":2,"method":"message.send"}');
+
+    const rejected = JSON.parse(await nextMessage(client));
+    expect(rejected).toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: 2,
+      error: {
+        code: -32000,
+        data: {
+          code: "TOO_MANY_QUEUED_REQUESTS",
+          maxQueuedRequests: 1,
+        },
+      },
+    });
+
+    releaseFirst?.();
+    client.close();
+    await nextClose(client);
+    await server.close();
+  });
+
   it("serves health probes and rejects unsafe HTTP and upgrade requests", async () => {
     const server = new AgenCWebSocketServer({
       ready: () => false,

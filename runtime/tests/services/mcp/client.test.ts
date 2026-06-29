@@ -192,7 +192,7 @@ test('MCP exported error classes preserve server and metadata details', () => {
 
   const toolError = new McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
     'tool failed',
-    'safe telemetry',
+    'safe log',
     { _meta: { requestId: 'req-1' } },
   )
   assert.equal(toolError.name, 'McpToolCallError')
@@ -857,7 +857,7 @@ test('MCP tool call passes metadata, progress, structured content, and result me
   })
 })
 
-test('MCP tool call wraps generic and protocol errors with telemetry-safe errors', async () => {
+test('MCP tool call wraps generic and protocol errors with log-safe errors', async () => {
   const genericProgress: unknown[] = []
   const genericClient = connectedClient({
     name: 'sdk-errors',
@@ -985,7 +985,7 @@ test('MCP tool call retries once after HTTP session expiry clears the connection
   assert.equal(calls, 2)
 })
 
-test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a telemetry-safe timeout', async () => {
+test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout', async () => {
   process.env.MCP_TOOL_TIMEOUT = '1'
   const client = connectedClient({
     name: 'slow-sdk',

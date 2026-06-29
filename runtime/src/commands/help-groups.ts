@@ -34,7 +34,7 @@ export const HELP_WORKFLOW_GROUPS: readonly HelpWorkflowGroup[] = [
   },
   {
     title: "Project / Context",
-    commands: ["config", "memory", "context", "diff"],
+    commands: ["config", "memory", "init", "output-style", "output-style:new", "context", "diff"],
   },
   {
     title: "Protocol",

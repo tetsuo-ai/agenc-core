@@ -3,7 +3,6 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 const originalEnv = { ...process.env }
 const axiosModulePath = 'axios'
 const oauthModulePath = 'src/constants/oauth.js'
-const growthbookModulePath = 'src/services/analytics/growthbook.js'
 const bootstrapStateModulePath = '../../src/bootstrap/state.js'
 const authModulePath = '../../src/utils/auth.js'
 const bundledModeModulePath = '../../src/utils/bundledMode.js'
@@ -18,7 +17,6 @@ const signalModulePath = '../../src/utils/signal.js'
 const mockedModulePaths = [
   axiosModulePath,
   oauthModulePath,
-  growthbookModulePath,
   bootstrapStateModulePath,
   authModulePath,
   bundledModeModulePath,
@@ -58,15 +56,6 @@ function installCommonMocks(options?: {
   vi.doMock(oauthModulePath, () => ({
     getOauthConfig: () => ({ BASE_API_URL: 'https://api.anthropic.com' }),
     OAUTH_BETA_HEADER: 'test-beta',
-  }))
-
-  vi.doMock(growthbookModulePath, () => ({
-    getFeatureValue_CACHED_MAY_BE_STALE: (_name: string, defaultValue: unknown) =>
-      defaultValue,
-    getFeatureValue_CACHED_WITH_REFRESH: async (
-      _name: string,
-      defaultValue: unknown,
-    ) => defaultValue,
   }))
 
   vi.doMock(bootstrapStateModulePath, () => ({

@@ -236,9 +236,9 @@ export interface TokenUsageEntry {
 }
 
 /**
- * Token analytics summary from historical data.
+ * Token usage summary from historical data.
  */
-export interface TokenAnalytics {
+export interface TokenUsageSummary {
   totalRequests: number
   totalInputTokens: number
   totalOutputTokens: number
@@ -253,9 +253,9 @@ export interface TokenAnalytics {
 }
 
 /**
- * Historical Token Analytics Tracker
+ * Historical token usage tracker.
  * 
- * Tracks token usage patterns over time for analytics,
+ * Tracks token usage patterns over time for local reporting,
  * cost optimization, and capacity planning.
  */
 export class TokenUsageTracker {
@@ -294,9 +294,9 @@ export class TokenUsageTracker {
   }
 
   /**
-   * Get analytics summary for all recorded usage.
+   * Get usage summary for all recorded usage.
    */
-  getAnalytics(): TokenAnalytics {
+  getSummary(): TokenUsageSummary {
     if (this.history.length === 0) {
       return {
         totalRequests: 0,

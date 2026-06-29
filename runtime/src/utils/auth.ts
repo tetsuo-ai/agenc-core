@@ -49,7 +49,6 @@ import {
   isEnvTruthy,
   isRunningOnHomespace,
 } from './envUtils.js'
-import { errorMessage } from './errors.js'
 import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrow.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
@@ -620,7 +619,7 @@ export function prefetchApiKeyFromApiKeyHelperIfSafe(
   isNonInteractiveSession: boolean,
 ): void {
   // Skip if trust not yet accepted — the inner _executeApiKeyHelper check
-  // would catch this too, but would fire a false-positive analytics event.
+  // would catch this too, but would fire a false-positive auth event.
   if (
     isApiKeyHelperFromProjectOrLocalSettings() &&
     !checkHasTrustDialogAccepted()
@@ -1720,128 +1719,6 @@ export function isUsing3PServices(): boolean {
     isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
     isEnvTruthy(process.env.AGENC_USE_GITHUB)
   )
-}
-
-/**
- * Get the configured otelHeadersHelper from settings
- */
-function getConfiguredOtelHeadersHelper(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.otelHeadersHelper
-}
-
-/**
- * Check if the configured otelHeadersHelper comes from project settings (projectSettings or localSettings)
- */
-export function isOtelHeadersHelperFromProjectOrLocalSettings(): boolean {
-  const otelHeadersHelper = getConfiguredOtelHeadersHelper()
-  if (!otelHeadersHelper) {
-    return false
-  }
-
-  const projectSettings = getSettingsForSource('projectSettings')
-  const localSettings = getSettingsForSource('localSettings')
-  return (
-    projectSettings?.otelHeadersHelper === otelHeadersHelper ||
-    localSettings?.otelHeadersHelper === otelHeadersHelper
-  )
-}
-
-// Cache for debouncing otelHeadersHelper calls
-let cachedOtelHeaders: Record<string, string> | null = null
-let cachedOtelHeadersTimestamp = 0
-const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS = 29 * 60 * 1000 // 29 minutes
-
-/**
- * Resolve the otelHeadersHelper debounce interval (ms) from the env override,
- * falling back to the default when unset or invalid.
- *
- * A non-numeric override (e.g. "abc") parses to NaN, and a NaN debounce makes
- * the `Date.now() - timestamp < debounceMs` comparison always false — silently
- * disabling the debounce and re-running the helper on every call. Guard with a
- * finite, non-negative check (matching getMaxMcpOutputTokens in mcpValidation)
- * so bad input falls back to the intended default instead of propagating NaN.
- *
- * Exported for testing.
- */
-export function resolveOtelHeadersDebounceMs(): number {
-  const envValue = process.env.AGENC_OTEL_HEADERS_HELPER_DEBOUNCE_MS
-  if (envValue) {
-    const parsed = parseInt(envValue, 10)
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      return parsed
-    }
-  }
-  return DEFAULT_OTEL_HEADERS_DEBOUNCE_MS
-}
-
-export function getOtelHeadersFromHelper(): Record<string, string> {
-  const otelHeadersHelper = getConfiguredOtelHeadersHelper()
-
-  if (!otelHeadersHelper) {
-    return {}
-  }
-
-  // Return cached headers if still valid (debounce)
-  const debounceMs = resolveOtelHeadersDebounceMs()
-  if (
-    cachedOtelHeaders &&
-    Date.now() - cachedOtelHeadersTimestamp < debounceMs
-  ) {
-    return cachedOtelHeaders
-  }
-
-  if (isOtelHeadersHelperFromProjectOrLocalSettings()) {
-    // Check if trust has been established for this project
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust) {
-      return {}
-    }
-  }
-
-  try {
-    const result = execSyncWithDefaults_DEPRECATED(otelHeadersHelper, {
-      timeout: 30000, // 30 seconds - allows for auth service latency
-    })
-      ?.toString()
-      .trim()
-    if (!result) {
-      throw new Error('otelHeadersHelper did not return a valid value')
-    }
-
-    const headers = jsonParse(result)
-    if (
-      typeof headers !== 'object' ||
-      headers === null ||
-      Array.isArray(headers)
-    ) {
-      throw new Error(
-        'otelHeadersHelper must return a JSON object with string key-value pairs',
-      )
-    }
-
-    // Validate all values are strings
-    for (const [key, value] of Object.entries(headers)) {
-      if (typeof value !== 'string') {
-        throw new Error(
-          `otelHeadersHelper returned non-string value for key "${key}": ${typeof value}`,
-        )
-      }
-    }
-
-    // Cache the result
-    cachedOtelHeaders = headers as Record<string, string>
-    cachedOtelHeadersTimestamp = Date.now()
-
-    return cachedOtelHeaders
-  } catch (error) {
-    logError(
-      new Error(
-        `Error getting OpenTelemetry headers from otelHeadersHelper (in settings): ${errorMessage(error)}`,
-      ),
-    )
-    throw error
-  }
 }
 
 function isConsumerPlan(plan: SubscriptionType): plan is 'max' | 'pro' {

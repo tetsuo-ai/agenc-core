@@ -8,7 +8,7 @@ import {
 } from './auth.js'
 import { getGlobalConfig, getOrCreateUserID } from './config.js'
 import { getCwd } from './cwd.js'
-import { type env, getHostPlatformForAnalytics } from './env.js'
+import { type env, getHostPlatform } from './env.js'
 import { isEnvTruthy } from './envUtils.js'
 
 // Cache for email fetched asynchronously at startup
@@ -27,10 +27,7 @@ export type GitHubActionsMetadata = {
   repositoryOwnerId?: string
 }
 
-/**
- * Core user data used as base for all analytics providers.
- * This is also the format used by GrowthBook.
- */
+/** Core user/account data shared by local services. */
 export type CoreUserData = {
   deviceId: string
   sessionId: string
@@ -71,19 +68,16 @@ export function resetUserCache(): void {
   getGitEmail.cache.clear?.()
 }
 
-/**
- * Get core user data.
- * This is the base representation that gets transformed for different analytics providers.
- */
+/** Get core user/account data. */
 export const getCoreUserData = memoize(
-  (includeAnalyticsMetadata?: boolean): CoreUserData => {
+  (includeAccountMetadata?: boolean): CoreUserData => {
     const deviceId = getOrCreateUserID()
     const config = getGlobalConfig()
 
     let subscriptionType: string | undefined
     let rateLimitTier: string | undefined
     let firstTokenTime: number | undefined
-    if (includeAnalyticsMetadata) {
+    if (includeAccountMetadata) {
       subscriptionType = getSubscriptionType() ?? undefined
       rateLimitTier = getRateLimitTier() ?? undefined
       if (subscriptionType && config.agencCodeFirstTokenDate) {
@@ -106,7 +100,7 @@ export const getCoreUserData = memoize(
       sessionId: getSessionId(),
       email: getEmail(),
       appVersion: MACRO.VERSION,
-      platform: getHostPlatformForAnalytics(),
+      platform: getHostPlatform(),
       organizationUuid,
       accountUuid,
       userType: process.env.USER_TYPE,

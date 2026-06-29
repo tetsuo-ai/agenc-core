@@ -199,7 +199,7 @@ function createConfigMenuSnapshot(
       "tui",
       "updates",
       config.autoUpdates,
-      `telemetry ${scalar(config.telemetryOptIn, "not set")}; remote control at startup ${scalar(config.remoteControlAtStartup, "not set")}`,
+      `remote control at startup ${scalar(config.remoteControlAtStartup, "not set")}`,
     ),
   ];
 

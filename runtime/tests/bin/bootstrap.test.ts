@@ -1608,10 +1608,6 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = boot.shutdown;
 
       const services = boot.session.services as typeof boot.session.services & {
-        readonly analyticsEventsClient: {
-          emit(event: unknown): Promise<void>;
-          events(): ReadonlyArray<{ readonly event: unknown }>;
-        };
         readonly modelClient: {
           setWindowGeneration(n: number): void;
           currentWindowGeneration(): number;
@@ -1660,11 +1656,6 @@ describe("bootstrapLocalRuntimeSession", () => {
 
       services.modelClient.setWindowGeneration(7);
       expect(services.modelClient.currentWindowGeneration()).toBe(7);
-
-      await services.analyticsEventsClient.emit({ type: "bootstrap_probe" });
-      expect(services.analyticsEventsClient.events().at(-1)?.event).toEqual({
-        type: "bootstrap_probe",
-      });
 
       expect(services.execPolicy.current()).toMatchObject({
         cwd: workspace,

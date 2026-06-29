@@ -139,7 +139,6 @@ afterEach(async () => {
 });
 
 function makeSession(sessionId: string, childId = "child-session"): Session {
-  const events: unknown[] = [];
   return {
     conversationId: sessionId,
     sessionConfiguration: {
@@ -148,12 +147,6 @@ function makeSession(sessionId: string, childId = "child-session"): Session {
     },
     config: { cwd: projectRoot },
     services: {
-      analyticsEventsClient: {
-        emit: async (event: unknown) => {
-          events.push(event);
-        },
-        events: () => events,
-      },
       agentControl: {
         spawn: async () => ({
           agentId: childId,

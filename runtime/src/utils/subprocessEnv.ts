@@ -40,13 +40,6 @@ const SUBPROCESS_SECRET_ENV_BASE = [
   // an MCP stdio child must not inherit the parent's OAuth client secret
   'MCP_CLIENT_SECRET',
 
-  // OTLP exporter headers — documented to carry Authorization=Bearer tokens
-  // for monitoring backends; read in-process by OTEL SDK, subprocesses never need them
-  'OTEL_EXPORTER_OTLP_HEADERS',
-  'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
-  'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
-  'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
-
   // Cloud provider creds — same pattern (lazy SDK reads)
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',

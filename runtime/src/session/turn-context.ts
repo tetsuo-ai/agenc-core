@@ -95,12 +95,6 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "none";
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TruncationPolicy = "head" | "middle" | "off";
 
-/** agenc runtime `SessionTelemetry`. T6 (event log + sidecars) lands real impl. */
-export interface SessionTelemetry {
-  readonly modelSlug?: string;
-  // T6 expands: emit timing, retry phase, transport classification, etc.
-}
-
 /** agenc runtime `Environment`. T7 (tool runtime) wires; today optional placeholder. */
 export interface Environment {
   readonly cwd: string;
@@ -589,9 +583,6 @@ export interface TurnContext {
 
   /** Per-(provider,model) capability bitmap. */
   readonly modelInfo: ModelInfo;
-
-  /** Telemetry sink for this session. */
-  readonly sessionTelemetry: SessionTelemetry;
 
   /** The active provider for this turn (multi-provider per provider-matrix.md). */
   readonly provider: LLMProvider;
@@ -1266,7 +1257,6 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     configSnapshot: frozenConfig,
     authManager: opts.authManager,
     modelInfo: opts.modelInfo,
-    sessionTelemetry: { modelSlug: opts.modelInfo.slug },
     provider: opts.provider,
     modelProviderId: opts.provider.name,
     reasoningEffort,

@@ -90,7 +90,7 @@ export type ForkedAgentParams = {
   canUseTool: CanUseToolFn
   /** Source identifier for tracking */
   querySource: QuerySource
-  /** Label for analytics (e.g., 'session_memory', 'supervisor') */
+  /** Label for request attribution (e.g., 'session_memory', 'supervisor') */
   forkLabel: string
   /** Optional overrides for the subagent context (e.g., readFileState from setup phase) */
   overrides?: SubagentContextOverrides

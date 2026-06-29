@@ -534,7 +534,6 @@ export interface AgenCConfig {
   readonly editorMode?: EditorMode;
   readonly tui?: TuiConfig;
   readonly tuiLayout?: TuiLayoutConfig;
-  readonly telemetryOptIn?: boolean;
   readonly autoFix?: unknown;
 
   // ── AgenC-specific additions ──────────────────────────────────────
@@ -570,11 +569,9 @@ export interface AgenCConfig {
  *
  * Runtime deferred:
  *   - notify           → T11 (hook-style post-turn notifications)
- *   - otel             → T12 (OTel exporters — depends on observability)
  *   - history          → T11 (rollout/history retention policy)
  *   - log_dir          → T11 (operator-overridable log root)
  *   - file_opener      → T11 (editor integration)
- *   - analytics        → T12 (analytics opt-in knobs)
  *
  * Settings deferred:
  *   - env              → T11 (shell env injection policy)
@@ -674,7 +671,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "editorMode",
   "tui",
   "tuiLayout",
-  "telemetryOptIn",
   "autoFix",
   "agent",
   "toolBudget",

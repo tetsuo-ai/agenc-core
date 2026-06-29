@@ -193,46 +193,6 @@ export function receiverMetadataFor(
   };
 }
 
-export function recordAgentCounter(
-  session: Session,
-  name: string,
-  tags: readonly [string, string][] = [],
-): void {
-  const telemetry = ((
-    session as unknown as {
-      sessionTelemetry?: {
-        counter?: (
-          name: string,
-          increment: number,
-          tags: readonly [string, string][],
-        ) => void;
-      };
-      services?: {
-        sessionTelemetry?: {
-          counter?: (
-            name: string,
-            increment: number,
-            tags: readonly [string, string][],
-          ) => void;
-        };
-      };
-    }
-  ).sessionTelemetry ?? session.services.sessionTelemetry) as
-    | {
-        counter?: (
-          name: string,
-          increment: number,
-          tags: readonly [string, string][],
-        ) => void;
-      }
-    | undefined;
-  try {
-    telemetry?.counter?.(name, 1, tags);
-  } catch {
-    // Telemetry must never affect model-facing tool behavior.
-  }
-}
-
 export function hideSpawnAgentMetadata(session: Session): boolean {
   return (
     (
