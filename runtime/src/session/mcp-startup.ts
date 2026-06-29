@@ -35,7 +35,10 @@ import type { MCPServerConfig } from "../mcp-client/types.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
 import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
-import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
+import {
+  createUnavailableSamplingResult,
+  type McpSamplingHandlers,
+} from "../services/mcp/hostCapabilities.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
   attachContextDefaults,
@@ -45,6 +48,7 @@ import { EMPTY_MCP_TOOL_APPROVAL_TEMPLATE_FILE } from "../permissions/rpc/mcp-to
 import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
 import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
+import type { EventMsg, TokenCountEvent } from "./event-log.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
 import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
 import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
@@ -260,21 +264,124 @@ function mcpSamplingStopReason(
   }
 }
 
+function mcpSamplingAllowedForSession(session: Session): boolean {
+  return session.sessionConfiguration.approvalPolicy.value === "never";
+}
+
+function emitSessionEvent(session: Session, msg: EventMsg): void {
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg,
+  });
+}
+
+function mcpSamplingCallId(
+  serverName: string,
+  requestId: string | number | undefined,
+): string {
+  return `mcp-sampling:${serverName}:${requestId ?? "unknown"}`;
+}
+
+function mcpSamplingRequestSummary(request: CreateMessageRequest): string {
+  return JSON.stringify({
+    messageCount: request.params.messages.length,
+    hasSystemPrompt: request.params.systemPrompt !== undefined,
+    maxTokens: request.params.maxTokens,
+  });
+}
+
+function tokenCountEventForSampling(
+  usage: Awaited<ReturnType<Session["provider"]["chat"]>>["usage"],
+  model: string,
+): TokenCountEvent {
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+    ...(usage.cachedInputTokens !== undefined
+      ? { cachedInputTokens: usage.cachedInputTokens }
+      : {}),
+    ...(usage.cacheCreationInputTokens !== undefined
+      ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
+      : {}),
+    ...(usage.reasoningOutputTokens !== undefined
+      ? { reasoningOutputTokens: usage.reasoningOutputTokens }
+      : {}),
+    ...(usage.webSearchRequests !== undefined
+      ? { webSearchRequests: usage.webSearchRequests }
+      : {}),
+    model,
+  };
+}
+
 export function createSessionMcpSamplingHandlers(
   session: Session,
 ): McpSamplingHandlers {
   return {
-    async createMessage({ request, signal }) {
-      const response = await session.provider.chat(
-        samplingRequestToLlmMessages(request),
-        {
-          ...(request.params.systemPrompt !== undefined
-            ? { systemPrompt: request.params.systemPrompt }
-            : {}),
-          maxOutputTokens: request.params.maxTokens,
-          ...(signal !== undefined ? { signal } : {}),
+    async createMessage({ serverName, requestId, request, signal }) {
+      if (!mcpSamplingAllowedForSession(session)) {
+        emitSessionEvent(session, {
+          type: "warning",
+          payload: {
+            cause: "mcp_sampling_denied",
+            message:
+              `MCP server "${serverName}" requested model sampling, but the current approval policy does not allow unattended provider calls.`,
+          },
+        });
+        return createUnavailableSamplingResult();
+      }
+
+      const startedAt = Date.now();
+      const callId = mcpSamplingCallId(serverName, requestId);
+      emitSessionEvent(session, {
+        type: "mcp_tool_call_begin",
+        payload: {
+          callId,
+          server: serverName,
+          toolName: "sampling/createMessage",
+          args: mcpSamplingRequestSummary(request),
         },
-      );
+      });
+
+      let response: Awaited<ReturnType<Session["provider"]["chat"]>>;
+      try {
+        response = await session.provider.chat(
+          samplingRequestToLlmMessages(request),
+          {
+            ...(request.params.systemPrompt !== undefined
+              ? { systemPrompt: request.params.systemPrompt }
+              : {}),
+            maxOutputTokens: request.params.maxTokens,
+            ...(signal !== undefined ? { signal } : {}),
+          },
+        );
+      } catch (err) {
+        emitSessionEvent(session, {
+          type: "mcp_tool_call_end",
+          payload: {
+            callId,
+            result: err instanceof Error ? err.message : String(err),
+            isError: true,
+            durationMs: Date.now() - startedAt,
+          },
+        });
+        throw err;
+      }
+
+      emitSessionEvent(session, {
+        type: "token_count",
+        payload: tokenCountEventForSampling(response.usage, response.model),
+      });
+      emitSessionEvent(session, {
+        type: "mcp_tool_call_end",
+        payload: {
+          callId,
+          result: "sampling/createMessage completed",
+          isError: false,
+          durationMs: Date.now() - startedAt,
+        },
+      });
+
       return {
         role: "assistant",
         model: response.model,

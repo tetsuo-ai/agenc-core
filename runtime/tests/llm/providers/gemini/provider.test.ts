@@ -153,6 +153,34 @@ describe("GeminiProvider", () => {
     expect(headers.get("x-goog-user-project")).toBe("project-1");
   });
 
+  test("prefers explicit OAuth credentials over API key credentials", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "oauth" }] },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      authMode: "oauth",
+      oauth: { accessToken: "oauth-token" },
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("oauth");
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const headers = init?.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer oauth-token");
+    expect(headers.get("x-goog-api-key")).toBeNull();
+  });
+
   test("sends tools as Gemini function declarations and parses function calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

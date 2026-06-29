@@ -149,14 +149,6 @@ function authHeadersForCredential(
 async function resolveGeminiAuthHeaders(
   config: GeminiProviderConfig,
 ): Promise<Record<string, string>> {
-  const apiKey = nonEmptyString(config.apiKey);
-  if (apiKey) {
-    return {
-      "x-goog-api-key": apiKey,
-      ...googleProjectHeaders(config.project),
-    };
-  }
-
   const explicitAccessToken =
     nonEmptyString(config.accessToken) ??
     (config.authMode === "oauth"
@@ -165,6 +157,14 @@ async function resolveGeminiAuthHeaders(
   if (explicitAccessToken) {
     return {
       authorization: `Bearer ${explicitAccessToken}`,
+      ...googleProjectHeaders(config.project),
+    };
+  }
+
+  const apiKey = nonEmptyString(config.apiKey);
+  if (apiKey && config.authMode !== "oauth") {
+    return {
+      "x-goog-api-key": apiKey,
       ...googleProjectHeaders(config.project),
     };
   }
