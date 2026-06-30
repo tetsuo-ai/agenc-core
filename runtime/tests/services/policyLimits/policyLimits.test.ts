@@ -69,7 +69,7 @@ describe("policy limits service", () => {
     const service = createPolicyLimitsService({
       agencHome: home,
       providerName: "anthropic",
-      endpoint: "https://api.agenc.tech/v1/policy-limits",
+      endpoint: "https://id.agenc.ag/v1/policy-limits",
       sleep: async () => {},
       ...options,
     });
@@ -114,7 +114,7 @@ describe("policy limits service", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://api.agenc.tech/v1/policy-limits",
+      "https://id.agenc.ag/v1/policy-limits",
     );
     expect(headersFromCall(fetchMock).get("x-api-key")).toBe(
       "direct-policy-key",
@@ -141,7 +141,7 @@ describe("policy limits service", () => {
     await service.loadPolicyLimits();
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://api.agenc.tech/v1/policy-limits",
+      "https://id.agenc.ag/v1/policy-limits",
     );
   });
 
@@ -278,7 +278,7 @@ describe("policy limits service", () => {
       agencHome: fileHome,
       providerName: "anthropic",
       apiKey: "direct-policy-key",
-      endpoint: "https://api.agenc.tech/v1/policy-limits",
+      endpoint: "https://id.agenc.ag/v1/policy-limits",
       fetchImpl: vi.fn(async () =>
         response(200, {
           restrictions: { allow_remote_sessions: { allowed: false } },

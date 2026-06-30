@@ -36,7 +36,7 @@ export type {
 
 const POLICY_LIMITS_CACHE_FILENAME = "policy-limits.json" as const;
 const DEFAULT_POLICY_LIMITS_ENDPOINT =
-  "https://api.agenc.tech/v1/policy-limits" as const;
+  "https://id.agenc.ag/v1/policy-limits" as const;
 const POLICY_LIMITS_ENDPOINT_ENV = "AGENC_POLICY_LIMITS_URL" as const;
 const DEFAULT_POLICY_LIMITS_FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_POLICY_LIMITS_MAX_RETRIES = 5;
@@ -684,7 +684,10 @@ function isFirstPartyBaseURL(provider: string, value: string): boolean {
 
 function isAgenCHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
-  return normalized === "api.agenc.tech" || normalized.endsWith(".agenc.tech");
+  return normalized === "api.agenc.tech" ||
+    normalized.endsWith(".agenc.tech") ||
+    normalized === "agenc.ag" ||
+    normalized.endsWith(".agenc.ag");
 }
 
 function hasOwn(
