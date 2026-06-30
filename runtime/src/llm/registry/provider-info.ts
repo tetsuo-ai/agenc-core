@@ -85,7 +85,7 @@ export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   minimax: "https://api.minimax.io/v1",
   github: "https://api.githubcopilot.com",
   "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
-  agenc: "https://api.agenc.tech/v1",
+  agenc: "https://id.agenc.ag/v1",
 } as const satisfies Readonly<Record<BuiltInProviderSlug, string>>);
 
 export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({} as const);
