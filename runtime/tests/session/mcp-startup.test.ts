@@ -206,16 +206,78 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
               content: { type: "text", text: "Summarize this" },
             },
           ],
+          modelPreferences: {
+            hints: [{ name: "grok-4.3-mini" }],
+            costPriority: 0.7,
+            speedPriority: 0.3,
+            intelligencePriority: 0.5,
+          },
           systemPrompt: "Be brief",
+          includeContext: "thisServer",
+          temperature: 0.2,
           maxTokens: 32,
+          stopSequences: ["END"],
+          tools: [
+            {
+              name: "lookup",
+              description: "Look up context.",
+              inputSchema: {
+                type: "object",
+                properties: { query: { type: "string" } },
+                required: ["query"],
+              },
+            },
+          ],
+          toolChoice: { mode: "none" },
+          metadata: { trace: "sampling-test" },
         },
       } as never,
     });
 
     expect(providerChat).toHaveBeenCalledWith(
       [{ role: "user", content: "Summarize this" }],
-      { systemPrompt: "Be brief", maxOutputTokens: 32 },
+      {
+        model: "grok-4.3-mini",
+        systemPrompt: "Be brief",
+        maxOutputTokens: 32,
+        temperature: 0.2,
+        stopSequences: ["END"],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              description: "Look up context.",
+              parameters: {
+                type: "object",
+                properties: { query: { type: "string" } },
+                required: ["query"],
+              },
+            },
+          },
+        ],
+        toolChoice: "none",
+      },
     );
+    const beginEvent = (session.emit as ReturnType<typeof vi.fn>).mock.calls[0]
+      ?.[0].msg;
+    expect(JSON.parse(beginEvent.payload.args)).toMatchObject({
+      messageCount: 1,
+      hasSystemPrompt: true,
+      maxTokens: 32,
+      temperature: 0.2,
+      stopSequenceCount: 1,
+      includeContext: "thisServer",
+      modelHint: "grok-4.3-mini",
+      modelPreferences: {
+        costPriority: 0.7,
+        speedPriority: 0.3,
+        intelligencePriority: 0.5,
+      },
+      toolCount: 1,
+      toolChoice: "none",
+      hasMetadata: true,
+    });
     const emittedTypes = (
       session.emit as ReturnType<typeof vi.fn>
     ).mock.calls.map((call) => call[0].msg.type);
@@ -274,6 +336,73 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       payload: {
         cause: "mcp_sampling_denied",
       },
+    });
+  });
+
+  it("returns provider tool calls as MCP sampling tool-use blocks", async () => {
+    const providerChat = vi.fn(async () => ({
+      content: "Need a lookup.",
+      toolCalls: [
+        {
+          id: "call-1",
+          name: "lookup",
+          arguments: "{\"query\":\"AgenC\"}",
+        },
+      ],
+      usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+      model: "grok-4.3",
+      finishReason: "tool_calls" as const,
+    }));
+    const session = {
+      provider: {
+        chat: providerChat,
+      },
+      emit: vi.fn(),
+      nextInternalSubId: vi.fn(() => "sub-0"),
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
+    } as unknown as Session;
+    const handlers = createSessionMcpSamplingHandlers(session);
+
+    const result = await handlers.createMessage({
+      serverName: "srv",
+      requestId: 8,
+      request: {
+        id: 8,
+        method: "sampling/createMessage",
+        params: {
+          messages: [
+            {
+              role: "user",
+              content: { type: "text", text: "Use lookup" },
+            },
+          ],
+          maxTokens: 32,
+          tools: [
+            {
+              name: "lookup",
+              inputSchema: {
+                type: "object",
+                properties: { query: { type: "string" } },
+              },
+            },
+          ],
+        },
+      } as never,
+    });
+
+    expect(result).toEqual({
+      role: "assistant",
+      model: "grok-4.3",
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "Need a lookup." },
+        {
+          type: "tool_use",
+          id: "call-1",
+          name: "lookup",
+          input: { query: "AgenC" },
+        },
+      ],
     });
   });
 

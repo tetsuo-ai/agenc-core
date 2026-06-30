@@ -4,6 +4,7 @@ import {
   ListRootsRequestSchema,
   type CreateMessageRequest,
   type CreateMessageResult,
+  type CreateMessageResultWithTools,
   type ListRootsResult,
 } from '@modelcontextprotocol/sdk/types.js'
 import { pathToFileURL } from 'node:url'
@@ -19,7 +20,7 @@ export interface McpSamplingHandlers {
     readonly request: CreateMessageRequest
     readonly contextMeta?: unknown
     readonly signal?: AbortSignal
-  }): Promise<CreateMessageResult>
+  }): Promise<CreateMessageResult | CreateMessageResultWithTools>
 }
 
 export interface McpHostRequestHandlerOptions {
@@ -42,7 +43,9 @@ export function buildMcpHostClientCapabilities(
 ): Record<string, unknown> {
   return {
     roots: {},
-    sampling: {},
+    sampling: {
+      tools: {},
+    },
     ...(elicitationMode === 'empty'
       ? { elicitation: {} }
       : elicitationMode === 'form-url'
@@ -104,7 +107,7 @@ export function configureMcpHostRequestHandlers(
     async (
       request: CreateMessageRequest,
       extra?: McpRequestHandlerExtra,
-    ): Promise<CreateMessageResult> => {
+    ): Promise<CreateMessageResult | CreateMessageResultWithTools> => {
       logMCPDebug(serverName, `Received sampling/createMessage request from server`)
       if (options.samplingHandlers !== undefined) {
         const contextMeta = request.params?._meta ?? extra?._meta

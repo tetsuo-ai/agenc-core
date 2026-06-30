@@ -70,7 +70,10 @@ describe("GeminiProvider", () => {
       fetchImpl,
     });
 
-    const response = await provider.chat([{ role: "user", content: "hello" }]);
+    const response = await provider.chat([{ role: "user", content: "hello" }], {
+      temperature: 0.25,
+      stopSequences: ["END"],
+    });
 
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
@@ -83,7 +86,11 @@ describe("GeminiProvider", () => {
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(requestBody).toMatchObject({
       contents: [{ role: "user", parts: [{ text: "hello" }] }],
-      generationConfig: { maxOutputTokens: 4096 },
+      generationConfig: {
+        maxOutputTokens: 4096,
+        temperature: 0.25,
+        stopSequences: ["END"],
+      },
     });
     expect("model" in requestBody).toBe(false);
     expect("store" in requestBody).toBe(false);

@@ -749,7 +749,9 @@ export class OllamaProvider implements LLMProvider {
 
     // Build model options
     const modelOptions: Record<string, unknown> = {};
-    if (this.config.temperature !== undefined)
+    if (options?.temperature !== undefined)
+      modelOptions.temperature = options.temperature;
+    else if (this.config.temperature !== undefined)
       modelOptions.temperature = this.config.temperature;
     if (
       typeof (options?.maxOutputTokens ?? this.config.maxTokens) === "number" &&
@@ -761,6 +763,9 @@ export class OllamaProvider implements LLMProvider {
       );
     if (this.config.numCtx !== undefined) modelOptions.num_ctx = this.config.numCtx;
     if (this.config.numGpu !== undefined) modelOptions.num_gpu = this.config.numGpu;
+    if (options?.stopSequences !== undefined && options.stopSequences.length > 0) {
+      modelOptions.stop = [...options.stopSequences];
+    }
     if (Object.keys(modelOptions).length > 0) params.options = modelOptions;
 
     if (this.config.keepAlive !== undefined)

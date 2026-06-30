@@ -25,6 +25,7 @@ import { dirname, join, parse } from "node:path";
 import type {
   CreateMessageRequest,
   CreateMessageResult,
+  CreateMessageResultWithTools,
   SamplingMessageContentBlock,
 } from "@modelcontextprotocol/sdk/types.js";
 
@@ -32,7 +33,14 @@ import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
 import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
-import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import type {
+  LLMChatOptions,
+  LLMContentPart,
+  LLMMessage,
+  LLMResponse,
+  LLMTool,
+  LLMToolChoice,
+} from "../llm/types.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
 import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
 import {
@@ -247,6 +255,88 @@ function samplingRequestToLlmMessages(
   }));
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function mcpSamplingModelHint(request: CreateMessageRequest): string | undefined {
+  const hints = request.params.modelPreferences?.hints;
+  if (!Array.isArray(hints)) return undefined;
+  for (const hint of hints) {
+    const name = nonEmptyString(hint.name);
+    if (name !== undefined) return name;
+  }
+  return undefined;
+}
+
+function mcpSamplingStopSequences(
+  request: CreateMessageRequest,
+): readonly string[] | undefined {
+  const sequences = request.params.stopSequences
+    ?.map((sequence) => sequence.trim())
+    .filter((sequence) => sequence.length > 0);
+  return sequences !== undefined && sequences.length > 0 ? sequences : undefined;
+}
+
+function mcpSamplingTools(
+  request: CreateMessageRequest,
+): readonly LLMTool[] | undefined {
+  const tools = request.params.tools;
+  if (tools === undefined || tools.length === 0) return undefined;
+  return tools.map((tool): LLMTool => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description ?? tool.title ?? tool.name,
+      parameters: tool.inputSchema,
+    },
+  }));
+}
+
+function mcpSamplingToolChoice(
+  request: CreateMessageRequest,
+): LLMToolChoice | undefined {
+  const mode = request.params.toolChoice?.mode;
+  if (mode === "auto" || mode === "required" || mode === "none") return mode;
+  return undefined;
+}
+
+function mcpSamplingChatOptions(
+  request: CreateMessageRequest,
+  signal: AbortSignal | undefined,
+): LLMChatOptions {
+  const model = mcpSamplingModelHint(request);
+  const maxOutputTokens = positiveInteger(request.params.maxTokens);
+  const temperature = finiteNumber(request.params.temperature);
+  const stopSequences = mcpSamplingStopSequences(request);
+  const tools = mcpSamplingTools(request);
+  const toolChoice = mcpSamplingToolChoice(request);
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(request.params.systemPrompt !== undefined
+      ? { systemPrompt: request.params.systemPrompt }
+      : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(stopSequences !== undefined ? { stopSequences } : {}),
+    ...(tools !== undefined ? { tools } : {}),
+    ...(toolChoice !== undefined ? { toolChoice } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+  };
+}
+
 function mcpSamplingStopReason(
   finishReason: Awaited<ReturnType<Session["provider"]["chat"]>>["finishReason"],
 ): CreateMessageResult["stopReason"] {
@@ -262,6 +352,45 @@ function mcpSamplingStopReason(
     default:
       return "endTurn";
   }
+}
+
+function parseToolCallInput(argumentsJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argumentsJson || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function mcpSamplingResultContent(
+  response: LLMResponse,
+): CreateMessageResult["content"] | CreateMessageResultWithTools["content"] {
+  if (response.toolCalls.length === 0) {
+    return {
+      type: "text",
+      text: response.content,
+    };
+  }
+
+  const blocks: SamplingMessageContentBlock[] = [];
+  if (response.content.trim().length > 0) {
+    blocks.push({
+      type: "text",
+      text: response.content,
+    });
+  }
+  for (const toolCall of response.toolCalls) {
+    blocks.push({
+      type: "tool_use",
+      id: toolCall.id,
+      name: toolCall.name,
+      input: parseToolCallInput(toolCall.arguments),
+    });
+  }
+  return blocks;
 }
 
 function mcpSamplingAllowedForSession(session: Session): boolean {
@@ -283,10 +412,37 @@ function mcpSamplingCallId(
 }
 
 function mcpSamplingRequestSummary(request: CreateMessageRequest): string {
+  const modelPreferences = request.params.modelPreferences;
+  const modelHint = mcpSamplingModelHint(request);
+  const prioritySummary = modelPreferences
+    ? {
+      costPriority: finiteNumber(modelPreferences.costPriority),
+      speedPriority: finiteNumber(modelPreferences.speedPriority),
+      intelligencePriority: finiteNumber(modelPreferences.intelligencePriority),
+    }
+    : undefined;
   return JSON.stringify({
     messageCount: request.params.messages.length,
     hasSystemPrompt: request.params.systemPrompt !== undefined,
     maxTokens: request.params.maxTokens,
+    ...(request.params.temperature !== undefined
+      ? { temperature: request.params.temperature }
+      : {}),
+    ...(request.params.stopSequences !== undefined
+      ? { stopSequenceCount: request.params.stopSequences.length }
+      : {}),
+    ...(request.params.includeContext !== undefined
+      ? { includeContext: request.params.includeContext }
+      : {}),
+    ...(modelHint !== undefined ? { modelHint } : {}),
+    ...(prioritySummary !== undefined ? { modelPreferences: prioritySummary } : {}),
+    ...(request.params.tools !== undefined
+      ? { toolCount: request.params.tools.length }
+      : {}),
+    ...(request.params.toolChoice?.mode !== undefined
+      ? { toolChoice: request.params.toolChoice.mode }
+      : {}),
+    ...(request.params.metadata !== undefined ? { hasMetadata: true } : {}),
   });
 }
 
@@ -347,13 +503,7 @@ export function createSessionMcpSamplingHandlers(
       try {
         response = await session.provider.chat(
           samplingRequestToLlmMessages(request),
-          {
-            ...(request.params.systemPrompt !== undefined
-              ? { systemPrompt: request.params.systemPrompt }
-              : {}),
-            maxOutputTokens: request.params.maxTokens,
-            ...(signal !== undefined ? { signal } : {}),
-          },
+          mcpSamplingChatOptions(request, signal),
         );
       } catch (err) {
         emitSessionEvent(session, {
@@ -386,10 +536,7 @@ export function createSessionMcpSamplingHandlers(
         role: "assistant",
         model: response.model,
         stopReason: mcpSamplingStopReason(response.finishReason),
-        content: {
-          type: "text",
-          text: response.content,
-        },
+        content: mcpSamplingResultContent(response),
       };
     },
   };

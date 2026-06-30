@@ -111,6 +111,8 @@ describe("providers/ollama entrypoint", () => {
         model: "qwen2.5-coder:7b",
         maxOutputTokens: 64,
         systemPrompt: "Be terse.",
+        temperature: 0.1,
+        stopSequences: ["END"],
       },
     );
 
@@ -127,8 +129,10 @@ describe("providers/ollama entrypoint", () => {
       model: "qwen2.5-coder:7b",
       keep_alive: "10m",
       options: {
+        temperature: 0.1,
         num_predict: 64,
         num_ctx: 8192,
+        stop: ["END"],
       },
       messages: [
         { role: "system", content: "Be terse." },

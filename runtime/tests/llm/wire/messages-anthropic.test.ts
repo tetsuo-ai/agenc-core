@@ -53,6 +53,21 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(request.max_tokens).toBe(4096);
   });
 
+  test("serializes request-scoped sampling controls", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        temperature: 0.4,
+        stopSequences: ["END"],
+      },
+    });
+
+    expect(request.temperature).toBe(0.4);
+    expect(request.stop_sequences).toEqual(["END"]);
+  });
+
   test("folds developer messages into system blocks and omits them from turns", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",

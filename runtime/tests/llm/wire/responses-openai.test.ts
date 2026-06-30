@@ -41,6 +41,19 @@ describe("buildOpenAIResponsesRequest", () => {
     expect(request.max_output_tokens).toBe(8192);
   });
 
+  test("serializes request-scoped temperature", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        temperature: 0.3,
+      },
+    });
+
+    expect(request.temperature).toBe(0.3);
+  });
+
   test("folds developer messages into instructions before current user input", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",

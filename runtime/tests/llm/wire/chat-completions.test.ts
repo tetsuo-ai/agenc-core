@@ -77,6 +77,21 @@ describe("buildChatCompletionsRequest", () => {
     expect(request.max_tokens).toBe(32_000);
   });
 
+  test("serializes request-scoped sampling controls", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        temperature: 0.2,
+        stopSequences: ["END"],
+      },
+    });
+
+    expect(request.temperature).toBe(0.2);
+    expect(request.stop).toEqual(["END"]);
+  });
+
   test("can target max_completion_tokens for providers that require it", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-5",
