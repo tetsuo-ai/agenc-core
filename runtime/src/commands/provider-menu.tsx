@@ -186,6 +186,7 @@ function baseURLError(baseURL: string): string | undefined {
 }
 
 function authState(params: {
+  readonly provider: ProviderSlug;
   readonly requiresManagedAuth: boolean;
   readonly configuredEnvVar?: string;
   readonly defaultEnvVar?: string;
@@ -231,7 +232,7 @@ function authState(params: {
     };
   }
 
-  if (managedKeysEnabled) {
+  if (managedKeysEnabled && providerHasLiveSubscriptionRoute(params.provider)) {
     return {
       state: "managed",
       label: "subscription",
@@ -244,6 +245,14 @@ function authState(params: {
     label: `${envVar} missing`,
     source: `set env ${envVar}`,
   };
+}
+
+function providerHasLiveSubscriptionRoute(provider: ProviderSlug): boolean {
+  // Keep this intentionally narrow. The hosted gateway currently has a live
+  // deployment for the default Grok route. Other providers can still work via
+  // BYOK; mark them subscription-managed only once their hosted deployments
+  // are healthy, otherwise the picker sends users into runtime 401/404s.
+  return provider === "grok";
 }
 
 function runtimeState(params: {
@@ -359,6 +368,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     const baseURL = providerBaseURL(info.baseURL, providerConfig);
     const configuredEnvVar = providerConfigApiKeyEnv(providerConfig);
     const auth = authState({
+      provider,
       requiresManagedAuth: info.requiresManagedAuth,
       ...(configuredEnvVar ? { configuredEnvVar } : {}),
       ...(info.apiKeyEnvVar ? { defaultEnvVar: info.apiKeyEnvVar } : {}),

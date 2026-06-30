@@ -361,4 +361,30 @@ describe("modelCommand", () => {
     expect(snapshot.managedKeysEnabled).toBe(true);
     expect(modelMenuFallback(snapshot)).toContain("Managed keys: on");
   });
+
+  it("blocks direct model switches to unavailable managed routes without BYOK", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const res = await modelCommand.execute({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "openai:gpt-5"),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+
+      expect(res).toEqual({
+        kind: "text",
+        text: expect.stringContaining("subscription-managed access is currently live for grok only"),
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+    }
+  });
 });

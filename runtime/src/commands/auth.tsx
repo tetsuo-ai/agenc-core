@@ -258,7 +258,8 @@ function formatSubscriptionCommandResult(tier: string | undefined): string {
   if (plan === "pro" || plan === "team" || plan === "enterprise") {
     lines.push(
       "Managed model access is enabled for this account.",
-      "Use /model to pick a model, or run /model grok:grok-4.3.",
+      "Currently live through the subscription: /provider grok or /model grok:grok-4.3.",
+      "Other providers need BYOK until their managed gateway deployments are enabled.",
       "Use /provider to inspect whether a provider is using BYOK or subscription-managed keys.",
     );
   } else {

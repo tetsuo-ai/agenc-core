@@ -365,4 +365,58 @@ describe("providerCommand", () => {
       }
     }
   });
+
+  it("does not mark non-live managed providers as subscription-managed without BYOK", () => {
+    const previous = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const snapshot = readProviderMenuSnapshot({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+      const openai = snapshot.rows.find(row => row.provider === "openai");
+
+      expect(openai).toMatchObject({
+        runtimeState: "unauthenticated",
+        authState: "missing",
+      });
+      expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+    }
+  });
+
+  it("blocks direct provider switches to unavailable managed routes without BYOK", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const res = await providerCommand.execute({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "openai"),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+
+      expect(res).toEqual({
+        kind: "text",
+        text: expect.stringContaining("subscription-managed access is currently live for grok only"),
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+    }
+  });
 });

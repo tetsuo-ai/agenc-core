@@ -15,12 +15,15 @@
  */
 
 import type { Session } from "../session/session.js";
+import { resolveProviderSettings } from "../config/resolve-provider.js";
 import { configuredModelForProvider, defaultModelForProvider } from "../config/resolve-model.js";
 import { normalizeProviderName } from "../llm/provider.js";
+import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import {
   checkModelHistoryCompat,
   type HistoryCompatResult,
 } from "./model.js";
+import { readCommandConfig } from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -166,6 +169,34 @@ function resolveCommandModelForProvider(
   );
 }
 
+function providerHasLiveSubscriptionRoute(provider: string): boolean {
+  return provider === "grok";
+}
+
+function providerSwitchAuthError(
+  ctx: SlashCommandContext,
+  targetProvider: string,
+): string | undefined {
+  const normalizedProvider = normalizeProviderName(targetProvider);
+  if (normalizedProvider === null) return undefined;
+  const config = readCommandConfig(ctx);
+  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
+  const info = resolveBuiltInProviderInfo(normalizedProvider);
+  if (info?.apiKeyEnvVar === undefined) return undefined;
+  const apiKey = resolveProviderSettings(
+    normalizedProvider,
+    config,
+    process.env,
+  )?.apiKey;
+  if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
+  if (providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
+  return (
+    `Provider switch to "${normalizedProvider}" blocked: ` +
+    `subscription-managed access is currently live for grok only. ` +
+    `Set ${info.apiKeyEnvVar} for BYOK, or run /provider grok.`
+  );
+}
+
 function updateProviderChrome(
   ctx: SlashCommandContext,
   model: string | undefined,
@@ -215,6 +246,10 @@ export const providerCommand: SlashCommand = {
       const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
       const targetModel =
         modelParts.length > 0 ? modelParts.join(" ").trim() : undefined;
+      const authError = providerSwitchAuthError(ctx, targetProvider);
+      if (authError !== undefined) {
+        return { kind: "text", text: authError };
+      }
       const resolvedModel = resolveCommandModelForProvider(
         ctx.session,
         targetProvider,
