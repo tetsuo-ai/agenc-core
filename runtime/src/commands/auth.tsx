@@ -12,6 +12,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { formatSubscriptionManagedModels } from "./subscription-managed-models.js";
 
 type AuthAction = "login" | "logout" | "whoami" | "subscription";
 
@@ -253,7 +254,7 @@ function formatSubscriptionCommandResult(tier: string | undefined): string {
   if (plan === "pro" || plan === "team" || plan === "enterprise") {
     lines.push(
       "Managed model access is enabled for this account.",
-      "Currently live through the subscription: /provider grok or /model grok:grok-4.3.",
+      `Currently live through the subscription: ${formatSubscriptionManagedModels()}.`,
       "Other providers need BYOK until their managed gateway deployments are enabled.",
       "Use /provider to inspect whether a provider is using BYOK or subscription-managed keys.",
     );

@@ -35,6 +35,11 @@ import {
   providerMenuFallback,
   readProviderMenuSnapshot,
 } from "./provider-menu.js";
+import {
+  isSubscriptionManagedModel,
+  providerHasLiveSubscriptionRoute,
+  subscriptionManagedDefaultModel,
+} from "./subscription-managed-models.js";
 
 /**
  * Re-export so callers that only pull in `provider.ts` can still reach
@@ -169,8 +174,68 @@ function resolveCommandModelForProvider(
   );
 }
 
-function providerHasLiveSubscriptionRoute(provider: string): boolean {
-  return provider === "grok";
+function managedDefaultForCommand(
+  ctx: SlashCommandContext,
+  targetProvider: string,
+  targetModel: string | undefined,
+): string | undefined {
+  if (targetModel !== undefined) return targetModel;
+  const normalizedProvider = normalizeProviderName(targetProvider);
+  if (normalizedProvider === null) return undefined;
+  const config = readCommandConfig(ctx);
+  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
+  const settings = resolveProviderSettings(
+    normalizedProvider,
+    config,
+    process.env,
+  );
+  if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
+  if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
+    return undefined;
+  }
+  return subscriptionManagedDefaultModel(normalizedProvider);
+}
+
+function subscriptionManagedModelError(
+  ctx: SlashCommandContext,
+  targetProvider: string,
+  targetModel: string | undefined,
+): string | undefined {
+  if (targetModel === undefined) return undefined;
+  const normalizedProvider = normalizeProviderName(targetProvider);
+  if (normalizedProvider === null) return undefined;
+  const config = readCommandConfig(ctx);
+  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
+  const settings = resolveProviderSettings(
+    normalizedProvider,
+    config,
+    process.env,
+  );
+  if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
+    return undefined;
+  }
+  if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
+  if (isSubscriptionManagedModel(normalizedProvider, targetModel)) return undefined;
+  return (
+    `Model "${targetModel}" is not enabled for subscription-managed ` +
+    `${normalizedProvider}. Use /model ${normalizedProvider}:grok-4.3 or ` +
+    `/model ${normalizedProvider}:grok-code-fast-1.`
+  );
+}
+
+function isLocalProviderEndpoint(baseURL: string | undefined): boolean {
+  if (baseURL === undefined) return false;
+  try {
+    const hostname = new URL(baseURL).hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname.endsWith(".local")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function providerSwitchAuthError(
@@ -183,16 +248,18 @@ function providerSwitchAuthError(
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const info = resolveBuiltInProviderInfo(normalizedProvider);
   if (info?.apiKeyEnvVar === undefined) return undefined;
-  const apiKey = resolveProviderSettings(
+  const settings = resolveProviderSettings(
     normalizedProvider,
     config,
     process.env,
-  )?.apiKey;
+  );
+  if (isLocalProviderEndpoint(settings?.baseURL ?? info.baseURL)) return undefined;
+  const apiKey = settings?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
   if (providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
   return (
     `Provider switch to "${normalizedProvider}" blocked: ` +
-    `subscription-managed access is currently live for grok only. ` +
+    `subscription-managed access is not enabled for this provider. ` +
     `Set ${info.apiKeyEnvVar} for BYOK, or run /provider grok.`
   );
 }
@@ -236,6 +303,13 @@ export const providerCommand: SlashCommand = {
                 shouldClose: false,
               };
             }
+            const modelError = subscriptionManagedModelError(ctx, provider, model);
+            if (modelError !== undefined) {
+              return {
+                message: modelError,
+                shouldClose: false,
+              };
+            }
             const summary = await applyProviderSwitch(ctx.session, provider, model);
             if (providerSwitchApplied(summary)) {
               updateProviderChrome(ctx, model);
@@ -253,19 +327,30 @@ export const providerCommand: SlashCommand = {
       const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
       const targetModel =
         modelParts.length > 0 ? modelParts.join(" ").trim() : undefined;
+      const effectiveTargetModel =
+        managedDefaultForCommand(ctx, targetProvider, targetModel) ??
+        targetModel;
       const authError = providerSwitchAuthError(ctx, targetProvider);
       if (authError !== undefined) {
         return { kind: "text", text: authError };
       }
+      const modelError = subscriptionManagedModelError(
+        ctx,
+        targetProvider,
+        effectiveTargetModel,
+      );
+      if (modelError !== undefined) {
+        return { kind: "text", text: modelError };
+      }
       const resolvedModel = resolveCommandModelForProvider(
         ctx.session,
         targetProvider,
-        targetModel,
+        effectiveTargetModel,
       );
       const summary = await applyProviderSwitch(
         ctx.session,
         targetProvider,
-        targetModel,
+        effectiveTargetModel,
       );
       if (resolvedModel !== undefined && providerSwitchApplied(summary)) {
         updateProviderChrome(ctx, resolvedModel);

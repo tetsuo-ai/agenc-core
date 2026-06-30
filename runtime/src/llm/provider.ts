@@ -112,6 +112,7 @@ type ProviderRuntimeExtra = Partial<
   readonly keepAlive?: string;
   readonly numCtx?: number;
   readonly numGpu?: number;
+  readonly managedGateway?: boolean;
   readonly providerFallback?: ProviderFallbackLadderOptions;
   readonly emitWarning?: LLMProviderConfig["emitWarning"];
   readonly emitDiagnostic?: LLMProviderConfig["emitDiagnostic"];
@@ -156,6 +157,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "keepAlive",
   "numCtx",
   "numGpu",
+  "managedGateway",
   "emitWarning",
   "emitDiagnostic",
   "onCapabilityDrift",
@@ -987,6 +989,9 @@ function readRuntimeExtra(
     ...(readNumber(extra, "numGpu") !== undefined
       ? { numGpu: readNumber(extra, "numGpu") }
       : {}),
+    ...(readBoolean(extra, "managedGateway") !== undefined
+      ? { managedGateway: readBoolean(extra, "managedGateway") }
+      : {}),
     ...(typeof extra?.emitWarning === "function"
       ? { emitWarning: extra.emitWarning as LLMProviderConfig["emitWarning"] }
       : {}),
@@ -1179,6 +1184,67 @@ export function normalizeProviderName(
   return normalizeBuiltInProviderSlug(provider) ?? null;
 }
 
+function buildManagedGatewayProvider(
+  provider: Exclude<ProviderName, "agenc">,
+  opts: ProviderFactoryOptions,
+  extra: ProviderRuntimeExtra,
+): LLMProvider {
+  const apiKey = requireFactoryApiKey(provider, opts);
+  const baseURL = normalizeBaseURL(opts.baseURL);
+  if (baseURL === undefined) {
+    throw new Error(
+      `${provider} managed gateway provider requires baseURL from AuthBackend.vendKey()`,
+    );
+  }
+  const model = normalizeManagedGatewayModel(
+    provider,
+    requireModel(
+      provider,
+      opts.model,
+      undefined,
+      `${provider.toUpperCase()}_MODEL`,
+      defaultModelFor(provider),
+    ),
+  );
+  const cfg: OpenAIProviderConfig = {
+    ...buildCommonConfig(extra),
+    apiKey,
+    baseURL,
+    model,
+    providerName: provider,
+    apiKeyEnvLabel: "AgenC subscription",
+    tools: opts.tools ? [...opts.tools] : undefined,
+    useResponsesApi: false,
+    ...(extra.contextWindowTokens !== undefined
+      ? { contextWindowTokens: extra.contextWindowTokens }
+      : {}),
+    ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
+    ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+  };
+  const providerInstance = new OpenAIProvider(cfg);
+  return markFactoryProvider(providerInstance, {
+    provider,
+    options: {
+      apiKey,
+      baseURL,
+      model,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(readProviderRuntimeExtra({
+        ...(cfg as unknown as Record<string, unknown>),
+        managedGateway: true,
+      })
+        ? {
+          extra: readProviderRuntimeExtra({
+            ...(cfg as unknown as Record<string, unknown>),
+            managedGateway: true,
+          }),
+        }
+        : {}),
+    },
+  });
+}
+
 export function createProvider(
   name: ProviderName,
   opts: ProviderFactoryOptions,
@@ -1186,6 +1252,9 @@ export function createProvider(
   const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
   if (authVendedProvider !== undefined) return authVendedProvider;
   const extra = readRuntimeExtra(opts.extra);
+  if (extra.managedGateway === true && name !== "agenc") {
+    return buildManagedGatewayProvider(name, opts, extra);
+  }
   switch (name) {
     case "agenc": {
       const authBackend = readAuthBackendExtra(opts.extra);

@@ -18,6 +18,11 @@ import { MenuModal } from "../tui/components/v2/primitives.js";
 import { readCommandConfig } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import {
+  providerHasLiveSubscriptionRoute,
+  subscriptionManagedDefaultModel,
+  subscriptionManagedModels,
+} from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ProviderRowStatus = "current" | "configured" | "default";
@@ -25,6 +30,7 @@ type ProviderAuthState = "managed" | "ready" | "missing" | "optional";
 type ProviderRuntimeState =
   | "active"
   | "available"
+  | "local"
   | "unauthenticated"
   | "unavailable"
   | "error";
@@ -114,8 +120,13 @@ function providerModel(params: {
   readonly provider: ProviderSlug;
   readonly currentProvider: ProviderSlug;
   readonly currentModel: string;
+  readonly managedKeysEnabled?: boolean;
 }): string {
   if (params.provider === params.currentProvider) return params.currentModel;
+  if (params.managedKeysEnabled === true) {
+    const managedDefault = subscriptionManagedDefaultModel(params.provider);
+    if (managedDefault !== undefined) return managedDefault;
+  }
   return (
     (params.config !== undefined
       ? configuredModelForProvider(params.config, params.provider)
@@ -224,11 +235,14 @@ function authState(params: {
     };
   }
 
-  if (isLocalProviderEndpoint(params.baseURL)) {
+  const localEndpoint = isLocalProviderEndpoint(params.baseURL);
+  if (localEndpoint) {
     return {
       state: "optional",
-      label: `${envVar} optional`,
-      source: `env ${envVar} optional for local endpoint`,
+      label: managedKeysEnabled ? "local only" : `${envVar} optional`,
+      source: managedKeysEnabled
+        ? `local endpoint; subscription is not used`
+        : `env ${envVar} optional for local endpoint`,
     };
   }
 
@@ -245,14 +259,6 @@ function authState(params: {
     label: `${envVar} missing`,
     source: `set env ${envVar}`,
   };
-}
-
-function providerHasLiveSubscriptionRoute(provider: ProviderSlug): boolean {
-  // Keep this intentionally narrow. The hosted gateway currently has a live
-  // deployment for the default Grok route. Other providers can still work via
-  // BYOK; mark them subscription-managed only once their hosted deployments
-  // are healthy, otherwise the picker sends users into runtime 401/404s.
-  return provider === "grok";
 }
 
 function runtimeState(params: {
@@ -274,6 +280,12 @@ function runtimeState(params: {
   if (params.status === "current") {
     return { state: "active" };
   }
+  if (
+    params.authState === "optional" &&
+    isLocalProviderEndpoint(params.baseURL)
+  ) {
+    return { state: "local" };
+  }
   return { state: "available" };
 }
 
@@ -286,6 +298,8 @@ function runtimeDetail(params: {
   switch (params.state) {
     case "active":
       return "active provider";
+    case "local":
+      return "local endpoint";
     case "available":
       return rowDetail(params.status);
     case "unauthenticated":
@@ -301,6 +315,8 @@ function statusColor(state: ProviderRuntimeState): ProviderColor {
   switch (state) {
     case "active":
       return "success";
+    case "local":
+      return "inactive";
     case "available":
       return "agenc";
     case "unauthenticated":
@@ -316,6 +332,8 @@ function statusGlyph(state: ProviderRuntimeState): string {
   switch (state) {
     case "active":
       return "◆";
+    case "local":
+      return "○";
     case "available":
       return "●";
     case "unauthenticated":
@@ -360,6 +378,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     config?.model?.trim() ??
     defaultModelForProvider(currentProvider);
   const modelCatalog = buildProviderModelCatalog(config);
+  const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
 
   const rows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
@@ -375,7 +394,12 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       baseURL,
       ...(config ? { config } : {}),
     });
-    const models = modelCatalog[provider] ?? [];
+    const rawModels = modelCatalog[provider] ?? [];
+    const managedModels =
+      managedKeysEnabled && providerHasLiveSubscriptionRoute(provider)
+        ? subscriptionManagedModels(provider)
+        : undefined;
+    const models = managedModels !== undefined ? managedModels : rawModels;
     const state = runtimeState({
       status,
       authState: auth.state,
@@ -385,7 +409,13 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     return {
       provider,
       name: info.name,
-      model: providerModel({ config, provider, currentProvider, currentModel }),
+      model: providerModel({
+        config,
+        provider,
+        currentProvider,
+        currentModel,
+        managedKeysEnabled,
+      }),
       models,
       baseURL,
       status,

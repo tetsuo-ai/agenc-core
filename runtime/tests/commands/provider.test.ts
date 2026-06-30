@@ -330,7 +330,7 @@ describe("providerCommand", () => {
     const openai = snapshot.rows.find(row => row.provider === "openai");
 
     expect(ollama).toMatchObject({
-      runtimeState: "available",
+      runtimeState: "local",
       authState: "optional",
       model: "llama3.3",
     });
@@ -356,6 +356,7 @@ describe("providerCommand", () => {
         authState: "managed",
         auth: "subscription",
       });
+      expect(grok?.models).toEqual(["grok-4.3", "grok-code-fast-1"]);
       expect(grok?.credentialSource).toContain("subscription-managed key");
     } finally {
       if (previous === undefined) {
@@ -366,7 +367,7 @@ describe("providerCommand", () => {
     }
   });
 
-  it("does not mark non-live managed providers as subscription-managed without BYOK", () => {
+  it("does not mark providers without live managed routes as subscription-managed", () => {
     const previous = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     try {
@@ -381,10 +382,11 @@ describe("providerCommand", () => {
       const openai = snapshot.rows.find(row => row.provider === "openai");
 
       expect(openai).toMatchObject({
-        runtimeState: "unauthenticated",
         authState: "missing",
       });
+      expect(openai?.auth).toContain("OPENAI_API_KEY");
       expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
+      expect(openai?.credentialSource).not.toContain("subscription-managed key");
     } finally {
       if (previous === undefined) {
         delete process.env.OPENAI_API_KEY;
@@ -394,7 +396,69 @@ describe("providerCommand", () => {
     }
   });
 
-  it("blocks direct provider switches to unavailable managed routes without BYOK", async () => {
+  it("marks local providers as local-only under managed subscription mode", () => {
+    const previous = process.env.LMSTUDIO_API_KEY;
+    delete process.env.LMSTUDIO_API_KEY;
+    try {
+      const snapshot = readProviderMenuSnapshot({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+      const lmstudio = snapshot.rows.find(row => row.provider === "lmstudio");
+
+      expect(lmstudio).toMatchObject({
+        runtimeState: "local",
+        authState: "optional",
+        auth: "local only",
+        detail: "local endpoint",
+      });
+      expect(lmstudio?.credentialSource).toContain("subscription is not used");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.LMSTUDIO_API_KEY;
+      } else {
+        process.env.LMSTUDIO_API_KEY = previous;
+      }
+    }
+  });
+
+  it("does not block direct switches to local providers under managed subscription mode", async () => {
+    const previous = process.env.LMSTUDIO_API_KEY;
+    delete process.env.LMSTUDIO_API_KEY;
+    try {
+      const session = stubSession({ provider: "grok", model: "grok-4.3" });
+      const res = await providerCommand.execute({
+        ...mkctx(session, "lmstudio"),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+
+      expect(res.kind).toBe("text");
+      if (res.kind === "text") {
+        expect(res.text).toContain('Provider switched to "lmstudio"');
+        expect(res.text).not.toContain("subscription-managed access");
+      }
+      const pending = (session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }).pendingProviderSwitch;
+      expect(pending).toEqual({ provider: "lmstudio", model: "gpt-4o-mini" });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.LMSTUDIO_API_KEY;
+      } else {
+        process.env.LMSTUDIO_API_KEY = previous;
+      }
+    }
+  });
+
+  it("blocks direct provider switches to providers without subscription-managed routes or BYOK", async () => {
     const previous = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     try {
@@ -409,7 +473,7 @@ describe("providerCommand", () => {
 
       expect(res).toEqual({
         kind: "text",
-        text: expect.stringContaining("subscription-managed access is currently live for grok only"),
+        text: expect.stringContaining("subscription-managed access is not enabled for this provider"),
       });
     } finally {
       if (previous === undefined) {

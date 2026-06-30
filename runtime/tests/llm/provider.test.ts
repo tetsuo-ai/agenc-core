@@ -349,6 +349,23 @@ describe("createProvider", () => {
     expect(vendKey).toHaveBeenCalledWith("grok", "session-gateway");
   });
 
+  test("normalizes Grok model ids for direct managed gateway providers", async () => {
+    const provider = createProvider("grok", {
+      apiKey: "managed-gateway-key",
+      baseURL: "https://llm.agenc.tech",
+      model: "grok-code-fast-1",
+      extra: { managedGateway: true },
+    });
+
+    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+      provider: "grok",
+      model: "xai/grok-code-fast-1",
+    });
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      model: "xai/grok-code-fast-1",
+    });
+  });
+
   test("defaults model metadata on AuthBackend-vended providers without explicit model", () => {
     const provider = withEnv(
       {

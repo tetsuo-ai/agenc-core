@@ -51,6 +51,11 @@ import {
   openModelMenu,
   readModelMenuSnapshot,
 } from "./model-menu.js";
+import {
+  isSubscriptionManagedModel,
+  providerHasLiveSubscriptionRoute,
+  subscriptionManagedModels,
+} from "./subscription-managed-models.js";
 
 export interface HistoryCompatResult {
   readonly compatible: boolean;
@@ -242,9 +247,16 @@ function resolveCommandSelection(
           model: resolved.model,
         };
       } catch {
+        const model = target.slice(explicitSeparator + 1);
+        if (isSubscriptionManagedModel(provider, model)) {
+          return {
+            provider,
+            model,
+          };
+        }
         return {
           provider,
-          model: target.slice(explicitSeparator + 1),
+          model,
           error: `Model switch blocked: ${target} is not in the ${provider} catalog.`,
         };
       }
@@ -262,10 +274,6 @@ function resolveCommandSelection(
   } catch {
     return { model: target };
   }
-}
-
-function providerHasLiveSubscriptionRoute(provider: string): boolean {
-  return provider === "grok";
 }
 
 function modelSwitchAuthError(
@@ -286,6 +294,32 @@ function modelSwitchAuthError(
   return (
     `Model switch blocked: subscription-managed access is currently live for ` +
     `grok only. Set ${info.apiKeyEnvVar} for BYOK, or run /model grok:grok-4.3.`
+  );
+}
+
+function subscriptionManagedModelError(
+  ctx: SlashCommandContext,
+  targetProvider: string | undefined,
+  targetModel: string,
+): string | undefined {
+  const provider =
+    normalizeProviderSlug(targetProvider) ??
+    normalizeProviderSlug(readSessionSelection(ctx.session).provider);
+  if (provider === undefined) return undefined;
+  const config = readCommandConfig(ctx);
+  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
+  const info = resolveBuiltInProviderInfo(provider);
+  if (info?.apiKeyEnvVar === undefined) return undefined;
+  const apiKey = resolveProviderSettings(provider, config, process.env)?.apiKey;
+  if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
+  if (!providerHasLiveSubscriptionRoute(provider)) return undefined;
+  if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
+  const liveModels = subscriptionManagedModels(provider)
+    .map((model) => `/model ${provider}:${model}`)
+    .join(" or ");
+  return (
+    `Model "${targetModel}" is not enabled for subscription-managed ` +
+    `${provider}. Use ${liveModels}.`
   );
 }
 
@@ -330,6 +364,13 @@ export const modelCommand: SlashCommand = {
                 shouldClose: false,
               };
             }
+            const modelError = subscriptionManagedModelError(ctx, provider, model);
+            if (modelError !== undefined) {
+              return {
+                message: modelError,
+                shouldClose: false,
+              };
+            }
             const summary = await applyModelSwitch(
               ctx.session,
               model,
@@ -355,6 +396,14 @@ export const modelCommand: SlashCommand = {
       const authError = modelSwitchAuthError(ctx, selection.provider);
       if (authError !== undefined) {
         return { kind: "text", text: authError };
+      }
+      const modelError = subscriptionManagedModelError(
+        ctx,
+        selection.provider,
+        selection.model,
+      );
+      if (modelError !== undefined) {
+        return { kind: "text", text: modelError };
       }
       const summary = await applyModelSwitch(
         ctx.session,

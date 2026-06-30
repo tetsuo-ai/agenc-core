@@ -1612,6 +1612,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
   const showTransientResult = useCallback((text: string, opts?: {
     display?: string;
+    persistent?: boolean;
   }) => {
     if (transientResultTimerRef.current !== null) {
       clearTimeout(transientResultTimerRef.current);
@@ -1624,6 +1625,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           </Box>,
       shouldHidePromptInput: false
     });
+    if (opts?.persistent === true) return;
     transientResultTimerRef.current = setTimeout(() => {
       transientResultTimerRef.current = null;
       setToolJSX(null);
@@ -1835,7 +1837,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         } | {
           kind: "exit";
           code?: number;
-        }): {
+        }, commandName?: string): {
           forwardedToModel: boolean;
         } => {
           if (result.kind === "skip") return {
@@ -1874,7 +1876,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           // `Usage: /model <model-name>` would persist across every
           // subsequent prompt until another setToolJSX fired.
           showTransientResult(display, {
-            display: result.kind === "error" ? "error" : undefined
+            display: result.kind === "error" ? "error" : undefined,
+            persistent: commandName === "whoami" || commandName === "subscription"
           });
           return {
             forwardedToModel: false
@@ -1909,7 +1912,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           commandRegistry
         }, commandRegistry);
         if (outcome.result.kind !== "skip" || outcome.command !== undefined) {
-          const dispatched_0 = renderResult(outcome.result as never);
+          const dispatched_0 = renderResult(outcome.result as never, outcome.command?.name);
           if (!dispatched_0.forwardedToModel) {
             setPendingSubmission(false);
           }

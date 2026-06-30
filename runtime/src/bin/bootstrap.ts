@@ -341,7 +341,7 @@ function requireProviderApiKeyOrUndefined(params: {
   const envHint = providerApiKeyEnvHint(params.provider, params.providerSettings);
   if (envHint === undefined) return undefined;
   const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(params.provider)
-    ? "Subscription-managed access is currently live for grok only."
+    ? "Subscription-managed access is currently live for Grok only."
     : params.managedKey.disabled
     ? "Managed key vending is disabled by auth.managedKeys.enabled."
     : params.managedKey.attempted
@@ -1081,6 +1081,7 @@ export async function bootstrapLocalRuntimeSession(
         ...(providerFallback !== undefined
           ? { providerFallback }
           : {}),
+        ...(managedKey.baseURL !== undefined ? { managedGateway: true } : {}),
       },
     },
   );

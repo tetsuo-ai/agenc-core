@@ -863,9 +863,7 @@ function buildProviderFallbackLadderOptions(params: {
   };
 }
 
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "grok",
-]);
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["grok"]);
 
 function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
@@ -996,7 +994,12 @@ async function providerFactoryOptionsFromSettings(params: {
   return {
     ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
-    ...(Object.keys(extra).length > 0 ? { extra } : {}),
+    ...(managedCredential?.baseURL !== undefined
+      ? { extra: { ...extra, managedGateway: true } }
+      : {}),
+    ...(managedCredential?.baseURL === undefined && Object.keys(extra).length > 0
+      ? { extra }
+      : {}),
   };
 }
 
