@@ -281,6 +281,15 @@ export function buildAnthropicMessagesRequest(
   };
 
   if (system.length > 0) body.system = system;
+  if (input.options?.temperature !== undefined) {
+    body.temperature = input.options.temperature;
+  }
+  if (
+    input.options?.stopSequences !== undefined &&
+    input.options.stopSequences.length > 0
+  ) {
+    body.stop_sequences = [...input.options.stopSequences];
+  }
   const structuredOutputTool = buildAnthropicStructuredOutputTool(input.options);
   const tools = structuredOutputTool
     ? [...input.tools, structuredOutputTool]

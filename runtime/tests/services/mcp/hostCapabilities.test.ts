@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
-import { configureMcpHostRequestHandlers } from './hostCapabilities.js'
+import {
+  buildMcpHostClientCapabilities,
+  configureMcpHostRequestHandlers,
+} from './hostCapabilities.js'
 
 type FakeHandler = (request?: unknown, extra?: unknown) => unknown
 
@@ -12,6 +15,13 @@ class FakeClient {
     this.handlers.push(handler)
   }
 }
+
+test('buildMcpHostClientCapabilities advertises tool-capable sampling', () => {
+  assert.deepEqual(buildMcpHostClientCapabilities(), {
+    roots: {},
+    sampling: { tools: {} },
+  })
+})
 
 test('configureMcpHostRequestHandlers delegates sampling/createMessage to injected handler', async () => {
   const client = new FakeClient()

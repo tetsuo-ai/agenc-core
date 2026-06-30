@@ -454,6 +454,12 @@ function geminiGenerationConfig(
     finiteInteger(defaultMaxTokens) ??
     DEFAULT_GEMINI_MAX_OUTPUT_TOKENS;
   const config: Record<string, unknown> = { maxOutputTokens };
+  if (typeof options?.temperature === "number" && Number.isFinite(options.temperature)) {
+    config.temperature = options.temperature;
+  }
+  if (options?.stopSequences !== undefined && options.stopSequences.length > 0) {
+    config.stopSequences = [...options.stopSequences];
+  }
   const structuredSchema = options?.structuredOutput?.schema;
   if (options?.structuredOutput?.enabled || structuredSchema) {
     config.responseMimeType = "application/json";

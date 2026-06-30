@@ -433,9 +433,18 @@ function buildRequest(
   ];
   const maxTokens = positiveInteger(options?.maxOutputTokens) ??
     positiveInteger(config.maxTokens);
-  const temperature = typeof config.temperature === "number" &&
+  const optionTemperature = typeof options?.temperature === "number" &&
+      Number.isFinite(options.temperature)
+    ? options.temperature
+    : undefined;
+  const configTemperature = typeof config.temperature === "number" &&
       Number.isFinite(config.temperature)
     ? config.temperature
+    : undefined;
+  const temperature = optionTemperature ?? configTemperature;
+  const stopSequences = options?.stopSequences !== undefined &&
+      options.stopSequences.length > 0
+    ? [...options.stopSequences]
     : undefined;
   const tools = requestTools(config, options);
   const toolConfig = buildToolConfig(tools, options?.toolChoice);
@@ -443,11 +452,12 @@ function buildRequest(
   return {
     messages: built.messages,
     ...(system.length > 0 ? { system } : {}),
-    ...(maxTokens !== undefined || temperature !== undefined
+    ...(maxTokens !== undefined || temperature !== undefined || stopSequences !== undefined
       ? {
         inferenceConfig: {
           ...(maxTokens !== undefined ? { maxTokens } : {}),
           ...(temperature !== undefined ? { temperature } : {}),
+          ...(stopSequences !== undefined ? { stopSequences } : {}),
         },
       }
       : {}),

@@ -561,6 +561,10 @@ export interface LLMChatOptions {
   readonly contextWindowTokens?: number;
   /** Positive output-token budget for this request. */
   readonly maxOutputTokens?: number;
+  /** Request-scoped sampling temperature when the provider exposes it. */
+  readonly temperature?: number;
+  /** Request-scoped stop sequences when the provider exposes them. */
+  readonly stopSequences?: readonly string[];
   /**
    * Optional stable session key passed to providers that expose a
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure

@@ -290,6 +290,9 @@ export function buildOpenAIResponsesRequest(
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;
   }
+  if (input.options?.temperature !== undefined) {
+    body.temperature = input.options.temperature;
+  }
   const maxOutputTokens =
     positiveInteger(input.maxOutputTokens) ??
     positiveInteger(input.options?.maxOutputTokens);

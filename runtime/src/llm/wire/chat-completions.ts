@@ -164,6 +164,15 @@ export function buildChatCompletionsRequest(
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
+  if (input.options?.temperature !== undefined) {
+    body.temperature = input.options.temperature;
+  }
+  if (
+    input.options?.stopSequences !== undefined &&
+    input.options.stopSequences.length > 0
+  ) {
+    body.stop = [...input.options.stopSequences];
+  }
   // Strip fields the destination provider rejects. Hints are
   // adapter-populated; an undefined `acceptsX` flag preserves the
   // pre-hint behavior of "include if caller supplied a value", so

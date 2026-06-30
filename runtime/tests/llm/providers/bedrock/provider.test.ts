@@ -128,6 +128,8 @@ describe("providers/bedrock", () => {
         ],
         toolRouting: { allowedToolNames: ["lookup"] },
         toolChoice: { type: "function", name: "lookup" },
+        temperature: 0.4,
+        stopSequences: ["END"],
       },
     );
 
@@ -191,7 +193,11 @@ describe("providers/bedrock", () => {
           ],
         },
       ],
-      inferenceConfig: { maxTokens: 128, temperature: 0.2 },
+      inferenceConfig: {
+        maxTokens: 128,
+        temperature: 0.4,
+        stopSequences: ["END"],
+      },
       toolConfig: {
         tools: [
           {
@@ -223,7 +229,7 @@ describe("providers/bedrock", () => {
     expect(headers.get("authorization")).toBe(
       "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20240102/us-west-2/bedrock/aws4_request, " +
         "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, " +
-        "Signature=fce0b51b3833e2186a19397da2d5eb962c1dc56afed0a03ca0373fee8efdb852",
+        "Signature=14b03391fc44fbb9113c2e9314b5088756f27cbf2ebb6894bf6ec5aae8bb0713",
     );
   });
 
