@@ -229,6 +229,13 @@ export const providerCommand: SlashCommand = {
         const snapshot = readProviderMenuSnapshot(ctx);
         if (
           openProviderMenu(ctx, snapshot, async (provider, model) => {
+            const authError = providerSwitchAuthError(ctx, provider);
+            if (authError !== undefined) {
+              return {
+                message: authError,
+                shouldClose: false,
+              };
+            }
             const summary = await applyProviderSwitch(ctx.session, provider, model);
             if (providerSwitchApplied(summary)) {
               updateProviderChrome(ctx, model);

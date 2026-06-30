@@ -109,6 +109,18 @@ describe("auth slash commands", () => {
     expect(subscriptionCommand.description).toContain("plan");
   });
 
+  it("shows subscription details as persistent transcript text", async () => {
+    const agencHome = await makeHome();
+    const ctx = localAuthCtx(agencHome);
+    await loginCommand.execute(ctx);
+
+    await expect(subscriptionCommand.execute(ctx)).resolves.toEqual({
+      kind: "text",
+      text:
+        "Plan: free\nBilling: https://id.agenc.ag/subscription\nManaged model access requires Pro or higher.\nBYOK still works without a subscription.",
+    });
+  });
+
   it("rejects unexpected arguments", async () => {
     const agencHome = await makeHome();
     const ctx = {

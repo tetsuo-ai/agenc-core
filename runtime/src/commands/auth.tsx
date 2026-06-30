@@ -46,7 +46,7 @@ export const whoamiCommand: SlashCommand = {
 export const subscriptionCommand: SlashCommand = {
   name: "subscription",
   aliases: ["billing"],
-  description: "Show your AgenC plan and open subscription billing",
+  description: "Show your AgenC plan and billing URL",
   immediate: true,
   supportsNonInteractive: false,
   execute: async (ctx) => executeAuthCommand("subscription", ctx),
@@ -104,11 +104,6 @@ async function executeAuthCommand(
 
     const tier = await resolveSubscriptionTier(backend);
     if (action === "subscription") {
-      try {
-        await openUrlInBrowser(SUBSCRIPTION_URL);
-      } catch {
-        // The text result still gives the user a copyable URL.
-      }
       return {
         kind: "text",
         text: formatSubscriptionCommandResult(tier),

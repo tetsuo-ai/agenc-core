@@ -220,8 +220,11 @@ describe("createProvider", () => {
     { name: "grok", model: "grok-4.3" },
     { name: "openai", model: "gpt-5" },
     { name: "anthropic", model: "claude-opus-4-7" },
-    { name: "lmstudio", model: "gpt-4o-mini" },
-    { name: "openai-compatible", model: "local-model" },
+    {
+      name: "openai-compatible",
+      model: "local-model",
+      baseURL: "https://llm.agenc.tech/v1",
+    },
     { name: "openrouter", model: "openai/gpt-5" },
     { name: "groq", model: "llama-3.3-70b-versatile" },
     { name: "deepseek", model: "deepseek-reasoner" },
@@ -235,6 +238,7 @@ describe("createProvider", () => {
     async (entry) => {
       const { name, model } = entry;
       const extra = "extra" in entry ? entry.extra : undefined;
+      const baseURL = "baseURL" in entry ? entry.baseURL : undefined;
       const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
         provider,
         sessionId,
@@ -254,6 +258,7 @@ describe("createProvider", () => {
 
       const provider = createProvider(name, {
         model,
+        ...(baseURL !== undefined ? { baseURL } : {}),
         extra: {
           authBackend: vendingAuthBackend,
           sessionId: "session-vend",
@@ -268,6 +273,52 @@ describe("createProvider", () => {
         model,
       });
       expect(vendKey).toHaveBeenCalledWith(name, "session-vend");
+    },
+  );
+
+  test.each([
+    {
+      name: "lmstudio",
+      model: "gpt-4o-mini",
+      expectedProvider: LMStudioProvider,
+    },
+    {
+      name: "openai-compatible",
+      model: "local-model",
+      expectedProvider: OpenAICompatibleProvider,
+    },
+    {
+      name: "openai-compatible",
+      model: "local-model",
+      baseURL: "http://127.0.0.1:8000/v1",
+      expectedProvider: OpenAICompatibleProvider,
+    },
+  ] as const)(
+    "does not vend AuthBackend keys for local '$name' endpoints",
+    async ({ name, model, baseURL, expectedProvider }) => {
+      const vendKey = vi.fn(() => {
+        throw new Error("vendKey should not run for local providers");
+      });
+      const vendingAuthBackend: AuthBackend = {
+        ...authBackend,
+        vendKey,
+      };
+
+      const provider = createProvider(name, {
+        model,
+        ...(baseURL !== undefined ? { baseURL } : {}),
+        extra: {
+          authBackend: vendingAuthBackend,
+          sessionId: "session-local",
+        },
+      });
+
+      expect(provider).toBeInstanceOf(expectedProvider);
+      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+        provider: name,
+        model,
+      });
+      expect(vendKey).not.toHaveBeenCalled();
     },
   );
 

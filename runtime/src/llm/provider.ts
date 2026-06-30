@@ -342,7 +342,6 @@ const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
   "grok",
   "openai",
   "anthropic",
-  "lmstudio",
   "openai-compatible",
   "openrouter",
   "groq",
@@ -675,6 +674,7 @@ function createAuthVendedProviderIfNeeded(
   opts: ProviderFactoryOptions,
 ): LLMProvider | undefined {
   if (!AUTH_VENDED_PROVIDER_NAMES.has(provider)) return undefined;
+  if (providerTargetsLocalEndpoint(provider, opts)) return undefined;
   if (concreteProviderExplicitApiKey(provider, opts) !== undefined) {
     return undefined;
   }
@@ -705,6 +705,36 @@ function createAuthVendedProviderIfNeeded(
       options: factoryOptions,
     },
   );
+}
+
+function providerTargetsLocalEndpoint(
+  provider: ProviderName,
+  opts: ProviderFactoryOptions,
+): boolean {
+  if (provider === "lmstudio" || provider === "ollama") return true;
+  if (provider !== "openai-compatible") return false;
+  return isLocalBaseURL(
+    normalizeBaseURL(opts.baseURL) ??
+      normalizeBaseURL(process.env.OPENAI_COMPATIBLE_BASE_URL) ??
+      normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
+      normalizeBaseURL(process.env.OPENAI_API_BASE) ??
+      defaultBaseURLFor("openai-compatible"),
+  );
+}
+
+function isLocalBaseURL(baseURL: string | undefined): boolean {
+  if (baseURL === undefined) return false;
+  try {
+    const hostname = new URL(baseURL).hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname.endsWith(".local")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function hasFactoryOAuthAccessToken(opts: ProviderFactoryOptions): boolean {
