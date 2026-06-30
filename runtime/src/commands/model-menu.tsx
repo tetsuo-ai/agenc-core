@@ -40,6 +40,7 @@ export type ModelMenuSnapshot = {
   readonly currentModel: string;
   readonly configuredModel?: string;
   readonly defaultModel: string;
+  readonly managedKeysEnabled: boolean;
   readonly rows: readonly ModelMenuRow[];
   readonly activeIndex: number;
   readonly providerCounts: Readonly<Record<string, number>>;
@@ -284,6 +285,7 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     currentModel,
     ...(configuredModel !== undefined ? { configuredModel } : {}),
     defaultModel,
+    managedKeysEnabled: config?.auth?.managedKeys?.enabled === true,
     rows,
     activeIndex,
     providerCounts,
@@ -295,6 +297,7 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
     "Model selection",
     `Provider: ${snapshot.provider}`,
     `Current: ${snapshot.currentModel}`,
+    `Managed keys: ${snapshot.managedKeysEnabled ? "on" : "off"}`,
     "",
     "Available models:",
   ];
@@ -303,7 +306,11 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
       `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.model} (${row.detail})`,
     );
   }
-  lines.push("", "Run /model <model-name> or /model <provider>:<model-name> to switch.");
+  lines.push(
+    "",
+    "Run /model <model-name> or /model <provider>:<model-name> to switch.",
+    "Run /provider to see whether that provider uses BYOK or subscription-managed keys.",
+  );
   return lines.join("\n");
 }
 
@@ -375,7 +382,7 @@ function ModelMenuView({
     <MenuModal
       title="model"
       count={`${rows.length}`}
-      summary={`active ${snapshot.provider} / ${snapshot.currentModel}`}
+      summary={`active ${snapshot.provider} / ${snapshot.currentModel} · managed ${snapshot.managedKeysEnabled ? "on" : "off"}`}
       headerRight={busy ? "switching" : "live"}
       columns={[3, 13, 15, 34, 12, 34]}
       headers={["", "status", "provider", "model", "group", "detail"]}
@@ -410,6 +417,10 @@ function ModelMenuView({
           <ThemedText color="text2" wrap="wrap">
             Empty /model opens this provider-grouped catalog. Use /provider to
             inspect credentials and provider auth state.
+          </ThemedText>
+          <ThemedText color={snapshot.managedKeysEnabled ? "success" : "warning"} wrap="wrap">
+            Managed keys: {snapshot.managedKeysEnabled ? "on" : "off"}. Paid accounts can use
+            subscription-managed provider keys when no BYOK key is set.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
             Selected: {selected?.provider ?? snapshot.provider}:{selected?.model ?? snapshot.currentModel}

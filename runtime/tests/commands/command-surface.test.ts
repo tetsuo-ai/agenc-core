@@ -31,6 +31,7 @@ const MINIMAL_NAMES = [
   "login",
   "logout",
   "whoami",
+  "subscription",
   "cost",
   "model",
   "provider",

@@ -4,7 +4,7 @@ import {
   applyModelSwitch,
   checkModelHistoryCompat,
 } from "./model.js";
-import { readModelMenuSnapshot } from "./model-menu.js";
+import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
 
@@ -346,5 +346,19 @@ describe("modelCommand", () => {
     expect(snapshot.rows.some(row => row.provider === "openai")).toBe(true);
     expect(snapshot.rows[snapshot.activeIndex]?.status).toBe("current");
     expect(snapshot.providerCounts.openai).toBeGreaterThan(0);
+  });
+
+  it("model menu snapshot reports managed key mode from config", () => {
+    const snapshot = readModelMenuSnapshot({
+      ...mkctx(stubSession(), ""),
+      configStore: {
+        current: () => ({
+          auth: { managedKeys: { enabled: true } },
+        }),
+      } as SlashCommandContext["configStore"],
+    });
+
+    expect(snapshot.managedKeysEnabled).toBe(true);
+    expect(modelMenuFallback(snapshot)).toContain("Managed keys: on");
   });
 });

@@ -337,4 +337,32 @@ describe("providerCommand", () => {
     expect(openai?.models.length).toBeGreaterThan(0);
     expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
   });
+
+  it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", () => {
+    const previous = process.env.XAI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    try {
+      const snapshot = readProviderMenuSnapshot({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+      const grok = snapshot.rows.find(row => row.provider === "grok");
+
+      expect(grok).toMatchObject({
+        authState: "managed",
+        auth: "subscription",
+      });
+      expect(grok?.credentialSource).toContain("subscription-managed key");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.XAI_API_KEY;
+      } else {
+        process.env.XAI_API_KEY = previous;
+      }
+    }
+  });
 });

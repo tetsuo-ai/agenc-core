@@ -8,6 +8,7 @@ import { LocalAuthBackend } from "../auth/backends/local.js";
 import {
   loginCommand,
   logoutCommand,
+  subscriptionCommand,
   whoamiCommand,
 } from "./auth.js";
 import { buildDefaultRegistry } from "./registry.js";
@@ -99,6 +100,13 @@ describe("auth slash commands", () => {
     const registry = buildDefaultRegistry();
 
     expect(registry.find("account")?.name).toBe("whoami");
+  });
+
+  it("registers billing as an alias for subscription", () => {
+    const registry = buildDefaultRegistry();
+
+    expect(registry.find("billing")?.name).toBe("subscription");
+    expect(subscriptionCommand.description).toContain("plan");
   });
 
   it("rejects unexpected arguments", async () => {

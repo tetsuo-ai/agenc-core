@@ -196,11 +196,11 @@ function authState(params: {
   readonly label: string;
   readonly source: string;
 } {
+  const managedKeysEnabled = params.config?.auth?.managedKeys?.enabled === true;
   if (params.requiresManagedAuth) {
-    const enabled = params.config?.auth?.managedKeys?.enabled === true;
     return {
       state: "managed",
-      label: enabled ? "managed on" : "managed",
+      label: managedKeysEnabled ? "managed on" : "managed",
       source: "managed key vending",
     };
   }
@@ -228,6 +228,14 @@ function authState(params: {
       state: "optional",
       label: `${envVar} optional`,
       source: `env ${envVar} optional for local endpoint`,
+    };
+  }
+
+  if (managedKeysEnabled) {
+    return {
+      state: "managed",
+      label: "subscription",
+      source: `AgenC subscription-managed key; ${envVar} optional`,
     };
   }
 
@@ -528,7 +536,7 @@ function ProviderAuthView({
         row.authState === "missing"
           ? row.credentialSource
           : row.authState === "managed"
-            ? "managed auth is selected for this provider"
+            ? "managed auth is selected for this provider; use /subscription to check plan"
             : "credential is available or optional",
       color: row.authState === "missing" ? "warning" : "subtle",
     },
