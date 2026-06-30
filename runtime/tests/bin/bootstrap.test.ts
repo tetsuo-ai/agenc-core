@@ -2031,6 +2031,7 @@ describe("bootstrapLocalRuntimeSession", () => {
             AGENC_HOME: home,
             AGENC_WORKSPACE: workspace,
             AGENC_XAI_API_KEY: "",
+            AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
             HOME: home,
             GROK_API_KEY: "",
             XAI_API_KEY: "",

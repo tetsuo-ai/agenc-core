@@ -190,6 +190,10 @@ function isSubscriptionEntitled(tier: AuthSubscriptionTier): boolean {
   return tier === "pro" || tier === "team" || tier === "enterprise";
 }
 
+function providerHasLiveManagedSubscriptionRoute(provider: ProviderName): boolean {
+  return provider === "grok";
+}
+
 function enforceRemoteSubscriptionGate(params: {
   readonly authBackend: AuthBackend | undefined;
   readonly subscriptionTier: AuthSubscriptionTier;
@@ -287,6 +291,9 @@ async function vendProviderKeyOrUndefined(params: {
   readonly sessionId: string;
 }): Promise<ManagedProviderKeyResult> {
   if (params.authBackend === undefined) return { attempted: false };
+  if (!providerHasLiveManagedSubscriptionRoute(params.provider)) {
+    return { attempted: false, disabled: true };
+  }
   try {
     const key = await params.authBackend.vendKey(
       params.provider,
@@ -333,7 +340,9 @@ function requireProviderApiKeyOrUndefined(params: {
   if (params.apiKey !== undefined) return params.apiKey;
   const envHint = providerApiKeyEnvHint(params.provider, params.providerSettings);
   if (envHint === undefined) return undefined;
-  const managedKeyHint = params.managedKey.disabled
+  const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(params.provider)
+    ? "Subscription-managed access is currently live for grok only."
+    : params.managedKey.disabled
     ? "Managed key vending is disabled by auth.managedKeys.enabled."
     : params.managedKey.attempted
       ? "AuthBackend.vendKey() did not return a usable managed key."
