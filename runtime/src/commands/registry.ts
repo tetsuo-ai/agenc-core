@@ -135,8 +135,8 @@ function commandSupportsSurface(
  * Build the default user-invocable slash registry.
  *
  * Presentation order matches the runtime stabilization minimal surface:
- * /help, /status, /cost, /model, /provider, /permissions, /plan, /agents,
- * /tasks, /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
+ * /help, /status, auth commands, /cost, /model, /provider, /permissions, /plan,
+ * /agents, /tasks, /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
  * /init, /output-style, /clear, /compact, /context, /diff, protocol commands,
  * /exit.
  */

@@ -173,6 +173,7 @@ export class AgenCProvider implements LLMProvider {
     if (apiKey === undefined) {
       throw new Error("AgenCProvider managed key vending returned an empty key");
     }
+    const baseURL = firstNonEmpty(key.baseUrl);
     const expiresAtMs =
       parseExpiresAtMs(key.expiresAt) ??
       this.nowMs() + this.delegateCacheTtlMs();
@@ -181,17 +182,20 @@ export class AgenCProvider implements LLMProvider {
       model,
       instance: this.#config.providerFactory(provider, {
         apiKey,
-        ...(this.#config.providerOptions?.baseURL !== undefined
-          ? { baseURL: this.#config.providerOptions.baseURL }
-          : {}),
+        ...(baseURL !== undefined
+          ? { baseURL }
+          : this.#config.providerOptions?.baseURL !== undefined
+            ? { baseURL: this.#config.providerOptions.baseURL }
+            : {}),
         model,
         tools: this.#config.tools ? [...this.#config.tools] : undefined,
         ...(this.#config.timeoutMs !== undefined
           ? { timeoutMs: this.#config.timeoutMs }
           : {}),
-        ...(this.#config.providerOptions?.extra !== undefined
-          ? { extra: this.#config.providerOptions.extra }
-          : {}),
+        extra: {
+          ...(this.#config.providerOptions?.extra ?? {}),
+          ...(baseURL !== undefined ? { managedGateway: true } : {}),
+        },
       }),
       ...(expiresAtMs !== undefined ? { expiresAtMs } : {}),
     };

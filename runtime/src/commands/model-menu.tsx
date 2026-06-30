@@ -3,6 +3,7 @@ import React from "react";
 import {
   buildProviderModelCatalog,
   normalizeProviderSlug,
+  resolveProviderSettings,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
 import {
@@ -17,6 +18,10 @@ import { MenuModal } from "../tui/components/v2/primitives.js";
 import { readCommandConfig } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import {
+  providerHasLiveSubscriptionRoute,
+  subscriptionManagedModels,
+} from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ModelRowStatus =
@@ -40,6 +45,7 @@ export type ModelMenuSnapshot = {
   readonly currentModel: string;
   readonly configuredModel?: string;
   readonly defaultModel: string;
+  readonly managedKeysEnabled: boolean;
   readonly rows: readonly ModelMenuRow[];
   readonly activeIndex: number;
   readonly providerCounts: Readonly<Record<string, number>>;
@@ -261,15 +267,41 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
   const configuredModel =
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
-  const rows = providerOrder(catalog, provider).flatMap(catalogProvider =>
-    providerRows({
-      provider: catalogProvider,
-      currentProvider: provider,
-      currentModel,
-      ...(config !== undefined ? { config } : {}),
-      catalogModels: catalog[catalogProvider] ?? [],
-    }),
-  );
+  const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
+  const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
+    config !== undefined
+      ? resolveProviderSettings(catalogProvider, config, process.env)?.apiKey
+      : undefined;
+  const providerHasByok = (catalogProvider: ProviderSlug): boolean => {
+    const apiKey = providerApiKey(catalogProvider);
+    return apiKey !== undefined && apiKey.trim().length > 0;
+  };
+  const shouldShowProvider = (catalogProvider: ProviderSlug): boolean => {
+    if (!managedKeysEnabled) return true;
+    if (providerHasByok(catalogProvider)) return true;
+    return providerHasLiveSubscriptionRoute(catalogProvider);
+  };
+  const modelsForProvider = (catalogProvider: ProviderSlug): readonly string[] => {
+    if (
+      managedKeysEnabled &&
+      providerHasLiveSubscriptionRoute(catalogProvider) &&
+      !providerHasByok(catalogProvider)
+    ) {
+      return subscriptionManagedModels(catalogProvider);
+    }
+    return catalog[catalogProvider] ?? [];
+  };
+  const rows = providerOrder(catalog, provider)
+    .filter(shouldShowProvider)
+    .flatMap(catalogProvider =>
+      providerRows({
+        provider: catalogProvider,
+        currentProvider: provider,
+        currentModel,
+        ...(config !== undefined ? { config } : {}),
+        catalogModels: modelsForProvider(catalogProvider),
+      })
+    );
   const activeIndex = Math.max(0, rows.findIndex(row => row.status === "current"));
   // Count the rows actually offered per provider (hidden models are filtered
   // out in providerRows) so the displayed count matches the selectable list.
@@ -284,6 +316,7 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     currentModel,
     ...(configuredModel !== undefined ? { configuredModel } : {}),
     defaultModel,
+    managedKeysEnabled,
     rows,
     activeIndex,
     providerCounts,
@@ -295,6 +328,7 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
     "Model selection",
     `Provider: ${snapshot.provider}`,
     `Current: ${snapshot.currentModel}`,
+    `Managed keys: ${snapshot.managedKeysEnabled ? "on" : "off"}`,
     "",
     "Available models:",
   ];
@@ -303,7 +337,11 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
       `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.model} (${row.detail})`,
     );
   }
-  lines.push("", "Run /model <model-name> or /model <provider>:<model-name> to switch.");
+  lines.push(
+    "",
+    "Run /model <model-name> or /model <provider>:<model-name> to switch.",
+    "Run /provider to see whether that provider uses BYOK or subscription-managed keys.",
+  );
   return lines.join("\n");
 }
 
@@ -375,7 +413,7 @@ function ModelMenuView({
     <MenuModal
       title="model"
       count={`${rows.length}`}
-      summary={`active ${snapshot.provider} / ${snapshot.currentModel}`}
+      summary={`active ${snapshot.provider} / ${snapshot.currentModel} · managed ${snapshot.managedKeysEnabled ? "on" : "off"}`}
       headerRight={busy ? "switching" : "live"}
       columns={[3, 13, 15, 34, 12, 34]}
       headers={["", "status", "provider", "model", "group", "detail"]}
@@ -410,6 +448,10 @@ function ModelMenuView({
           <ThemedText color="text2" wrap="wrap">
             Empty /model opens this provider-grouped catalog. Use /provider to
             inspect credentials and provider auth state.
+          </ThemedText>
+          <ThemedText color={snapshot.managedKeysEnabled ? "success" : "warning"} wrap="wrap">
+            Managed keys: {snapshot.managedKeysEnabled ? "on" : "off"}. Paid accounts can use
+            subscription-managed provider keys when no BYOK key is set.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
             Selected: {selected?.provider ?? snapshot.provider}:{selected?.model ?? snapshot.currentModel}

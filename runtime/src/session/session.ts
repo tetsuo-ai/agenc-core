@@ -62,6 +62,7 @@ import type {
 import type { PartialCompactDirection } from "../services/compact/prompt.js";
 import {
   normalizeProviderName,
+  normalizeManagedGatewayModel,
   prepareProviderSwitch,
   type ProviderFactoryOptions,
   type PreparedProviderSwitch,
@@ -862,15 +863,7 @@ function buildProviderFallbackLadderOptions(params: {
   };
 }
 
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "grok",
-  "openai",
-  "anthropic",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-]);
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["grok"]);
 
 function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
@@ -906,7 +899,15 @@ async function vendManagedProviderKey(params: {
   readonly provider: ProviderName;
   readonly authBackend: AuthBackend | undefined;
   readonly sessionId: string;
-}): Promise<{ readonly apiKey: string; readonly baseURL?: string } | undefined> {
+  readonly model: string;
+}): Promise<
+  | {
+    readonly apiKey: string;
+    readonly baseURL?: string;
+    readonly model?: string;
+  }
+  | undefined
+> {
   if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
     return undefined;
   }
@@ -917,9 +918,13 @@ async function vendManagedProviderKey(params: {
   const apiKey = firstNonEmpty(key.apiKey);
   if (apiKey === undefined) return undefined;
   const baseURL = firstNonEmpty(key.baseUrl);
+  const model = baseURL !== undefined
+    ? normalizeManagedGatewayModel(params.provider, params.model)
+    : params.model;
   return {
     apiKey,
     ...(baseURL !== undefined ? { baseURL } : {}),
+    model,
   };
 }
 
@@ -981,6 +986,7 @@ async function providerFactoryOptionsFromSettings(params: {
           provider: normalizedProvider,
           authBackend: params.authBackend,
           sessionId: params.sessionId,
+          model: params.model,
         })
       : undefined;
   const apiKey = params.settings?.apiKey ?? managedCredential?.apiKey;
@@ -988,7 +994,12 @@ async function providerFactoryOptionsFromSettings(params: {
   return {
     ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
-    ...(Object.keys(extra).length > 0 ? { extra } : {}),
+    ...(managedCredential?.baseURL !== undefined
+      ? { extra: { ...extra, managedGateway: true } }
+      : {}),
+    ...(managedCredential?.baseURL === undefined && Object.keys(extra).length > 0
+      ? { extra }
+      : {}),
   };
 }
 
@@ -2061,7 +2072,7 @@ export class Session {
           reusableLiveProviderOptions,
           settingsOptions,
         ),
-        model: resolvedModel,
+        model: settingsOptions.model ?? resolvedModel,
         tools: this.services.registry.toLLMTools(),
       });
     } catch (error) {

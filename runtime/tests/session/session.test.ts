@@ -816,10 +816,12 @@ describe("Session.consumePendingProviderSwitch", () => {
     );
   });
 
-  it("uses AuthBackend-managed keys when switching providers without BYOK", async () => {
+  it("uses AuthBackend-managed keys for live managed routes without BYOK", async () => {
     await withEnv(
       {
-        OPENAI_API_KEY: undefined,
+        XAI_API_KEY: undefined,
+        GROK_API_KEY: undefined,
+        AGENC_XAI_API_KEY: undefined,
       },
       async () => {
         const calls: string[] = [];
@@ -833,21 +835,21 @@ describe("Session.consumePendingProviderSwitch", () => {
             return {
               provider,
               sessionId,
-              apiKey: "managed-openai-key",
+              apiKey: "managed-grok-key",
               baseUrl: "https://llm.agenc.tech",
             };
           },
           inferAgencModel: () => ({
-            provider: "openai",
-            model: "gpt-5",
+            provider: "grok",
+            model: "grok-4.3",
           }),
           getSubscriptionTier: () => "team",
         };
         const session = buildSession({
           services: {
-            provider: createProvider("grok", {
+            provider: createProvider("openai", {
               apiKey: "test-key",
-              model: "grok-4",
+              model: "gpt-5",
             }),
             authBackend,
             authSubscriptionTier: "team",
@@ -859,23 +861,82 @@ describe("Session.consumePendingProviderSwitch", () => {
           },
         });
         session.setPendingProviderSwitch({
-          provider: "openai",
-          model: "gpt-5",
+          provider: "grok",
+          model: "grok-4.3",
         });
 
         const applied = await session.consumePendingProviderSwitch();
 
         expect(applied).toEqual({
           applied: true,
-          provider: "openai",
-          model: "gpt-5",
+          provider: "grok",
+          model: "grok-4.3",
         });
-        expect(calls).toEqual(["vendKey:openai:conv-test"]);
+        expect(calls).toEqual(["vendKey:grok:conv-test"]);
         expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
-          apiKey: "managed-openai-key",
+          apiKey: "managed-grok-key",
           baseURL: "https://llm.agenc.tech",
-          model: "gpt-5",
+          model: "grok-4.3",
         });
+      },
+    );
+  });
+
+  it("does not vend managed keys for local LM Studio switches", async () => {
+    await withEnv(
+      {
+        LMSTUDIO_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+      },
+      async () => {
+        const vendKey = vi.fn(() => {
+          throw new Error("vendKey should not run for local providers");
+        });
+        const authBackend: AuthBackend = {
+          kind: "remote",
+          login: () => ({ authenticated: true, provider: "remote" }),
+          logout: () => ({ authenticated: false }),
+          whoami: () => ({ authenticated: true, provider: "remote" }),
+          vendKey,
+          inferAgencModel: () => ({
+            provider: "grok",
+            model: "grok-4.3",
+          }),
+          getSubscriptionTier: () => "team",
+        };
+        const session = buildSession({
+          services: {
+            provider: createProvider("grok", {
+              apiKey: "test-key",
+              model: "grok-4.3",
+            }),
+            authBackend,
+            authSubscriptionTier: "team",
+            configStore: {
+              current: () => ({
+                auth: { managedKeys: { enabled: true } },
+              }),
+            },
+          },
+        });
+        session.setPendingProviderSwitch({
+          provider: "lmstudio",
+          model: "gpt-4o-mini",
+        });
+
+        const applied = await session.consumePendingProviderSwitch();
+
+        expect(applied).toEqual({
+          applied: true,
+          provider: "lmstudio",
+          model: "gpt-4o-mini",
+        });
+        expect(vendKey).not.toHaveBeenCalled();
+        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+          model: "gpt-4o-mini",
+        });
+        expect(readProviderFactoryOptions(session.services.provider).apiKey)
+          .toBeUndefined();
       },
     );
   });
@@ -883,13 +944,15 @@ describe("Session.consumePendingProviderSwitch", () => {
   it("rejects free remote managed-key switches before vending", async () => {
     await withEnv(
       {
-        OPENAI_API_KEY: undefined,
+        XAI_API_KEY: undefined,
+        GROK_API_KEY: undefined,
+        AGENC_XAI_API_KEY: undefined,
       },
       async () => {
         const vendKey = vi.fn(() => ({
-          provider: "openai",
+          provider: "grok",
           sessionId: "conv-test",
-          apiKey: "managed-openai-key",
+          apiKey: "managed-grok-key",
         }));
         const authBackend: AuthBackend = {
           kind: "remote",
@@ -898,14 +961,14 @@ describe("Session.consumePendingProviderSwitch", () => {
           whoami: () => ({ authenticated: true, provider: "remote" }),
           vendKey,
           inferAgencModel: () => ({
-            provider: "openai",
-            model: "gpt-5",
+            provider: "grok",
+            model: "grok-4.3",
           }),
           getSubscriptionTier: () => "free",
         };
-        const startingProvider = createProvider("grok", {
+        const startingProvider = createProvider("openai", {
           apiKey: "test-key",
-          model: "grok-4",
+          model: "gpt-5",
         });
         const session = buildSession({
           services: {
@@ -920,8 +983,8 @@ describe("Session.consumePendingProviderSwitch", () => {
           },
         });
         session.setPendingProviderSwitch({
-          provider: "openai",
-          model: "gpt-5",
+          provider: "grok",
+          model: "grok-4.3",
         });
 
         const applied = await session.consumePendingProviderSwitch();

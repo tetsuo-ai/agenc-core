@@ -12,10 +12,12 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { formatSubscriptionManagedModels } from "./subscription-managed-models.js";
 
-type AuthAction = "login" | "logout" | "whoami";
+type AuthAction = "login" | "logout" | "whoami" | "subscription";
 
 const TUI_AUTH_SESSION_ID = "tui" as const;
+const SUBSCRIPTION_URL = "https://id.agenc.ag/subscription" as const;
 
 export const loginCommand: SlashCommand = {
   name: "login",
@@ -42,10 +44,20 @@ export const whoamiCommand: SlashCommand = {
   execute: async (ctx) => executeAuthCommand("whoami", ctx),
 };
 
+export const subscriptionCommand: SlashCommand = {
+  name: "subscription",
+  aliases: ["billing"],
+  description: "Show your AgenC plan and billing URL",
+  immediate: true,
+  supportsNonInteractive: false,
+  execute: async (ctx) => executeAuthCommand("subscription", ctx),
+};
+
 export const authCommands: readonly SlashCommand[] = [
   loginCommand,
   logoutCommand,
   whoamiCommand,
+  subscriptionCommand,
 ];
 
 async function executeAuthCommand(
@@ -92,6 +104,13 @@ async function executeAuthCommand(
     }
 
     const tier = await resolveSubscriptionTier(backend);
+    if (action === "subscription") {
+      return {
+        kind: "text",
+        text: formatSubscriptionCommandResult(tier),
+      };
+    }
+
     return {
       kind: "text",
       text: `${formatAgenCAuthIdentity(result.identity)}${formatSubscriptionStatus(tier)}`,
@@ -224,4 +243,26 @@ function formatSubscriptionStatus(tier: string | undefined): string {
     return ` · plan=${tier} · managed keys available`;
   }
   return ` · plan=${tier} · managed keys require Pro (https://id.agenc.ag/pricing)`;
+}
+
+function formatSubscriptionCommandResult(tier: string | undefined): string {
+  const plan = tier ?? "unknown";
+  const lines = [
+    `Plan: ${plan}`,
+    `Billing: ${SUBSCRIPTION_URL}`,
+  ];
+  if (plan === "pro" || plan === "team" || plan === "enterprise") {
+    lines.push(
+      "Managed model access is enabled for this account.",
+      `Currently live through the subscription: ${formatSubscriptionManagedModels()}.`,
+      "Other providers need BYOK until their managed gateway deployments are enabled.",
+      "Use /provider to inspect whether a provider is using BYOK or subscription-managed keys.",
+    );
+  } else {
+    lines.push(
+      "Managed model access requires Pro or higher.",
+      "BYOK still works without a subscription.",
+    );
+  }
+  return lines.join("\n");
 }

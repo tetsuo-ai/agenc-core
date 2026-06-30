@@ -8,6 +8,7 @@ import { LocalAuthBackend } from "../auth/backends/local.js";
 import {
   loginCommand,
   logoutCommand,
+  subscriptionCommand,
   whoamiCommand,
 } from "./auth.js";
 import { buildDefaultRegistry } from "./registry.js";
@@ -99,6 +100,25 @@ describe("auth slash commands", () => {
     const registry = buildDefaultRegistry();
 
     expect(registry.find("account")?.name).toBe("whoami");
+  });
+
+  it("registers billing as an alias for subscription", () => {
+    const registry = buildDefaultRegistry();
+
+    expect(registry.find("billing")?.name).toBe("subscription");
+    expect(subscriptionCommand.description).toContain("plan");
+  });
+
+  it("shows subscription details as persistent transcript text", async () => {
+    const agencHome = await makeHome();
+    const ctx = localAuthCtx(agencHome);
+    await loginCommand.execute(ctx);
+
+    await expect(subscriptionCommand.execute(ctx)).resolves.toEqual({
+      kind: "text",
+      text:
+        "Plan: free\nBilling: https://id.agenc.ag/subscription\nManaged model access requires Pro or higher.\nBYOK still works without a subscription.",
+    });
   });
 
   it("rejects unexpected arguments", async () => {

@@ -4,7 +4,7 @@ import {
   applyModelSwitch,
   checkModelHistoryCompat,
 } from "./model.js";
-import { readModelMenuSnapshot } from "./model-menu.js";
+import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
 
@@ -346,5 +346,120 @@ describe("modelCommand", () => {
     expect(snapshot.rows.some(row => row.provider === "openai")).toBe(true);
     expect(snapshot.rows[snapshot.activeIndex]?.status).toBe("current");
     expect(snapshot.providerCounts.openai).toBeGreaterThan(0);
+  });
+
+  it("model menu snapshot reports managed key mode from config", () => {
+    const snapshot = readModelMenuSnapshot({
+      ...mkctx(stubSession(), ""),
+      configStore: {
+        current: () => ({
+          auth: { managedKeys: { enabled: true } },
+        }),
+      } as SlashCommandContext["configStore"],
+    });
+
+    expect(snapshot.managedKeysEnabled).toBe(true);
+    expect(modelMenuFallback(snapshot)).toContain("Managed keys: on");
+  });
+
+  it("model menu limits subscription-managed Grok to live models", () => {
+    const snapshot = readModelMenuSnapshot({
+      ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+      configStore: {
+        current: () => ({
+          auth: { managedKeys: { enabled: true } },
+        }),
+      } as SlashCommandContext["configStore"],
+    });
+    const grokModels = snapshot.rows
+      .filter(row => row.provider === "grok")
+      .map(row => row.model);
+
+    expect(grokModels).toEqual(["grok-4.3", "grok-code-fast-1"]);
+    expect(snapshot.rows.map(row => row.provider)).toEqual(["grok", "grok"]);
+  });
+
+  it("blocks direct model switches to unavailable subscription-managed Grok models", async () => {
+    const previous = process.env.XAI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    try {
+      const res = await modelCommand.execute({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "grok:grok-build-0.1"),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+
+      expect(res).toEqual({
+        kind: "text",
+        text: expect.stringContaining("not enabled for subscription-managed grok"),
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.XAI_API_KEY;
+      } else {
+        process.env.XAI_API_KEY = previous;
+      }
+    }
+  });
+
+  it("allows direct switches to subscription-managed Grok models outside the base catalog", async () => {
+    const previous = process.env.XAI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    try {
+      const session = stubSession({
+        provider: "grok",
+        model: "grok-4.3",
+        activeTurn: null,
+      });
+      const res = await modelCommand.execute({
+        ...mkctx(session, "grok:grok-code-fast-1"),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+
+      expect(res.kind).toBe("text");
+      const pending = (session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }).pendingProviderSwitch;
+      expect(pending).toEqual({ provider: "grok", model: "grok-code-fast-1" });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.XAI_API_KEY;
+      } else {
+        process.env.XAI_API_KEY = previous;
+      }
+    }
+  });
+
+  it("blocks direct model switches to unavailable managed routes without BYOK", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const res = await modelCommand.execute({
+        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "openai:gpt-5"),
+        configStore: {
+          current: () => ({
+            auth: { managedKeys: { enabled: true } },
+          }),
+        } as SlashCommandContext["configStore"],
+      });
+
+      expect(res).toEqual({
+        kind: "text",
+        text: expect.stringContaining("subscription-managed access is currently live for grok only"),
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+    }
   });
 });
