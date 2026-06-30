@@ -1920,7 +1920,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       whoami: () => ({ authenticated: true, provider: "local" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+          baseUrl: "https://llm.agenc.tech",
+        };
       },
       inferAgencModel: () => {
         calls.push("inferAgencModel");
@@ -1975,7 +1980,8 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "managed-key",
-          model: "grok-4.3",
+          baseURL: "https://llm.agenc.tech",
+          model: "xai/grok-4.3",
         }),
       );
       expect(calls).toEqual([

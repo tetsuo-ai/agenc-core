@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import {
   createProvider,
+  normalizeManagedGatewayModel,
   normalizeProviderName,
   type ProviderName,
 } from "../llm/provider.js";
@@ -292,7 +293,14 @@ async function vendProviderKeyOrUndefined(params: {
       params.sessionId,
     );
     const apiKey = key.apiKey.trim();
-    return apiKey.length > 0 ? { attempted: true, apiKey } : { attempted: true };
+    const baseURL = key.baseUrl?.trim();
+    return apiKey.length > 0
+      ? {
+        attempted: true,
+        apiKey,
+        ...(baseURL ? { baseURL } : {}),
+      }
+      : { attempted: true };
   } catch {
     return { attempted: true };
   }
@@ -302,6 +310,7 @@ interface ManagedProviderKeyResult {
   readonly attempted: boolean;
   readonly disabled?: boolean;
   readonly apiKey?: string;
+  readonly baseURL?: string;
 }
 
 const PROVIDER_API_KEY_ENV_HINTS: Readonly<Partial<Record<ProviderName, string>>> =
@@ -964,6 +973,13 @@ export async function bootstrapLocalRuntimeSession(
     model: providerModel,
     settings: runtimeProviderSettings,
   });
+  const selectedBaseURL = firstNonEmptyString(
+    providerSettings?.baseURL,
+    managedKey.baseURL,
+  );
+  const selectedProviderModel = managedKey.baseURL !== undefined
+    ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
+    : providerModel;
   const mcpManager = await createSessionMcpManagerFromSources(
     configStore.current(),
     env,
@@ -1033,10 +1049,8 @@ export async function bootstrapLocalRuntimeSession(
     resolvedProvider as ProviderName,
     {
       apiKey: selectedApiKey,
-      ...(providerSettings?.baseURL
-        ? { baseURL: providerSettings.baseURL }
-        : {}),
-      model: providerModel,
+      ...(selectedBaseURL ? { baseURL: selectedBaseURL } : {}),
+      model: selectedProviderModel,
       tools: registry.toLLMTools(),
       extra: {
         emitWarning: emitProviderWarning,

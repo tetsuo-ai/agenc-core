@@ -214,6 +214,33 @@ export function readProviderFactoryOptions(
   };
 }
 
+export function normalizeManagedGatewayModel(
+  provider: ProviderName | string,
+  model: string,
+): string {
+  const trimmed = model.trim();
+  if (trimmed.length === 0 || trimmed.includes("/")) return trimmed;
+  const normalizedProvider = normalizeProviderName(provider);
+  switch (normalizedProvider) {
+    case "grok":
+      return `xai/${trimmed}`;
+    case "openai":
+      return `openai/${trimmed}`;
+    case "anthropic":
+      return `anthropic/${trimmed}`;
+    case "gemini":
+      return `gemini/${trimmed}`;
+    case "groq":
+      return `groq/${trimmed}`;
+    case "deepseek":
+      return `deepseek/${trimmed}`;
+    case "mistral":
+      return `mistral/${trimmed}`;
+    default:
+      return trimmed;
+  }
+}
+
 function markFactoryProvider<T extends LLMProvider>(
   provider: T,
   state: ProviderRuntimeState,
@@ -471,9 +498,13 @@ class AuthVendedProvider implements LLMProvider {
       readString(vended as Record<string, unknown>, "baseURL"),
       readString(vended as Record<string, unknown>, "baseUrl"),
     );
+    const model = baseURL !== undefined && options.model !== undefined
+      ? normalizeManagedGatewayModel(this.#provider, options.model)
+      : options.model;
     return {
       instance: createProvider(this.#provider, {
         ...options,
+        ...(model !== undefined ? { model } : {}),
         apiKey,
         ...(baseURL !== undefined ? { baseURL } : {}),
         ...(extra !== undefined ? { extra } : {}),

@@ -271,6 +271,33 @@ describe("createProvider", () => {
     },
   );
 
+  test("normalizes Grok model ids for AuthBackend-vended gateway keys", async () => {
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: "vended-gateway-key",
+      baseUrl: "https://llm.agenc.tech",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+
+    const provider = createProvider("grok", {
+      model: "grok-4.3",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-gateway",
+      },
+    });
+
+    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+      provider: "grok",
+      model: "xai/grok-4.3",
+    });
+    expect(vendKey).toHaveBeenCalledWith("grok", "session-gateway");
+  });
+
   test("defaults model metadata on AuthBackend-vended providers without explicit model", () => {
     const provider = withEnv(
       {
