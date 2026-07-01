@@ -362,29 +362,46 @@ describe("modelCommand", () => {
     expect(modelMenuFallback(snapshot)).toContain("Managed keys: on");
   });
 
-  it("model menu limits subscription-managed Grok to live models", () => {
+  it("model menu limits subscription-managed OpenRouter to live models", () => {
     const snapshot = readModelMenuSnapshot({
-      ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+      ...mkctx(stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }), ""),
       configStore: {
         current: () => ({
           auth: { managedKeys: { enabled: true } },
         }),
       } as SlashCommandContext["configStore"],
     });
-    const grokModels = snapshot.rows
-      .filter(row => row.provider === "grok")
+    const openrouterModels = snapshot.rows
+      .filter(row => row.provider === "openrouter")
       .map(row => row.model);
 
-    expect(grokModels).toEqual(["grok-4.3", "grok-code-fast-1"]);
-    expect(snapshot.rows.map(row => row.provider)).toEqual(["grok", "grok"]);
+    expect(openrouterModels).toEqual([
+      "x-ai/grok-4.3",
+      "x-ai/grok-build-0.1",
+      "openai/gpt-4o-mini",
+      "anthropic/claude-haiku-4.5",
+      "google/gemini-2.5-flash",
+      "deepseek/deepseek-chat",
+    ]);
+    expect(snapshot.rows.map(row => row.provider)).toEqual([
+      "openrouter",
+      "openrouter",
+      "openrouter",
+      "openrouter",
+      "openrouter",
+      "openrouter",
+    ]);
   });
 
-  it("blocks direct model switches to unavailable subscription-managed Grok models", async () => {
-    const previous = process.env.XAI_API_KEY;
-    delete process.env.XAI_API_KEY;
+  it("blocks direct model switches to unavailable subscription-managed OpenRouter models", async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     try {
       const res = await modelCommand.execute({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "grok:grok-build-0.1"),
+        ...mkctx(
+          stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }),
+          "openrouter:x-ai/grok-4.20",
+        ),
         configStore: {
           current: () => ({
             auth: { managedKeys: { enabled: true } },
@@ -394,28 +411,28 @@ describe("modelCommand", () => {
 
       expect(res).toEqual({
         kind: "text",
-        text: expect.stringContaining("not enabled for subscription-managed grok"),
+        text: expect.stringContaining("not enabled for subscription-managed openrouter"),
       });
     } finally {
       if (previous === undefined) {
-        delete process.env.XAI_API_KEY;
+        delete process.env.OPENROUTER_API_KEY;
       } else {
-        process.env.XAI_API_KEY = previous;
+        process.env.OPENROUTER_API_KEY = previous;
       }
     }
   });
 
-  it("allows direct switches to subscription-managed Grok models outside the base catalog", async () => {
-    const previous = process.env.XAI_API_KEY;
-    delete process.env.XAI_API_KEY;
+  it("allows direct switches to subscription-managed OpenRouter models outside the base catalog", async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     try {
       const session = stubSession({
-        provider: "grok",
-        model: "grok-4.3",
+        provider: "openrouter",
+        model: "x-ai/grok-4.3",
         activeTurn: null,
       });
       const res = await modelCommand.execute({
-        ...mkctx(session, "grok:grok-code-fast-1"),
+        ...mkctx(session, "openrouter:deepseek/deepseek-chat"),
         configStore: {
           current: () => ({
             auth: { managedKeys: { enabled: true } },
@@ -427,12 +444,15 @@ describe("modelCommand", () => {
       const pending = (session as unknown as {
         pendingProviderSwitch: { provider: string; model: string } | null;
       }).pendingProviderSwitch;
-      expect(pending).toEqual({ provider: "grok", model: "grok-code-fast-1" });
+      expect(pending).toEqual({
+        provider: "openrouter",
+        model: "deepseek/deepseek-chat",
+      });
     } finally {
       if (previous === undefined) {
-        delete process.env.XAI_API_KEY;
+        delete process.env.OPENROUTER_API_KEY;
       } else {
-        process.env.XAI_API_KEY = previous;
+        process.env.OPENROUTER_API_KEY = previous;
       }
     }
   });
@@ -452,7 +472,7 @@ describe("modelCommand", () => {
 
       expect(res).toEqual({
         kind: "text",
-        text: expect.stringContaining("subscription-managed access is currently live for grok only"),
+        text: expect.stringContaining("/model openrouter:x-ai/grok-4.3"),
       });
     } finally {
       if (previous === undefined) {

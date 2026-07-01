@@ -51,13 +51,7 @@ const PROVIDERS_REQUIRING_KEY = new Set<ProviderName>([
 ]);
 
 const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "grok",
-  "openai",
-  "anthropic",
   "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
 ]);
 
 const LOCAL_PROVIDERS = new Set<ProviderName>([

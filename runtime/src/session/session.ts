@@ -864,10 +864,7 @@ function buildProviderFallbackLadderOptions(params: {
 }
 
 const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "anthropic",
-  "openai",
-  "grok",
-  "gemini",
+  "openrouter",
 ]);
 
 function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {

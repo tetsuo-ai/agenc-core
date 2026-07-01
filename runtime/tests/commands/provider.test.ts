@@ -339,30 +339,37 @@ describe("providerCommand", () => {
   });
 
   it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", () => {
-    const previous = process.env.XAI_API_KEY;
-    delete process.env.XAI_API_KEY;
+    const previous = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     try {
       const snapshot = readProviderMenuSnapshot({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+        ...mkctx(stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }), ""),
         configStore: {
           current: () => ({
             auth: { managedKeys: { enabled: true } },
           }),
         } as SlashCommandContext["configStore"],
       });
-      const grok = snapshot.rows.find(row => row.provider === "grok");
+      const openrouter = snapshot.rows.find(row => row.provider === "openrouter");
 
-      expect(grok).toMatchObject({
+      expect(openrouter).toMatchObject({
         authState: "managed",
         auth: "subscription",
       });
-      expect(grok?.models).toEqual(["grok-4.3", "grok-code-fast-1"]);
-      expect(grok?.credentialSource).toContain("subscription-managed key");
+      expect(openrouter?.models).toEqual([
+        "x-ai/grok-4.3",
+        "x-ai/grok-build-0.1",
+        "openai/gpt-4o-mini",
+        "anthropic/claude-haiku-4.5",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-chat",
+      ]);
+      expect(openrouter?.credentialSource).toContain("subscription-managed key");
     } finally {
       if (previous === undefined) {
-        delete process.env.XAI_API_KEY;
+        delete process.env.OPENROUTER_API_KEY;
       } else {
-        process.env.XAI_API_KEY = previous;
+        process.env.OPENROUTER_API_KEY = previous;
       }
     }
   });

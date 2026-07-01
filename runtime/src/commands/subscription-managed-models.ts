@@ -1,16 +1,24 @@
 import { normalizeProviderSlug, type ProviderSlug } from "../config/resolve-provider.js";
 
 const LIVE_SUBSCRIPTION_MODELS: Readonly<Record<string, readonly string[]>> = {
-  anthropic: ["claude-haiku-4-5-20251001"],
-  openai: ["gpt-5-mini"],
-  grok: ["grok-4.3", "grok-code-fast-1"],
-  gemini: ["gemini-2.5-pro"],
+  openrouter: [
+    "x-ai/grok-4.3",
+    "x-ai/grok-build-0.1",
+    "openai/gpt-4o-mini",
+    "anthropic/claude-haiku-4.5",
+    "google/gemini-2.5-flash",
+    "deepseek/deepseek-chat",
+  ],
 };
 
 function normalizeModelId(model: string): string {
   const trimmed = model.trim();
-  if (trimmed.startsWith("xai/")) return trimmed.slice("xai/".length);
-  if (trimmed.startsWith("x-ai/")) return trimmed.slice("x-ai/".length);
+  if (trimmed.startsWith("openrouter/")) {
+    return trimmed.slice("openrouter/".length);
+  }
+  if (trimmed.startsWith("xai/")) {
+    return `x-ai/${trimmed.slice("xai/".length)}`;
+  }
   return trimmed;
 }
 
