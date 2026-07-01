@@ -439,6 +439,11 @@ describe("modelCommand", () => {
         kind: "text",
         text: expect.stringContaining("not enabled for subscription-managed openrouter"),
       });
+      if (res.kind === "text") {
+        expect(res.text).toContain("Try /model openrouter:x-ai/grok-4.3");
+        expect(res.text).toContain("open /model to pick a hosted route");
+        expect(res.text).not.toContain(" or /model openrouter:openai/gpt-4o-mini");
+      }
     } finally {
       if (previous === undefined) {
         delete process.env.OPENROUTER_API_KEY;

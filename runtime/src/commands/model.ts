@@ -326,12 +326,14 @@ function subscriptionManagedModelError(
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
   if (!providerHasLiveSubscriptionRoute(provider)) return undefined;
   if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
-  const liveModels = subscriptionManagedModels(provider)
-    .map((model) => `/model ${provider}:${model}`)
-    .join(" or ");
+  const example = subscriptionManagedModels(provider)[0];
+  const hint =
+    example !== undefined
+      ? `Try /model ${provider}:${example}, or open /model to pick a hosted route.`
+      : "Open /model to pick a hosted route.";
   return (
     `Model "${targetModel}" is not enabled for subscription-managed ` +
-    `${provider}. Use ${liveModels}.`
+    `${provider}. ${hint}`
   );
 }
 
