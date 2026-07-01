@@ -869,7 +869,7 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
   "openrouter",
 ]);
 
-const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
+const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
 async function buildBaseInstructionsForModel(params: {
   readonly registry: ToolRegistry;

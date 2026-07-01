@@ -25,6 +25,7 @@ import { TextDecoder, TextEncoder } from "node:util";
 const INTERNAL_PREFIX = "mcp.";
 const WIRE_PREFIX = "mcp__";
 const ESCAPED_WIRE_PREFIX = "mcp2__";
+const GENERIC_ESCAPED_WIRE_PREFIX = "tool2__";
 const SEP = "__";
 const PROVIDER_FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 const WIRE_SAFE_SEGMENT_BYTE_PATTERN = /^[a-zA-Z0-9-]$/;
@@ -109,7 +110,12 @@ function decodeMcpNameSegment(segment: string): string | null {
  */
 export function encodeMcpToolNameForWire(name: string): string {
   const parts = splitInternalMcpToolName(name);
-  if (!parts) return name;
+  if (!parts) {
+    if (name.length === 0 || name.startsWith(INTERNAL_PREFIX)) return name;
+    if (isProviderToolNameSafe(name)) return name;
+    const escaped = `${GENERIC_ESCAPED_WIRE_PREFIX}${encodeMcpNameSegment(name)}`;
+    return isProviderToolNameSafe(escaped) ? escaped : name;
+  }
 
   if (!parts.server.includes(SEP)) {
     const legacyWireName = `${WIRE_PREFIX}${parts.server}${SEP}${parts.tool}`;
@@ -125,6 +131,13 @@ export function encodeMcpToolNameForWire(name: string): string {
  * tool name (e.g. `FileEdit`) round-trips unchanged.
  */
 export function decodeMcpToolNameFromWire(name: string): string {
+  if (name.startsWith(GENERIC_ESCAPED_WIRE_PREFIX)) {
+    const decoded = decodeMcpNameSegment(
+      name.slice(GENERIC_ESCAPED_WIRE_PREFIX.length),
+    );
+    return decoded ?? name;
+  }
+
   if (name.startsWith(ESCAPED_WIRE_PREFIX)) {
     const afterPrefix = name.slice(ESCAPED_WIRE_PREFIX.length);
     const sepIndex = afterPrefix.indexOf(SEP);
