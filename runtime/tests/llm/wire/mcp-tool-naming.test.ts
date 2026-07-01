@@ -61,6 +61,20 @@ describe("MCP tool-name wire encoding", () => {
     );
   });
 
+  test("escapes non-MCP internal tool names rejected by strict providers", () => {
+    const systemSearchWire = encodeMcpToolNameForWire("system.searchTools");
+    expect(systemSearchWire).toBe("tool2__system_x2esearchTools");
+    expect(isProviderToolNameSafe(systemSearchWire)).toBe(true);
+    expect(decodeMcpToolNameFromWire(systemSearchWire)).toBe(
+      "system.searchTools",
+    );
+
+    const dottedWire = encodeMcpToolNameForWire("foo.bar-baz");
+    expect(dottedWire).toBe("tool2__foo_x2ebar-baz");
+    expect(isProviderToolNameSafe(dottedWire)).toBe(true);
+    expect(decodeMcpToolNameFromWire(dottedWire)).toBe("foo.bar-baz");
+  });
+
   test("decodes mcp__<server>__<tool> back to the dotted form", () => {
     expect(decodeMcpToolNameFromWire("mcp__memory__search_nodes")).toBe(
       "mcp.memory.search_nodes",
@@ -105,6 +119,8 @@ describe("MCP tool-name wire encoding", () => {
       "mcp.server.do__stuff", // tool name with __
       "mcp.serv__er.foo",
       "mcp.plugin:sample:local.ping",
+      "system.searchTools",
+      "foo.bar-baz",
       "FileEdit",
       "exec_command",
       "TodoWrite",
@@ -127,6 +143,8 @@ describe("MCP tool-name wire encoding", () => {
       "mcp.design_tooling.get_design_context",
       "mcp.plugin:sample:local.ping",
       "mcp.serv__er.foo",
+      "system.searchTools",
+      "foo.bar-baz",
     ];
     for (const internal of cases) {
       const wire = encodeMcpToolNameForWire(internal);
