@@ -195,4 +195,29 @@ describe("ProjectExplorer row truncation", () => {
     // The old ambiguous "N more" wording must be gone.
     expect(output).not.toContain("more");
   });
+
+  it("keeps the WORKSPACE header label whole when count metadata exactly fills the pane", async () => {
+    harness.snapshot = {
+      cwd: "/repo",
+      loading: false,
+      error: null,
+      cursorPath: null,
+      activePath: null,
+      expandedPaths: [],
+      fileCount: 380,
+      rows: Array.from({ length: 7 }, (_, index) =>
+        fileRow(`dirty-${index}.ts`, `dirty-${index}.ts`, {
+          gitState: "modified",
+        }),
+      ),
+    };
+
+    const lines = await renderTree(26);
+    const headerLine = lines.find((line) => line.includes("WORK"));
+
+    expect(headerLine).toBeDefined();
+    expect(headerLine).toContain("WORKSPACE");
+    expect(headerLine).toContain("380 7 changed");
+    expect(headerLine).not.toContain("WORKSPAC ");
+  });
 });

@@ -191,13 +191,27 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   // a multi-file project (e.g. an agent-created subpackage showing "WORKSPACE 1").
   const itemCount = snapshot.fileCount;
   const dirtyCount = snapshot.rows.filter((row) => row.gitState && row.gitState !== "clean").length;
+  const headerLabel = "WORKSPACE";
+  const headerLabelWidth = stringWidth(headerLabel);
+  const headerContentWidth = Math.max(0, width - 3);
+  const renderedHeaderLabelWidth = Math.min(headerLabelWidth, headerContentWidth);
+  const headerMeta = `${itemCount}${dirtyCount > 0 ? ` ${dirtyCount} changed` : ""}${snapshot.loading ? " sync" : ""}`;
+  const headerMetaWidth = Math.max(0, headerContentWidth - renderedHeaderLabelWidth - 1);
   const glyphs = selectAgenCTuiGlyphs();
 
   return (
     <Box flexDirection="column" width={width} height="100%" borderRight borderColor={focused ? "suggestion" : "gray"} paddingX={1}>
       <Box height={1} flexShrink={0}>
-        <Text color={focused ? "suggestion" : "gray"} wrap="truncate-end">WORKSPACE</Text>
-        <Text dimColor wrap="truncate-end"> {itemCount}{dirtyCount > 0 ? ` ${dirtyCount} changed` : ""}{snapshot.loading ? " sync" : ""}</Text>
+        {renderedHeaderLabelWidth > 0 ? (
+          <Box width={renderedHeaderLabelWidth} flexShrink={0}>
+            <Text color={focused ? "suggestion" : "gray"} wrap={renderedHeaderLabelWidth < headerLabelWidth ? "truncate-end" : "wrap"}>{headerLabel}</Text>
+          </Box>
+        ) : null}
+        {headerMetaWidth > 0 ? (
+          <Box width={headerMetaWidth} marginLeft={1} flexShrink={1} overflow="hidden">
+            <Text dimColor wrap="truncate-end">{headerMeta}</Text>
+          </Box>
+        ) : null}
       </Box>
       {snapshot.error ? (
         <Box height={1} flexShrink={0}>
