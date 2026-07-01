@@ -962,6 +962,29 @@ describe("RemoteAuthBackend", () => {
     });
   });
 
+  it("persists refreshed subscription tiers to the remote auth state", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({
+        token: "remote-token",
+        subscriptionTier: "free",
+      }),
+      subscriptionTierResolver: () => "pro",
+    });
+
+    try {
+      await backend.login({ sessionId: "cli" });
+      await expect(
+        backend.getSubscriptionTier({ sessionId: "session-1" }),
+      ).resolves.toBe("pro");
+      await expect(readFile(join(agencHome, "auth.json"), "utf8")).resolves
+        .toContain("\"subscriptionTier\": \"pro\"");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("uses the configured HTTP subscription tier endpoint", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(

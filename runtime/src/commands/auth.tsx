@@ -93,9 +93,12 @@ async function executeAuthCommand(
       } finally {
         clearLocalAuthNotice(ctx);
       }
+      const tier = await resolveSubscriptionTier(backend);
       return {
         kind: "text",
-        text: `Logged in as ${formatAgenCAuthIdentity(result.identity)}`,
+        text:
+          `Logged in as ${formatAgenCAuthIdentity(result.identity)}` +
+          formatSubscriptionStatus(tier),
       };
     }
 

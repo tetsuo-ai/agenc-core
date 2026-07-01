@@ -31,6 +31,7 @@ import {
   resolveProviderSettings,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
+import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
 import { resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
 import { normalizeProviderName } from "../llm/provider.js";
@@ -52,7 +53,6 @@ import {
   readModelMenuSnapshot,
 } from "./model-menu.js";
 import {
-  formatSubscriptionManagedModels,
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedModels,
@@ -291,10 +291,21 @@ function modelSwitchAuthError(
   if (info?.apiKeyEnvVar === undefined) return undefined;
   const apiKey = resolveProviderSettings(provider, config, process.env)?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
-  if (providerHasLiveSubscriptionRoute(provider)) return undefined;
+  if (
+    providerHasLiveSubscriptionRoute(provider) &&
+    hasEntitledRemoteAuthSessionSync(process.env)
+  ) {
+    return undefined;
+  }
+  if (providerHasLiveSubscriptionRoute(provider)) {
+    return (
+      `Model switch blocked: sign in with a paid AgenC plan using /login, ` +
+      `or set ${info.apiKeyEnvVar} for BYOK.`
+    );
+  }
   return (
-    `Model switch blocked: subscription-managed access is currently live for ` +
-    `${formatSubscriptionManagedModels()}. Set ${info.apiKeyEnvVar} for BYOK.`
+    `Model switch blocked: hosted subscription access is available through ` +
+    `OpenRouter. Run /provider openrouter, or set ${info.apiKeyEnvVar} for BYOK.`
   );
 }
 

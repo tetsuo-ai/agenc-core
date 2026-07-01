@@ -498,7 +498,9 @@ describe("modelCommand", () => {
 
       expect(res).toEqual({
         kind: "text",
-        text: expect.stringContaining("/model openrouter:x-ai/grok-4.3"),
+        text: expect.stringContaining(
+          "hosted subscription access is available through OpenRouter",
+        ),
       });
     } finally {
       if (previous === undefined) {

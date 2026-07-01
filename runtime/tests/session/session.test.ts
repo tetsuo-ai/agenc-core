@@ -906,6 +906,84 @@ describe("Session.consumePendingProviderSwitch", () => {
     );
   });
 
+  it("caps direct managed OpenRouter key switches to the hosted output-token default", async () => {
+    await withEnv(
+      {
+        OPENROUTER_API_KEY: undefined,
+      },
+      async () => {
+        const calls: string[] = [];
+        const authBackend: AuthBackend = {
+          kind: "remote",
+          login: () => ({ authenticated: true, provider: "remote" }),
+          logout: () => ({ authenticated: false }),
+          whoami: () => ({ authenticated: true, provider: "remote" }),
+          vendKey: (provider, sessionId) => {
+            calls.push(`vendKey:${provider}:${sessionId}`);
+            return {
+              provider,
+              sessionId,
+              apiKey: "managed-openrouter-key",
+            };
+          },
+          inferAgencModel: () => ({
+            provider: "openrouter",
+            model: "openai/gpt-5-nano",
+          }),
+          getSubscriptionTier: () => "team",
+        };
+        const session = buildSession({
+          services: {
+            provider: createProvider("openai", {
+              apiKey: "test-key",
+              model: "gpt-5",
+            }),
+            authBackend,
+            authSubscriptionTier: "team",
+            configStore: {
+              current: () => ({
+                auth: { managedKeys: { enabled: true } },
+              }),
+            },
+            modelsManager: {
+              getModelInfo: async (model: string) => ({
+                ...mkModelInfo(),
+                slug: model,
+                contextWindow: 128_000,
+                maxOutputTokens: 128_000,
+                maxOutputTokensUpperLimit: 128_000,
+              }),
+            },
+          },
+        });
+        session.setPendingProviderSwitch({
+          provider: "openrouter",
+          model: "openai/gpt-5-nano",
+        });
+
+        const applied = await session.consumePendingProviderSwitch();
+
+        expect(applied).toEqual({
+          applied: true,
+          provider: "openrouter",
+          model: "openai/gpt-5-nano",
+        });
+        expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
+        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+          apiKey: "managed-openrouter-key",
+          model: "openai/gpt-5-nano",
+          extra: {
+            managedCredential: true,
+            maxTokens: 2048,
+          },
+        });
+        expect(session.modelInfo.maxOutputTokens).toBe(2048);
+        expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
+        expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
+      },
+    );
+  });
+
   it("does not vend managed keys for local LM Studio switches", async () => {
     await withEnv(
       {

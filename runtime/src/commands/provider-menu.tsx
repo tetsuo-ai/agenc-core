@@ -6,6 +6,7 @@ import {
   readProviderConfig,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
+import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
@@ -121,9 +122,10 @@ function providerModel(params: {
   readonly currentProvider: ProviderSlug;
   readonly currentModel: string;
   readonly managedKeysEnabled?: boolean;
+  readonly managedSubscriptionAvailable?: boolean;
 }): string {
   if (params.provider === params.currentProvider) return params.currentModel;
-  if (params.managedKeysEnabled === true) {
+  if (params.managedSubscriptionAvailable === true) {
     const managedDefault = subscriptionManagedDefaultModel(params.provider);
     if (managedDefault !== undefined) return managedDefault;
   }
@@ -203,6 +205,7 @@ function authState(params: {
   readonly defaultEnvVar?: string;
   readonly baseURL: string;
   readonly config?: AgenCConfig;
+  readonly managedSubscriptionAvailable: boolean;
 }): {
   readonly state: ProviderAuthState;
   readonly label: string;
@@ -246,11 +249,23 @@ function authState(params: {
     };
   }
 
-  if (managedKeysEnabled && providerHasLiveSubscriptionRoute(params.provider)) {
+  if (
+    managedKeysEnabled &&
+    providerHasLiveSubscriptionRoute(params.provider) &&
+    params.managedSubscriptionAvailable
+  ) {
     return {
       state: "managed",
       label: "subscription",
       source: `AgenC subscription-managed key; ${envVar} optional`,
+    };
+  }
+
+  if (managedKeysEnabled && providerHasLiveSubscriptionRoute(params.provider)) {
+    return {
+      state: "missing",
+      label: `${envVar} or Pro login`,
+      source: `run /login or set env ${envVar}`,
     };
   }
 
@@ -379,6 +394,8 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     defaultModelForProvider(currentProvider);
   const modelCatalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
+  const managedSubscriptionAvailable =
+    managedKeysEnabled && hasEntitledRemoteAuthSessionSync(process.env);
 
   const rows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
@@ -393,10 +410,11 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       ...(info.apiKeyEnvVar ? { defaultEnvVar: info.apiKeyEnvVar } : {}),
       baseURL,
       ...(config ? { config } : {}),
+      managedSubscriptionAvailable,
     });
     const rawModels = modelCatalog[provider] ?? [];
     const managedModels =
-      managedKeysEnabled && providerHasLiveSubscriptionRoute(provider)
+      managedSubscriptionAvailable && providerHasLiveSubscriptionRoute(provider)
         ? subscriptionManagedModels(provider)
         : undefined;
     const models = managedModels !== undefined ? managedModels : rawModels;
@@ -415,6 +433,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
         currentProvider,
         currentModel,
         managedKeysEnabled,
+        managedSubscriptionAvailable,
       }),
       models,
       baseURL,

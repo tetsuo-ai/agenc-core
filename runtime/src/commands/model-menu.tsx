@@ -6,6 +6,7 @@ import {
   resolveProviderSettings,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
+import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
@@ -268,6 +269,8 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
+  const managedSubscriptionAvailable =
+    managedKeysEnabled && hasEntitledRemoteAuthSessionSync(process.env);
   const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
     config !== undefined
       ? resolveProviderSettings(catalogProvider, config, process.env)?.apiKey
@@ -277,13 +280,17 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     return apiKey !== undefined && apiKey.trim().length > 0;
   };
   const shouldShowProvider = (catalogProvider: ProviderSlug): boolean => {
+    if (catalogProvider === provider) return true;
     if (!managedKeysEnabled) return true;
     if (providerHasByok(catalogProvider)) return true;
-    return providerHasLiveSubscriptionRoute(catalogProvider);
+    return (
+      managedSubscriptionAvailable &&
+      providerHasLiveSubscriptionRoute(catalogProvider)
+    );
   };
   const modelsForProvider = (catalogProvider: ProviderSlug): readonly string[] => {
     if (
-      managedKeysEnabled &&
+      managedSubscriptionAvailable &&
       providerHasLiveSubscriptionRoute(catalogProvider) &&
       !providerHasByok(catalogProvider)
     ) {

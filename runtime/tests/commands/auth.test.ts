@@ -55,7 +55,8 @@ describe("auth slash commands", () => {
 
     await expect(loginCommand.execute(ctx)).resolves.toEqual({
       kind: "text",
-      text: "Logged in as Local AgenC user (id=local, plan=free)",
+      text:
+        "Logged in as Local AgenC user (id=local, plan=free) · plan=free · managed keys require Pro (https://id.agenc.ag/pricing)",
     });
     await expect(whoamiCommand.execute(ctx)).resolves.toEqual({
       kind: "text",

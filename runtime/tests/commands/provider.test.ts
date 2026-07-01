@@ -493,7 +493,9 @@ describe("providerCommand", () => {
 
       expect(res).toEqual({
         kind: "text",
-        text: expect.stringContaining("subscription-managed access is not enabled for this provider"),
+        text: expect.stringContaining(
+          "hosted subscription access is available through OpenRouter",
+        ),
       });
     } finally {
       if (previous === undefined) {

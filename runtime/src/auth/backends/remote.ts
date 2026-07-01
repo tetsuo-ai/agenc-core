@@ -330,7 +330,15 @@ export class RemoteAuthBackend implements AuthBackend {
     params: AuthSessionRef,
   ): Promise<AuthSubscriptionTier> {
     const tier = await this.#subscriptionTierResolver(params);
-    return normalizeRequiredSubscriptionTier(tier);
+    const normalized = normalizeRequiredSubscriptionTier(tier);
+    const state = await readRemoteAuthState(this.#authFilePath);
+    if (state !== null && state.subscriptionTier !== normalized) {
+      await writeRemoteAuthState(this.#authFilePath, {
+        ...state,
+        subscriptionTier: normalized,
+      });
+    }
+    return normalized;
   }
 
   async #requestLlmUsage(params: AuthSessionRef): Promise<AuthLlmUsage> {
