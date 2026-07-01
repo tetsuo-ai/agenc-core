@@ -302,6 +302,51 @@ describe("StaticModelsManager", () => {
     expect(info.usedFallbackModelMetadata).toBe(false);
   });
 
+  it("prefers live openai-compatible context over stale configured context", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("http://127.0.0.1:8001/v1/models");
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        "Bearer local-token",
+      );
+      return jsonResponse({
+        data: [
+          {
+            id: "qwen3-coder-next-fp8",
+            max_model_len: 65_536,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "openai-compatible",
+        model: "qwen3-coder-next-fp8",
+        providers: {
+          "openai-compatible": {
+            api_key_env: "OPENAI_COMPATIBLE_API_KEY",
+            base_url: "http://127.0.0.1:8001/v1",
+            default_model: "qwen3-coder-next-fp8",
+            context_window_tokens: 131_072,
+            max_output_tokens: 32_768,
+          },
+        },
+      }),
+      fallbackProvider: "openai-compatible",
+      metadata: {
+        fetchImpl,
+        env: {
+          OPENAI_COMPATIBLE_API_KEY: "local-token",
+        },
+      },
+    });
+
+    const info = await manager.getModelInfo("qwen3-coder-next-fp8");
+    expect(info.contextWindow).toBe(65_536);
+    expect(info.maxOutputTokens).toBe(32_768);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("reads default generic openai-compatible endpoint metadata without requiring auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("http://localhost:8000/v1/models");

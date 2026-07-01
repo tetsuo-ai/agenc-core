@@ -70,6 +70,8 @@ const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed"; // branding-scan: allow real OpenAI provider identifier
 const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call"; // branding-scan: allow real OpenAI provider identifier
+const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
+const CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS = 256;
 
 interface OpenAISseEvent {
   readonly event?: string;
@@ -742,18 +744,30 @@ export class OpenAIProvider implements LLMProvider {
     });
   }
 
-  private assertWithinContextWindow(
+  private fitRequestWithinContextWindow(
+    request: Record<string, unknown>,
     metadata: ChatCompletionsRequestMetadata,
     contextWindowTokens: number | undefined,
-  ): void {
+  ): ChatCompletionsRequestMetadata {
     if (contextWindowTokens === undefined || metadata.maxTokens === undefined) {
-      return;
+      return metadata;
+    }
+    const maxTokenField = metadata.maxTokenField;
+    if (maxTokenField === undefined) return metadata;
+    const availableOutputTokens = Math.floor(
+      contextWindowTokens -
+        metadata.estimatedPromptTokens -
+        CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS,
+    );
+    if (metadata.maxTokens <= availableOutputTokens) return metadata;
+    if (availableOutputTokens >= CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS) {
+      request[maxTokenField] = availableOutputTokens;
+      return collectChatCompletionsRequestMetadata(request);
     }
     const requestedTokens = metadata.estimatedPromptTokens + metadata.maxTokens;
-    if (requestedTokens <= contextWindowTokens) return;
     throw new LLMContextWindowExceededError(
       this.name,
-      `estimated prompt (${metadata.estimatedPromptTokens}) plus reserved output (${metadata.maxTokens}) exceeds context window (${contextWindowTokens})`,
+      `estimated prompt (${metadata.estimatedPromptTokens}) plus reserved output (${metadata.maxTokens}) exceeds context window (${contextWindowTokens}) after ${CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS} token safety buffer`,
       {
         effectiveTokens: requestedTokens,
         maxTokens: contextWindowTokens,
@@ -786,12 +800,13 @@ export class OpenAIProvider implements LLMProvider {
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
       providerCapabilityHints,
     });
-    const metadata = collectChatCompletionsRequestMetadata(request);
-    this.emitRequestMetadata("chat_completions", metadata);
-    this.assertWithinContextWindow(
+    let metadata = collectChatCompletionsRequestMetadata(request);
+    metadata = this.fitRequestWithinContextWindow(
+      request,
       metadata,
       this.resolveContextWindowTokens(args.options),
     );
+    this.emitRequestMetadata("chat_completions", metadata);
     return request;
   }
 

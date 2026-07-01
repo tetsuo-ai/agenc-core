@@ -587,7 +587,46 @@ describe("OpenAIProvider", () => {
     expectNoRequestMetadataWarning(emitWarning);
   });
 
-  test("fails before chat-completions network calls when the request exceeds the context window", async () => {
+  test("clamps chat-completions max_tokens to the remaining context window", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_clamped",
+          model: "qwen3.6-35b-a3b-fp8",
+          choices: [
+            {
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "local-token",
+      model: "qwen3.6-35b-a3b-fp8",
+      baseURL: "http://127.0.0.1:8000/v1",
+      useResponsesApi: false,
+      contextWindowTokens: 2048,
+      maxTokens: 4096,
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(typeof request.max_tokens).toBe("number");
+    expect(request.max_tokens as number).toBeLessThan(4096);
+    expect(request.max_tokens as number).toBeGreaterThanOrEqual(256);
+  });
+
+  test("fails before chat-completions network calls when no safe output room remains", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new OpenAIProvider({
       apiKey: "local-token",

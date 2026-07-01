@@ -118,6 +118,18 @@ export class ModelMetadataResolver {
 
   async resolve(params: LookupParams): Promise<ResolvedModelMetadata> {
     const explicit = readExplicitConfigMetadata(params);
+    if (shouldPreferLiveEndpointOverExplicit(params, this.env)) {
+      const live = await this.resolveLiveEndpointMetadata(params);
+      if (hasAnyMetadata(live)) {
+        return this.finalize(
+          params,
+          mergeLiveEndpointMetadata(live, explicit),
+          "live_endpoint",
+          false,
+        );
+      }
+    }
+
     if (hasAnyMetadata(explicit)) {
       return this.finalize(params, explicit, "explicit_config", false);
     }
@@ -307,6 +319,53 @@ function shouldQueryLiveEndpoint(
     Boolean(providerConfig?.base_url?.trim()) ||
     Boolean(envBaseUrl(provider, env))
   );
+}
+
+function shouldPreferLiveEndpointOverExplicit(
+  params: LookupParams,
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return (
+    normalizeProvider(params.provider) === "openai-compatible" &&
+    shouldQueryLiveEndpoint(params, env)
+  );
+}
+
+function mergeLiveEndpointMetadata(
+  live: ModelMetadataValues,
+  explicit: ModelMetadataValues | undefined,
+): ModelMetadataValues {
+  return {
+    ...(live.contextWindow !== undefined
+      ? { contextWindow: live.contextWindow }
+      : explicit?.contextWindow !== undefined
+        ? { contextWindow: explicit.contextWindow }
+        : {}),
+    ...(live.maxContextWindow !== undefined
+      ? { maxContextWindow: live.maxContextWindow }
+      : explicit?.maxContextWindow !== undefined
+        ? { maxContextWindow: explicit.maxContextWindow }
+        : {}),
+    ...(explicit?.maxOutputTokens !== undefined
+      ? {
+        maxOutputTokens: explicit.maxOutputTokens,
+        maxOutputTokensUpperLimit:
+          explicit.maxOutputTokensUpperLimit ?? explicit.maxOutputTokens,
+        ...(explicit.maxOutputTokensExplicit !== undefined
+          ? { maxOutputTokensExplicit: explicit.maxOutputTokensExplicit }
+          : {}),
+      }
+      : live.maxOutputTokens !== undefined
+        ? {
+          maxOutputTokens: live.maxOutputTokens,
+          maxOutputTokensUpperLimit:
+            live.maxOutputTokensUpperLimit ?? live.maxOutputTokens,
+          ...(live.maxOutputTokensExplicit !== undefined
+            ? { maxOutputTokensExplicit: live.maxOutputTokensExplicit }
+            : {}),
+        }
+        : {}),
+  };
 }
 
 function readExplicitConfigMetadata(
