@@ -1,4 +1,9 @@
+import type { EnvSnapshot } from "../config/env.js";
 import { normalizeProviderSlug, type ProviderSlug } from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
+import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
+
+export const SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER: ProviderSlug = "openrouter";
 
 const LIVE_SUBSCRIPTION_MODELS: Readonly<Record<string, readonly string[]>> = {
   openrouter: [
@@ -46,6 +51,16 @@ export function providerHasLiveSubscriptionRoute(
   provider: ProviderSlug | string,
 ): boolean {
   return subscriptionManagedModels(provider).length > 0;
+}
+
+export function hasHostedSubscriptionAccess(
+  config: AgenCConfig | undefined,
+  env: EnvSnapshot = process.env,
+): boolean {
+  return (
+    config?.auth?.managedKeys?.enabled === true &&
+    hasEntitledRemoteAuthSessionSync(env)
+  );
 }
 
 export function subscriptionManagedDefaultModel(

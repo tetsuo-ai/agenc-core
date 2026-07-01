@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   modelCommand,
@@ -69,6 +73,54 @@ function mkctx(
     home: "/home/test",
     ...(appState ? { appState } : {}),
   };
+}
+
+function withProAuthSession<T>(fn: () => T): T {
+  const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-pro-"));
+  writeFileSync(
+    join(agencHome, "auth.json"),
+    JSON.stringify({
+      provider: "remote",
+      token: "test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      subscriptionTier: "pro",
+    }),
+  );
+  const previousHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = agencHome;
+  try {
+    return fn();
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousHome;
+    }
+  }
+}
+
+async function withProAuthSessionAsync<T>(fn: () => Promise<T>): Promise<T> {
+  const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-pro-"));
+  writeFileSync(
+    join(agencHome, "auth.json"),
+    JSON.stringify({
+      provider: "remote",
+      token: "test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      subscriptionTier: "pro",
+    }),
+  );
+  const previousHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = agencHome;
+  try {
+    return await fn();
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousHome;
+    }
+  }
 }
 
 describe("checkModelHistoryCompat", () => {
@@ -363,6 +415,7 @@ describe("modelCommand", () => {
   });
 
   it("model menu limits subscription-managed OpenRouter to live models", () => {
+    withProAuthSession(() => {
     const snapshot = readModelMenuSnapshot({
       ...mkctx(stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }), ""),
       configStore: {
@@ -417,9 +470,45 @@ describe("modelCommand", () => {
       "openrouter",
       "openrouter",
     ]);
+    });
+  });
+
+  it("opens paid managed sessions on hosted OpenRouter models first", () => {
+    withProAuthSession(() => {
+      const previous = process.env.OPENROUTER_API_KEY;
+      delete process.env.OPENROUTER_API_KEY;
+      try {
+        const snapshot = readModelMenuSnapshot({
+          ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+          configStore: {
+            current: () => ({
+              auth: { managedKeys: { enabled: true } },
+            }),
+          } as SlashCommandContext["configStore"],
+        });
+
+        expect(snapshot.rows[0]).toMatchObject({
+          provider: "openrouter",
+          model: "x-ai/grok-4.3",
+          detail: "default hosted subscription model",
+        });
+        expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
+          provider: "openrouter",
+          model: "x-ai/grok-4.3",
+        });
+        expect(snapshot.rows.some(row => row.provider === "grok")).toBe(true);
+      } finally {
+        if (previous === undefined) {
+          delete process.env.OPENROUTER_API_KEY;
+        } else {
+          process.env.OPENROUTER_API_KEY = previous;
+        }
+      }
+    });
   });
 
   it("blocks direct model switches to unavailable subscription-managed OpenRouter models", async () => {
+    await withProAuthSessionAsync(async () => {
     const previous = process.env.OPENROUTER_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
     try {
@@ -451,9 +540,11 @@ describe("modelCommand", () => {
         process.env.OPENROUTER_API_KEY = previous;
       }
     }
+    });
   });
 
   it("allows direct switches to subscription-managed OpenRouter models outside the base catalog", async () => {
+    await withProAuthSessionAsync(async () => {
     const previous = process.env.OPENROUTER_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
     try {
@@ -486,6 +577,7 @@ describe("modelCommand", () => {
         process.env.OPENROUTER_API_KEY = previous;
       }
     }
+    });
   });
 
   it("blocks direct model switches to unavailable managed routes without BYOK", async () => {

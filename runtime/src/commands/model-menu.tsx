@@ -6,7 +6,6 @@ import {
   resolveProviderSettings,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
-import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
@@ -20,6 +19,8 @@ import { readCommandConfig } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
+  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+  hasHostedSubscriptionAccess,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedModels,
 } from "./subscription-managed-models.js";
@@ -193,12 +194,17 @@ function statusGlyph(status: ModelRowStatus): string {
 function providerOrder(
   catalog: Readonly<Record<string, readonly string[]>>,
   currentProvider: ProviderSlug,
+  preferredProvider?: ProviderSlug,
 ): readonly ProviderSlug[] {
   const ids = Object.keys(catalog)
     .map(provider => normalizeProviderSlug(provider))
     .filter((provider): provider is ProviderSlug => provider !== undefined);
   const unique = [...new Set(ids)];
   return unique.sort((left, right) => {
+    if (preferredProvider !== undefined) {
+      if (left === preferredProvider) return -1;
+      if (right === preferredProvider) return 1;
+    }
     if (left === currentProvider) return -1;
     if (right === currentProvider) return 1;
     return left.localeCompare(right);
@@ -296,8 +302,10 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable =
-    managedKeysEnabled && hasEntitledRemoteAuthSessionSync(process.env);
+  const managedSubscriptionAvailable = hasHostedSubscriptionAccess(
+    config,
+    process.env,
+  );
   const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
     config !== undefined
       ? resolveProviderSettings(catalogProvider, config, process.env)?.apiKey
@@ -325,7 +333,10 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     }
     return catalog[catalogProvider] ?? [];
   };
-  const rows = providerOrder(catalog, provider)
+  const preferredProvider = managedSubscriptionAvailable
+    ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
+    : undefined;
+  const rows = providerOrder(catalog, provider, preferredProvider)
     .filter(shouldShowProvider)
     .flatMap(catalogProvider => {
       const managedRoute =
@@ -341,7 +352,19 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
         managedRoute,
       });
     });
-  const activeIndex = Math.max(0, rows.findIndex(row => row.status === "current"));
+  const preferredActiveIndex =
+    managedSubscriptionAvailable
+      ? rows.findIndex(
+          row =>
+            row.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER &&
+            row.selectable,
+        )
+      : -1;
+  const currentActiveIndex = rows.findIndex(row => row.status === "current");
+  const activeIndex = Math.max(
+    0,
+    preferredActiveIndex >= 0 ? preferredActiveIndex : currentActiveIndex,
+  );
   // Count the rows actually offered per provider (hidden models are filtered
   // out in providerRows) so the displayed count matches the selectable list.
   const providerCounts = Object.freeze(
