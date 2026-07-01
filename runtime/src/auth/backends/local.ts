@@ -13,6 +13,7 @@ import type {
   AuthLoginResult,
   AuthLogoutParams,
   AuthLogoutResult,
+  AuthLlmUsage,
   AuthProviderSlug,
   AuthSessionId,
   AuthSessionRef,
@@ -203,6 +204,24 @@ export class LocalAuthBackend implements AuthBackend {
     _params: AuthSessionRef = {},
   ): AuthSubscriptionTier {
     return "free";
+  }
+
+  getLlmUsage(
+    _params: AuthSessionRef = {},
+  ): AuthLlmUsage {
+    return {
+      managedModelsEnabled: false,
+      modelAllowance: {
+        allowedModelCount: 0,
+        duration: "30d",
+        includedUsd: 0,
+        percentUsed: 0,
+        remainingUsd: 0,
+        status: "free",
+        usedUsd: 0,
+      },
+      subscriptionTier: "free",
+    };
   }
 
   private createDiskState(): LocalAuthDiskState {

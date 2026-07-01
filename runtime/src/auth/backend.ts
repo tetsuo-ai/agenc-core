@@ -102,6 +102,30 @@ export interface AuthInferredAgencModel extends AuthJsonObject {
   readonly endpointUrl?: string;
 }
 
+export type AuthLlmUsageStatus =
+  | "free"
+  | "pending"
+  | "active"
+  | "exhausted"
+  | "unavailable";
+
+export interface AuthLlmUsageAllowance extends AuthJsonObject {
+  readonly allowedModelCount: number;
+  readonly duration: string;
+  readonly includedUsd?: number;
+  readonly percentUsed?: number;
+  readonly remainingUsd?: number;
+  readonly resetsAt?: string;
+  readonly status: AuthLlmUsageStatus;
+  readonly usedUsd?: number;
+}
+
+export interface AuthLlmUsage extends AuthJsonObject {
+  readonly managedModelsEnabled: boolean;
+  readonly modelAllowance: AuthLlmUsageAllowance;
+  readonly subscriptionTier: AuthSubscriptionTier;
+}
+
 export interface AuthBackend {
   readonly kind?: AuthBackendKind;
   login(params?: AuthLoginParams): AuthLoginResult | Promise<AuthLoginResult>;
@@ -118,6 +142,9 @@ export interface AuthBackend {
   inferAgencModel(
     params?: AuthInferAgencModelParams,
   ): AuthInferredAgencModel | Promise<AuthInferredAgencModel>;
+  getLlmUsage(
+    params?: AuthSessionRef,
+  ): AuthLlmUsage | Promise<AuthLlmUsage>;
   getSubscriptionTier(
     params?: AuthSessionRef,
   ): AuthSubscriptionTier | Promise<AuthSubscriptionTier>;

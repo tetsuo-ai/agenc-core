@@ -68,6 +68,7 @@ export function createAgenCDaemonRuntimeAuthBackend(
       return entry.promise;
     },
     inferAgencModel: (params) => current.inferAgencModel(params),
+    getLlmUsage: (params) => current.getLlmUsage(params),
     getSubscriptionTier: (params) => current.getSubscriptionTier(params),
     replaceBackend: (next) => {
       current = next;

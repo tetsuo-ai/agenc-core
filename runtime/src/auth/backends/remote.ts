@@ -5,6 +5,9 @@ import type {
   AuthIdentity,
   AuthInferAgencModelParams,
   AuthInferredAgencModel,
+  AuthLlmUsage,
+  AuthLlmUsageAllowance,
+  AuthLlmUsageStatus,
   AuthLoginParams,
   AuthLoginResult,
   AuthLogoutParams,
@@ -32,8 +35,11 @@ const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
   "https://id.agenc.ag/v1/auth/infer-model" as const;
 const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
   "https://id.agenc.ag/v1/auth/subscription-tier" as const;
+const DEFAULT_REMOTE_AUTH_USAGE_URL =
+  "https://id.agenc.ag/v1/auth/llm-usage" as const;
 const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
 const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
+const REMOTE_AUTH_USAGE_URL_ENV = "AGENC_REMOTE_AUTH_USAGE_URL" as const;
 const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
 const REMOTE_AUTH_LOGIN_START_URL_ENV =
   "AGENC_REMOTE_AUTH_LOGIN_START_URL" as const;
@@ -72,6 +78,10 @@ export type RemoteAuthSubscriptionTierResolver = (
   request: AuthSessionRef,
 ) => AuthSubscriptionTier | Promise<AuthSubscriptionTier>;
 
+export type RemoteAuthLlmUsageResolver = (
+  request: AuthSessionRef,
+) => AuthLlmUsage | Promise<AuthLlmUsage>;
+
 export interface RemoteAuthLoginRequest extends AuthSessionRef {}
 
 export interface RemoteAuthLoginFlowResult {
@@ -104,6 +114,7 @@ export interface RemoteAuthBackendOptions {
   readonly modelInferer?: RemoteAuthModelInferer;
   readonly onDeviceCode?: RemoteAuthDeviceCodeHandler;
   readonly subscriptionTierResolver?: RemoteAuthSubscriptionTierResolver;
+  readonly llmUsageResolver?: RemoteAuthLlmUsageResolver;
   readonly endpoint?: string;
   readonly env?: EnvSnapshot;
   readonly fetchImpl?: typeof fetch;
@@ -116,6 +127,7 @@ export interface RemoteAuthBackendOptions {
   readonly now?: () => Date;
   readonly sleepMs?: (ms: number) => Promise<void>;
   readonly tierEndpoint?: string;
+  readonly usageEndpoint?: string;
   readonly token?: string;
 }
 
@@ -132,6 +144,7 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly #loginFlow: RemoteAuthLoginFlow;
   readonly #modelInferer: RemoteAuthModelInferer;
   readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
+  readonly #llmUsageResolver: RemoteAuthLlmUsageResolver;
   readonly #managedKeysEnabled: boolean;
   readonly #keyCacheTtlMs: number;
   readonly #now: () => Date;
@@ -147,6 +160,8 @@ export class RemoteAuthBackend implements AuthBackend {
     this.#subscriptionTierResolver =
       options.subscriptionTierResolver ??
       createHttpRemoteAuthSubscriptionTierResolver(options);
+    this.#llmUsageResolver =
+      options.llmUsageResolver ?? createHttpRemoteAuthLlmUsageResolver(options);
     this.#managedKeysEnabled = options.managedKeysEnabled === true;
     this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
     this.#now = options.now ?? (() => new Date());
@@ -271,6 +286,12 @@ export class RemoteAuthBackend implements AuthBackend {
     return this.#requestSubscriptionTier(params);
   }
 
+  async getLlmUsage(
+    params: AuthSessionRef = {},
+  ): Promise<AuthLlmUsage> {
+    return this.#requestLlmUsage(params);
+  }
+
   async #requestVendedKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
@@ -310,6 +331,10 @@ export class RemoteAuthBackend implements AuthBackend {
   ): Promise<AuthSubscriptionTier> {
     const tier = await this.#subscriptionTierResolver(params);
     return normalizeRequiredSubscriptionTier(tier);
+  }
+
+  async #requestLlmUsage(params: AuthSessionRef): Promise<AuthLlmUsage> {
+    return normalizeRemoteAuthLlmUsage(await this.#llmUsageResolver(params));
   }
 }
 
@@ -530,6 +555,40 @@ function createHttpRemoteAuthSubscriptionTierResolver(
     }
     return parseRemoteAuthSubscriptionTierResponse(
       await readRemoteAuthJsonResponse(response, "subscription tier lookup"),
+    );
+  };
+}
+
+function createHttpRemoteAuthLlmUsageResolver(
+  options: RemoteAuthBackendOptions,
+): RemoteAuthLlmUsageResolver {
+  const env = options.env ?? process.env;
+  const endpoint =
+    trimNonEmpty(options.usageEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_USAGE_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_USAGE_URL;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  return async (request) => {
+    if (fetchImpl === undefined) {
+      throw new Error("RemoteAuthBackend requires fetch for remote LLM usage");
+    }
+    const token = await resolveRemoteAuthToken(options);
+    if (token === undefined) {
+      return freeLlmUsage();
+    }
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: remoteAuthJsonHeaders(token),
+      body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
+    });
+    if (response.status === 401 || response.status === 403) return freeLlmUsage();
+    if (!response.ok) {
+      throw new Error(
+        `RemoteAuthBackend LLM usage lookup failed with HTTP ${response.status}`,
+      );
+    }
+    return parseRemoteAuthLlmUsageResponse(
+      await readRemoteAuthJsonResponse(response, "LLM usage lookup"),
     );
   };
 }
@@ -793,6 +852,93 @@ function parseRemoteAuthSubscriptionTierResponse(
         ? record.tier
         : undefined;
   return normalizeRequiredSubscriptionTier(rawTier);
+}
+
+function parseRemoteAuthLlmUsageResponse(value: unknown): AuthLlmUsage {
+  if (!value || typeof value !== "object") {
+    throw new Error("RemoteAuthBackend LLM usage lookup returned a non-object response");
+  }
+  return normalizeRemoteAuthLlmUsage(value as Partial<AuthLlmUsage>);
+}
+
+function normalizeRemoteAuthLlmUsage(value: Partial<AuthLlmUsage>): AuthLlmUsage {
+  const subscriptionTier = typeof value.subscriptionTier === "string"
+    ? normalizeSubscriptionTier(value.subscriptionTier)
+    : undefined;
+  if (subscriptionTier === undefined) {
+    throw new Error("RemoteAuthBackend LLM usage response has invalid subscriptionTier");
+  }
+  const allowance = normalizeRemoteAuthLlmUsageAllowance(value.modelAllowance);
+  return {
+    managedModelsEnabled: value.managedModelsEnabled === true,
+    modelAllowance: allowance,
+    subscriptionTier,
+  };
+}
+
+function normalizeRemoteAuthLlmUsageAllowance(
+  value: unknown,
+): AuthLlmUsageAllowance {
+  if (!value || typeof value !== "object") {
+    throw new Error("RemoteAuthBackend LLM usage response missing modelAllowance");
+  }
+  const record = value as Record<string, unknown>;
+  const status = normalizeLlmUsageStatus(record.status);
+  const allowedModelCount = readFiniteNumber(record.allowedModelCount);
+  const duration = readTrimmedString(record.duration);
+  if (status === undefined || allowedModelCount === undefined || duration === undefined) {
+    throw new Error("RemoteAuthBackend LLM usage response has invalid modelAllowance");
+  }
+  return {
+    allowedModelCount,
+    duration,
+    ...(readFiniteNumber(record.includedUsd) !== undefined
+      ? { includedUsd: readFiniteNumber(record.includedUsd) }
+      : {}),
+    ...(readFiniteNumber(record.percentUsed) !== undefined
+      ? { percentUsed: readFiniteNumber(record.percentUsed) }
+      : {}),
+    ...(readFiniteNumber(record.remainingUsd) !== undefined
+      ? { remainingUsd: readFiniteNumber(record.remainingUsd) }
+      : {}),
+    ...(readTrimmedString(record.resetsAt) !== undefined
+      ? { resetsAt: readTrimmedString(record.resetsAt) }
+      : {}),
+    status,
+    ...(readFiniteNumber(record.usedUsd) !== undefined
+      ? { usedUsd: readFiniteNumber(record.usedUsd) }
+      : {}),
+  };
+}
+
+function normalizeLlmUsageStatus(value: unknown): AuthLlmUsageStatus | undefined {
+  if (typeof value !== "string") return undefined;
+  switch (value.trim()) {
+    case "free":
+    case "pending":
+    case "active":
+    case "exhausted":
+    case "unavailable":
+      return value.trim() as AuthLlmUsageStatus;
+    default:
+      return undefined;
+  }
+}
+
+function freeLlmUsage(): AuthLlmUsage {
+  return {
+    managedModelsEnabled: false,
+    modelAllowance: {
+      allowedModelCount: 0,
+      duration: "30d",
+      includedUsd: 0,
+      percentUsed: 0,
+      remainingUsd: 0,
+      status: "free",
+      usedUsd: 0,
+    },
+    subscriptionTier: "free",
+  };
 }
 
 function normalizeRemoteAuthModelInference(

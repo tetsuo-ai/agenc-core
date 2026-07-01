@@ -96,10 +96,9 @@ const AGENT_APP_STATE = {
 };
 
 describe("/cost", () => {
-  it("is registered with /usage and /stats aliases on the default surface", () => {
+  it("is registered with /stats as the default-surface alias", () => {
     const registry = buildDefaultRegistry();
     expect(registry.find("cost")?.name).toBe("cost");
-    expect(registry.find("usage")?.name).toBe("cost");
     expect(registry.find("stats")?.name).toBe("cost");
   });
 

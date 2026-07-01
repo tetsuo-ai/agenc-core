@@ -1,5 +1,5 @@
 /**
- * `/cost` — session cost & token transparency (aliases `/usage`, `/stats`).
+ * `/cost` — session cost & token transparency (alias `/stats`).
  *
  * Surfaces what the session has actually spent: cumulative USD cost, token
  * totals (input/output), per-model breakdown, and a per-agent breakdown for
@@ -315,7 +315,7 @@ async function openCostModal(
 
 export const costCommand: SlashCommand = {
   name: "cost",
-  aliases: ["usage", "stats"],
+  aliases: ["stats"],
   description: "Show session cost, token usage, and per-agent spend",
   supportedSurfaces: ["runtime", "daemon-tui"],
   immediate: true,
