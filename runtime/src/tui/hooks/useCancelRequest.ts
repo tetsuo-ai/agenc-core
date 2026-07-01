@@ -152,6 +152,8 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // When viewing a teammate's transcript, let useBackgroundTaskNavigation handle Escape
   const isViewingTeammate = viewSelectionMode === 'viewing-agent'
   const isScreenBlockingCancel = screen === 'transcript' && !hasActiveTurnToCancel
+  const shouldDeferToVimInsert =
+    isVimModeEnabled() && vimMode === 'INSERT' && !hasActiveTurnToCancel
   // Context guards: other screens/overlays handle their own cancel
   const isContextActive =
     !isScreenBlockingCancel &&
@@ -160,15 +162,19 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     !isLocalJSXCommand &&
     !isHelpOpen &&
     !isModalOverlayActive &&
-    !(isVimModeEnabled() && vimMode === 'INSERT')
+    !shouldDeferToVimInsert
 
   // Escape (chat:cancel) defers to mode-exit when in special mode with empty
   // input, and to useBackgroundTaskNavigation when viewing a teammate
+  const shouldDeferEscapeToModeExit =
+    isInSpecialModeWithEmptyInput && !hasActiveTurnToCancel
+  const shouldDeferEscapeToTeammate =
+    isViewingTeammate && !hasActiveTurnToCancel
   const isEscapeActive =
     isContextActive &&
     (hasActiveTurnToCancel || hasQueuedCommands || hasStoppableAgents) &&
-    !isInSpecialModeWithEmptyInput &&
-    !isViewingTeammate
+    !shouldDeferEscapeToModeExit &&
+    !shouldDeferEscapeToTeammate
 
   // Ctrl+C (app:interrupt): when viewing a teammate, stops everything and
   // returns to main thread. Otherwise just handleCancel. Must NOT claim
@@ -248,7 +254,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     return false
   }, {
     context: 'Chat',
-    isActive: isEscapeActive || isCtrlCActive,
+    isActive: true,
   })
   useInput((input, key, event) => {
     if (key.escape && isEscapeActive) {
@@ -261,7 +267,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       event.stopImmediatePropagation()
     }
   }, {
-    isActive: isEscapeActive || isCtrlCActive,
+    isActive: true,
   })
 
   // chat:killAgents uses a two-press pattern: first press shows a

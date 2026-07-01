@@ -8,6 +8,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { Writable } from "node:stream";
+import treeKill from "tree-kill";
 
 import { AgenCDaemonAgentLifecycleError } from "./agent-lifecycle.js";
 import {
@@ -1072,7 +1073,13 @@ function closeStdin(session: CommandExecSession): void {
 
 function terminateSession(session: CommandExecSession): void {
   if (session.pty !== null) {
-    session.pty.kill();
+    const pty = session.pty;
+    terminatePtySession(pty, "SIGTERM");
+    setTimeout(() => {
+      if (!session.finalized) {
+        terminatePtySession(pty, "SIGKILL");
+      }
+    }, FORCE_KILL_DELAY_MS).unref?.();
     return;
   }
   const child = session.child;
@@ -1098,6 +1105,28 @@ function terminateSession(session: CommandExecSession): void {
       child.kill("SIGKILL");
     }
   }, FORCE_KILL_DELAY_MS).unref?.();
+}
+
+function terminatePtySession(pty: IPty, signal: NodeJS.Signals): void {
+  const killPty = (): void => {
+    try {
+      pty.kill(signal);
+    } catch {
+      // Best-effort shutdown.
+    }
+  };
+  const pid = pty.pid;
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      treeKill(pid, signal, () => {
+        killPty();
+      });
+      return;
+    } catch {
+      // Fall back to the PTY handle below.
+    }
+  }
+  killPty();
 }
 
 function delay(ms: number): Promise<void> {

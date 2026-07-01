@@ -44,6 +44,9 @@ describe("terminal-tool-result", () => {
     expect(terminalToolCauseFromAbortReason("mode_changed")).toBe(
       "mode_changed",
     );
+    expect(terminalToolCauseFromAbortReason("interrupted")).toBe(
+      "user_interrupted",
+    );
     expect(
       terminalToolCauseFromError(
         new Error("tool stub exceeded 50ms timeout"),

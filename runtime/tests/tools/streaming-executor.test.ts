@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
 import {
   StreamingToolExecutor,
@@ -10,6 +12,8 @@ import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { Tool } from "./types.js";
 import { EXCLUSIVE, SHARED_READ } from "./concurrency.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
+import { createExecCommandTool } from "./system/exec-command.js";
+import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 
 function mockRegistry(
   dispatch: (call: LLMToolCall) => Promise<ToolDispatchResult>,
@@ -54,6 +58,49 @@ function makeBlock(id: string, name: string): ToolUseBlock {
 
 function makeCall(id: string, name: string): LLMToolCall {
   return { id, name, arguments: "{}" };
+}
+
+function markerPids(marker: string): number[] {
+  if (process.platform === "win32") return [];
+  try {
+    const output = execFileSync("ps", ["-eo", "pid=,args="], {
+      encoding: "utf8",
+    });
+    return output
+      .split("\n")
+      .flatMap((line) => {
+        const match = line.trim().match(/^(\d+)\s+(.*)$/);
+        if (match === null) return [];
+        const pid = Number(match[1]);
+        const args = match[2] ?? "";
+        return Number.isFinite(pid) && args.includes(marker) ? [pid] : [];
+      });
+  } catch {
+    return [];
+  }
+}
+
+async function waitForMarker(
+  marker: string,
+  present: boolean,
+): Promise<boolean> {
+  for (let i = 0; i < 50; i += 1) {
+    const found = markerPids(marker).length > 0;
+    if (found === present) return true;
+    await delay(100);
+  }
+  return false;
+}
+
+function killMarker(marker: string): void {
+  if (process.platform === "win32") return;
+  for (const pid of markerPids(marker)) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Best-effort test cleanup.
+    }
+  }
 }
 
 /**
@@ -178,6 +225,85 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       "sibling tool errored; this tool was cancelled",
     );
   });
+
+  test.skipIf(process.platform === "win32")(
+    "interrupted executor abort terminates an active exec_command PTY child",
+    async () => {
+      const abortController = new AbortController();
+      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+      const marker = `agenc-stream-exec-interrupt-${process.pid}-${Date.now()}`;
+      const execCommand = createExecCommandTool({
+        cwd: process.cwd(),
+        unifiedExecManager: manager,
+      });
+      const registry = mockRegistry(
+        async () => ({ content: "unused" }),
+        [execCommand],
+      );
+      const executor = new StreamingToolExecutor({
+        registry,
+        abortSignal: abortController.signal,
+        runToolUseFn: async (call, signal) => {
+          const args = JSON.parse(call.arguments ?? "{}") as Record<string, unknown>;
+          Object.defineProperty(args, "__abortSignal", {
+            value: signal,
+            enumerable: false,
+            writable: false,
+            configurable: true,
+          });
+          const result = await execCommand.execute(args);
+          return {
+            content: result.content,
+            isError: result.isError,
+            metadata: result.metadata,
+          };
+        },
+      });
+
+      try {
+        executor.addTool(
+          {
+            type: "tool_use",
+            id: "shell1",
+            name: "exec_command",
+            input: {
+              cmd: `bash -lc 'exec -a ${marker} sleep 30'`,
+              tty: true,
+              yield_time_ms: 10_000,
+            },
+          },
+          {
+            id: "shell1",
+            name: "exec_command",
+            arguments: JSON.stringify({
+              cmd: `bash -lc 'exec -a ${marker} sleep 30'`,
+              tty: true,
+              yield_time_ms: 10_000,
+            }),
+          },
+        );
+        executor.close();
+        const drain = (async () => {
+          const results = [];
+          for await (const result of executor.getRemainingResults()) {
+            results.push(result);
+          }
+          return results;
+        })();
+
+        expect(await waitForMarker(marker, true)).toBe(true);
+        abortController.abort("interrupted");
+        await drain;
+
+        expect(await waitForMarker(marker, false)).toBe(true);
+      } finally {
+        executor.abort("test_cleanup");
+        await manager.closeAll("test_cleanup");
+        killMarker(marker);
+      }
+    },
+    10_000,
+  );
 
   test("I-41 re-entrance guard: second discard is no-op", () => {
     const exec = new StreamingToolExecutor({

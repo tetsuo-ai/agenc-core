@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
@@ -43,6 +44,51 @@ function notificationContainsOutput(
     typeof params.deltaBase64 === "string" &&
     Buffer.from(params.deltaBase64, "base64").toString("utf8").includes(text)
   );
+}
+
+function markerPids(marker: string): number[] {
+  if (process.platform === "win32") return [];
+  try {
+    const output = execFileSync("ps", ["-eo", "pid=,args="], {
+      encoding: "utf8",
+    });
+    return output
+      .split("\n")
+      .flatMap((line) => {
+        const match = line.trim().match(/^(\d+)\s+(.*)$/);
+        if (match === null) return [];
+        const pid = Number(match[1]);
+        const args = match[2] ?? "";
+        return pid !== process.pid && args.includes(marker) ? [pid] : [];
+      });
+  } catch {
+    return [];
+  }
+}
+
+async function waitForMarker(
+  marker: string,
+  present: boolean,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if ((markerPids(marker).length > 0) === present) {
+      return true;
+    }
+    await delay(50);
+  }
+  return false;
+}
+
+function killMarker(marker: string): void {
+  for (const pid of markerPids(marker)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Best-effort test cleanup.
+    }
+  }
 }
 
 describe("AgenC daemon command exec", () => {
@@ -584,6 +630,88 @@ describe("AgenC daemon command exec", () => {
         typeof (response as { result?: { exitCode?: number } }).result?.exitCode,
       ).toBe("number");
     },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "request.cancel terminates a PTY foreground child process",
+    async () => {
+      const marker = `agenc-daemon-pty-abort-${process.pid}-${Date.now()}`;
+      const notifications: JsonObject[] = [];
+      const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: new AgenCDaemonAgentManager(),
+      });
+      const connection = dispatcher.createConnection({
+        sendNotification: (message) => notifications.push(message),
+      });
+      try {
+        await connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "init",
+          method: "initialize",
+          params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+        });
+        const startResponse = connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "cancel-pty-start",
+          method: "commandExec.start",
+          params: {
+            command: ["bash", "-i"],
+            processId: "cancel-pty-1",
+            tty: true,
+            size: { rows: 24, cols: 80 },
+            disableTimeout: true,
+          },
+        });
+
+        await expect(
+          connection.dispatch({
+            jsonrpc: JSON_RPC_VERSION,
+            id: "write-child",
+            method: "commandExec.write",
+            params: {
+              processId: "cancel-pty-1",
+              deltaBase64: Buffer.from(
+                `bash -lc 'exec -a ${marker} sleep 30'\n`,
+              ).toString("base64"),
+            },
+          }),
+        ).resolves.toMatchObject({ result: {} });
+        expect(await waitForMarker(marker, true)).toBe(true);
+
+        await expect(
+          connection.dispatch({
+            jsonrpc: JSON_RPC_VERSION,
+            id: "cancel-pty-request",
+            method: "request.cancel",
+            params: {
+              requestId: "cancel-pty-start",
+              reason: "test cancellation",
+            },
+          }),
+        ).resolves.toMatchObject({
+          result: {
+            requestId: "cancel-pty-start",
+            cancelled: true,
+          },
+        });
+        await expect(startResponse).resolves.toMatchObject({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "cancel-pty-start",
+          error: {
+            code: -32000,
+            data: {
+              code: "REQUEST_CANCELLED",
+              requestId: "cancel-pty-start",
+            },
+          },
+        });
+        expect(await waitForMarker(marker, false)).toBe(true);
+      } finally {
+        await connection.close();
+        killMarker(marker);
+      }
+    },
+    10_000,
   );
 
   it("rejects duplicate process ids and terminates active sessions", async () => {

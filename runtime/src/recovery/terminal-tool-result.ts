@@ -91,6 +91,7 @@ export function terminalToolCauseFromAbortReason(
     normalized === "signal_received" ||
     normalized === "stdin_lost" ||
     normalized === "interrupt" ||
+    normalized === "interrupted" ||
     normalized.includes("user interrupted")
   ) {
     return "user_interrupted";

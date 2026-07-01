@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -88,7 +90,7 @@ function installFakePty(
         | ((event: { readonly exitCode: number; readonly signal?: number | string }) => void)
         | null = null;
       return {
-        pid: 4242,
+        pid: 0,
         write: vi.fn(),
         resize: vi.fn(),
         kill: vi.fn(() => {
@@ -102,6 +104,51 @@ function installFakePty(
       };
     },
   });
+}
+
+function markerPids(marker: string): number[] {
+  if (process.platform === "win32") return [];
+  try {
+    const output = execFileSync("ps", ["-eo", "pid=,args="], {
+      encoding: "utf8",
+    });
+    return output
+      .split("\n")
+      .flatMap((line) => {
+        const match = line.trim().match(/^(\d+)\s+(.*)$/);
+        if (match === null) return [];
+        const pid = Number(match[1]);
+        const args = match[2] ?? "";
+        return pid !== process.pid && args.includes(marker) ? [pid] : [];
+      });
+  } catch {
+    return [];
+  }
+}
+
+async function waitForMarker(
+  marker: string,
+  present: boolean,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if ((markerPids(marker).length > 0) === present) {
+      return true;
+    }
+    await delay(50);
+  }
+  return false;
+}
+
+function killMarker(marker: string): void {
+  for (const pid of markerPids(marker)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Best-effort test cleanup.
+    }
+  }
 }
 
 describe("UnifiedExecProcessManager", () => {
@@ -316,6 +363,47 @@ describe("UnifiedExecProcessManager", () => {
         expect(echoed.process_id).toBe(sessionId);
       } finally {
         await manager.closeAll("test_cleanup");
+      }
+    },
+    10_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "aborting a yielded PTY poll terminates the foreground child process",
+    async () => {
+      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+      const controller = new AbortController();
+      const marker = `agenc-unified-pty-abort-${process.pid}-${Date.now()}`;
+      try {
+        const started = await manager.execCommand({
+          cmd: "bash -i",
+          tty: true,
+          yield_time_ms: 250,
+          __abortSignal: controller.signal,
+        });
+        const sessionId = started.process_id!;
+
+        await manager.writeStdin({
+          session_id: sessionId,
+          chars: `bash -lc 'exec -a ${marker} sleep 30'\n`,
+          yield_time_ms: 250,
+        });
+        expect(await waitForMarker(marker, true)).toBe(true);
+
+        const polled = manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 5_000,
+          __abortSignal: controller.signal,
+        });
+        await delay(100);
+        controller.abort("interrupted");
+        await polled;
+
+        expect(await waitForMarker(marker, false)).toBe(true);
+      } finally {
+        await manager.closeAll("test_cleanup");
+        killMarker(marker);
       }
     },
     10_000,

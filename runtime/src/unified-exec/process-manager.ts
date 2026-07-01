@@ -2,6 +2,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
+import treeKill from "tree-kill";
 
 import {
   SandboxManager,
@@ -688,9 +689,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       processHandle.onExit((event) => {
         complete(entry, { exitCode: event.exitCode, signal: event.signal });
       });
-      abortController.signal.addEventListener("abort", () => this.terminate(entry), {
-        once: true,
-      });
+      this.attachAbortTermination(entry);
       return entry;
     }
 
@@ -716,11 +715,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       notifyData("stderr", error.message);
       complete(entry, { exitCode: 1 });
     });
-    abortController.signal.addEventListener("abort", () => this.terminate(entry), {
-      once: true,
-    });
+    this.attachAbortTermination(entry);
     child.unref();
     return entry;
+  }
+
+  private attachAbortTermination(entry: ProcessEntry): void {
+    const terminate = (): void => {
+      this.forceTerminate(entry);
+    };
+    entry.abortController.signal.addEventListener("abort", terminate, {
+      once: true,
+    });
+    if (entry.abortController.signal.aborted) {
+      terminate();
+    }
   }
 
   private buildSpawnCommand(params: {
@@ -892,7 +901,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private terminate(entry: ProcessEntry, signal: NodeJS.Signals = "SIGTERM"): void {
     try {
       if (entry.stored.kind === "pty") {
-        entry.stored.process.kill();
+        this.terminatePty(entry.stored.process, signal);
       } else if (entry.stored.process.pid) {
         if (process.platform !== "win32") {
           try {
@@ -907,5 +916,27 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     } catch {
       // Best-effort shutdown.
     }
+  }
+
+  private terminatePty(processHandle: IPty, signal: NodeJS.Signals): void {
+    const killPty = (): void => {
+      try {
+        processHandle.kill(signal);
+      } catch {
+        // Best-effort shutdown.
+      }
+    };
+    const pid = processHandle.pid;
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        treeKill(pid, signal, () => {
+          killPty();
+        });
+        return;
+      } catch {
+        // Fall back to the PTY handle below.
+      }
+    }
+    killPty();
   }
 }

@@ -11,6 +11,7 @@ const fixture = vi.hoisted(() => ({
   queuedCommandsLength: 0,
   hasCommandsInQueue: false,
   overlayActive: false,
+  vimModeEnabled: false,
   handlers: new Map<string, { handler: () => void; isActive?: boolean }>(),
   captureInput: null as null | {
     handler: (
@@ -61,7 +62,7 @@ vi.mock('../state/AppState.js', () => ({
 }))
 
 vi.mock('../components/PromptInput/utils.js', () => ({
-  isVimModeEnabled: () => false,
+  isVimModeEnabled: () => fixture.vimModeEnabled,
 }))
 
 vi.mock('../context/notifications', () => ({
@@ -163,6 +164,9 @@ async function renderHandler(
     readonly streamMode?: SpinnerMode
     readonly canCancelActiveTurn?: boolean
     readonly screen?: 'prompt' | 'transcript'
+    readonly vimMode?: 'INSERT' | 'NORMAL'
+    readonly inputMode?: 'bash' | 'prompt' | 'orphaned-permission' | 'task-notification'
+    readonly inputValue?: string
   } = {},
 ): Promise<void> {
   const { CancelRequestHandler } = await import('./useCancelRequest.js')
@@ -191,6 +195,7 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
     fixture.queuedCommandsLength = 0
     fixture.hasCommandsInQueue = false
     fixture.overlayActive = false
+    fixture.vimModeEnabled = false
     fixture.handlers.clear()
     fixture.captureInput = null
     fixture.rawInput = null
@@ -319,6 +324,47 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
 
     expect(fixture.onCancel).toHaveBeenCalled()
     expect(stopImmediatePropagation).toHaveBeenCalled()
+  })
+
+  test('captured Escape cancels an active turn while Vim insert mode is enabled', async () => {
+    fixture.vimModeEnabled = true
+
+    await renderHandler({
+      canCancelActiveTurn: true,
+      streamMode: 'tool-use',
+      vimMode: 'INSERT',
+    })
+
+    expect(fixture.captureInput?.isActive).toBe(true)
+
+    const consumed = fixture.captureInput?.handler(
+      '',
+      { escape: true },
+      { stopImmediatePropagation: vi.fn() },
+    )
+
+    expect(consumed).toBe(true)
+    expect(fixture.onCancel).toHaveBeenCalled()
+  })
+
+  test('captured Escape cancels an active turn from empty bash mode', async () => {
+    await renderHandler({
+      canCancelActiveTurn: true,
+      streamMode: 'tool-use',
+      inputMode: 'bash',
+      inputValue: '',
+    })
+
+    expect(fixture.captureInput?.isActive).toBe(true)
+
+    const consumed = fixture.captureInput?.handler(
+      '',
+      { escape: true },
+      { stopImmediatePropagation: vi.fn() },
+    )
+
+    expect(consumed).toBe(true)
+    expect(fixture.onCancel).toHaveBeenCalled()
   })
 
   test('Escape is active during local-agent-only work and shows a visible cancel path', async () => {

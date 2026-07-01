@@ -230,9 +230,23 @@ export function useInputCapture(
 ): void {
   const { context = 'Global', isActive = true } = options
   const keybindingContext = useOptionalKeybindingContext()
+  const handlerRef = useRef(handler)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    handlerRef.current = handler
+  }, [handler])
+
+  const invokeLatestHandler = useCallback(
+    (input: string, key: Key, event: InputEvent) =>
+      handlerRef.current(input, key, event),
+    [],
+  )
+
+  useLayoutEffect(() => {
     if (!keybindingContext || !isActive) return
-    return keybindingContext.registerInputCapture({ context, handler })
-  }, [context, handler, keybindingContext, isActive])
+    return keybindingContext.registerInputCapture({
+      context,
+      handler: invokeLatestHandler,
+    })
+  }, [context, invokeLatestHandler, keybindingContext, isActive])
 }
