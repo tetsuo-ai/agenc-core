@@ -240,6 +240,7 @@ export interface ConfigStoreLike {
   readonly agencHome?: string;
   readonly snapshot?: unknown;
   current?(): AgenCConfig;
+  reload?(): Promise<AgenCConfig>;
   subscribe?(listener: (config: unknown) => void): (() => void) | void;
   warnings?(): readonly string[];
 }

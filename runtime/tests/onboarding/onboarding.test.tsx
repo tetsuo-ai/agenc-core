@@ -514,6 +514,62 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
+  test.each([
+    "grok",
+    "openai",
+    "anthropic",
+    "openrouter",
+    "groq",
+    "deepseek",
+    "gemini",
+  ] as const)("verifies and saves approved BYOK keys for %s", async (provider) => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const context = {
+        agencHome,
+        config: defaultConfig(),
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      let state = createInitialFirstRunOnboardingState(context);
+      state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+      state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+      state = (
+        await submitFirstRunOnboardingInput(state, provider, context)
+      ).state;
+
+      expect(state.currentStepId).toBe("api-key");
+      expect(state.selectedProvider).toBe(provider);
+
+      state = (
+        await submitFirstRunOnboardingInput(
+          state,
+          `${provider}-approved-key`,
+          context,
+        )
+      ).state;
+      expect(state.pendingApiKeyApproval).toMatchObject({
+        provider,
+        verificationStatus: "valid",
+      });
+
+      state = (await submitFirstRunOnboardingInput(state, "yes", context)).state;
+      expect(state.currentStepId).toBe("security");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey(provider),
+      ).resolves.toBe(`${provider}-approved-key`);
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("keeps rejected BYOK API keys out of local auth", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
