@@ -194,6 +194,49 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {
+    const events: string[] = [];
+    let releaseLong: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const longStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const server = new AgenCWebSocketServer({
+      onMessage: async (message) => {
+        if (message.method === "message.stream") {
+          events.push("stream:start");
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseLong = resolve;
+          });
+          events.push("stream:end");
+        } else if (message.method === "session.cancelTurn") {
+          events.push("turn:cancel");
+        }
+      },
+    });
+
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.send('{"jsonrpc":"2.0","id":1,"method":"message.stream"}');
+    await longStarted;
+    client.send(
+      '{"jsonrpc":"2.0","id":2,"method":"session.cancelTurn","params":{"sessionId":"session_1","reason":"interrupted"}}',
+    );
+
+    await delay(40);
+    expect(events).toEqual(["stream:start", "turn:cancel"]);
+
+    releaseLong?.();
+    await delay(40);
+    expect(events).toEqual(["stream:start", "turn:cancel", "stream:end"]);
+
+    client.close();
+    await nextClose(client);
+    await server.close();
+  });
+
   it("rejects normal requests beyond the per-connection queue cap", async () => {
     let releaseFirst: (() => void) | undefined;
     let resolveStarted: () => void = () => {};

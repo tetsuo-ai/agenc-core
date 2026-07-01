@@ -130,11 +130,11 @@ export class AgenCStdioTransport {
     }
 
     if (isDaemonControlMessage(message)) {
-      // Control messages (request.cancel) must NOT queue behind the in-flight
-      // long request they target, or cancellation can never run. They carry no
-      // ordering dependency on normal requests (they reference a target by
-      // requestId, not by arrival position), so dispatch them off-chain. The
-      // promise is still tracked in #pendingMessages so close() drains it.
+      // Abort controls must NOT queue behind the in-flight long request they
+      // target, or cancellation can never run. They carry no ordering
+      // dependency on normal requests because they reference an explicit target,
+      // so dispatch them off-chain. The promise is still tracked in
+      // #pendingMessages so close() drains it.
       const pending = Promise.resolve(this.#options.onMessage(message)).catch(
         (error) => {
           this.#options.onError?.(asError(error), line);
@@ -225,14 +225,10 @@ export function writeJsonLine(
 /**
  * Pure-control messages that must bypass the per-connection dispatch FIFO.
  *
- * `request.cancel` references its target by requestId and has no ordering
- * dependency on normal requests, so queuing it behind a long-running request
- * would let that request starve the very cancellation meant to abort it. The
- * dispatcher handles it synchronously up to `controller.abort()`, so running it
- * off-chain is concurrency-safe. Extend this predicate to the other side-effect
- * free aborts (`session.cancelTurn`, `tool.cancel`, `commandExec.terminate`)
- * only if they prove starved as well — never to anything with ordering or
- * mutating side effects, which must stay strictly FIFO.
+ * Abort controls reference an explicit target by request/session/process id and
+ * have no ordering dependency on normal requests, so queuing them behind a
+ * long-running request would let that request starve the cancellation meant to
+ * abort it. Never extend this predicate to anything that depends on FIFO order.
  */
 function isJsonObject(value: JsonValue): value is JsonObject {
   return isRecord(value);

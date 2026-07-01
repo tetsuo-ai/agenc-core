@@ -26,8 +26,18 @@ export interface AgenCDaemonLimiterAdmission {
   release(): void;
 }
 
+const DAEMON_CONTROL_METHODS = new Set<string>([
+  "request.cancel",
+  "session.cancelTurn",
+  "tool.cancel",
+  "commandExec.terminate",
+]);
+
 export function isDaemonControlMessage(message: JsonObject): boolean {
-  return message.method === "request.cancel";
+  return (
+    typeof message.method === "string" &&
+    DAEMON_CONTROL_METHODS.has(message.method)
+  );
 }
 
 export function requestIdFromJsonRpcMessage(message: JsonObject): RequestId | null {

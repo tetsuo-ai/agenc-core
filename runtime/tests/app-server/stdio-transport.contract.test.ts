@@ -204,6 +204,50 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
+  it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseLong: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const longStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      onMessage: async (message) => {
+        if (message.method === "message.stream") {
+          events.push("stream:start");
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseLong = resolve;
+          });
+          events.push("stream:end");
+        } else if (message.method === "session.cancelTurn") {
+          events.push("turn:cancel");
+        }
+      },
+    });
+    transport.start();
+
+    input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream"}\n');
+    await longStarted;
+    input.write(
+      '{"jsonrpc":"2.0","id":2,"method":"session.cancelTurn","params":{"sessionId":"session_1","reason":"interrupted"}}\n',
+    );
+
+    await delay(20);
+    expect(events).toEqual(["stream:start", "turn:cancel"]);
+
+    releaseLong?.();
+    await delay(20);
+    expect(events).toEqual(["stream:start", "turn:cancel", "stream:end"]);
+
+    await transport.close();
+  });
+
   it("rejects normal requests beyond the per-connection queue cap", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
