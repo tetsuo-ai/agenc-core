@@ -334,6 +334,22 @@ describe("old-stack tool surface consolidation", () => {
     ).toMatchObject({ isSearch: true, isRead: false });
   });
 
+  test("canonical FileRead schema accepts numeric string ranges", () => {
+    expect(
+      CanonicalFileReadTool.inputSchema.safeParse({
+        file_path: "package.json",
+        offset: "2",
+        limit: "10",
+      }).success,
+    ).toBe(true);
+    expect(
+      CanonicalFileReadTool.inputSchema.safeParse({
+        file_path: "package.json",
+        offset: "abc",
+      }).success,
+    ).toBe(false);
+  });
+
   test("canonical file wrappers enforce session read-before-edit", async () => {
     const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-file-"));
     const sessionId = "canonical-file-session";

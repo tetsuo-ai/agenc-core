@@ -1231,12 +1231,20 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
         },
         offset: {
-          type: "number",
-          description: "Optional. Line number to start from (1-indexed).",
+          anyOf: [
+            { type: "number" },
+            { type: "string", pattern: "^[1-9]\\d*$" },
+          ],
+          description:
+            "Optional. Line number to start from (1-indexed). Numeric strings are accepted.",
         },
         limit: {
-          type: "number",
-          description: "Optional. Max number of lines to return.",
+          anyOf: [
+            { type: "number" },
+            { type: "string", pattern: "^[1-9]\\d*$" },
+          ],
+          description:
+            "Optional. Max number of lines to return. Numeric strings are accepted.",
         },
         pages: {
           type: "string",

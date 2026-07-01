@@ -463,8 +463,8 @@ function mapCanonicalInput(
 
 const fileReadInputSchema = z.strictObject({
   file_path: z.string(),
-  offset: z.number().optional(),
-  limit: z.number().optional(),
+  offset: z.union([z.number(), z.string().regex(/^[1-9]\d*$/)]).optional(),
+  limit: z.union([z.number(), z.string().regex(/^[1-9]\d*$/)]).optional(),
   pages: z.string().optional(),
 });
 

@@ -1344,6 +1344,30 @@ describe("T11 W3-B — permission evaluator integration", () => {
     }
   });
 
+  test("FileRead accepts numeric string offset and limit through schema validation", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-exec-workspace-"));
+    try {
+      const file = join(workspace, "lines.txt");
+      await writeFile(file, "one\ntwo\nthree\nfour\n", "utf8");
+      const tool = createFileReadTool({ allowedPaths: [workspace] });
+
+      const out = await runToolUse(
+        JSON.stringify({ file_path: file, offset: "2", limit: "2" }),
+        {
+          currentTurnId: "t1",
+          tool,
+          invocation: makeInvocation("c1", "FileRead"),
+        },
+      );
+
+      expect(out.isError).toBe(false);
+      expect(out.content).toBe("2→two\n3→three");
+      expect(out.content).not.toContain("InputValidationError");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("pre-resolved outside FileRead approval executes with the permission ask updated input", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agenc-exec-workspace-"));
     const outside = await mkdtemp(join(tmpdir(), "agenc-exec-outside-"));
