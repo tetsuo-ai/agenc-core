@@ -620,6 +620,9 @@ export interface TurnContext {
   /** App-server client identifier. */
   readonly appServerClientName?: string;
 
+  /** Baseline system prompt for the active model/session. */
+  readonly baseInstructions?: string;
+
   /** Developer instructions (separate from user instructions). */
   readonly developerInstructions?: string;
 
@@ -1269,6 +1272,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     currentDate,
     timezone,
     appServerClientName: sc.appServerClientName,
+    baseInstructions: sc.baseInstructions,
     developerInstructions: sc.developerInstructions,
     compactPrompt: sc.compactPrompt,
     userInstructions: sc.userInstructions,

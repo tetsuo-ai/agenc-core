@@ -68,6 +68,8 @@ import {
   type BuildToolRegistryOptions,
   type ToolRegistry,
 } from "../tool-registry.js";
+import { getSystemPrompt } from "../constants/prompts.js";
+import type { Tools as PromptTools } from "../tools/Tool.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
@@ -195,6 +197,17 @@ function providerHasLiveManagedSubscriptionRoute(provider: ProviderName): boolea
 }
 
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
+
+async function buildBaseInstructionsForModel(params: {
+  readonly registry: ToolRegistry;
+  readonly model: string;
+}): Promise<string> {
+  const sections = await getSystemPrompt(
+    params.registry.tools as unknown as PromptTools,
+    params.model,
+  );
+  return sections.join("\n\n");
+}
 
 function enforceRemoteSubscriptionGate(params: {
   readonly authBackend: AuthBackend | undefined;
@@ -1157,13 +1170,20 @@ export async function bootstrapLocalRuntimeSession(
           maxOutputTokensCappedDefault: true,
         }
       : rawModelInfo;
-  const baseSessionConfiguration = sessionConfigurationFromAgenCConfig({
-    config: startup.config,
-    workspaceRoot,
-    model,
-    provider: resolvedProvider,
-    projectTrust,
+  const baseInstructions = await buildBaseInstructionsForModel({
+    registry,
+    model: selectedProviderModel,
   });
+  const baseSessionConfiguration = {
+    ...sessionConfigurationFromAgenCConfig({
+      config: startup.config,
+      workspaceRoot,
+      model,
+      provider: resolvedProvider,
+      projectTrust,
+    }),
+    baseInstructions,
+  };
   const sessionConfiguration = cli.allowDangerouslySkipPermissions
     ? ({
         ...baseSessionConfiguration,

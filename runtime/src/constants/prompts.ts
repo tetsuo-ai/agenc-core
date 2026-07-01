@@ -622,8 +622,8 @@ export async function computeEnvInfo(
   } else {
     const marketingName = getMarketingNameForModel(modelId)
     modelDescription = marketingName
-      ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}.`
-      : `You are powered by the model ${modelId}.`
+      ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}. If asked what model you are, answer from this exact ID/name; do not claim to be ChatGPT, Claude, GPT-4, or another model family unless this ID/name says so.`
+      : `You are powered by the model ${modelId}. If asked what model you are, answer from this exact ID; do not claim to be ChatGPT, Claude, GPT-4, or another model family unless this ID says so.`
   }
 
   const additionalDirsInfo =
@@ -661,8 +661,8 @@ export async function computeSimpleEnvInfo(
   } else {
     const marketingName = getMarketingNameForModel(modelId)
     modelDescription = marketingName
-      ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}.`
-      : `You are powered by the model ${modelId}.`
+      ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}. If asked what model you are, answer from this exact ID/name; do not claim to be ChatGPT, Claude, GPT-4, or another model family unless this ID/name says so.`
+      : `You are powered by the model ${modelId}. If asked what model you are, answer from this exact ID; do not claim to be ChatGPT, Claude, GPT-4, or another model family unless this ID says so.`
   }
 
   const cutoff = getKnowledgeCutoff(modelId)
