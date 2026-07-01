@@ -29,6 +29,14 @@ const fixture = vi.hoisted(() => ({
     ) => void;
     isActive?: boolean;
   },
+  urgentHandler: null as null | ((
+    input: string,
+    key: { readonly escape?: boolean; readonly ctrl?: boolean },
+  ) => boolean),
+  lastUrgentHandler: null as null | ((
+    input: string,
+    key: { readonly escape?: boolean; readonly ctrl?: boolean },
+  ) => boolean),
   notifications: {
     addNotification: vi.fn(),
     removeNotification: vi.fn(),
@@ -79,6 +87,23 @@ vi.mock('./useCommandQueue', () => ({
 
 vi.mock('../keybindings/shortcutFormat.js', () => ({
   getShortcutDisplay: () => 'ctrl+x ctrl+k',
+}))
+
+vi.mock('../urgentCancelInput.js', () => ({
+  registerUrgentCancelInputHandler: (
+    handler: (
+      input: string,
+      key: { readonly escape?: boolean; readonly ctrl?: boolean },
+    ) => boolean,
+  ) => {
+    fixture.urgentHandler = handler
+    fixture.lastUrgentHandler = handler
+    return () => {
+      if (fixture.urgentHandler === handler) {
+        fixture.urgentHandler = null
+      }
+    }
+  },
 }))
 
 vi.mock('../keybindings/useKeybinding.js', () => ({
@@ -199,6 +224,8 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
     fixture.handlers.clear()
     fixture.captureInput = null
     fixture.rawInput = null
+    fixture.urgentHandler = null
+    fixture.lastUrgentHandler = null
     fixture.notifications.addNotification.mockClear()
     fixture.notifications.removeNotification.mockClear()
     fixture.killAllRunningAgentTasks.mockClear()
@@ -324,6 +351,34 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
 
     expect(fixture.onCancel).toHaveBeenCalled()
     expect(stopImmediatePropagation).toHaveBeenCalled()
+  })
+
+  test('urgent Escape cancels an active turn before Ink input listeners run', async () => {
+    await renderHandler({
+      canCancelActiveTurn: true,
+      streamMode: 'tool-use',
+    })
+
+    expect(fixture.lastUrgentHandler).not.toBeNull()
+
+    const consumed = fixture.lastUrgentHandler?.('', { escape: true })
+
+    expect(consumed).toBe(true)
+    expect(fixture.onCancel).toHaveBeenCalled()
+  })
+
+  test('urgent Ctrl+C cancels an active turn before Ink input listeners run', async () => {
+    await renderHandler({
+      canCancelActiveTurn: true,
+      streamMode: 'tool-use',
+    })
+
+    expect(fixture.lastUrgentHandler).not.toBeNull()
+
+    const consumed = fixture.lastUrgentHandler?.('c', { ctrl: true })
+
+    expect(consumed).toBe(true)
+    expect(fixture.onCancel).toHaveBeenCalled()
   })
 
   test('captured Escape cancels an active turn while Vim insert mode is enabled', async () => {

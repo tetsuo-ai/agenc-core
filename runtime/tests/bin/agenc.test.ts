@@ -2641,6 +2641,76 @@ describe("main() smoke", () => {
     }
   });
 
+  it("bootTUIEntry forwards deferred session cancel to the live daemon session", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-cancel-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cancel-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+
+    process.argv = ["node", "agenc", "--provider", "grok", "--model", "grok-4.3"];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_cancel",
+      sessionId: "session_tui_cancel",
+      cwd: tmpCwd,
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+      cancelActiveTurn?: (reason?: string) => Promise<void>;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+
+      await session.submit?.("hello daemon");
+      await session.cancelActiveTurn?.("interrupted");
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      expect(daemon.requests.map((request) => request.method)).toEqual([
+        "agent.attach",
+        "session.cancelTurn",
+      ]);
+      expect(daemon.requests.at(1)?.params).toEqual({
+        sessionId: "session_tui_cancel",
+        reason: "interrupted",
+      });
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("bootTUIEntry carries pre-start /mcp additions into the daemon prompt agent", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-cwd-"));

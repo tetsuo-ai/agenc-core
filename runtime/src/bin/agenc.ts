@@ -2667,6 +2667,7 @@ type TuiSessionShape = {
   subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
   emit?: (event: unknown) => void;
   emitPhaseEvent?: (event: PhaseEvent) => void;
+  cancelActiveTurn?: (reason?: string) => Promise<void>;
   clearDaemonSession?: () => Promise<void>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
   partialCompactFromMessage?: (params: {
@@ -2923,6 +2924,20 @@ async function createDeferredDaemonPromptTuiSession(params: {
     clearDaemonSession: async () => {
       if (liveSession !== null) {
         await (liveSession as TuiSessionShape).clearDaemonSession?.();
+      }
+    },
+    cancelActiveTurn: async (reason) => {
+      if (liveSession !== null) {
+        await liveSession.cancelActiveTurn?.(reason);
+        return;
+      }
+      const abortAllTasks = (
+        base as {
+          abortAllTasks?: (reason: "interrupted") => Promise<void> | void;
+        }
+      ).abortAllTasks;
+      if (abortAllTasks !== undefined) {
+        await abortAllTasks.call(base, "interrupted");
       }
     },
     // Same forwarder pattern as clearDaemonSession: /status, /usage,

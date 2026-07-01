@@ -4,7 +4,7 @@
  * Must be rendered inside KeybindingSetup to have access to the keybinding context.
  * This component renders nothing - it just registers the cancel keybinding handler.
  */
-import { useCallback, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 import {
   useAppState,
   useAppStateStore,
@@ -27,6 +27,7 @@ import {
 } from '../../tasks/LocalAgentTask/LocalAgentTask'
 import type { PromptInputMode, VimMode } from '../../types/textInputTypes'
 import { isStoppableLocalAgentStatus } from '../components/spinner/agentActivity.js'
+import { registerUrgentCancelInputHandler } from '../urgentCancelInput.js'
 import {
   clearCommandQueue,
   enqueuePendingNotification,
@@ -237,6 +238,32 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     hasQueuedCommands,
     handleCancel,
   ])
+
+  const urgentCancelRef = useRef(handleCancel)
+  const urgentInterruptRef = useRef(handleInterrupt)
+  const urgentEscapeActiveRef = useRef(isEscapeActive)
+  const urgentCtrlCActiveRef = useRef(isCtrlCActive)
+
+  useLayoutEffect(() => {
+    urgentCancelRef.current = handleCancel
+    urgentInterruptRef.current = handleInterrupt
+    urgentEscapeActiveRef.current = isEscapeActive
+    urgentCtrlCActiveRef.current = isCtrlCActive
+  }, [handleCancel, handleInterrupt, isEscapeActive, isCtrlCActive])
+
+  useLayoutEffect(() => {
+    return registerUrgentCancelInputHandler((input, key) => {
+      if (key.escape && urgentEscapeActiveRef.current) {
+        urgentCancelRef.current()
+        return true
+      }
+      if (input === 'c' && key.ctrl && urgentCtrlCActiveRef.current) {
+        urgentInterruptRef.current()
+        return true
+      }
+      return false
+    })
+  }, [])
 
   useKeybinding('app:interrupt', handleInterrupt, {
     context: 'Global',

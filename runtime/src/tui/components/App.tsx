@@ -40,6 +40,7 @@ import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import { type AppState, AppStateProvider, getDefaultAppState, useAppState, useAppStateStore, useSetAppState } from "../state/AppState.js";
 import { Box, Text, useApp, useTerminalFocus, useTerminalTitle } from "../ink.js";
 import { setPendingResumeSessionId } from "../pending-resume.js";
+import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { McpElicitationRequestEvent, McpElicitationResponse, McpPrimitiveSchemaDefinition, McpRequestId, RequestUserInputEvent, RequestUserInputResponse } from "../../elicitation/types.js";
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
@@ -2096,9 +2097,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // from the RPC are swallowed inside cancelActiveTurn — pressing ESC must
     // never surface an RPC failure to the user.
     if (turnAbortController !== null && !turnAbortController.signal.aborted) {
-      turnAbortController.abort("user_interrupt");
+      turnAbortController.abort("interrupted");
     }
-    void props.session.cancelActiveTurn?.("interrupted");
+    requestTuiSessionTurnCancel(props.session);
   }, [turnAbortController, props.session]);
   const handleAgentsKilled = useCallback((agents: readonly KilledAgentSummary[]) => {
     const text = formatAgentsKilledNotification(agents);

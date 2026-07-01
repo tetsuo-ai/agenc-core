@@ -6,6 +6,7 @@ import { isMouseClicksDisabled } from '../../../utils/fullscreen.js';
 import { logForDebugging } from '../../../utils/debug.js';
 import { logError } from '../../../utils/log.js';
 import { recordTuiBackpressure } from '../../backpressure.js';
+import { handleUrgentCancelInput } from '../../urgentCancelInput.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
@@ -586,8 +587,13 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
       app.handleSuspend();
       continue;
     }
-    app.handleInput(sequence);
     const event = new InputEvent(item);
+    if (handleUrgentCancelInput(event.input, event.key)) {
+      event.stopImmediatePropagation();
+      continue;
+    }
+
+    app.handleInput(sequence);
     app.internal_eventEmitter.emit('input', event);
 
     // Also dispatch through the DOM tree so onKeyDown handlers fire.
