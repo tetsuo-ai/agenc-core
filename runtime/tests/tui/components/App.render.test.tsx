@@ -1,5 +1,5 @@
 import { PassThrough } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React, { type SetStateAction } from "react";
@@ -3305,8 +3305,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await submit("next");
           await submit("1");
           await submit("2");
+          await submit("skip");
           await submit("test");
-          await submit("next");
           await submit("next");
           await submit("done");
 
@@ -3361,7 +3361,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await submit("next");
           await submit("1");
           await submit("1");
-          await submit("test");
           await submit("xai-app-key");
 
           expect(output()).toContain("Approve BYOK API key");
@@ -3376,6 +3375,87 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       );
     } finally {
       fetchSpy.mockRestore();
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("persists first-run BYOK provider selection for restarts", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
+    const session = {
+      ...createSession(),
+      setPendingProviderSwitch: vi.fn(),
+    };
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
+    const previousAgencHome = process.env.AGENC_HOME;
+    const previousConfigDir = process.env.AGENC_CONFIG_DIR;
+    process.env.AGENC_HOME = agencHome;
+    delete process.env.AGENC_CONFIG_DIR;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    providerProbe.promptSubmits.length = 0;
+    try {
+      const helpers = {
+        clearBuffer: vi.fn(),
+        resetHistory: vi.fn(),
+        setCursorOffset: vi.fn(),
+      };
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          isInteractive={true}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+            reload: vi.fn(async () => defaultConfig()),
+          }}
+        />,
+        async () => {
+          const submit = async (value: string): Promise<void> => {
+            const onSubmit = providerProbe.promptSubmits.at(-1);
+            expect(onSubmit).toBeDefined();
+            await onSubmit!(value, helpers);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          };
+
+          await submit("next");
+          await submit("1");
+          await submit("deepseek");
+          await submit("sk-deepseek-onboarding-test");
+          await submit("yes");
+          await submit("next");
+          await submit("done");
+
+          expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
+            provider: "deepseek",
+            model: "deepseek-reasoner",
+          });
+          await expect(
+            new LocalAuthBackend({ agencHome }).readByokKey("deepseek"),
+          ).resolves.toBe("sk-deepseek-onboarding-test");
+          expect(
+            JSON.parse(readFileSync(join(agencHome, "settings.json"), "utf8")),
+          ).toMatchObject({ model: "deepseek-reasoner" });
+          const configToml = readFileSync(join(agencHome, "config.toml"), "utf8");
+          expect(configToml).toContain('"model_provider" = "deepseek"');
+          expect(configToml).toContain('"model" = "deepseek-reasoner"');
+          expect(configToml).toContain('"default_model" = "deepseek-reasoner"');
+        },
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      providerProbe.promptSubmits.length = 0;
+      if (previousAgencHome === undefined) {
+        delete process.env.AGENC_HOME;
+      } else {
+        process.env.AGENC_HOME = previousAgencHome;
+      }
+      if (previousConfigDir === undefined) {
+        delete process.env.AGENC_CONFIG_DIR;
+      } else {
+        process.env.AGENC_CONFIG_DIR = previousConfigDir;
+      }
       rmSync(agencHome, { recursive: true, force: true });
     }
   });

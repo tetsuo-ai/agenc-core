@@ -3,6 +3,7 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useStdin } from '../../ink/components/StdinContext.js';
+import { configReadsEnabled } from '../../../config/init.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log.js';
 import { getSystemThemeName, type SystemTheme } from '../../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -34,9 +35,15 @@ type Props = {
   onThemeSave?: (setting: ThemeSetting) => void;
 };
 function defaultInitialTheme(): ThemeSetting {
+  if (!configReadsEnabled()) {
+    return DEFAULT_THEME;
+  }
   return getGlobalConfig().theme;
 }
 function defaultSaveTheme(setting: ThemeSetting): void {
+  if (!configReadsEnabled()) {
+    return;
+  }
   saveGlobalConfig(current => ({
     ...current,
     theme: setting

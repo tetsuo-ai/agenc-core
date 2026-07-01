@@ -13,6 +13,7 @@ import {
 } from "./ThemeProvider.js";
 
 const mocks = vi.hoisted(() => {
+  const configReadsEnabled = vi.fn(() => true);
   const feature = vi.fn(() => false);
   const getGlobalConfig = vi.fn(() => ({ theme: "auto" }));
   const logError = vi.fn();
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => {
   const watchSystemTheme = vi.fn(() => () => {});
 
   return {
+    configReadsEnabled,
     feature,
     getGlobalConfig,
     getSystemThemeName,
@@ -33,6 +35,10 @@ const mocks = vi.hoisted(() => {
     watchSystemTheme,
   };
 });
+
+vi.mock("../../../config/init.js", () => ({
+  configReadsEnabled: mocks.configReadsEnabled,
+}));
 
 vi.mock("bun:bundle", () => ({
   feature: mocks.feature,
@@ -113,6 +119,48 @@ async function waitFor(
 }
 
 describe("ThemeProvider", () => {
+  test("uses a dark fallback before config reads are enabled", async () => {
+    mocks.configReadsEnabled.mockReturnValueOnce(false);
+    const snapshots: ThemeSnapshot[] = [];
+    const { stderr, stdin, stdout } = createTestStreams();
+    const root = await createRoot({
+      stderr: stderr as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+    });
+
+    function Probe() {
+      const [theme] = useTheme();
+      const setting = useThemeSetting();
+
+      React.useEffect(() => {
+        snapshots.push({ setting, theme });
+      }, [setting, theme]);
+
+      return <Text>{`${setting}:${theme}`}</Text>;
+    }
+
+    try {
+      root.render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>,
+      );
+
+      await waitFor(
+        () => snapshots.some(snapshot => snapshot.setting === "dark" && snapshot.theme === "dark"),
+        "dark fallback theme was not used",
+      );
+      expect(mocks.getGlobalConfig).not.toHaveBeenCalled();
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      stderr.end();
+    }
+  });
+
   test("resolves cached auto themes, previews changes, and persists default saves", async () => {
     const snapshots: ThemeSnapshot[] = [];
     let controls: ProbeControls | undefined;

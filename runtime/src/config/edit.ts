@@ -95,6 +95,34 @@ export class AgenCConfigEditsBuilder {
     return this;
   }
 
+  setModelSelection(provider: string, model: string): this {
+    const normalizedProvider = provider.trim();
+    const normalizedModel = model.trim();
+    this.edits.push((raw) => {
+      if (normalizedProvider.length > 0) {
+        raw.model_provider = normalizedProvider;
+      }
+      if (normalizedModel.length > 0) {
+        raw.model = normalizedModel;
+      }
+      if (
+        normalizedProvider.length > 0 &&
+        normalizedModel.length > 0
+      ) {
+        const providers = isPlainRecord(raw.providers)
+          ? cloneRecord(raw.providers)
+          : {};
+        const existing = isPlainRecord(providers[normalizedProvider])
+          ? cloneRecord(providers[normalizedProvider] as Record<string, unknown>)
+          : {};
+        existing.default_model = normalizedModel;
+        providers[normalizedProvider] = existing;
+        raw.providers = providers;
+      }
+    });
+    return this;
+  }
+
   setPersonality(personality: Personality | null): this {
     this.edits.push((raw) => {
       if (personality === null) {

@@ -1,3 +1,5 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
@@ -46,6 +48,7 @@ import type { McpElicitationRequestEvent, McpElicitationResponse, McpPrimitiveSc
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import { defaultConfig } from "../../config/schema.js";
+import { configReadsEnabled } from "../../config/init.js";
 import { createTuiTools } from "../tool-rendering.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
@@ -73,6 +76,10 @@ import { getTotalCost } from "../../cost/tracker.js";
 import { useNotifications } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
 import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
+import { AgenCConfigEditsBuilder } from "../../config/edit.js";
+import { logError } from "../../utils/log.js";
+import { markInternalWrite } from "../../utils/settings/internalWrites.js";
+import { resetSettingsCache } from "../../utils/settings/settingsCache.js";
 import { createFileStateCacheWithSizeLimit, READ_FILE_STATE_CACHE_SIZE } from "../../utils/fileStateCache.js";
 import { fileHistoryRewind } from "../../utils/fileHistory.js";
 import { getCurrentWorktreeSession } from "../../utils/worktree.js";
@@ -1017,6 +1024,49 @@ function initialPermissionContext(props: AgenCTuiProps): ToolPermissionContext {
 function startupModel(props: AgenCTuiProps): string | null {
   return props.model ?? props.session.sessionConfiguration?.collaborationMode?.model ?? null;
 }
+function hasAcknowledgedCostThreshold(): boolean {
+  return configReadsEnabled() && getGlobalConfig().hasAcknowledgedCostThreshold === true;
+}
+async function persistOnboardingModelSetting(agencHome: string | undefined, model: string): Promise<void> {
+  if (agencHome === undefined || model.length === 0) {
+    return;
+  }
+  const filePath = join(agencHome, "settings.json");
+  let existing: Record<string, unknown> = {};
+  try {
+    const text = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  await mkdir(dirname(filePath), {
+    recursive: true,
+    mode: 0o700
+  });
+  markInternalWrite(filePath);
+  await writeFile(filePath, `${JSON.stringify({
+    ...existing,
+    model
+  }, null, 2)}\n`, {
+    mode: 0o600
+  });
+  resetSettingsCache();
+}
+async function persistOnboardingSelection(props: AgenCTuiProps, agencHome: string | undefined, next: FirstRunOnboardingState): Promise<void> {
+  const provider = next.selectedProvider.trim();
+  const model = next.selectedModel.trim();
+  await persistOnboardingModelSetting(agencHome, model);
+  if (agencHome !== undefined && provider.length > 0 && model.length > 0) {
+    await new AgenCConfigEditsBuilder(agencHome).setModelSelection(provider, model).apply();
+  }
+  await props.configStore.reload?.();
+  await props.session.services.configStore?.reload?.();
+}
 function initialState(props: AgenCTuiProps): any {
   const agentDefinitions = listAgentRoleDefinitions();
   return {
@@ -1467,7 +1517,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [selectorNotice, setSelectorNotice] = useState<string | null>(null);
   const summarizeAbortRef = useRef<AbortController | null>(null);
   const [exitFlow, setExitFlow] = useState<React.ReactNode>(null);
-  const [haveShownCostDialog, setHaveShownCostDialog] = useState(() => getGlobalConfig().hasAcknowledgedCostThreshold === true);
+  const [haveShownCostDialog, setHaveShownCostDialog] = useState(hasAcknowledgedCostThreshold);
   const [showCostDialog, setShowCostDialog] = useState(false);
   const [compactProgress, setCompactProgress] = useState({
     status: "idle",
@@ -1528,13 +1578,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       props.session.setPendingProviderSwitch?.(switchSpec);
     }
   }, [setAppState, props.session]);
-  const applyOnboardingSelection = useCallback((next_0: FirstRunOnboardingState) => {
+  const applyOnboardingSelection = useCallback(async (next_0: FirstRunOnboardingState) => {
+    await persistOnboardingSelection(props, agencHome, next_0).catch(error => {
+      logError(error);
+    });
     setModel(next_0.selectedModel);
     props.session.setPendingProviderSwitch?.({
       provider: next_0.selectedProvider,
       model: next_0.selectedModel
     });
-  }, [props.session, setModel]);
+  }, [agencHome, props, setModel]);
   const onboarding = useFirstRunOnboardingController({
     ...onboardingContext,
     hasInitialPrompt: (props.initialPrompt?.length ?? 0) > 0 || (props.initialUserMessages?.length ?? 0) > 0,

@@ -138,7 +138,7 @@ export interface UseFirstRunOnboardingOptions extends FirstRunOnboardingContext 
   readonly disabled?: boolean;
   readonly hasInitialPrompt?: boolean;
   readonly isInteractive?: boolean;
-  readonly onComplete?: (state: FirstRunOnboardingState) => void;
+  readonly onComplete?: (state: FirstRunOnboardingState) => void | Promise<void>;
 }
 
 export interface UseFirstRunOnboardingResult {
@@ -1092,8 +1092,8 @@ export function useFirstRunOnboardingController(
               completedStepIds: nextState.completedStepIds,
             });
           }
+          await options.onComplete?.(nextState);
           setActive(false);
-          options.onComplete?.(nextState);
         }
         return true;
       } finally {
