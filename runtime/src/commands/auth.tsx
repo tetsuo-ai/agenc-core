@@ -3,9 +3,11 @@ import { spawn } from "node:child_process";
 import type { AuthBackend, AuthIdentity, AuthLlmUsage } from "../auth/backend.js";
 import { createAuthBackend } from "../auth/selection.js";
 import { resolveAgencHome } from "../config/env.js";
+import { normalizeProviderSlug } from "../config/resolve-provider.js";
 import { defaultConfig } from "../config/schema.js";
 import { Box, Text } from "../tui/ink.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
+import { applyProviderSwitch } from "./provider.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -13,6 +15,8 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import {
+  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+  hasHostedSubscriptionAccess,
   subscriptionManagedDefaultModel,
   subscriptionManagedModels,
 } from "./subscription-managed-models.js";
@@ -94,11 +98,13 @@ async function executeAuthCommand(
         clearLocalAuthNotice(ctx);
       }
       const tier = await resolveSubscriptionTier(backend);
+      const routeMessage = await maybeSelectHostedSubscriptionRoute(ctx, tier);
       return {
         kind: "text",
         text:
           `Logged in as ${formatAgenCAuthIdentity(result.identity)}` +
-          formatSubscriptionStatus(tier),
+          formatSubscriptionStatus(tier) +
+          (routeMessage !== undefined ? `\n${routeMessage}` : ""),
       };
     }
 
@@ -138,6 +144,103 @@ async function executeAuthCommand(
       text: `${formatAgenCAuthIdentity(result.identity)}${formatSubscriptionStatus(tier)}`,
     };
   });
+}
+
+function paidSubscriptionTier(tier: string | undefined): boolean {
+  return tier === "pro" || tier === "team" || tier === "enterprise";
+}
+
+function readSessionProvider(ctx: SlashCommandContext): string | undefined {
+  const peekState = (ctx.session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const rawState =
+    typeof peekState === "function"
+      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
+          sessionConfiguration?: {
+            provider?: { slug?: string };
+          };
+        })
+      : null;
+  const directConfig = (ctx.session as unknown as {
+    sessionConfiguration?: {
+      provider?: { slug?: string };
+    };
+  }).sessionConfiguration;
+  return rawState?.sessionConfiguration?.provider?.slug ??
+    directConfig?.provider?.slug;
+}
+
+async function maybeSelectHostedSubscriptionRoute(
+  ctx: SlashCommandContext,
+  tier: string | undefined,
+): Promise<string | undefined> {
+  if (!paidSubscriptionTier(tier)) return undefined;
+  const config = ctx.configStore?.current() ?? defaultConfig();
+  if (!hasHostedSubscriptionAccess(config, process.env)) return undefined;
+
+  const currentProvider =
+    normalizeProviderSlug(readSessionProvider(ctx)) ??
+    normalizeProviderSlug(config.model_provider) ??
+    "grok";
+  if (currentProvider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) {
+    return undefined;
+  }
+
+  const configuredProvider = normalizeProviderSlug(config.model_provider);
+  if (
+    configuredProvider !== undefined &&
+    configuredProvider !== "grok" &&
+    configuredProvider !== SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
+  ) {
+    return (
+      "Hosted models ready through OpenRouter. Your configured provider was kept; " +
+      "run /provider openrouter to switch."
+    );
+  }
+
+  if (currentProvider !== "grok") {
+    return (
+      "Hosted models ready through OpenRouter. Your current provider was kept; " +
+      "run /provider openrouter to switch."
+    );
+  }
+
+  const defaultModel = subscriptionManagedDefaultModel(
+    SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+  );
+  if (defaultModel === undefined) return undefined;
+  const summary = await applyProviderSwitch(
+    ctx.session,
+    SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+    defaultModel,
+  );
+  if (!summary.startsWith("Provider switched ") && !summary.startsWith("Provider switch staged:")) {
+    return `Hosted models ready, but the automatic OpenRouter switch was blocked: ${summary}`;
+  }
+  updateHostedRouteChrome(ctx, defaultModel);
+  return (
+    `Hosted route selected: ${SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER} / ` +
+    `${defaultModel}. Run /model to choose another hosted model.`
+  );
+}
+
+function updateHostedRouteChrome(
+  ctx: SlashCommandContext,
+  model: string,
+): void {
+  if (typeof ctx.appState?.setAppState === "function") {
+    ctx.appState.setAppState((prev: unknown): unknown => {
+      if (typeof prev !== "object" || prev === null) return prev;
+      return {
+        ...prev,
+        mainLoopModel: model,
+        mainLoopModelForSession: model,
+      };
+    });
+    return;
+  }
+  ctx.appState?.setModel?.(model);
 }
 
 function createSlashAuthBackend(ctx: SlashCommandContext): AuthBackend {

@@ -6,7 +6,6 @@ import {
   readProviderConfig,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
-import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
@@ -20,6 +19,8 @@ import { readCommandConfig } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
+  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+  hasHostedSubscriptionAccess,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedDefaultModel,
   subscriptionManagedModels,
@@ -373,6 +374,43 @@ function authColor(state: ProviderAuthState): ProviderColor {
   }
 }
 
+function providerRuntimeRank(state: ProviderRuntimeState): number {
+  switch (state) {
+    case "active":
+      return 0;
+    case "available":
+      return 1;
+    case "local":
+      return 2;
+    case "unauthenticated":
+      return 3;
+    case "unavailable":
+      return 4;
+    case "error":
+      return 5;
+  }
+}
+
+function sortProviderRows(
+  rows: readonly ProviderMenuRow[],
+  currentProvider: ProviderSlug,
+  hostedSubscriptionReady: boolean,
+): readonly ProviderMenuRow[] {
+  return [...rows].sort((left, right) => {
+    if (hostedSubscriptionReady) {
+      if (left.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) return -1;
+      if (right.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) return 1;
+    }
+    if (left.provider === currentProvider) return -1;
+    if (right.provider === currentProvider) return 1;
+    const rankDelta =
+      providerRuntimeRank(left.runtimeState) -
+      providerRuntimeRank(right.runtimeState);
+    if (rankDelta !== 0) return rankDelta;
+    return left.provider.localeCompare(right.provider);
+  });
+}
+
 export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenuSnapshot {
   const config = readCommandConfig(ctx);
   const sessionSelection = readSessionSelection(ctx);
@@ -394,10 +432,12 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     defaultModelForProvider(currentProvider);
   const modelCatalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable =
-    managedKeysEnabled && hasEntitledRemoteAuthSessionSync(process.env);
+  const managedSubscriptionAvailable = hasHostedSubscriptionAccess(
+    config,
+    process.env,
+  );
 
-  const rows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
+  const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
@@ -456,9 +496,21 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     };
   });
 
+  const rows = sortProviderRows(
+    unsortedRows,
+    currentProvider,
+    managedSubscriptionAvailable,
+  );
+  const preferredActiveIndex =
+    managedSubscriptionAvailable
+      ? rows.findIndex(
+          row => row.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+        )
+      : -1;
+  const currentActiveIndex = rows.findIndex(row => row.provider === currentProvider);
   const activeIndex = Math.max(
     0,
-    rows.findIndex(row => row.provider === currentProvider),
+    preferredActiveIndex >= 0 ? preferredActiveIndex : currentActiveIndex,
   );
   return {
     currentProvider,

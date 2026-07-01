@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   providerCommand,
@@ -76,6 +80,30 @@ function mkctx(
     home: "/home/test",
     ...(appState ? { appState } : {}),
   };
+}
+
+function withProAuthSession<T>(fn: () => T): T {
+  const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-pro-"));
+  writeFileSync(
+    join(agencHome, "auth.json"),
+    JSON.stringify({
+      provider: "remote",
+      token: "test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      subscriptionTier: "pro",
+    }),
+  );
+  const previousHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = agencHome;
+  try {
+    return fn();
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousHome;
+    }
+  }
 }
 
 describe("providerCommand", () => {
@@ -339,6 +367,7 @@ describe("providerCommand", () => {
   });
 
   it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", () => {
+    withProAuthSession(() => {
     const previous = process.env.OPENROUTER_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
     try {
@@ -385,6 +414,39 @@ describe("providerCommand", () => {
         process.env.OPENROUTER_API_KEY = previous;
       }
     }
+    });
+  });
+
+  it("prioritizes hosted OpenRouter for paid managed sessions", () => {
+    withProAuthSession(() => {
+      const previous = process.env.OPENROUTER_API_KEY;
+      delete process.env.OPENROUTER_API_KEY;
+      try {
+        const snapshot = readProviderMenuSnapshot({
+          ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+          configStore: {
+            current: () => ({
+              auth: { managedKeys: { enabled: true } },
+            }),
+          } as SlashCommandContext["configStore"],
+        });
+
+        expect(snapshot.rows[0]).toMatchObject({
+          provider: "openrouter",
+          authState: "managed",
+          auth: "subscription",
+          model: "x-ai/grok-4.3",
+        });
+        expect(snapshot.rows[snapshot.activeIndex]?.provider).toBe("openrouter");
+        expect(snapshot.currentProvider).toBe("grok");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.OPENROUTER_API_KEY;
+        } else {
+          process.env.OPENROUTER_API_KEY = previous;
+        }
+      }
+    });
   });
 
   it("does not mark providers without live managed routes as subscription-managed", () => {

@@ -9,17 +9,36 @@ the AgenC LiteLLM/OpenRouter gateway.
 
 1. `agenc login` stores the remote auth token in `AGENC_HOME/auth.json`.
 2. The TUI or CLI reads the subscription tier from the auth backend.
-3. With `AGENC_AUTH_MANAGED_KEYS_ENABLED=true`, paid users can select managed
-   OpenRouter models from `/provider` or `/model`.
-4. `/usage` asks the auth backend for the user's hosted model allowance,
+3. With `AGENC_AUTH_MANAGED_KEYS_ENABLED=true`, paid users get the hosted
+   OpenRouter route selected automatically when the active provider is the old
+   default `grok` route.
+4. `/provider` opens with OpenRouter first and marked as subscription-managed.
+   `/model` opens on the hosted OpenRouter model list first, even if the
+   previous session provider was `grok`.
+5. `/usage` asks the auth backend for the user's hosted model allowance,
    current spend, remaining included usage, and reset timestamp.
-5. The backend vends a LiteLLM key for the session. The local CLI keeps it in
+6. The backend vends a LiteLLM key for the session. The local CLI keeps it in
    provider memory only; it is not written as a provider API key.
-6. The provider sends requests to the managed gateway with the model normalized
+7. The provider sends requests to the managed gateway with the model normalized
    as `openrouter/<provider>/<model>`.
 
 BYOK still wins. If a user has `OPENROUTER_API_KEY` or provider config API keys,
 those credentials are used instead of the subscription-managed route.
+
+## TUI Behavior
+
+After a successful paid `/login`, the TUI should feel ready without extra
+provider setup:
+
+- If the session was still on the default `grok` provider, login switches it to
+  `openrouter / x-ai/grok-4.3` and tells the user to run `/model` for other
+  hosted models.
+- If the user intentionally configured another provider, login keeps that
+  provider and tells the user that `/provider openrouter` is available.
+- `/provider` prioritizes the hosted OpenRouter route for paid accounts, then
+  shows BYOK and local routes.
+- `/model` prioritizes hosted OpenRouter models for paid accounts, while still
+  leaving BYOK/local provider rows visible when they are configured.
 
 ## Output Cap
 
