@@ -92,6 +92,8 @@ import {
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
+import { getSystemPrompt } from "../constants/prompts.js";
+import type { Tools as PromptTools } from "../tools/Tool.js";
 import {
   resolveProviderSettings,
   type ResolvedProviderSettings,
@@ -868,6 +870,17 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
 ]);
 
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
+
+async function buildBaseInstructionsForModel(params: {
+  readonly registry: ToolRegistry;
+  readonly model: string;
+}): Promise<string> {
+  const sections = await getSystemPrompt(
+    params.registry.tools as unknown as PromptTools,
+    params.model,
+  );
+  return sections.join("\n\n");
+}
 
 function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
@@ -2109,6 +2122,10 @@ export class Session {
       this.services.modelsManager,
       preparedSwitch.model,
     );
+    const nextBaseInstructions = await buildBaseInstructionsForModel({
+      registry: this.services.registry,
+      model: preparedSwitch.model,
+    });
     const previousClient = readProviderHttpClient(liveProvider);
     const nextClient = readProviderHttpClient(preparedSwitch.instance);
 
@@ -2118,6 +2135,7 @@ export class Session {
           sessionConfiguration?: {
             provider?: unknown;
             collaborationMode?: { model?: string };
+            baseInstructions?: string;
           };
         }
       ).sessionConfiguration;
@@ -2127,6 +2145,7 @@ export class Session {
         ...(cfg.collaborationMode ?? {}),
         model: preparedSwitch.model,
       };
+      cfg.baseInstructions = nextBaseInstructions;
     });
 
     (this as { modelInfo: ModelInfo }).modelInfo = nextModelInfo;
