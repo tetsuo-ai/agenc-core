@@ -783,6 +783,10 @@ function ProviderMenuView({
             Empty /provider opens this registry-backed provider catalog. Enter switches to
             the configured or default model when the provider is usable.
           </ThemedText>
+          <ThemedText color="text2" wrap="wrap">
+            Pro hosted access is routed through OpenRouter. Other provider rows are
+            direct BYOK or local routes unless their auth says subscription.
+          </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
             Selected: {selected?.name ?? snapshot.currentProvider} /{" "}
             {selected?.model ?? snapshot.currentModel}

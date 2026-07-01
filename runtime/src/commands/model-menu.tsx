@@ -125,7 +125,25 @@ function rowStatus(params: {
   return "available";
 }
 
-function rowDetail(status: ModelRowStatus, provider: ProviderSlug): string {
+function rowDetailForRoute(
+  status: ModelRowStatus,
+  provider: ProviderSlug,
+  managedRoute: boolean,
+): string {
+  if (managedRoute) {
+    switch (status) {
+      case "current":
+        return "active hosted subscription model";
+      case "configured":
+        return "configured hosted subscription model";
+      case "default":
+        return "default hosted subscription model";
+      case "available":
+        return "hosted subscription model";
+      case "unavailable":
+        return "no hosted models configured";
+    }
+  }
   switch (status) {
     case "current":
       return "active session model";
@@ -200,6 +218,7 @@ function providerRows(params: {
   readonly currentModel: string;
   readonly config?: AgenCConfig;
   readonly catalogModels: readonly string[];
+  readonly managedRoute?: boolean;
 }): readonly ModelMenuRow[] {
   const configuredModel =
     params.config !== undefined
@@ -228,7 +247,11 @@ function providerRows(params: {
       status: "unavailable",
       selectable: false,
       groupLabel: params.provider,
-      detail: rowDetail("unavailable", params.provider),
+      detail: rowDetailForRoute(
+        "unavailable",
+        params.provider,
+        params.managedRoute === true,
+      ),
     }];
   }
 
@@ -247,7 +270,11 @@ function providerRows(params: {
       status,
       selectable: status !== "unavailable",
       groupLabel: params.provider,
-      detail: rowDetail(status, params.provider),
+      detail: rowDetailForRoute(
+        status,
+        params.provider,
+        params.managedRoute === true,
+      ),
     };
   });
 }
@@ -300,15 +327,20 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
   };
   const rows = providerOrder(catalog, provider)
     .filter(shouldShowProvider)
-    .flatMap(catalogProvider =>
-      providerRows({
+    .flatMap(catalogProvider => {
+      const managedRoute =
+        managedSubscriptionAvailable &&
+        providerHasLiveSubscriptionRoute(catalogProvider) &&
+        !providerHasByok(catalogProvider);
+      return providerRows({
         provider: catalogProvider,
         currentProvider: provider,
         currentModel,
         ...(config !== undefined ? { config } : {}),
         catalogModels: modelsForProvider(catalogProvider),
-      })
-    );
+        managedRoute,
+      });
+    });
   const activeIndex = Math.max(0, rows.findIndex(row => row.status === "current"));
   // Count the rows actually offered per provider (hidden models are filtered
   // out in providerRows) so the displayed count matches the selectable list.
@@ -459,6 +491,10 @@ function ModelMenuView({
           <ThemedText color={snapshot.managedKeysEnabled ? "success" : "warning"} wrap="wrap">
             Managed keys: {snapshot.managedKeysEnabled ? "on" : "off"}. Paid accounts can use
             subscription-managed provider keys when no BYOK key is set.
+          </ThemedText>
+          <ThemedText color="text2" wrap="wrap">
+            Pro hosted models appear under OpenRouter. Other providers are BYOK
+            or local routes unless they show hosted subscription detail.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
             Selected: {selected?.provider ?? snapshot.provider}:{selected?.model ?? snapshot.currentModel}
