@@ -579,7 +579,7 @@ describe("OpenAIProvider", () => {
     ).rejects.toMatchObject({
       name: "LLMProviderError",
       message: expect.stringContaining(
-        "Hosted model usage limit reached for this request",
+        "This hosted model request is too large for the current allowance",
       ),
       statusCode: 402,
     });

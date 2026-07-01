@@ -129,7 +129,7 @@ async function executeAuthCommand(
       const usage = await resolveLlmUsage(backend);
       return {
         kind: "text",
-        text: formatUsageCommandResult(usage, tier),
+        text: formatUsageCommandResult(usage.usage, tier, usage.error),
       };
     }
 
@@ -172,11 +172,14 @@ async function resolveSubscriptionTier(
 
 async function resolveLlmUsage(
   backend: AuthBackend,
-): Promise<AuthLlmUsage | undefined> {
+): Promise<{
+  readonly error?: string;
+  readonly usage?: AuthLlmUsage;
+}> {
   try {
-    return await backend.getLlmUsage({ sessionId: TUI_AUTH_SESSION_ID });
-  } catch {
-    return undefined;
+    return { usage: await backend.getLlmUsage({ sessionId: TUI_AUTH_SESSION_ID }) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -308,11 +311,13 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
 export function formatUsageCommandResult(
   usage: AuthLlmUsage | undefined,
   fallbackTier: string | undefined,
+  error?: string,
 ): string {
   if (usage === undefined) {
     return [
       `Plan: ${fallbackTier ?? "unknown"}`,
       "Managed model usage is temporarily unavailable.",
+      ...(error !== undefined ? [`Reason: ${error}`] : []),
       `Billing: ${SUBSCRIPTION_URL}`,
     ].join("\n");
   }
