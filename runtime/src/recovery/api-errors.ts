@@ -19,6 +19,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMMessageValidationError,
+  LLMProviderError,
 } from "../llm/errors.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -224,8 +225,78 @@ export function isStreamingFallbackOccured(state: TurnState): boolean {
     lastAssistant.text !== undefined &&
     lastAssistant.text.length > 0 &&
     lastStreamError !== undefined &&
+    !isNonRecoverableProviderSetupError(lastStreamError) &&
     !isPartialProviderResponseError(lastStreamError) &&
     !isFallbackTriggeredError(lastStreamError)
+  );
+}
+
+const NON_RECOVERABLE_PROVIDER_SETUP_MARKERS = [
+  "openai_category=model_not_found",
+  "openai_category=endpoint_not_found",
+  "openai_category=tool_call_incompatible",
+  "model not found",
+  "model_not_found",
+  "unknown model",
+  "unavailable model",
+  "does not exist",
+] as const;
+
+function isNonRecoverableProviderSetupError(
+  err: unknown,
+  seen: Set<object> = new Set(),
+  depth = 0,
+): boolean {
+  if (depth > 4) return false;
+  if (isExplicitNonTransientProviderError(err)) return true;
+  if (err instanceof LLMProviderError) {
+    if (
+      err.statusCode !== undefined &&
+      err.statusCode >= 400 &&
+      err.statusCode < 500
+    ) {
+      return true;
+    }
+    if (hasNonRecoverableProviderSetupMarker(err.message)) return true;
+  } else if (err instanceof Error) {
+    if (hasNonRecoverableProviderSetupMarker(err.message)) return true;
+  }
+
+  if (!err || typeof err !== "object") return false;
+  if (seen.has(err)) return false;
+  seen.add(err);
+
+  const record = err as {
+    readonly cause?: unknown;
+    readonly errors?: unknown;
+    readonly originalError?: unknown;
+  };
+
+  if (isNonRecoverableProviderSetupError(record.cause, seen, depth + 1)) {
+    return true;
+  }
+  if (
+    isNonRecoverableProviderSetupError(
+      record.originalError,
+      seen,
+      depth + 1,
+    )
+  ) {
+    return true;
+  }
+  if (Array.isArray(record.errors)) {
+    return record.errors.some((nested) =>
+      isNonRecoverableProviderSetupError(nested, seen, depth + 1)
+    );
+  }
+
+  return false;
+}
+
+function hasNonRecoverableProviderSetupMarker(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return NON_RECOVERABLE_PROVIDER_SETUP_MARKERS.some((marker) =>
+    normalized.includes(marker)
   );
 }
 
