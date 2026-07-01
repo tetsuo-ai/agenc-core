@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import {
+  formatSubscriptionCommandResult,
   loginCommand,
   logoutCommand,
   subscriptionCommand,
@@ -119,6 +120,23 @@ describe("auth slash commands", () => {
       text:
         "Plan: free\nBilling: https://id.agenc.ag/subscription\nManaged model access requires Pro or higher.\nBYOK still works without a subscription.",
     });
+  });
+
+  it("summarizes paid subscription model access without listing every route", () => {
+    const text = formatSubscriptionCommandResult("pro");
+
+    expect(text).toBe(
+      "Plan: pro\n" +
+        "Billing: https://id.agenc.ag/subscription\n" +
+        "Managed models: enabled\n" +
+        "Gateway: AgenC -> LiteLLM -> OpenRouter\n" +
+        "Included usage cap: $10 model spend / 30d\n" +
+        "Available models: 19 managed OpenRouter routes\n" +
+        "Default route: /model openrouter:x-ai/grok-4.3\n" +
+        "Choose/switch models with /provider.",
+    );
+    expect(text).not.toContain(" or /model ");
+    expect(text).not.toContain("claude-haiku-4.5 or");
   });
 
   it("rejects unexpected arguments", async () => {
