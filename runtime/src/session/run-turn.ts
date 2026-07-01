@@ -3626,6 +3626,28 @@ async function* runTurnKernelInner(
     completeConsumedCommands();
     return terminal;
   };
+  const finishCancelledIfAborted = async (): Promise<{
+    readonly terminal: Terminal;
+    readonly event: PhaseEvent;
+  } | null> => {
+    if (!signal.aborted) return null;
+    await drainInFlight(state, ctx, session);
+    await syncSessionState();
+    emitTurnAborted(
+      String(
+        (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
+      ),
+    );
+    return {
+      terminal: { reason: "cancelled" },
+      event: {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "cancelled",
+      },
+    };
+  };
 
   yield { type: "turn_start", turnIndex: 0 };
 
@@ -3638,24 +3660,10 @@ async function* runTurnKernelInner(
 
   // The phase loop — agenc runtime's "while streaming & tools" outer loop.
   while (true) {
-    if (signal.aborted) {
-      await drainInFlight(state, ctx, session);
-      // T6 gap #119: cancellation path gets `turn_aborted` so rollouts
-      // close the turn boundary with the actual reason.
-      await syncSessionState();
-      emitTurnAborted(
-        String(
-          (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
-        ),
-      );
-      const terminal: Terminal = { reason: "cancelled" };
-      yield {
-        type: "turn_complete",
-        content: lastContent,
-        usage,
-        stopReason: "cancelled",
-      };
-      return returnTerminal(terminal);
+    const cancelledAtLoopStart = await finishCancelledIfAborted();
+    if (cancelledAtLoopStart !== null) {
+      yield cancelledAtLoopStart.event;
+      return returnTerminal(cancelledAtLoopStart.terminal);
     }
 
     // Guardian-rejection circuit-breaker interrupt (inspected runtime
@@ -3877,6 +3885,12 @@ async function* runTurnKernelInner(
         error: underlying,
       };
       return returnTerminal(terminal);
+    }
+
+    const cancelledAfterSampling = await finishCancelledIfAborted();
+    if (cancelledAfterSampling !== null) {
+      yield cancelledAfterSampling.event;
+      return returnTerminal(cancelledAfterSampling.terminal);
     }
 
     // Recovery re-entry? postSampleRecovery or continuationNudge may
@@ -4132,6 +4146,11 @@ async function* runTurnKernelInner(
       (block) => block.name === SLEEP_TOOL_NAME,
     );
     await executeTools(state, ctx, session, signal);
+    const cancelledAfterTools = await finishCancelledIfAborted();
+    if (cancelledAfterTools !== null) {
+      yield cancelledAfterTools.event;
+      return returnTerminal(cancelledAfterTools.terminal);
+    }
     if (lastAssistant) {
       const completedByCallId = new Map(
         state.completedToolResults.map((record) => [record.callId, record]),

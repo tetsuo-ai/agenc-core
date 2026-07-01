@@ -1169,6 +1169,44 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(yielded.at(-1)?.type).toBe("turn_complete");
   });
 
+  test("session abort during tool execution stops before follow-up sampling", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const { provider, calls } = mkSingleToolFollowUpProvider({
+      seenMessages,
+    });
+    let session: Session;
+    const registry: ToolRegistry = {
+      tools: [
+        {
+          name: "queue_tool",
+          description: "queue test tool",
+          inputSchema: { type: "object", additionalProperties: false },
+          requiresApproval: false,
+          execute: async () => {
+            await session.abortAllTasks("interrupted");
+            return { content: "tool output", isError: false };
+          },
+        },
+      ],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "tool output", isError: false }),
+    } as unknown as ToolRegistry;
+    ({ session } = mkSession({ provider, registry }));
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
+      yielded.push(event);
+    }
+
+    expect(calls()).toBe(1);
+    expect(seenMessages).toHaveLength(1);
+    const turnComplete = yielded.find(
+      (event): event is Extract<PhaseEvent, { type: "turn_complete" }> =>
+        event.type === "turn_complete",
+    );
+    expect(turnComplete?.stopReason).toBe("cancelled");
+  });
+
   test("leaves slash commands queued for input dispatch", async () => {
     const seenMessages: LLMMessage[][] = [];
     const lifecycle: Array<{ uuid: string; state: string }> = [];
