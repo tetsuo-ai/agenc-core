@@ -129,14 +129,15 @@ describe("auth slash commands", () => {
       "Plan: pro\n" +
         "Billing: https://id.agenc.ag/subscription\n" +
         "Managed models: enabled\n" +
-        "Gateway: AgenC -> LiteLLM -> OpenRouter\n" +
-        "Included usage cap: $10 model spend / 30d\n" +
+        "Model access: hosted by AgenC\n" +
         "Available models: 19 managed OpenRouter routes\n" +
         "Default route: /model openrouter:x-ai/grok-4.3\n" +
         "Choose/switch models with /provider.",
     );
     expect(text).not.toContain(" or /model ");
     expect(text).not.toContain("claude-haiku-4.5 or");
+    expect(text).not.toContain("$10");
+    expect(text).not.toContain("LiteLLM");
   });
 
   it("rejects unexpected arguments", async () => {

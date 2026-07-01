@@ -248,19 +248,6 @@ function formatSubscriptionStatus(tier: string | undefined): string {
   return ` · plan=${tier} · managed keys require Pro (https://id.agenc.ag/pricing)`;
 }
 
-function managedUsageCapLabel(plan: string): string | undefined {
-  switch (plan) {
-    case "pro":
-      return "$10 model spend / 30d";
-    case "team":
-      return "$200 model spend / 30d";
-    case "enterprise":
-      return "$1000 model spend / 30d";
-    default:
-      return undefined;
-  }
-}
-
 export function formatSubscriptionCommandResult(tier: string | undefined): string {
   const plan = tier ?? "unknown";
   const lines = [
@@ -271,11 +258,9 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
     const provider = "openrouter";
     const models = subscriptionManagedModels(provider);
     const defaultModel = subscriptionManagedDefaultModel(provider);
-    const cap = managedUsageCapLabel(plan);
     lines.push(
       "Managed models: enabled",
-      "Gateway: AgenC -> LiteLLM -> OpenRouter",
-      ...(cap !== undefined ? [`Included usage cap: ${cap}`] : []),
+      "Model access: hosted by AgenC",
       `Available models: ${models.length} managed OpenRouter routes`,
       defaultModel !== undefined
         ? `Default route: /model ${provider}:${defaultModel}`
