@@ -208,6 +208,15 @@ describe("auth slash commands", () => {
     );
   });
 
+  it("shows the lookup failure reason when usage cannot be loaded", () => {
+    expect(formatUsageCommandResult(undefined, "pro", "HTTP 500")).toBe(
+      "Plan: pro\n" +
+        "Managed model usage is temporarily unavailable.\n" +
+        "Reason: HTTP 500\n" +
+        "Billing: https://id.agenc.ag/subscription",
+    );
+  });
+
   it("rejects unexpected arguments", async () => {
     const agencHome = await makeHome();
     const ctx = {

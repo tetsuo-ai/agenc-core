@@ -174,8 +174,8 @@ function isOpenRouterBudgetLimitFailure(args: {
 
 function openRouterBudgetLimitErrorMessage(): string {
   return [
-    "Hosted model usage limit reached for this request.",
-    "Try a shorter prompt/response, choose a smaller hosted model, or run /usage to check your plan.",
+    "This hosted model request is too large for the current allowance.",
+    "You may still have usage left; run /usage, ask for a shorter response, or choose a cheaper hosted model.",
     "[openai_category=rate_limited]",
     "Upstream account details were redacted.",
   ].join(" ");
