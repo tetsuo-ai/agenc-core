@@ -65,6 +65,16 @@ import {
 import type { AuthBackend } from "../auth/backend.js";
 import { clearSession } from "../commands/clear.js";
 
+;(globalThis as Record<string, unknown>).MACRO ??= {
+  VERSION: "test-version",
+  DISPLAY_VERSION: "test-version",
+  BUILD_TIME: "test-build-time",
+  ISSUES_EXPLAINER: "open an issue",
+  PACKAGE_URL: "@tetsuo-ai/agenc",
+  NATIVE_PACKAGE_URL: undefined,
+  FEEDBACK_CHANNEL: "support",
+};
+
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers
 // ─────────────────────────────────────────────────────────────────────
@@ -816,12 +826,10 @@ describe("Session.consumePendingProviderSwitch", () => {
     );
   });
 
-  it("uses AuthBackend-managed keys for live managed routes without BYOK", async () => {
+  it("caps managed OpenRouter switches to the hosted output-token default", async () => {
     await withEnv(
       {
-        XAI_API_KEY: undefined,
-        GROK_API_KEY: undefined,
-        AGENC_XAI_API_KEY: undefined,
+        OPENROUTER_API_KEY: undefined,
       },
       async () => {
         const calls: string[] = [];
@@ -835,13 +843,13 @@ describe("Session.consumePendingProviderSwitch", () => {
             return {
               provider,
               sessionId,
-              apiKey: "managed-grok-key",
+              apiKey: "managed-openrouter-key",
               baseUrl: "https://llm.agenc.tech",
             };
           },
           inferAgencModel: () => ({
-            provider: "grok",
-            model: "grok-4.3",
+            provider: "openrouter",
+            model: "openai/gpt-5-nano",
           }),
           getSubscriptionTier: () => "team",
         };
@@ -858,26 +866,42 @@ describe("Session.consumePendingProviderSwitch", () => {
                 auth: { managedKeys: { enabled: true } },
               }),
             },
+            modelsManager: {
+              getModelInfo: async (model: string) => ({
+                ...mkModelInfo(),
+                slug: model,
+                contextWindow: 128_000,
+                maxOutputTokens: 128_000,
+                maxOutputTokensUpperLimit: 128_000,
+              }),
+            },
           },
         });
         session.setPendingProviderSwitch({
-          provider: "grok",
-          model: "grok-4.3",
+          provider: "openrouter",
+          model: "openai/gpt-5-nano",
         });
 
         const applied = await session.consumePendingProviderSwitch();
 
         expect(applied).toEqual({
           applied: true,
-          provider: "grok",
-          model: "grok-4.3",
+          provider: "openrouter",
+          model: "openrouter/openai/gpt-5-nano",
         });
-        expect(calls).toEqual(["vendKey:grok:conv-test"]);
+        expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
         expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
-          apiKey: "managed-grok-key",
+          apiKey: "managed-openrouter-key",
           baseURL: "https://llm.agenc.tech",
-          model: "grok-4.3",
+          model: "openrouter/openai/gpt-5-nano",
+          extra: {
+            managedGateway: true,
+            maxTokens: 2048,
+          },
         });
+        expect(session.modelInfo.maxOutputTokens).toBe(2048);
+        expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
+        expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
       },
     );
   });
@@ -944,15 +968,13 @@ describe("Session.consumePendingProviderSwitch", () => {
   it("rejects free remote managed-key switches before vending", async () => {
     await withEnv(
       {
-        XAI_API_KEY: undefined,
-        GROK_API_KEY: undefined,
-        AGENC_XAI_API_KEY: undefined,
+        OPENROUTER_API_KEY: undefined,
       },
       async () => {
         const vendKey = vi.fn(() => ({
-          provider: "grok",
+          provider: "openrouter",
           sessionId: "conv-test",
-          apiKey: "managed-grok-key",
+          apiKey: "managed-openrouter-key",
         }));
         const authBackend: AuthBackend = {
           kind: "remote",
@@ -961,8 +983,8 @@ describe("Session.consumePendingProviderSwitch", () => {
           whoami: () => ({ authenticated: true, provider: "remote" }),
           vendKey,
           inferAgencModel: () => ({
-            provider: "grok",
-            model: "grok-4.3",
+            provider: "openrouter",
+            model: "openai/gpt-5-nano",
           }),
           getSubscriptionTier: () => "free",
         };
@@ -983,8 +1005,8 @@ describe("Session.consumePendingProviderSwitch", () => {
           },
         });
         session.setPendingProviderSwitch({
-          provider: "grok",
-          model: "grok-4.3",
+          provider: "openrouter",
+          model: "openai/gpt-5-nano",
         });
 
         const applied = await session.consumePendingProviderSwitch();

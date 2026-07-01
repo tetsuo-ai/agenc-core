@@ -538,6 +538,58 @@ describe("OpenAIProvider", () => {
     expectNoRequestMetadataWarning(emitWarning);
   });
 
+  test("redacts OpenRouter managed budget errors", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message:
+              "This request requires more credits, or fewer max_tokens. You requested up to 128000 tokens, but can only afford 48795. To increase, visit https://openrouter.ai/workspaces/default/keys/d1c7a95e8d4f8808ad9cdbf6c4a257650cc07e7e2be6afaba263ac58a32af514 and adjust the key's monthly limit",
+            code: 402,
+            metadata: {
+              previous_errors: [
+                {
+                  code: 402,
+                  message:
+                    "This request requires more credits, or fewer max_tokens. user_id=user_3FtLIoOmuZCXYUQSkEKiiHSWvIo",
+                },
+              ],
+            },
+          },
+        }),
+        {
+          status: 402,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "managed-key",
+      providerName: "openrouter",
+      model: "openrouter/openai/gpt-5-nano",
+      baseURL: "https://llm.agenc.tech/v1",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }], {
+        maxOutputTokens: 128_000,
+      }),
+    ).rejects.toMatchObject({
+      name: "LLMProviderError",
+      message: expect.stringContaining(
+        "managed OpenRouter budget limit reached",
+      ),
+      statusCode: 402,
+    });
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }], {
+        maxOutputTokens: 128_000,
+      }),
+    ).rejects.not.toThrow(/d1c7a95e8d4f|user_3FtLIoOmu|openrouter\.ai\/workspaces|128000/);
+  });
+
   test("rejects chat-completions non-stream tool calls with invalid JSON", async () => {
     const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

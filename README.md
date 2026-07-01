@@ -185,6 +185,10 @@ vending locally:
 AGENC_AUTH_BACKEND=remote AGENC_AUTH_MANAGED_KEYS_ENABLED=true agenc login
 ```
 
+Paid hosted model access currently routes through the AgenC OpenRouter gateway.
+See [`docs/managed-openrouter.md`](docs/managed-openrouter.md) for the model
+surface, output-token caps, and budget-limit behavior.
+
 Common flags:
 
 ```text
