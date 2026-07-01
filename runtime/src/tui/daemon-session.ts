@@ -66,6 +66,23 @@ export const AGENC_DAEMON_RECONNECTING_MESSAGE =
 
 let nextRealtimeTranscriptEventSequence = 0;
 
+const ACTIVE_DAEMON_TRANSCRIPT_EVENTS = new Set([
+  "agent_message",
+  "agent_message_delta",
+  "tool_call_started",
+  "tool_progress",
+  "tool_call_completed",
+  "request_permissions",
+  "request_user_input",
+  "mcp_elicitation_request",
+]);
+
+const TERMINAL_DAEMON_TRANSCRIPT_EVENTS = new Set([
+  "turn_complete",
+  "turn_aborted",
+  "error",
+]);
+
 export type AgenCDaemonConnectionStatus =
   | "connected"
   | "disconnected"
@@ -309,6 +326,14 @@ export function createDaemonTuiSession<
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
   let queuedInputCount = 0;
   let unsubscribeDaemonEvents: (() => void) | null = null;
+  const markDaemonActivityActive = (event: unknown): void => {
+    const payload = (event as { readonly payload?: unknown }).payload;
+    const turnId =
+      isJsonObject(payload) && typeof payload.turnId === "string" && payload.turnId.length > 0
+        ? payload.turnId
+        : activeTurnSnapshot?.turnId ?? "daemon-turn";
+    activeTurnSnapshot = { turnId };
+  };
   const noteDaemonActivity = (event: unknown): void => {
     if (typeof event !== "object" || event === null) {
       return;
@@ -319,8 +344,16 @@ export function createDaemonTuiSession<
     // "background_agent_status" status update. Treat it as turn-ending so the
     // active turn is cleared and conversation actions (/rewind, /compact) are
     // not left permanently blocked after a failed turn.
-    if (eventType === "error") {
+    if (typeof eventType === "string" && TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)) {
       activeTurnSnapshot = null;
+      return;
+    }
+    if (eventType === "turn_start" || eventType === "turn_started") {
+      markDaemonActivityActive(event);
+      return;
+    }
+    if (typeof eventType === "string" && ACTIVE_DAEMON_TRANSCRIPT_EVENTS.has(eventType)) {
+      markDaemonActivityActive(event);
       return;
     }
     if (eventType !== "background_agent_status") {

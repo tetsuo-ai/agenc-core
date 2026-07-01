@@ -225,6 +225,38 @@ describe("KeybindingProviderSetup", () => {
     expect(event.stopped).toBe(true);
   });
 
+  test("runs registered input captures even when their context is not separately active", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+    const pendingChordRef = { current: null as ParsedKeystroke[] | null };
+    const captured: string[] = [];
+    const handler = createChordInputHandler({
+      bindings,
+      pendingChordRef,
+      setPendingChord: pending => {
+        pendingChordRef.current = pending;
+      },
+      activeContexts: new Set(),
+      handlerRegistryRef: { current: new Map() },
+      inputCaptureRegistryRef: {
+        current: new Set([
+          {
+            context: "Chat",
+            handler: input => {
+              captured.push(input);
+              return true;
+            },
+          },
+        ]),
+      },
+    });
+
+    const event = inputEvent();
+    handler("", key({ escape: true }), event);
+
+    expect(captured).toEqual([""]);
+    expect(event.stopped).toBe(true);
+  });
+
   test("resolves raw footer x and enter input from terminal bytes", () => {
     const bindings = parseBindings(DEFAULT_BINDINGS);
 

@@ -1451,6 +1451,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // (catch wrapper for #61). Local slash commands skip this state so
   // immediate command errors don't flash a model-request spinner.
   const [pendingSubmission, setPendingSubmission] = useState(false);
+  // `pendingSubmission` can clear as soon as the daemon acknowledges the
+  // request. Keep a separate count for the actual submit promises so the
+  // prompt remains busy/cancellable while message.stream is still running.
+  const [activeModelSubmissionCount, setActiveModelSubmissionCount] = useState(0);
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
   const [vimMode, setVimMode] = useState<VimMode>("INSERT");
   const [showBashesDialog, setShowBashesDialog] = useState<string | boolean>(false);
@@ -1569,7 +1573,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const appTasks = useAppState(s => s.tasks);
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
   const hasActiveSessionTurn = hasActiveConversationTurn(props.session);
-  const isLoading = transcript.isStreaming || pendingSubmission || hasActiveSessionTurn;
+  const hasActiveModelSubmission = activeModelSubmissionCount > 0;
+  const isLoading = transcript.isStreaming || pendingSubmission || hasActiveSessionTurn || hasActiveModelSubmission;
   const effectiveInputBusy = isLoading || hasActiveLocalAgents || completionPipelineActive;
   const effectiveInputBusyRef = useRef(effectiveInputBusy);
   effectiveInputBusyRef.current = effectiveInputBusy;
@@ -1696,6 +1701,19 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       emitTranscriptText(`<bash-stderr>${escapeXml(message_1)}</bash-stderr>`);
     }
   }, [getToolUseContext]);
+  const submitToSession = useCallback(async (value: string, options?: {
+    readonly displayUserMessage?: string | null;
+  }): Promise<void> => {
+    const submitSession = props.session.submit;
+    if (typeof submitSession !== "function") return;
+    setActiveModelSubmissionCount(count => count + 1);
+    effectiveInputBusyRef.current = true;
+    try {
+      await submitSession(value, options);
+    } finally {
+      setActiveModelSubmissionCount(count => Math.max(0, count - 1));
+    }
+  }, [props.session]);
   const submit = useCallback(async (value: string, options?: LiveSubmitOptions) => {
     const text_0 = value.trim();
     const activePastedContents = options?.pastedContentsOverride ?? pastedContents;
@@ -1939,7 +1957,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           props.session.enqueueIdleInput?.(loaded.metadata);
           props.session.enqueueIdleInput?.({ content: loaded.blocks });
           startPendingSubmission();
-          await props.session.submit?.("", { displayUserMessage: text_0 });
+          await submitToSession("", { displayUserMessage: text_0 });
         } catch (err_1) {
           const message_0 = err_1 instanceof Error ? err_1.message : String(err_1);
           showTransientResult(message_0, {
@@ -1973,7 +1991,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       // the original input. Pairs with the daemon-hook change in
       // background-agent-runner.installDaemonTurnDriverHooks that
       // suppresses the run-turn duplicate emit.
-      await props.session.submit?.(value, { displayUserMessage: value });
+      await submitToSession(value, { displayUserMessage: value });
     } catch (err_1) {
       // Same defense as submitPromptToModel above: a daemon JSON-RPC
       // error response (e.g. "AgenC daemon agent not running:
@@ -1991,7 +2009,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       // waiting for a turn that will never start.
       setPendingSubmission(false);
     }
-  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry]);
+  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry, submitToSession]);
   // When the daemon shows any sign of activity, drop the optimistic
   // pending-submission flag. We don't gate this only on isStreaming
   // (turn_started) because the daemon sometimes skips that event and
@@ -2055,29 +2073,28 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const toolUseConfirmQueue = useMemo(() => buildToolUseConfirmQueue(permissionRequests, availableTools), [permissionRequests, availableTools]);
 
   // Per-turn AbortController. CancelRequestHandler reads
-  // `abortSignal !== undefined && !aborted` as "is there a turn to
-  // cancel right now," so we must (a) populate it when streaming starts
-  // and (b) fire/clear it when ESC fires or the turn naturally ends.
+  // `canCancelActiveTurn` as "is there a turn to cancel right now," so we
+  // must (a) populate the signal when visible loading starts and (b)
+  // fire/clear it when ESC fires or the turn naturally ends.
   // We do NOT auto-abort when streaming ends — the user pressing ESC
   // after a turn finished is a no-op, which is correct behavior. The
   // signal is also handed to command contexts so command implementations can
   // cooperatively cancel.
   const [turnAbortController, setTurnAbortController] = useState<AbortController | null>(null);
   useEffect(() => {
-    if (transcript.isStreaming) {
+    if (isLoading) {
       setTurnAbortController(prev_1 => prev_1 === null || prev_1.signal.aborted ? new AbortController() : prev_1);
     } else {
       // Drop the reference once the turn naturally ends; do not abort
       // (the run-turn already finished cleanly).
       setTurnAbortController(null);
     }
-  }, [transcript.isStreaming]);
+  }, [isLoading]);
   const handleTurnCancel = useCallback(() => {
-    // Fire the local signal first so the CancelRequestHandler observes
-    // an aborted signal (gate flips off), then ask the daemon to
-    // interrupt the active turn. Errors from the RPC are swallowed
-    // inside cancelActiveTurn — pressing ESC must never surface an RPC
-    // failure to the user.
+    // Fire the local signal first so cooperative command contexts see the
+    // interruption, then ask the daemon to interrupt the active turn. Errors
+    // from the RPC are swallowed inside cancelActiveTurn — pressing ESC must
+    // never surface an RPC failure to the user.
     if (turnAbortController !== null && !turnAbortController.signal.aborted) {
       turnAbortController.abort("user_interrupt");
     }
@@ -2334,7 +2351,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           ? "responding"
           : "requesting";
   const cancelStreamMode = visibleCancelStreamMode(showSpinner, streamMode);
-  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={hasActiveToolActivity} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
+  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={hasActiveToolActivity} showLeaderTokenStats={false} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
@@ -2452,7 +2469,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // and resolved via session.cancelTurn cascade.
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
-    } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} />
+    } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} canCancelActiveTurn={isLoading} />
       {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} pendingApproval={permissionRequests[0] ?? null} scrollRef={scrollRef} atWelcome={transcript.messages.length === 0 && !transcript.streamingText} activityMode={showSpinner ? streamMode : null} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}

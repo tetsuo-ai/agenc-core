@@ -35,6 +35,7 @@ const SUPPORTS_SUSPEND = process.platform !== 'win32';
 // but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000;
 const INPUT_BACKPRESSURE_THRESHOLD_MS = 500;
+const MAX_LONE_ESCAPE_READABLE_DEFERRALS = 1;
 type Props = {
   readonly children: ReactNode;
   readonly stdin: NodeJS.ReadStream;
@@ -118,6 +119,7 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE;
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null;
+  loneEscapeReadableDeferrals = 0;
   terminalIdentityProbeImmediate: ReturnType<typeof setImmediate> | null = null;
   // Default to readable-mode stdin (compatibility Ink behavior). The data-mode path
   // is kept as an explicit opt-in because some terminals can enter a state
@@ -330,12 +332,24 @@ export default class App extends PureComponent<Props, State> {
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
     if (this.props.stdin.readableLength > 0) {
-      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.NORMAL_TIMEOUT);
-      return;
+      if (
+        this.keyParseState.incomplete !== '\x1b' ||
+        this.loneEscapeReadableDeferrals < MAX_LONE_ESCAPE_READABLE_DEFERRALS
+      ) {
+        if (this.keyParseState.incomplete === '\x1b') {
+          this.loneEscapeReadableDeferrals += 1;
+        } else {
+          this.loneEscapeReadableDeferrals = 0;
+        }
+        this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.NORMAL_TIMEOUT);
+        return;
+      }
+      this.loneEscapeReadableDeferrals = 0;
     }
 
     // Process incomplete as a flush operation (input=null)
     // This reuses all existing parsing logic
+    this.loneEscapeReadableDeferrals = 0;
     this.processInput(null);
   };
 
@@ -364,11 +378,16 @@ export default class App extends PureComponent<Props, State> {
 
     // If we have incomplete escape sequences, set a timer to flush them
     if (this.keyParseState.incomplete) {
+      if (this.keyParseState.incomplete !== '\x1b') {
+        this.loneEscapeReadableDeferrals = 0;
+      }
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer);
       }
       this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT);
+    } else {
+      this.loneEscapeReadableDeferrals = 0;
     }
   };
   handleReadable = (): void => {

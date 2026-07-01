@@ -112,6 +112,22 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(output).toContain("10 tokens");
   });
 
+  test("suppresses estimated leader token and liveness stats when disabled", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+
+    const output = await renderRow({
+      loadingStartTimeRef: makeRef(NOW - 5 * 60_000),
+      responseLengthRef: makeRef(4_000),
+      showLeaderTokenStats: false,
+      verbose: true,
+    });
+
+    expect(output).not.toContain("tokens");
+    expect(output).not.toContain("tok/s");
+    expect(output).not.toContain("last token");
+    expect(output).not.toContain("slow model");
+  });
+
   // The heartbeat must NOT appear while "thinking" is already explaining the
   // silence (thinking has its own visible status).
   test("suppresses the heartbeat while thinking is shown", async () => {

@@ -14,10 +14,11 @@ import { isVimModeEnabled } from '../components/PromptInput/utils.js'
 import type { ToolUseConfirm } from '../permission-types.js'
 import type { SpinnerMode } from '../components/spinner/types.js'
 import { useNotifications } from '../context/notifications'
-import { useIsOverlayActive } from '../context/overlayContext'
+import { useIsModalOverlayActive } from '../context/overlayContext'
 import { useCommandQueue } from './useCommandQueue'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
-import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useInputCapture, useKeybinding } from '../keybindings/useKeybinding.js'
+import { useInput } from '../ink.js'
 import type { Screen } from '../types/screen.js'
 import { exitTeammateView } from '../state/teammateViewHelpers'
 import {
@@ -55,6 +56,7 @@ type CancelRequestHandlerProps = {
   inputMode?: PromptInputMode
   inputValue?: string
   streamMode?: SpinnerMode
+  canCancelActiveTurn?: boolean
 }
 
 /**
@@ -76,6 +78,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     isHelpOpen,
     inputMode,
     inputValue,
+    canCancelActiveTurn,
   } = props
   const store = useAppStateStore()
   const setAppState = useSetAppState()
@@ -88,11 +91,13 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       t => t.type === 'local_agent' && isStoppableLocalAgentStatus(t.status),
     ),
   )
+  const hasActiveTurnToCancel =
+    canCancelActiveTurn ?? (abortSignal !== undefined && !abortSignal.aborted)
 
   const handleCancel = useCallback(() => {
     // Priority 1: If there's an active task running, cancel it first
     // This takes precedence over queue management so users can always interrupt AgenC
-    if (abortSignal !== undefined && !abortSignal.aborted) {
+    if (hasActiveTurnToCancel) {
       setToolUseConfirmQueue(() => [])
       onCancel()
       return
@@ -125,7 +130,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     setToolUseConfirmQueue(() => [])
     onCancel()
   }, [
-    abortSignal,
+    hasActiveTurnToCancel,
     popCommandFromQueue,
     setToolUseConfirmQueue,
     onCancel,
@@ -137,8 +142,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // Other contexts (Transcript, HistorySearch, Help) have their own escape handlers
   // Overlays (ModelPicker, ThinkingToggle, etc.) register themselves via useRegisterOverlay
   // Local JSX commands handle their own input
-  const isOverlayActive = useIsOverlayActive()
-  const canCancelRunningTask = abortSignal !== undefined && !abortSignal.aborted
+  const isModalOverlayActive = useIsModalOverlayActive()
   const hasQueuedCommands = queuedCommandsLength > 0
   // When in bash/background mode with empty input, escape should exit the mode
   // rather than cancel the request. Let PromptInput handle mode exit.
@@ -147,21 +151,22 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     inputMode !== undefined && inputMode !== 'prompt' && !inputValue
   // When viewing a teammate's transcript, let useBackgroundTaskNavigation handle Escape
   const isViewingTeammate = viewSelectionMode === 'viewing-agent'
+  const isScreenBlockingCancel = screen === 'transcript' && !hasActiveTurnToCancel
   // Context guards: other screens/overlays handle their own cancel
   const isContextActive =
-    screen !== 'transcript' &&
+    !isScreenBlockingCancel &&
     !isSearchingHistory &&
     !isMessageSelectorVisible &&
     !isLocalJSXCommand &&
     !isHelpOpen &&
-    !isOverlayActive &&
+    !isModalOverlayActive &&
     !(isVimModeEnabled() && vimMode === 'INSERT')
 
   // Escape (chat:cancel) defers to mode-exit when in special mode with empty
   // input, and to useBackgroundTaskNavigation when viewing a teammate
   const isEscapeActive =
     isContextActive &&
-    (canCancelRunningTask || hasQueuedCommands || hasStoppableAgents) &&
+    (hasActiveTurnToCancel || hasQueuedCommands || hasStoppableAgents) &&
     !isInSpecialModeWithEmptyInput &&
     !isViewingTeammate
 
@@ -171,7 +176,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // handler and double-press-to-exit from ever seeing the keypress.
   const isCtrlCActive =
     isContextActive &&
-    (canCancelRunningTask || hasQueuedCommands || isViewingTeammate)
+    (hasActiveTurnToCancel || hasQueuedCommands || isViewingTeammate)
 
   useKeybinding('chat:cancel', handleCancel, {
     context: 'Chat',
@@ -215,14 +220,14 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       killAllAgentsAndNotify()
       exitTeammateView(setAppState)
     }
-    if (canCancelRunningTask || hasQueuedCommands) {
+    if (hasActiveTurnToCancel || hasQueuedCommands) {
       handleCancel()
     }
   }, [
     isViewingTeammate,
     killAllAgentsAndNotify,
     setAppState,
-    canCancelRunningTask,
+    hasActiveTurnToCancel,
     hasQueuedCommands,
     handleCancel,
   ])
@@ -230,6 +235,33 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   useKeybinding('app:interrupt', handleInterrupt, {
     context: 'Global',
     isActive: isCtrlCActive,
+  })
+  useInputCapture((input, key) => {
+    if (key.escape && isEscapeActive) {
+      handleCancel()
+      return true
+    }
+    if (input === 'c' && key.ctrl && isCtrlCActive) {
+      handleInterrupt()
+      return true
+    }
+    return false
+  }, {
+    context: 'Chat',
+    isActive: isEscapeActive || isCtrlCActive,
+  })
+  useInput((input, key, event) => {
+    if (key.escape && isEscapeActive) {
+      handleCancel()
+      event.stopImmediatePropagation()
+      return
+    }
+    if (input === 'c' && key.ctrl && isCtrlCActive) {
+      handleInterrupt()
+      event.stopImmediatePropagation()
+    }
+  }, {
+    isActive: isEscapeActive || isCtrlCActive,
   })
 
   // chat:killAgents uses a two-press pattern: first press shows a

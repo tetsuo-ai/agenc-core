@@ -591,6 +591,25 @@ describe("Ink App coverage swarm row 010", () => {
     });
     app.flushIncomplete();
     expect(processInput).toHaveBeenCalledWith(null);
+
+    const forcedStdin = stream();
+    Object.defineProperty(forcedStdin, "readableLength", {
+      configurable: true,
+      value: 1,
+    });
+    const forcedApp = createApp({ stdin: forcedStdin });
+    const forcedProcessInput = vi.spyOn(forcedApp, "processInput").mockImplementation(() => {});
+    forcedApp.keyParseState = {
+      mode: "NORMAL",
+      incomplete: "\x1b",
+      pasteBuffer: "",
+    };
+
+    forcedApp.flushIncomplete();
+    expect(forcedProcessInput).not.toHaveBeenCalled();
+
+    forcedApp.flushIncomplete();
+    expect(forcedProcessInput).toHaveBeenCalledWith(null);
   });
 
   test("clears stale incomplete timers before scheduling the next parser flush", () => {

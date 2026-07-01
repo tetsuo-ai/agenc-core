@@ -540,6 +540,78 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribe();
   });
 
+  it("keeps daemon activeTurn alive for foreground tool events after per-step idle status", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+
+    client.emit("session_1", {
+      method: "event.agent_status",
+      params: {
+        eventId: "status_idle",
+        turnId: "turn_1",
+        status: "idle",
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "tool_started",
+        event: {
+          id: "tool_started",
+          type: "tool_call_started",
+          payload: {
+            callId: "call_1",
+            toolName: "Read",
+            args: "{}",
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "daemon-turn" });
+
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "tool_done",
+        event: {
+          id: "tool_done",
+          type: "tool_call_completed",
+          payload: {
+            callId: "call_1",
+            toolName: "Read",
+            result: "ok",
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "daemon-turn" });
+
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "turn_done",
+        event: {
+          id: "turn_done",
+          type: "turn_complete",
+          payload: {
+            turnId: "turn_1",
+            lastAgentMessage: "done",
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    unsubscribe();
+  });
+
   it("sends TUI user input through message.stream", async () => {
     const client = createClient();
     const abortController = new AbortController();

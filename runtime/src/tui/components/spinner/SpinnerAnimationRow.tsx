@@ -105,6 +105,7 @@ export type SpinnerAnimationRowProps = {
   leaderIsIdle?: boolean;
   thinkingStatus: 'thinking' | number | null;
   effortSuffix: string;
+  showLeaderTokenStats?: boolean;
 };
 
 function statusGlyph(mode: SpinnerMode, hasActiveTools: boolean): string {
@@ -129,6 +130,7 @@ export function SpinnerAnimationRow({
   foregroundedTeammate,
   thinkingStatus,
   effortSuffix,
+  showLeaderTokenStats = true,
 }: SpinnerAnimationRowProps): React.ReactNode {
   const now = Date.now();
   const elapsedTimeMs =
@@ -137,7 +139,7 @@ export function SpinnerAnimationRow({
       : now - loadingStartTimeRef.current - totalPausedMsRef.current;
 
   const visibleMessage = truncateSpinnerText(message, computeSpinnerMessageMaxWidth(columns));
-  const leaderTokens = Math.round(responseLengthRef.current / 4);
+  const leaderTokens = showLeaderTokenStats ? Math.round(responseLengthRef.current / 4) : 0;
   const totalTokens =
     foregroundedTeammate && !foregroundedTeammate.isIdle
       ? foregroundedTeammate.progress?.tokenCount ?? 0
@@ -155,7 +157,8 @@ export function SpinnerAnimationRow({
 
   // Liveness: distinguishes "alive but slow" from "hung". Only meaningful for
   // the leader's own stream (a foregrounded teammate reports its own progress).
-  const trackLiveness = !(foregroundedTeammate && !foregroundedTeammate.isIdle);
+  const trackLiveness =
+    showLeaderTokenStats && !(foregroundedTeammate && !foregroundedTeammate.isIdle);
   const { msSinceLastToken, ratePerSec } = useTokenLiveness(
     trackLiveness ? totalTokens : 0,
     now,
@@ -190,7 +193,9 @@ export function SpinnerAnimationRow({
   // The stall note is itself a liveness signal, so surface the timer/tokens
   // alongside it even before the usual 30s threshold.
   const wantsTimerAndTokens =
-    verbose || hasRunningTeammates || elapsedTimeMs > SHOW_TOKENS_AFTER_MS || showStallNote;
+    verbose ||
+    hasRunningTeammates ||
+    (showLeaderTokenStats && (elapsedTimeMs > SHOW_TOKENS_AFTER_MS || showStallNote));
   const availableSpace = columns - messageWidth - 5;
   let showThinking = wantsThinking && availableSpace > thinkingWidthValue;
   if (!showThinking && wantsThinking && thinkingStatus === 'thinking' && effortSuffix) {

@@ -276,7 +276,7 @@ export function createChordInputHandler({
 }: ChordInputHandlerOptions): (input: string, key: Key, event: InputEvent) => void {
   return (input, key, event) => {
     if ((key.wheelUp || key.wheelDown || key.escape) && pendingChordRef.current === null) {
-      if (runInputCaptures(input, key, event, activeContexts, inputCaptureRegistryRef)) {
+      if (runInputCaptures(input, key, event, inputCaptureRegistryRef)) {
         event.stopImmediatePropagation();
         return;
       }
@@ -349,7 +349,7 @@ export function createChordInputHandler({
       case "none":
     }
     const stopped = typeof event.didStopImmediatePropagation === "function" && event.didStopImmediatePropagation();
-    if (!stopped && runInputCaptures(input, key, event, activeContexts, inputCaptureRegistryRef)) {
+    if (!stopped && runInputCaptures(input, key, event, inputCaptureRegistryRef)) {
       event.stopImmediatePropagation();
     }
   };
@@ -359,13 +359,12 @@ function runInputCaptures(
   input: string,
   key: Key,
   event: InputEvent,
-  activeContexts: Set<KeybindingContextName>,
   inputCaptureRegistryRef: React.RefObject<Set<InputCaptureRegistration>>,
 ): boolean {
   const registry = inputCaptureRegistryRef.current;
   if (!registry || registry.size === 0) return false;
   for (const registration of registry) {
-    if (activeContexts.has(registration.context) && registration.handler(input, key, event)) {
+    if (registration.handler(input, key, event)) {
       return true;
     }
   }

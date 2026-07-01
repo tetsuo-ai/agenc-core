@@ -1701,6 +1701,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "tool-use",
         hasActiveTools: true,
+        showLeaderTokenStats: false,
         overrideMessage: "Running tools",
       }),
     );
@@ -1708,6 +1709,76 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         streamingText: "I will inspect that now.",
       }),
+    );
+  });
+
+  test("keeps spinner visible after first assistant row while submit is still in flight", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const subscribers = new Set<(event: unknown) => void>();
+    let resolveSubmit: (() => void) | undefined;
+    const session = {
+      ...createSession(),
+      submit: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSubmit = resolve;
+          }),
+      ),
+      subscribeToEvents: (cb: (event: unknown) => void) => {
+        subscribers.add(cb);
+        return () => {
+          subscribers.delete(cb);
+        };
+      },
+    } satisfies AgenCBridgeSession;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const onSubmit = providerProbe.promptSubmits.at(-1);
+        expect(onSubmit).toBeDefined();
+
+        const submitPromise = onSubmit!("inspect the project", helpers);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(session.submit).toHaveBeenCalledWith("inspect the project", {
+          displayUserMessage: "inspect the project",
+        });
+        for (const subscriber of subscribers) {
+          subscriber({
+            id: "first-assistant-row",
+            type: "turn_complete",
+            payload: {
+              turnId: "turn-1",
+              lastAgentMessage: "I will inspect that now.",
+            },
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.promptProps.at(-1)).toEqual(
+          expect.objectContaining({ isLoading: true }),
+        );
+        expect(containsElementNamed(providerProbe.fullscreenLayoutProps.at(-1)?.bottom, "SpinnerWithVerb")).toBe(true);
+
+        resolveSubmit?.();
+        await submitPromise;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.promptProps.at(-1)).toEqual(
+          expect.objectContaining({ isLoading: false }),
+        );
+      },
     );
   });
 
@@ -1746,6 +1817,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "responding",
         hasActiveTools: false,
+        showLeaderTokenStats: false,
       }),
     );
     expect(providerProbe.messageProps.at(-1)).toEqual(
@@ -1800,6 +1872,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "thinking",
         hasActiveTools: false,
+        showLeaderTokenStats: false,
       }),
     );
   });
@@ -1857,6 +1930,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "tool-input",
         hasActiveTools: true,
+        showLeaderTokenStats: false,
         overrideMessage: null,
       }),
     );
