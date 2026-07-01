@@ -1871,6 +1871,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async interruptAgentTurn(agentId: string, reason: string): Promise<boolean> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) return false;
+    try {
+      await active.bootstrap.session.abortAllTasks("interrupted");
+    } catch {
+      /* interrupt delivery still falls through the managed thread path */
+    }
     void active.thread.submit({ type: "interrupt", reason }).catch(() => {
       /* interrupt delivery surfaces via session events */
     });

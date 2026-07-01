@@ -116,6 +116,7 @@ function makeTopLevelRunner(opts: {
   const session = {
     conversationId: opts.conversationId,
     permissionModeRegistry,
+    abortAllTasks: vi.fn(async () => {}),
     eventLog: {
       subscribe: (listener: (event: unknown) => void) => {
         eventLogSubscribers.push(listener);
@@ -1132,8 +1133,8 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.toMatchObject({ status: "idle" });
   });
 
-  it("[managed-thread] interruptAgentTurn submits interrupt op on managed thread", async () => {
-    const { runner, stub } = makeTopLevelRunner({
+  it("[managed-thread] interruptAgentTurn aborts the active session and submits interrupt op on managed thread", async () => {
+    const { runner, session, stub } = makeTopLevelRunner({
       conversationId: "session-interrupt",
     });
 
@@ -1151,6 +1152,7 @@ describe("AgenC delegate background-agent runner", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(interrupted).toBe(true);
+    expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
     expect(stub.thread.submit).toHaveBeenCalledWith({
       type: "interrupt",
       reason: "user_cancel",

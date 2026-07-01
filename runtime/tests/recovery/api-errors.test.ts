@@ -6,12 +6,14 @@ import {
   isMediaSizeError,
   isMediaTooLargeMessage,
   isPromptTooLongMessage,
+  isStreamingFallbackOccured,
   isTransientProviderError,
   isWithheld413Message,
   isWithheldMaxOutputTokens,
   parsePromptTooLongTokenCounts,
 } from "./api-errors.js";
-import type { AssistantMessage } from "../session/turn-state.js";
+import { LLMProviderError } from "../llm/errors.js";
+import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 
 function mkMsg(
   text: string,
@@ -109,5 +111,49 @@ describe("isTransientProviderError", () => {
     (err401 as unknown as { status: number }).status = 401;
     expect(isTransientProviderError(err401)).toBe(false);
     expect(isTransientProviderError(new Error("syntax error"))).toBe(false);
+  });
+});
+
+describe("isStreamingFallbackOccured", () => {
+  function stateWithProviderError(error: unknown): TurnState {
+    return {
+      assistantMessages: [
+        mkMsg("provider failed", { apiError: "provider_error" }),
+      ],
+      lastStreamError: error,
+    } as unknown as TurnState & { lastStreamError: unknown };
+  }
+
+  test("generic provider stream errors still enter streaming fallback", () => {
+    expect(
+      isStreamingFallbackOccured(
+        stateWithProviderError(new Error("socket closed mid-stream")),
+      ),
+    ).toBe(true);
+  });
+
+  test("local model-not-found provider errors fail fast instead of fallback looping", () => {
+    const missingModel = new LLMProviderError(
+      "ollama",
+      "Ollama API error: model not found [openai_category=model_not_found]",
+      404,
+    );
+
+    expect(
+      isStreamingFallbackOccured(stateWithProviderError(missingModel)),
+    ).toBe(false);
+  });
+
+  test("nested deterministic provider setup errors are not streaming fallback", () => {
+    const wrapped = new Error("provider wrapper");
+    (wrapped as Error & { cause: Error }).cause = new LLMProviderError(
+      "lmstudio",
+      "OpenAI API error 404: Not Found [openai_category=endpoint_not_found]",
+      404,
+    );
+
+    expect(isStreamingFallbackOccured(stateWithProviderError(wrapped))).toBe(
+      false,
+    );
   });
 });
