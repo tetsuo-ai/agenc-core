@@ -127,6 +127,61 @@ function providerHttpBodyToString(body: unknown): string {
   }
 }
 
+function readNestedProviderMessage(value: unknown, depth = 0): string | undefined {
+  if (depth > 5 || value === null || value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  if (typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.message === "string") return record.message;
+  if (typeof record.error === "string") return record.error;
+  const nestedError = readNestedProviderMessage(record.error, depth + 1);
+  if (nestedError !== undefined) return nestedError;
+  if (Array.isArray(record.previous_errors)) {
+    for (const item of record.previous_errors) {
+      const itemMessage = readNestedProviderMessage(item, depth + 1);
+      if (itemMessage !== undefined) return itemMessage;
+    }
+  }
+  if (Array.isArray(record.previousErrors)) {
+    for (const item of record.previousErrors) {
+      const itemMessage = readNestedProviderMessage(item, depth + 1);
+      if (itemMessage !== undefined) return itemMessage;
+    }
+  }
+  return undefined;
+}
+
+function isOpenRouterBudgetLimitFailure(args: {
+  readonly providerName: string;
+  readonly status: number;
+  readonly body: unknown;
+  readonly message: string;
+}): boolean {
+  if (args.providerName !== "openrouter") return false;
+  if (args.status !== 402 && args.status !== 403 && args.status !== 429) {
+    return false;
+  }
+  const nested = readNestedProviderMessage(args.body);
+  const text = `${args.message}\n${nested ?? ""}\n${providerHttpBodyToString(args.body)}`;
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("requires more credits") ||
+    lower.includes("insufficient credits") ||
+    lower.includes("monthly limit") ||
+    (lower.includes("can only afford") && lower.includes("max_tokens"))
+  );
+}
+
+function openRouterBudgetLimitErrorMessage(): string {
+  return [
+    "managed OpenRouter budget limit reached.",
+    "Try a shorter request/response or choose a smaller model.",
+    "If this is a paid AgenC subscription, the hosted OpenRouter key needs more credits or a higher monthly allowance.",
+    "[openai_category=rate_limited]",
+    "Hint: upstream account and key details were redacted.",
+  ].join(" ");
+}
+
 function errorCode(error: unknown): string | undefined {
   let current: unknown = error;
   for (let depth = 0; depth < 5; depth += 1) {
@@ -275,6 +330,13 @@ function mapOpenAIHttpFailureToError(args: {
   readonly body: unknown;
   readonly retryAfterMs?: number;
 }): Error {
+  if (isOpenRouterBudgetLimitFailure(args)) {
+    return new LLMProviderError(
+      args.providerName,
+      openRouterBudgetLimitErrorMessage(),
+      args.status,
+    );
+  }
   const bodyText = providerHttpBodyToString(args.body);
   const failure = classifyOpenAIHttpFailure({
     status: args.status,

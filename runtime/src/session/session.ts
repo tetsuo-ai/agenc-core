@@ -871,6 +871,27 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
 
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
+function isManagedGatewayProviderOptions(
+  options: ProviderFactoryOptions | undefined,
+): boolean {
+  return options?.extra?.managedGateway === true;
+}
+
+function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
+  return {
+    ...modelInfo,
+    maxOutputTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+    maxOutputTokensUpperLimit:
+      modelInfo.maxOutputTokensUpperLimit !== undefined
+        ? Math.min(
+            modelInfo.maxOutputTokensUpperLimit,
+            MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+          )
+        : MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+    maxOutputTokensCappedDefault: true,
+  };
+}
+
 async function buildBaseInstructionsForModel(params: {
   readonly registry: ToolRegistry;
   readonly model: string;
@@ -2054,6 +2075,7 @@ export class Session {
     }
 
     let preparedSwitch: PreparedProviderSwitch;
+    let targetProviderSettings: ResolvedProviderSettings | undefined;
     try {
       const targetNormalizedProvider = normalizeProviderName(resolvedProvider);
       const liveProviderIdentity = readProviderIdentity(
@@ -2068,7 +2090,7 @@ export class Session {
           : undefined;
       const configStore = (this.services as Partial<SessionServices>)
         .configStore;
-      const targetProviderSettings =
+      targetProviderSettings =
         targetNormalizedProvider !== null && configStore?.current
           ? resolveProviderSettings(
               targetNormalizedProvider,
@@ -2118,10 +2140,19 @@ export class Session {
       return { applied: false, reason };
     }
 
-    const nextModelInfo = await deriveNextModelInfo(
+    const rawNextModelInfo = await deriveNextModelInfo(
       this.services.modelsManager,
       preparedSwitch.model,
     );
+    const preparedSwitchOptions = readProviderFactoryOptions(
+      preparedSwitch.instance,
+    );
+    const nextModelInfo =
+      normalizeProviderName(preparedSwitch.provider) === "openrouter" &&
+      isManagedGatewayProviderOptions(preparedSwitchOptions) &&
+      targetProviderSettings?.maxOutputTokens === undefined
+        ? capManagedOpenRouterModelInfo(rawNextModelInfo)
+        : rawNextModelInfo;
     const nextBaseInstructions = await buildBaseInstructionsForModel({
       registry: this.services.registry,
       model: preparedSwitch.model,
