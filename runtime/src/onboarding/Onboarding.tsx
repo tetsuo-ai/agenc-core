@@ -187,6 +187,7 @@ const KEY_REQUIRED_PROVIDERS = new Set<BuiltInProviderSlug>([
 const MANAGED_KEY_PROVIDERS = new Set<BuiltInProviderSlug>([
   "grok",
   "openai",
+  "anthropic",
   "openrouter",
   "groq",
   "deepseek",

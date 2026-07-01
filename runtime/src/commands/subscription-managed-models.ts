@@ -1,7 +1,10 @@
 import { normalizeProviderSlug, type ProviderSlug } from "../config/resolve-provider.js";
 
 const LIVE_SUBSCRIPTION_MODELS: Readonly<Record<string, readonly string[]>> = {
+  anthropic: ["claude-haiku-4-5-20251001"],
+  openai: ["gpt-5-mini"],
   grok: ["grok-4.3", "grok-code-fast-1"],
+  gemini: ["gemini-2.5-pro"],
 };
 
 function normalizeModelId(model: string): string {
@@ -39,7 +42,9 @@ export function isSubscriptionManagedModel(
 }
 
 export function formatSubscriptionManagedModels(): string {
-  return subscriptionManagedModels("grok")
-    .map((model) => `/model grok:${model}`)
+  return Object.entries(LIVE_SUBSCRIPTION_MODELS)
+    .flatMap(([provider, models]) =>
+      models.map((model) => `/model ${provider}:${model}`)
+    )
     .join(" or ");
 }

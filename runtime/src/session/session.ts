@@ -863,7 +863,12 @@ function buildProviderFallbackLadderOptions(params: {
   };
 }
 
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["grok"]);
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
+  "anthropic",
+  "openai",
+  "grok",
+  "gemini",
+]);
 
 function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
