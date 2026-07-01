@@ -174,11 +174,10 @@ function isOpenRouterBudgetLimitFailure(args: {
 
 function openRouterBudgetLimitErrorMessage(): string {
   return [
-    "managed OpenRouter budget limit reached.",
-    "Try a shorter request/response or choose a smaller model.",
-    "If this is a paid AgenC subscription, the hosted OpenRouter key needs more credits or a higher monthly allowance.",
+    "Hosted model usage limit reached for this request.",
+    "Try a shorter prompt/response, choose a smaller hosted model, or run /usage to check your plan.",
     "[openai_category=rate_limited]",
-    "Hint: upstream account and key details were redacted.",
+    "Upstream account details were redacted.",
   ].join(" ");
 }
 

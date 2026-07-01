@@ -579,7 +579,7 @@ describe("OpenAIProvider", () => {
     ).rejects.toMatchObject({
       name: "LLMProviderError",
       message: expect.stringContaining(
-        "managed OpenRouter budget limit reached",
+        "Hosted model usage limit reached for this request",
       ),
       statusCode: 402,
     });

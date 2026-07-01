@@ -11,9 +11,11 @@ the AgenC LiteLLM/OpenRouter gateway.
 2. The TUI or CLI reads the subscription tier from the auth backend.
 3. With `AGENC_AUTH_MANAGED_KEYS_ENABLED=true`, paid users can select managed
    OpenRouter models from `/provider` or `/model`.
-4. The backend vends a LiteLLM key for the session. The local CLI keeps it in
+4. `/usage` asks the auth backend for the user's hosted model allowance,
+   current spend, remaining included usage, and reset timestamp.
+5. The backend vends a LiteLLM key for the session. The local CLI keeps it in
    provider memory only; it is not written as a provider API key.
-5. The provider sends requests to the managed gateway with the model normalized
+6. The provider sends requests to the managed gateway with the model normalized
    as `openrouter/<provider>/<model>`.
 
 BYOK still wins. If a user has `OPENROUTER_API_KEY` or provider config API keys,
@@ -39,7 +41,8 @@ When debugging production, check these layers in order:
 
 1. User subscription is active on the backend.
 2. `/v1/auth/llm-credential` returns a managed OpenRouter credential.
-3. LiteLLM key allowlist includes the selected `openrouter/...` model.
-4. OpenRouter workspace has credits and the key monthly limit is high enough.
-5. The CLI request uses the managed `2048` default unless the user configured a
+3. `/v1/auth/llm-usage` can read the user's LiteLLM key spend for `/usage`.
+4. LiteLLM key allowlist includes the selected `openrouter/...` model.
+5. OpenRouter workspace has credits and the key monthly limit is high enough.
+6. The CLI request uses the managed `2048` default unless the user configured a
    smaller or larger explicit cap.

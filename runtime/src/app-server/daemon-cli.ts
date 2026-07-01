@@ -2768,6 +2768,10 @@ class AgenCDaemonReloadableAuthBackend implements AuthBackend {
     return this.#current.inferAgencModel(params);
   }
 
+  getLlmUsage(params?: Parameters<AuthBackend["getLlmUsage"]>[0]) {
+    return this.#current.getLlmUsage(params);
+  }
+
   getSubscriptionTier(
     params?: Parameters<AuthBackend["getSubscriptionTier"]>[0],
   ) {

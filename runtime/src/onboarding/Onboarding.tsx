@@ -49,6 +49,7 @@ import {
   verifyApiKey,
   type VerificationStatus,
 } from "./useApiKeyVerification.js";
+import { subscriptionManagedDefaultModel } from "../commands/subscription-managed-models.js";
 
 export type FirstRunOnboardingStepId =
   | "preflight"
@@ -204,6 +205,16 @@ function providerDefaultModel(
   config: AgenCConfig,
   env: OnboardingEnv | undefined,
 ): string {
+  if (
+    MANAGED_KEY_PROVIDERS.has(provider) &&
+    resolveAuthManagedKeysEnabled(config) &&
+    hasEntitledRemoteAuthSessionSync(env)
+  ) {
+    return (
+      subscriptionManagedDefaultModel(provider) ??
+      BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
+    );
+  }
   const settings = resolveProviderSettings(provider, config, env);
   return settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
 }
@@ -212,13 +223,18 @@ function initialProvider(
   config: AgenCConfig,
   env: OnboardingEnv | undefined,
 ): BuiltInProviderSlug {
-  return (
-    resolveProviderSelection({
-      config,
-      env,
-      fallback: "grok",
-    }) ?? "grok"
-  );
+  const envOrShortcut = resolveProviderSelection({
+    config: { ...config, model_provider: undefined },
+    env,
+  });
+  if (envOrShortcut !== undefined) return envOrShortcut;
+  const configured = normalizeBuiltInProviderSlug(config.model_provider);
+  if (resolveAuthManagedKeysEnabled(config) && hasEntitledRemoteAuthSessionSync(env)) {
+    return configured === undefined || configured === "grok"
+      ? "openrouter"
+      : configured;
+  }
+  return configured ?? "grok";
 }
 
 export function createInitialFirstRunOnboardingState(
@@ -245,20 +261,42 @@ export function createInitialFirstRunOnboardingState(
   };
 }
 
-function providerChoices(): readonly BuiltInProviderSlug[] {
-  const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze([
-    "grok",
-    "openai",
-    "anthropic",
-    "ollama",
-    "lmstudio",
-    "openai-compatible",
-    "openrouter",
-    "groq",
-    "deepseek",
-    "gemini",
-    "agenc",
-  ]);
+function providerChoices(
+  context?: Pick<FirstRunOnboardingContext, "config" | "env">,
+): readonly BuiltInProviderSlug[] {
+  const proHostedReady =
+    context !== undefined &&
+    resolveAuthManagedKeysEnabled(context.config) &&
+    hasEntitledRemoteAuthSessionSync(context.env);
+  const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze(
+    proHostedReady
+      ? [
+          "openrouter",
+          "grok",
+          "openai",
+          "anthropic",
+          "ollama",
+          "lmstudio",
+          "openai-compatible",
+          "groq",
+          "deepseek",
+          "gemini",
+          "agenc",
+        ]
+      : [
+          "grok",
+          "openai",
+          "anthropic",
+          "ollama",
+          "lmstudio",
+          "openai-compatible",
+          "openrouter",
+          "groq",
+          "deepseek",
+          "gemini",
+          "agenc",
+        ],
+  );
   const available = new Set(listBuiltInProviderInfo().map((info) => info.id));
   return preferredOrder.filter((provider) => available.has(provider));
 }
@@ -307,10 +345,14 @@ function parseTheme(raw: string, current: string): string | null {
   return THEME_CHOICES.find((theme) => theme === input) ?? null;
 }
 
-function parseProvider(raw: string, current: BuiltInProviderSlug): BuiltInProviderSlug | null {
+function parseProvider(
+  raw: string,
+  current: BuiltInProviderSlug,
+  context: Pick<FirstRunOnboardingContext, "config" | "env">,
+): BuiltInProviderSlug | null {
   const input = raw.trim().toLowerCase();
   if (input === "" || input === "next") return current;
-  const choices = providerChoices();
+  const choices = providerChoices(context);
   const index = Number(input);
   if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
     return choices[index - 1] ?? current;
@@ -655,7 +697,7 @@ export async function checkOnboardingProviderConnection(
       model,
       status: "ready",
       ok: true,
-      detail: "AgenC account is signed in and can provide managed provider credentials.",
+      detail: "AgenC Pro is signed in. Hosted OpenRouter model access is ready.",
       baseURL,
     };
   }
@@ -753,7 +795,7 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "provider": {
-      const provider = parseProvider(raw, state.selectedProvider);
+      const provider = parseProvider(raw, state.selectedProvider, context);
       if (provider === null) {
         return {
           state: { ...state, error: "Choose a provider number or slug." },
@@ -1098,8 +1140,18 @@ function apiKeyInstructionForConnection(
   return `Paste ${connection.keyEnvVar} to verify it, or type next or skip to add it later.`;
 }
 
-function apiKeyInstructionForProvider(provider: BuiltInProviderSlug): string {
+function apiKeyInstructionForProvider(
+  provider: BuiltInProviderSlug,
+  context: FirstRunOnboardingContext,
+): string {
   const keyEnvVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
+  if (
+    MANAGED_KEY_PROVIDERS.has(provider) &&
+    resolveAuthManagedKeysEnabled(context.config) &&
+    hasEntitledRemoteAuthSessionSync(context.env)
+  ) {
+    return "Your Pro account can use hosted model access here. Type next to verify it.";
+  }
   if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
     return "This provider can continue without a BYOK API key. Type next to continue.";
   }
@@ -1150,7 +1202,7 @@ export function detailLinesForStep(
       ];
     case "provider":
       return [
-        ...providerChoices().map((provider, index) =>
+        ...providerChoices(context).map((provider, index) =>
           `${index + 1}. ${provider}${provider === state.selectedProvider ? " (current)" : ""}`
         ),
         "Type a number or provider slug.",
@@ -1171,7 +1223,7 @@ export function detailLinesForStep(
       if (connection === null) {
         return [
           `Provider: ${state.selectedProvider}`,
-          apiKeyInstructionForProvider(state.selectedProvider),
+          apiKeyInstructionForProvider(state.selectedProvider, context),
         ];
       }
       return [

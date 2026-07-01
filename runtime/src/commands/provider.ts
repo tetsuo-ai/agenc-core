@@ -16,6 +16,7 @@
 
 import type { Session } from "../session/session.js";
 import { resolveProviderSettings } from "../config/resolve-provider.js";
+import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
 import { configuredModelForProvider, defaultModelForProvider } from "../config/resolve-model.js";
 import { normalizeProviderName } from "../llm/provider.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
@@ -259,11 +260,22 @@ function providerSwitchAuthError(
   if (isLocalProviderEndpoint(settings?.baseURL ?? info.baseURL)) return undefined;
   const apiKey = settings?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
-  if (providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
+  if (
+    providerHasLiveSubscriptionRoute(normalizedProvider) &&
+    hasEntitledRemoteAuthSessionSync(process.env)
+  ) {
+    return undefined;
+  }
+  if (providerHasLiveSubscriptionRoute(normalizedProvider)) {
+    return (
+      `Provider switch to "${normalizedProvider}" blocked: sign in with a paid ` +
+      `AgenC plan using /login, or set ${info.apiKeyEnvVar} for BYOK.`
+    );
+  }
   return (
     `Provider switch to "${normalizedProvider}" blocked: ` +
-    `subscription-managed access is not enabled for this provider. ` +
-    `Set ${info.apiKeyEnvVar} for BYOK, or run /provider grok.`
+    `hosted subscription access is available through OpenRouter. ` +
+    `Run /provider openrouter, or set ${info.apiKeyEnvVar} for BYOK.`
   );
 }
 

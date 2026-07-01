@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import {
   formatSubscriptionCommandResult,
+  formatUsageCommandResult,
   loginCommand,
   logoutCommand,
   subscriptionCommand,
+  usageCommand,
   whoamiCommand,
 } from "./auth.js";
 import { buildDefaultRegistry } from "./registry.js";
@@ -53,7 +55,8 @@ describe("auth slash commands", () => {
 
     await expect(loginCommand.execute(ctx)).resolves.toEqual({
       kind: "text",
-      text: "Logged in as Local AgenC user (id=local, plan=free)",
+      text:
+        "Logged in as Local AgenC user (id=local, plan=free) · plan=free · managed keys require Pro (https://id.agenc.ag/pricing)",
     });
     await expect(whoamiCommand.execute(ctx)).resolves.toEqual({
       kind: "text",
@@ -107,6 +110,7 @@ describe("auth slash commands", () => {
     const registry = buildDefaultRegistry();
 
     expect(registry.find("billing")?.name).toBe("subscription");
+    expect(registry.find("usage")?.name).toBe("usage");
     expect(subscriptionCommand.description).toContain("plan");
   });
 
@@ -138,6 +142,70 @@ describe("auth slash commands", () => {
     expect(text).not.toContain("claude-haiku-4.5 or");
     expect(text).not.toContain("$10");
     expect(text).not.toContain("LiteLLM");
+  });
+
+  it("shows model allowance usage for free local accounts", async () => {
+    const agencHome = await makeHome();
+    const ctx = localAuthCtx(agencHome);
+    await loginCommand.execute(ctx);
+
+    await expect(usageCommand.execute(ctx)).resolves.toEqual({
+      kind: "text",
+      text:
+        "Plan: free\n" +
+        "Managed models: not enabled\n" +
+        "Hosted model usage requires Pro or higher.\n" +
+        "BYOK still works without a subscription.\n" +
+        "Billing: https://id.agenc.ag/subscription",
+    });
+  });
+
+  it("formats paid model allowance usage", () => {
+    expect(formatUsageCommandResult({
+      managedModelsEnabled: true,
+      modelAllowance: {
+        allowedModelCount: 19,
+        duration: "30d",
+        includedUsd: 10,
+        percentUsed: 12.3,
+        remainingUsd: 8.7654,
+        resetsAt: "2026-06-01T00:00:00.000Z",
+        status: "active",
+        usedUsd: 1.2346,
+      },
+      subscriptionTier: "pro",
+    }, "pro")).toBe(
+      "Plan: pro\n" +
+        "Managed models: enabled\n" +
+        "Usage: active\n" +
+        "Included usage: $10.00\n" +
+        "Used: $1.23\n" +
+        "Remaining: $8.77\n" +
+        "Used percent: 12.3%\n" +
+        "Resets: 2026-06-01T00:00:00.000Z\n" +
+        "Models: 19 hosted routes\n" +
+        "Token counts vary by model, so usage is tracked as included USD.",
+    );
+  });
+
+  it("formats unavailable paid usage without fabricated numbers", () => {
+    expect(formatUsageCommandResult({
+      managedModelsEnabled: true,
+      modelAllowance: {
+        allowedModelCount: 19,
+        duration: "30d",
+        resetsAt: "2026-06-01T00:00:00.000Z",
+        status: "unavailable",
+      },
+      subscriptionTier: "pro",
+    }, "pro")).toBe(
+      "Plan: pro\n" +
+        "Managed models: enabled\n" +
+        "Usage: temporarily unavailable\n" +
+        "Resets: 2026-06-01T00:00:00.000Z\n" +
+        "Models: 19 hosted routes\n" +
+        "Token counts vary by model, so usage is tracked as included USD.",
+    );
   });
 
   it("rejects unexpected arguments", async () => {

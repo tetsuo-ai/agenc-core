@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import type { AuthBackend, AuthIdentity } from "../auth/backend.js";
+import type { AuthBackend, AuthIdentity, AuthLlmUsage } from "../auth/backend.js";
 import { createAuthBackend } from "../auth/selection.js";
 import { resolveAgencHome } from "../config/env.js";
 import { defaultConfig } from "../config/schema.js";
@@ -17,7 +17,7 @@ import {
   subscriptionManagedModels,
 } from "./subscription-managed-models.js";
 
-type AuthAction = "login" | "logout" | "whoami" | "subscription";
+type AuthAction = "login" | "logout" | "whoami" | "subscription" | "usage";
 
 const TUI_AUTH_SESSION_ID = "tui" as const;
 const SUBSCRIPTION_URL = "https://id.agenc.ag/subscription" as const;
@@ -56,11 +56,20 @@ export const subscriptionCommand: SlashCommand = {
   execute: async (ctx) => executeAuthCommand("subscription", ctx),
 };
 
+export const usageCommand: SlashCommand = {
+  name: "usage",
+  description: "Show hosted model usage for your AgenC plan",
+  immediate: true,
+  supportsNonInteractive: true,
+  execute: async (ctx) => executeAuthCommand("usage", ctx),
+};
+
 export const authCommands: readonly SlashCommand[] = [
   loginCommand,
   logoutCommand,
   whoamiCommand,
   subscriptionCommand,
+  usageCommand,
 ];
 
 async function executeAuthCommand(
@@ -84,9 +93,12 @@ async function executeAuthCommand(
       } finally {
         clearLocalAuthNotice(ctx);
       }
+      const tier = await resolveSubscriptionTier(backend);
       return {
         kind: "text",
-        text: `Logged in as ${formatAgenCAuthIdentity(result.identity)}`,
+        text:
+          `Logged in as ${formatAgenCAuthIdentity(result.identity)}` +
+          formatSubscriptionStatus(tier),
       };
     }
 
@@ -111,6 +123,13 @@ async function executeAuthCommand(
       return {
         kind: "text",
         text: formatSubscriptionCommandResult(tier),
+      };
+    }
+    if (action === "usage") {
+      const usage = await resolveLlmUsage(backend);
+      return {
+        kind: "text",
+        text: formatUsageCommandResult(usage, tier),
       };
     }
 
@@ -146,6 +165,16 @@ async function resolveSubscriptionTier(
 ): Promise<string | undefined> {
   try {
     return await backend.getSubscriptionTier({ sessionId: TUI_AUTH_SESSION_ID });
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveLlmUsage(
+  backend: AuthBackend,
+): Promise<AuthLlmUsage | undefined> {
+  try {
+    return await backend.getLlmUsage({ sessionId: TUI_AUTH_SESSION_ID });
   } catch {
     return undefined;
   }
@@ -274,4 +303,78 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
     );
   }
   return lines.join("\n");
+}
+
+export function formatUsageCommandResult(
+  usage: AuthLlmUsage | undefined,
+  fallbackTier: string | undefined,
+): string {
+  if (usage === undefined) {
+    return [
+      `Plan: ${fallbackTier ?? "unknown"}`,
+      "Managed model usage is temporarily unavailable.",
+      `Billing: ${SUBSCRIPTION_URL}`,
+    ].join("\n");
+  }
+
+  const allowance = usage.modelAllowance;
+  const lines = [
+    `Plan: ${usage.subscriptionTier}`,
+    `Managed models: ${usage.managedModelsEnabled ? "enabled" : "not enabled"}`,
+  ];
+
+  if (!usage.managedModelsEnabled || allowance.status === "free") {
+    lines.push(
+      "Hosted model usage requires Pro or higher.",
+      "BYOK still works without a subscription.",
+      `Billing: ${SUBSCRIPTION_URL}`,
+    );
+    return lines.join("\n");
+  }
+
+  if (allowance.status === "unavailable") {
+    lines.push("Usage: temporarily unavailable");
+  } else {
+    if (allowance.status === "pending") {
+      lines.push("Usage: ready, no hosted model usage yet");
+    } else {
+      lines.push(`Usage: ${allowance.status}`);
+    }
+    if (allowance.includedUsd !== undefined) {
+      lines.push(`Included usage: ${formatUsd(allowance.includedUsd)}`);
+    }
+    if (allowance.usedUsd !== undefined) {
+      lines.push(`Used: ${formatUsd(allowance.usedUsd)}`);
+    }
+    if (allowance.remainingUsd !== undefined) {
+      lines.push(`Remaining: ${formatUsd(allowance.remainingUsd)}`);
+    }
+    if (allowance.percentUsed !== undefined) {
+      lines.push(`Used percent: ${formatPercent(allowance.percentUsed)}`);
+    }
+  }
+
+  if (allowance.resetsAt !== undefined) {
+    lines.push(`Resets: ${formatDate(allowance.resetsAt)}`);
+  }
+  lines.push(
+    `Models: ${allowance.allowedModelCount} hosted routes`,
+    "Token counts vary by model, so usage is tracked as included USD.",
+  );
+  return lines.join("\n");
+}
+
+function formatUsd(value: number): string {
+  const decimals = value > 0 && value < 1 ? 4 : 2;
+  return `$${value.toFixed(decimals)}`;
+}
+
+function formatPercent(value: number): string {
+  return `${value.toFixed(value % 1 === 0 ? 0 : 1)}%`;
+}
+
+function formatDate(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return value;
+  return parsed.toISOString();
 }

@@ -1896,7 +1896,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           // subsequent prompt until another setToolJSX fired.
           showTransientResult(display, {
             display: result.kind === "error" ? "error" : undefined,
-            persistent: commandName === "whoami" || commandName === "subscription"
+            persistent: [
+              "login",
+              "logout",
+              "whoami",
+              "subscription",
+              "usage",
+            ].includes(commandName)
           });
           return {
             forwardedToModel: false

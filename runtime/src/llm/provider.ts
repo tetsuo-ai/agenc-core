@@ -112,6 +112,7 @@ type ProviderRuntimeExtra = Partial<
   readonly keepAlive?: string;
   readonly numCtx?: number;
   readonly numGpu?: number;
+  readonly managedCredential?: boolean;
   readonly managedGateway?: boolean;
   readonly providerFallback?: ProviderFallbackLadderOptions;
   readonly emitWarning?: LLMProviderConfig["emitWarning"];
@@ -157,6 +158,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "keepAlive",
   "numCtx",
   "numGpu",
+  "managedCredential",
   "managedGateway",
   "emitWarning",
   "emitDiagnostic",
@@ -993,6 +995,9 @@ function readRuntimeExtra(
     ...(readNumber(extra, "numGpu") !== undefined
       ? { numGpu: readNumber(extra, "numGpu") }
       : {}),
+    ...(readBoolean(extra, "managedCredential") !== undefined
+      ? { managedCredential: readBoolean(extra, "managedCredential") }
+      : {}),
     ...(readBoolean(extra, "managedGateway") !== undefined
       ? { managedGateway: readBoolean(extra, "managedGateway") }
       : {}),
@@ -1168,6 +1173,10 @@ function buildOpenAICompatibleProvider(
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   };
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
+  const providerExtra = readProviderRuntimeExtra({
+    ...(cfg as unknown as Record<string, unknown>),
+    ...(extra.managedCredential === true ? { managedCredential: true } : {}),
+  });
   return markFactoryProvider(new ProviderCtor(cfg), {
     provider,
     options: {
@@ -1175,9 +1184,7 @@ function buildOpenAICompatibleProvider(
       baseURL: cfg.baseURL,
       model,
       ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-      ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-        ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
-        : {}),
+      ...(providerExtra ? { extra: providerExtra } : {}),
     },
   });
 }

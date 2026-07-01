@@ -11,6 +11,7 @@ const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL";
 const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL";
 const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
 const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL";
+const REMOTE_AUTH_USAGE_URL_ENV = "AGENC_REMOTE_AUTH_USAGE_URL";
 
 function invalidJsonResponse(): Response {
   return new Response("not-json", { status: 200 });
@@ -89,6 +90,65 @@ describe("RemoteAuthBackend", () => {
       ).resolves.toBe("team");
       expect(fetchImpl).toHaveBeenCalledWith(
         "https://api.agenc.tech/test/subscription-tier",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer remote-token",
+          },
+          body: JSON.stringify({ sessionId: "session-1" }),
+        },
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a persisted remote login token for later HTTP LLM usage calls", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({
+        managedModelsEnabled: true,
+        modelAllowance: {
+          allowedModelCount: 19,
+          duration: "30d",
+          includedUsd: 10,
+          percentUsed: 12.3,
+          remainingUsd: 8.7654,
+          resetsAt: "2026-06-01T00:00:00.000Z",
+          status: "active",
+          usedUsd: 1.2346,
+        },
+        subscriptionTier: "pro",
+      }), { status: 200 })
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: {
+        [REMOTE_AUTH_TOKEN_ENV]: "bootstrap-token",
+        [REMOTE_AUTH_USAGE_URL_ENV]: "https://api.agenc.tech/test/llm-usage",
+      },
+      fetchImpl,
+      loginFlow: () => ({
+        token: "remote-token",
+      }),
+    });
+
+    try {
+      await backend.login({ sessionId: "cli" });
+      await expect(
+        backend.getLlmUsage({ sessionId: "session-1" }),
+      ).resolves.toMatchObject({
+        managedModelsEnabled: true,
+        modelAllowance: {
+          remainingUsd: 8.7654,
+          status: "active",
+          usedUsd: 1.2346,
+        },
+        subscriptionTier: "pro",
+      });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://api.agenc.tech/test/llm-usage",
         {
           method: "POST",
           headers: {
@@ -900,6 +960,29 @@ describe("RemoteAuthBackend", () => {
     expect(subscriptionTierResolver).toHaveBeenCalledWith({
       sessionId: "session-1",
     });
+  });
+
+  it("persists refreshed subscription tiers to the remote auth state", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({
+        token: "remote-token",
+        subscriptionTier: "free",
+      }),
+      subscriptionTierResolver: () => "pro",
+    });
+
+    try {
+      await backend.login({ sessionId: "cli" });
+      await expect(
+        backend.getSubscriptionTier({ sessionId: "session-1" }),
+      ).resolves.toBe("pro");
+      await expect(readFile(join(agencHome, "auth.json"), "utf8")).resolves
+        .toContain("\"subscriptionTier\": \"pro\"");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("uses the configured HTTP subscription tier endpoint", async () => {

@@ -871,10 +871,13 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
 
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
-function isManagedGatewayProviderOptions(
+function isManagedCredentialProviderOptions(
   options: ProviderFactoryOptions | undefined,
 ): boolean {
-  return options?.extra?.managedGateway === true;
+  return (
+    options?.extra?.managedCredential === true ||
+    options?.extra?.managedGateway === true
+  );
 }
 
 function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
@@ -1027,12 +1030,14 @@ async function providerFactoryOptionsFromSettings(params: {
           model: params.model,
         })
       : undefined;
+  const hasManagedCredential = managedCredential !== undefined;
   if (
-    managedCredential !== undefined &&
+    hasManagedCredential &&
     normalizedProvider === "openrouter" &&
     params.settings?.maxOutputTokens === undefined
   ) {
     extra.maxTokens = MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS;
+    extra.managedCredential = true;
   }
   const apiKey = params.settings?.apiKey ?? managedCredential?.apiKey;
   const baseURL = params.settings?.baseURL ?? managedCredential?.baseURL;
@@ -2149,7 +2154,7 @@ export class Session {
     );
     const nextModelInfo =
       normalizeProviderName(preparedSwitch.provider) === "openrouter" &&
-      isManagedGatewayProviderOptions(preparedSwitchOptions) &&
+      isManagedCredentialProviderOptions(preparedSwitchOptions) &&
       targetProviderSettings?.maxOutputTokens === undefined
         ? capManagedOpenRouterModelInfo(rawNextModelInfo)
         : rawNextModelInfo;

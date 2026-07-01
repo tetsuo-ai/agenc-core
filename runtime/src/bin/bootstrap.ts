@@ -1001,6 +1001,8 @@ export async function bootstrapLocalRuntimeSession(
     providerSettings?.baseURL,
     managedKey.baseURL,
   );
+  const hasManagedCredential =
+    managedKey.apiKey !== undefined || managedKey.baseURL !== undefined;
   const selectedProviderModel = managedKey.baseURL !== undefined
     ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
     : providerModel;
@@ -1093,7 +1095,7 @@ export async function bootstrapLocalRuntimeSession(
         ...(providerSettings?.maxOutputTokens !== undefined
           ? { maxTokens: providerSettings.maxOutputTokens }
           : {}),
-        ...(managedKey.baseURL !== undefined &&
+        ...(hasManagedCredential &&
         resolvedProvider === "openrouter" &&
         providerSettings?.maxOutputTokens === undefined
           ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
@@ -1101,6 +1103,7 @@ export async function bootstrapLocalRuntimeSession(
         ...(providerFallback !== undefined
           ? { providerFallback }
           : {}),
+        ...(hasManagedCredential ? { managedCredential: true } : {}),
         ...(managedKey.baseURL !== undefined ? { managedGateway: true } : {}),
       },
     },
@@ -1154,7 +1157,7 @@ export async function bootstrapLocalRuntimeSession(
   setContextWindowUpgradeContext({ currentModel: model, modelsManager });
   const rawModelInfo = await modelsManager.getModelInfo(model);
   const modelInfo =
-    managedKey.baseURL !== undefined &&
+    hasManagedCredential &&
     resolvedProvider === "openrouter" &&
     providerSettings?.maxOutputTokens === undefined
       ? {
