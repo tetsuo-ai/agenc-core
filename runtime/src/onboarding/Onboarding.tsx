@@ -185,12 +185,7 @@ const KEY_REQUIRED_PROVIDERS = new Set<BuiltInProviderSlug>([
   "gemini",
 ]);
 const MANAGED_KEY_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "grok",
-  "openai",
   "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
 ]);
 
 function buildFirstRunOnboardingSteps(

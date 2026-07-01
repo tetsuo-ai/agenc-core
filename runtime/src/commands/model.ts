@@ -52,6 +52,7 @@ import {
   readModelMenuSnapshot,
 } from "./model-menu.js";
 import {
+  formatSubscriptionManagedModels,
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedModels,
@@ -293,7 +294,7 @@ function modelSwitchAuthError(
   if (providerHasLiveSubscriptionRoute(provider)) return undefined;
   return (
     `Model switch blocked: subscription-managed access is currently live for ` +
-    `grok only. Set ${info.apiKeyEnvVar} for BYOK, or run /model grok:grok-4.3.`
+    `${formatSubscriptionManagedModels()}. Set ${info.apiKeyEnvVar} for BYOK.`
   );
 }
 

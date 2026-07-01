@@ -39,6 +39,7 @@ import {
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedDefaultModel,
+  subscriptionManagedModels,
 } from "./subscription-managed-models.js";
 
 /**
@@ -216,10 +217,12 @@ function subscriptionManagedModelError(
   }
   if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
   if (isSubscriptionManagedModel(normalizedProvider, targetModel)) return undefined;
+  const liveModels = subscriptionManagedModels(normalizedProvider)
+    .map((model) => `/model ${normalizedProvider}:${model}`)
+    .join(" or ");
   return (
     `Model "${targetModel}" is not enabled for subscription-managed ` +
-    `${normalizedProvider}. Use /model ${normalizedProvider}:grok-4.3 or ` +
-    `/model ${normalizedProvider}:grok-code-fast-1.`
+    `${normalizedProvider}. Use ${liveModels}.`
   );
 }
 

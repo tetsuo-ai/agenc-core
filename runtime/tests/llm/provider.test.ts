@@ -322,7 +322,7 @@ describe("createProvider", () => {
     },
   );
 
-  test("normalizes Grok model ids for AuthBackend-vended gateway keys", async () => {
+  test("normalizes OpenRouter model ids for AuthBackend-vended gateway keys", async () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
@@ -334,8 +334,8 @@ describe("createProvider", () => {
       vendKey,
     };
 
-    const provider = createProvider("grok", {
-      model: "grok-4.3",
+    const provider = createProvider("openrouter", {
+      model: "x-ai/grok-4.3",
       extra: {
         authBackend: vendingAuthBackend,
         sessionId: "session-gateway",
@@ -343,26 +343,26 @@ describe("createProvider", () => {
     });
 
     await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-      provider: "grok",
-      model: "xai/grok-4.3",
+      provider: "openrouter",
+      model: "openrouter/x-ai/grok-4.3",
     });
-    expect(vendKey).toHaveBeenCalledWith("grok", "session-gateway");
+    expect(vendKey).toHaveBeenCalledWith("openrouter", "session-gateway");
   });
 
-  test("normalizes Grok model ids for direct managed gateway providers", async () => {
-    const provider = createProvider("grok", {
+  test("normalizes OpenRouter model ids for direct managed gateway providers", async () => {
+    const provider = createProvider("openrouter", {
       apiKey: "managed-gateway-key",
       baseURL: "https://llm.agenc.tech",
-      model: "grok-code-fast-1",
+      model: "x-ai/grok-build-0.1",
       extra: { managedGateway: true },
     });
 
     await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
-      provider: "grok",
-      model: "xai/grok-code-fast-1",
+      provider: "openrouter",
+      model: "openrouter/x-ai/grok-build-0.1",
     });
     expect(readProviderFactoryOptions(provider)).toMatchObject({
-      model: "xai/grok-code-fast-1",
+      model: "openrouter/x-ai/grok-build-0.1",
     });
   });
 
@@ -1986,7 +1986,7 @@ describe("createProvider", () => {
       () => createProvider("openrouter", { apiKey: "or-test" }),
     );
 
-    expect(readProviderFactoryOptions(provider).model).toBe("openai/gpt-5");
+    expect(readProviderFactoryOptions(provider).model).toBe("x-ai/grok-4.3");
   });
 
   test("'lmstudio' uses the registry default model without an override", () => {

@@ -339,30 +339,50 @@ describe("providerCommand", () => {
   });
 
   it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", () => {
-    const previous = process.env.XAI_API_KEY;
-    delete process.env.XAI_API_KEY;
+    const previous = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     try {
       const snapshot = readProviderMenuSnapshot({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
+        ...mkctx(stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }), ""),
         configStore: {
           current: () => ({
             auth: { managedKeys: { enabled: true } },
           }),
         } as SlashCommandContext["configStore"],
       });
-      const grok = snapshot.rows.find(row => row.provider === "grok");
+      const openrouter = snapshot.rows.find(row => row.provider === "openrouter");
 
-      expect(grok).toMatchObject({
+      expect(openrouter).toMatchObject({
         authState: "managed",
         auth: "subscription",
       });
-      expect(grok?.models).toEqual(["grok-4.3", "grok-code-fast-1"]);
-      expect(grok?.credentialSource).toContain("subscription-managed key");
+      expect(openrouter?.models).toEqual([
+        "x-ai/grok-4.3",
+        "x-ai/grok-build-0.1",
+        "openai/gpt-4o-mini",
+        "openai/gpt-5-nano",
+        "openai/gpt-4.1-nano",
+        "openai/gpt-oss-120b",
+        "anthropic/claude-haiku-4.5",
+        "google/gemini-2.5-flash",
+        "google/gemini-2.5-flash-lite",
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v3.2",
+        "qwen/qwen3-coder-30b-a3b-instruct",
+        "qwen/qwen3-235b-a22b-2507",
+        "mistralai/mistral-small-3.2-24b-instruct",
+        "meta-llama/llama-3.3-70b-instruct",
+        "meta-llama/llama-4-scout",
+        "minimax/minimax-m2.5",
+        "z-ai/glm-4.7-flash",
+      ]);
+      expect(openrouter?.credentialSource).toContain("subscription-managed key");
     } finally {
       if (previous === undefined) {
-        delete process.env.XAI_API_KEY;
+        delete process.env.OPENROUTER_API_KEY;
       } else {
-        process.env.XAI_API_KEY = previous;
+        process.env.OPENROUTER_API_KEY = previous;
       }
     }
   });

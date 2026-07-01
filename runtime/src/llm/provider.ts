@@ -221,8 +221,12 @@ export function normalizeManagedGatewayModel(
   model: string,
 ): string {
   const trimmed = model.trim();
-  if (trimmed.length === 0 || trimmed.includes("/")) return trimmed;
   const normalizedProvider = normalizeProviderName(provider);
+  if (trimmed.length === 0) return trimmed;
+  if (normalizedProvider === "openrouter") {
+    return trimmed.startsWith("openrouter/") ? trimmed : `openrouter/${trimmed}`;
+  }
+  if (trimmed.includes("/")) return trimmed;
   switch (normalizedProvider) {
     case "grok":
       return `xai/${trimmed}`;
