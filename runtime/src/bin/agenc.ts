@@ -2785,6 +2785,18 @@ async function createDeferredDaemonPromptTuiSession(params: {
   const subscribers = new Set<(event: unknown) => void>();
   const liveUnsubscribers = new Map<(event: unknown) => void, () => void>();
 
+  const detachLiveSession = async (): Promise<void> => {
+    for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
+    liveUnsubscribers.clear();
+    liveSession = null;
+    liveSessionPromise = null;
+    const client = daemonClient;
+    daemonClient = null;
+    await client?.close().catch(() => {
+      /* best effort */
+    });
+  };
+
   const ensureLiveSession = async (
     firstMessage: string,
   ): Promise<TuiSessionShape | null> => {
@@ -3155,8 +3167,18 @@ async function createDeferredDaemonPromptTuiSession(params: {
       // user-message row whenever both emits fired with different ids,
       // because the transcript reducer's dedup keys on `event.id`.
       if (liveSession !== null) {
-        await liveSession.submit?.(message, opts);
-        return;
+        try {
+          await liveSession.submit?.(message, opts);
+          return;
+        } catch (error) {
+          if (
+            isLocalSlashCommandInput(message) ||
+            !isDaemonSessionGoneError(error)
+          ) {
+            throw error;
+          }
+          await detachLiveSession();
+        }
       }
       const firstMessage = isLocalSlashCommandInput(message)
         ? await handleLocalTuiSlashCommand({
@@ -3214,11 +3236,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   return {
     session,
     close: async () => {
-      for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
-      liveUnsubscribers.clear();
-      await daemonClient?.close().catch(() => {
-        /* best effort */
-      });
+      await detachLiveSession();
     },
   };
 }
@@ -3235,6 +3253,15 @@ export const __createDeferredDaemonPromptTuiSessionForTest =
 function isLocalSlashCommandInput(message: string): boolean {
   const trimmed = message.trimStart();
   return trimmed.startsWith("/") && !/[\r\n]/.test(message);
+}
+
+function isDaemonSessionGoneError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/AgenC daemon session not found or closed:/.test(message)) return true;
+  if (!isRecord(error)) return false;
+  if (error.code === "AGENT_NOT_FOUND") return true;
+  const data = error.data;
+  return isRecord(data) && data.code === "AGENT_NOT_FOUND";
 }
 
 function envWithBridgeMcpServers(

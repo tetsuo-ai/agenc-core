@@ -1090,6 +1090,69 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] closes active tool rows when a turn is interrupted", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-interrupted-tool",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-interrupted-tool", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    session.emitPhaseEvent({
+      type: "tool_call",
+      toolCall: {
+        id: "call_1",
+        name: "exec_command",
+        arguments: '{"cmd":"sleep 120"}',
+      },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      stopReason: "cancelled",
+    });
+
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            event: expect.objectContaining({
+              type: "tool_call_completed",
+              payload: expect.objectContaining({
+                callId: "call_1",
+                isError: true,
+                metadata: { cause: "user_interrupted" },
+              }),
+            }),
+          }),
+        }),
+      );
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "idle",
+            runStatus: "completed",
+            message: "cancelled",
+          }),
+        }),
+      );
+    });
+  });
+
   it("[managed-thread] records completed turn phases as idle snapshots", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-completed-turn-status",

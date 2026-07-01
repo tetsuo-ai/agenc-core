@@ -150,7 +150,7 @@ function installDaemonCliDepsForTest(
       readonly emit: (event: unknown) => void;
     }) => void;
     readonly createConnectedTuiClientError?: Error;
-    readonly requestErrors?: Partial<Record<string, Error>>;
+    readonly requestErrors?: Partial<Record<string, Error | readonly Error[]>>;
     readonly mcpManager?: unknown;
   } = {},
 ): {
@@ -177,6 +177,12 @@ function installDaemonCliDepsForTest(
   const runtimeSessionId = options.runtimeSessionId ?? sessionId;
   const cwd = options.cwd ?? process.cwd();
   const requests: Array<{ method: string; params: unknown }> = [];
+  const requestErrorQueues = new Map<string, Error[]>(
+    Object.entries(options.requestErrors ?? {}).map(([method, error]) => [
+      method,
+      Array.isArray(error) ? [...error] : [error],
+    ]),
+  );
   let sessionEventEmit: ((event: unknown) => void) | null = null;
   const oneShotEvents =
     options.oneShotEvents ??
@@ -215,7 +221,11 @@ function installDaemonCliDepsForTest(
   const client = {
     request: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       requests.push({ method, params });
-      const requestError = options.requestErrors?.[method];
+      const requestErrors = requestErrorQueues.get(method);
+      const requestError = requestErrors?.shift();
+      if (requestErrors !== undefined && requestErrors.length === 0) {
+        requestErrorQueues.delete(method);
+      }
       if (requestError !== undefined) throw requestError;
       if (method === "agent.create") {
         return {
@@ -2699,6 +2709,94 @@ describe("main() smoke", () => {
         sessionId: "session_tui_cancel",
         reason: "interrupted",
       });
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry reopens deferred TUI sessions after daemon session loss", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-stale-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-stale-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+
+    process.argv = ["node", "agenc", "--provider", "grok", "--model", "grok-4.3"];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_stale",
+      sessionId: "session_tui_stale",
+      cwd: tmpCwd,
+      requestErrors: {
+        "message.stream": [
+          new Error(
+            "AgenC daemon session not found or closed: session_tui_stale",
+          ),
+        ],
+      },
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+
+      await session.submit?.("first daemon prompt");
+      await expect(
+        session.submit?.("second daemon prompt"),
+      ).resolves.toBeUndefined();
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      expect(daemon.startPromptAgent).toHaveBeenCalledTimes(2);
+      expect(daemon.startPromptAgent).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          prompt: "second daemon prompt",
+          cwd: tmpCwd,
+          provider: "grok",
+          model: "grok-4.3",
+          initialContent: "second daemon prompt",
+        }),
+      );
+      expect(daemon.requests.map((request) => request.method)).toEqual([
+        "agent.attach",
+        "message.stream",
+        "agent.attach",
+      ]);
+      expect(daemon.createConnectedTuiClient).toHaveBeenCalledTimes(2);
+      expect(daemon.client.close).toHaveBeenCalled();
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {

@@ -2114,18 +2114,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       return;
     }
     const event = this.#eventFromProgress(agentId, progress);
-    if (event === null) return;
+    const events = [
+      ...this.#takeInterruptedToolCompletionEvents(agentId, progress),
+      ...(event !== null ? [event] : []),
+    ];
+    if (events.length === 0) return;
     if (active === undefined) {
       const pending = this.#pendingEvents.get(agentId) ?? [];
-      pending.push(event);
+      pending.push(...events);
       this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
       return;
     }
     this.#applyProgressStatus(active, progress);
-    await this.#emitOrBufferEvent(
-      active,
-      withAgentBudgetUsage(active, event, this.#budgetNowMs()),
-    );
+    for (const nextEvent of events) {
+      await this.#emitOrBufferEvent(
+        active,
+        withAgentBudgetUsage(active, nextEvent, this.#budgetNowMs()),
+      );
+    }
   }
 
   #applyProgressStatus(
@@ -2301,6 +2307,41 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         this.#pendingActiveToolCallIds.set(agentId, activeToolCallIds);
       }
     }
+  }
+
+  #takeInterruptedToolCompletionEvents(
+    agentId: string,
+    progress: RunAgentProgressEvent,
+  ): BackgroundAgentDaemonEvent[] {
+    if (
+      progress.kind !== "turn_interrupted" &&
+      progress.kind !== "run_interrupted"
+    ) {
+      return [];
+    }
+    const active = this.#active.get(agentId);
+    const activeToolCallIds =
+      active?.activeToolCallIds ?? this.#pendingActiveToolCallIds.get(agentId);
+    if (activeToolCallIds === undefined || activeToolCallIds.size === 0) {
+      return [];
+    }
+    const events = [...activeToolCallIds].map((callId) => ({
+      id: `tool-interrupted-${agentId}-${callId}-${hashStable(progress.reason)}`,
+      type: "tool_call_completed",
+      payload: {
+        callId,
+        result: interruptedToolResultContent(callId, progress.reason),
+        isError: true,
+        metadata: {
+          cause: "user_interrupted",
+        },
+      },
+    }));
+    activeToolCallIds.clear();
+    if (active === undefined) {
+      this.#pendingActiveToolCallIds.delete(agentId);
+    }
+    return events;
   }
 
   #eventFromProgress(
@@ -4122,6 +4163,14 @@ function messageContentDisplayText(content: MessageContent): string {
     .map((part) => (part.type === "text" ? part.text : "[image]"))
     .filter((part) => part.trim().length > 0)
     .join("\n");
+}
+
+function interruptedToolResultContent(callId: string, reason: string): string {
+  return JSON.stringify({
+    tool_use_id: callId,
+    is_error: true,
+    content: `<tool_use_error>user interrupted - ${reason}</tool_use_error>`,
+  });
 }
 
 function hashStable(value: string): string {
