@@ -191,8 +191,10 @@ function isSubscriptionEntitled(tier: AuthSubscriptionTier): boolean {
 }
 
 function providerHasLiveManagedSubscriptionRoute(provider: ProviderName): boolean {
-  return provider === "grok";
+  return provider === "openrouter";
 }
+
+const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 
 function enforceRemoteSubscriptionGate(params: {
   readonly authBackend: AuthBackend | undefined;
@@ -341,7 +343,7 @@ function requireProviderApiKeyOrUndefined(params: {
   const envHint = providerApiKeyEnvHint(params.provider, params.providerSettings);
   if (envHint === undefined) return undefined;
   const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(params.provider)
-    ? "Subscription-managed access is currently live for Grok only."
+    ? "Subscription-managed access is currently live for OpenRouter only."
     : params.managedKey.disabled
     ? "Managed key vending is disabled by auth.managedKeys.enabled."
     : params.managedKey.attempted
@@ -1078,6 +1080,11 @@ export async function bootstrapLocalRuntimeSession(
         ...(providerSettings?.maxOutputTokens !== undefined
           ? { maxTokens: providerSettings.maxOutputTokens }
           : {}),
+        ...(managedKey.baseURL !== undefined &&
+        resolvedProvider === "openrouter" &&
+        providerSettings?.maxOutputTokens === undefined
+          ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
+          : {}),
         ...(providerFallback !== undefined
           ? { providerFallback }
           : {}),
@@ -1132,7 +1139,24 @@ export async function bootstrapLocalRuntimeSession(
   // can propose same-family larger-context-window models without
   // having to await a fresh catalog lookup.
   setContextWindowUpgradeContext({ currentModel: model, modelsManager });
-  const modelInfo = await modelsManager.getModelInfo(model);
+  const rawModelInfo = await modelsManager.getModelInfo(model);
+  const modelInfo =
+    managedKey.baseURL !== undefined &&
+    resolvedProvider === "openrouter" &&
+    providerSettings?.maxOutputTokens === undefined
+      ? {
+          ...rawModelInfo,
+          maxOutputTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+          maxOutputTokensUpperLimit:
+            rawModelInfo.maxOutputTokensUpperLimit !== undefined
+              ? Math.min(
+                  rawModelInfo.maxOutputTokensUpperLimit,
+                  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+                )
+              : MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+          maxOutputTokensCappedDefault: true,
+        }
+      : rawModelInfo;
   const baseSessionConfiguration = sessionConfigurationFromAgenCConfig({
     config: startup.config,
     workspaceRoot,

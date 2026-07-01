@@ -867,6 +867,8 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
   "openrouter",
 ]);
 
+const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
+
 function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
 }
@@ -991,6 +993,13 @@ async function providerFactoryOptionsFromSettings(params: {
           model: params.model,
         })
       : undefined;
+  if (
+    managedCredential !== undefined &&
+    normalizedProvider === "openrouter" &&
+    params.settings?.maxOutputTokens === undefined
+  ) {
+    extra.maxTokens = MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS;
+  }
   const apiKey = params.settings?.apiKey ?? managedCredential?.apiKey;
   const baseURL = params.settings?.baseURL ?? managedCredential?.baseURL;
   return {
