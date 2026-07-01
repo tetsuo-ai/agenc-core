@@ -12,7 +12,10 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { formatSubscriptionManagedModels } from "./subscription-managed-models.js";
+import {
+  subscriptionManagedDefaultModel,
+  subscriptionManagedModels,
+} from "./subscription-managed-models.js";
 
 type AuthAction = "login" | "logout" | "whoami" | "subscription";
 
@@ -245,18 +248,39 @@ function formatSubscriptionStatus(tier: string | undefined): string {
   return ` · plan=${tier} · managed keys require Pro (https://id.agenc.ag/pricing)`;
 }
 
-function formatSubscriptionCommandResult(tier: string | undefined): string {
+function managedUsageCapLabel(plan: string): string | undefined {
+  switch (plan) {
+    case "pro":
+      return "$10 model spend / 30d";
+    case "team":
+      return "$200 model spend / 30d";
+    case "enterprise":
+      return "$1000 model spend / 30d";
+    default:
+      return undefined;
+  }
+}
+
+export function formatSubscriptionCommandResult(tier: string | undefined): string {
   const plan = tier ?? "unknown";
   const lines = [
     `Plan: ${plan}`,
     `Billing: ${SUBSCRIPTION_URL}`,
   ];
   if (plan === "pro" || plan === "team" || plan === "enterprise") {
+    const provider = "openrouter";
+    const models = subscriptionManagedModels(provider);
+    const defaultModel = subscriptionManagedDefaultModel(provider);
+    const cap = managedUsageCapLabel(plan);
     lines.push(
-      "Managed model access is enabled for this account.",
-      `Currently live through the subscription: ${formatSubscriptionManagedModels()}.`,
-      "Other providers need BYOK until their managed gateway deployments are enabled.",
-      "Use /provider to inspect whether a provider is using BYOK or subscription-managed keys.",
+      "Managed models: enabled",
+      "Gateway: AgenC -> LiteLLM -> OpenRouter",
+      ...(cap !== undefined ? [`Included usage cap: ${cap}`] : []),
+      `Available models: ${models.length} managed OpenRouter routes`,
+      defaultModel !== undefined
+        ? `Default route: /model ${provider}:${defaultModel}`
+        : "Default route: run /provider",
+      "Choose/switch models with /provider.",
     );
   } else {
     lines.push(
