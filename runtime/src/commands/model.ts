@@ -61,7 +61,7 @@ import {
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedModels,
-  subscriptionManagedModelsForTier,
+  visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
 export interface HistoryCompatResult {
@@ -342,7 +342,7 @@ function subscriptionManagedModelError(
   if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
   const tier = remoteAuthSessionSubscriptionTierSync(process.env);
   const example =
-    subscriptionManagedModelsForTier(provider, tier)[0] ??
+    visibleSubscriptionManagedModelsForTier(provider, tier)[0] ??
     subscriptionManagedModels(provider)[0];
   const hint =
     example !== undefined

@@ -23,7 +23,7 @@ import {
   hasHostedManagedAccess,
   hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
-  subscriptionManagedModelsForTier,
+  visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -328,7 +328,7 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
       providerHasLiveSubscriptionRoute(catalogProvider) &&
       !providerHasByok(catalogProvider)
     ) {
-      return subscriptionManagedModelsForTier(
+      return visibleSubscriptionManagedModelsForTier(
         catalogProvider,
         managedSubscriptionTier,
       );

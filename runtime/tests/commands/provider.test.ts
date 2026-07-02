@@ -406,7 +406,7 @@ describe("providerCommand", () => {
         "minimax/minimax-m2.5",
         "z-ai/glm-4.7-flash",
       ]);
-      expect(openrouter?.models).toContain("openrouter/free");
+      expect(openrouter?.models).not.toContain("openrouter/free");
       expect(openrouter?.models).toContain("openai/gpt-oss-20b:free");
       expect(openrouter?.models.length).toBeGreaterThan(19);
       expect(openrouter?.credentialSource).toContain("subscription-managed key");

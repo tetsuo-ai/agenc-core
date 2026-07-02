@@ -24,7 +24,7 @@ import {
   hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedDefaultModelForTier,
-  subscriptionManagedModelsForTier,
+  visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -463,7 +463,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     const rawModels = modelCatalog[provider] ?? [];
     const managedModels =
       managedSubscriptionAvailable && providerHasLiveSubscriptionRoute(provider)
-        ? subscriptionManagedModelsForTier(provider, managedSubscriptionTier)
+        ? visibleSubscriptionManagedModelsForTier(provider, managedSubscriptionTier)
         : undefined;
     const models = managedModels !== undefined ? managedModels : rawModels;
     const state = runtimeState({
