@@ -45,7 +45,7 @@ import {
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedDefaultModelForTier,
-  subscriptionManagedModelsForTier,
+  visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
 /**
@@ -226,7 +226,7 @@ function subscriptionManagedModelError(
   }
   if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
   if (isSubscriptionManagedModel(normalizedProvider, targetModel)) return undefined;
-  const liveModels = subscriptionManagedModelsForTier(
+  const liveModels = visibleSubscriptionManagedModelsForTier(
     normalizedProvider,
     remoteAuthSessionSubscriptionTierSync(process.env),
   )

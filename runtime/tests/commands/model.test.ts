@@ -449,7 +449,7 @@ describe("modelCommand", () => {
       "minimax/minimax-m2.5",
       "z-ai/glm-4.7-flash",
     ]);
-    expect(openrouterModels).toContain("openrouter/free");
+    expect(openrouterModels).not.toContain("openrouter/free");
     expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
     expect(openrouterModels.length).toBeGreaterThan(19);
     expect(snapshot.rows.every(row => row.provider === "openrouter")).toBe(true);

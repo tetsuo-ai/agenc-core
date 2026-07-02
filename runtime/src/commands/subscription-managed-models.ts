@@ -10,6 +10,9 @@ import type { AuthSubscriptionTier } from "../auth/backend.js";
 import { OPENROUTER_FREE_MODEL_IDS } from "../llm/registry/openrouter-free-models.js";
 
 export const SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER: ProviderSlug = "openrouter";
+const HIDDEN_SUBSCRIPTION_MANAGED_MODEL_IDS = new Set<string>([
+  "openrouter/free",
+]);
 
 const OPENROUTER_PAID_MODELS = [
   "x-ai/grok-4.3",
@@ -74,6 +77,15 @@ export function subscriptionManagedModelsForTier(
   return [];
 }
 
+export function visibleSubscriptionManagedModelsForTier(
+  provider: ProviderSlug | string,
+  tier: AuthSubscriptionTier | undefined,
+): readonly string[] {
+  return subscriptionManagedModelsForTier(provider, tier).filter(
+    (model) => !HIDDEN_SUBSCRIPTION_MANAGED_MODEL_IDS.has(model),
+  );
+}
+
 export function providerHasLiveSubscriptionRoute(
   provider: ProviderSlug | string,
 ): boolean {
@@ -116,7 +128,7 @@ export function subscriptionManagedDefaultModelForTier(
   provider: ProviderSlug | string,
   tier: AuthSubscriptionTier | undefined,
 ): string | undefined {
-  return subscriptionManagedModelsForTier(provider, tier)[0];
+  return visibleSubscriptionManagedModelsForTier(provider, tier)[0];
 }
 
 export function isSubscriptionManagedModel(

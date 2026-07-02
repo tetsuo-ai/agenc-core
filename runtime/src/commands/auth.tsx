@@ -19,8 +19,7 @@ import {
   hasHostedManagedAccess,
   subscriptionManagedDefaultModel,
   subscriptionManagedDefaultModelForTier,
-  subscriptionManagedModels,
-  subscriptionManagedModelsForTier,
+  visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
 type AuthAction = "login" | "logout" | "whoami" | "subscription" | "usage";
@@ -396,7 +395,7 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
   ];
   if (plan === "pro" || plan === "team" || plan === "enterprise") {
     const provider = "openrouter";
-    const models = subscriptionManagedModels(provider);
+    const models = visibleSubscriptionManagedModelsForTier(provider, plan);
     const defaultModel = subscriptionManagedDefaultModel(provider);
     lines.push(
       "Managed models: enabled",
@@ -409,7 +408,7 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
     );
   } else if (plan === "free") {
     const provider = "openrouter";
-    const models = subscriptionManagedModelsForTier(provider, "free");
+    const models = visibleSubscriptionManagedModelsForTier(provider, "free");
     const defaultModel = subscriptionManagedDefaultModelForTier(provider, "free");
     lines.push(
       "Free hosted models: enabled",
