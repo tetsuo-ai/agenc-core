@@ -377,14 +377,14 @@ function createHttpRemoteAuthKeyVendor(
     if (fetchImpl === undefined) {
       throw new Error("RemoteAuthBackend requires fetch for remote key vending");
     }
-    const response = await fetchImpl(endpoint, {
+    const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
       headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
       body: JSON.stringify({
         provider: request.provider,
         sessionId: request.sessionId,
       }),
-    });
+    }, "key vending");
     if (!response.ok) {
       throw new Error(
         `RemoteAuthBackend key vending failed with HTTP ${response.status}`,
@@ -415,11 +415,11 @@ function createHttpRemoteAuthLoginFlow(
     if (fetchImpl === undefined) {
       throw new Error("RemoteAuthBackend requires fetch for remote login");
     }
-    const startResponse = await fetchImpl(startEndpoint, {
+    const startResponse = await remoteAuthFetch(fetchImpl, startEndpoint, {
       method: "POST",
       headers: remoteAuthJsonHeaders(undefined),
       body: JSON.stringify(compactRemoteAuthLoginRequest(request)),
-    });
+    }, "login start");
     if (!startResponse.ok) {
       throw new Error(
         `RemoteAuthBackend login start failed with HTTP ${startResponse.status}`,
@@ -439,14 +439,20 @@ function createHttpRemoteAuthLoginFlow(
       (started.intervalSeconds ?? 2) * 1000,
     );
     while (Date.now() <= expiresAtMs) {
-      const pollResponse = await fetchImpl(pollEndpoint, {
-        method: "POST",
-        headers: remoteAuthJsonHeaders(undefined),
-        body: JSON.stringify({
-          deviceCode: started.deviceCode,
-          sessionId: request.sessionId,
-        }),
-      });
+      let pollResponse: Response;
+      try {
+        pollResponse = await remoteAuthFetch(fetchImpl, pollEndpoint, {
+          method: "POST",
+          headers: remoteAuthJsonHeaders(undefined),
+          body: JSON.stringify({
+            deviceCode: started.deviceCode,
+            sessionId: request.sessionId,
+          }),
+        }, "login poll");
+      } catch {
+        await sleep(intervalMs);
+        continue;
+      }
       const polled = await readRemoteAuthPollResponse(pollResponse);
       if (pollResponse.status === 202) {
         intervalMs = remoteAuthPollIntervalMs(polled, intervalMs);
@@ -517,11 +523,11 @@ function createHttpRemoteAuthModelInferer(
     if (fetchImpl === undefined) {
       throw new Error("RemoteAuthBackend requires fetch for hosted model routing");
     }
-    const response = await fetchImpl(endpoint, {
+    const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
       headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
       body: JSON.stringify(compactRemoteAuthModelRequest(request)),
-    });
+    }, "hosted model routing");
     if (!response.ok) {
       throw new Error(
         `RemoteAuthBackend hosted model routing failed with HTTP ${response.status}`,
@@ -550,11 +556,11 @@ function createHttpRemoteAuthSubscriptionTierResolver(
     }
     const token = await resolveRemoteAuthToken(options);
     if (token === undefined) return "free";
-    const response = await fetchImpl(endpoint, {
+    const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
       headers: remoteAuthJsonHeaders(token),
       body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
-    });
+    }, "subscription tier lookup");
     if (response.status === 401 || response.status === 403) return "free";
     if (!response.ok) {
       throw new Error(
@@ -584,11 +590,11 @@ function createHttpRemoteAuthLlmUsageResolver(
     if (token === undefined) {
       return freeLlmUsage();
     }
-    const response = await fetchImpl(endpoint, {
+    const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
       headers: remoteAuthJsonHeaders(token),
       body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
-    });
+    }, "LLM usage lookup");
     if (response.status === 401 || response.status === 403) return freeLlmUsage();
     if (!response.ok) {
       throw new Error(
@@ -608,6 +614,33 @@ function remoteAuthJsonHeaders(
     "content-type": "application/json",
     ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
   };
+}
+
+async function remoteAuthFetch(
+  fetchImpl: typeof fetch,
+  input: string,
+  init: RequestInit,
+  operation: string,
+): Promise<Response> {
+  try {
+    return await fetchImpl(input, init);
+  } catch (error) {
+    throw new Error(
+      `RemoteAuthBackend ${operation} network request failed: ${formatRemoteAuthNetworkError(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+function formatRemoteAuthNetworkError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause =
+    error instanceof Error && error.cause instanceof Error
+      ? error.cause.message
+      : undefined;
+  return cause !== undefined && !message.includes(cause)
+    ? `${message} (${cause})`
+    : message;
 }
 
 function compactRemoteAuthLoginRequest(

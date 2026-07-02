@@ -260,6 +260,75 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
+  it("reports login start network failures with operation context", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new TypeError("fetch failed", {
+          cause: new Error("getaddrinfo ENOTFOUND id.agenc.ag"),
+        }),
+      );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginStartEndpoint: "https://id.agenc.ag/v1/auth/login/start",
+    });
+
+    try {
+      await expect(backend.login({ sessionId: "tui" })).rejects.toThrow(
+        "RemoteAuthBackend login start network request failed: fetch failed (getaddrinfo ENOTFOUND id.agenc.ag)",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("retries transient login poll network failures", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const sleepMs = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            userCode: "USER-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 0,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "remote-token" }), {
+          status: 200,
+        }),
+      );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+      loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+      sleepMs,
+    });
+
+    try {
+      await expect(backend.login({ sessionId: "tui" })).resolves.toMatchObject({
+        authenticated: true,
+        provider: "remote",
+        token: "remote-token",
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(sleepMs).toHaveBeenCalledWith(
+        REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS,
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("accepts standard OAuth device-code start fields", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const onDeviceCode = vi.fn();

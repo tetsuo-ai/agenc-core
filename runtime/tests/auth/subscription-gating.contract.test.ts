@@ -125,7 +125,7 @@ describe("remote subscription gating", () => {
     }
   });
 
-  it("allows remote free-tier hosted OpenRouter free model startup", async () => {
+  it("rejects remote free-tier hosted OpenRouter free model startup", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-tier-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-tier-ws-"));
     const keyVendor = vi.fn(() => ({
@@ -139,66 +139,33 @@ describe("remote subscription gating", () => {
       managedKeysEnabled: true,
       subscriptionTierResolver: () => "free",
     });
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockImplementation(
-        () =>
-          ({
-            name: "stub",
-            chat: async () => ({
-              content: "ok",
-              toolCalls: [],
-              usage: {
-                promptTokens: 1,
-                completionTokens: 1,
-                totalTokens: 2,
-              },
-            }),
-          }) as never,
-      );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
 
-    let shutdown: (() => Promise<void>) | null = null;
     try {
-      const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
-        conversationId: "conv-free-openrouter",
-        argv: [
-          "node",
-          "agenc",
-          "--provider",
-          "openrouter",
-          "--model",
-          "openai/gpt-oss-20b:free",
-        ],
-        env: {
-          AGENC_HOME: agencHome,
-          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
-          AGENC_WORKSPACE: workspace,
-          HOME: agencHome,
-          OPENROUTER_API_KEY: "",
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(boot.authSubscriptionTier).toBe("free");
-      expect(createProviderSpy).toHaveBeenCalledWith(
-        "openrouter",
-        expect.objectContaining({
-          apiKey: "managed-free-key",
-          baseURL: "https://llm.agenc.tech",
-          model: "openrouter/openai/gpt-oss-20b:free",
+      await expect(
+        bootstrapLocalRuntimeSession({
+          authBackend,
+          conversationId: "conv-free-openrouter",
+          argv: [
+            "node",
+            "agenc",
+            "--provider",
+            "openrouter",
+            "--model",
+            "openai/gpt-oss-20b:free",
+          ],
+          env: {
+            AGENC_HOME: agencHome,
+            AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+            AGENC_WORKSPACE: workspace,
+            HOME: agencHome,
+            OPENROUTER_API_KEY: "",
+          },
         }),
-      );
-      expect(keyVendor).toHaveBeenCalled();
+      ).rejects.toThrow(/unknown model 'openai\/gpt-oss-20b:free'/);
+      expect(keyVendor).not.toHaveBeenCalled();
     } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
-      vi.restoreAllMocks();
     }
   });
 

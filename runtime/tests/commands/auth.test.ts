@@ -122,7 +122,10 @@ describe("auth slash commands", () => {
     await expect(subscriptionCommand.execute(ctx)).resolves.toEqual({
       kind: "text",
       text:
-        "Plan: free\nBilling: https://id.agenc.ag/subscription\nManaged model access requires Pro or higher.\nBYOK still works without a subscription.",
+        "Plan: free\n" +
+        "Billing: https://id.agenc.ag/subscription\n" +
+        "Managed model access requires Pro or higher.\n" +
+        "BYOK still works without a subscription.",
     });
   });
 
