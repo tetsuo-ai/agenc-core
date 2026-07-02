@@ -16,7 +16,11 @@
 
 import type { Session } from "../session/session.js";
 import { resolveProviderSettings } from "../config/resolve-provider.js";
-import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
+import {
+  hasEntitledRemoteAuthSessionSync,
+  hasRemoteAuthSessionSync,
+  remoteAuthSessionSubscriptionTierSync,
+} from "../auth/session-state.js";
 import { configuredModelForProvider, defaultModelForProvider } from "../config/resolve-model.js";
 import { normalizeProviderName } from "../llm/provider.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
@@ -37,10 +41,11 @@ import {
   readProviderMenuSnapshot,
 } from "./provider-menu.js";
 import {
+  isFreeSubscriptionManagedModel,
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
-  subscriptionManagedDefaultModel,
-  subscriptionManagedModels,
+  subscriptionManagedDefaultModelForTier,
+  subscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
 /**
@@ -195,7 +200,10 @@ function managedDefaultForCommand(
   if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
     return undefined;
   }
-  return subscriptionManagedDefaultModel(normalizedProvider);
+  return subscriptionManagedDefaultModelForTier(
+    normalizedProvider,
+    remoteAuthSessionSubscriptionTierSync(process.env),
+  );
 }
 
 function subscriptionManagedModelError(
@@ -218,7 +226,10 @@ function subscriptionManagedModelError(
   }
   if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
   if (isSubscriptionManagedModel(normalizedProvider, targetModel)) return undefined;
-  const liveModels = subscriptionManagedModels(normalizedProvider)
+  const liveModels = subscriptionManagedModelsForTier(
+    normalizedProvider,
+    remoteAuthSessionSubscriptionTierSync(process.env),
+  )
     .map((model) => `/model ${normalizedProvider}:${model}`)
     .join(" or ");
   return (
@@ -245,6 +256,7 @@ function isLocalProviderEndpoint(baseURL: string | undefined): boolean {
 function providerSwitchAuthError(
   ctx: SlashCommandContext,
   targetProvider: string,
+  targetModel: string | undefined,
 ): string | undefined {
   const normalizedProvider = normalizeProviderName(targetProvider);
   if (normalizedProvider === null) return undefined;
@@ -266,10 +278,19 @@ function providerSwitchAuthError(
   ) {
     return undefined;
   }
+  if (
+    providerHasLiveSubscriptionRoute(normalizedProvider) &&
+    hasRemoteAuthSessionSync(process.env) &&
+    targetModel !== undefined &&
+    isFreeSubscriptionManagedModel(normalizedProvider, targetModel)
+  ) {
+    return undefined;
+  }
   if (providerHasLiveSubscriptionRoute(normalizedProvider)) {
     return (
-      `Provider switch to "${normalizedProvider}" blocked: sign in with a paid ` +
-      `AgenC plan using /login, or set ${info.apiKeyEnvVar} for BYOK.`
+      `Provider switch to "${normalizedProvider}" blocked: sign in with AgenC ` +
+      `using /login for free hosted models, upgrade for paid hosted models, ` +
+      `or set ${info.apiKeyEnvVar} for BYOK.`
     );
   }
   return (
@@ -311,7 +332,7 @@ export const providerCommand: SlashCommand = {
         const snapshot = readProviderMenuSnapshot(ctx);
         if (
           openProviderMenu(ctx, snapshot, async (provider, model) => {
-            const authError = providerSwitchAuthError(ctx, provider);
+            const authError = providerSwitchAuthError(ctx, provider, model);
             if (authError !== undefined) {
               return {
                 message: authError,
@@ -345,7 +366,11 @@ export const providerCommand: SlashCommand = {
       const effectiveTargetModel =
         managedDefaultForCommand(ctx, targetProvider, targetModel) ??
         targetModel;
-      const authError = providerSwitchAuthError(ctx, targetProvider);
+      const authError = providerSwitchAuthError(
+        ctx,
+        targetProvider,
+        effectiveTargetModel,
+      );
       if (authError !== undefined) {
         return { kind: "text", text: authError };
       }

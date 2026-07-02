@@ -7,6 +7,7 @@ import {
   normalizeProviderName,
   type ProviderName,
 } from "../llm/provider.js";
+import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
@@ -196,6 +197,17 @@ function providerHasLiveManagedSubscriptionRoute(provider: ProviderName): boolea
   return provider === "openrouter";
 }
 
+function allowsFreeManagedProviderKey(params: {
+  readonly provider: ProviderName;
+  readonly model: string;
+  readonly subscriptionTier: AuthSubscriptionTier;
+}): boolean {
+  return (
+    params.subscriptionTier === "free" &&
+    isFreeSubscriptionManagedModel(params.provider, params.model)
+  );
+}
+
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
 async function buildBaseInstructionsForModel(params: {
@@ -219,7 +231,14 @@ function enforceRemoteSubscriptionGate(params: {
   readonly managedKeysEnabled: boolean;
 }): void {
   if (!isRemoteAuthBackend(params.authBackend)) return;
-  if (isSubscriptionEntitled(params.subscriptionTier)) return;
+  if (
+    isSubscriptionEntitled(params.subscriptionTier) ||
+    allowsFreeManagedProviderKey({
+      provider: params.provider,
+      model: params.model,
+      subscriptionTier: params.subscriptionTier,
+    })
+  ) return;
   if (requiresAuthModelInference(params.provider, params.model)) {
     throw new Error(
       "Hosted AgenC model routing requires an active AgenC subscription",

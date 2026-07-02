@@ -73,6 +73,7 @@ import {
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
+import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
@@ -926,6 +927,17 @@ function requiresHostedModelRouting(provider: string, model: string): boolean {
   );
 }
 
+function allowsFreeManagedProviderKey(params: {
+  readonly provider: string;
+  readonly model: string;
+  readonly subscriptionTier?: AuthSubscriptionTier;
+}): boolean {
+  return (
+    params.subscriptionTier === "free" &&
+    isFreeSubscriptionManagedModel(params.provider, params.model)
+  );
+}
+
 function firstNonEmpty(
   ...values: Array<string | undefined>
 ): string | undefined {
@@ -1001,7 +1013,12 @@ async function providerFactoryOptionsFromSettings(params: {
   const byokApiKey = params.settings?.apiKey ?? params.reusableApiKey;
   if (
     isRemoteAuthBackend(params.authBackend) &&
-    !isSubscriptionEntitled(params.authSubscriptionTier)
+    !isSubscriptionEntitled(params.authSubscriptionTier) &&
+    !allowsFreeManagedProviderKey({
+      provider: params.provider,
+      model: params.model,
+      subscriptionTier: params.authSubscriptionTier,
+    })
   ) {
     if (requiresHostedModelRouting(params.provider, params.model)) {
       throw new Error(

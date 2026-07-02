@@ -20,9 +20,10 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
   SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-  hasHostedSubscriptionAccess,
+  hasHostedManagedAccess,
+  hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
-  subscriptionManagedModels,
+  subscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -302,10 +303,8 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable = hasHostedSubscriptionAccess(
-    config,
-    process.env,
-  );
+  const managedSubscriptionAvailable = hasHostedManagedAccess(config, process.env);
+  const managedSubscriptionTier = hostedManagedSubscriptionTier(process.env);
   const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
     config !== undefined
       ? resolveProviderSettings(catalogProvider, config, process.env)?.apiKey
@@ -329,7 +328,10 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
       providerHasLiveSubscriptionRoute(catalogProvider) &&
       !providerHasByok(catalogProvider)
     ) {
-      return subscriptionManagedModels(catalogProvider);
+      return subscriptionManagedModelsForTier(
+        catalogProvider,
+        managedSubscriptionTier,
+      );
     }
     return catalog[catalogProvider] ?? [];
   };

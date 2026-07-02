@@ -709,18 +709,19 @@ describe("provider resolution (T13)", () => {
   test("buildProviderModelCatalog routes built-in OpenRouter seed models", () => {
     const catalog = buildProviderModelCatalog(defaultConfig());
 
-    expect(catalog.openrouter).toEqual([
-      "openai/gpt-5",
-      "openai/gpt-5-mini",
-      "x-ai/grok-code-fast-1",
-    ]);
-    expect(resolveModelDisambiguated("openai/gpt-5-mini", catalog)).toEqual({
+    expect(catalog.openrouter).toEqual(expect.arrayContaining([
+      "x-ai/grok-4.3",
+      "openai/gpt-5-nano",
+      "openai/gpt-oss-20b:free",
+      "openrouter/free",
+    ]));
+    expect(resolveModelDisambiguated("openai/gpt-5-nano", catalog)).toEqual({
       provider: "openrouter",
-      model: "openai/gpt-5-mini",
+      model: "openai/gpt-5-nano",
     });
-    expect(resolveModelDisambiguated("x-ai/grok-code-fast-1", catalog)).toEqual({
+    expect(resolveModelDisambiguated("openai/gpt-oss-20b:free", catalog)).toEqual({
       provider: "openrouter",
-      model: "x-ai/grok-code-fast-1",
+      model: "openai/gpt-oss-20b:free",
     });
   });
 

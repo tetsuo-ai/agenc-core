@@ -20,10 +20,11 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
   SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-  hasHostedSubscriptionAccess,
+  hasHostedManagedAccess,
+  hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
-  subscriptionManagedDefaultModel,
-  subscriptionManagedModels,
+  subscriptionManagedDefaultModelForTier,
+  subscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -124,10 +125,19 @@ function providerModel(params: {
   readonly currentModel: string;
   readonly managedKeysEnabled?: boolean;
   readonly managedSubscriptionAvailable?: boolean;
+  readonly managedSubscriptionTier?: string;
 }): string {
   if (params.provider === params.currentProvider) return params.currentModel;
   if (params.managedSubscriptionAvailable === true) {
-    const managedDefault = subscriptionManagedDefaultModel(params.provider);
+    const managedDefault = subscriptionManagedDefaultModelForTier(
+      params.provider,
+      params.managedSubscriptionTier === "free" ||
+        params.managedSubscriptionTier === "pro" ||
+        params.managedSubscriptionTier === "team" ||
+        params.managedSubscriptionTier === "enterprise"
+        ? params.managedSubscriptionTier
+        : undefined,
+    );
     if (managedDefault !== undefined) return managedDefault;
   }
   return (
@@ -432,10 +442,8 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     defaultModelForProvider(currentProvider);
   const modelCatalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable = hasHostedSubscriptionAccess(
-    config,
-    process.env,
-  );
+  const managedSubscriptionAvailable = hasHostedManagedAccess(config, process.env);
+  const managedSubscriptionTier = hostedManagedSubscriptionTier(process.env);
 
   const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
@@ -455,7 +463,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     const rawModels = modelCatalog[provider] ?? [];
     const managedModels =
       managedSubscriptionAvailable && providerHasLiveSubscriptionRoute(provider)
-        ? subscriptionManagedModels(provider)
+        ? subscriptionManagedModelsForTier(provider, managedSubscriptionTier)
         : undefined;
     const models = managedModels !== undefined ? managedModels : rawModels;
     const state = runtimeState({
@@ -474,6 +482,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
         currentModel,
         managedKeysEnabled,
         managedSubscriptionAvailable,
+        managedSubscriptionTier,
       }),
       models,
       baseURL,

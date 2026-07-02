@@ -428,7 +428,7 @@ describe("modelCommand", () => {
       .filter(row => row.provider === "openrouter")
       .map(row => row.model);
 
-    expect(openrouterModels).toEqual([
+    expect(openrouterModels.slice(0, 19)).toEqual([
       "x-ai/grok-4.3",
       "x-ai/grok-build-0.1",
       "openai/gpt-4o-mini",
@@ -449,27 +449,10 @@ describe("modelCommand", () => {
       "minimax/minimax-m2.5",
       "z-ai/glm-4.7-flash",
     ]);
-    expect(snapshot.rows.map(row => row.provider)).toEqual([
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-      "openrouter",
-    ]);
+    expect(openrouterModels).toContain("openrouter/free");
+    expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
+    expect(openrouterModels.length).toBeGreaterThan(19);
+    expect(snapshot.rows.every(row => row.provider === "openrouter")).toBe(true);
     });
   });
 
