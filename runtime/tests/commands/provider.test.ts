@@ -385,7 +385,7 @@ describe("providerCommand", () => {
         authState: "managed",
         auth: "subscription",
       });
-      expect(openrouter?.models).toEqual([
+      expect(openrouter?.models.slice(0, 19)).toEqual([
         "x-ai/grok-4.3",
         "x-ai/grok-build-0.1",
         "openai/gpt-4o-mini",
@@ -406,6 +406,9 @@ describe("providerCommand", () => {
         "minimax/minimax-m2.5",
         "z-ai/glm-4.7-flash",
       ]);
+      expect(openrouter?.models).toContain("openrouter/free");
+      expect(openrouter?.models).toContain("openai/gpt-oss-20b:free");
+      expect(openrouter?.models.length).toBeGreaterThan(19);
       expect(openrouter?.credentialSource).toContain("subscription-managed key");
     } finally {
       if (previous === undefined) {

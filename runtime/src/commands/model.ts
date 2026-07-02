@@ -31,7 +31,11 @@ import {
   resolveProviderSettings,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
-import { hasEntitledRemoteAuthSessionSync } from "../auth/session-state.js";
+import {
+  hasEntitledRemoteAuthSessionSync,
+  hasRemoteAuthSessionSync,
+  remoteAuthSessionSubscriptionTierSync,
+} from "../auth/session-state.js";
 import { resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
 import { normalizeProviderName } from "../llm/provider.js";
@@ -53,9 +57,11 @@ import {
   readModelMenuSnapshot,
 } from "./model-menu.js";
 import {
+  isFreeSubscriptionManagedModel,
   isSubscriptionManagedModel,
   providerHasLiveSubscriptionRoute,
   subscriptionManagedModels,
+  subscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
 export interface HistoryCompatResult {
@@ -280,6 +286,7 @@ function resolveCommandSelection(
 function modelSwitchAuthError(
   ctx: SlashCommandContext,
   targetProvider: string | undefined,
+  targetModel: string,
 ): string | undefined {
   const provider =
     normalizeProviderSlug(targetProvider) ??
@@ -297,9 +304,16 @@ function modelSwitchAuthError(
   ) {
     return undefined;
   }
+  if (
+    providerHasLiveSubscriptionRoute(provider) &&
+    hasRemoteAuthSessionSync(process.env) &&
+    isFreeSubscriptionManagedModel(provider, targetModel)
+  ) {
+    return undefined;
+  }
   if (providerHasLiveSubscriptionRoute(provider)) {
     return (
-      `Model switch blocked: sign in with a paid AgenC plan using /login, ` +
+      `Model switch blocked: sign in with AgenC using /login for free hosted models, upgrade for paid hosted models, ` +
       `or set ${info.apiKeyEnvVar} for BYOK.`
     );
   }
@@ -326,7 +340,10 @@ function subscriptionManagedModelError(
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
   if (!providerHasLiveSubscriptionRoute(provider)) return undefined;
   if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
-  const example = subscriptionManagedModels(provider)[0];
+  const tier = remoteAuthSessionSubscriptionTierSync(process.env);
+  const example =
+    subscriptionManagedModelsForTier(provider, tier)[0] ??
+    subscriptionManagedModels(provider)[0];
   const hint =
     example !== undefined
       ? `Try /model ${provider}:${example}, or open /model to pick a hosted route.`
@@ -371,7 +388,7 @@ export const modelCommand: SlashCommand = {
           openModelMenu(ctx, snapshot, async (provider, model) => {
             const targetProvider =
               provider === snapshot.provider ? undefined : provider;
-            const authError = modelSwitchAuthError(ctx, provider);
+            const authError = modelSwitchAuthError(ctx, provider, model);
             if (authError !== undefined) {
               return {
                 message: authError,
@@ -407,7 +424,7 @@ export const modelCommand: SlashCommand = {
       if (selection.error !== undefined) {
         return { kind: "text", text: selection.error };
       }
-      const authError = modelSwitchAuthError(ctx, selection.provider);
+      const authError = modelSwitchAuthError(ctx, selection.provider, selection.model);
       if (authError !== undefined) {
         return { kind: "text", text: authError };
       }

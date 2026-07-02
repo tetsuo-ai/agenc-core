@@ -7,6 +7,7 @@
  */
 
 import { deriveFlatCatalog } from "./model-catalog.js";
+import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
 
 // Single source of truth: model lists for providers that have entries in
 // REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
@@ -146,6 +147,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "meta-llama/llama-4-scout",
     "minimax/minimax-m2.5",
     "z-ai/glm-4.7-flash",
+    ...OPENROUTER_FREE_MODEL_IDS,
   ]),
   groq: Object.freeze([
     "llama-3.3-70b-versatile",

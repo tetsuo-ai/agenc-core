@@ -16,9 +16,11 @@ import {
 } from "./types.js";
 import {
   SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-  hasHostedSubscriptionAccess,
+  hasHostedManagedAccess,
   subscriptionManagedDefaultModel,
+  subscriptionManagedDefaultModelForTier,
   subscriptionManagedModels,
+  subscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
 type AuthAction = "login" | "logout" | "whoami" | "subscription" | "usage";
@@ -146,8 +148,10 @@ async function executeAuthCommand(
   });
 }
 
-function paidSubscriptionTier(tier: string | undefined): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
+function managedSubscriptionTier(
+  tier: string | undefined,
+): tier is "free" | "pro" | "team" | "enterprise" {
+  return tier === "free" || tier === "pro" || tier === "team" || tier === "enterprise";
 }
 
 function readSessionProvider(ctx: SlashCommandContext): string | undefined {
@@ -175,9 +179,9 @@ async function maybeSelectHostedSubscriptionRoute(
   ctx: SlashCommandContext,
   tier: string | undefined,
 ): Promise<string | undefined> {
-  if (!paidSubscriptionTier(tier)) return undefined;
+  if (!managedSubscriptionTier(tier)) return undefined;
   const config = ctx.configStore?.current() ?? defaultConfig();
-  if (!hasHostedSubscriptionAccess(config, process.env)) return undefined;
+  if (!hasHostedManagedAccess(config, process.env)) return undefined;
 
   const currentProvider =
     normalizeProviderSlug(readSessionProvider(ctx)) ??
@@ -206,8 +210,9 @@ async function maybeSelectHostedSubscriptionRoute(
     );
   }
 
-  const defaultModel = subscriptionManagedDefaultModel(
+  const defaultModel = subscriptionManagedDefaultModelForTier(
     SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+    tier,
   );
   if (defaultModel === undefined) return undefined;
   const summary = await applyProviderSwitch(
@@ -220,7 +225,7 @@ async function maybeSelectHostedSubscriptionRoute(
   }
   updateHostedRouteChrome(ctx, defaultModel);
   return (
-    `Hosted route selected: ${SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER} / ` +
+    `Hosted ${tier === "free" ? "free " : ""}route selected: ${SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER} / ` +
     `${defaultModel}. Run /model to choose another hosted model.`
   );
 }
@@ -402,6 +407,19 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
         : "Default route: run /provider",
       "Choose/switch models with /provider.",
     );
+  } else if (plan === "free") {
+    const provider = "openrouter";
+    const models = subscriptionManagedModelsForTier(provider, "free");
+    const defaultModel = subscriptionManagedDefaultModelForTier(provider, "free");
+    lines.push(
+      "Free hosted models: enabled",
+      "Paid model allowance: upgrade to Pro",
+      `Available free models: ${models.length} OpenRouter routes`,
+      defaultModel !== undefined
+        ? `Default free route: /model ${provider}:${defaultModel}`
+        : "Default free route: run /provider",
+      "BYOK still works without a subscription.",
+    );
   } else {
     lines.push(
       "Managed model access requires Pro or higher.",
@@ -430,6 +448,17 @@ export function formatUsageCommandResult(
     `Plan: ${usage.subscriptionTier}`,
     `Managed models: ${usage.managedModelsEnabled ? "enabled" : "not enabled"}`,
   ];
+
+  if (allowance.status === "free" && usage.managedModelsEnabled) {
+    lines.push(
+      "Free hosted models: enabled",
+      "Paid usage: not active",
+      `Models: ${allowance.allowedModelCount} free hosted routes`,
+      "Free hosted routes do not consume Pro usage allowance.",
+      `Billing: ${SUBSCRIPTION_URL}`,
+    );
+    return lines.join("\n");
+  }
 
   if (!usage.managedModelsEnabled || allowance.status === "free") {
     lines.push(
