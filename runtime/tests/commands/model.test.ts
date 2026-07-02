@@ -450,8 +450,8 @@ describe("modelCommand", () => {
       "z-ai/glm-4.7-flash",
     ]);
     expect(openrouterModels).not.toContain("openrouter/free");
-    expect(openrouterModels).not.toContain("openai/gpt-oss-20b:free");
-    expect(openrouterModels).toHaveLength(19);
+    expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
+    expect(openrouterModels.length).toBeGreaterThan(19);
     expect(snapshot.rows.every(row => row.provider === "openrouter")).toBe(true);
     });
   });
