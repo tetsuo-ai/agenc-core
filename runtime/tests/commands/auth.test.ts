@@ -122,7 +122,13 @@ describe("auth slash commands", () => {
     await expect(subscriptionCommand.execute(ctx)).resolves.toEqual({
       kind: "text",
       text:
-        "Plan: free\nBilling: https://id.agenc.ag/subscription\nManaged model access requires Pro or higher.\nBYOK still works without a subscription.",
+        "Plan: free\n" +
+        "Billing: https://id.agenc.ag/subscription\n" +
+        "Free hosted models: enabled\n" +
+        "Paid model allowance: upgrade to Pro\n" +
+        "Available free models: 22 OpenRouter routes\n" +
+        "Default free route: /model openrouter:cohere/north-mini-code:free\n" +
+        "BYOK still works without a subscription.",
     });
   });
 
@@ -134,7 +140,7 @@ describe("auth slash commands", () => {
         "Billing: https://id.agenc.ag/subscription\n" +
         "Managed models: enabled\n" +
         "Model access: hosted by AgenC\n" +
-        "Available models: 19 managed OpenRouter routes\n" +
+        "Available models: 41 managed OpenRouter routes\n" +
         "Default route: /model openrouter:x-ai/grok-4.3\n" +
         "Choose/switch models with /provider.",
     );

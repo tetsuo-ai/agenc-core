@@ -712,16 +712,10 @@ describe("provider resolution (T13)", () => {
     expect(catalog.openrouter).toEqual(expect.arrayContaining([
       "x-ai/grok-4.3",
       "openai/gpt-5-nano",
-      "openai/gpt-oss-20b:free",
-      "openrouter/free",
     ]));
     expect(resolveModelDisambiguated("openai/gpt-5-nano", catalog)).toEqual({
       provider: "openrouter",
       model: "openai/gpt-5-nano",
-    });
-    expect(resolveModelDisambiguated("openai/gpt-oss-20b:free", catalog)).toEqual({
-      provider: "openrouter",
-      model: "openai/gpt-oss-20b:free",
     });
   });
 

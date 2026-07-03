@@ -409,16 +409,23 @@ export function formatSubscriptionCommandResult(tier: string | undefined): strin
   } else if (plan === "free") {
     const provider = "openrouter";
     const models = visibleSubscriptionManagedModelsForTier(provider, "free");
-    const defaultModel = subscriptionManagedDefaultModelForTier(provider, "free");
-    lines.push(
-      "Free hosted models: enabled",
-      "Paid model allowance: upgrade to Pro",
-      `Available free models: ${models.length} OpenRouter routes`,
-      defaultModel !== undefined
-        ? `Default free route: /model ${provider}:${defaultModel}`
-        : "Default free route: run /provider",
-      "BYOK still works without a subscription.",
-    );
+    if (models.length > 0) {
+      const defaultModel = subscriptionManagedDefaultModelForTier(provider, "free");
+      lines.push(
+        "Free hosted models: enabled",
+        "Paid model allowance: upgrade to Pro",
+        `Available free models: ${models.length} OpenRouter routes`,
+        defaultModel !== undefined
+          ? `Default free route: /model ${provider}:${defaultModel}`
+          : "Default free route: run /provider",
+        "BYOK still works without a subscription.",
+      );
+    } else {
+      lines.push(
+        "Managed model access requires Pro or higher.",
+        "BYOK still works without a subscription.",
+      );
+    }
   } else {
     lines.push(
       "Managed model access requires Pro or higher.",
@@ -448,7 +455,11 @@ export function formatUsageCommandResult(
     `Managed models: ${usage.managedModelsEnabled ? "enabled" : "not enabled"}`,
   ];
 
-  if (allowance.status === "free" && usage.managedModelsEnabled) {
+  if (
+    allowance.status === "free" &&
+    usage.managedModelsEnabled &&
+    allowance.allowedModelCount > 0
+  ) {
     lines.push(
       "Free hosted models: enabled",
       "Paid usage: not active",

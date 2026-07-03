@@ -1,4 +1,6 @@
 export const OPENROUTER_FREE_MODEL_IDS = Object.freeze([
+  // Routed through AgenC's per-user OpenRouter proxy. Do not route these
+  // through a shared LiteLLM/OpenRouter key; free pools rate-limit globally.
   "cohere/north-mini-code:free",
   "nvidia/nemotron-3.5-content-safety:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
