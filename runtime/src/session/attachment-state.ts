@@ -109,6 +109,12 @@ export interface AttachmentTrackingState {
    */
   loadedNestedMemoryPaths: Set<string>;
   /**
+   * Flips true on the first `relevant_memories` producer run of the
+   * session. Gates the one-shot session-start recall path (project/CWD-
+   * keyed memory injection when turn 0 carries no substantive query).
+   */
+  sessionStartMemoryRecallChecked: boolean;
+  /**
    * Paths of learned memory files surfaced by `relevant_memories` in this
    * session. Relevant-memory recall is allowed to reset after compaction
    * in future, but a stable set prevents rapid same-session repeats today.
@@ -158,6 +164,7 @@ export function getAttachmentTrackingState(
       hasExitedAutoModeInSession: false,
       nestedMemoryAttachmentTriggers: new Set(),
       loadedNestedMemoryPaths: new Set(),
+      sessionStartMemoryRecallChecked: false,
       surfacedRelevantMemoryPaths: new Set(),
       surfacedRelevantMemoryBytes: 0,
       memoryMode: "enabled",

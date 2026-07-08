@@ -526,6 +526,15 @@ export interface BuildToolRegistryOptions {
    * as `spawn_agent`.
    */
   readonly extraTools?: ReadonlyArray<Tool>;
+  /**
+   * Session-configured structured-output JSON schema. Consumed by the
+   * bootstrap model-facing tool assembly (`bin/bootstrap-tool-registry.ts`):
+   * when present, the StructuredOutput tool is registered schema-bound and
+   * non-deferred (visible without tool-search discovery); when absent, it
+   * stays a deferred passthrough. Carried here so SDK/programmatic callers
+   * can pass it through `toolRegistryOptions`.
+   */
+  readonly outputSchema?: Record<string, unknown>;
 }
 
 /**

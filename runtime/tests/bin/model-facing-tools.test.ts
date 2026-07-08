@@ -485,6 +485,65 @@ describe("model-facing tools", () => {
     expect(lsp.description).toContain("index");
   });
 
+  it("exposes StructuredOutput without discovery when an output schema is configured", async () => {
+    const registry = buildBootstrapToolRegistry({
+      workspaceRoot: process.cwd(),
+      agencHome: join(tmpdir(), "agenc-tools-test"),
+      mcpManager: fakeMcpManager() as never,
+      getSession: () => null,
+      emitWarning: () => {},
+      toolRegistryOptions: {
+        outputSchema: {
+          type: "object",
+          properties: { verdict: { type: "string" } },
+          required: ["verdict"],
+          additionalProperties: false,
+        },
+      },
+    });
+
+    const structuredOutput = registry.tools.find(
+      (tool) => tool.name === "StructuredOutput",
+    );
+    expect(structuredOutput?.metadata?.deferred).toBe(false);
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).toContain("StructuredOutput");
+
+    // The advertised tool is schema-bound, not the passthrough.
+    const invalid = await registry.dispatch({
+      id: "structured-output-invalid",
+      name: "StructuredOutput",
+      arguments: JSON.stringify({ wrong: true }),
+    });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.content).toContain("does not match required schema");
+    const valid = await registry.dispatch({
+      id: "structured-output-valid",
+      name: "StructuredOutput",
+      arguments: JSON.stringify({ verdict: "ship it" }),
+    });
+    expect(valid.isError).toBeUndefined();
+    expect(JSON.parse(valid.content).structured_output).toEqual({
+      verdict: "ship it",
+    });
+  });
+
+  it("keeps StructuredOutput deferred when no output schema is configured", () => {
+    const registry = buildBootstrapToolRegistry({
+      workspaceRoot: process.cwd(),
+      agencHome: join(tmpdir(), "agenc-tools-test"),
+      mcpManager: fakeMcpManager() as never,
+      getSession: () => null,
+      emitWarning: () => {},
+    });
+
+    expect(registry.tools.map((tool) => tool.name)).toContain(
+      "StructuredOutput",
+    );
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).not.toContain("StructuredOutput");
+  });
+
   it("accepts max_concurrency and the upstream max_workers alias", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),

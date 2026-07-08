@@ -13,6 +13,22 @@ describe("structured-output-tool", () => {
     expect(tool.metadata?.deferred).toBe(true);
   });
 
+  it("registers a visible (non-deferred) tool when requested", () => {
+    const tool = createStructuredOutputTool({ visible: true });
+    expect(tool.name).toBe(STRUCTURED_OUTPUT_TOOL_NAME);
+    expect(tool.metadata?.deferred).toBe(false);
+  });
+
+  it("schema-bound tool is always visible (non-deferred)", () => {
+    const built = createStructuredOutputToolForSchema({
+      type: "object",
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
+    });
+    if (!("tool" in built)) throw new Error("expected built tool");
+    expect(built.tool.metadata?.deferred).toBe(false);
+  });
+
   it("base tool echoes input as structured_output", async () => {
     const tool = createStructuredOutputTool();
     const result = await tool.execute({ kind: "bug", severity: "high" });

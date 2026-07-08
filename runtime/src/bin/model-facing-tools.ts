@@ -62,7 +62,10 @@ import { ensureAgentControl } from "./delegate-tool.js";
 import { createMultiAgentV2Tools } from "../agents/v2/index.js";
 import { loadMarkdownAgentRoles } from "../agents/role.js";
 import { createTaskTools } from "../tools/tasks/index.js";
-import { createStructuredOutputTool } from "./structured-output-tool.js";
+import {
+  createStructuredOutputTool,
+  createStructuredOutputToolForSchema,
+} from "./structured-output-tool.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
@@ -91,6 +94,14 @@ export interface ModelFacingToolOptions {
   }) => void;
   readonly env?: NodeJS.ProcessEnv;
   readonly providerFactory?: typeof createProvider;
+  /**
+   * Session-configured structured-output JSON schema. When present, the
+   * StructuredOutput tool is registered schema-bound and non-deferred so
+   * programmatic callers that start a session with an output schema see it
+   * without a tool-search round-trip. When absent, the passthrough tool
+   * stays deferred (discoverable only).
+   */
+  readonly outputSchema?: Record<string, unknown>;
   /** `[tools]` block from config.toml (env vars win over these). */
   readonly toolsConfig?: {
     readonly web_search_endpoint?: string;
@@ -3044,6 +3055,24 @@ export function createModelFacingTools(
     ...createCronAndWorkflowTools(opts),
     createRemoteTriggerTool(opts),
     ...createPowerShellTool(opts),
-    createStructuredOutputTool(),
+    createSessionStructuredOutputTool(opts),
   ];
+}
+
+/**
+ * StructuredOutput registration policy: schema-bound + visible when the
+ * session was configured with an output schema, deferred passthrough
+ * otherwise. An uncompilable schema falls back to the deferred passthrough
+ * tool with a warning rather than dropping the tool.
+ */
+function createSessionStructuredOutputTool(opts: ModelFacingToolOptions): Tool {
+  if (opts.outputSchema !== undefined) {
+    const built = createStructuredOutputToolForSchema(opts.outputSchema);
+    if ("tool" in built) return built.tool;
+    opts.emitWarning?.({
+      cause: "structured_output_schema_invalid",
+      message: `session output schema failed to compile; registering the deferred passthrough StructuredOutput tool instead: ${built.error}`,
+    });
+  }
+  return createStructuredOutputTool();
 }
