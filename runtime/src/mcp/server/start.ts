@@ -7,8 +7,20 @@
  */
 
 import type { Server } from "node:http";
+import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
 import type { Readable, Writable } from "node:stream";
+import {
+  getMemoryBaseDir,
+  MEMORY_DIRNAME,
+  PROJECT_INSTRUCTION_FILE,
+  PROJECT_MEMORY_DIR,
+} from "../../memory/index.js";
+import { getAgenCConfigHomeDir } from "../../utils/envUtils.js";
+import {
+  createMemoryResourceProvider,
+  createSkillPromptProvider,
+} from "./content-providers.js";
 import type { AgenCConfig, McpServerModeConfig } from "../../config/schema.js";
 import { VERSION } from "../../index.js";
 import { McpServerFramework } from "../../mcp-server/framework.js";
@@ -110,7 +122,7 @@ export async function runMcpStdioServe(
   io: McpServerStartIo,
   options: McpServerStartOptions = {},
 ): Promise<void> {
-  const server = createMcpFramework(createLazyMcpToolProvider(options));
+  const server = createMcpFramework(createLazyMcpToolProvider(options), options.cwd);
   await new Promise<void>((resolve, reject) => {
     const transport = new McpStdioServerTransport({
       input: io.stdin,
@@ -131,7 +143,7 @@ export async function startMcpSseServe(
   const host = normalizeMcpSseLoopbackHost(command.host);
   const transport = new McpHttpSseServerTransport({
     serverFactory: () =>
-      createMcpFramework(mcpToolRegistryFromAgenCTools(registry)),
+      createMcpFramework(mcpToolRegistryFromAgenCTools(registry), options.cwd),
   });
   const server = transport.createNodeServer();
   await new Promise<void>((resolve, reject) => {
@@ -222,9 +234,32 @@ function createLazyMcpToolProvider(
   };
 }
 
-function createMcpFramework(toolProvider: McpToolProvider): McpServerFramework {
+function createMcpFramework(
+  toolProvider: McpToolProvider,
+  cwd?: string,
+): McpServerFramework {
+  const workspaceRoot = cwd ?? processCwd();
+  const configHome = getAgenCConfigHomeDir();
   return new McpServerFramework({
     serverInfo: { version: VERSION },
     toolProvider,
+    promptProvider: createSkillPromptProvider({
+      skillRoots: [
+        join(configHome, "skills"),
+        join(configHome, "commands"),
+        join(workspaceRoot, PROJECT_MEMORY_DIR, "skills"),
+        join(workspaceRoot, PROJECT_MEMORY_DIR, "commands"),
+      ],
+    }),
+    resourceProvider: createMemoryResourceProvider({
+      memoryDirs: [
+        join(getMemoryBaseDir(), MEMORY_DIRNAME),
+        join(workspaceRoot, PROJECT_MEMORY_DIR, MEMORY_DIRNAME),
+      ],
+      instructionFiles: [
+        join(configHome, PROJECT_INSTRUCTION_FILE),
+        join(workspaceRoot, PROJECT_INSTRUCTION_FILE),
+      ],
+    }),
   });
 }
