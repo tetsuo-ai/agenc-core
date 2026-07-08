@@ -48,7 +48,6 @@ const BASELINE: readonly string[] = [
   "tools/EnterPlanModeTool/EnterPlanModeTool.ts",
   "tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts",
   "tools/FileWriteTool/FileWriteTool.ts",
-  "tools/LSPTool/LSPTool.ts",
   "tools/McpAuthTool/McpAuthTool.ts",
   "tools/PowerShellTool/modeValidation.ts",
   "tools/PowerShellTool/pathValidation.ts",

@@ -65,7 +65,6 @@ const KNOWN_DUAL_IMPLEMENTATIONS = [
   "FileRead",
   "Glob",
   "Grep",
-  "LSP",
   "Monitor",
   "NotebookEdit",
   "TaskCreate",
@@ -168,6 +167,9 @@ describe("tool catalog divergence guard", () => {
 
   it("the hard-nulled graveyard stays deleted from the TUI pool", () => {
     for (const retired of [
+      // The env-gated legacy LSPTool duplicate was deleted; the daemon
+      // registry's `LSP` tool is the only implementation.
+      "LSP",
       "Sleep",
       "RemoteTrigger",
       "SendUserFile",

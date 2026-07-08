@@ -461,6 +461,30 @@ describe("model-facing tools", () => {
     });
   });
 
+  it("exposes LSP in the default visible surface with per-op backing documented", () => {
+    const registry = buildBootstrapToolRegistry({
+      workspaceRoot: process.cwd(),
+      agencHome: join(tmpdir(), "agenc-tools-test"),
+      mcpManager: fakeMcpManager() as never,
+      getSession: () => null,
+      emitWarning: () => {},
+    });
+
+    // Not deferred: diagnostics must be reachable without a prior
+    // tool-search discovery round-trip.
+    const lsp = registry.tools.find((tool) => tool.name === "LSP")!;
+    expect(lsp.metadata?.deferred).toBe(false);
+    expect(lsp.isReadOnly).toBe(true);
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).toContain("LSP");
+
+    // The description must let the model calibrate trust per operation:
+    // diagnostics is language-server-backed, the navigation ops come from
+    // the built-in semantic index.
+    expect(lsp.description).toContain("language server");
+    expect(lsp.description).toContain("index");
+  });
+
   it("accepts max_concurrency and the upstream max_workers alias", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -837,6 +861,77 @@ describe("model-facing tools", () => {
         lsp_status: "server_error",
         server_error: { message: "server start timed out" },
         diagnostics: [{ message: "old diag", severity: "Warning" }],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns language-server diagnostics through the model-visible path when the server runs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-running-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a: number = 'oops';\n", "utf8");
+      const config = normalizeLspServerConfig("ts", {
+        command: "typescript-language-server",
+        extensionToLanguage: { ".ts": "typescript" },
+      });
+      // Running-server fixture: ensureServerStarted sees "running" and
+      // returns the instance without spawning a real language server.
+      const server = {
+        name: "ts",
+        config,
+        get state() {
+          return "running";
+        },
+        start: async () => {},
+        stop: async () => {},
+        restart: async () => {},
+        isHealthy: () => true,
+        sendRequest: async () => ({}),
+        sendNotification: async () => {},
+        onNotification: () => {},
+        onRequest: () => {},
+      } as unknown as LSPServerInstance;
+      initializeLspServerManager({
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => server,
+      });
+      // Server-published diagnostics land in the pending registry; the tool
+      // surfaces them attributed to the running server.
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: [{
+              message: "Type 'string' is not assignable to type 'number'.",
+              severity: "Error",
+            }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(result.isError).not.toBe(true);
+      expect(payload).toMatchObject({
+        file_path: file,
+        server: "ts",
+        diagnostics: [{
+          message: "Type 'string' is not assignable to type 'number'.",
+          severity: "Error",
+        }],
+        note: "Pending language-server diagnostics were returned.",
       });
     } finally {
       await rm(root, { recursive: true, force: true });
