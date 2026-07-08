@@ -425,6 +425,38 @@ describe("buildChatCompletionsRequest", () => {
     expect(request.service_tier).toBe("fast");
   });
 
+  test("encodes a named toolChoice with the same wire name as tools", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local",
+      messages: [{ role: "user", content: "search memory" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "mcp.memory.search_nodes",
+            description: "Search the memory graph.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      options: {
+        toolChoice: { type: "function", name: "mcp.memory.search_nodes" },
+      },
+    });
+
+    const tools = request.tools as Array<{
+      function: { name: string };
+    }>;
+    // Hardcoded literal on purpose: pins the wire contract.
+    expect(tools[0]!.function.name).toBe("mcp__memory__search_nodes");
+    // tool_choice must reference the encoded tools[] entry byte-for-byte,
+    // never the dotted internal name the provider never saw.
+    expect(request.tool_choice).toEqual({
+      type: "function",
+      function: { name: tools[0]!.function.name },
+    });
+  });
+
   test("falls back to DeepSeek reasoning_content when content is absent", () => {
     const response = parseChatCompletionsResponse(
       "deepseek-reasoner",

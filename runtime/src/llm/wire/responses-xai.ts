@@ -37,11 +37,17 @@ function normalizeXaiResponsesToolChoice(
     return toolChoice;
   }
 
+  // `tools[]` ships MCP names in the bijective wire encoding
+  // (mcp-tool-naming.ts); a named tool_choice must reference that
+  // encoded entry, not the dotted internal name the provider never saw.
   const directName = typeof toolChoice.name === "string"
     ? toolChoice.name.trim()
     : "";
   if (toolChoice.type === "function" && directName.length > 0) {
-    return { type: "function", function: { name: directName } };
+    return {
+      type: "function",
+      function: { name: encodeMcpToolNameForWire(directName) },
+    };
   }
 
   const legacyName = typeof (toolChoice as { function?: { name?: unknown } }).function
@@ -49,7 +55,10 @@ function normalizeXaiResponsesToolChoice(
     ? (toolChoice as { function?: { name?: string } }).function!.name!.trim()
     : "";
   if (toolChoice.type === "function" && legacyName.length > 0) {
-    return { type: "function", function: { name: legacyName } };
+    return {
+      type: "function",
+      function: { name: encodeMcpToolNameForWire(legacyName) },
+    };
   }
 
   return toolChoice;

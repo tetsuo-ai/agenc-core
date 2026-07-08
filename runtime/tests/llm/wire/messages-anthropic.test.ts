@@ -824,6 +824,37 @@ describe("buildAnthropicMessagesRequest", () => {
 
     expect(response.thinking).toBeUndefined();
   });
+
+  test("encodes a named toolChoice with the same wire name as tools", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [{ role: "user", content: "search memory" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "mcp.memory.search_nodes",
+            description: "Search the memory graph.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      options: {
+        toolChoice: { type: "function", name: "mcp.memory.search_nodes" },
+      },
+      maxTokens: 4096,
+    });
+
+    const tools = request.tools as Array<{ name: string }>;
+    // Hardcoded literal on purpose: pins the wire contract.
+    expect(tools[0]!.name).toBe("mcp__memory__search_nodes");
+    // tool_choice must reference the encoded tools[] entry byte-for-byte,
+    // never the dotted internal name the provider never saw.
+    expect(request.tool_choice).toEqual({
+      type: "tool",
+      name: tools[0]!.name,
+    });
+  });
 });
 
 /**

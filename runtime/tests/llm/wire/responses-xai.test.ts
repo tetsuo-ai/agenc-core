@@ -263,15 +263,12 @@ describe("responses-xai wire shim", () => {
       prompt_cache_key: "session-1",
       include: [XAI_ENCRYPTED_REASONING_INCLUDE],
       parallel_tool_calls: false,
-      // NOTE: tool_choice is currently NOT run through the MCP wire-name
-      // encoding (normalizeXaiResponsesToolChoice passes the name through),
-      // so a named tool_choice for a dotted tool references a name the
-      // provider never saw in `tools`. This pins today's behavior; if the
-      // shim starts encoding tool_choice too, update this to
-      // TEST_TOOL_WIRE_NAME.
+      // A named tool_choice goes through the same MCP wire-name encoding
+      // as `tools`, so the provider sees a tool_choice name that matches
+      // an entry in `tools` byte-for-byte.
       tool_choice: {
         type: "function",
-        function: { name: "system.echo" },
+        function: { name: TEST_TOOL_WIRE_NAME },
       },
       tools: [
         {
