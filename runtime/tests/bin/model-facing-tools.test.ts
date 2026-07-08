@@ -299,7 +299,6 @@ describe("model-facing tools", () => {
         "wait_agent",
         "close_agent",
         "assign_task",
-        "followup_task",
         "send_message",
         "list_agents",
         "Skill",
@@ -334,7 +333,19 @@ describe("model-facing tools", () => {
     expect(allNames).not.toContain("TeamCreate");
     expect(allNames).not.toContain("TeamDelete");
 
+    // followup_task was a dormant deferred alias of assign_task — deleted.
+    expect(allNames).not.toContain("followup_task");
+
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+
+    // Exactly one visible elicitation tool: AskUserQuestion is canonical;
+    // request_user_input is registered but deferred + hidden.
+    expect(allNames).toContain("request_user_input");
+    expect(
+      visibleNames.filter(
+        (name) => name === "AskUserQuestion" || name === "request_user_input",
+      ),
+    ).toEqual(["AskUserQuestion"]);
     expect(visibleNames).toEqual(
       expect.arrayContaining([
         "web_fetch",
@@ -1892,15 +1903,8 @@ describe("model-facing tools", () => {
     expect(assign.isError).toBe(true);
     expect(JSON.parse(assign.content).error).toContain("unknown field `items`");
 
-    const followupLegacy = await byName.get("followup_task")!.execute({
-      target: "/root/task_1",
-      message: "hello",
-      items: [],
-    });
-    expect(followupLegacy.isError).toBe(true);
-    expect(JSON.parse(followupLegacy.content).error).toContain(
-      "unknown field `items`",
-    );
+    // followup_task (the deferred assign_task alias) no longer exists.
+    expect(byName.has("followup_task")).toBe(false);
   });
 
   it("rejects invalid strict spawn_agent arguments before delegation", async () => {
