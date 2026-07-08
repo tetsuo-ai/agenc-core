@@ -48,6 +48,7 @@ const MINIMAL_NAMES = [
   "plugins",
   "memory",
   "resume",
+  "rewind",
   "init",
   "output-style",
   "output-style:new",

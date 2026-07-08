@@ -1519,6 +1519,7 @@ export async function bootstrapLocalRuntimeSession(
             }),
         });
         sidecarManager.register(new FileHistorySidecar({ fileHistory }));
+        s.attachFileHistory(fileHistory);
         sidecarManager.register(
           new ErrorLogSidecar({
             projectDir,

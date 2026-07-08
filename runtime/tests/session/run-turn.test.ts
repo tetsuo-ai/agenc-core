@@ -730,6 +730,30 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("stamps the seed user message with the user_message event id (file-history join)", async () => {
+    const ctx = mkCtx();
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello world", { ctx }));
+
+    const userEvent = events.find((e) => e.msg.type === "user_message");
+    expect(userEvent).toBeDefined();
+    // The event id is the durable join key the file-history sidecar
+    // snapshots under — it must be the uuid-based user-msg id, not an
+    // internal sub-id.
+    expect(userEvent?.id).toMatch(/^user-msg-/);
+
+    // The finalized session history carries the same id so conversation
+    // rewind can resolve the barrier snapshot for this message.
+    const historyUser = session
+      .snapshotHistoryMessages()
+      .find((message) => message.role === "user");
+    expect(historyUser?.runtimeOnly?.userMessageId).toBe(userEvent?.id);
+  });
+
   test("can emit a raw display user_message while running expanded prompt content", async () => {
     const seenMessages: LLMMessage[][] = [];
     const ctx = mkCtx();
@@ -1766,7 +1790,15 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     await drain(session.runTurn("first question", { ctx: mkCtx() }));
 
     expect(getState().history).toEqual([
-      { role: "user", content: "first question" },
+      {
+        role: "user",
+        content: "first question",
+        // File-history join key stamped by runTurn (matches the emitted
+        // user_message event id).
+        runtimeOnly: {
+          userMessageId: expect.stringMatching(/^user-msg-/),
+        },
+      },
       { role: "assistant", content: "first answer" },
     ]);
     expect(getState().previousTurnSettings?.model).toBe("test-model");

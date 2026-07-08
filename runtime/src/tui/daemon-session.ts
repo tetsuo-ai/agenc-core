@@ -24,6 +24,9 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
+  SessionFileRewindParams,
+  SessionPreviewFileRewindResult,
+  SessionRewindFilesToMessageResult,
   SessionSetModelParams,
   SessionSetModelResult,
   SessionSetPermissionModeParams,
@@ -127,6 +130,12 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   rewindConversationToMessage?(params: {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindConversationToMessageResult>;
+  previewFileRewind?(params: {
+    readonly messageOrdinal: number;
+  }): Promise<SessionPreviewFileRewindResult>;
+  rewindFilesToMessage?(params: {
+    readonly messageOrdinal: number;
+  }): Promise<SessionRewindFilesToMessageResult>;
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
@@ -189,6 +198,12 @@ export type AgenCDaemonBackedTuiSession<
   rewindConversationToMessage(params: {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindConversationToMessageResult>;
+  previewFileRewind(params: {
+    readonly messageOrdinal: number;
+  }): Promise<SessionPreviewFileRewindResult>;
+  rewindFilesToMessage(params: {
+    readonly messageOrdinal: number;
+  }): Promise<SessionRewindFilesToMessageResult>;
 };
 
 export interface AgenCDaemonTuiClient {
@@ -202,6 +217,16 @@ export interface AgenCDaemonTuiClient {
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionRewindConversationToMessageResult>;
+  request(
+    method: "session.previewFileRewind",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionPreviewFileRewindResult>;
+  request(
+    method: "session.rewindFilesToMessage",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionRewindFilesToMessageResult>;
   request(
     method: "session.setModel",
     params?: JsonObject,
@@ -528,6 +553,16 @@ export function createDaemonTuiSession<
         sessionId,
         messageOrdinal: params.messageOrdinal,
       } satisfies SessionRewindConversationToMessageParams),
+    previewFileRewind: async (params) =>
+      client.request("session.previewFileRewind", {
+        sessionId,
+        messageOrdinal: params.messageOrdinal,
+      } satisfies SessionFileRewindParams),
+    rewindFilesToMessage: async (params) =>
+      client.request("session.rewindFilesToMessage", {
+        sessionId,
+        messageOrdinal: params.messageOrdinal,
+      } satisfies SessionFileRewindParams),
     // `/model` and `/provider` stage their switch by calling
     // `session.setPendingProviderSwitch` on this bridge. The in-process
     // session would mutate `pendingProviderSwitch` directly, but on the

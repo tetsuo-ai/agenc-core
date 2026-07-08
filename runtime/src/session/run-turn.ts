@@ -1338,7 +1338,10 @@ function drainQueuedCommandsAfterTools(params: {
         mergeBoundary: "user_context",
         ...(!durableUserPrompt
           ? { excludeFromDurableHistory: true as const }
-          : {}),
+          : // Durable prompts emit a `user_message` event with `id: uuid`
+            // below — stamp the same id so file-history rewind can find
+            // the sidecar's barrier snapshot for this message.
+            { userMessageId: uuid }),
       },
     });
     if (typeof command.uuid === "string") {
@@ -3287,6 +3290,22 @@ async function* runTurnKernelInner(
     messages: readonly LLMMessage[],
   ): number => (messages[0]?.role === "system" ? 1 : 0);
 
+  // File-history join: give the seed user message a durable id shared
+  // with the `user_message` event emitted below, so the file-history
+  // sidecar's barrier snapshot (keyed by that event id) can be found
+  // again from the history message during conversation rewind. A
+  // standalone uuid-based id keeps the internal sub-id sequence
+  // untouched.
+  const seedUserMessageId =
+    opts.displayUserMessage !== null
+      ? `user-msg-${crypto.randomUUID()}`
+      : null;
+  if (seedUserMessageId !== null) {
+    user.runtimeOnly = {
+      ...user.runtimeOnly,
+      userMessageId: seedUserMessageId,
+    };
+  }
   let state: TurnState = buildInitialTurnState(ctx, user, {
     priorMessages: priorFull,
     ...(opts.skipCacheWrite !== undefined
@@ -3537,7 +3556,7 @@ async function* runTurnKernelInner(
   // phase iteration.
   if (opts.displayUserMessage !== null) {
     session.emit({
-      id: session.nextInternalSubId(),
+      id: seedUserMessageId ?? session.nextInternalSubId(),
       msg: {
         type: "user_message",
         payload: {

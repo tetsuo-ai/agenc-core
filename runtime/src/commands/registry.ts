@@ -28,6 +28,7 @@ import { skillsCommand } from "./skills.js";
 import { agentsCommand } from "./agent-management.js";
 import { tasksCommand } from "./tasks.js";
 import { resumeCommand } from "./resume.js";
+import { rewindCommand } from "./rewind.js";
 import { memorySlashCommand } from "./memory/slash.js";
 import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
@@ -162,6 +163,7 @@ export function buildDefaultRegistry(
     pluginsCommand,
     memorySlashCommand,
     resumeCommand,
+    rewindCommand,
     initCommand,
     outputStyleCommand,
     outputStyleNewCommand,

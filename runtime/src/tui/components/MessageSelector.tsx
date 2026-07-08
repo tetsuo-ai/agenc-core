@@ -79,6 +79,13 @@ type Props = {
   onRestoreCode: (message: UserMessage) => Promise<void>;
   onSummarize: (message: UserMessage, feedback?: string, direction?: PartialCompactDirection) => Promise<void>;
   onClose: () => void;
+  /**
+   * Daemon-backed dry-run of a file restore for the selected message.
+   * Preferred over the legacy in-process file-history state (which the
+   * daemon path never populates). Resolves `undefined` when restoring
+   * files for that message would change nothing (or isn't possible).
+   */
+  onPreviewRewind?: (message: UserMessage) => Promise<DiffStats>;
   /** Skip pick-list, land on confirm. Caller ran skip-check first. Esc closes fully (no back-to-list). */
   preselectedMessage?: UserMessage;
 };
@@ -99,11 +106,23 @@ export function MessageSelector({
   onRestoreCode,
   onSummarize,
   onClose,
+  onPreviewRewind,
   preselectedMessage
 }: Props): React.ReactNode {
   const fileHistory = useAppState(s => s.fileHistory);
   const [error, setError] = useState<string | undefined>(undefined);
   const isFileHistoryEnabled = fileHistoryEnabled();
+  const fileRestoreAvailable = onPreviewRewind !== undefined || isFileHistoryEnabled;
+  const resolveRestoreDiffStats = useCallback(async (message: UserMessage): Promise<DiffStats> => {
+    if (onPreviewRewind !== undefined) {
+      const daemonStats = await onPreviewRewind(message);
+      if (daemonStats !== undefined) return daemonStats;
+    }
+    if (isFileHistoryEnabled) {
+      return await fileHistoryGetDiffStats(fileHistory, message.uuid);
+    }
+    return undefined;
+  }, [onPreviewRewind, isFileHistoryEnabled, fileHistory]);
 
   // Add current prompt as a virtual message
   const currentUUID = useMemo(randomUUID, []);
@@ -121,9 +140,9 @@ export function MessageSelector({
   const [messageToRestore, setMessageToRestore] = useState<UserMessage | undefined>(preselectedMessage);
   const [diffStatsForRestore, setDiffStatsForRestore] = useState<DiffStats | undefined>(undefined);
   useEffect(() => {
-    if (!preselectedMessage || !isFileHistoryEnabled) return;
+    if (!preselectedMessage || !fileRestoreAvailable) return;
     let cancelled = false;
-    void fileHistoryGetDiffStats(fileHistory, preselectedMessage.uuid).then(stats => {
+    void resolveRestoreDiffStats(preselectedMessage).then(stats => {
       if (!cancelled) setDiffStatsForRestore(stats);
     }).catch(error_0 => {
       if (cancelled) return;
@@ -133,7 +152,7 @@ export function MessageSelector({
     return () => {
       cancelled = true;
     };
-  }, [preselectedMessage, isFileHistoryEnabled, fileHistory]);
+  }, [preselectedMessage, fileRestoreAvailable, resolveRestoreDiffStats]);
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoringOption, setRestoringOption] = useState<RestoreOption | null>(null);
   const [selectedRestoreOption, setSelectedRestoreOption] = useState<RestoreOption>('both');
@@ -204,13 +223,13 @@ export function MessageSelector({
       onClose();
       return;
     }
-    if (!isFileHistoryEnabled) {
+    if (!fileRestoreAvailable) {
       await restoreConversationDirectly(message_0);
       return;
     }
     let diffStats;
     try {
-      diffStats = await fileHistoryGetDiffStats(fileHistory, message_0.uuid);
+      diffStats = await resolveRestoreDiffStats(message_0);
     } catch (error_0) {
       logError(error_0 as Error);
       diffStats = undefined;
@@ -332,7 +351,7 @@ export function MessageSelector({
       isFileHistoryEnabled
     }));
   }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled]);
-  const canRestoreCode_0 = isFileHistoryEnabled && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
+  const canRestoreCode_0 = fileRestoreAvailable && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
   return <Popup title="rewind" footer={MESSAGE_SELECTOR_FOOTER} status={hasMessagesToSelect ? `${Math.max(0, messageOptions.length - 1)} messages` : 'empty'}>
       <Box flexDirection="column" gap={1}>
@@ -371,7 +390,7 @@ export function MessageSelector({
               </Box>}
           </>}
         {showPickList && <>
-            {isFileHistoryEnabled ? <Text>
+            {fileRestoreAvailable ? <Text>
                 Restore the code and/or conversation to the point before…
               </Text> : <Text>
                 Restore and fork the conversation to the point before…
