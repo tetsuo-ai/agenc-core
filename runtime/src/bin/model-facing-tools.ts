@@ -2404,9 +2404,9 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "LSP",
     description:
-      "Inspect pending language-server diagnostics and native semantic code-index lookups.",
+      "Code diagnostics and navigation. `diagnostics` queries the live language server (requires a running server); `definition`/`references`/`symbols` use the built-in semantic index, which may be stale relative to a live server.",
     metadata: toolMetadata("coding", {
-      deferred: true,
+      deferred: false,
       keywords: ["lsp", "diagnostics", "definition", "references", "symbols"],
     }),
     isReadOnly: true,

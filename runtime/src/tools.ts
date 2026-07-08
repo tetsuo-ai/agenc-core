@@ -48,7 +48,6 @@ const getSendMessageTool = () =>
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from 'src/tools/ask-user-question/tui-tool.js'
-import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
 import { ReadMcpResourceTool } from './tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { ToolSearchTool } from './tools/ToolSearchTool/ToolSearchTool.js'
@@ -153,7 +152,6 @@ export function getAllBaseTools(): Tools {
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
-    ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(isAgentSwarmsEnabled()
