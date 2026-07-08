@@ -55,6 +55,7 @@ const MINIMAL_NAMES = [
   "clear",
   "compact",
   "context",
+  "coordinator",
   "diff",
   "claim",
   "delegate",

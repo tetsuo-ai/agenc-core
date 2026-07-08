@@ -123,6 +123,17 @@ export class AgenCConfigEditsBuilder {
     return this;
   }
 
+  setCoordinatorMode(enabled: boolean | null): this {
+    this.edits.push((raw) => {
+      if (enabled === null) {
+        delete raw.coordinator_mode;
+      } else {
+        raw.coordinator_mode = enabled;
+      }
+    });
+    return this;
+  }
+
   setPersonality(personality: Personality | null): this {
     this.edits.push((raw) => {
       if (personality === null) {
