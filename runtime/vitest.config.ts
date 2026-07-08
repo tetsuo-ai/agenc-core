@@ -382,6 +382,10 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     pool: 'forks',
+    // Suite-level hermeticity (TODO task 30): strip ambient provider keys /
+    // developer AgenC state and pin the local auth backend before any test
+    // module loads. See vitest.setup.ts + tests/helpers/hermetic-env.mjs.
+    setupFiles: ['./vitest.setup.ts'],
     include: [
       'tests/**/*.test.ts',
       'tests/**/*.test.tsx',

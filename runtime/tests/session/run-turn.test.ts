@@ -4467,6 +4467,13 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     // slot drives model resolution through resolveProfile. The staged
     // marker's `model` field acts as the fallback; the profile overlay
     // supersedes it when it declares a model.
+    //
+    // Applying the switch resolves xai provider settings from process.env,
+    // so set an explicit key (same pattern as the sibling switch tests): the
+    // hermetic suite setup (vitest.setup.ts, TODO task 30) strips ambient
+    // provider keys, and this test previously depended on a developer's
+    // real XAI_API_KEY.
+    const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
     const ctx = mkCtx();
     const configSnapshot = {
       model: "base-model",
@@ -4495,13 +4502,17 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       },
     });
 
-    // Empty input still exercises the runTurn switch consumer, then skips sampling.
-    await drain(session.runTurn("", { ctx }));
+    try {
+      // Empty input still exercises the runTurn switch consumer, then skips sampling.
+      await drain(session.runTurn("", { ctx }));
 
-    expect(session.pendingProviderSwitch).toBeNull();
-    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
-      "grok-code-fast-1",
-    );
+      expect(session.pendingProviderSwitch).toBeNull();
+      expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+        "grok-code-fast-1",
+      );
+    } finally {
+      restoreApiKey();
+    }
   });
 
   test("profile switch falls back to marker's model when configStore is absent", async () => {
