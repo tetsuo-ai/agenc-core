@@ -708,3 +708,55 @@ describe("UnifiedExecProcessManager", () => {
     } satisfies Partial<UnifiedExecError>);
   }, 10_000);
 });
+
+describe("background-shell trio (task 8)", () => {
+  test("yield → poll (non-tty) → completion output → kill", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+
+    // 1) Run in background: the command outlives the yield window and
+    //    returns a live session id.
+    const started = await manager.execCommand({
+      cmd: "sleep 8 && echo done-marker",
+      yield_time_ms: 150,
+    });
+    expect(started.process_id).toEqual(expect.any(Number));
+    const sessionId = started.process_id!;
+    expect(started.stdout).not.toContain("done-marker");
+
+    // 2) Early poll via write_stdin with EMPTY input — allowed for
+    //    non-tty sessions (only WRITING requires tty).
+    const early = await manager.writeStdin({
+      session_id: sessionId,
+      chars: "",
+      yield_time_ms: 100, // floored to the 5s empty-poll minimum
+    });
+    expect(early.stdout).not.toContain("done-marker");
+    expect(early.process_id).toBe(sessionId);
+
+    // 3) Later poll sees the completed output and the exit.
+    const later = await manager.writeStdin({
+      session_id: sessionId,
+      chars: "",
+      yield_time_ms: 6_000,
+    });
+    expect(later.stdout).toContain("done-marker");
+    expect(later.process_id).toBeUndefined();
+
+    // 4) Kill a long-runner by id.
+    const longRunner = await manager.execCommand({
+      cmd: "sleep 300",
+      yield_time_ms: 100,
+    });
+    const killId = longRunner.process_id!;
+    expect(manager.terminateProcess(killId)).toEqual({ terminated: true });
+    // Wait for the SIGTERM to land (exit is asynchronous), then a
+    // second kill (or an unknown id) is a benign no-op.
+    await manager
+      .writeStdin({ session_id: killId, chars: "", yield_time_ms: 100 })
+      .catch(() => undefined);
+    expect(manager.terminateProcess(killId)).toEqual({ terminated: false });
+    expect(manager.terminateProcess(999_999)).toEqual({ terminated: false });
+
+    await manager.closeAll();
+  }, 40_000);
+});

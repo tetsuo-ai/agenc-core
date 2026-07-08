@@ -110,6 +110,8 @@ export interface UnifiedExecProcessManagerLike {
   readonly maxTimeoutMs: number;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput>;
+  /** Terminate one live background process by its session/process id. */
+  terminateProcess?(processId: number): { terminated: boolean };
   closeAll(reason?: string): Promise<void>;
 }
 

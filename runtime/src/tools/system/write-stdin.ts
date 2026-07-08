@@ -51,7 +51,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
   return {
     name: "write_stdin",
     description:
-      "Send input to a live AgenC PTY session created by exec_command with tty=true. Use session_id from the exec_command result. Pass chars='' to poll for more output.",
+      "Interact with a live exec_command session by session_id. Pass chars='' to poll for more output from ANY still-running session (background commands included — tty not required). Sending non-empty input requires the session to have been started with tty=true.",
     metadata: {
       family: "terminal",
       source: "builtin",

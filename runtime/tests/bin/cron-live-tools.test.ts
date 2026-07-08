@@ -41,6 +41,19 @@ async function advanceMinutesWithIo(minutes: number): Promise<void> {
   }
 }
 
+/**
+ * Advance fake minutes until the command queue is non-empty (or the
+ * minute budget runs out). Under full-suite load the tick's real fs
+ * hops can take more wall time per fake minute, so a fixed advance
+ * count is flaky — poll instead.
+ */
+async function advanceUntilQueued(maxMinutes: number): Promise<void> {
+  for (let minute = 0; minute < maxMinutes; minute += 1) {
+    await advanceMinutesWithIo(1);
+    if (getCommandQueueSnapshot().length > 0) return;
+  }
+}
+
 function cronTools(): Map<string, Tool> {
   const tools = createModelFacingTools({
     workspaceRoot: tempRoot,
@@ -130,7 +143,7 @@ describe("live Cron tools drive the real scheduler", () => {
       expect(getCommandQueueSnapshot()).toHaveLength(0);
 
       // Advance past the next whole minute (+ scheduler floors/jitter).
-      await advanceMinutesWithIo(5);
+      await advanceUntilQueued(20);
 
       const queued = getCommandQueueSnapshot();
       expect(queued.length).toBeGreaterThan(0);
@@ -175,7 +188,7 @@ describe("live Cron tools drive the real scheduler", () => {
         "./model-facing-tools.js"
       );
       await startCronSchedulerRunner();
-      await advanceMinutesWithIo(5);
+      await advanceUntilQueued(20);
 
       const queued = getCommandQueueSnapshot();
       expect(
