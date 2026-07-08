@@ -215,7 +215,6 @@ async function launchFallbackAgentFromHookChains(
     if (
       status === 'async_launched' ||
       status === 'completed' ||
-      status === 'remote_launched' ||
       status === 'teammate_spawned'
     ) {
       return {

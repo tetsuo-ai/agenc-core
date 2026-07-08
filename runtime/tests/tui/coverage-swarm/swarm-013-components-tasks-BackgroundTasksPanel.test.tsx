@@ -119,27 +119,6 @@ function makeShellTask(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function makeRemoteTask(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'remote-task',
-    type: 'remote_agent',
-    status: 'running',
-    description: 'Remote task description',
-    startTime: Date.now() - 1_000,
-    outputFile: 'urn:agenc:task:remote-task:output',
-    outputOffset: 0,
-    notified: false,
-    remoteTaskType: 'ultrareview',
-    sessionId: 'session-remote',
-    command: 'review the change',
-    title: 'Remote review',
-    todoList: [],
-    log: [],
-    pollStartedAt: Date.now() - 1_000,
-    ...overrides,
-  }
-}
-
 function makeLocalAgentTask(overrides: Record<string, unknown> = {}) {
   return {
     id: 'local-agent-task',
@@ -208,7 +187,7 @@ describe('BackgroundTasksPanel swarm row 013', () => {
     getTaskOutputPathMock.mockClear()
   })
 
-  it('filters dialog tasks, renders terminal task rows, and leaves remote stop unavailable', async () => {
+  it('filters dialog tasks and renders terminal task rows', async () => {
     appStateMock.state = {
       tasks: {
         invalidPrimitive: null,
@@ -224,22 +203,11 @@ describe('BackgroundTasksPanel swarm row 013', () => {
           command: 'should not be listed',
           isBackgrounded: false,
         }),
-        remoteRunning: makeRemoteTask({
-          id: 'remote-running',
-          title: 'Remote selected task',
-          startTime: Date.now() - 1_000,
-        }),
         pendingShell: makeShellTask({
           id: 'pending-shell',
           status: 'pending',
           command: 'pnpm build',
           startTime: Date.now() - 2_000,
-        }),
-        completedRemote: makeRemoteTask({
-          id: 'remote-finished',
-          status: 'completed',
-          title: 'Finished remote task',
-          startTime: Date.now() - 3_000,
         }),
         completedTeammate: makeTeammateTask({
           id: 'teammate-finished',
@@ -267,14 +235,10 @@ describe('BackgroundTasksPanel swarm row 013', () => {
 
     const output = await renderToString(<BackgroundTasksPanel />, 132)
 
-    expect(output).toContain('2 RUNNING')
-    expect(output).toContain('4 FINISHED')
-    expect(output).toContain('remote-running')
-    expect(output).toContain('Remote selected task')
-    expect(output).toContain('Remote task stop is not available')
+    expect(output).toContain('1 RUNNING')
+    expect(output).toContain('3 FINISHED')
     expect(output).toContain('pnpm build')
     expect(output).toContain('queued')
-    expect(output).toContain('Finished remote')
     expect(output).toContain('npm run done')
     expect(output).not.toContain('foreground-finished')
     expect(output).not.toContain('invalid-type')
@@ -370,21 +334,14 @@ describe('BackgroundTasksPanel swarm row 013', () => {
     }
   })
 
-  it('renders remote review progress and ignores stop input for finished tasks', async () => {
+  it('ignores stop input for finished tasks', async () => {
     appStateMock.state = {
       tasks: {
-        review: makeRemoteTask({
-          id: 'remote-review',
+        finished: makeLocalAgentTask({
+          id: 'local-review',
           status: 'completed',
-          title: '',
-          command: '',
-          description: 'Remote description fallback',
-          reviewProgress: {
-            bugsFound: 4,
-            bugsVerified: 2,
-            bugsRefuted: 1,
-          },
-          log: undefined,
+          prompt: '',
+          description: 'Local description fallback',
         }),
       },
     }
@@ -394,16 +351,12 @@ describe('BackgroundTasksPanel swarm row 013', () => {
     )
 
     const output = await renderToString(
-      <BackgroundTasksPanel initialDetailTaskId="remote-review" />,
+      <BackgroundTasksPanel initialDetailTaskId="local-review" />,
       132,
     )
 
     expect(output).toContain('TASK DETAIL')
-    expect(output).toContain('Remote description fallback')
-    expect(output).toContain('review')
-    expect(output).toContain('4 found')
-    expect(output).toContain('2 verified')
-    expect(output).toContain('1 refuted')
+    expect(output).toContain('Local description fallback')
 
     if (!inputHandler.current) {
       throw new Error('BackgroundTasksPanel did not register input handling')

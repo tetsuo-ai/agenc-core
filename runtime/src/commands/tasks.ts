@@ -72,8 +72,6 @@ function taskTypeLabel(type: TaskType): string {
       return "teammate";
     case "local_bash":
       return "shell";
-    case "remote_agent":
-      return "remote";
   }
 }
 

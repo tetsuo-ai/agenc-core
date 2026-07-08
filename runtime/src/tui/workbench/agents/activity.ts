@@ -43,13 +43,6 @@ export function taskPathLabel(task: TaskState): string | null {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
   }
-  const metadata = record.remoteTaskMetadata;
-  if (metadata && typeof metadata === "object") {
-    for (const key of ["cwd", "worktreePath", "path"]) {
-      const value = (metadata as Record<string, unknown>)[key];
-      if (typeof value === "string" && value.trim().length > 0) return value.trim();
-    }
-  }
   return null;
 }
 

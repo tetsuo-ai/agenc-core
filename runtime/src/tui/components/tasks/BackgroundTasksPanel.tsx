@@ -114,8 +114,6 @@ function taskKindIcon(task: TaskState): string {
     return "◐";
   }
   switch (task.type) {
-    case "remote_agent":
-      return "◆";
     case "in_process_teammate":
       return "∙";
     case "local_bash":
@@ -127,8 +125,6 @@ function taskKindIcon(task: TaskState): string {
 
 function taskKindLabel(task: TaskState): string {
   switch (task.type) {
-    case "remote_agent":
-      return "remote";
     case "in_process_teammate":
       return "teammate";
     case "local_bash":
@@ -140,8 +136,6 @@ function taskKindLabel(task: TaskState): string {
 
 function taskKindColor(task: TaskState): "worker" | "agenc" | "text2" | "subtle" {
   switch (task.type) {
-    case "remote_agent":
-      return "worker";
     case "in_process_teammate":
       return "agenc";
     case "local_bash":
@@ -171,8 +165,6 @@ function taskDetailStatusLabel(task: TaskState): string {
 
 function taskTarget(task: TaskState): string {
   switch (task.type) {
-    case "remote_agent":
-      return "worker/remote";
     case "in_process_teammate":
       return "worker/teammate";
     case "local_bash":
@@ -359,21 +351,6 @@ function buildTaskDetailRows(
       addDetailRows(rows, "teammate", "error", task.error, "error");
       addDetailRows(rows, "teammate", "result", task.result, "subtle");
       break;
-    case "remote_agent":
-      addDetailRows(rows, "remote", "session", task.sessionId, "worker");
-      addDetailRows(rows, "remote", "kind", task.remoteTaskType, "inactive");
-      addDetailRows(rows, "remote", "command", task.command, "text2");
-      if (task.reviewProgress) {
-        addDetailRows(
-          rows,
-          "remote",
-          "review",
-          `${task.reviewProgress.stage ?? "review"} · ${task.reviewProgress.bugsFound} found · ${task.reviewProgress.bugsVerified} verified · ${task.reviewProgress.bugsRefuted} refuted`,
-          "subtle",
-        );
-      }
-      addMessageRows(rows, "remote", "log", task.log);
-      break;
   }
 
   return rows;
@@ -483,8 +460,7 @@ export function BackgroundTasksPanel({
     [nameByAgentId, selectedShellOutputTail, selectedTask],
   );
   const selectedTaskStopAction = tuiStopActionForTask(selectedTask);
-  const selectedTaskCanStop =
-    selectedTaskStopAction !== null && selectedTaskStopAction !== "remote-unavailable";
+  const selectedTaskCanStop = selectedTaskStopAction !== null;
   React.useEffect(() => {
     setDetailIndex(0);
   }, [selectedTaskId]);
@@ -653,8 +629,7 @@ export function BackgroundTasksPanel({
   const listSelectedTask = selectedTask!;
   const listSelectedTaskDetail = taskDetail(listSelectedTask);
   const listSelectedTaskStopAction = tuiStopActionForTask(listSelectedTask);
-  const listSelectedTaskCanStop =
-    listSelectedTaskStopAction !== null && listSelectedTaskStopAction !== "remote-unavailable";
+  const listSelectedTaskCanStop = listSelectedTaskStopAction !== null;
 
   return (
     <MenuModal
@@ -671,7 +646,7 @@ export function BackgroundTasksPanel({
         ...(listSelectedTaskCanStop ? [{ keyName: "x", label: "stop" }] : []),
         { keyName: "l", label: "detail" },
       ]}
-      hint={truncateToWidth("kinds · remote · teammate · bash · local", taskTextWidth)}
+      hint={truncateToWidth("kinds · teammate · bash · local", taskTextWidth)}
       preview={
         <Box flexDirection="column">
           <ThemedText color={taskStatusColor(listSelectedTask.status)} bold={true}>
@@ -691,9 +666,6 @@ export function BackgroundTasksPanel({
             <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${listSelectedTask.prompt}`, taskTextWidth)}</ThemedText>
           ) : null}
           <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`view output: ${listSelectedTask.outputFile}`, taskTextWidth)}</ThemedText>
-          {listSelectedTaskStopAction === "remote-unavailable" ? (
-            <ThemedText color="inactive">Remote task stop is not available from this session.</ThemedText>
-          ) : null}
         </Box>
       }
       renderRow={(task, _index, active) => [

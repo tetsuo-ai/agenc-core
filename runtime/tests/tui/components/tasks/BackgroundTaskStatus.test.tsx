@@ -26,26 +26,6 @@ vi.mock('../../hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => terminalSizeMock.size,
 }))
 
-function remoteTask(id: string) {
-  return {
-    id,
-    type: 'remote_agent',
-    status: 'running',
-    description: id,
-    startTime: 10,
-    outputFile: `urn:agenc:task:${id}:output`,
-    outputOffset: 0,
-    notified: false,
-    remoteTaskType: 'remote-agent',
-    sessionId: `session-${id}`,
-    command: 'remote',
-    title: id,
-    todoList: [],
-    log: [],
-    pollStartedAt: 1,
-  }
-}
-
 function teammateTask(id: string, agentName: string) {
   return {
     id,
@@ -94,24 +74,6 @@ describe('BackgroundTaskStatus glyph rendering', () => {
     } else {
       process.env.AGENC_TUI_GLYPHS = originalGlyphMode
     }
-  })
-
-  it('uses ASCII markers for compact remote-session labels', async () => {
-    appStateMock.state = {
-      ...appStateMock.state,
-      tasks: {
-        remote: remoteTask('remote'),
-      },
-    }
-
-    const { BackgroundTaskStatus } = await import('./BackgroundTaskStatus.js')
-    const output = await renderToString(
-      <BackgroundTaskStatus tasksSelected={false} />,
-      80,
-    )
-
-    expect(output).toContain('<> 1 cloud session')
-    expect(output).not.toContain('◇')
   })
 
   it('uses ASCII separator and shortcut text for teammate expand hints', async () => {

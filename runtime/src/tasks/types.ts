@@ -14,7 +14,6 @@ import { randomInt } from "node:crypto";
 export type TaskType =
   | "local_bash"
   | "local_agent"
-  | "remote_agent"
   | "in_process_teammate";
 
 export type LifecycleOnlyTaskType = "monitor" | "generic";
@@ -101,33 +100,6 @@ export interface LocalAgentTaskState extends TaskStateBase<"local_agent"> {
   readonly evictAfter?: number;
 }
 
-export type RemoteTaskType =
-  | "remote-agent"
-  | "ultrareview"
-  | "autofix-pr"
-  | "background-pr";
-
-export interface RemoteReviewProgress {
-  readonly stage?: "finding" | "verifying" | "synthesizing";
-  readonly bugsFound: number;
-  readonly bugsVerified: number;
-  readonly bugsRefuted: number;
-}
-
-export interface RemoteAgentTaskState extends TaskStateBase<"remote_agent"> {
-  readonly remoteTaskType: RemoteTaskType;
-  readonly remoteTaskMetadata?: unknown;
-  readonly sessionId: string;
-  readonly command: string;
-  readonly title: string;
-  readonly todoList: unknown;
-  readonly log: readonly unknown[];
-  readonly isLongRunning?: boolean;
-  readonly pollStartedAt: number;
-  readonly isRemoteReview?: boolean;
-  readonly reviewProgress?: RemoteReviewProgress;
-}
-
 export interface TeammateIdentity {
   readonly agentId: string;
   readonly agentName: string;
@@ -166,7 +138,6 @@ export interface InProcessTeammateTaskState
 export type TaskState =
   | LocalShellTaskState
   | LocalAgentTaskState
-  | RemoteAgentTaskState
   | InProcessTeammateTaskState;
 
 export type BackgroundTaskState = TaskState;
@@ -174,7 +145,6 @@ export type BackgroundTaskState = TaskState;
 const TASK_ID_PREFIXES: Record<AgenCBackgroundTaskType, string> = {
   local_bash: "b",
   local_agent: "a",
-  remote_agent: "r",
   in_process_teammate: "t",
   monitor: "m",
   generic: "t",
@@ -185,7 +155,6 @@ const TASK_ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const APP_STATE_TASK_TYPES = new Set<string>([
   "local_bash",
   "local_agent",
-  "remote_agent",
   "in_process_teammate",
 ]);
 

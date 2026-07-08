@@ -6,7 +6,6 @@ import {
   type BackgroundTaskState,
   type InProcessTeammateTaskState,
   type LocalShellTaskState,
-  type RemoteAgentTaskState,
 } from "./types.js";
 
 function shell(
@@ -47,24 +46,6 @@ function teammate(
   };
 }
 
-function remote(
-  id: string,
-  overrides: Partial<RemoteAgentTaskState> = {},
-): RemoteAgentTaskState {
-  return {
-    ...createTaskStateBase(id, "remote_agent", id),
-    status: "running",
-    remoteTaskType: "remote-agent",
-    sessionId: "session-1",
-    command: "remote",
-    title: id,
-    todoList: [],
-    log: [],
-    pollStartedAt: 1,
-    ...overrides,
-  };
-}
-
 describe("getPillLabel", () => {
   it("labels shell and monitor groups", () => {
     expect(getPillLabel([shell("one")])).toBe("1 shell");
@@ -75,7 +56,7 @@ describe("getPillLabel", () => {
     );
   });
 
-  it("labels teams, local agents, remote sessions, and mixed tasks", () => {
+  it("labels teams, local agents, and mixed tasks", () => {
     expect(getPillLabel([teammate("agent-1", "alpha")])).toBe("1 team");
     expect(
       getPillLabel([teammate("agent-1", "alpha"), teammate("agent-2", "beta")]),
@@ -97,17 +78,8 @@ describe("getPillLabel", () => {
         },
       ]),
     ).toBe("1 local agent");
-    expect(getPillLabel([remote("remote-1")])).toBe("\u25c7 1 cloud session");
     expect(
-      getPillLabel([remote("remote-1")], { AGENC_TUI_GLYPHS: "ascii" }),
-    ).toBe("<> 1 cloud session");
-    expect(
-      getPillLabel([remote("remote-1"), remote("remote-2")], {
-        AGENC_TUI_GLYPHS: "ascii",
-      }),
-    ).toBe("<> 2 cloud sessions");
-    expect(
-      getPillLabel([remote("remote-1"), shell("shell-1")] as BackgroundTaskState[]),
+      getPillLabel([teammate("agent-1", "alpha"), shell("shell-1")] as BackgroundTaskState[]),
     ).toBe("2 background tasks");
     expect(getPillLabel([])).toBe("0 background tasks");
   });

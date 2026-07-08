@@ -86,28 +86,6 @@ function makeShellTask(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function makeRemoteTask(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'r1',
-    type: 'remote_agent',
-    status: 'running',
-    description: 'Remote implementation',
-    startTime: Date.now(),
-    outputFile: 'urn:agenc:task:r1:output',
-    outputOffset: 0,
-    notified: false,
-    remoteTaskType: 'remote-agent',
-    sessionId: 'session-1',
-    command: 'implement TODO item',
-    title: 'Remote implementation',
-    todoList: [],
-    log: [],
-    pollStartedAt: Date.now(),
-    isBackgrounded: true,
-    ...overrides,
-  }
-}
-
 function makeTeammateTask(overrides: Record<string, unknown> = {}) {
   return {
     id: 't1',
@@ -174,7 +152,7 @@ describe('BackgroundTasksPanel', () => {
     appStateMock.state = {
       tasks: {
         b1: makeShellTask(),
-        r1: makeRemoteTask(),
+        r1: makeTeammateTask({ id: 'r1' }),
       },
     }
 
@@ -238,12 +216,13 @@ describe('BackgroundTasksPanel', () => {
   })
 
   it('renders long task logs in a scroll-bounded detail surface', async () => {
-    terminalSizeMock.size = { columns: 80, rows: 18 }
+    terminalSizeMock.size = { columns: 80, rows: 26 }
     appStateMock.state = {
       tasks: {
-        r1: makeRemoteTask({
-          log: Array.from({ length: 24 }, (_, index) => ({
-            message: `remote log line ${index + 1}`,
+        r1: makeTeammateTask({
+          id: 'r1',
+          messages: Array.from({ length: 24 }, (_, index) => ({
+            message: `teammate log line ${index + 1}`,
           })),
         }),
       },
@@ -258,8 +237,8 @@ describe('BackgroundTasksPanel', () => {
 
     expect(output).toContain('TASK DETAIL')
     expect(output).toContain('scroll')
-    expect(output).toContain('remote log line 1')
-    expect(output).not.toContain('remote log line 24')
+    expect(output).toContain('teammate log line 1')
+    expect(output).not.toContain('teammate log line 24')
   })
 
   it('truncates long task list and detail text to the terminal width', async () => {

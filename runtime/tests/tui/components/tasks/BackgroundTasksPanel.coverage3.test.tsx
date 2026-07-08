@@ -253,23 +253,14 @@ describe('BackgroundTasksPanel branch coverage', () => {
   it('falls back for blank titles, missing timestamps, empty activity, and unknown selected-agent roles', async () => {
     appStateMock.state = {
       tasks: {
-        blankRemote: {
+        blankTitle: makeLocalAgentTask({
           id: 'blank-title-task',
-          type: 'remote_agent',
           status: 'completed',
           description: '   ',
           startTime: undefined,
           outputFile: 'urn:agenc:task:blank-title-task:output',
-          outputOffset: 0,
-          notified: false,
-          remoteTaskType: 'remote-agent',
-          sessionId: 'remote-session',
-          command: '',
-          title: '',
-          todoList: [],
-          log: [],
-          pollStartedAt: Date.now(),
-        },
+          prompt: '',
+        }),
         teammate: makeTeammateTask({
           id: 'teammate-no-role',
           status: 'completed',

@@ -10,7 +10,6 @@ import type { Tool } from '../Tool.js';
 import { buildTool, type ToolDef } from '../Tool.js';
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js';
-import type { RemoteAgentTaskState } from '../../tasks/types.js';
 import type { TaskState } from '../../tasks/types.js';
 import { AbortError } from '../../utils/errors.js';
 import { lazySchema } from '../../utils/lazySchema.js';
@@ -100,13 +99,6 @@ async function getTaskOutputData(task: TaskState): Promise<TaskOutput> {
       result: cleanResult || output,
       output: cleanResult || output,
       error: agentTask.error
-    };
-  }
-  if (task.type === 'remote_agent') {
-    const remoteTask = task as RemoteAgentTaskState;
-    return {
-      ...baseOutput,
-      prompt: remoteTask.command
     };
   }
   return baseOutput;
@@ -512,47 +504,6 @@ function TaskOutputResultDisplay(t0: {
       t3 = $[31];
     }
     return t3;
-  }
-  if (task.task_type === "remote_agent") {
-    let t3;
-    if ($[32] !== task.description || $[33] !== task.status) {
-      t3 = <Text>  {task.description} [{task.status}]</Text>;
-      $[32] = task.description;
-      $[33] = task.status;
-      $[34] = t3;
-    } else {
-      t3 = $[34];
-    }
-    let t4;
-    if ($[35] !== task.output || $[36] !== verbose) {
-      t4 = task.output && verbose && <Box paddingLeft={4} marginTop={1}><Text>{task.output}</Text></Box>;
-      $[35] = task.output;
-      $[36] = verbose;
-      $[37] = t4;
-    } else {
-      t4 = $[37];
-    }
-    let t5;
-    if ($[38] !== expandShortcut || $[39] !== task.output || $[40] !== verbose) {
-      t5 = !verbose && task.output && <Text dimColor={true}>{"     "}({expandShortcut} to expand)</Text>;
-      $[38] = expandShortcut;
-      $[39] = task.output;
-      $[40] = verbose;
-      $[41] = t5;
-    } else {
-      t5 = $[41];
-    }
-    let t6;
-    if ($[42] !== t3 || $[43] !== t4 || $[44] !== t5) {
-      t6 = <Box flexDirection="column">{t3}{t4}{t5}</Box>;
-      $[42] = t3;
-      $[43] = t4;
-      $[44] = t5;
-      $[45] = t6;
-    } else {
-      t6 = $[45];
-    }
-    return t6;
   }
   let t3;
   if ($[46] !== task.description || $[47] !== task.status) {

@@ -14,7 +14,6 @@ import {
 import {
   buildConversationChain,
   clearAgentTranscriptSubdir,
-  deleteRemoteAgentMetadata,
   cacheSessionTitle,
   clearSessionMetadata,
   getAgentTranscriptPath,
@@ -34,12 +33,10 @@ import {
   isLiteLog,
   isTranscriptMessage,
   linkSessionToPR,
-  listRemoteAgentMetadata,
   loadFullLog,
   loadTranscriptFromFile,
   loadTranscriptFile,
   readAgentMetadata,
-  readRemoteAgentMetadata,
   reAppendSessionMetadata,
   recordAttributionSnapshot,
   recordContentReplacement,
@@ -69,7 +66,6 @@ import {
   setSessionFileForTesting,
   stripPersistedToolUseResultsFromJSONLBuffer,
   writeAgentMetadata,
-  writeRemoteAgentMetadata,
 } from "../../src/utils/sessionStorage.js";
 
 const tempDirs: string[] = [];
@@ -351,51 +347,6 @@ test("readAgentMetadata returns null for a corrupt sidecar instead of throwing",
   await writeFile(metaPath, "{");
 
   await expect(readAgentMetadata(agentId)).resolves.toBeNull();
-});
-
-test("readRemoteAgentMetadata returns null for a corrupt sidecar instead of throwing", async () => {
-  const { projectDir } = await configureIsolatedSession();
-
-  // Simulate a partial write from a crashed fire-and-forget persist.
-  const remoteDir = join(projectDir, sessionId, "remote-agents");
-  await mkdir(remoteDir, { recursive: true });
-  await writeFile(
-    join(remoteDir, "remote-agent-task-corrupt.meta.json"),
-    "{",
-  );
-
-  await expect(readRemoteAgentMetadata("task-corrupt")).resolves.toBeNull();
-});
-
-test("persists, lists, and deletes remote agent metadata", async () => {
-  const { projectDir } = await configureIsolatedSession();
-  const metadata = {
-    taskId: "task-1",
-    remoteTaskType: "review",
-    sessionId: "ccr-session",
-    title: "Review task",
-    command: "review",
-    spawnedAt: 123,
-    toolUseId: "tu_remote",
-    isLongRunning: true,
-    isRemoteReview: true,
-    remoteTaskMetadata: { priority: "high" },
-  };
-
-  expect(await readRemoteAgentMetadata("task-1")).toBeNull();
-  expect(await listRemoteAgentMetadata()).toEqual([]);
-
-  await writeRemoteAgentMetadata("task-1", metadata);
-  const remoteDir = join(projectDir, sessionId, "remote-agents");
-  await writeFile(join(remoteDir, "remote-agent-corrupt.meta.json"), "{");
-  await writeFile(join(remoteDir, "ignore.txt"), "{}");
-
-  expect(await readRemoteAgentMetadata("task-1")).toEqual(metadata);
-  expect(await listRemoteAgentMetadata()).toEqual([metadata]);
-
-  await deleteRemoteAgentMetadata("task-1");
-  await deleteRemoteAgentMetadata("task-1");
-  expect(await readRemoteAgentMetadata("task-1")).toBeNull();
 });
 
 test("checks session file existence in the current project directory", async () => {
