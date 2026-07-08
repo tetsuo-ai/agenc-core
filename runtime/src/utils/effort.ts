@@ -45,7 +45,12 @@ export function modelSupportsEffort(model: string): boolean {
     return true
   }
   // Supported by a subset of AgenC 4 models
-  if (m.includes('opus-4-6') || m.includes('opus-4-7') || m.includes('sonnet-4-6')) {
+  if (
+    m.includes('opus-4-6') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-8') ||
+    m.includes('sonnet-4-6')
+  ) {
     return true
   }
   // Exclude any other known compatibility models (haiku, older opus/sonnet variants)
@@ -70,7 +75,8 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  if (model.toLowerCase().includes('opus-4-6') || model.toLowerCase().includes('opus-4-7')) {
+  const m = model.toLowerCase()
+  if (m.includes('opus-4-6') || m.includes('opus-4-7') || m.includes('opus-4-8')) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
@@ -361,9 +367,13 @@ export function getDefaultEffortForModel(
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
 
-  // Default effort on Opus 4.6/4.7 to medium for Pro.
+  // Default effort on Opus 4.6/4.7/4.8 to medium for Pro.
   // Max/Team also get medium when the tengu_grey_step2 config is enabled.
-  if (model.toLowerCase().includes('opus-4-6') || model.toLowerCase().includes('opus-4-7')) {
+  if (
+    model.toLowerCase().includes('opus-4-6') ||
+    model.toLowerCase().includes('opus-4-7') ||
+    model.toLowerCase().includes('opus-4-8')
+  ) {
     if (isProSubscriber()) {
       return 'medium'
     }
