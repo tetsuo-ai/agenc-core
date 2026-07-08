@@ -409,11 +409,6 @@ release workflow uploads that SBOM next to the runtime tarballs and publishes
 4. Use **conventional commits** (`fix(runtime): …`); open a PR and squash-merge.
    Don't bypass git hooks (`--no-verify`).
 
-For new or moved user-facing strings, prefer the lightweight English-default
-message seam in `runtime/src/i18n/messages.ts` when the string belongs to a
-shared CLI/runtime boundary. Keep extraction narrow; this is a future l10n seam,
-not a full translation layer.
-
 A pre-commit hook is provided in `.githooks/` (build + PTY startup smoke); enable
 it with `git config core.hooksPath .githooks`.
 

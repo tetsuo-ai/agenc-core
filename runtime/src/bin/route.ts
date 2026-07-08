@@ -19,8 +19,6 @@
  * without touching Ink, the session subsystem, or the provider layer.
  */
 
-import { formatMessage } from "../i18n/messages.js";
-
 /**
  * Parse a `--flag <value>` or `--flag=<value>` pair out of an argv
  * vector. Returns `null` when the flag is absent or has no value. When
@@ -180,8 +178,10 @@ type HeadlessFormatValueFlag =
 const HEADLESS_FORMAT_FLAG_USAGE: Readonly<
   Record<HeadlessFormatValueFlag, string>
 > = Object.freeze({
-  "--output-format": formatMessage("cli.outputFormat.requiresValue"),
-  "--input-format": formatMessage("cli.inputFormat.requiresValue"),
+  "--output-format":
+    "agenc --output-format requires a value (usage: agenc -p --output-format <text|json|stream-json>)",
+  "--input-format":
+    "agenc --input-format requires a value (usage: agenc -p --input-format <stream-json>)",
 });
 
 /**
