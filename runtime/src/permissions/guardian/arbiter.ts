@@ -813,6 +813,23 @@ function emitApprovalPromptEvents(opts: RequestToolUserApprovalOpts): void {
   if (!opts.eventLog) return;
   const subId = opts.subId ?? opts.callId ?? "approval";
   const callId = opts.callId ?? opts.subId ?? "approval";
+  // Notification hooks fire whenever the runtime starts WAITING on the
+  // human — the OS-alerting seam (fire-and-forget; never blocks the
+  // approval prompt itself).
+  void (async () => {
+    try {
+      const { dispatchNotification } = await import(
+        "../../llm/hooks/dispatcher.js"
+      );
+      await dispatchNotification({
+        hook_event_name: "Notification",
+        notification_type: "permission_request",
+        message: `AgenC is waiting for permission to run ${opts.tool.name}`,
+      });
+    } catch {
+      /* notification hooks are best-effort */
+    }
+  })();
   opts.eventLog.emit({
     id: subId,
     msg: {

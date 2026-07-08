@@ -14,15 +14,21 @@
  */
 import type {
   LifecycleHookEvent,
+  NotificationHook,
   PostCompactHook,
   PreCompactHook,
+  SessionEndHook,
   SessionStartHook,
+  SubagentStopHook,
 } from "./types.js";
 
 export class LifecycleHookRegistry {
   private preCompact: PreCompactHook[] = [];
   private postCompact: PostCompactHook[] = [];
   private sessionStart: SessionStartHook[] = [];
+  private subagentStop: SubagentStopHook[] = [];
+  private sessionEnd: SessionEndHook[] = [];
+  private notification: NotificationHook[] = [];
 
   addPreCompact(hook: PreCompactHook): void {
     this.preCompact.push(hook);
@@ -34,6 +40,18 @@ export class LifecycleHookRegistry {
 
   addSessionStart(hook: SessionStartHook): void {
     this.sessionStart.push(hook);
+  }
+
+  addSubagentStop(hook: SubagentStopHook): void {
+    this.subagentStop.push(hook);
+  }
+
+  addSessionEnd(hook: SessionEndHook): void {
+    this.sessionEnd.push(hook);
+  }
+
+  addNotification(hook: NotificationHook): void {
+    this.notification.push(hook);
   }
 
   getPreCompact(): ReadonlyArray<PreCompactHook> {
@@ -48,12 +66,27 @@ export class LifecycleHookRegistry {
     return this.sessionStart;
   }
 
+  getSubagentStop(): ReadonlyArray<SubagentStopHook> {
+    return this.subagentStop;
+  }
+
+  getSessionEnd(): ReadonlyArray<SessionEndHook> {
+    return this.sessionEnd;
+  }
+
+  getNotification(): ReadonlyArray<NotificationHook> {
+    return this.notification;
+  }
+
   /** Drop every hook for `event`, or all events when omitted. */
   clear(event?: LifecycleHookEvent): void {
     if (event === undefined) {
       this.preCompact = [];
       this.postCompact = [];
       this.sessionStart = [];
+      this.subagentStop = [];
+      this.sessionEnd = [];
+      this.notification = [];
       return;
     }
     switch (event) {
@@ -65,6 +98,15 @@ export class LifecycleHookRegistry {
         return;
       case "SessionStart":
         this.sessionStart = [];
+        return;
+      case "SubagentStop":
+        this.subagentStop = [];
+        return;
+      case "SessionEnd":
+        this.sessionEnd = [];
+        return;
+      case "Notification":
+        this.notification = [];
         return;
     }
   }
@@ -119,5 +161,38 @@ export function registerSessionStartHook(hook: SessionStartHook): () => void {
       .filter((h) => h !== hook);
     defaultRegistry.clear("SessionStart");
     for (const h of remaining) defaultRegistry.addSessionStart(h);
+  };
+}
+
+export function registerSubagentStopHook(hook: SubagentStopHook): () => void {
+  defaultRegistry.addSubagentStop(hook);
+  return () => {
+    const remaining = defaultRegistry
+      .getSubagentStop()
+      .filter((h) => h !== hook);
+    defaultRegistry.clear("SubagentStop");
+    for (const h of remaining) defaultRegistry.addSubagentStop(h);
+  };
+}
+
+export function registerSessionEndHook(hook: SessionEndHook): () => void {
+  defaultRegistry.addSessionEnd(hook);
+  return () => {
+    const remaining = defaultRegistry
+      .getSessionEnd()
+      .filter((h) => h !== hook);
+    defaultRegistry.clear("SessionEnd");
+    for (const h of remaining) defaultRegistry.addSessionEnd(h);
+  };
+}
+
+export function registerNotificationHook(hook: NotificationHook): () => void {
+  defaultRegistry.addNotification(hook);
+  return () => {
+    const remaining = defaultRegistry
+      .getNotification()
+      .filter((h) => h !== hook);
+    defaultRegistry.clear("Notification");
+    for (const h of remaining) defaultRegistry.addNotification(h);
   };
 }

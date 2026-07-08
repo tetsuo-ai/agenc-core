@@ -3848,6 +3848,28 @@ export class Session {
    */
   async shutdown(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
+    // SessionEnd hooks fire first (bounded, failure-contained) so
+    // cleanup/telemetry automations observe every shutdown while the
+    // session state is still intact.
+    try {
+      const { dispatchSessionEnd } = await import(
+        "../llm/hooks/dispatcher.js"
+      );
+      const hookTimeout = new Promise<void>((resolveTimeout) => {
+        setTimeout(resolveTimeout, MAX_DRAIN_MS).unref?.();
+      });
+      await Promise.race([
+        dispatchSessionEnd({
+          hook_event_name: "SessionEnd",
+          reason: "exit",
+          session_id: this.conversationId,
+          cwd: this.state.unsafePeek().sessionConfiguration?.cwd,
+        }),
+        hookTimeout,
+      ]);
+    } catch {
+      /* SessionEnd hooks must never block shutdown */
+    }
     const drained: Array<{ threadId: ThreadId; pending: number }> = [];
 
     const drainOne = async (

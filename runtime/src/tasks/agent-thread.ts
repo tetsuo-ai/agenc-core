@@ -10,6 +10,7 @@
 
 import type { AgentStatus } from "../agents/status.js";
 import type { RunAgentResult } from "../agents/run-agent.js";
+import { dispatchSubagentStop } from "../llm/hooks/dispatcher.js";
 import type { LLMMessage } from "../llm/types.js";
 import type {
   CacheSafeParams,
@@ -307,17 +308,47 @@ export function registerAgentThreadTask(
   const joinPromise = thread.join();
   if (joinPromise && typeof joinPromise.then === "function") {
     lifecycle.bindPromise(threadId, joinPromise, {
-      onFulfilled: (result) => {
+      onFulfilled: async (result) => {
         // Capture the final live counts while the record is still
         // non-terminal; the imminent complete/fail transition freezes them.
         refreshLiveProgress();
         stopProgressTimer();
         stopSummary();
         unsubscribe();
+        // SubagentStop hooks observe every terminal subagent; their
+        // feedback (failed-hook output / additionalContext) is appended
+        // to the completion output the PARENT agent reads in its
+        // task-notification.
+        let hookFeedback: string | undefined;
+        try {
+          const dispatched = await dispatchSubagentStop({
+            hook_event_name: "SubagentStop",
+            task_name: description,
+            agent_id: threadId,
+            ...((): { agent_type?: string } => {
+              const roleName = (
+                thread.live as { role?: { name?: string } }
+              ).role?.name;
+              return typeof roleName === "string"
+                ? { agent_type: roleName }
+                : {};
+            })(),
+            outcome: result.outcome,
+            final_message: result.finalMessage ?? "",
+            duration_ms: result.durationMs,
+          });
+          hookFeedback = dispatched.feedback;
+        } catch {
+          /* hook infrastructure failures never break task completion */
+        }
+        const withFeedback = (output: string | undefined): string | undefined =>
+          hookFeedback !== undefined
+            ? `${output ?? ""}\n\n<subagent-stop-hook-feedback>\n${hookFeedback}\n</subagent-stop-hook-feedback>`
+            : output;
         switch (result.outcome) {
           case "completed":
             return {
-              output: result.finalMessage,
+              output: withFeedback(result.finalMessage),
               metadata: {
                 durationMs: result.durationMs,
                 outcome: result.outcome,

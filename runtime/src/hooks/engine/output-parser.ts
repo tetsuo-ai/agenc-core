@@ -209,6 +209,9 @@ function specificKeysForEvent(event: string | undefined): readonly string[] {
     case "PostToolUse":
     case "UserPromptSubmit":
     case "SessionStart":
+    case "SubagentStop":
+    case "SessionEnd":
+    case "Notification":
     case "PreCompact":
     case "PostCompact":
       return ["additionalContext", "decision", "reason"];

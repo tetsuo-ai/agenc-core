@@ -61,7 +61,14 @@ import {
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import { dispatchPostCompact, dispatchPreCompact, dispatchSessionStart } from "../llm/hooks/dispatcher.js";
-import { registerPostCompactHook, registerPreCompactHook, registerSessionStartHook } from "../llm/hooks/registry.js";
+import {
+  registerNotificationHook,
+  registerPostCompactHook,
+  registerPreCompactHook,
+  registerSessionEndHook,
+  registerSessionStartHook,
+  registerSubagentStopHook,
+} from "../llm/hooks/registry.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import {
@@ -344,6 +351,15 @@ function createHooksService(): Hooks & {
   addSessionStartHook(
     hook: Parameters<typeof registerSessionStartHook>[0],
   ): void;
+  addSubagentStopHook(
+    hook: Parameters<typeof registerSubagentStopHook>[0],
+  ): void;
+  addSessionEndHook(
+    hook: Parameters<typeof registerSessionEndHook>[0],
+  ): void;
+  addNotificationHook(
+    hook: Parameters<typeof registerNotificationHook>[0],
+  ): void;
   clearConfiguredLifecycleHooks(): void;
   processSessionStart(
     ...args: Parameters<typeof dispatchSessionStart>
@@ -374,6 +390,15 @@ function createHooksService(): Hooks & {
     },
     addSessionStartHook: (hook) => {
       lifecycleUnregisters.push(registerSessionStartHook(hook));
+    },
+    addSubagentStopHook: (hook) => {
+      lifecycleUnregisters.push(registerSubagentStopHook(hook));
+    },
+    addSessionEndHook: (hook) => {
+      lifecycleUnregisters.push(registerSessionEndHook(hook));
+    },
+    addNotificationHook: (hook) => {
+      lifecycleUnregisters.push(registerNotificationHook(hook));
     },
     clearConfiguredLifecycleHooks: () => {
       for (const unregister of lifecycleUnregisters.splice(0)) {
