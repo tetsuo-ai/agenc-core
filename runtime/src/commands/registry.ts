@@ -29,6 +29,7 @@ import { agentsCommand } from "./agent-management.js";
 import { tasksCommand } from "./tasks.js";
 import { resumeCommand } from "./resume.js";
 import { rewindCommand } from "./rewind.js";
+import { coordinatorCommand } from "./coordinator.js";
 import { memorySlashCommand } from "./memory/slash.js";
 import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
@@ -170,6 +171,7 @@ export function buildDefaultRegistry(
     clearCommand,
     compactCommand,
     contextCommand,
+    coordinatorCommand,
     diffCommand,
     ...protocolCommands,
     exitCommand,

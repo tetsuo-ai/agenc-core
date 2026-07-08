@@ -213,7 +213,14 @@ const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 async function buildBaseInstructionsForModel(params: {
   readonly registry: ToolRegistry;
   readonly model: string;
+  readonly coordinatorMode?: boolean;
 }): Promise<string> {
+  if (params.coordinatorMode === true) {
+    const { getLiveCoordinatorSystemPrompt } = await import(
+      "../coordinator/coordinatorMode.js"
+    );
+    return getLiveCoordinatorSystemPrompt();
+  }
   const sections = await getSystemPrompt(
     params.registry.tools as unknown as PromptTools,
     params.model,
@@ -1076,6 +1083,13 @@ export async function bootstrapLocalRuntimeSession(
     });
   };
 
+  const { isCoordinatorModeEnabled, LIVE_COORDINATOR_ALLOWED_TOOLS } =
+    await import("../coordinator/coordinatorMode.js");
+  const coordinatorModeEnabled = isCoordinatorModeEnabled(
+    startup.config.coordinator_mode,
+  );
+  const baseToolsConfig =
+    options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config;
   const registry = buildBootstrapToolRegistry({
     workspaceRoot,
     agencHome,
@@ -1086,8 +1100,15 @@ export async function bootstrapLocalRuntimeSession(
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
       codeModeService,
-      toolsConfig:
-        options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config,
+      // Coordinator mode restricts the LIVE surface to orchestration +
+      // user-interaction tools: the coordinator directs workers, it
+      // does not edit files or run commands itself.
+      toolsConfig: coordinatorModeEnabled
+        ? {
+            ...(baseToolsConfig ?? {}),
+            enabled_tools: [...LIVE_COORDINATOR_ALLOWED_TOOLS],
+          }
+        : baseToolsConfig,
     },
   });
   const provider: LLMProvider = createProvider(
@@ -1195,6 +1216,7 @@ export async function bootstrapLocalRuntimeSession(
   const baseInstructions = await buildBaseInstructionsForModel({
     registry,
     model: selectedProviderModel,
+    coordinatorMode: coordinatorModeEnabled,
   });
   const baseSessionConfiguration = {
     ...sessionConfigurationFromAgenCConfig({

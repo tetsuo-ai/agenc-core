@@ -561,6 +561,12 @@ export interface AgenCConfig {
   readonly max_turns?: number;
   readonly max_budget_usd?: number;
   readonly autonomous_mode?: boolean;
+  /**
+   * Coordinator mode: the main session orchestrates work through
+   * spawned agents (spawn_agent/send_message/wait_agent) instead of
+   * editing code itself. `AGENC_COORDINATOR_MODE` env overrides.
+   */
+  readonly coordinator_mode?: boolean;
   readonly agenc_home?: string;
   readonly workspace?: string;
   readonly simpleMode?: boolean;
@@ -695,6 +701,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "max_turns",
   "max_budget_usd",
   "autonomous_mode",
+  "coordinator_mode",
   "agenc_home",
   "workspace",
   "simpleMode",

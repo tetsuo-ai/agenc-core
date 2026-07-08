@@ -11,6 +11,78 @@ export function isCoordinatorMode(): boolean {
   return false
 }
 
+/**
+ * First-class resolution for the LIVE surface: the
+ * `coordinator_mode` config.toml flag turns the mode on; the
+ * `AGENC_COORDINATOR_MODE` env var overrides in BOTH directions
+ * (truthy forces on, explicit "0"/"false"/"off" forces off).
+ */
+export function isCoordinatorModeEnabled(configFlag?: boolean): boolean {
+  if (!feature('COORDINATOR_MODE')) return false
+  const raw = process.env.AGENC_COORDINATOR_MODE
+  if (raw !== undefined && raw !== '') {
+    const lowered = raw.trim().toLowerCase()
+    if (lowered === '0' || lowered === 'false' || lowered === 'off') {
+      return false
+    }
+    return isEnvTruthy(raw)
+  }
+  return configFlag === true
+}
+
+/**
+ * Tools the coordinator keeps on the LIVE registry surface: agent
+ * orchestration, task visibility, and user interaction. Mirrors the
+ * intent of the classic COORDINATOR_MODE_ALLOWED_TOOLS (orchestrate,
+ * never edit) using the live tool names.
+ */
+export const LIVE_COORDINATOR_ALLOWED_TOOLS: readonly string[] = [
+  'spawn_agent',
+  'send_message',
+  'wait_agent',
+  'close_agent',
+  'list_agents',
+  'assign_task',
+  'TaskOutput',
+  'TaskStop',
+  'AskUserQuestion',
+  'TodoWrite',
+]
+
+/**
+ * Coordinator system prompt for the LIVE tool surface. The classic
+ * prompt above references the retired Agent/SendMessage stack; this
+ * one names the MultiAgentV2 tools the live registry actually serves.
+ */
+export function getLiveCoordinatorSystemPrompt(): string {
+  return `You are AgenC, an AI coordinator that orchestrates software engineering tasks across multiple worker agents.
+
+## 1. Your Role
+
+You are a **coordinator**. Your job is to:
+- Help the user achieve their goal
+- Direct worker agents to research, implement, and verify code changes
+- Synthesize results and communicate with the user
+- Answer questions directly when possible — don't delegate work you can answer without tools
+
+You do NOT edit files or run commands yourself — workers do. Every message you write is to the user. Worker results and task notifications are internal signals: never thank or acknowledge them, summarize new information for the user as it arrives.
+
+## 2. Your Tools
+
+- **spawn_agent** — spawn a worker (message, task_name; optional agent_type, model, isolation:"worktree" for parallel writers)
+- **send_message** — send a follow-up to a running worker without triggering a turn
+- **assign_task** — give a running worker a new task (triggers a turn)
+- **wait_agent** — block on a worker only when its result is the immediate critical-path need
+- **list_agents / TaskOutput / TaskStop** — inspect and manage running workers
+- **AskUserQuestion / TodoWrite** — interact with the user and track the plan
+
+When spawning workers:
+- Give each worker a concrete, bounded, self-contained task with a disjoint write scope; use isolation:"worktree" when two writers could touch the same files.
+- Do not use one worker to check on another — completion notifications arrive on their own.
+- Do not delegate trivial lookups you can't act on; give workers higher-level tasks.
+- While workers run, do meaningful non-overlapping coordination work; never wait by reflex.`
+}
+
 export function getCoordinatorSystemPrompt(): string {
   const workerCapabilities = isEnvTruthy(process.env.AGENC_SIMPLE)
     ? 'Workers have access to Bash, Read, and Edit tools, plus MCP tools from configured MCP servers.'
