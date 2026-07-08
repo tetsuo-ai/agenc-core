@@ -61,8 +61,19 @@ export interface McpToolsCapability {
   readonly listChanged?: boolean;
 }
 
+export interface McpPromptsCapability {
+  readonly listChanged?: boolean;
+}
+
+export interface McpResourcesCapability {
+  readonly listChanged?: boolean;
+  readonly subscribe?: boolean;
+}
+
 export interface McpServerCapabilities {
   readonly tools?: McpToolsCapability;
+  readonly prompts?: McpPromptsCapability;
+  readonly resources?: McpResourcesCapability;
 }
 
 export interface McpInitializeParams {
@@ -117,6 +128,76 @@ export interface McpToolProvider {
     params: McpToolCallParams,
     context: McpToolCallContext,
   ): Promise<McpCallToolResult>;
+}
+
+// --- Prompts (MCP `prompts/*`) ---
+
+export interface McpPromptArgumentDefinition {
+  readonly name: string;
+  readonly description?: string;
+  readonly required?: boolean;
+}
+
+export interface McpPromptDefinition {
+  readonly name: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly arguments?: readonly McpPromptArgumentDefinition[];
+}
+
+export interface McpListPromptsResult {
+  readonly prompts: readonly McpPromptDefinition[];
+  readonly nextCursor?: string | null;
+}
+
+export interface McpPromptMessage {
+  readonly role: "user" | "assistant";
+  readonly content: McpToolTextContent;
+}
+
+export interface McpGetPromptResult {
+  readonly description?: string;
+  readonly messages: readonly McpPromptMessage[];
+}
+
+export interface McpPromptProvider {
+  listPrompts(): Promise<readonly McpPromptDefinition[]>;
+  /** Returns null when no prompt with that name exists. */
+  getPrompt(
+    name: string,
+    args?: Readonly<Record<string, string>>,
+  ): Promise<McpGetPromptResult | null>;
+}
+
+// --- Resources (MCP `resources/*`) ---
+
+export interface McpResourceDefinition {
+  readonly uri: string;
+  readonly name: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly mimeType?: string;
+}
+
+export interface McpListResourcesResult {
+  readonly resources: readonly McpResourceDefinition[];
+  readonly nextCursor?: string | null;
+}
+
+export interface McpResourceContents {
+  readonly uri: string;
+  readonly mimeType?: string;
+  readonly text: string;
+}
+
+export interface McpReadResourceResult {
+  readonly contents: readonly McpResourceContents[];
+}
+
+export interface McpResourceProvider {
+  listResources(): Promise<readonly McpResourceDefinition[]>;
+  /** Returns null when the uri is unknown (never reads arbitrary paths). */
+  readResource(uri: string): Promise<McpReadResourceResult | null>;
 }
 
 export const MCP_JSON_RPC_VERSION = "2.0" as const;

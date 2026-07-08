@@ -27,6 +27,10 @@ import {
   type McpOutgoingMessage,
   type McpRequestId,
   type McpResponseMessage,
+  type McpListPromptsResult,
+  type McpListResourcesResult,
+  type McpPromptProvider,
+  type McpResourceProvider,
   type McpServerCapabilities,
   type McpServerInfo,
   type McpToolCallParams,
@@ -40,6 +44,8 @@ export interface McpServerFrameworkOptions {
   readonly instructions?: string | null;
   readonly defaultProtocolVersion?: string;
   readonly toolProvider?: McpToolProvider;
+  readonly promptProvider?: McpPromptProvider;
+  readonly resourceProvider?: McpResourceProvider;
 }
 
 export interface McpServerFrameworkSnapshot {
@@ -232,6 +238,8 @@ export class McpServerFramework {
   private readonly instructions: string | null;
   private readonly defaultProtocolVersion: string;
   private readonly toolProvider: McpToolProvider | null;
+  private readonly promptProvider: McpPromptProvider | null;
+  private readonly resourceProvider: McpResourceProvider | null;
   private initialized = false;
   private initializedNotificationReceived = false;
   private clientInfo: McpInitializeParams["clientInfo"] | null = null;
@@ -245,8 +253,16 @@ export class McpServerFramework {
       title: options.serverInfo?.title ?? "AgenC",
       version: options.serverInfo?.version ?? "0.0.0",
     };
+    this.promptProvider = options.promptProvider ?? null;
+    this.resourceProvider = options.resourceProvider ?? null;
     this.capabilities = options.capabilities ?? {
       tools: { listChanged: true },
+      ...(this.promptProvider !== null
+        ? { prompts: { listChanged: false } }
+        : {}),
+      ...(this.resourceProvider !== null
+        ? { resources: { listChanged: false, subscribe: false } }
+        : {}),
     };
     this.instructions = options.instructions ?? null;
     this.defaultProtocolVersion =
@@ -342,7 +358,14 @@ export class McpServerFramework {
   private async handleRequestAsync(
     request: McpJsonRpcRequest,
   ): Promise<McpOutgoingMessage> {
-    if (request.method !== "tools/call") {
+    const asyncMethods = [
+      "tools/call",
+      "prompts/list",
+      "prompts/get",
+      "resources/list",
+      "resources/read",
+    ];
+    if (!asyncMethods.includes(request.method)) {
       return this.handleRequest(request);
     }
     if (!this.initialized) {
@@ -354,6 +377,16 @@ export class McpServerFramework {
           { method: request.method },
         ),
       );
+    }
+    switch (request.method) {
+      case "prompts/list":
+        return await this.handleListPrompts(request);
+      case "prompts/get":
+        return await this.handleGetPrompt(request);
+      case "resources/list":
+        return await this.handleListResources(request);
+      case "resources/read":
+        return await this.handleReadResource(request);
     }
     const parsedParams = parseToolCallParams(request.params);
     if (!parsedParams.ok) {
@@ -442,12 +475,33 @@ export class McpServerFramework {
       case "tools/list":
         return response(request.id, this.handleListTools());
       case "resources/list":
-      case "resources/templates/list":
       case "resources/read":
-      case "resources/subscribe":
-      case "resources/unsubscribe":
       case "prompts/list":
       case "prompts/get":
+        // Served by the async dispatcher when a provider is configured.
+        if (
+          (request.method.startsWith("prompts/") &&
+            this.promptProvider !== null) ||
+          (request.method.startsWith("resources/") &&
+            this.resourceProvider !== null)
+        ) {
+          return errorResponse(
+            request.id,
+            errorObject(
+              MCP_ERROR_INVALID_REQUEST,
+              `${request.method} requires the async MCP dispatcher`,
+            ),
+          );
+        }
+        return errorResponse(
+          request.id,
+          errorObject(MCP_ERROR_METHOD_NOT_FOUND, `method not found: ${request.method}`, {
+            method: request.method,
+          }),
+        );
+      case "resources/templates/list":
+      case "resources/subscribe":
+      case "resources/unsubscribe":
       case "logging/setLevel":
       case "completion/complete":
         return errorResponse(
@@ -509,6 +563,96 @@ export class McpServerFramework {
 
   private handleListTools(): McpListToolsResult {
     return { tools: this.toolProvider?.listTools() ?? [], nextCursor: null };
+  }
+
+  private methodNotFound(request: McpJsonRpcRequest): McpOutgoingMessage {
+    return errorResponse(
+      request.id,
+      errorObject(
+        MCP_ERROR_METHOD_NOT_FOUND,
+        `method not found: ${request.method}`,
+        { method: request.method },
+      ),
+    );
+  }
+
+  private async handleListPrompts(
+    request: McpJsonRpcRequest,
+  ): Promise<McpOutgoingMessage> {
+    if (this.promptProvider === null) {
+      return this.methodNotFound(request);
+    }
+    const result: McpListPromptsResult = {
+      prompts: await this.promptProvider.listPrompts(),
+      nextCursor: null,
+    };
+    return response(request.id, result);
+  }
+
+  private async handleGetPrompt(
+    request: McpJsonRpcRequest,
+  ): Promise<McpOutgoingMessage> {
+    if (this.promptProvider === null) {
+      return this.methodNotFound(request);
+    }
+    const params = asRecord(request.params);
+    const name = params?.name;
+    if (typeof name !== "string" || name.length === 0) {
+      return errorResponse(
+        request.id,
+        errorObject(MCP_ERROR_INVALID_PARAMS, "prompts/get name must be a non-empty string"),
+      );
+    }
+    const rawArgs = asRecord(params?.arguments);
+    const args: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawArgs ?? {})) {
+      if (typeof value === "string") args[key] = value;
+    }
+    const prompt = await this.promptProvider.getPrompt(name, args);
+    if (prompt === null) {
+      return errorResponse(
+        request.id,
+        errorObject(MCP_ERROR_INVALID_PARAMS, `unknown prompt: ${name}`),
+      );
+    }
+    return response(request.id, prompt);
+  }
+
+  private async handleListResources(
+    request: McpJsonRpcRequest,
+  ): Promise<McpOutgoingMessage> {
+    if (this.resourceProvider === null) {
+      return this.methodNotFound(request);
+    }
+    const result: McpListResourcesResult = {
+      resources: await this.resourceProvider.listResources(),
+      nextCursor: null,
+    };
+    return response(request.id, result);
+  }
+
+  private async handleReadResource(
+    request: McpJsonRpcRequest,
+  ): Promise<McpOutgoingMessage> {
+    if (this.resourceProvider === null) {
+      return this.methodNotFound(request);
+    }
+    const params = asRecord(request.params);
+    const uri = params?.uri;
+    if (typeof uri !== "string" || uri.length === 0) {
+      return errorResponse(
+        request.id,
+        errorObject(MCP_ERROR_INVALID_PARAMS, "resources/read uri must be a non-empty string"),
+      );
+    }
+    const contents = await this.resourceProvider.readResource(uri);
+    if (contents === null) {
+      return errorResponse(
+        request.id,
+        errorObject(MCP_ERROR_INVALID_PARAMS, `unknown resource: ${uri}`),
+      );
+    }
+    return response(request.id, contents);
   }
 
   private handleNotification(notification: McpJsonRpcNotification): void {
