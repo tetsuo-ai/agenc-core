@@ -82,6 +82,15 @@ test('useApiKeyVerification resets stale missing status when the session switche
     verifyApiKey: async () => true,
   }))
 
+  // A live hosted (remote) auth session short-circuits the hook to 'valid'
+  // before it ever consults the anthropic key sources. Pin it to absent so
+  // this test is hermetic against the developer's real ~/.agenc/auth.json.
+  const actualSessionState = await import('../../../src/auth/session-state.js')
+  mock.module('../../../src/auth/session-state.js', () => ({
+    ...actualSessionState,
+    hasRemoteAuthSessionSync: () => false,
+  }))
+
   // @ts-expect-error cache-busting query string for Bun module mocks
   const { useApiKeyVerification } = await import(
     '../../../src/tui/hooks/useApiKeyVerification.ts'

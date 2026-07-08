@@ -1318,9 +1318,16 @@ token_cap = 123
     const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
     const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
     host.runningPids.add(host.pid);
+    // Pin the local auth backend explicitly: since 97f1baf8 ("add Google
+    // login flow") the default backend is "remote", which would make the
+    // active-vs-reloaded auth state indistinguishable below (and route
+    // auth requests at the hosted identity service).
     await writeFile(
       join(agencHome, "config.toml"),
       `
+[auth]
+backend = "local"
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -1464,6 +1471,17 @@ port = 0
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
     const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    // Pin the local auth backend: since 97f1baf8 ("add Google login flow")
+    // the default is "remote", whose auth.login performs a real device-code
+    // flow against the hosted identity service — a live network dependency
+    // this offline contract test must not have.
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[auth]
+backend = "local"
+      `,
+    );
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },

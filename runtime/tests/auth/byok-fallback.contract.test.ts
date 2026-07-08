@@ -108,9 +108,41 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        /grok provider requires an API key.*auth\.managedKeys\.enabled.*XAI_API_KEY.*providers\.grok\.api_key_env/,
+        // Since e4a54ec1 ("route managed bootstrap through OpenRouter") grok
+        // has no live managed route, so the actionable error explains the
+        // OpenRouter-only managed surface plus both BYOK escape hatches.
+        /grok provider requires an API key.*Subscription-managed access is currently live for OpenRouter only.*XAI_API_KEY.*providers\.grok\.api_key_env/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key"]);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("points at auth.managedKeys.enabled when managed vending is disabled for the live OpenRouter route", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-ws-"));
+    const calls: string[] = [];
+
+    try {
+      await expect(
+        bootstrapLocalRuntimeSession({
+          authBackend: localBackendThatCannotVend(calls),
+          conversationId: "conv-no-key-openrouter",
+          env: {
+            AGENC_HOME: agencHome,
+            AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
+            AGENC_PROVIDER: "openrouter",
+            AGENC_WORKSPACE: workspace,
+            HOME: agencHome,
+            OPENROUTER_API_KEY: "",
+          },
+        }),
+      ).rejects.toThrow(
+        /openrouter provider requires an API key.*auth\.managedKeys\.enabled.*OPENROUTER_API_KEY.*providers\.openrouter\.api_key_env/,
+      );
+      expect(calls).toEqual(["getSubscriptionTier:conv-no-key-openrouter"]);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });

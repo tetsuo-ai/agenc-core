@@ -118,9 +118,17 @@ describe("provider discovery", () => {
     });
     const entries = byProvider(report.entries);
 
-    expect(entries.get("openai")).toMatchObject({
+    // Managed subscription vending is OpenRouter-only (b461d139 "use
+    // OpenRouter for managed Pro models"); previously-managed providers such
+    // as openai now surface as plain BYOK-missing rows.
+    expect(entries.get("openrouter")).toMatchObject({
       usable: true,
       keyStatus: "managed",
+      subscriptionTier: "team",
+    });
+    expect(entries.get("openai")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
       subscriptionTier: "team",
     });
     expect(entries.get("agenc")).toMatchObject({
@@ -128,7 +136,8 @@ describe("provider discovery", () => {
       keyStatus: "not-required",
       subscriptionTier: "team",
     });
-    expect(calls).toContain("openai:cli");
+    expect(calls).toContain("openrouter:cli");
+    expect(calls).not.toContain("openai:cli");
   });
 
   it("uses runtime local-provider env resolution for probe URLs", async () => {

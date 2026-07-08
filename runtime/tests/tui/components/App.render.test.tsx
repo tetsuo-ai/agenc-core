@@ -3274,6 +3274,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       setPendingProviderSwitch: vi.fn(),
     };
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    // Isolate AGENC_HOME: a real ~/.agenc/auth.json (hosted managed session)
+    // would reorder the onboarding provider menu and swap the API-key step
+    // for the hosted-access path, breaking the scripted anonymous flow.
+    const previousAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = agencHome;
     providerProbe.promptSubmits.length = 0;
     try {
       const helpers = {
@@ -3319,6 +3324,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
+      if (previousAgencHome === undefined) {
+        delete process.env.AGENC_HOME;
+      } else {
+        process.env.AGENC_HOME = previousAgencHome;
+      }
       rmSync(agencHome, { recursive: true, force: true });
     }
   });
@@ -3331,6 +3341,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       setPendingProviderSwitch: vi.fn(),
     };
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    // Isolate AGENC_HOME: a real ~/.agenc/auth.json (hosted managed session)
+    // would replace the BYOK API-key step with the hosted-access path.
+    const previousAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = agencHome;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), { status: 200 }),
     );
@@ -3375,6 +3389,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       );
     } finally {
       fetchSpy.mockRestore();
+      if (previousAgencHome === undefined) {
+        delete process.env.AGENC_HOME;
+      } else {
+        process.env.AGENC_HOME = previousAgencHome;
+      }
       rmSync(agencHome, { recursive: true, force: true });
     }
   });

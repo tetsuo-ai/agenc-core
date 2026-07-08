@@ -70,9 +70,11 @@ beforeEach(() => {
   dequeueAll();
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
-  resetCronSchedulerForTests();
+  // Await quiescence: an in-flight tick would otherwise race the rmSync
+  // below and die with an unhandled ENOENT writing scheduled_tasks.json.
+  await resetCronSchedulerForTests();
   resetStateForTests();
   dequeueAll();
   rmSync(tempRoot, { recursive: true, force: true });
@@ -175,7 +177,7 @@ describe("live Cron tools drive the real scheduler", () => {
         recurring: true,
       });
       // Simulate a daemon restart: the in-memory scheduler dies…
-      resetCronSchedulerForTests();
+      await resetCronSchedulerForTests();
       resetStateForTests();
       setProjectRoot(tempRoot);
       setOriginalCwd(tempRoot);

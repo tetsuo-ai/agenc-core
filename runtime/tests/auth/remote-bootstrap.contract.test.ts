@@ -14,10 +14,13 @@ describe("remote AuthBackend bootstrap key vending", () => {
   it("vends a remote managed key through createAuthBackend during provider startup", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-remote-auth-ws-"));
+    // Managed subscription vending is OpenRouter-only (e4a54ec1 "route
+    // managed bootstrap through OpenRouter"), so the remote key is vended
+    // for the openrouter provider.
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
-          provider: "grok",
+          provider: "openrouter",
           sessionId: "conv-remote-key",
           apiKey: " remote-managed-key ",
         }),
@@ -71,20 +74,23 @@ describe("remote AuthBackend bootstrap key vending", () => {
         env: {
           AGENC_HOME: agencHome,
           AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+          AGENC_MODEL: "x-ai/grok-4.3",
+          AGENC_PROVIDER: "openrouter",
           AGENC_WORKSPACE: workspace,
           AGENC_XAI_API_KEY: "",
           GROK_API_KEY: "",
           HOME: agencHome,
+          OPENROUTER_API_KEY: "",
           XAI_API_KEY: "",
         },
       });
       shutdown = boot.shutdown;
 
       expect(createProviderSpy).toHaveBeenCalledWith(
-        "grok",
+        "openrouter",
         expect.objectContaining({
           apiKey: "remote-managed-key",
-          model: "grok-4.3",
+          model: "x-ai/grok-4.3",
         }),
       );
       expect(fetchImpl).toHaveBeenCalledWith(
@@ -92,7 +98,7 @@ describe("remote AuthBackend bootstrap key vending", () => {
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
-            provider: "grok",
+            provider: "openrouter",
             sessionId: "conv-remote-key",
           }),
         }),

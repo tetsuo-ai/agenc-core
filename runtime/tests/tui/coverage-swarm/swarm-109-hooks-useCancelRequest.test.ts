@@ -66,6 +66,8 @@ vi.mock('src/tui/context/notifications', () => ({
 
 vi.mock('src/tui/context/overlayContext', () => ({
   useIsOverlayActive: () => fixture.overlayActive,
+  // the hook's Escape guard now keys off the modal-only variant
+  useIsModalOverlayActive: () => fixture.overlayActive,
 }))
 
 vi.mock('src/tui/hooks/useCommandQueue', () => ({
@@ -87,6 +89,11 @@ vi.mock('src/tui/keybindings/useKeybinding.js', () => ({
       isActive: options?.isActive,
     })
   },
+  // useCancelRequest also registers a raw urgent-cancel input capture;
+  // these tests drive handlers through fixture.keybindings, so a no-op
+  // capture is sufficient (without it the module mock is missing an
+  // export and the hook render throws before registering any binding).
+  useInputCapture: () => {},
 }))
 
 vi.mock('src/tui/state/teammateViewHelpers', () => ({
@@ -214,7 +221,7 @@ describe('CancelRequestHandler coverage swarm 109', () => {
     expect(fixture.onCancel).toHaveBeenCalledTimes(1)
   })
 
-  test('context guards deactivate Escape while keeping Ctrl+C available for an active turn', async () => {
+  test('Escape and Ctrl+C both stay available for an active turn in bash mode with empty input', async () => {
     const abortController = new AbortController()
 
     await renderHandler({
@@ -223,7 +230,9 @@ describe('CancelRequestHandler coverage swarm 109', () => {
       inputValue: '',
     })
 
-    expect(getKeybinding('chat:cancel').isActive).toBe(false)
+    // An active turn overrides the Escape-to-mode-exit deferral so the user
+    // can always interrupt AgenC (98af9cb21 / 2af458c7e).
+    expect(getKeybinding('chat:cancel').isActive).toBe(true)
     expect(getKeybinding('app:interrupt').isActive).toBe(true)
 
     getKeybinding('app:interrupt').handler()
@@ -234,18 +243,52 @@ describe('CancelRequestHandler coverage swarm 109', () => {
     )
   })
 
+  test('Escape defers to mode exit while idle in bash mode, keeping Ctrl+C for the queue', async () => {
+    fixture.queuedCommandsLength = 1
+    fixture.hasCommandsInQueue = true
+
+    await renderHandler({
+      inputMode: 'bash',
+      inputValue: '',
+    })
+
+    // Without an active turn, Escape exits the special input mode
+    // (PromptInput handles it) even though a command is queued; Ctrl+C is
+    // unaffected by the mode-exit deferral and can still manage the queue.
+    expect(getKeybinding('chat:cancel').isActive).toBe(false)
+    expect(getKeybinding('app:interrupt').isActive).toBe(true)
+  })
+
   test.each([
-    ['transcript screen', { screen: 'transcript' as const }],
     ['history search', { isSearchingHistory: true }],
     ['message selector', { isMessageSelectorVisible: true }],
     ['local JSX command', { isLocalJSXCommand: true }],
     ['help dialog', { isHelpOpen: true }],
     ['overlay', {}, true],
-    ['vim insert mode', { vimMode: 'INSERT' as const }, false, true],
   ])(
     'deactivates cancel keybindings while %s handles Escape',
-    async (_name, overrides, overlayActive = false, vimEnabled = false) => {
+    async (_name, overrides, overlayActive = false) => {
       fixture.overlayActive = overlayActive
+      const abortController = new AbortController()
+
+      await renderHandler({
+        abortSignal: abortController.signal,
+        ...overrides,
+      })
+
+      expect(getKeybinding('chat:cancel').isActive).toBe(false)
+      expect(getKeybinding('app:interrupt').isActive).toBe(false)
+    },
+  )
+
+  // transcript screen and vim INSERT only claim Escape while AgenC is idle;
+  // during an active turn the interrupt keys stay live (98af9cb21).
+  test.each([
+    ['transcript screen', { screen: 'transcript' as const }, false],
+    ['vim insert mode', { vimMode: 'INSERT' as const }, true],
+  ])(
+    'keeps cancel keybindings active during an active turn despite %s',
+    async (_name, overrides, vimEnabled) => {
       fixture.vimEnabled = vimEnabled
       const abortController = new AbortController()
 
@@ -253,6 +296,23 @@ describe('CancelRequestHandler coverage swarm 109', () => {
         abortSignal: abortController.signal,
         ...overrides,
       })
+
+      expect(getKeybinding('chat:cancel').isActive).toBe(true)
+      expect(getKeybinding('app:interrupt').isActive).toBe(true)
+    },
+  )
+
+  test.each([
+    ['transcript screen', { screen: 'transcript' as const }, false],
+    ['vim insert mode', { vimMode: 'INSERT' as const }, true],
+  ])(
+    'defers cancel keybindings to %s while idle even with queued commands',
+    async (_name, overrides, vimEnabled) => {
+      fixture.vimEnabled = vimEnabled
+      fixture.queuedCommandsLength = 1
+      fixture.hasCommandsInQueue = true
+
+      await renderHandler(overrides)
 
       expect(getKeybinding('chat:cancel').isActive).toBe(false)
       expect(getKeybinding('app:interrupt').isActive).toBe(false)

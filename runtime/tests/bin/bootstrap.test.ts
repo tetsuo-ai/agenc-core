@@ -1273,8 +1273,14 @@ describe("bootstrapLocalRuntimeSession", () => {
         true,
       );
       const state = boot.session.state.unsafePeek();
+      // User history entries carry the file-history join key since 07ae54e6
+      // ("make conversation rewind restore files on disk").
       expect(state.history).toEqual([
-        { role: "user", content: "driver prompt" },
+        {
+          role: "user",
+          content: "driver prompt",
+          runtimeOnly: { userMessageId: expect.stringMatching(/^user-msg-/) },
+        },
         { role: "assistant", content: "driver reply" },
       ]);
       expect(manager!.snapshot(conversationId).historyLength).toBe(2);
@@ -1966,10 +1972,15 @@ describe("bootstrapLocalRuntimeSession", () => {
           ...process.env,
           AGENC_HOME: home,
           AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+          // Managed subscription vending is live for OpenRouter only
+          // (e4a54ec1 "route managed bootstrap through OpenRouter").
+          AGENC_MODEL: "x-ai/grok-4.3",
+          AGENC_PROVIDER: "openrouter",
           AGENC_WORKSPACE: workspace,
           AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
+          OPENROUTER_API_KEY: "",
           XAI_API_KEY: "",
         },
       });
@@ -1977,16 +1988,16 @@ describe("bootstrapLocalRuntimeSession", () => {
 
       expect(boot.authSubscriptionTier).toBe("pro");
       expect(createProviderSpy).toHaveBeenCalledWith(
-        "grok",
+        "openrouter",
         expect.objectContaining({
           apiKey: "managed-key",
           baseURL: "https://llm.agenc.tech",
-          model: "xai/grok-4.3",
+          model: "openrouter/x-ai/grok-4.3",
         }),
       );
       expect(calls).toEqual([
         "getSubscriptionTier:conv-auth",
-        "vendKey:grok:conv-auth",
+        "vendKey:openrouter:conv-auth",
       ]);
     } finally {
       await shutdown?.().catch(() => {
@@ -2032,8 +2043,13 @@ describe("bootstrapLocalRuntimeSession", () => {
             AGENC_WORKSPACE: workspace,
             AGENC_XAI_API_KEY: "",
             AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
+            // OpenRouter is the only provider with a live managed route, so
+            // it is the only one that can surface the managed-keys-disabled
+            // hint (other providers report "OpenRouter only" instead).
+            AGENC_PROVIDER: "openrouter",
             HOME: home,
             GROK_API_KEY: "",
+            OPENROUTER_API_KEY: "",
             XAI_API_KEY: "",
           },
         }),
@@ -2265,9 +2281,11 @@ describe("bootstrapLocalRuntimeSession", () => {
         calls.push(
           `inferAgencModel:${provider ?? ""}:${requestedModel ?? ""}:${subscriptionTier ?? ""}`,
         );
+        // Managed subscription vending is OpenRouter-only (e4a54ec1), so the
+        // hosted alias resolves to the OpenRouter route.
         return {
-          provider: "agenc",
-          model: "grok-4.3",
+          provider: "openrouter",
+          model: "x-ai/grok-4.3",
           subscriptionTier,
         };
       },
@@ -2311,25 +2329,26 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
+          OPENROUTER_API_KEY: "",
           XAI_API_KEY: "",
         },
       });
       shutdown = boot.shutdown;
 
       expect(boot.authSubscriptionTier).toBe("team");
-      expect(boot.resolvedProvider).toBe("grok");
-      expect(boot.model).toBe("grok-4.3");
+      expect(boot.resolvedProvider).toBe("openrouter");
+      expect(boot.model).toBe("x-ai/grok-4.3");
       expect(createProviderSpy).toHaveBeenCalledWith(
-        "grok",
+        "openrouter",
         expect.objectContaining({
           apiKey: "managed-key",
-          model: "grok-4.3",
+          model: "x-ai/grok-4.3",
         }),
       );
       expect(calls).toEqual([
         "getSubscriptionTier:conv-hosted",
         "inferAgencModel:grok:agenc:team",
-        "vendKey:grok:conv-hosted",
+        "vendKey:openrouter:conv-hosted",
       ]);
     } finally {
       await shutdown?.().catch(() => {

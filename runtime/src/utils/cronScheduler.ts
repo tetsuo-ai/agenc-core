@@ -153,6 +153,16 @@ export class CronScheduler {
   /** True while a tick (the local wake path) is executing — re-entrancy guard. */
   private tickInFlight = false
   /**
+   * The most recent timer-initiated tick, kept so stop paths can await
+   * quiescence: stop() only clears the NEXT wake — a tick already executing
+   * keeps running and persists fire state to disk. Without draining it,
+   * shutdown (and test teardown that deletes the state dir) races the
+   * in-flight write. Rejections are caught where this is assigned, so an
+   * exploding tick logs instead of dying as an unhandled rejection from
+   * the bare timer callback.
+   */
+  private lastTick: Promise<void> = Promise.resolve()
+  /**
    * Per-task overlap guard: monotonic-ms deadline through which a task that just
    * fired is treated as "still in flight" so a duplicate is skipped. The lease
    * AUTO-EXPIRES after minIntervalFloorMs so a recurring task is never
@@ -225,6 +235,16 @@ export class CronScheduler {
     this.clearTimer()
   }
 
+  /**
+   * Await the most recent timer-initiated tick. stop() prevents NEW wakes but
+   * a tick already executing keeps going (it persists lastFiredAt / removes
+   * fired one-shots on disk); callers that are about to tear down the state
+   * directory must stop() then drain() before deleting files.
+   */
+  async drain(): Promise<void> {
+    await this.lastTick
+  }
+
   /** Resume after a pause (manual or post-cap), re-arming the next wake. */
   resume(): void {
     this.paused = false
@@ -270,7 +290,9 @@ export class CronScheduler {
     )
     this.recordNextWake(wait)
     this.timer = this.deps.setTimer(() => {
-      void this.onWake()
+      this.lastTick = this.onWake().catch((error: unknown) => {
+        logForDebugging(`[CronScheduler] tick failed: ${String(error)}`)
+      })
     }, wait)
   }
 
@@ -583,8 +605,14 @@ export function getCronScheduler(): CronScheduler {
   return singleton
 }
 
-/** Test-only: drop the singleton so each test starts from a clean driver. */
-export function resetCronSchedulerForTests(): void {
+/**
+ * Test-only: drop the singleton so each test starts from a clean driver.
+ * Async because stop() alone leaves an in-flight tick running — a caller that
+ * deletes the temp state dir right after reset would race the tick's
+ * scheduled_tasks.json write (observed as an unhandled ENOENT rejection).
+ */
+export async function resetCronSchedulerForTests(): Promise<void> {
   singleton?.stop()
+  await singleton?.drain()
   singleton = null
 }

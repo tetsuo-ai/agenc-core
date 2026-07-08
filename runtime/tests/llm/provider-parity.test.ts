@@ -71,6 +71,36 @@ const ECHO_TOOL: LLMTool = {
   },
 };
 
+/**
+ * Wire form of `system.echo` under the bijective MCP tool-name encoding
+ * (src/llm/wire/mcp-tool-naming.ts). The strict-regex providers reject
+ * dotted function names, so the shared wire shims (chat-completions,
+ * responses-openai/xai, messages-anthropic) encode the internal dotted
+ * name on the request and decode the provider's echoed name back before
+ * dispatch. The literal is hardcoded on purpose: this suite pins the wire
+ * contract instead of round-tripping through the encoder.
+ *
+ * Gemini, Bedrock, and Ollama use their own converters that pass tool
+ * names through unencoded, so their wire form stays `system.echo`.
+ */
+const ECHO_TOOL_WIRE_NAME = "tool2__system_x2eecho";
+const PASSTHROUGH_WIRE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
+  "ollama",
+  "gemini",
+  "amazon-bedrock",
+]);
+
+/**
+ * Real providers echo `function.name` back in tool-call responses exactly
+ * as it appeared on the wire request. The mocked payloads must do the
+ * same (encoded form for the strict-regex providers) so the runtime's
+ * decode path is genuinely exercised — the response-side assertions in
+ * `assertToolCalls` expect the DECODED dotted name.
+ */
+function encodedWireToolCallName(name: string): string {
+  return name === "system.echo" ? ECHO_TOOL_WIRE_NAME : name;
+}
+
 const BASE_USAGE = {
   promptTokens: 11,
   completionTokens: 3,
@@ -190,7 +220,10 @@ const CANONICAL_PROMPTS: readonly CanonicalPromptCase[] = [
   {
     id: "tool-call-only",
     messages: [{ role: "user", content: "PARITY::tool-call-only" }],
-    requestMarkers: ["PARITY::tool-call-only", "system.echo"],
+    // The wire tool name differs per provider family (encoded vs
+    // pass-through), so it is asserted per provider below rather than as a
+    // shared marker here.
+    requestMarkers: ["PARITY::tool-call-only"],
     tools: [ECHO_TOOL],
     expected: {
       content: "",
@@ -206,7 +239,7 @@ const CANONICAL_PROMPTS: readonly CanonicalPromptCase[] = [
   {
     id: "tool-call-with-text",
     messages: [{ role: "user", content: "PARITY::tool-call-with-text" }],
-    requestMarkers: ["PARITY::tool-call-with-text", "system.echo"],
+    requestMarkers: ["PARITY::tool-call-with-text"],
     tools: [ECHO_TOOL],
     expected: {
       content: "Need system.echo before answering.",
@@ -341,7 +374,7 @@ function buildResponsesApiPayload(
       type: "function_call",
       id: `fc_${parityCase.id}_${index}`,
       call_id: `call_${parityCase.id}_${index}`,
-      name: toolCall.name,
+      name: encodedWireToolCallName(toolCall.name),
       arguments: toolCall.arguments,
     })),
   );
@@ -378,7 +411,7 @@ function buildChatCompletionsPayload(
                 id: `call_${parityCase.id}_${index}`,
                 type: "function",
                 function: {
-                  name: toolCall.name,
+                  name: encodedWireToolCallName(toolCall.name),
                   arguments: toolCall.arguments,
                 },
               })),
@@ -450,7 +483,7 @@ function buildAnthropicPayload(
     ...parityCase.expected.toolCalls.map((toolCall, index) => ({
       type: "tool_use",
       id: `toolu_${parityCase.id}_${index}`,
-      name: toolCall.name,
+      name: encodedWireToolCallName(toolCall.name),
       input: JSON.parse(toolCall.arguments) as Record<string, unknown>,
     })),
   );
@@ -927,7 +960,14 @@ describe("provider parity", () => {
           expect(serializedRequest).toContain(marker);
         }
         if ((parityCase.tools?.length ?? 0) > 0) {
-          expect(serializedRequest).toContain("system.echo");
+          if (PASSTHROUGH_WIRE_PROVIDERS.has(entry.provider)) {
+            expect(serializedRequest).toContain("system.echo");
+          } else {
+            // Strict-regex providers must receive the bijectively encoded
+            // name, and the raw dotted form must not leak onto the wire.
+            expect(serializedRequest).toContain(ECHO_TOOL_WIRE_NAME);
+            expect(serializedRequest).not.toContain("system.echo");
+          }
         }
       },
     );
