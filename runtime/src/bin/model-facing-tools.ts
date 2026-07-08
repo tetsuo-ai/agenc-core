@@ -1,15 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
-  mkdir,
   readFile,
-  rename,
   stat,
-  writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
-  dirname,
   extname,
   isAbsolute,
   join,
@@ -250,13 +246,10 @@ async function readState(opts: ModelFacingToolOptions): Promise<ToolState> {
   }
 }
 
-async function writeState(opts: ModelFacingToolOptions, state: ToolState): Promise<void> {
-  const file = stateFile(opts);
-  await mkdir(dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await rename(tmp, file);
-}
+// NOTE: the legacy runtime-tools/state.json cron store is READ-only now
+// (RemoteTrigger's stub still lists it). Cron definitions live in the
+// scheduler's own store (.agenc/scheduled_tasks.json via utils/cronTasks)
+// so registered jobs actually fire; the old file's entries never did.
 
 function resolveWorkspacePath(opts: ModelFacingToolOptions, input: string): string {
   const resolved = isAbsolute(input) ? resolve(input) : resolve(opts.workspaceRoot, input);
@@ -2649,12 +2642,27 @@ function validateCron(schedule: string): boolean {
   return schedule.trim().split(/\s+/).length === 5;
 }
 
+/**
+ * Enable + start the shared cron runner (idempotent — start() no-ops on
+ * a running scheduler) and re-arm to the new earliest due time. This is
+ * the wiring that makes CronCreate definitions actually FIRE: due jobs
+ * enqueue their prompt onto the session command queue as a new turn.
+ */
+export async function startCronSchedulerRunner(): Promise<void> {
+  const { setScheduledTasksEnabled } = await import("../bootstrap/state.js");
+  const { getCronScheduler } = await import("../utils/cronScheduler.js");
+  setScheduledTasksEnabled(true);
+  const scheduler = getCronScheduler();
+  scheduler.start();
+  await scheduler.reschedule();
+}
+
 function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool[] {
   return [
     {
       name: "CronCreate",
       description:
-        "Register a local scheduled prompt definition. The current runtime records the schedule; an external runner can execute registered jobs.",
+        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session.",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -2667,7 +2675,11 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
           cron: { type: "string" },
           schedule: { type: "string" },
           prompt: { type: "string" },
-          timezone: { type: "string" },
+          recurring: {
+            type: "boolean",
+            description:
+              "true (default) reschedules after each fire; false fires once and deletes itself.",
+          },
           durable: { type: "boolean" },
         },
         required: ["prompt"],
@@ -2682,24 +2694,25 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         if (!validateCron(schedule)) {
           return json({ error: "cron expression must have five fields" }, true);
         }
-        const state = await readState(opts);
-        const cron: StoredCron = {
-          id: `cron-${randomUUID()}`,
-          schedule,
-          prompt,
-          ...(stringValue(args.timezone) !== undefined
-            ? { timezone: stringValue(args.timezone) }
-            : {}),
-          durable: boolValue(args.durable) ?? true,
-          createdAt: new Date().toISOString(),
-        };
-        await writeState(opts, { ...state, crons: [...state.crons, cron] });
-        return json({ cron });
+        const { addCronTask, nextCronRunMs } = await import(
+          "../utils/cronTasks.js"
+        );
+        if (nextCronRunMs(schedule, Date.now()) === null) {
+          return json({ error: `invalid cron expression: ${schedule}` }, true);
+        }
+        const recurring = boolValue(args.recurring) ?? true;
+        const durable = boolValue(args.durable) ?? true;
+        const id = await addCronTask(schedule, prompt, recurring, durable);
+        // Arm the real runner: without this the definition is inert.
+        await startCronSchedulerRunner();
+        return json({
+          cron: { id, cron: schedule, prompt, recurring, durable },
+        });
       },
     },
     {
       name: "CronDelete",
-      description: "Delete a local scheduled prompt definition.",
+      description: "Delete a scheduled prompt job by id.",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -2715,15 +2728,21 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
       execute: async (args) => {
         const id = stringValue(args.id);
         if (!id) return json({ error: "id is required" }, true);
-        const state = await readState(opts);
-        const crons = state.crons.filter((cron) => cron.id !== id);
-        await writeState(opts, { ...state, crons });
-        return json({ deleted: state.crons.length !== crons.length, id });
+        const { listAllCronTasks, removeCronTasks } = await import(
+          "../utils/cronTasks.js"
+        );
+        const before = await listAllCronTasks();
+        const existed = before.some((task) => task.id === id);
+        await removeCronTasks([id]);
+        const { getCronScheduler } = await import("../utils/cronScheduler.js");
+        await getCronScheduler().reschedule();
+        return json({ deleted: existed, id });
       },
     },
     {
       name: "CronList",
-      description: "List local scheduled prompt definitions.",
+      description:
+        "List scheduled prompt jobs (id, cron expression, prompt, recurring).",
       metadata: toolMetadata("workflow", {
         deferred: true,
         keywords: ["cron", "list"],
@@ -2735,7 +2754,22 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         properties: {},
         additionalProperties: false,
       },
-      execute: async () => json({ crons: (await readState(opts)).crons }),
+      execute: async () => {
+        const { listAllCronTasks } = await import("../utils/cronTasks.js");
+        const tasks = await listAllCronTasks();
+        return json({
+          crons: tasks.map((task) => ({
+            id: task.id,
+            cron: task.cron,
+            prompt: task.prompt,
+            recurring: task.recurring === true,
+            createdAt: new Date(task.createdAt).toISOString(),
+            ...(task.lastFiredAt !== undefined
+              ? { lastFiredAt: new Date(task.lastFiredAt).toISOString() }
+              : {}),
+          })),
+        });
+      },
     },
     {
       name: "WorkflowTool",

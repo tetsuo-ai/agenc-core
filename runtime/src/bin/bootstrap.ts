@@ -1520,6 +1520,24 @@ export async function bootstrapLocalRuntimeSession(
         });
         sidecarManager.register(new FileHistorySidecar({ fileHistory }));
         s.attachFileHistory(fileHistory);
+
+        // Re-arm persisted cron jobs across restarts: a durable schedule
+        // written by CronCreate must keep firing after the daemon/session
+        // restarts, not sit inert until the next CronCreate call.
+        void (async () => {
+          try {
+            const { readCronTasks } = await import("../utils/cronTasks.js");
+            const persisted = await readCronTasks(workspaceRoot);
+            if (persisted.length > 0) {
+              const { startCronSchedulerRunner } = await import(
+                "./model-facing-tools.js"
+              );
+              await startCronSchedulerRunner();
+            }
+          } catch {
+            /* cron re-arm is best-effort; tools re-arm on next CronCreate */
+          }
+        })();
         sidecarManager.register(
           new ErrorLogSidecar({
             projectDir,
