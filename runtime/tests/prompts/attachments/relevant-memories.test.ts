@@ -173,6 +173,135 @@ describe("relevantMemoriesProducer", () => {
     }
   });
 
+  test("injects project/CWD-keyed memories on the first turn without a user query", async () => {
+    const projectMemoryDir = join(cwd, ".agenc", "memory");
+    const globalMemoryDir = join(agencHome, "memory");
+    const projectPath = writeMemory(
+      projectMemoryDir,
+      "build-notes.md",
+      "Build pipeline notes",
+      "Run the runtime build twice.",
+    );
+    const matchingGlobalPath = writeMemory(
+      globalMemoryDir,
+      "repo-conventions.md",
+      "Conventions for this workspace",
+      "Follow the workspace conventions.",
+    );
+    writeMemory(
+      globalMemoryDir,
+      "cooking.md",
+      "Slow braising technique",
+      "Simmer gently for hours.",
+    );
+    const trackingState = getAttachmentTrackingState({});
+
+    const out = await relevantMemoriesProducer(
+      makeOpts({ userInput: null }),
+      trackingState,
+    );
+
+    // Session-start recall must stay cheap: no model-side selection.
+    expect(sideQuery).not.toHaveBeenCalled();
+    expect(out).toHaveLength(1);
+    if (out[0]?.kind !== "relevant_memories") {
+      throw new Error("expected relevant_memories");
+    }
+    const paths = out[0].memories.map((memory) => memory.path);
+    // Project-memory-dir files rank first; global files qualify only via
+    // project signal tokens (cwd basename "repo" matches the filename).
+    expect(paths).toEqual([projectPath, matchingGlobalPath]);
+    expect(out[0].memories[0]?.content).toContain(
+      "Run the runtime build twice.",
+    );
+    expect(trackingState.surfacedRelevantMemoryPaths.has(projectPath)).toBe(
+      true,
+    );
+    expect(trackingState.surfacedRelevantMemoryBytes).toBeGreaterThan(0);
+  });
+
+  test("session-start recall fires only on the first producer run", async () => {
+    const projectMemoryDir = join(cwd, ".agenc", "memory");
+    writeMemory(
+      projectMemoryDir,
+      "build-notes.md",
+      "Build pipeline notes",
+      "Run the runtime build twice.",
+    );
+    const trackingState = getAttachmentTrackingState({});
+
+    const first = await relevantMemoriesProducer(
+      makeOpts({ userInput: "" }),
+      trackingState,
+    );
+    expect(first).toHaveLength(1);
+
+    // Later query-less turns must not re-run session-start recall, even for
+    // memories that were not surfaced the first time.
+    writeMemory(
+      projectMemoryDir,
+      "later-notes.md",
+      "Follow-up notes",
+      "Written after turn 0.",
+    );
+    const second = await relevantMemoriesProducer(
+      makeOpts({ userInput: "" }),
+      trackingState,
+    );
+    expect(second).toEqual([]);
+    expect(sideQuery).not.toHaveBeenCalled();
+  });
+
+  test("skips session-start recall for subagents", async () => {
+    writeMemory(
+      join(cwd, ".agenc", "memory"),
+      "build-notes.md",
+      "Build pipeline notes",
+      "Run the runtime build twice.",
+    );
+    const trackingState = getAttachmentTrackingState({});
+    const out = await relevantMemoriesProducer(
+      makeOpts({ userInput: null, subagentDepth: 1 }),
+      trackingState,
+    );
+    expect(out).toEqual([]);
+    expect(sideQuery).not.toHaveBeenCalled();
+  });
+
+  test("does not double-inject when the first prompt is a real query", async () => {
+    const globalMemoryDir = join(agencHome, "memory");
+    const browserPath = writeMemory(
+      globalMemoryDir,
+      "browser.md",
+      "Browser automation guidance",
+      "Use the browser automation workflow.",
+    );
+    writeMemory(
+      join(cwd, ".agenc", "memory"),
+      "build-notes.md",
+      "Build pipeline notes",
+      "Run the runtime build twice.",
+    );
+    selectMemory("browser.md");
+    const trackingState = getAttachmentTrackingState({});
+
+    // Turn 0 with a substantive query: only the query-gated path fires.
+    const out = await relevantMemoriesProducer(makeOpts(), trackingState);
+    expect(out).toHaveLength(1);
+    if (out[0]?.kind !== "relevant_memories") {
+      throw new Error("expected relevant_memories");
+    }
+    expect(out[0].memories.map((memory) => memory.path)).toEqual([browserPath]);
+
+    // The session-start one-shot was consumed by turn 0, so a later
+    // query-less turn injects nothing on top.
+    const second = await relevantMemoriesProducer(
+      makeOpts({ userInput: null }),
+      trackingState,
+    );
+    expect(second).toEqual([]);
+  });
+
   test("truncates large selected memories before attachment emission", async () => {
     const memoryDir = join(agencHome, "memory");
     writeMemory(

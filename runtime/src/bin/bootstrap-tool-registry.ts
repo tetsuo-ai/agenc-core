@@ -38,6 +38,9 @@ export function buildBootstrapToolRegistry(
     ...(options.toolRegistryOptions?.toolsConfig !== undefined
       ? { toolsConfig: options.toolRegistryOptions.toolsConfig }
       : {}),
+    ...(options.toolRegistryOptions?.outputSchema !== undefined
+      ? { outputSchema: options.toolRegistryOptions.outputSchema }
+      : {}),
   });
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
