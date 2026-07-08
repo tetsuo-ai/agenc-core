@@ -27,6 +27,7 @@ import {
   prepareMessagesForWire,
   readAudioPayload,
   readDocumentPayload,
+  splitSystemPromptOnDynamicBoundary,
   toResponsesToolOutput,
   withEndpointMarkers,
   withSerializedMetrics,
@@ -201,8 +202,14 @@ export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
+  // Prefix-cache split: only the cross-turn-stable head of the system
+  // prompt goes into `instructions` (part of the cached prefix); the
+  // volatile tail is appended as the LAST input item below so the
+  // request prefix stays byte-identical across turns.
+  const { staticPrefix: staticSystemPrompt, dynamicSuffix: dynamicSystemPrompt } =
+    splitSystemPromptOnDynamicBoundary(input.options?.systemPrompt);
   const instructions = [
-    input.options?.systemPrompt?.trim(),
+    staticSystemPrompt,
     ...messages
       .filter((message) =>
         message.role === "system" || message.role === "developer"
@@ -263,6 +270,14 @@ export function buildOpenAIResponsesRequest(
       type: "message",
       role: "user",
       content: [{ type: "input_text", text: "" }],
+    });
+  }
+
+  if (dynamicSystemPrompt !== undefined) {
+    responseInput.push({
+      type: "message",
+      role: "system",
+      content: [{ type: "input_text", text: dynamicSystemPrompt }],
     });
   }
 

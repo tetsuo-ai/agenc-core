@@ -88,7 +88,10 @@ import {
   toXaiResponsesTools,
   XAI_ENCRYPTED_REASONING_INCLUDE,
 } from "../../wire/responses-xai.js";
-import { coerceUsage } from "../../wire/shared.js";
+import {
+  coerceUsage,
+  splitSystemPromptOnDynamicBoundary,
+} from "../../wire/shared.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -1753,10 +1756,23 @@ export class GrokProvider implements LLMProvider {
     requestMessages: readonly LLMMessage[];
   } {
     const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
-    const requestMessages =
-      options?.systemPrompt && options.systemPrompt.length > 0
-        ? [{ role: "system" as const, content: options.systemPrompt }, ...messages]
-        : messages;
+    // Prefix-cache split: xAI caching is prefix-based ("never modify
+    // earlier messages — only append"), so the volatile tail of the
+    // system prompt (timestamp, git state, …) must not sit at the front
+    // where it diverges every turn and prevents the system + history
+    // prefix from ever being served from cache. Static head leads,
+    // dynamic tail becomes the FINAL message.
+    const { staticPrefix: staticSystemPrompt, dynamicSuffix: dynamicSystemPrompt } =
+      splitSystemPromptOnDynamicBoundary(options?.systemPrompt);
+    const requestMessages = [
+      ...(staticSystemPrompt !== undefined
+        ? [{ role: "system" as const, content: staticSystemPrompt }]
+        : []),
+      ...messages,
+      ...(dynamicSystemPrompt !== undefined
+        ? [{ role: "system" as const, content: dynamicSystemPrompt }]
+        : []),
+    ];
     const repairedMessages = repairToolTurnSequence(requestMessages);
     validateToolTurnSequence(repairedMessages, {
       providerName: this.name,
