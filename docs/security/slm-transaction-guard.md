@@ -27,20 +27,39 @@ Install the requested Gemma 4 E4B model:
 ollama pull gemma4:e4b
 ```
 
-Enable the guard:
+Enable the guard in `~/.agenc/config.toml`:
+
+```toml
+[transaction_guard]
+enabled = true
+model = "gemma4:e4b"
+endpoint = "http://127.0.0.1:11434"
+fail_mode = "closed"   # "closed" (default) blocks when the guard is
+                       # unavailable; "open" lets the call proceed unguarded
+```
+
+Environment variables remain overrides on top of the config block
+(precedence: env > config > built-in defaults):
 
 ```bash
-export AGENC_TRANSACTION_GUARD=slm
+export AGENC_TRANSACTION_GUARD=slm            # "slm" enables; any other value disables
 export AGENC_TRANSACTION_GUARD_MODEL=gemma4:e4b
 export AGENC_TRANSACTION_GUARD_OLLAMA_URL=http://127.0.0.1:11434
+export AGENC_TRANSACTION_GUARD_FAIL_MODE=closed
 export AGENC_TRANSACTION_GUARD_TIMEOUT_MS=120000
 ```
 
-When enabled, malformed verdicts, model timeouts, and Ollama errors all resolve
-to an `unavailable` decision that blocks the transaction-like action before
-execution (fail-closed). Sensitive-looking fields (keys, secrets, mnemonics,
-seeds, tokens, passwords, authorization headers) are redacted before the intent
-is serialized into the docket.
+`agenc doctor` reports the effective guard status (enabled/disabled, the
+source of that decision, model, endpoint) and probes endpoint reachability
+with a short timeout, warning when the guard is enabled but its endpoint is
+down.
+
+When enabled with the default `fail_mode = "closed"`, malformed verdicts,
+model timeouts, and Ollama errors all resolve to an `unavailable` decision
+that blocks the transaction-like action before execution (fail-closed).
+Sensitive-looking fields (keys, secrets, mnemonics, seeds, tokens, passwords,
+authorization headers) are redacted before the intent is serialized into the
+docket.
 
 ## What Is Guarded
 

@@ -494,6 +494,26 @@ export interface PluginsConfig {
   readonly plugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
 }
 
+export type TransactionGuardFailMode = "open" | "closed";
+
+/**
+ * `[transaction_guard]` — SLM transaction-guard block
+ * (docs/security/slm-transaction-guard.md). The guard runs a local
+ * CourtGuard-style classification against an Ollama endpoint before
+ * transaction-like tool calls execute. Env vars remain overrides:
+ * `AGENC_TRANSACTION_GUARD` (= "slm" enables, any other value disables),
+ * `AGENC_TRANSACTION_GUARD_MODEL`, `AGENC_TRANSACTION_GUARD_OLLAMA_URL`,
+ * and `AGENC_TRANSACTION_GUARD_FAIL_MODE` win over these fields; built-in
+ * defaults apply when neither is set (env > config > defaults — see
+ * `transaction-guard/config.ts`).
+ */
+export interface TransactionGuardConfig {
+  readonly enabled?: boolean;
+  readonly model?: string;
+  readonly endpoint?: string;
+  readonly fail_mode?: TransactionGuardFailMode;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -567,6 +587,11 @@ export interface AgenCConfig {
    * editing code itself. `AGENC_COORDINATOR_MODE` env overrides.
    */
   readonly coordinator_mode?: boolean;
+  /**
+   * SLM transaction guard (`[transaction_guard]`). Optional — the guard
+   * defaults to disabled; `AGENC_TRANSACTION_GUARD*` env vars override.
+   */
+  readonly transaction_guard?: TransactionGuardConfig;
   readonly agenc_home?: string;
   readonly workspace?: string;
   readonly simpleMode?: boolean;
@@ -702,6 +727,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "max_budget_usd",
   "autonomous_mode",
   "coordinator_mode",
+  "transaction_guard",
   "agenc_home",
   "workspace",
   "simpleMode",
@@ -981,6 +1007,17 @@ export class InvalidAgentConfigError extends InvalidNamedConfigError {
 export class InvalidPluginsConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("plugins", "InvalidPluginsConfigError", field, detail);
+  }
+}
+
+export class InvalidTransactionGuardConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super(
+      "transaction_guard",
+      "InvalidTransactionGuardConfigError",
+      field,
+      detail,
+    );
   }
 }
 
@@ -1889,6 +1926,39 @@ function validateMcpConfigTable(raw: unknown): Readonly<{
  * nested fields are deny-by-default so misspellings cannot silently change
  * runtime behavior.
  */
+const TRANSACTION_GUARD_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "model",
+  "endpoint",
+  "fail_mode",
+]);
+
+export function validateTransactionGuardConfig(
+  raw: unknown,
+): TransactionGuardConfig | undefined {
+  if (raw === undefined) return undefined;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidTransactionGuardConfigError(field, detail);
+  const record = requirePlainObject(raw, "", makeError);
+  rejectUnknownFields(record, TRANSACTION_GUARD_KEYS, makeError);
+  const out: {
+    -readonly [K in keyof TransactionGuardConfig]: TransactionGuardConfig[K];
+  } = {};
+  const enabled = optionalBoolean(record.enabled, "enabled", makeError);
+  if (enabled !== undefined) out.enabled = enabled;
+  const model = optionalString(record.model, "model", makeError);
+  if (model !== undefined) out.model = model;
+  const endpoint = optionalString(record.endpoint, "endpoint", makeError);
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  if (record.fail_mode !== undefined) {
+    if (record.fail_mode !== "open" && record.fail_mode !== "closed") {
+      throw makeError("fail_mode", 'expected "open" or "closed"');
+    }
+    out.fail_mode = record.fail_mode;
+  }
+  return Object.freeze(out as TransactionGuardConfig);
+}
+
 export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   const out: Record<string, unknown> = { ...config };
   let changed = false;
@@ -1922,6 +1992,12 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   }
   if (config.tui !== undefined) {
     out.tui = validateTuiConfig(config.tui);
+    changed = true;
+  }
+  if (config.transaction_guard !== undefined) {
+    out.transaction_guard = validateTransactionGuardConfig(
+      config.transaction_guard,
+    );
     changed = true;
   }
 

@@ -19,7 +19,8 @@ export function formatAgenCDoctorCliHelpText(): string {
     "",
     "Usage:",
     "  agenc doctor            Print installation, version, ripgrep, update,",
-    "                          and PATH/glob diagnostics with suggested fixes",
+    "                          transaction-guard, and PATH/glob diagnostics",
+    "                          with suggested fixes",
     "  agenc doctor --json     Emit the raw diagnostic as JSON",
     "",
     "Options:",
@@ -54,7 +55,7 @@ export function parseAgenCDoctorCliArgs(
   return { kind: "doctor", json };
 }
 
-function formatDiagnosticText(
+export function formatDiagnosticText(
   info: Awaited<ReturnType<typeof getDoctorDiagnostic>>,
 ): string {
   const lines: string[] = [];
@@ -82,6 +83,18 @@ function formatDiagnosticText(
           : ""
       })`,
   );
+  const guard = info.transactionGuard;
+  lines.push(
+    `  Transaction guard:  ${guard.enabled ? "enabled" : "disabled"} ` +
+      `(source: ${guard.source}, fail-${guard.failMode})`,
+  );
+  if (guard.enabled) {
+    lines.push(`    model:    ${guard.model}`);
+    lines.push(
+      `    endpoint: ${guard.endpoint} ` +
+        `(${guard.endpointReachable ? "reachable" : "UNREACHABLE"})`,
+    );
+  }
 
   if (info.multipleInstallations.length > 0) {
     lines.push("");

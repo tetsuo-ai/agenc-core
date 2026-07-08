@@ -110,7 +110,9 @@ export class OllamaCourtGuard implements TransactionGuard {
       const verdict = parseTransactionGuardVerdict(verdictText);
       if (!verdict) {
         return {
-          allowed: false,
+          // Fail-closed (default) blocks on malformed verdicts; an
+          // explicit fail_mode="open" policy lets the call proceed.
+          allowed: !this.policy.failClosed,
           verdict: "unavailable",
           code: TRANSACTION_GUARD_UNAVAILABLE,
           reason: `Guard returned malformed verdict: ${verdictText}`,
@@ -135,7 +137,9 @@ export class OllamaCourtGuard implements TransactionGuard {
       };
     } catch (error) {
       return {
-        allowed: false,
+        // Fail-closed (default) blocks on guard errors/timeouts; an
+        // explicit fail_mode="open" policy lets the call proceed.
+        allowed: !this.policy.failClosed,
         verdict: "unavailable",
         code: TRANSACTION_GUARD_UNAVAILABLE,
         reason: error instanceof Error ? error.message : String(error),

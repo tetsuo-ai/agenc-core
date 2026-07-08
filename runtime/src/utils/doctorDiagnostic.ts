@@ -10,6 +10,12 @@ import {
   getGlobalConfig,
   type InstallMethod,
 } from './config.js'
+import { loadConfig } from '../config/loader.js'
+import type { TransactionGuardConfig } from '../config/schema.js'
+import {
+  resolveTransactionGuardPolicy,
+  type TransactionGuardValueSource,
+} from '../transaction-guard/config.js'
 import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -83,6 +89,18 @@ export type DiagnosticInfo = {
     mode: 'system' | 'builtin' | 'embedded'
     systemPath: string | null
   }
+  transactionGuard: TransactionGuardDoctorStatus
+}
+
+export type TransactionGuardDoctorStatus = {
+  enabled: boolean
+  /** Where the enabled/disabled decision came from. */
+  source: TransactionGuardValueSource
+  model: string
+  endpoint: string
+  failMode: 'open' | 'closed'
+  /** `null` when the guard is disabled (endpoint not probed). */
+  endpointReachable: boolean | null
 }
 
 function getNormalizedPaths(): [invokedPath: string, execPath: string] {
@@ -558,6 +576,93 @@ export function buildRipgrepWarning(
   }
 }
 
+/**
+ * Short-timeout reachability probe for the transaction-guard endpoint.
+ * Any HTTP response (even 404/405) proves the endpoint is reachable;
+ * only network errors / timeouts report unreachable. Never throws.
+ */
+export async function probeTransactionGuardEndpoint(
+  endpoint: string,
+  timeoutMs = 1_500,
+): Promise<boolean> {
+  try {
+    await fetch(endpoint, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolve the effective transaction-guard status for `agenc doctor`:
+ * the `[transaction_guard]` config block merged with env overrides
+ * (env > config > defaults), plus an endpoint reachability probe when
+ * the guard is enabled.
+ *
+ * `opts.config` short-circuits the disk load for tests (`null` = "no
+ * config block on disk"); `opts.probe` injects the reachability check.
+ */
+export async function getTransactionGuardDoctorStatus(opts?: {
+  config?: TransactionGuardConfig | null
+  env?: NodeJS.ProcessEnv
+  probe?: (endpoint: string) => Promise<boolean>
+}): Promise<TransactionGuardDoctorStatus> {
+  const env = opts?.env ?? process.env
+  let guardConfig: TransactionGuardConfig | undefined =
+    opts?.config === null ? undefined : opts?.config
+  if (guardConfig === undefined && opts?.config === undefined) {
+    try {
+      const loaded = await loadConfig({ onWarn: () => {} })
+      guardConfig = loaded.config.transaction_guard
+    } catch {
+      // No resolvable AGENC home / unreadable config — env-only status.
+    }
+  }
+  const { policy, sources } = resolveTransactionGuardPolicy(guardConfig, env)
+  const probe = opts?.probe ?? probeTransactionGuardEndpoint
+  let endpointReachable: boolean | null = null
+  if (policy.enabled) {
+    try {
+      endpointReachable = await probe(policy.ollamaUrl)
+    } catch {
+      // The doctor path never throws on probe failure.
+      endpointReachable = false
+    }
+  }
+  return {
+    enabled: policy.enabled,
+    source: sources.enabled,
+    model: policy.model,
+    endpoint: policy.ollamaUrl,
+    failMode: policy.failClosed ? 'closed' : 'open',
+    endpointReachable,
+  }
+}
+
+/**
+ * Actionable warning when the guard is enabled but its endpoint is down.
+ * Pure so it can be unit-tested directly (same shape as
+ * {@link buildRipgrepWarning}).
+ */
+export function buildTransactionGuardWarning(
+  status: TransactionGuardDoctorStatus,
+): { issue: string; fix: string } | null {
+  if (!status.enabled || status.endpointReachable !== false) {
+    return null
+  }
+  const consequence =
+    status.failMode === 'closed'
+      ? 'fail mode is "closed", so guarded transaction-like tool calls are blocked until it is reachable'
+      : 'fail mode is "open", so guarded transaction-like tool calls currently run WITHOUT the SLM guard'
+  return {
+    issue: `transaction guard is enabled but its endpoint ${status.endpoint} is unreachable — ${consequence}`,
+    fix: `Start the Ollama endpoint (e.g. \`ollama serve\` and \`ollama pull ${status.model}\`) or point [transaction_guard].endpoint / AGENC_TRANSACTION_GUARD_OLLAMA_URL at a reachable host`,
+  }
+}
+
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationType = await getCurrentInstallationType()
   // The bundler substitutes `MACRO.VERSION` (property access) with a string
@@ -656,6 +761,14 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     warnings.push(ripgrepWarning)
   }
 
+  // Transaction-guard status (config + env merged) with a short-timeout
+  // endpoint probe when enabled. Unreachable-but-enabled gets a warning.
+  const transactionGuard = await getTransactionGuardDoctorStatus()
+  const transactionGuardWarning = buildTransactionGuardWarning(transactionGuard)
+  if (transactionGuardWarning) {
+    warnings.push(transactionGuardWarning)
+  }
+
   // Get package manager info if running from package manager
   const packageManager =
     installationType === 'package-manager'
@@ -679,6 +792,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     warnings,
     packageManager,
     ripgrepStatus,
+    transactionGuard,
   }
 
   return diagnostic
