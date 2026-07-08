@@ -67,6 +67,12 @@ import type {
   RuntimeMessage,
 } from "../services/compact/types.js";
 import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
+import {
+  applyToolResultBudget,
+  resolveToolResultBudgetChars,
+  shrinkOversizedToolResults,
+  type ContentReplacementState,
+} from "./_deps/tool-result-storage.js";
 import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
 import { commit } from "../phases/commit.js";
@@ -348,6 +354,7 @@ async function prepareAgenCTurnContext(
       messages,
       toolUseContext,
       querySource,
+      contentReplacementState: state.contentReplacementState,
     });
     state.messagesForQuery = prepared.messages;
     state.snipTokensFreed = prepared.snipTokensFreed;
@@ -499,6 +506,7 @@ async function prepareAgenCQueryMessages(params: {
   readonly messages: readonly LLMMessage[];
   readonly toolUseContext: AgenCToolUseContext;
   readonly querySource: string;
+  readonly contentReplacementState?: ContentReplacementState;
 }): Promise<{
   readonly messages: LLMMessage[];
   readonly snipTokensFreed: number;
@@ -507,7 +515,16 @@ async function prepareAgenCQueryMessages(params: {
   try {
     const result = await withCompactContextGuards(async () => {
       let messages = toAgenCRuntimeMessages(params.messages);
-      const budgeted = await applyToolResultBudget(messages);
+      const budgeted = await applyToolResultBudget(
+        messages,
+        params.contentReplacementState,
+        {
+          limitChars: resolveToolResultBudgetChars(
+            params.toolUseContext.options.contextWindowTokens,
+          ),
+          persist: persistOversizedToolResult,
+        },
+      );
       messages = budgeted.messages as AgenCRuntimeMessage[];
       const { microcompactMessages } =
         await import("../services/compact/microCompact.js");
@@ -519,7 +536,10 @@ async function prepareAgenCQueryMessages(params: {
       messages = microcompactResult.messages as AgenCRuntimeMessage[];
       const committed = false;
       return {
-        messages: fromAgenCRuntimeMessages(messages),
+        messages: truncateToolResultsToFit(
+          fromAgenCRuntimeMessages(messages),
+          params.toolUseContext.options.contextWindowTokens,
+        ),
         snipTokensFreed: 0,
         committed,
       };
@@ -534,11 +554,52 @@ async function prepareAgenCQueryMessages(params: {
   }
 }
 
-async function applyToolResultBudget(messages: RuntimeMessage[]): Promise<{
-  readonly messages: RuntimeMessage[];
-  readonly newlyReplaced: readonly unknown[];
-}> {
-  return { messages, newlyReplaced: [] };
+/**
+ * Pre-send truncate-to-fit backstop. The mid-turn compact gate anchors
+ * on the PREVIOUS sample's `promptTokens`, which cannot see tool
+ * results added since — a burst of large results can push the next
+ * request past the window and waste a full 413 round-trip before the
+ * reactive collapse fires. When the assembled request's rough estimate
+ * exceeds the window minus an output reserve, shrink oversized tool
+ * results (head+tail slices, pairing preserved) at progressively
+ * tighter caps until it fits or nothing shrinkable remains.
+ */
+function truncateToolResultsToFit(
+  messages: LLMMessage[],
+  contextWindowTokens: number | undefined,
+): LLMMessage[] {
+  const window = finitePositive(contextWindowTokens);
+  if (window === undefined) return messages;
+  const fitTokens = Math.max(8_000, window - 16_000);
+  let estimate = roughTokenCountEstimationForMessages(messages);
+  if (estimate <= fitTokens) return messages;
+  let out = messages;
+  for (const cap of [100_000, 50_000, 20_000, 8_000]) {
+    const shrunk = shrinkOversizedToolResults(out, cap);
+    if (shrunk.shrunkCount === 0) continue;
+    out = shrunk.messages;
+    estimate = roughTokenCountEstimationForMessages(out);
+    if (estimate <= fitTokens) break;
+  }
+  return out;
+}
+
+/**
+ * Persist an over-budget tool result via the shared tool-results store
+ * (same disk layout as the single-result offload path in
+ * `tools/execution.ts`, so the model's FileRead pointer works for both)
+ * and return the preview replacement string, or null on failure.
+ */
+async function persistOversizedToolResult(
+  content: string,
+  toolUseId: string,
+): Promise<string | null> {
+  const { persistToolResult, buildLargeToolResultMessage } = await import(
+    "../utils/toolResultStorage.js"
+  );
+  const persisted = await persistToolResult(content, toolUseId);
+  if ("error" in persisted) return null;
+  return buildLargeToolResultMessage(persisted);
 }
 
 async function toAgenCCompactionResult(

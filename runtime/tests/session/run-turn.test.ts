@@ -730,6 +730,87 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("a burst of medium tool results is bounded by the aggregate budget (wiring)", async () => {
+    // Each result stays BELOW the single-result execution cap
+    // (MIN_TOOL_RESULT_BYTES = 16K on this 1024-token window), so only
+    // the aggregate per-group budget can bound the sum: 10 × 12K = 120K
+    // chars in one group vs the 50K floor budget.
+    const mediumResult = "M".repeat(12_000);
+    const seenMessages: LLMMessage[][] = [];
+    let calls = 0;
+    const provider: LLMProvider = {
+      name: "budget-provider",
+      chat: async () => ({
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async (messages) => {
+        calls += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: Array.from({ length: 10 }, (_, i) => ({
+              id: `budget-call-${i}`,
+              name: "budget_tool",
+              arguments: "{}",
+            })),
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        return {
+          content: "final",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+      healthCheck: async () => true,
+    } as unknown as LLMProvider;
+    const registry: ToolRegistry = {
+      tools: [
+        {
+          name: "budget_tool",
+          description: "emits a medium result",
+          inputSchema: { type: "object", additionalProperties: false },
+          requiresApproval: false,
+          execute: async () => ({ content: mediumResult, isError: false }),
+        },
+      ],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: mediumResult, isError: false }),
+    } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+
+    await drain(session.runTurn("run the big tools", { ctx: mkCtx() }));
+
+    expect(calls).toBe(2);
+    const second = seenMessages[1] ?? [];
+    const verbatimCount = second.filter(
+      (message) =>
+        typeof message.content === "string" &&
+        message.content.includes(mediumResult),
+    ).length;
+    const totalChars = second.reduce(
+      (sum, message) =>
+        sum +
+        (typeof message.content === "string" ? message.content.length : 0),
+      0,
+    );
+    // With the budget wired, most of the 10 results are replaced by
+    // persisted previews (or shrunk); the assembled request is bounded.
+    // Fails when the run-turn wiring is reverted to the no-op stub
+    // (all 10 × 12K flow verbatim → totalChars > 120K).
+    expect(verbatimCount).toBeLessThan(10);
+    expect(totalChars).toBeLessThan(80_000);
+  });
+
   test("stamps the seed user message with the user_message event id (file-history join)", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession({
