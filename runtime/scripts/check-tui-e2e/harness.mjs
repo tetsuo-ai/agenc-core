@@ -890,12 +890,57 @@ export class TuiSession {
   }
 
   /**
-   * Wait for the assistant's reply marker. The TUI prefixes assistant turns
-   * with "● " in the transcript. After `submit`, this fires once the model's
-   * first content chunk renders.
+   * Wait for the assistant's reply to render. Since 345e27c66 the TUI renders
+   * every assistant turn (live streaming AND settled) under a `▮ AGENC`
+   * identity header with the reply text indented beneath it — the old bare
+   * "● " streaming marker is gone. After `submit`, this fires once the
+   * header AND at least one line of real reply content under it render.
+   *
+   * The content check is row/column aware on purpose: the header alone can
+   * paint before the first model chunk arrives, and full-width repaints put
+   * sidebar/footer text on rows below the header. Requiring visible message
+   * text at/after the header's column, before any box-drawing border row,
+   * keeps the assertion anchored to actual reply content.
    */
   async waitForAssistantReply({ timeout = 60_000 } = {}) {
-    return this.waitFor(/●\s+\S/, { timeout, label: "assistant reply" });
+    const start = Date.now();
+    const headerRe = /▮\s+AGENC\b/;
+    while (Date.now() - start < timeout) {
+      const rows = renderPtyRows(this.buffer.slice(this.watermark), {
+        cols: this.cols,
+        rows: this.rows,
+      });
+      const headerIdx = rows.findIndex((row) => headerRe.test(row));
+      if (headerIdx !== -1) {
+        const headerCol = rows[headerIdx].indexOf("▮");
+        let matched = false;
+        for (let r = headerIdx + 1; r < rows.length; r += 1) {
+          const body = rows[r].slice(headerCol);
+          if (body.trim().length === 0) continue;
+          // Box-drawing chars mean we left the transcript block and hit the
+          // composer/panel chrome without seeing reply text — keep waiting.
+          if (/^\s*[─│┌┐└┘├┤╭╮╰╯]/.test(body)) break;
+          // Real reply content: the first visible character under the AGENC
+          // header column is message text (word char or common markdown /
+          // quote / list openers), not pane chrome glyphs (❯ ↳ ◐ ✳ ·).
+          if (/^\s*["'`*#>\w([{$~-]/.test(body)) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) {
+          this.watermark = this.buffer.length;
+          return;
+        }
+      }
+      if (this.exited) {
+        throw new Error(
+          `waitFor(assistant reply): TUI exited before reply rendered (code=${this.exitInfo?.exitCode}, signal=${this.exitInfo?.signal})`,
+        );
+      }
+      await sleep(100);
+    }
+    throw new Error(`waitFor(assistant reply): timeout after ${timeout}ms`);
   }
 
   /**
