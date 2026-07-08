@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "run": {
+    "id": "local-1db68f14-e7fb-4282-89d2-bcaf9a6dada3",
+    "benchmark": "agenc-local-coding-v1",
+    "startedAt": "2026-07-08T07:55:59.509Z",
+    "finishedAt": "2026-07-08T07:55:59.875Z",
+    "agent": {
+      "name": "agenc"
+    },
+    "environment": {
+      "repo": "/home/tetsuo/git/AgenC/agenc-core/runtime",
+      "commit": "4e4e05c68",
+      "branch": "feat/eval-quality-gate",
+      "runner": "local",
+      "sandbox": "local",
+      "localOnly": true,
+      "executor": "mock",
+      "configFingerprint": "d8eccafe903d9654"
+    }
+  },
+  "tasks": [
+    {
+      "id": "fix-off-by-one",
+      "source": "agenc-local",
+      "title": "Fix off-by-one loop bound in sum()",
+      "status": "passed",
+      "durationMs": 24,
+      "tokens": {
+        "input": 240,
+        "output": 70
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/fix-off-by-one'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 6
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "fix-null-guard",
+      "source": "agenc-local",
+      "title": "Guard greet() against missing users",
+      "status": "passed",
+      "durationMs": 20,
+      "tokens": {
+        "input": 260,
+        "output": 84
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/fix-null-guard'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "add-clamp",
+      "source": "agenc-local",
+      "title": "Add a clamp() helper to math.js",
+      "status": "passed",
+      "durationMs": 22,
+      "tokens": {
+        "input": 280,
+        "output": 96
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/add-clamp'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "add-cli-upper-flag",
+      "source": "agenc-local",
+      "title": "Add an --upper flag to cli.mjs",
+      "status": "passed",
+      "durationMs": 82,
+      "tokens": {
+        "input": 300,
+        "output": 110
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/add-cli-upper-flag'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "refactor-no-var",
+      "source": "agenc-local",
+      "title": "Replace var declarations in counter.js",
+      "status": "passed",
+      "durationMs": 22,
+      "tokens": {
+        "input": 220,
+        "output": 74
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/refactor-no-var'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "refactor-extract-helper",
+      "source": "agenc-local",
+      "title": "Extract duplicated name formatting into a helper",
+      "status": "passed",
+      "durationMs": 22,
+      "tokens": {
+        "input": 310,
+        "output": 105
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/refactor-extract-helper'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "write-slugify-tests",
+      "source": "agenc-local",
+      "title": "Write assert-based tests for slugify()",
+      "status": "passed",
+      "durationMs": 56,
+      "tokens": {
+        "input": 340,
+        "output": 130
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/write-slugify-tests'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "tests-pass-and-catch-mutations",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "find-config-port",
+      "source": "agenc-local",
+      "title": "Locate the configured HTTP port",
+      "status": "passed",
+      "durationMs": 20,
+      "tokens": {
+        "input": 210,
+        "output": 40
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/find-config-port'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "answer",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "fix-config-json",
+      "source": "agenc-local",
+      "title": "Repair invalid config.json",
+      "status": "passed",
+      "durationMs": 21,
+      "tokens": {
+        "input": 190,
+        "output": 36
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/fix-config-json'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "parses",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "rename-typo-symbol",
+      "source": "agenc-local",
+      "title": "Rename the misspelled procesData symbol",
+      "status": "passed",
+      "durationMs": 22,
+      "tokens": {
+        "input": 270,
+        "output": 88
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/rename-typo-symbol'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "docs-usage-section",
+      "source": "agenc-local",
+      "title": "Replace the README TODO with a Usage section",
+      "status": "passed",
+      "durationMs": 21,
+      "tokens": {
+        "input": 200,
+        "output": 60
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/docs-usage-section'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "readme",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    },
+    {
+      "id": "fix-fizzbuzz-order",
+      "source": "agenc-local",
+      "title": "Fix fizzbuzz branch ordering",
+      "status": "passed",
+      "durationMs": 21,
+      "tokens": {
+        "input": 230,
+        "output": 66
+      },
+      "commands": [
+        {
+          "command": "bash '/home/tetsuo/git/AgenC/agenc-core/runtime/eval/tasks/fix-fizzbuzz-order'/solution.sh",
+          "exitCode": 0,
+          "durationMs": 4
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "behavior",
+          "status": "passed",
+          "command": "node {taskDir}/verify.mjs"
+        }
+      ]
+    }
+  ]
+}

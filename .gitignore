@@ -63,6 +63,12 @@ obj/
 !config/private-kernel-distribution.example.json
 !config/private-kernel-distribution.local.json
 !web/public/assets/maps/**/*.json
+# Agent-eval quality gate: committed baseline, matrix config, suite manifest,
+# and tiny task fixture/solution JSONs (runtime/eval/reports/ stays ignored).
+!runtime/eval/*.json
+!runtime/eval/tasks/manifest.json
+!runtime/eval/tasks/*/fixture/*.json
+!runtime/eval/tasks/*/solution/*.json
 id.json
 deploy/
 keys/

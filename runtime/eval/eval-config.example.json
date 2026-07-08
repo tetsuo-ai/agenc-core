@@ -1,0 +1,16 @@
+{
+  "matrix": [
+    {
+      "id": "mock",
+      "executor": "mock",
+      "provider": "local",
+      "model": "scripted-mock"
+    },
+    {
+      "id": "grok-4",
+      "provider": "xai",
+      "model": "grok-4",
+      "agentCommand": "agenc -p {prompt} --output-format json"
+    }
+  ]
+}

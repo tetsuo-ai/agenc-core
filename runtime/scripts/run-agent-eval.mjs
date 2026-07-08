@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { performance } from "node:perf_hooks";
@@ -25,11 +26,16 @@ const OUTPUT_CAPTURE_LIMIT = 64 * 1024;
 function usage() {
   return [
     "Usage: node scripts/run-agent-eval.mjs --tasks <manifest.json> [options]",
+    "       node scripts/run-agent-eval.mjs --suite <dir> [options]",
     "",
     "Runs a local agent-evaluation manifest and writes an AgenC eval report.",
     "",
     "Options:",
+    "  --suite <dir>           Suite directory containing manifest.json + task dirs",
     "  --output <path>          Write report JSON to path (default: stdout)",
+    "  --output-dir <path>     Write one report per matrix entry into a directory",
+    "  --config <path>         Model/config matrix JSON ({\"matrix\": [...]})",
+    "  --executor <mode>       'real' (default) or 'mock' (scripted solution.sh)",
     "  --agent-command <cmd>   Default shell command for each task",
     "  --benchmark <name>      Override manifest benchmark name",
     "  --run-id <id>           Override generated run id",
@@ -39,8 +45,10 @@ function usage() {
     "  --model <name>          Model label for report metadata",
     "  --repo <path>           Repository/workspace path (default: cwd)",
     "  --timeout-ms <ms>       Per-command timeout (default: 600000)",
+    "  --keep-workspaces       Do not delete per-task fixture workspaces",
     "",
-    "Task commands may use placeholders: {prompt}, {promptJson}, {taskId}, {cwd}.",
+    "Task commands may use placeholders: {prompt}, {promptJson}, {taskId}, {cwd},",
+    "and {taskDir} (for suite tasks with a dir).",
   ].join("\n");
 }
 
@@ -49,7 +57,12 @@ function parseArgs(argv) {
   const parsed = {
     help: false,
     tasksPath: undefined,
+    suitePath: undefined,
     outputPath: undefined,
+    outputDir: undefined,
+    configPath: undefined,
+    executor: "real",
+    keepWorkspaces: false,
     agentCommand: undefined,
     benchmark: undefined,
     runId: undefined,
@@ -76,8 +89,28 @@ function parseArgs(argv) {
       case "--tasks":
         parsed.tasksPath = path.resolve(readValue());
         break;
+      case "--suite":
+        parsed.suitePath = path.resolve(readValue());
+        break;
       case "--output":
         parsed.outputPath = path.resolve(readValue());
+        break;
+      case "--output-dir":
+        parsed.outputDir = path.resolve(readValue());
+        break;
+      case "--config":
+        parsed.configPath = path.resolve(readValue());
+        break;
+      case "--executor": {
+        const value = readValue();
+        if (value !== "real" && value !== "mock") {
+          throw new Error("--executor must be 'real' or 'mock'");
+        }
+        parsed.executor = value;
+        break;
+      }
+      case "--keep-workspaces":
+        parsed.keepWorkspaces = true;
         break;
       case "--agent-command":
         parsed.agentCommand = readValue();
@@ -119,8 +152,16 @@ function parseArgs(argv) {
     }
   }
 
-  if (!parsed.help && !parsed.tasksPath) {
-    throw new Error("missing required --tasks manifest path");
+  if (!parsed.help) {
+    if (parsed.tasksPath && parsed.suitePath) {
+      throw new Error("--tasks and --suite are mutually exclusive");
+    }
+    if (parsed.suitePath) {
+      parsed.tasksPath = path.join(parsed.suitePath, "manifest.json");
+    }
+    if (!parsed.tasksPath) {
+      throw new Error("missing required --tasks manifest path (or --suite dir)");
+    }
   }
   return parsed;
 }
@@ -160,13 +201,14 @@ function asStringArray(value, label) {
   return value;
 }
 
-function normalizeManifest(raw) {
+function normalizeManifest(raw, baseDir) {
   const manifest = Array.isArray(raw) ? { tasks: raw } : asObject(raw, "manifest");
   const tasks = manifest.tasks;
   if (!Array.isArray(tasks) || tasks.length === 0) {
     throw new Error("manifest.tasks must be a non-empty array");
   }
   return {
+    baseDir,
     benchmark: asString(manifest.benchmark) ?? "local-agent-eval",
     agentCommand: asString(manifest.agentCommand),
     timeoutMs:
@@ -175,6 +217,32 @@ function normalizeManifest(raw) {
         : undefined,
     tasks: tasks.map((task, index) => normalizeTask(task, index)),
   };
+}
+
+function normalizeConfig(raw) {
+  const config = asObject(raw, "config");
+  const matrix = config.matrix;
+  if (!Array.isArray(matrix) || matrix.length === 0) {
+    throw new Error("config.matrix must be a non-empty array");
+  }
+  return matrix.map((entry, index) => {
+    const item = asObject(entry, `config.matrix[${index}]`);
+    const executor = asString(item.executor);
+    if (executor !== undefined && executor !== "real" && executor !== "mock") {
+      throw new Error(
+        `config.matrix[${index}].executor must be 'real' or 'mock'`,
+      );
+    }
+    return {
+      id: asString(item.id) ?? asString(item.model) ?? `entry-${index + 1}`,
+      executor,
+      agentCommand: asString(item.agentCommand),
+      agentName: asString(item.agentName),
+      agentVersion: asString(item.agentVersion),
+      provider: asString(item.provider),
+      model: asString(item.model),
+    };
+  });
 }
 
 function normalizeTask(raw, index) {
@@ -190,8 +258,11 @@ function normalizeTask(raw, index) {
     title: asString(task.title),
     prompt: typeof task.prompt === "string" ? task.prompt : "",
     cwd: asString(task.cwd),
+    dir: asString(task.dir),
+    fixture: asString(task.fixture),
     skip: task.skip === true,
     agentCommand: asString(task.agentCommand ?? task.command),
+    mockCommand: asString(task.mockCommand),
     setupCommands: asStringArray(
       task.setupCommands ?? task.setup,
       `task ${id} setupCommands`,
@@ -220,12 +291,21 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/gu, "'\\''")}'`;
 }
 
-function renderCommand(template, task, cwd) {
-  return template
+function renderCommand(template, task, cwd, taskDir) {
+  if (template.includes("{taskDir}") && !taskDir) {
+    throw new Error(
+      `task ${task.id} uses {taskDir} but has no dir (suite manifests must set task.dir)`,
+    );
+  }
+  let rendered = template
     .replaceAll("{prompt}", shellQuote(task.prompt))
     .replaceAll("{promptJson}", shellQuote(JSON.stringify(task.prompt)))
     .replaceAll("{taskId}", shellQuote(task.id))
     .replaceAll("{cwd}", shellQuote(cwd));
+  if (taskDir) {
+    rendered = rendered.replaceAll("{taskDir}", shellQuote(taskDir));
+  }
+  return rendered;
 }
 
 function appendCaptured(output, chunk) {
@@ -376,14 +456,8 @@ function taskNotes(results) {
 }
 
 async function runTask(task, manifest, args) {
-  const taskStarted = performance.now();
-  const cwd = path.resolve(task.cwd ?? args.repo);
-  const timeoutMs = task.timeoutMs ?? manifest.timeoutMs ?? args.timeoutMs;
-  const commands = [];
-  const riskFlags = new Set(task.riskFlags);
-  const rawResults = [];
-
   if (task.skip) {
+    const riskFlags = new Set(task.riskFlags);
     return {
       id: task.id,
       ...(task.source ? { source: task.source } : {}),
@@ -395,8 +469,46 @@ async function runTask(task, manifest, args) {
     };
   }
 
+  let workspace;
+  try {
+    if (task.fixture) {
+      const taskDir = task.dir ? path.resolve(manifest.baseDir, task.dir) : undefined;
+      const fixtureDir = path.resolve(taskDir ?? manifest.baseDir, task.fixture);
+      const fixtureStat = await stat(fixtureDir).catch(() => undefined);
+      if (!fixtureStat?.isDirectory()) {
+        return buildTaskReport({
+          task,
+          status: "error",
+          durationMs: 0,
+          commands: [],
+          verifiers: [],
+          riskFlags: new Set([...task.riskFlags, "fixture_missing"]),
+          rawResults: [],
+          notes: `Fixture directory not found: ${fixtureDir}`,
+        });
+      }
+      workspace = await mkdtemp(path.join(os.tmpdir(), `agenc-eval-${task.id}-`));
+      await cp(fixtureDir, workspace, { recursive: true });
+    }
+    return await runTaskInWorkspace(task, manifest, args, workspace);
+  } finally {
+    if (workspace && !args.keepWorkspaces) {
+      await rm(workspace, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+async function runTaskInWorkspace(task, manifest, args, workspace) {
+  const taskStarted = performance.now();
+  const taskDir = task.dir ? path.resolve(manifest.baseDir, task.dir) : undefined;
+  const cwd = workspace ?? path.resolve(task.cwd ?? args.repo);
+  const timeoutMs = task.timeoutMs ?? manifest.timeoutMs ?? args.timeoutMs;
+  const commands = [];
+  const riskFlags = new Set(task.riskFlags);
+  const rawResults = [];
+
   for (const setupCommand of task.setupCommands) {
-    const rendered = renderCommand(setupCommand, task, cwd);
+    const rendered = renderCommand(setupCommand, task, cwd, taskDir);
     const result = await runCommand(rendered, { cwd, timeoutMs });
     commands.push(commandReport(result));
     rawResults.push(result);
@@ -415,10 +527,14 @@ async function runTask(task, manifest, args) {
     }
   }
 
-  const agentCommand = task.agentCommand ?? manifest.agentCommand ?? args.agentCommand;
+  const agentCommand = args.executor === "mock"
+    ? task.mockCommand ?? (taskDir ? "bash {taskDir}/solution.sh" : undefined)
+    : task.agentCommand ?? manifest.agentCommand ?? args.agentCommand;
   let agentResult;
   if (!agentCommand) {
-    riskFlags.add("agent_command_missing");
+    riskFlags.add(
+      args.executor === "mock" ? "mock_command_missing" : "agent_command_missing",
+    );
     return buildTaskReport({
       task,
       status: "error",
@@ -427,10 +543,12 @@ async function runTask(task, manifest, args) {
       verifiers: [],
       riskFlags,
       rawResults,
-      notes: "No agent command configured for task or manifest.",
+      notes: args.executor === "mock"
+        ? "No mock command or task dir with solution.sh configured for task."
+        : "No agent command configured for task or manifest.",
     });
   }
-  agentResult = await runCommand(renderCommand(agentCommand, task, cwd), {
+  agentResult = await runCommand(renderCommand(agentCommand, task, cwd, taskDir), {
     cwd,
     timeoutMs,
   });
@@ -442,10 +560,13 @@ async function runTask(task, manifest, args) {
   const verifiers = [];
   if (agentResult.exitCode === 0) {
     for (const verifier of task.verifiers) {
-      const result = await runCommand(renderCommand(verifier.command, task, cwd), {
-        cwd,
-        timeoutMs,
-      });
+      const result = await runCommand(
+        renderCommand(verifier.command, task, cwd, taskDir),
+        {
+          cwd,
+          timeoutMs,
+        },
+      );
       rawResults.push(result);
       verifiers.push(verifierReport(verifier, result));
       if (result.timedOut) riskFlags.add("verifier_timeout");
@@ -494,7 +615,7 @@ async function gitValue(repo, command) {
   return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
-async function buildEnvironment(repo) {
+async function buildEnvironment(repo, executor, fingerprint) {
   const [commit, branch] = await Promise.all([
     gitValue(repo, "git rev-parse --short HEAD"),
     gitValue(repo, "git branch --show-current"),
@@ -506,7 +627,31 @@ async function buildEnvironment(repo) {
     runner: "local",
     sandbox: "local",
     localOnly: true,
+    ...(executor ? { executor } : {}),
+    ...(fingerprint ? { configFingerprint: fingerprint } : {}),
   };
+}
+
+function computeConfigFingerprint(manifest, effective) {
+  const material = JSON.stringify({
+    benchmark: effective.benchmark ?? manifest.benchmark,
+    executor: effective.executor,
+    agentCommand: effective.agentCommand ?? manifest.agentCommand ?? null,
+    agent: {
+      name: effective.agentName ?? null,
+      provider: effective.provider ?? null,
+      model: effective.model ?? null,
+    },
+    tasks: manifest.tasks.map((task) => ({
+      id: task.id,
+      prompt: task.prompt,
+      setupCommands: task.setupCommands,
+      agentCommand: task.agentCommand ?? null,
+      mockCommand: task.mockCommand ?? null,
+      verifiers: task.verifiers,
+    })),
+  });
+  return createHash("sha256").update(material).digest("hex").slice(0, 16);
 }
 
 function compileValidator(schema) {
@@ -538,45 +683,84 @@ async function main() {
     readJson(schemaPath, "agent eval report schema"),
     readJson(args.tasksPath, "agent eval manifest"),
   ]);
-  const manifest = normalizeManifest(rawManifest);
-  const startedAt = new Date().toISOString();
-  const tasks = [];
-  for (const task of manifest.tasks) {
-    tasks.push(await runTask(task, manifest, args));
-  }
-  const finishedAt = new Date().toISOString();
-  const report = {
-    schemaVersion: 1,
-    run: {
-      id: args.runId ?? `local-${randomUUID()}`,
-      benchmark: args.benchmark ?? manifest.benchmark,
-      startedAt,
-      finishedAt,
-      agent: {
-        name: args.agentName,
-        ...(args.agentVersion ? { version: args.agentVersion } : {}),
-        ...(args.provider ? { provider: args.provider } : {}),
-        ...(args.model ? { model: args.model } : {}),
-      },
-      environment: await buildEnvironment(args.repo),
-    },
-    tasks,
-  };
-
-  const validate = compileValidator(schema);
-  if (!validate(report)) {
+  const manifest = normalizeManifest(rawManifest, path.dirname(args.tasksPath));
+  const entries = args.configPath
+    ? normalizeConfig(await readJson(args.configPath, "eval config"))
+    : [undefined];
+  if (entries.length > 1 && !args.outputDir) {
     throw new Error(
-      `generated eval report failed schema validation:\n${formatAjvErrors(validate.errors)}`,
+      "--output-dir is required when config.matrix has more than one entry",
     );
   }
-
-  const output = `${JSON.stringify(report, null, 2)}\n`;
-  if (args.outputPath) {
-    await writeFile(args.outputPath, output, "utf8");
-    process.stdout.write(`Wrote eval report: ${args.outputPath}\n`);
-    return;
+  if (args.outputDir) {
+    await mkdir(args.outputDir, { recursive: true });
   }
-  process.stdout.write(output);
+  const validate = compileValidator(schema);
+
+  for (const entry of entries) {
+    const effective = {
+      ...args,
+      benchmark: args.benchmark ?? manifest.benchmark,
+      executor: entry?.executor ?? args.executor,
+      agentCommand: entry?.agentCommand ?? args.agentCommand,
+      agentName: entry?.agentName ?? args.agentName,
+      agentVersion: entry?.agentVersion ?? args.agentVersion,
+      provider: entry?.provider ?? args.provider,
+      model: entry?.model ?? args.model,
+    };
+    const fingerprint = computeConfigFingerprint(manifest, effective);
+    const startedAt = new Date().toISOString();
+    const tasks = [];
+    for (const task of manifest.tasks) {
+      tasks.push(await runTask(task, manifest, effective));
+    }
+    const finishedAt = new Date().toISOString();
+    const runId = args.runId ?? `local-${randomUUID()}`;
+    const report = {
+      schemaVersion: 1,
+      run: {
+        id: entry ? `${runId}-${entry.id}` : runId,
+        benchmark: effective.benchmark,
+        startedAt,
+        finishedAt,
+        agent: {
+          name: effective.agentName,
+          ...(effective.agentVersion ? { version: effective.agentVersion } : {}),
+          ...(effective.provider ? { provider: effective.provider } : {}),
+          ...(effective.model ? { model: effective.model } : {}),
+        },
+        environment: await buildEnvironment(
+          args.repo,
+          effective.executor,
+          fingerprint,
+        ),
+      },
+      tasks,
+    };
+
+    if (!validate(report)) {
+      throw new Error(
+        `generated eval report failed schema validation:\n${formatAjvErrors(validate.errors)}`,
+      );
+    }
+
+    const output = `${JSON.stringify(report, null, 2)}\n`;
+    if (args.outputDir) {
+      const reportPath = path.join(
+        args.outputDir,
+        `report-${entry?.id ?? "default"}.json`,
+      );
+      await writeFile(reportPath, output, "utf8");
+      process.stdout.write(`Wrote eval report: ${reportPath}\n`);
+      continue;
+    }
+    if (args.outputPath) {
+      await writeFile(args.outputPath, output, "utf8");
+      process.stdout.write(`Wrote eval report: ${args.outputPath}\n`);
+      continue;
+    }
+    process.stdout.write(output);
+  }
 }
 
 try {
