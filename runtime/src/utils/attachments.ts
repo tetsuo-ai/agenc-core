@@ -195,6 +195,7 @@ import {
   tokenCountWithEstimation,
 } from './tokens.js'
 import {
+  getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
 } from '../services/compact/autoCompact.js'
@@ -659,6 +660,10 @@ export type Attachment =
     }
   | {
       type: 'compaction_reminder'
+      used: number
+      threshold: number
+      remaining: number
+      percentUsed: number
     }
   | {
       type: 'context_efficiency'
@@ -3857,30 +3862,40 @@ async function getVerifyPlanReminderAttachment(
   return [{ type: 'verify_plan_reminder' }]
 }
 
+/**
+ * Fraction of the auto-compact threshold at which the model starts
+ * seeing the context-pressure line. Below this the signal is noise;
+ * above it the model can still change course (finish discrete steps,
+ * persist state) before compaction truncates details.
+ */
+const CONTEXT_PRESSURE_SIGNAL_FRACTION = 0.5
+
 export function getCompactionReminderAttachment(
   messages: Message[],
   model: string,
 ): Attachment[] {
-  if (!false) {
-    return []
-  }
-
   if (!isAutoCompactEnabled()) {
     return []
   }
 
-  const contextWindow = getContextWindowForModel(model, getSdkBetas())
-  if (contextWindow < 1_000_000) {
-    return []
-  }
-
-  const effectiveWindow = getEffectiveContextWindowSize(model)
+  const threshold = getAutoCompactThreshold(model)
   const usedTokens = tokenCountWithEstimation(messages)
-  if (usedTokens < effectiveWindow * 0.25) {
+  if (usedTokens < threshold * CONTEXT_PRESSURE_SIGNAL_FRACTION) {
     return []
   }
 
-  return [{ type: 'compaction_reminder' }]
+  return [
+    {
+      type: 'compaction_reminder',
+      used: usedTokens,
+      threshold,
+      remaining: Math.max(0, threshold - usedTokens),
+      percentUsed: Math.min(
+        100,
+        Math.round((usedTokens / threshold) * 100),
+      ),
+    },
+  ]
 }
 
 /**

@@ -20,6 +20,7 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
   TRANSCRIPT_CLASSIFIER: true,
   ULTRATHINK: true,
   TOKEN_BUDGET: true,
+  COMPACTION_REMINDERS: true,
   HISTORY_PICKER: true,
   QUICK_SEARCH: true,
   EXTRACT_MEMORIES: true,

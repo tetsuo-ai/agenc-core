@@ -312,8 +312,13 @@ describe("attachmentsToMessages", () => {
     expect(out[2]?.content).toContain(
       "Output tokens — turn: 750 / 4,000 · session: 2,000",
     );
-    expect(out[3]?.content).toContain("Auto-compact is enabled");
-    expect(out[3]?.content).toContain("automatic compaction");
+    expect(out[3]?.content).toContain(
+      "~80% of the auto-compact threshold used",
+    );
+    expect(out[3]?.content).toContain("~80k of ~100k tokens");
+    // The old copy claimed "unlimited context" — the opposite of a
+    // usable pressure signal.
+    expect(out[3]?.content).not.toContain("unlimited context");
     for (const message of out) {
       expect(message.content).toContain("<system-reminder>");
     }
