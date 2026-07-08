@@ -85,6 +85,8 @@ export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.partialCompactFromMessage",
   "session.rewindConversationToMessage",
+  "session.previewFileRewind",
+  "session.rewindFilesToMessage",
   "session.setModel",
   "session.setPermissionMode",
   "session.hooks.status",
@@ -496,6 +498,22 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     description:
       "TUI-internal request to rewind daemon-owned session history before a selected prompt.",
   },
+  "session.previewFileRewind": {
+    method: "session.previewFileRewind",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal dry-run reporting which files a file rewind to a selected prompt would change.",
+  },
+  "session.rewindFilesToMessage": {
+    method: "session.rewindFilesToMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to restore edited files on disk to their state before a selected prompt.",
+  },
   "session.setModel": {
     method: "session.setModel",
     direction: "client-to-server",
@@ -843,6 +861,12 @@ export interface SessionPartialCompactFromMessageParams extends JsonObject {
 }
 
 export interface SessionRewindConversationToMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+}
+
+/** Shared params for `session.previewFileRewind` / `session.rewindFilesToMessage`. */
+export interface SessionFileRewindParams extends JsonObject {
   readonly sessionId: string;
   readonly messageOrdinal: number;
 }
@@ -1641,6 +1665,26 @@ export interface SessionRewindConversationToMessageResult extends JsonObject {
   readonly event?: JsonObject;
 }
 
+export interface SessionPreviewFileRewindResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly canRestoreFiles?: boolean;
+  readonly filesChanged?: readonly string[];
+  readonly insertions?: number;
+  readonly deletions?: number;
+}
+
+export interface SessionRewindFilesToMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly restoredFiles?: readonly string[];
+  readonly displayText?: string;
+}
+
 export interface SessionSetModelResult extends JsonObject {
   readonly sessionId: string;
   /** `true` when the switch was applied or staged on the live session. */
@@ -1864,6 +1908,8 @@ export interface AgenCDaemonResultByMethod {
 export interface AgenCDaemonInternalResultByMethod {
   readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
+  readonly "session.previewFileRewind": SessionPreviewFileRewindResult;
+  readonly "session.rewindFilesToMessage": SessionRewindFilesToMessageResult;
   readonly "session.setModel": SessionSetModelResult;
   readonly "session.setPermissionMode": SessionSetPermissionModeResult;
   readonly "session.hooks.status": SessionHooksStatusResult;

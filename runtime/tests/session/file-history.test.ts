@@ -7,6 +7,7 @@ import {
   computeDiffStats,
   copyFileHistoryForResume,
   FileHistory,
+  FileHistorySidecar,
   fileHistoryCanRestore,
   fileHistoryGetDiffStats,
   fileHistoryHasAnyChanges,
@@ -86,7 +87,7 @@ describe("FileHistory (I-28)", () => {
     expect(last?.aggregateDiffStats?.filesChanged).toContain(file);
   });
 
-  test("restoreToMessage writes contents back", async () => {
+  test("rewindToMessage writes contents back", async () => {
     const file = join(project, "src.txt");
     writeFileSync(file, "original", "utf8");
     const hist = new FileHistory({ projectDir: project });
@@ -94,11 +95,174 @@ describe("FileHistory (I-28)", () => {
     await hist.makeSnapshot("msg-1");
     writeFileSync(file, "modified", "utf8");
     await hist.makeSnapshot("msg-2");
-    const restored = await hist.restoreToMessage("msg-1");
+    const restored = await hist.rewindToMessage("msg-1");
     expect(restored).toContain(file);
     // Content post-restore should be original (from v1 backup).
-    const { readFileSync } = await import("node:fs");
     expect(readFileSync(file, "utf8")).toBe("original");
+  });
+
+  test("rewindToMessage restores files first tracked AFTER the target snapshot to their origin", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const early = join(project, "early.txt");
+    writeFileSync(early, "early-original", "utf8");
+    await hist.trackEdit(early, "msg-1");
+    await hist.makeSnapshot("msg-1");
+
+    // A second file is first edited only after msg-1's snapshot.
+    const late = join(project, "late.txt");
+    writeFileSync(late, "late-original", "utf8");
+    await hist.trackEdit(late, "msg-2");
+    writeFileSync(late, "late-modified", "utf8");
+    await hist.makeSnapshot("msg-2");
+
+    const restored = await hist.rewindToMessage("msg-1");
+    // Rewinding to "before msg-2" must undo the late file's edit too,
+    // via its v1 origin backup.
+    expect(restored).toContain(late);
+    expect(readFileSync(late, "utf8")).toBe("late-original");
+  });
+
+  test("previewRewind reports changed files without touching disk", async () => {
+    const file = join(project, "src.txt");
+    writeFileSync(file, "original", "utf8");
+    const hist = new FileHistory({ projectDir: project });
+    await hist.trackEdit(file, "msg-1");
+    await hist.makeSnapshot("msg-1");
+    writeFileSync(file, "modified", "utf8");
+    await hist.makeSnapshot("msg-2");
+
+    const preview = await hist.previewRewind("msg-1");
+    expect(preview).not.toBeNull();
+    expect(preview?.filesChanged).toContain(file);
+    expect((preview?.insertions ?? 0) + (preview?.deletions ?? 0)).toBeGreaterThan(0);
+    // Dry-run: disk untouched.
+    expect(readFileSync(file, "utf8")).toBe("modified");
+    // Unknown snapshot → null.
+    expect(await hist.previewRewind("msg-unknown")).toBeNull();
+  });
+
+  test("hasSnapshotFor reflects snapshot presence", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const file = join(project, "src.txt");
+    writeFileSync(file, "x", "utf8");
+    await hist.trackEdit(file, "msg-1");
+    await hist.makeSnapshot("msg-1");
+    expect(hist.hasSnapshotFor("msg-1")).toBe(true);
+    expect(hist.hasSnapshotFor("msg-2")).toBe(false);
+  });
+});
+
+describe("FileHistorySidecar event wiring", () => {
+  let project = "";
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-sidecar-"));
+  });
+  afterEach(() => {
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  async function waitForTracked(
+    hist: FileHistory,
+    file: string,
+  ): Promise<void> {
+    for (let i = 0; i < 50; i += 1) {
+      if (hist.getState().trackedFiles.has(file)) return;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+  }
+
+  function startedEvent(
+    id: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Parameters<FileHistorySidecar["onEvent"]>[0] {
+    return {
+      id,
+      msg: {
+        type: "tool_call_started",
+        payload: { callId: id, toolName, args: JSON.stringify(args) },
+      },
+    } as Parameters<FileHistorySidecar["onEvent"]>[0];
+  }
+
+  test("tracks Edit calls via the live `file_path` arg key", async () => {
+    // Live Edit/Write schemas use `file_path` — the sidecar must track
+    // from it (the original port only read `path`/`filePath`, so file
+    // history captured NOTHING at runtime).
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "edited.txt");
+    writeFileSync(file, "before", "utf8");
+    sidecar.onEvent(startedEvent("ev-1", "Edit", { file_path: file }));
+    await waitForTracked(hist, file);
+    expect(hist.getState().trackedFiles.has(file)).toBe(true);
+  });
+
+  test("tracks NotebookEdit and MultiEdit tool calls", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const notebook = join(project, "nb.ipynb");
+    const multi = join(project, "multi.txt");
+    writeFileSync(notebook, "{}", "utf8");
+    writeFileSync(multi, "m", "utf8");
+    sidecar.onEvent(
+      startedEvent("ev-nb", "NotebookEdit", { notebook_path: notebook }),
+    );
+    sidecar.onEvent(startedEvent("ev-me", "MultiEdit", { file_path: multi }));
+    await waitForTracked(hist, notebook);
+    await waitForTracked(hist, multi);
+    expect(hist.getState().trackedFiles.has(notebook)).toBe(true);
+    expect(hist.getState().trackedFiles.has(multi)).toBe(true);
+  });
+
+  test("tracks every file named by an apply_patch payload", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const a = join(project, "a.txt");
+    const b = join(project, "b.txt");
+    writeFileSync(a, "aa", "utf8");
+    writeFileSync(b, "bb", "utf8");
+    const input = [
+      "*** Begin Patch",
+      `*** Update File: ${a}`,
+      "@@",
+      "-aa",
+      "+aa2",
+      `*** Delete File: ${b}`,
+      "*** End Patch",
+    ].join("\n");
+    sidecar.onEvent(startedEvent("ev-patch", "apply_patch", { input }));
+    await waitForTracked(hist, a);
+    await waitForTracked(hist, b);
+    expect(hist.getState().trackedFiles.has(a)).toBe(true);
+    expect(hist.getState().trackedFiles.has(b)).toBe(true);
+  });
+
+  test("user_message events take a barrier snapshot keyed by the event id", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "tracked.txt");
+    writeFileSync(file, "v1", "utf8");
+    sidecar.onEvent(startedEvent("ev-edit", "Edit", { file_path: file }));
+    await waitForTracked(hist, file);
+
+    sidecar.onEvent({
+      id: "user-msg-123",
+      msg: {
+        type: "user_message",
+        payload: { message: "next prompt" },
+      },
+    } as Parameters<FileHistorySidecar["onEvent"]>[0]);
+    for (let i = 0; i < 50 && !hist.hasSnapshotFor("user-msg-123"); i += 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    expect(hist.hasSnapshotFor("user-msg-123")).toBe(true);
+
+    // Restoring to the barrier reverts edits made after the message.
+    writeFileSync(file, "v2-after-message", "utf8");
+    await hist.rewindToMessage("user-msg-123");
+    expect(readFileSync(file, "utf8")).toBe("v1");
   });
 });
 

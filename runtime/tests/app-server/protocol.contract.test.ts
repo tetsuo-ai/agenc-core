@@ -124,6 +124,8 @@ const expectedNotifications = [
 const expectedInternalMethods = [
   "session.partialCompactFromMessage",
   "session.rewindConversationToMessage",
+  "session.previewFileRewind",
+  "session.rewindFilesToMessage",
   "session.setModel",
   "session.setPermissionMode",
   "session.hooks.status",

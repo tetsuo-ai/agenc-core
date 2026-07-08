@@ -51,6 +51,9 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
+  SessionFileRewindParams,
+  SessionPreviewFileRewindResult,
+  SessionRewindFilesToMessageResult,
   SessionSetModelParams,
   SessionSetModelResult,
   SessionSetPermissionModeParams,
@@ -1607,6 +1610,56 @@ export class AgenCDaemonAgentManager {
       { allowConversationRewind: true },
     );
     return await this.#runner.rewindConversationToMessage(agentId, {
+      sessionId: params.sessionId,
+      messageOrdinal: params.messageOrdinal,
+    });
+  }
+
+  async previewFileRewind(
+    params: SessionFileRewindParams,
+  ): Promise<SessionPreviewFileRewindResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.previewFileRewind requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.previewFileRewind === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.previewFileRewind requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowConversationRewind: true },
+    );
+    return await this.#runner.previewFileRewind(agentId, {
+      sessionId: params.sessionId,
+      messageOrdinal: params.messageOrdinal,
+    });
+  }
+
+  async rewindFilesToMessage(
+    params: SessionFileRewindParams,
+  ): Promise<SessionRewindFilesToMessageResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.rewindFilesToMessage requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.rewindFilesToMessage === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.rewindFilesToMessage requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowConversationRewind: true },
+    );
+    return await this.#runner.rewindFilesToMessage(agentId, {
       sessionId: params.sessionId,
       messageOrdinal: params.messageOrdinal,
     });

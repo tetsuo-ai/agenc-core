@@ -1985,6 +1985,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             requestResumeSession: (sessionId: string) => {
               setPendingResumeSessionId(sessionId);
               exit();
+            },
+            // /rewind: open the message selector (the rewind dialog).
+            // Inlined on stable state setters (not handleShowMessageSelector)
+            // so this callback never goes stale inside the submit closure.
+            requestShowMessageSelector: () => {
+              setSelectorNotice(null);
+              setIsMessageSelectorVisible(true);
             }
           },
           commandRegistry
@@ -2288,14 +2295,52 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }
     setSelectorNotice(result_1.displayText ?? "Conversation rewound");
   }, [props.session, transcript.isStreaming, transcript.messages]);
+  const resolveSelectableMessageOrdinal = useCallback((message: any): number => {
+    const selectableMessages = (transcript.messages as any[]).filter(selectableUserMessagesFilter as any);
+    return selectableMessages.indexOf(message);
+  }, [transcript.messages]);
   const handleRestoreCode = useCallback(async (message_2: any) => {
+    // Daemon path: file history is captured by the daemon-side sidecar,
+    // so restores must run there too. The legacy in-process rewind below
+    // only works for sessions whose tools ran inside the TUI process.
+    if (props.session.rewindFilesToMessage !== undefined) {
+      const messageOrdinal = resolveSelectableMessageOrdinal(message_2);
+      if (messageOrdinal === -1) {
+        throw new Error("The selected message is no longer available.");
+      }
+      const result = await props.session.rewindFilesToMessage({
+        messageOrdinal
+      });
+      if (!result.ok) {
+        throw new Error(result.message ?? "Failed to restore files.");
+      }
+      return;
+    }
     await fileHistoryRewind(updater_0 => {
       setAppState(prev_4 => ({
         ...prev_4,
         fileHistory: updater_0(prev_4.fileHistory)
       }));
     }, message_2.uuid);
-  }, [setAppState]);
+  }, [setAppState, props.session, resolveSelectableMessageOrdinal]);
+  const handlePreviewRewind = useCallback(async (message_p: any) => {
+    if (props.session.previewFileRewind === undefined) return undefined;
+    const messageOrdinal = resolveSelectableMessageOrdinal(message_p);
+    if (messageOrdinal === -1) return undefined;
+    try {
+      const result = await props.session.previewFileRewind({
+        messageOrdinal
+      });
+      if (!result.ok || result.canRestoreFiles !== true) return undefined;
+      return {
+        filesChanged: [...(result.filesChanged ?? [])],
+        insertions: result.insertions ?? 0,
+        deletions: result.deletions ?? 0
+      };
+    } catch {
+      return undefined;
+    }
+  }, [props.session, resolveSelectableMessageOrdinal]);
   const handleSummarize = useCallback(async (message_3: any, feedback?: string, direction: "from" | "up_to" = "from") => {
     if (transcript.isStreaming || hasActiveConversationTurn(props.session)) {
       setSelectorNotice(CONVERSATION_ACTION_BUSY_MESSAGE);
@@ -2533,7 +2578,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} pendingApproval={permissionRequests[0] ?? null} scrollRef={scrollRef} atWelcome={transcript.messages.length === 0 && !transcript.streamingText} activityMode={showSpinner ? streamMode : null} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
-      {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}
+      {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onPreviewRewind={handlePreviewRewind} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}
     </>;
   if (fullscreen) {
     return <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>

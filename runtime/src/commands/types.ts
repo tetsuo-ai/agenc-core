@@ -48,6 +48,11 @@ export interface SlashCommandAppStateBridge {
    * the `agenc --resume <id>` instructions).
    */
   readonly requestResumeSession?: (sessionId: string) => void;
+  /**
+   * Open the rewind dialog (message selector) — restore code and/or
+   * conversation to a prior prompt. Absent in headless contexts.
+   */
+  readonly requestShowMessageSelector?: () => void;
 }
 
 /**

@@ -68,6 +68,14 @@ export interface LLMMessage {
     readonly mergeBoundary?: "user_context";
     readonly excludeFromDurableHistory?: true;
     /**
+     * For user messages: the event id of the `user_message` event
+     * emitted for this message. The file-history sidecar keys its
+     * pre-turn barrier snapshot by the same id, so conversation
+     * rewind can restore the files on disk to the state they had
+     * when this message was sent.
+     */
+    readonly userMessageId?: string;
+    /**
      * When `true`, this message is preserved across compaction
      * boundaries. Compaction extracts anchor-marked messages from
      * the segment being summarized and retains them alongside the

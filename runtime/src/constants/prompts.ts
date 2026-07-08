@@ -226,9 +226,15 @@ function getSimpleDoingTasksSection(): string {
       : []),
   ]
 
+  // MACRO is a build-time define; unbundled contexts (tsx dev runs,
+  // vitest) have no global, so a bare access throws ReferenceError.
+  const issuesExplainer =
+    typeof MACRO === 'undefined'
+      ? 'report the issue at https://github.com/tetsuo-ai/agenc-core/issues'
+      : MACRO.ISSUES_EXPLAINER
   const userHelpSubitems = [
     `/help: Get help with using AgenC`,
-    `To give feedback, users should ${MACRO.ISSUES_EXPLAINER}`,
+    `To give feedback, users should ${issuesExplainer}`,
   ]
 
   const items = [

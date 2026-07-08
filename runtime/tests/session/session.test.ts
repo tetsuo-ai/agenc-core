@@ -15,6 +15,14 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   buildRealtimeSessionConfig,
@@ -1709,5 +1717,94 @@ describe("Session.rewindConversationToMessage", () => {
           "This session is being continued from a previous conversation that ran out of context. Summary.",
       },
     ]);
+  });
+});
+
+describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () => {
+  let project = "";
+
+  afterEach(() => {
+    if (project) {
+      rmSync(project, { recursive: true, force: true });
+      project = "";
+    }
+  });
+
+  async function buildFileRewindFixture(): Promise<{
+    session: Session;
+    file: string;
+  }> {
+    const { FileHistory } = await import("./file-history.js");
+    project = mkdtempSync(join(tmpdir(), "agenc-session-rewind-"));
+    const file = join(project, "tracked.txt");
+    writeFileSync(file, "original", "utf8");
+    const hist = new FileHistory({ projectDir: project });
+    // Barrier snapshot the sidecar would take when the user message
+    // with id "user-msg-1" arrived, followed by an edit.
+    await hist.trackEdit(file, "user-msg-1");
+    await hist.makeSnapshot("user-msg-1");
+    writeFileSync(file, "modified-by-turn", "utf8");
+    await hist.makeSnapshot("post-edit");
+
+    const session = buildSession();
+    session.attachFileHistory(hist);
+    await session.state.with((state) => {
+      state.history = [
+        {
+          role: "user",
+          content: "rewind target",
+          runtimeOnly: { userMessageId: "user-msg-1" },
+        },
+        { role: "assistant", content: "edited your file" },
+      ];
+    });
+    return { session, file };
+  }
+
+  it("previewFileRewind reports restorable files without touching disk", async () => {
+    const { session, file } = await buildFileRewindFixture();
+    const preview = await session.previewFileRewind({ messageOrdinal: 0 });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) throw new Error(preview.message);
+    expect(preview.canRestoreFiles).toBe(true);
+    expect(preview.filesChanged).toContain(file);
+    expect(readFileSync(file, "utf8")).toBe("modified-by-turn");
+  });
+
+  it("rewindFilesToMessage restores the tracked file on disk", async () => {
+    const { session, file } = await buildFileRewindFixture();
+    const result = await session.rewindFilesToMessage({ messageOrdinal: 0 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.restoredFiles).toContain(file);
+    expect(readFileSync(file, "utf8")).toBe("original");
+  });
+
+  it("fails with NO_FILE_HISTORY when the message carries no userMessageId", async () => {
+    const { session } = await buildFileRewindFixture();
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "unstamped prompt" },
+        { role: "assistant", content: "answer" },
+      ];
+    });
+    const result = await session.rewindFilesToMessage({ messageOrdinal: 0 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.code).toBe("NO_FILE_HISTORY");
+  });
+
+  it("previewFileRewind degrades to canRestoreFiles=false without attached history", async () => {
+    const session = buildSession();
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "prompt" },
+        { role: "assistant", content: "answer" },
+      ];
+    });
+    const preview = await session.previewFileRewind({ messageOrdinal: 0 });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) throw new Error(preview.message);
+    expect(preview.canRestoreFiles).toBe(false);
   });
 });

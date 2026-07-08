@@ -88,6 +88,7 @@ import {
   type SessionListParams,
   type SessionPartialCompactFromMessageParams,
   type SessionRewindConversationToMessageParams,
+  type SessionFileRewindParams,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
   type SessionHooksStatusParams,
@@ -210,6 +211,11 @@ function buildServerCapabilities(
       agentManager,
       "rewindConversationToMessage",
     ),
+    "session.previewFileRewind": hasMethod(agentManager, "previewFileRewind"),
+    "session.rewindFilesToMessage": hasMethod(
+      agentManager,
+      "rewindFilesToMessage",
+    ),
     "session.setModel": hasMethod(agentManager, "setSessionModel"),
     "session.setPermissionMode": hasMethod(
       agentManager,
@@ -277,6 +283,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "disableMcpServerOnSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
+    | "previewFileRewind"
+    | "rewindFilesToMessage"
     | "setSessionModel"
     | "setSessionPermissionMode"
     | "applyConfigToSession"
@@ -349,6 +357,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "disableMcpServerOnSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
+    | "previewFileRewind"
+    | "rewindFilesToMessage"
     | "setSessionModel"
     | "setSessionPermissionMode"
     | "applyConfigToSession"
@@ -695,6 +705,23 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.rewindConversationToMessage(
             validateSessionRewindConversationToMessageParams(params),
+          ),
+        );
+      case "session.previewFileRewind":
+        return successResponse(
+          id,
+          await this.#agentManager.previewFileRewind(
+            validateSessionFileRewindParams(params, "session.previewFileRewind"),
+          ),
+        );
+      case "session.rewindFilesToMessage":
+        return successResponse(
+          id,
+          await this.#agentManager.rewindFilesToMessage(
+            validateSessionFileRewindParams(
+              params,
+              "session.rewindFilesToMessage",
+            ),
           ),
         );
       case "session.setModel":
@@ -1733,6 +1760,30 @@ function validateSessionRewindConversationToMessageParams(
     );
   }
   return validated as SessionRewindConversationToMessageParams;
+}
+
+function validateSessionFileRewindParams(
+  params: JsonObject,
+  methodName:
+    | "session.previewFileRewind"
+    | "session.rewindFilesToMessage",
+): SessionFileRewindParams {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId"],
+    numberFields: ["messageOrdinal"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  if (
+    typeof validated.messageOrdinal !== "number" ||
+    !Number.isInteger(validated.messageOrdinal) ||
+    validated.messageOrdinal < 0
+  ) {
+    throw invalidParams(
+      `${methodName} messageOrdinal must be a non-negative integer`,
+    );
+  }
+  return validated as SessionFileRewindParams;
 }
 
 function validateSessionSetModelParams(

@@ -1144,6 +1144,47 @@ export interface SessionRewindConversationToMessageParams {
   readonly messageOrdinal: number;
 }
 
+export interface SessionFileRewindParams {
+  readonly messageOrdinal: number;
+}
+
+export type SessionFileRewindErrorCode =
+  | "ACTIVE_TURN"
+  | "MESSAGE_NOT_FOUND"
+  | "NO_FILE_HISTORY";
+
+export type SessionPreviewFileRewindResult =
+  | {
+      readonly ok: true;
+      readonly sessionId: string;
+      /** True when restoring files for this message would change disk state. */
+      readonly canRestoreFiles: boolean;
+      readonly filesChanged: readonly string[];
+      readonly insertions: number;
+      readonly deletions: number;
+    }
+  | {
+      readonly ok: false;
+      readonly sessionId: string;
+      readonly code: SessionFileRewindErrorCode;
+      readonly message: string;
+    };
+
+export type SessionRewindFilesToMessageResult =
+  | {
+      readonly ok: true;
+      readonly sessionId: string;
+      /** Files whose on-disk contents were changed by the restore. */
+      readonly restoredFiles: readonly string[];
+      readonly displayText: string;
+    }
+  | {
+      readonly ok: false;
+      readonly sessionId: string;
+      readonly code: SessionFileRewindErrorCode;
+      readonly message: string;
+    };
+
 export type SessionPartialCompactErrorCode =
   | "ABORTED"
   | "ACTIVE_TURN"
@@ -1211,6 +1252,7 @@ function normalizeHistoryMessages(
       toolCalls?: unknown;
       toolCallId?: unknown;
       toolName?: unknown;
+      runtimeOnly?: { userMessageId?: unknown };
     };
     if (
       candidate.role !== "system" &&
@@ -1239,6 +1281,17 @@ function normalizeHistoryMessages(
         : {}),
       ...(typeof candidate.toolName === "string"
         ? { toolName: candidate.toolName }
+        : {}),
+      // Preserve ONLY the file-history join key from runtimeOnly —
+      // conversation rewind resolves the sidecar's barrier snapshot
+      // through it. The rest of the runtimeOnly bag stays dropped so
+      // normalized snapshots don't resurrect merge/durability flags.
+      ...(typeof candidate.runtimeOnly?.userMessageId === "string"
+        ? {
+            runtimeOnly: {
+              userMessageId: candidate.runtimeOnly.userMessageId,
+            },
+          }
         : {}),
     });
   }
@@ -2588,6 +2641,159 @@ export class Session {
         event,
         replacementHistory,
         displayText,
+      };
+    } finally {
+      if (task !== null) {
+        await this.onTaskFinished(task.subId);
+      }
+    }
+  }
+
+  /**
+   * File-history engine attached by the bootstrap path (it is created
+   * alongside the SidecarManager, after the Session). Null when file
+   * history is unavailable (e.g. bare sessions, tests).
+   */
+  private attachedFileHistory: import("./file-history.js").FileHistory | null =
+    null;
+
+  attachFileHistory(
+    fileHistory: import("./file-history.js").FileHistory,
+  ): void {
+    this.attachedFileHistory = fileHistory;
+  }
+
+  /**
+   * Resolve a message ordinal (over selectable user messages in the
+   * active history — same contract as conversation rewind) to the
+   * `userMessageId` stamped by `runTurn`, which keys the file-history
+   * sidecar's barrier snapshot for that message.
+   */
+  private resolveFileRewindTarget(
+    messageOrdinal: number,
+  ): { found: false } | { found: true; userMessageId: string | null } {
+    const sourceHistory = this.snapshotHistoryMessages();
+    const { activeHistory } = splitActiveHistory(sourceHistory);
+    const selectedIndex = activeHistoryIndexForOrdinal(
+      activeHistory,
+      messageOrdinal,
+    );
+    if (selectedIndex === null) return { found: false };
+    const message = activeHistory[selectedIndex];
+    const userMessageId = message?.runtimeOnly?.userMessageId;
+    return {
+      found: true,
+      userMessageId: typeof userMessageId === "string" ? userMessageId : null,
+    };
+  }
+
+  /**
+   * Dry-run of `rewindFilesToMessage`: which files would change on disk
+   * if the tracked files were restored to their state at the selected
+   * message. Never mutates anything.
+   */
+  async previewFileRewind(
+    params: SessionFileRewindParams,
+  ): Promise<SessionPreviewFileRewindResult> {
+    const target = this.resolveFileRewindTarget(params.messageOrdinal);
+    if (!target.found) {
+      return {
+        ok: false,
+        sessionId: this.conversationId,
+        code: "MESSAGE_NOT_FOUND",
+        message: "The selected message is no longer in the active conversation.",
+      };
+    }
+    const fileHistory = this.attachedFileHistory;
+    const preview =
+      target.userMessageId !== null && fileHistory !== null
+        ? await fileHistory.previewRewind(target.userMessageId)
+        : null;
+    if (preview === null) {
+      return {
+        ok: true,
+        sessionId: this.conversationId,
+        canRestoreFiles: false,
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      };
+    }
+    return {
+      ok: true,
+      sessionId: this.conversationId,
+      canRestoreFiles: preview.filesChanged.length > 0,
+      filesChanged: [...preview.filesChanged],
+      insertions: preview.insertions,
+      deletions: preview.deletions,
+    };
+  }
+
+  /**
+   * Restore the tracked files on disk to their state at the selected
+   * message (the file-history sidecar's barrier snapshot). The
+   * conversation is not touched — pair with
+   * `rewindConversationToMessage` for a full rewind.
+   */
+  async rewindFilesToMessage(
+    params: SessionFileRewindParams,
+  ): Promise<SessionRewindFilesToMessageResult> {
+    let task: RunningTask | null = null;
+    try {
+      task = await this.beginIdleTask({
+        subId: this.nextInternalSubId(),
+        kind: "compact",
+        autoStart: false,
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
+        return {
+          ok: false,
+          sessionId: this.conversationId,
+          code: "ACTIVE_TURN",
+          message: "Cannot restore files right now: a turn is currently in flight.",
+        };
+      }
+      throw error;
+    }
+    try {
+      const target = this.resolveFileRewindTarget(params.messageOrdinal);
+      if (!target.found) {
+        return {
+          ok: false,
+          sessionId: this.conversationId,
+          code: "MESSAGE_NOT_FOUND",
+          message:
+            "The selected message is no longer in the active conversation.",
+        };
+      }
+      const fileHistory = this.attachedFileHistory;
+      if (
+        target.userMessageId === null ||
+        fileHistory === null ||
+        !fileHistory.hasSnapshotFor(target.userMessageId)
+      ) {
+        return {
+          ok: false,
+          sessionId: this.conversationId,
+          code: "NO_FILE_HISTORY",
+          message: "No file history is available for the selected message.",
+        };
+      }
+      const restoredFiles = await fileHistory.rewindToMessage(
+        target.userMessageId,
+      );
+      return {
+        ok: true,
+        sessionId: this.conversationId,
+        restoredFiles: [...restoredFiles],
+        displayText:
+          restoredFiles.length === 0
+            ? "Files already match the selected point"
+            : `Restored ${restoredFiles.length} file${restoredFiles.length === 1 ? "" : "s"}`,
       };
     } finally {
       if (task !== null) {

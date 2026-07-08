@@ -87,6 +87,14 @@ export interface FileHistorySnapshot {
   };
 }
 
+/** Result of `FileHistory.previewRewind` — the dry-run of a restore. */
+export interface FileHistoryRewindPreview {
+  readonly filesChanged: ReadonlyArray<string>;
+  readonly insertions: number;
+  readonly deletions: number;
+  readonly perFile: Readonly<Record<string, DiffStats>>;
+}
+
 export interface FileHistoryState {
   readonly snapshots: ReadonlyArray<FileHistorySnapshot>;
   readonly trackedFiles: ReadonlySet<string>;
@@ -455,51 +463,69 @@ export class FileHistory {
   }
 
   /**
-   * Restore a tracked file to its state at `messageId`.
-   * Returns the list of files restored.
+   * Rewind every tracked file on disk to its state at the snapshot
+   * identified by `messageId`. Files first tracked AFTER that snapshot
+   * are restored to their v1 (origin) contents — rewinding to "before
+   * message X" must also undo edits to files whose first edit happened
+   * after X. Returns the list of files that changed on disk.
+   *
+   * Canonical restore entrypoint — delegates to the module-level
+   * `fileHistoryRewind`, which owns the origin-fallback semantics.
    */
-  async restoreToMessage(messageId: string): Promise<ReadonlyArray<string>> {
+  async rewindToMessage(messageId: string): Promise<ReadonlyArray<string>> {
     if (!this.enabled) return [];
-    let target: FileHistorySnapshot | undefined;
-    for (let i = this.state.snapshots.length - 1; i >= 0; i -= 1) {
-      const s = this.state.snapshots[i];
-      if (s && s.messageId === messageId) {
-        target = s;
-        break;
-      }
+    try {
+      return await fileHistoryRewind(this.state, messageId);
+    } catch (err) {
+      this.emitDiagnostic({
+        cause: "file_history_restore_failed",
+        message:
+          err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     }
-    if (!target) return [];
-    const restored: string[] = [];
-    for (const [trackingPath, backup] of Object.entries(
-      target.trackedFileBackups,
-    )) {
+  }
+
+  /** True when a snapshot keyed by `messageId` exists. */
+  hasSnapshotFor(messageId: string): boolean {
+    return findSnapshotByMessageId(this.state, messageId) !== undefined;
+  }
+
+  /**
+   * Dry-run of `rewindToMessage`: report which files would change on
+   * disk (and line-level diff stats vs their current contents) without
+   * touching anything. Returns `null` when no snapshot exists for
+   * `messageId`.
+   */
+  async previewRewind(messageId: string): Promise<FileHistoryRewindPreview | null> {
+    if (!this.enabled) return null;
+    const target = findSnapshotByMessageId(this.state, messageId);
+    if (!target) return null;
+    const filesChanged: string[] = [];
+    const perFile: Record<string, DiffStats> = {};
+    let insertions = 0;
+    let deletions = 0;
+    for (const trackingPath of this.state.trackedFiles) {
+      const targetBackup = target.trackedFileBackups[trackingPath];
+      const origin = targetBackup ?? getOriginBackup(this.state, trackingPath);
+      if (origin === undefined) continue;
       try {
-        if (backup.backupFileName === null) {
-          // File did not exist at snapshot time — remove it if it
-          // exists now.
-          try {
-            await rm(trackingPath);
-          } catch {
-            /* already gone */
-          }
-          restored.push(trackingPath);
-          continue;
-        }
-        const backupPath = this.backupFilePath(trackingPath, backup);
-        const contents = await readFile(backupPath, "utf8");
-        await writeFile(trackingPath, contents);
-        restored.push(trackingPath);
-      } catch (err) {
-        this.emitDiagnostic({
-          cause: "file_history_restore_failed",
-          message:
-            err instanceof Error
-              ? `restore ${trackingPath}: ${err.message}`
-              : String(err),
-        });
+        const diskContent = await readFileOrEmpty(trackingPath);
+        const targetContent =
+          origin.backupFileName === null
+            ? ""
+            : await readFileOrEmpty(origin.backupFileName);
+        if (diskContent === targetContent) continue;
+        const stats = computeDiffStats(diskContent, targetContent);
+        filesChanged.push(trackingPath);
+        perFile[trackingPath] = stats;
+        insertions += stats.insertions;
+        deletions += stats.deletions;
+      } catch {
+        /* best-effort — unreadable files are skipped */
       }
     }
-    return restored;
+    return { filesChanged, insertions, deletions, perFile };
   }
 
   /** Clear all tracked files + backups. Used on `/clear` or session end. */
@@ -515,10 +541,6 @@ export class FileHistory {
   // ───────────────────────────────────────────────────────────────────
   // Private
   // ───────────────────────────────────────────────────────────────────
-
-  private backupFilePath(trackingPath: string, backup: FileHistoryBackup): string {
-    return join(this.historyDir, pathHash(trackingPath), `v${backup.version}`);
-  }
 
   private async createBackup(
     filePath: string,
@@ -585,8 +607,46 @@ export interface FileHistorySidecarOpts {
 
 const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
   "Edit",
+  "MultiEdit",
   "Write",
+  "NotebookEdit",
+  "apply_patch",
 ];
+
+const APPLY_PATCH_FILE_MARKERS = [
+  "*** Add File: ",
+  "*** Delete File: ",
+  "*** Update File: ",
+] as const;
+
+/**
+ * Extract the file path(s) a mutating tool call touches from its raw
+ * JSON args. The live tool schemas use `file_path` (Edit / MultiEdit /
+ * Write) and `notebook_path` (NotebookEdit); `path`/`filePath` are kept
+ * for legacy callers. `apply_patch` carries a multi-file patch payload
+ * in `input` — its hunk headers name every touched file.
+ */
+function extractEditedFilePaths(
+  args: Record<string, unknown> | null,
+): ReadonlyArray<string> {
+  if (args === null) return [];
+  const single =
+    args.file_path ?? args.notebook_path ?? args.path ?? args.filePath;
+  if (typeof single === "string" && single.length > 0) return [single];
+  if (typeof args.input === "string") {
+    const paths: string[] = [];
+    for (const line of args.input.split("\n")) {
+      for (const marker of APPLY_PATCH_FILE_MARKERS) {
+        if (line.startsWith(marker)) {
+          const path = line.slice(marker.length).trim();
+          if (path.length > 0) paths.push(path);
+        }
+      }
+    }
+    return paths;
+  }
+  return [];
+}
 
 export class FileHistorySidecar implements Sidecar {
   readonly name = "file-history";
@@ -617,8 +677,7 @@ export class FileHistorySidecar implements Sidecar {
       if (this.editToolNames.includes(msg.payload.toolName)) {
         this.lastEditStartedAtMs = monotonicMs();
         const args = this.tryParseArgs(msg.payload.args);
-        const filePath = args?.path ?? args?.filePath;
-        if (typeof filePath === "string") {
+        for (const filePath of extractEditedFilePaths(args)) {
           void this.history.trackEdit(filePath, event.id);
         }
       }
@@ -629,6 +688,15 @@ export class FileHistorySidecar implements Sidecar {
       }
     } else if (msg.type === "turn_complete") {
       void this.history.makeSnapshot(`turn-${event.id}`);
+    } else if (msg.type === "user_message") {
+      // Barrier snapshot: capture the tracked files' state at the
+      // moment a user message arrives, keyed by the event id that
+      // `runTurn` also stamps into the seed LLMMessage's
+      // `runtimeOnly.userMessageId`. Conversation rewind restores to
+      // this barrier — "the files as they were before you sent this
+      // message". Tool execution starts only after a full sampling
+      // round-trip, so the async backup always wins the race.
+      void this.history.makeSnapshot(event.id);
     }
   }
 
@@ -693,6 +761,15 @@ async function safeStat(filePath: string): Promise<Stats | null> {
     return await stat(filePath);
   } catch {
     return null;
+  }
+}
+
+/** Read a file as utf8; missing/unreadable files read as empty ("did not exist"). */
+async function readFileOrEmpty(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return "";
   }
 }
 

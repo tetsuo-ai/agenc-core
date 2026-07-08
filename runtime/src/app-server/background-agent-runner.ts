@@ -98,6 +98,8 @@ import type {
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageResult,
+  SessionPreviewFileRewindResult,
+  SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
   SessionTranscriptResult,
   SessionHookConfigShape,
@@ -354,6 +356,14 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindConversationToMessageResult>;
+  previewFileRewind?(
+    agentId: string,
+    params: AgenCBackgroundAgentConversationRewindParams,
+  ): Promise<SessionPreviewFileRewindResult>;
+  rewindFilesToMessage?(
+    agentId: string,
+    params: AgenCBackgroundAgentConversationRewindParams,
+  ): Promise<SessionRewindFilesToMessageResult>;
   setAgentModel?(
     agentId: string,
     params: AgenCBackgroundAgentSetModelParams,
@@ -1422,6 +1432,70 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       eventAlreadyEmitted: true,
       code: result.ok ? "NO_EVENT" : result.code,
       message: result.ok ? "No replacement event was produced." : result.message,
+    };
+  }
+
+  async previewFileRewind(
+    agentId: string,
+    params: AgenCBackgroundAgentConversationRewindParams,
+  ): Promise<SessionPreviewFileRewindResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const preview = active.bootstrap.session.previewFileRewind;
+    if (preview === undefined) {
+      throw new Error("session.previewFileRewind is not available");
+    }
+    const result = await preview.call(active.bootstrap.session, {
+      messageOrdinal: params.messageOrdinal,
+    });
+    if (result.ok) {
+      return {
+        sessionId: params.sessionId,
+        ok: true,
+        canRestoreFiles: result.canRestoreFiles,
+        filesChanged: [...result.filesChanged],
+        insertions: result.insertions,
+        deletions: result.deletions,
+      };
+    }
+    return {
+      sessionId: params.sessionId,
+      ok: false,
+      code: result.code,
+      message: result.message,
+    };
+  }
+
+  async rewindFilesToMessage(
+    agentId: string,
+    params: AgenCBackgroundAgentConversationRewindParams,
+  ): Promise<SessionRewindFilesToMessageResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const rewindFiles = active.bootstrap.session.rewindFilesToMessage;
+    if (rewindFiles === undefined) {
+      throw new Error("session.rewindFilesToMessage is not available");
+    }
+    const result = await rewindFiles.call(active.bootstrap.session, {
+      messageOrdinal: params.messageOrdinal,
+    });
+    if (result.ok) {
+      return {
+        sessionId: params.sessionId,
+        ok: true,
+        restoredFiles: [...result.restoredFiles],
+        displayText: result.displayText,
+      };
+    }
+    return {
+      sessionId: params.sessionId,
+      ok: false,
+      code: result.code,
+      message: result.message,
     };
   }
 
