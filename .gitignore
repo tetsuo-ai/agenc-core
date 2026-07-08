@@ -24,6 +24,8 @@ bin/
 !runtime/bin/agenc-linux-sandbox
 !runtime/src/bin/
 !runtime/src/bin/*.ts
+!runtime/tests/bin/
+!runtime/tests/bin/*.ts
 !packages/agenc/bin/
 !packages/agenc/bin/*.js
 obj/

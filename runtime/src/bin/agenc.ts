@@ -178,6 +178,11 @@ import {
   runAgenCStateCli,
 } from "./state-cli.js";
 import {
+  formatAgenCTrajectoriesCliHelpText,
+  parseAgenCTrajectoriesCliArgs,
+  runAgenCTrajectoriesCli,
+} from "./trajectories-cli.js";
+import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
 } from "../hooks/user-prompt-submit.js";
@@ -303,6 +308,7 @@ export function formatCliHelpText(): string {
     "       agenc permissions <command>",
     "       agenc state export <agent-id>",
     "       agenc state import",
+    "       agenc trajectories export [--format sft|dpo] [--dir <path>] [--out <file>]",
     "       agenc daemon start [--foreground]",
     "       agenc daemon <stop|status|reload|restart>",
     "       agenc agent start <objective>",
@@ -320,6 +326,7 @@ export function formatCliHelpText(): string {
     "  plugin                                  Manage local plugins and marketplaces",
     "  permissions                             List/update rules or resolve live requests",
     "  state                                   Export or import project state",
+    "  trajectories                            Curate exported trajectories into training JSONL",
     "  daemon                                  Manage the local AgenC daemon",
     "  agent                                   Start, attach, inspect, or stop background agents",
     "  mcp                                     Manage MCP servers or serve AgenC tools over MCP",
@@ -397,6 +404,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCConfigCliHelpText();
     case "state":
       return formatAgenCStateCliHelpText();
+    case "trajectories":
+      return formatAgenCTrajectoriesCliHelpText();
     default:
       return null;
   }
@@ -4000,6 +4009,10 @@ export async function main(): Promise<number> {
   const stateCommand = parseAgenCStateCliArgs(argv);
   if (stateCommand !== null) {
     return runAgenCStateCli(stateCommand);
+  }
+  const trajectoriesCommand = parseAgenCTrajectoriesCliArgs(argv);
+  if (trajectoriesCommand !== null) {
+    return runAgenCTrajectoriesCli(trajectoriesCommand);
   }
 
   const startupShortCircuit = detectStartupShortCircuit(argv);
