@@ -240,17 +240,19 @@ describe("AgentsRail", () => {
     expect(output).not.toContain("tools 0 tokens 0");
   });
 
-  it("does not advertise stop shortcuts for remote agents that cannot be stopped locally", async () => {
+  it("does not advertise stop shortcuts for stale task kinds without a stop action", async () => {
+    // "remote_agent" was deleted as an unshipped scaffold; a stale record with
+    // that kind must render view-only instead of advertising a fake stop.
     const output = (await renderAgentsRail({
       tasks: [{
-        ...agentTask("remote-running", "running", {
-          description: "remote running",
+        ...agentTask("stale-running", "running", {
+          description: "stale running",
         }),
         type: "remote_agent",
       }],
     })).output;
 
-    expect(output).toContain("* remote running");
+    expect(output).toContain("* stale running");
     expect(output).not.toContain("x stop");
   });
 

@@ -54,19 +54,6 @@ import { runAgent } from './runAgent.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-// Stub signatures match the real internal CCR API shapes the (dead, external-
-// build-eliminated) remote block below consumes, so the block still type-checks.
-const checkRemoteAgentEligibility = async (..._args: unknown[]): Promise<{ eligible: false; errors: readonly string[] }> => ({ eligible: false, errors: [] });
-const formatPreconditionError = (..._args: unknown[]): string => 'Remote agents are not available in this build.';
-const getRemoteTaskSessionUrl = (..._args: unknown[]): string => '';
-const registerRemoteAgentTask = (..._args: unknown[]): { taskId: string; sessionId: string } => ({ taskId: '', sessionId: '' });
-const teleportToRemote = async (..._args: unknown[]): Promise<{ id: string; title: string } | null> => null;
-// ---- end donor-purge stubs ----
 // Stub for the internal-only proactive module (always absent in this build).
 // Typed via an IIFE so the value isn't control-flow-narrowed to the `null`
 // literal, which would make the `?.isProactiveActive()` access below resolve
@@ -192,18 +179,7 @@ type TeammateSpawnedOutput = {
 
 // Combined output type including both public and internal types
 // Note: TeammateSpawnedOutput type is fine - TypeScript types are erased at compile time
-// Private type for remote-launched results — excluded from exported schema
-// like TeammateSpawnedOutput for dead code elimination purposes. Exported
-// for UI.tsx to do proper discriminated-union narrowing instead of ad-hoc casts.
-export type RemoteLaunchedOutput = {
-  status: 'remote_launched';
-  taskId: string;
-  sessionUrl: string;
-  description: string;
-  prompt: string;
-  outputFile: string;
-};
-type InternalOutput = Output | TeammateSpawnedOutput | RemoteLaunchedOutput;
+type InternalOutput = Output | TeammateSpawnedOutput;
 import type { AgentToolProgress, ShellProgress } from '../../types/tools.js';
 // AgentTool forwards both its own progress events and shell progress
 // events from the sub-agent so the SDK receives tool_progress updates during bash/powershell runs.
@@ -443,53 +419,6 @@ export const AgentTool = buildTool({
     // Resolve effective isolation mode (explicit param overrides agent def)
     const effectiveIsolation = isolation ?? selectedAgent.isolation;
 
-    // Remote isolation: delegate to CCR. Gated internal-only — the guard enables
-    // dead code elimination of the entire block for external builds.
-    if (("external" as string) === 'ant' && effectiveIsolation === 'remote') {
-      const eligibility = await checkRemoteAgentEligibility();
-      if (!eligibility.eligible) {
-        const reasons = eligibility.errors.map(formatPreconditionError).join('\n');
-        throw new Error(`Cannot launch remote agent:\n${reasons}`);
-      }
-      let bundleFailHint: string | undefined;
-      const session = await teleportToRemote({
-        initialMessage: prompt,
-        description,
-        signal: toolUseContext.abortController.signal,
-        onBundleFail: (msg: string) => {
-          bundleFailHint = msg;
-        }
-      });
-      if (!session) {
-        throw new Error(bundleFailHint ?? 'Failed to create remote session');
-      }
-      const {
-        taskId,
-        sessionId
-      } = registerRemoteAgentTask({
-        remoteTaskType: 'remote-agent',
-        session: {
-          id: session.id,
-          title: session.title || description
-        },
-        command: prompt,
-        context: toolUseContext,
-        toolUseId: toolUseContext.toolUseId
-      });
-      const remoteResult: RemoteLaunchedOutput = {
-        status: 'remote_launched',
-        taskId,
-        sessionUrl: getRemoteTaskSessionUrl(sessionId),
-        description,
-        prompt,
-        outputFile: getTaskOutputPath(taskId)
-      };
-      return {
-        data: remoteResult
-      } as unknown as {
-        data: Output;
-      };
-    }
     // System prompt + prompt messages: branch on fork path.
     //
     // Fork path: child inherits the PARENT's system prompt (not FORK_AGENT's)
@@ -1308,17 +1237,6 @@ agent_id: ${spawnData.teammate_id}
 name: ${spawnData.name}
 team_name: ${spawnData.team_name}
 The agent is now running and will receive instructions via mailbox.`
-        }]
-      };
-    }
-    if ('status' in internalData && internalData.status === 'remote_launched') {
-      const r = internalData;
-      return {
-        tool_use_id: toolUseID,
-        type: 'tool_result',
-        content: [{
-          type: 'text',
-          text: `Remote agent launched in CCR.\ntaskId: ${r.taskId}\nsession_url: ${r.sessionUrl}\noutput_file: ${r.outputFile}\nThe agent is running remotely. You will be notified automatically when it completes.\nBriefly tell the user what you launched and end your response.`
         }]
       };
     }

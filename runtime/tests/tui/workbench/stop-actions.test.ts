@@ -25,8 +25,12 @@ describe("workbench task stop actions", () => {
     })).toBe("teammate");
   });
 
-  it("does not expose fake stop behavior for terminal or remote tasks", () => {
+  it("does not expose fake stop behavior for terminal or unknown task kinds", () => {
     expect(workbenchStopActionForTask({ type: "local_agent", status: "completed" })).toBeNull();
-    expect(workbenchStopActionForTask({ type: "remote_agent", status: "running" })).toBe("remote-unavailable");
+    // remote_agent was deleted as an unshipped scaffold; a stale record with
+    // that kind (e.g. from an old session) must fall through to "no stop action".
+    expect(
+      workbenchStopActionForTask({ type: "remote_agent", status: "running" } as never),
+    ).toBeNull();
   });
 });

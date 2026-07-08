@@ -122,11 +122,6 @@ export const TaskStopTool = buildTool({
     if (action === null) {
       throw new Error(`Task ${id} is not running (status: ${task.status})`)
     }
-    if (action === 'remote-unavailable') {
-      throw new Error(
-        `Task ${id} is a remote agent and cannot be stopped from this session`,
-      )
-    }
     const command =
       'command' in task && typeof task.command === 'string'
         ? task.command

@@ -97,7 +97,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
       ) : null}
       <Text dimColor wrap="truncate-end">
         {canEnterAgentTranscript(task) ? "enter transcript · " : ""}
-        {stopAction === "remote-unavailable" ? "stop unavailable from this session" : stopAction ? "x stop" : "view only"}
+        {stopAction ? "x stop" : "view only"}
         {" · steer unavailable unless agent routing is real"}
       </Text>
       <Box flexDirection="column" flexGrow={1} overflow="hidden">

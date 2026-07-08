@@ -79,7 +79,6 @@ function lifecycleTask<T extends AgenCBackgroundTaskType>(
 const TASK_REGISTRY = Object.freeze([
   lifecycleTask("local_bash", "local shell"),
   lifecycleTask("local_agent", "local agent"),
-  lifecycleTask("remote_agent", "remote agent"),
   lifecycleTask("in_process_teammate", "in-process teammate"),
   lifecycleTask("monitor", "monitor"),
   lifecycleTask("generic", "generic background task"),

@@ -12,7 +12,7 @@ describe("workbench agents rail model", () => {
   it("groups active and background agent tasks", () => {
     const grouped = partitionAgentTasks([
       { id: "agent-1", type: "local_agent", status: "running" },
-      { id: "agent-2", type: "remote_agent", status: "pending" },
+      { id: "agent-2", type: "local_agent", status: "pending" },
       { id: "agent-3", type: "in_process_teammate", status: "failed" },
       { id: "agent-4", type: "local_agent", status: "completed" },
     ]);
@@ -24,7 +24,7 @@ describe("workbench agents rail model", () => {
   it("resolves stale agent selection to the first live agent", () => {
     const tasks = [
       { id: "agent-1", type: "local_agent", status: "running" },
-      { id: "agent-2", type: "remote_agent", status: "completed" },
+      { id: "agent-2", type: "local_agent", status: "completed" },
     ];
 
     expect(resolveAgentSelection(tasks, "agent-2")).toMatchObject({
@@ -61,7 +61,7 @@ describe("workbench agents rail model", () => {
     const tasks = [
       { id: "completed-new", type: "local_agent", status: "completed", startTime: 3_000 },
       { id: "running-old", type: "local_agent", status: "running", startTime: 1_000 },
-      { id: "pending-new", type: "remote_agent", status: "pending", startTime: 2_000 },
+      { id: "pending-new", type: "local_agent", status: "pending", startTime: 2_000 },
       { id: "failed-missing-start", type: "local_agent", status: "failed" },
     ];
 
@@ -117,16 +117,8 @@ describe("workbench agents rail model", () => {
     expect(taskPathLabel({
       ...task,
       cwd: undefined,
-      remoteTaskMetadata: {
-        cwd: "",
-        worktreePath: "  /repo/remote-worktree  ",
-      },
-    })).toBe("/repo/remote-worktree");
-    expect(taskPathLabel({
-      ...task,
-      cwd: undefined,
-      remoteTaskMetadata: null,
-    })).toBe(null);
+      worktreePath: "  /repo/other-worktree  ",
+    })).toBe("/repo/other-worktree");
   });
 
   it("identifies in-flight paths from active agent activity", () => {
@@ -169,23 +161,20 @@ describe("workbench agents rail model", () => {
     expect(inFlightPathsFromTasks([{ ...task, type: "local_bash" }], ["src/app.ts"])).toEqual([]);
   });
 
-  it("searches command, prompt, title, path metadata, and tool inputs for path references", () => {
+  it("searches command, prompt, title, and tool inputs for path references", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const remoteTask = {
-      id: "agent-remote",
-      type: "remote_agent",
+    const commandTask = {
+      id: "agent-command",
+      type: "local_agent",
       status: "running",
-      description: "remote work",
+      description: "background work",
       startTime: 0,
-      outputFile: "urn:agenc:task:agent-remote:output",
+      outputFile: "urn:agenc:task:agent-command:output",
       outputOffset: 0,
       notified: false,
       command: "review src/command.ts",
       title: "inspect src/title.ts",
-      remoteTaskMetadata: {
-        path: "src/metadata.ts",
-      },
       progress: {
         lastActivity: {
           toolName: "Read",
@@ -212,12 +201,11 @@ describe("workbench agents rail model", () => {
       worktreePath: "src/worktree.ts",
     } as any;
 
-    expect(taskMayReferencePath(remoteTask, "src/command.ts")).toBe(true);
-    expect(taskMayReferencePath(remoteTask, "src/title.ts")).toBe(true);
-    expect(taskMayReferencePath(remoteTask, "src/metadata.ts")).toBe(true);
-    expect(taskMayReferencePath(remoteTask, "src/activity.ts")).toBe(true);
-    expect(taskMayReferencePath(remoteTask, "src/windows.ts")).toBe(true);
-    expect(taskMayReferencePath(remoteTask, "src/string-input.ts")).toBe(true);
+    expect(taskMayReferencePath(commandTask, "src/command.ts")).toBe(true);
+    expect(taskMayReferencePath(commandTask, "src/title.ts")).toBe(true);
+    expect(taskMayReferencePath(commandTask, "src/activity.ts")).toBe(true);
+    expect(taskMayReferencePath(commandTask, "src/windows.ts")).toBe(true);
+    expect(taskMayReferencePath(commandTask, "src/string-input.ts")).toBe(true);
     expect(taskMayReferencePath(localTask, "src/prompt.ts")).toBe(true);
     expect(taskMayReferencePath(localTask, "src/worktree.ts")).toBe(true);
   });

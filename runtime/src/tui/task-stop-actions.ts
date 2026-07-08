@@ -14,8 +14,7 @@ type StopActionTask =
 export type TuiTaskStopAction =
   | "local-shell"
   | "local-agent"
-  | "teammate"
-  | "remote-unavailable";
+  | "teammate";
 
 export function tuiStopActionForTask(task: StopActionTask | null | undefined): TuiTaskStopAction | null {
   if (!task) return null;
@@ -26,8 +25,6 @@ export function tuiStopActionForTask(task: StopActionTask | null | undefined): T
       return task.status === "pending" || task.status === "running" ? "local-agent" : null;
     case "in_process_teammate":
       return task.status === "running" && task.shutdownRequested !== true ? "teammate" : null;
-    case "remote_agent":
-      return task.status === "pending" || task.status === "running" ? "remote-unavailable" : null;
     default:
       return null;
   }
@@ -48,7 +45,6 @@ export function stopTuiTask(
     case "teammate":
       requestTeammateShutdown(task.id, setAppState);
       return action;
-    case "remote-unavailable":
     case null:
       return action;
   }

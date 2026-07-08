@@ -219,7 +219,6 @@ export type AppState = DeepImmutable<{
   fileHistory: FileHistoryState
   attribution: AttributionState
   todos: { [agentId: string]: TodoList }
-  remoteAgentTaskSuggestions: { summary: string; task: string }[]
   notifications: {
     current: Notification | null
     queue: Notification[]
@@ -455,7 +454,6 @@ export function getDefaultAppState(): AppState {
       needsRefresh: false,
     },
     todos: {},
-    remoteAgentTaskSuggestions: [],
     notifications: {
       current: null,
       queue: [],

@@ -205,7 +205,7 @@ function AgentRailRow({
         {formatTaskElapsed(task)} · tools {progress.toolUseCount ?? 0} tokens {progress.tokenCount ?? 0}
         {typeof diffCount === "number" && diffCount > 0 ? ` · diffs ${diffCount}` : ""}
         {approvalPending ? " · approval" : ""}
-        {stopAction && stopAction !== "remote-unavailable" ? " · x stop" : ""}
+        {stopAction ? " · x stop" : ""}
       </Text>
     </Box>
   );

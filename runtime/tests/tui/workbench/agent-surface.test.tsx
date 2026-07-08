@@ -300,7 +300,8 @@ describe("AgentSurface", () => {
   it("limits transcript entry to locally viewable agent task types", () => {
     expect(canEnterAgentTranscript({ id: "local", type: "local_agent" })).toBe(true);
     expect(canEnterAgentTranscript({ id: "team", type: "in_process_teammate" })).toBe(true);
-    expect(canEnterAgentTranscript({ id: "remote", type: "remote_agent" })).toBe(false);
+    // Stale record with the deleted remote_agent scaffold kind stays view-only.
+    expect(canEnterAgentTranscript({ id: "stale", type: "remote_agent" })).toBe(false);
     expect(canEnterAgentTranscript({ type: "local_agent" })).toBe(false);
     expect(canEnterAgentTranscript(null)).toBe(false);
   });
@@ -496,7 +497,7 @@ describe("AgentSurface", () => {
     }
   });
 
-  it("renders rich progress, path, remote stop availability, and recent activity fallbacks", async () => {
+  it("renders rich progress, path, stop availability, and recent activity fallbacks", async () => {
     const output = await renderToString(
       <AppStateProvider
         initialState={{
@@ -504,23 +505,23 @@ describe("AgentSurface", () => {
           tasks: {
             "agent-1": {
               id: "agent-1",
-              type: "remote_agent",
+              type: "local_agent",
               status: "running",
-              description: "remote review",
+              description: "background review",
               startTime: 1_000,
               outputFile: "urn:agenc:task:agent-1:output",
               outputOffset: 0,
               notified: false,
-              command: "review",
-              title: "review",
-              sessionId: "session",
-              todoList: {},
-              log: [],
-              pollStartedAt: 1_000,
-              remoteTaskType: "ultrareview",
-              remoteTaskMetadata: {
-                cwd: "/repo",
-              },
+              agentId: "agent-1",
+              agentType: "worker",
+              prompt: "review",
+              cwd: "/repo",
+              retrieved: false,
+              pendingMessages: [],
+              lastReportedToolCount: 0,
+              lastReportedTokenCount: 0,
+              retain: false,
+              diskLoaded: false,
               progress: {
                 toolUseCount: 3,
                 tokenCount: 42,
@@ -556,8 +557,8 @@ describe("AgentSurface", () => {
     expect(output).toContain("recent Search");
     expect(output).toContain("recent activity");
     expect(output).not.toContain("old activity");
-    expect(output).toContain("stop unavailable from this session");
-    expect(output).not.toContain("enter transcript");
+    expect(output).toContain("x stop");
+    expect(output).toContain("enter transcript");
   });
 });
 

@@ -26,7 +26,7 @@ import { buildSubagentLookups, createAssistantMessage, EMPTY_LOOKUPS } from '../
 import type { ModelAlias } from '../../utils/model/aliases.js';
 import { getMainLoopModel, parseUserSpecifiedModel, renderModelName } from '../../utils/model/model.js';
 import type { Theme, ThemeName } from '../../utils/theme.js';
-import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.js';
+import type { outputSchema, Progress } from './AgentTool.js';
 import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { getDefaultAgentRole } from 'src/agents/role.js';
@@ -325,21 +325,6 @@ export function renderToolResultMessage(data: Output, progressMessagesForMessage
   theme: ThemeName;
   isTranscriptMode?: boolean;
 }): React.ReactNode {
-  // Remote-launched agents (internal-only) use a private output type not in the
-  // public schema. Narrow via the internal discriminant.
-  const internal = data as Output | RemoteLaunchedOutput;
-  if (internal.status === 'remote_launched') {
-    return <Box flexDirection="column">
-        <MessageResponse height={1}>
-          <Text>
-            Remote agent launched{' '}
-            <Text dimColor>
-              · {internal.taskId} · {internal.sessionUrl}
-            </Text>
-          </Text>
-        </MessageResponse>
-      </Box>;
-  }
   if (data.status === 'async_launched') {
     const {
       prompt
@@ -708,7 +693,7 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     const outputStatus = (result?.output as {
       status?: string;
     } | undefined)?.status;
-    const backgroundedMidExecution = outputStatus === 'async_launched' || outputStatus === 'remote_launched';
+    const backgroundedMidExecution = outputStatus === 'async_launched';
     const isAsync = launchedAsAsync || backgroundedMidExecution || isTeammateSpawn;
     const name = parsedInput.success ? parsedInput.data.name : undefined;
     return {

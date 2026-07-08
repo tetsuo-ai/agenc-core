@@ -11,7 +11,6 @@ describe("task registry", () => {
     expect(getAllTasks().map((task) => task.type)).toEqual([
       "local_bash",
       "local_agent",
-      "remote_agent",
       "in_process_teammate",
       "monitor",
       "generic",
@@ -21,6 +20,8 @@ describe("task registry", () => {
     expect(getTaskByType("local_workflow")).toBeUndefined();
     expect(getTaskByType("monitor_mcp")).toBeUndefined();
     expect(getTaskByType("dream")).toBeUndefined();
+    // Deleted producer-less scaffold — must never come back as a registered kind.
+    expect(getTaskByType("remote_agent")).toBeUndefined();
   });
 
   it("delegates kill to the caller-supplied stop implementation", async () => {
