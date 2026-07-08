@@ -146,6 +146,27 @@ function metadataFor(event: HookEventName): {
         description:
           "Input is JSON with session start source. Exit code 0 can add context for AgenC. Blocking errors are ignored.",
       };
+    case "SubagentStop":
+      return {
+        summary: "When a spawned subagent reaches a terminal state",
+        matcher: "agent_type",
+        description:
+          "Input is JSON with task_name, agent_id, agent_type, outcome, and final_message. Exit code 2 (or hookSpecificOutput additionalContext) appends feedback to the completion notification the parent agent reads.",
+      };
+    case "SessionEnd":
+      return {
+        summary: "When the session shuts down",
+        matcher: "reason",
+        description:
+          "Input is JSON with the shutdown reason. Fire-and-forget: output and exit codes are recorded as diagnostics only.",
+      };
+    case "Notification":
+      return {
+        summary: "When AgenC is waiting on the user",
+        matcher: "notification_type",
+        description:
+          "Input is JSON with message and notification_type (e.g. permission_request). Use for desktop/OS alerting. Fire-and-forget.",
+      };
     case "Stop":
       return {
         summary: "Right before AgenC concludes its response",

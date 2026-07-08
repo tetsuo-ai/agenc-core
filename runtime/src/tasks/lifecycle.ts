@@ -92,12 +92,26 @@ export interface RegisterBackgroundTaskInput {
 }
 
 export interface BindTaskPromiseOptions<T> {
-  readonly onFulfilled?: (value: T) => {
-    readonly status?: Extract<BackgroundTaskStatus, "completed" | "failed">;
-    readonly output?: string;
-    readonly error?: string;
-    readonly metadata?: Readonly<Record<string, unknown>>;
-  } | void;
+  readonly onFulfilled?: (value: T) =>
+    | {
+        readonly status?: Extract<BackgroundTaskStatus, "completed" | "failed">;
+        readonly output?: string;
+        readonly error?: string;
+        readonly metadata?: Readonly<Record<string, unknown>>;
+      }
+    | void
+    | Promise<
+        | {
+            readonly status?: Extract<
+              BackgroundTaskStatus,
+              "completed" | "failed"
+            >;
+            readonly output?: string;
+            readonly error?: string;
+            readonly metadata?: Readonly<Record<string, unknown>>;
+          }
+        | void
+      >;
   readonly onRejected?: (error: unknown) => {
     readonly output?: string;
     readonly error?: string;
@@ -372,8 +386,11 @@ export class BackgroundTaskLifecycle {
   ): void {
     void promise
       .then(
-        (value) => {
-          const mapped = options.onFulfilled?.(value);
+        async (value) => {
+          // onFulfilled may be async (e.g. the agent-thread mapper
+          // dispatches SubagentStop hooks and appends their feedback
+          // to the completion output the parent reads).
+          const mapped = await options.onFulfilled?.(value);
           const status = mapped?.status ?? "completed";
           if (status === "failed") {
             const snapshot = this.fail(

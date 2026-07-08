@@ -14,10 +14,22 @@
  */
 import type { HookResultMessage } from "../../types/message.js";
 
-export type LifecycleHookEvent = "PreCompact" | "PostCompact" | "SessionStart";
+export type LifecycleHookEvent =
+  | "PreCompact"
+  | "PostCompact"
+  | "SessionStart"
+  | "SubagentStop"
+  | "SessionEnd"
+  | "Notification";
 
 export type CompactTrigger = "manual" | "auto";
 export type SessionStartSource = "startup" | "resume" | "clear" | "compact";
+export type SubagentOutcome =
+  | "completed"
+  | "errored"
+  | "interrupted"
+  | "aborted";
+export type SessionEndReason = "exit" | "clear" | "logout" | "other";
 
 /** Input passed to a `PreCompact` hook. Shape mirrors upstream
  *  `PreCompactHookInput` but trimmed to the fields the gut compact
@@ -47,10 +59,44 @@ export interface SessionStartHookInput {
   readonly permission_mode?: string;
 }
 
+/** Input passed to a `SubagentStop` hook when a spawned agent reaches a
+ *  terminal state. Hook feedback (output of a failed hook, or
+ *  `additionalContext`) is appended to the completion notification the
+ *  PARENT agent sees. */
+export interface SubagentStopHookInput {
+  readonly hook_event_name: "SubagentStop";
+  readonly task_name: string;
+  readonly agent_id: string;
+  readonly agent_type?: string;
+  readonly outcome: SubagentOutcome;
+  readonly final_message: string;
+  readonly duration_ms?: number;
+}
+
+/** Input passed to a `SessionEnd` hook during session shutdown. */
+export interface SessionEndHookInput {
+  readonly hook_event_name: "SessionEnd";
+  readonly reason: SessionEndReason;
+  readonly session_id?: string;
+  readonly cwd?: string;
+}
+
+/** Input passed to a `Notification` hook when the runtime is waiting on
+ *  the human (permission request, elicitation, idle prompt). */
+export interface NotificationHookInput {
+  readonly hook_event_name: "Notification";
+  readonly message: string;
+  readonly notification_type: string;
+  readonly session_id?: string;
+}
+
 export type HookInput =
   | PreCompactHookInput
   | PostCompactHookInput
-  | SessionStartHookInput;
+  | SessionStartHookInput
+  | SubagentStopHookInput
+  | SessionEndHookInput
+  | NotificationHookInput;
 
 /**
  * Result returned by a single hook invocation. Modeled after upstream
@@ -86,3 +132,6 @@ export type LifecycleHook<I extends HookInput = HookInput> = (
 export type PreCompactHook = LifecycleHook<PreCompactHookInput>;
 export type PostCompactHook = LifecycleHook<PostCompactHookInput>;
 export type SessionStartHook = LifecycleHook<SessionStartHookInput>;
+export type SubagentStopHook = LifecycleHook<SubagentStopHookInput>;
+export type SessionEndHook = LifecycleHook<SessionEndHookInput>;
+export type NotificationHook = LifecycleHook<NotificationHookInput>;

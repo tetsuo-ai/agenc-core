@@ -25,10 +25,14 @@ import { hookMatcherInputsForToolName } from "../permissions/hook-event-schedule
 import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import type { UserPromptSubmitHook } from "./user-prompt-submit.js";
 import type {
+  HookInput,
   HookResult,
+  NotificationHookInput,
   PostCompactHookInput,
   PreCompactHookInput,
+  SessionEndHookInput,
   SessionStartHookInput,
+  SubagentStopHookInput,
 } from "../llm/hooks/types.js";
 import { redactSecrets } from "../secrets/index.js";
 import { asRecord } from "../utils/record.js";
@@ -82,6 +86,24 @@ export interface HookInstallTarget {
   readonly addSessionStartHook?: (
     hook: (
       input: SessionStartHookInput,
+      signal?: AbortSignal,
+    ) => Promise<HookResult>,
+  ) => void;
+  readonly addSubagentStopHook?: (
+    hook: (
+      input: SubagentStopHookInput,
+      signal?: AbortSignal,
+    ) => Promise<HookResult>,
+  ) => void;
+  readonly addSessionEndHook?: (
+    hook: (
+      input: SessionEndHookInput,
+      signal?: AbortSignal,
+    ) => Promise<HookResult>,
+  ) => void;
+  readonly addNotificationHook?: (
+    hook: (
+      input: NotificationHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
   ) => void;
@@ -245,6 +267,31 @@ export class ConfiguredHooksRuntime {
           break;
         case "SessionStart":
           target.addSessionStartHook?.(this.createLifecycleHook(hook));
+          break;
+        case "SubagentStop":
+          target.addSubagentStopHook?.(
+            this.createGenericLifecycleHook(hook, (input) =>
+              input.hook_event_name === "SubagentStop"
+                ? input.agent_type ?? input.task_name
+                : "",
+            ),
+          );
+          break;
+        case "SessionEnd":
+          target.addSessionEndHook?.(
+            this.createGenericLifecycleHook(hook, (input) =>
+              input.hook_event_name === "SessionEnd" ? input.reason : "",
+            ),
+          );
+          break;
+        case "Notification":
+          target.addNotificationHook?.(
+            this.createGenericLifecycleHook(hook, (input) =>
+              input.hook_event_name === "Notification"
+                ? input.notification_type
+                : "",
+            ),
+          );
           break;
       }
     }
@@ -576,6 +623,46 @@ export class ConfiguredHooksRuntime {
         });
         return allowStopOutcome();
       },
+    };
+  }
+
+  /**
+   * Lifecycle-hook wrapper for events whose matcher key is not the
+   * PreCompact/PostCompact `trigger` (SubagentStop matches
+   * agent_type/task_name, SessionEnd matches reason, Notification
+   * matches notification_type). Same run/parse semantics as
+   * `createLifecycleHook`.
+   */
+  private createGenericLifecycleHook<I extends HookInput>(
+    hook: IndividualHookConfig,
+    matchKey: (input: I) => string,
+  ): (input: I, signal?: AbortSignal) => Promise<HookResult> {
+    return async (input, signal) => {
+      if (this.isDisabled() || !matchesPattern(matchKey(input), hook.matcher)) {
+        return { succeeded: true, output: "", command: hook.command.command };
+      }
+      const run = await this.runCommandHook(
+        hook,
+        input as unknown as Record<string, unknown>,
+        signal,
+      );
+      const parsed = this.readStructuredOutput(run);
+      const specific = parsed.output;
+      const output =
+        specific?.suppressOutput === true
+          ? ""
+          : run.status === "success"
+            ? run.stdout
+            : run.stderr || run.stdout;
+      return {
+        succeeded:
+          run.status === "success" && specific?.continueProcessing !== false,
+        output,
+        command: hookCommandLabel(hook),
+        ...(specific?.additionalContext !== undefined
+          ? { additionalContexts: [redactSecrets(specific.additionalContext)] }
+          : {}),
+      };
     };
   }
 
@@ -957,6 +1044,22 @@ function defaultHookInput(
         hook_event_name: event,
         trigger: "manual",
         compact_summary: "",
+      };
+    case "SubagentStop":
+      return {
+        hook_event_name: event,
+        task_name: "test",
+        agent_id: "test",
+        outcome: "completed",
+        final_message: "",
+      };
+    case "SessionEnd":
+      return { hook_event_name: event, reason: "exit", cwd };
+    case "Notification":
+      return {
+        hook_event_name: event,
+        message: "test",
+        notification_type: "permission_request",
       };
   }
 }

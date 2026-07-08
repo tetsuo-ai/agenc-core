@@ -29,9 +29,12 @@ import {
 } from "./registry.js";
 import type {
   HookResult,
+  NotificationHookInput,
   PostCompactHookInput,
   PreCompactHookInput,
+  SessionEndHookInput,
   SessionStartHookInput,
+  SubagentStopHookInput,
 } from "./types.js";
 
 const PRE_COMPACT_LABEL = "PreCompact";
@@ -208,7 +211,22 @@ function getRegistryHooks(
   event: "SessionStart",
 ): ReturnType<LifecycleHookRegistry["getSessionStart"]>;
 function getRegistryHooks(
-  event: "PreCompact" | "PostCompact" | "SessionStart",
+  event: "SubagentStop",
+): ReturnType<LifecycleHookRegistry["getSubagentStop"]>;
+function getRegistryHooks(
+  event: "SessionEnd",
+): ReturnType<LifecycleHookRegistry["getSessionEnd"]>;
+function getRegistryHooks(
+  event: "Notification",
+): ReturnType<LifecycleHookRegistry["getNotification"]>;
+function getRegistryHooks(
+  event:
+    | "PreCompact"
+    | "PostCompact"
+    | "SessionStart"
+    | "SubagentStop"
+    | "SessionEnd"
+    | "Notification",
 ): ReadonlyArray<unknown> {
   const r = getLifecycleHookRegistry();
   switch (event) {
@@ -218,5 +236,90 @@ function getRegistryHooks(
       return r.getPostCompact();
     case "SessionStart":
       return r.getSessionStart();
+    case "SubagentStop":
+      return r.getSubagentStop();
+    case "SessionEnd":
+      return r.getSessionEnd();
+    case "Notification":
+      return r.getNotification();
+  }
+}
+
+export interface SubagentStopDispatchResult {
+  /** Feedback the PARENT agent should see alongside the completion
+   *  notification: failed-hook outputs + every `additionalContext`. */
+  readonly feedback?: string;
+}
+
+/**
+ * Dispatch `SubagentStop` when a spawned agent reaches a terminal
+ * state. A hook that FAILS (exit code ≠ 0 for configured command
+ * hooks) or emits `additionalContext` produces feedback that is
+ * appended to the completion notification the parent agent reads —
+ * the observe/gate seam for subagent results.
+ */
+export async function dispatchSubagentStop(
+  input: SubagentStopHookInput,
+  opts: DispatchOpts<
+    (input: SubagentStopHookInput, signal?: AbortSignal) =>
+      | Promise<HookResult | undefined>
+      | HookResult
+      | undefined
+  > = {},
+): Promise<SubagentStopDispatchResult> {
+  const hooks = opts.hooks ?? getRegistryHooks("SubagentStop");
+  if (hooks.length === 0) return {};
+  const feedbackParts: string[] = [];
+  for (const h of hooks) {
+    if (opts.signal?.aborted) break;
+    const result = await safeRun(h, input, opts.signal, "SubagentStop");
+    if (!result.succeeded && result.output.trim().length > 0) {
+      feedbackParts.push(result.output.trim());
+    }
+    if (result.additionalContexts) {
+      for (const c of result.additionalContexts) {
+        if (c.trim().length > 0) feedbackParts.push(c.trim());
+      }
+    }
+  }
+  return feedbackParts.length > 0
+    ? { feedback: feedbackParts.join("\n\n") }
+    : {};
+}
+
+/** Dispatch `SessionEnd` during session shutdown. Results are
+ *  display-only (the session is going away); failures are contained. */
+export async function dispatchSessionEnd(
+  input: SessionEndHookInput,
+  opts: DispatchOpts<
+    (input: SessionEndHookInput, signal?: AbortSignal) =>
+      | Promise<HookResult | undefined>
+      | HookResult
+      | undefined
+  > = {},
+): Promise<void> {
+  const hooks = opts.hooks ?? getRegistryHooks("SessionEnd");
+  for (const h of hooks) {
+    if (opts.signal?.aborted) break;
+    await safeRun(h, input, opts.signal, "SessionEnd");
+  }
+}
+
+/** Dispatch `Notification` when the runtime starts waiting on the
+ *  human (permission request, elicitation). Fire-and-forget semantics;
+ *  hook output is not fed back to the model. */
+export async function dispatchNotification(
+  input: NotificationHookInput,
+  opts: DispatchOpts<
+    (input: NotificationHookInput, signal?: AbortSignal) =>
+      | Promise<HookResult | undefined>
+      | HookResult
+      | undefined
+  > = {},
+): Promise<void> {
+  const hooks = opts.hooks ?? getRegistryHooks("Notification");
+  for (const h of hooks) {
+    if (opts.signal?.aborted) break;
+    await safeRun(h, input, opts.signal, "Notification");
   }
 }

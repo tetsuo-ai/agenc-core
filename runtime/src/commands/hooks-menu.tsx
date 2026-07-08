@@ -74,6 +74,12 @@ function hookEventSummary(event: HookEventName): {
       return { matcher: "-", summary: "prompt submission" };
     case "SessionStart":
       return { matcher: "source", summary: "session start" };
+    case "SubagentStop":
+      return { matcher: "agent_type", summary: "subagent completion" };
+    case "SessionEnd":
+      return { matcher: "reason", summary: "session shutdown" };
+    case "Notification":
+      return { matcher: "notification_type", summary: "waiting on the user" };
     case "Stop":
       return { matcher: "-", summary: "response stop" };
     case "StopFailure":

@@ -44,10 +44,16 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
-const flush = (): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+// Several macrotask turns, not one: bindPromise's onFulfilled mapper is
+// async (it dynamically imports the hook dispatcher for SubagentStop),
+// so a single setTimeout(0) can lose the race under full-suite load.
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
+};
 
 function cacheSafeParams(): CacheSafeParams {
   return {

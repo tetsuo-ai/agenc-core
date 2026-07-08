@@ -1720,6 +1720,26 @@ describe("Session.rewindConversationToMessage", () => {
   });
 });
 
+describe("Session.shutdown dispatches SessionEnd hooks", () => {
+  it("fires registered SessionEnd hooks with the session id", async () => {
+    const { registerSessionEndHook, resetLifecycleHookRegistry } =
+      await import("../llm/hooks/registry.js");
+    const seen: Array<{ reason: string; session_id?: string }> = [];
+    resetLifecycleHookRegistry();
+    registerSessionEndHook(async (input) => {
+      seen.push({ reason: input.reason, session_id: input.session_id });
+      return { succeeded: true, output: "" };
+    });
+    try {
+      const session = buildSession();
+      await session.shutdown();
+      expect(seen).toEqual([{ reason: "exit", session_id: "conv-test" }]);
+    } finally {
+      resetLifecycleHookRegistry();
+    }
+  });
+});
+
 describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () => {
   let project = "";
 
