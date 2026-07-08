@@ -74,6 +74,47 @@ function toAnthropicImageSource(
   };
 }
 
+/**
+ * The system-prompt static/dynamic boundary marker. Must stay byte-equal
+ * to `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` exported by
+ * `src/prompts/system-prompt.ts` (the producer of `options.systemPrompt`);
+ * a regression test asserts the two never diverge. Single-sourced here so
+ * every wire can split without importing the prompt-assembly graph.
+ */
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER = "<!-- dynamic-boundary -->";
+
+/**
+ * Split an assembled system prompt into its cross-turn-stable head and
+ * its volatile tail (env timestamp, git branch, MCP servers, …).
+ *
+ * Prefix-caching providers (OpenAI, xAI) hash the leading bytes of the
+ * request: sending the volatile tail at the FRONT (inside instructions
+ * or a leading system message) makes every turn's prefix diverge, so
+ * the growing conversation is never served from cache. Callers place
+ * `staticPrefix` at the front and `dynamicSuffix` at the very end of
+ * the request — both providers' documented best practice ("put variable
+ * content at the end"; "never modify earlier messages — only append").
+ *
+ * When the marker is absent, the whole prompt is the static prefix
+ * (unchanged legacy behaviour).
+ */
+export function splitSystemPromptOnDynamicBoundary(
+  systemPrompt: string | undefined,
+): { staticPrefix?: string; dynamicSuffix?: string } {
+  const trimmed = systemPrompt?.trim();
+  if (trimmed === undefined || trimmed.length === 0) return {};
+  const markerIndex = trimmed.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER);
+  if (markerIndex === -1) return { staticPrefix: trimmed };
+  const staticPrefix = trimmed.slice(0, markerIndex).trimEnd();
+  const dynamicSuffix = trimmed
+    .slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length)
+    .trim();
+  return {
+    ...(staticPrefix.length > 0 ? { staticPrefix } : {}),
+    ...(dynamicSuffix.length > 0 ? { dynamicSuffix } : {}),
+  };
+}
+
 export function readDocumentPayload(part: unknown): {
   readonly data: string;
   readonly mediaType: string;

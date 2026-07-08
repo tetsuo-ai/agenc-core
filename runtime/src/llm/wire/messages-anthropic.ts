@@ -111,13 +111,14 @@ function buildAnthropicStructuredOutputTool(
 }
 
 /**
- * gaphunt3 #5/#33: the system-prompt static/dynamic boundary marker. Must stay
- * byte-equal to `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` exported by
- * `src/prompts/system-prompt.ts` (the producer of `options.systemPrompt`).
- * Kept local so the prompt-assembly module graph does not leak into the wire
- * layer; the gaphunt3 regression test asserts the two never diverge.
+ * gaphunt3 #5/#33: the system-prompt static/dynamic boundary marker.
+ * Single-sourced in `wire/shared.ts` (task 5 extended the split to the
+ * OpenAI/xAI wires); re-exported here for existing importers. The
+ * gaphunt3 regression test still asserts it never diverges from
+ * `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` in `src/prompts/system-prompt.ts`.
  */
-export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER = "<!-- dynamic-boundary -->";
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
 
 /**
  * Build the Anthropic `system` block(s) for the option-supplied system prompt.
