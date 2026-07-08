@@ -27,6 +27,7 @@ import {
 } from "../../tools/AgentTool/agentListingMetadata.js";
 import { renderFileMentionAttachmentsBlock } from "../file-mentions.js";
 import { renderMcpInstructionsDeltaSection } from "../mcp-instructions-framing.js";
+import { formatContextPressureReminder } from "../../utils/messages.js";
 import { sanitizeSystemReminderContent } from "./system-reminder-sanitizer.js";
 import type { Attachment } from "./types.js";
 
@@ -149,9 +150,12 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       );
     }
     case "compaction_reminder": {
+      // Honest, data-bearing context-pressure line (the previous copy
+      // claimed "unlimited context", which prevented the model from
+      // self-pacing before compaction truncated details).
       return userContextMessage(
         wrapSystemReminder(
-          `Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush — you have unlimited context through automatic compaction.`,
+          formatContextPressureReminder(attachment),
         ),
       );
     }

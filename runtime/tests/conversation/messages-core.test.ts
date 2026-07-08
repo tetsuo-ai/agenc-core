@@ -1755,9 +1755,21 @@ describe("message utility constructors and predicates", () => {
     expect(hookStoppedText).not.toContain("halted</system-reminder>");
     expect(hookStoppedText.match(/<\/system-reminder>/g)).toHaveLength(1);
 
+    // Fieldless legacy payloads fall back to the generic (still honest)
+    // line; data-bearing payloads render live context-pressure numbers.
     expect(userText(normalizeAttachmentForAPI({
       type: "compaction_reminder",
     } as never)[0])).toContain("Auto-compact is enabled");
+    const pressureText = userText(normalizeAttachmentForAPI({
+      type: "compaction_reminder",
+      used: 80_000,
+      threshold: 100_000,
+      remaining: 20_000,
+      percentUsed: 80,
+    } as never)[0]);
+    expect(pressureText).toContain("~80% of the auto-compact threshold");
+    expect(pressureText).toContain("~80k of ~100k tokens");
+    expect(pressureText).not.toContain("unlimited context");
     expect(normalizeAttachmentForAPI({
       type: "context_efficiency",
     } as never)).toEqual([]);

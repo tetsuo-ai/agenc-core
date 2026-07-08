@@ -4741,11 +4741,52 @@ function normalizeAgentMentionAttachment(
   ])
 }
 
-function normalizeCompactionReminderAttachment(): UserMessage[] {
+/**
+ * Honest context-pressure line. The previous copy told the model it had
+ * "unlimited context" \u2014 the opposite of actionable: the model could not
+ * self-pace (wrap up a discrete step, persist state to files) before
+ * auto-compact summarized details away.
+ */
+export function formatContextPressureReminder(attachment: {
+  used: number
+  threshold: number
+  remaining: number
+  percentUsed: number
+}): string {
+  const roundK = (tokens: number): string =>
+    `${Math.max(1, Math.round(tokens / 1000))}k`
+  const urgency =
+    attachment.percentUsed >= 90
+      ? ' Compaction is imminent: finish the current discrete step and persist anything you must not lose (files, notes, commit) NOW.'
+      : ' Prefer finishing discrete units of work and persisting important state to files before then; details from older messages may be summarized away.'
+  return (
+    `Context status: ~${attachment.percentUsed}% of the auto-compact threshold used ` +
+    `(~${roundK(attachment.used)} of ~${roundK(attachment.threshold)} tokens; ~${roundK(attachment.remaining)} left). ` +
+    `When the threshold is reached, older messages are automatically summarized and work continues.${urgency}`
+  )
+}
+
+function normalizeCompactionReminderAttachment(attachment: {
+  used?: number
+  threshold?: number
+  remaining?: number
+  percentUsed?: number
+}): UserMessage[] {
+  const content =
+    typeof attachment.used === 'number' &&
+    typeof attachment.threshold === 'number' &&
+    typeof attachment.remaining === 'number' &&
+    typeof attachment.percentUsed === 'number'
+      ? formatContextPressureReminder({
+          used: attachment.used,
+          threshold: attachment.threshold,
+          remaining: attachment.remaining,
+          percentUsed: attachment.percentUsed,
+        })
+      : 'Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working.'
   return wrapMessagesInSystemReminder([
     createUserMessage({
-      content:
-        'Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush \u2014 you have unlimited context through automatic compaction.',
+      content,
       isMeta: true,
     }),
   ])
@@ -5053,7 +5094,7 @@ export function normalizeAttachmentForAPI(
       return normalizeHookStoppedContinuationAttachment(attachment)
     }
     case 'compaction_reminder': {
-      return normalizeCompactionReminderAttachment()
+      return normalizeCompactionReminderAttachment(attachment)
     }
     case 'context_efficiency': {
       return normalizeContextEfficiencyAttachment()
