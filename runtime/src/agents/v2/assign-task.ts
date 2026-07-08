@@ -12,9 +12,8 @@ const TRIGGER_TURN_TASK_DESCRIPTION =
 export function createTriggerTurnTaskTool(
   opts: MultiAgentV2Options,
   config: {
-    readonly name: "assign_task" | "followup_task";
+    readonly name: "assign_task";
     readonly keywords: readonly string[];
-    readonly deferred?: boolean;
   },
 ): Tool {
   return {
@@ -22,9 +21,6 @@ export function createTriggerTurnTaskTool(
     description: TRIGGER_TURN_TASK_DESCRIPTION,
     metadata: toolMetadata("agent", {
       mutating: true,
-      ...(config.deferred !== undefined
-        ? { deferred: config.deferred, hiddenByDefault: config.deferred }
-        : {}),
       keywords: config.keywords,
     }),
     recoveryCategory: "side-effecting",

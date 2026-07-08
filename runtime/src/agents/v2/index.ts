@@ -2,7 +2,6 @@ import type { Tool } from "../../tools/types.js";
 import type { MultiAgentV2Options } from "./common.js";
 import { createAssignTaskTool } from "./assign-task.js";
 import { createCloseAgentTool } from "./close-agent.js";
-import { createFollowupTaskTool } from "./followup-task.js";
 import { createListAgentsTool } from "./list-agents.js";
 import { createSendMessageTool } from "./send-message.js";
 import { createSpawnAgentTool } from "./spawn.js";
@@ -16,7 +15,6 @@ export function createMultiAgentV2Tools(
     createWaitAgentTool(opts),
     createCloseAgentTool(opts),
     createAssignTaskTool(opts),
-    createFollowupTaskTool(opts),
     createSendMessageTool(opts),
     createListAgentsTool(opts),
   ];

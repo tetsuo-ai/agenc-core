@@ -299,6 +299,8 @@ const COLLAB_V2_TOOL_NAMES: ReadonlySet<string> = new Set([
   "close_agent",
   "assign_task",
   "send_message",
+  // followup_task (a deleted assign_task alias) stays here so historical
+  // transcripts that recorded it still render a single structured row.
   "followup_task",
 ]);
 

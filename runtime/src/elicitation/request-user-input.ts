@@ -180,7 +180,7 @@ function requestUserInputUnavailableMessage(
 export function requestUserInputToolDescription(
   availableModes: readonly PermissionMode[],
 ): string {
-  return `Request user input for one to three short questions and wait for the response. This tool is only available in ${formatAllowedModes(availableModes)}.`;
+  return `Request user input for one to three short questions and wait for the response. This tool is only available in ${formatAllowedModes(availableModes)}. Prefer AskUserQuestion for interactive questions — this tool exists for daemon clients that drive the elicitation protocol directly.`;
 }
 
 function formatAllowedModes(availableModes: readonly PermissionMode[]): string {
@@ -277,9 +277,14 @@ export function createRequestUserInputTool(
     metadata: {
       family: "interaction",
       source: "builtin",
-      hiddenByDefault: false,
+      // AskUserQuestion is the canonical visible elicitation tool —
+      // two overlapping visible question tools degrade model tool
+      // selection. request_user_input stays registered (deferred +
+      // hidden) for daemon clients that drive the elicitation.respond
+      // protocol explicitly and for tool-search discovery.
+      hiddenByDefault: true,
       mutating: true,
-      deferred: false,
+      deferred: true,
       keywords: ["interaction", "user-input", "elicitation"],
       preferredProfiles: ["coding", "operator", "general"],
     },

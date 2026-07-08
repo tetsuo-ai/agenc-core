@@ -15,9 +15,10 @@ This directory owns the model-facing v2 agent tools tracked by the
 | `core/src/tools/handlers/multi_agents_v2/list_agents.rs` | `list-agents.ts` | `list_agents` |
 | `core/src/tools/handlers/multi_agents_v2/message_tool.rs` | `message-tool.ts` | shared message dispatch |
 
-`followup-task.ts` remains as a deferred compatibility alias for the previous
-`followup_task` spelling. New model-visible tool lists should prefer
-`assign_task`.
+The previous `followup_task` compatibility alias (`followup-task.ts`) has been
+deleted — `assign_task` is the only trigger-turn spelling. Historical
+transcripts that recorded `followup_task` calls still render via the
+transcript's collab-tool suppression set.
 
 ## Guarded Behavior
 
