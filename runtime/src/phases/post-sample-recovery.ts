@@ -30,6 +30,7 @@ import {
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
 import { compactConversation } from "../services/compact/compact.js";
+import { shrinkOversizedToolResults } from "../session/_deps/tool-result-storage.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -100,11 +101,23 @@ export async function runContextCollapseOverflowRecovery(params: {
   } as const;
 }
 
+/**
+ * Cap applied to each tool result retained in the recovery tail. The
+ * overflow usually IS one oversized recent result — retaining it
+ * verbatim used to reproduce the very overflow this recovery exists to
+ * fix, looping the 413. Head+tail slicing keeps the pairing valid while
+ * guaranteeing the rebuilt prompt is small.
+ */
+const RECOVERY_TAIL_RESULT_CAP_CHARS = 20_000;
+
 async function recoverFromOverflow(
   messages: RuntimeMessage[],
 ): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
   if (messages.length < 4) return { messages, committed: 0 };
-  const retainedTail = selectOverflowRetainedTail(messages);
+  const retainedTail = shrinkOversizedToolResults(
+    selectOverflowRetainedTail(messages) as CollapseRuntimeMessage[],
+    RECOVERY_TAIL_RESULT_CAP_CHARS,
+  ).messages as unknown as readonly RuntimeMessage[];
   const compacted = await compactConversation(
     messages,
     {},
