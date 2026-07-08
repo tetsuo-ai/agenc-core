@@ -35,6 +35,9 @@ export function buildBootstrapToolRegistry(
       : {}),
     emitWarning: options.emitWarning,
     env: process.env,
+    ...(options.toolRegistryOptions?.toolsConfig !== undefined
+      ? { toolsConfig: options.toolRegistryOptions.toolsConfig }
+      : {}),
   });
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
