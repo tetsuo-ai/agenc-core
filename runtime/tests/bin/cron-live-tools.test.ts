@@ -17,7 +17,10 @@ import {
   setOriginalCwd,
   setProjectRoot,
 } from "../bootstrap/state.js";
-import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
+import {
+  getCronScheduler,
+  resetCronSchedulerForTests,
+} from "../utils/cronScheduler.js";
 import { listAllCronTasks } from "../utils/cronTasks.js";
 import {
   dequeueAll,
@@ -35,6 +38,10 @@ let tempRoot: string;
 async function advanceMinutesWithIo(minutes: number): Promise<void> {
   for (let minute = 0; minute < minutes; minute += 1) {
     await vi.advanceTimersByTimeAsync(60_000);
+    // Deterministically await the tick the timer just fired (its real fs
+    // I/O ignores fake timers) instead of guessing with setImmediate
+    // rounds — under full-suite load 20 yields were not always enough.
+    await getCronScheduler().drain();
     for (let flush = 0; flush < 20; flush += 1) {
       await new Promise<void>((resolveFlush) => setImmediate(resolveFlush));
     }
