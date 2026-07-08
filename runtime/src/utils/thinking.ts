@@ -3,6 +3,7 @@ import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
+import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
 import { getSettingsWithErrors } from './settings/settings.js'
@@ -188,8 +189,13 @@ export function modelSupportsThinking(model: string): boolean {
   ) {
     return true
   }
-  // 3P (Bedrock/Vertex): only Opus 4+ and Sonnet 4+
-  return canonical.includes('sonnet-4') || canonical.includes('opus-4')
+  // 3P (Bedrock/Vertex): Opus 4+, Sonnet 4+, and the always-on-thinking
+  // Fable 5 family (thinking cannot be turned off there at all).
+  return (
+    canonical.includes('sonnet-4') ||
+    canonical.includes('opus-4') ||
+    canonical.includes('fable-5')
+  )
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports adaptive thinking.
@@ -199,6 +205,13 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return supported3P
   }
   const canonical = getCanonicalName(model)
+  // Claude Fable 5: thinking is ALWAYS ON server-side. Omitting the
+  // `thinking` param runs adaptive thinking and `{type: 'adaptive'}` is the
+  // only explicit config the API accepts (`disabled`/budget_tokens 400) —
+  // provider docs, verified 2026-07-08.
+  if (isAlwaysOnThinkingAnthropicModel(canonical)) {
+    return true
+  }
   // Supported by a subset of AgenC 4 models
   if (canonical.includes('opus-4-7') || canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
     return true

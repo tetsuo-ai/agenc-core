@@ -12,6 +12,7 @@ import { getproviderClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'
 import { normalizeModelStringForAPI } from './model/model.js'
+import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 
 type MessageParam = provider.MessageParam
 type TextBlockParam = provider.TextBlockParam
@@ -162,12 +163,17 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   ].filter((block): block is TextBlockParam => block !== null)
 
   let thinkingConfig: BetaThinkingConfigParam | undefined
-  if (thinking === false) {
-    thinkingConfig = { type: 'disabled' }
-  } else if (thinking !== undefined) {
-    thinkingConfig = {
-      type: 'enabled',
-      budget_tokens: Math.min(thinking, max_tokens - 1),
+  // Task 28: the always-on-thinking family (Claude Fable/Mythos 5) rejects
+  // BOTH `{type:'disabled'}` and `{type:'enabled', budget_tokens}` with a
+  // 400 — the param must stay omitted (thinking runs adaptively server-side).
+  if (!isAlwaysOnThinkingAnthropicModel(model)) {
+    if (thinking === false) {
+      thinkingConfig = { type: 'disabled' }
+    } else if (thinking !== undefined) {
+      thinkingConfig = {
+        type: 'enabled',
+        budget_tokens: Math.min(thinking, max_tokens - 1),
+      }
     }
   }
 

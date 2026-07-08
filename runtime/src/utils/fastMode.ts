@@ -163,7 +163,8 @@ export function isFastModeSupportedByModel(
   const parsedModel = parseUserSpecifiedModel(model)
   const m = parsedModel.toLowerCase()
   // Fast mode: Opus 4.6/4.7/4.8. 4.8 is the durable fast-capable tier
-  // (4.7 fast mode is deprecated upstream).
+  // (4.7 fast mode is deprecated upstream). Claude Fable 5 has NO fast mode
+  // (provider docs, verified 2026-07-08) — deliberately excluded here.
   return (
     m.includes('opus-4-6') || m.includes('opus-4-7') || m.includes('opus-4-8')
   )

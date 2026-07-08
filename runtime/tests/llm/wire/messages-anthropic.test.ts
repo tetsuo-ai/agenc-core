@@ -825,3 +825,137 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(response.thinking).toBeUndefined();
   });
 });
+
+/**
+ * Task 28: Claude Fable 5 request-surface family-awareness. The
+ * Fable/Mythos 5 family has a DIFFERENT Messages API surface than the
+ * Opus family (provider docs, verified 2026-07-08): thinking is always
+ * on server-side (any explicit `thinking` config other than adaptive
+ * returns a 400 — the param must be omitted), and sampling parameters
+ * (`temperature`) are removed. The Opus (>= 4.6) path must stay exactly
+ * as-is. These tests fail if someone routes fable through the opus
+ * thinking path.
+ */
+describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
+  const baseInput = {
+    messages: [{ role: "user" as const, content: "hello" }],
+    tools: [],
+  };
+
+  test("a fable-5 request carries NO thinking config while opus-4-8 keeps its config", () => {
+    const fable = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-fable-5",
+      options: { reasoningEffort: "high" },
+    });
+    expect(fable.thinking).toBeUndefined();
+
+    // Opus family behavior is unchanged (kept exactly as-is).
+    const opus = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-opus-4-8",
+      options: { reasoningEffort: "high" },
+    });
+    expect(opus.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 4096,
+    });
+  });
+
+  test("provider spellings of the family also omit the thinking config", () => {
+    const request = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "us.anthropic.agenc-fable-5-v1",
+      options: { reasoningEffort: "medium" },
+    });
+    expect(request.thinking).toBeUndefined();
+  });
+
+  test("fable-5 omits forced tool_choice even without reasoningEffort (thinking is always on)", () => {
+    const tools = [
+      {
+        type: "function" as const,
+        function: {
+          name: "echo",
+          description: "Echo input.",
+          parameters: { type: "object" },
+        },
+      },
+    ];
+    const fable = buildAnthropicMessagesRequest({
+      messages: baseInput.messages,
+      tools,
+      model: "claude-fable-5",
+      options: { toolChoice: "required" },
+    });
+    expect(fable.tool_choice).toBeUndefined();
+
+    // A non-thinking opus request keeps the forced tool_choice.
+    const opus = buildAnthropicMessagesRequest({
+      messages: baseInput.messages,
+      tools,
+      model: "claude-opus-4-8",
+      options: { toolChoice: "required" },
+    });
+    expect(opus.tool_choice).toEqual({ type: "any" });
+  });
+
+  test("fable-5 does not force the structured-output tool choice", () => {
+    const request = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-fable-5",
+      options: {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: { type: "object" },
+          },
+        },
+      },
+    });
+    // The structured-output tool is still offered…
+    expect(
+      (request.tools as Array<Record<string, unknown>>).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual([ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME]);
+    // …but never force-selected (forced tool_choice with thinking 400s).
+    expect(request.tool_choice).toBeUndefined();
+  });
+
+  test("fable-5 omits temperature (sampling params removed) while opus keeps it", () => {
+    const fable = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-fable-5",
+      options: { temperature: 0.4 },
+    });
+    expect(fable.temperature).toBeUndefined();
+
+    const opus = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-opus-4-8",
+      options: { temperature: 0.4 },
+    });
+    expect(opus.temperature).toBe(0.4);
+  });
+
+  test("the refusal stop reason parses to the content_filter finish reason", () => {
+    const response = parseAnthropicMessagesResponse(
+      "claude-fable-5",
+      {
+        id: "msg_refusal",
+        model: "claude-fable-5",
+        stop_reason: "refusal",
+        content: [],
+      },
+      {
+        model: "claude-fable-5",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+      },
+    );
+    expect(response.finishReason).toBe("content_filter");
+    expect(response.content).toBe("");
+  });
+});

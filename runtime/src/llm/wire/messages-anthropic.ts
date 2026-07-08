@@ -32,6 +32,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
 
 export interface AnthropicMessagesRequestOptions {
   readonly model: string;
@@ -282,7 +283,11 @@ export function buildAnthropicMessagesRequest(
   };
 
   if (system.length > 0) body.system = system;
-  if (input.options?.temperature !== undefined) {
+  // Task 28: the Fable/Mythos 5 family removed sampling parameters —
+  // sending `temperature` returns a 400 (provider docs, verified
+  // 2026-07-08). Opus-family behavior is unchanged.
+  const alwaysOnThinking = isAlwaysOnThinkingAnthropicModel(input.model);
+  if (input.options?.temperature !== undefined && !alwaysOnThinking) {
     body.temperature = input.options.temperature;
   }
   if (
@@ -312,7 +317,14 @@ export function buildAnthropicMessagesRequest(
   // permits 'auto'/'none', returning a 400 otherwise). Mirror that constraint
   // by omitting any forced tool_choice (falling back to auto) whenever
   // thinking will be enabled on this request.
-  const thinkingEnabled = input.options?.reasoningEffort !== undefined;
+  //
+  // Task 28: on the Fable/Mythos 5 family thinking is ALWAYS on server-side
+  // regardless of `reasoningEffort`, so the forced-tool_choice constraint
+  // applies unconditionally there. The docs do not state that the family
+  // relaxed the forced-tool_choice-with-thinking rule, so we conservatively
+  // keep it (falling back to auto never 400s; forcing could).
+  const thinkingEnabled =
+    alwaysOnThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
     if (toolChoice !== undefined && !thinkingEnabled) {
@@ -325,7 +337,13 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  if (thinkingEnabled) {
+  // Task 28: never attach a `thinking` config for the Fable/Mythos 5
+  // family — thinking is always on and any explicit configuration other
+  // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
+  // returns a 400; omitting the param runs adaptive thinking. Depth is the
+  // effort parameter's job on that family. Opus-family (>= 4.6) behavior
+  // below is unchanged.
+  if (thinkingEnabled && !alwaysOnThinking) {
     body.thinking = {
       type: "enabled",
       budget_tokens:

@@ -1070,3 +1070,62 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     });
   });
 });
+
+describe("streamModel — refusal stop reason (task 28)", () => {
+  // Claude Fable 5 safety classifiers can decline a request on HTTP 200
+  // with `stop_reason: "refusal"` and an EMPTY content array. The wire
+  // normalizes that to finishReason "content_filter"; without an apiError
+  // mapping the turn ended as a silent empty assistant message.
+  test("surfaces a pre-output refusal as a visible apiError message, not silent empty content", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const provider = mkProvider(async () => ({
+      content: "",
+      toolCalls: [],
+      usage: { promptTokens: 10, completionTokens: 0, totalTokens: 10 },
+      model: "claude-fable-5",
+      finishReason: "content_filter",
+    }));
+    const { session } = mkSession(provider);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+    );
+
+    const assistant = state.assistantMessages.at(-1);
+    expect(assistant?.apiError).toBe("refusal");
+    // Clear user-visible body — not an empty message.
+    expect(assistant?.text).toContain("refusal");
+    expect((assistant?.text ?? "").length).toBeGreaterThan(0);
+  });
+
+  test("a mid-stream refusal keeps the partial text and still flags the apiError", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({ content: "partial answer ", done: false });
+      return {
+        content: "partial answer ",
+        toolCalls: [],
+        usage: { promptTokens: 10, completionTokens: 4, totalTokens: 14 },
+        model: "claude-fable-5",
+        finishReason: "content_filter",
+      };
+    });
+    const { session } = mkSession(provider);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+    );
+
+    const assistant = state.assistantMessages.at(-1);
+    expect(assistant?.apiError).toBe("refusal");
+    expect(assistant?.text).toContain("partial answer");
+  });
+});
