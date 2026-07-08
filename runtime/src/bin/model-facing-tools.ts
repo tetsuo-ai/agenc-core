@@ -94,6 +94,12 @@ export interface ModelFacingToolOptions {
   }) => void;
   readonly env?: NodeJS.ProcessEnv;
   readonly providerFactory?: typeof createProvider;
+  /** `[tools]` block from config.toml (env vars win over these). */
+  readonly toolsConfig?: {
+    readonly web_search_endpoint?: string;
+    readonly web_search_endpoint_kind?: string;
+    readonly [k: string]: unknown;
+  };
 }
 
 interface StoredCron {
@@ -322,6 +328,7 @@ async function fetchWithTimeout(
   opts: {
     readonly validateWebFetchUrls?: boolean;
     readonly allowWebFetchRedirect?: (nextUrl: string) => boolean;
+    readonly headers?: Readonly<Record<string, string>>;
   } = {},
 ): Promise<Response> {
   const controller = new AbortController();
@@ -334,6 +341,7 @@ async function fetchWithTimeout(
         headers: {
           "user-agent": "agenc-runtime/0.2",
           accept: "text/html,text/plain,application/json,*/*",
+          ...(opts.headers ?? {}),
         },
       });
     }
@@ -1727,12 +1735,68 @@ function checkWebFetchPermissions(
   };
 }
 
-function createWebFetchTool(toolName: string): Tool {
+/** Content below this size is returned raw — extraction wouldn't pay for itself. */
+const WEB_FETCH_EXTRACTION_MIN_CHARS = 4_000;
+/** Cap on page content handed to the extraction model call. */
+const WEB_FETCH_EXTRACTION_INPUT_CHARS = 60_000;
+/** Raw-content preview retained alongside an extraction. */
+const WEB_FETCH_EXTRACTION_PREVIEW_CHARS = 2_000;
+
+/**
+ * Run the caller's `prompt` against fetched page content through the
+ * session provider and return the extraction, or undefined when no
+ * provider is available or the call fails (callers fall back to raw
+ * content — never worse than the old echo behavior).
+ */
+async function runWebFetchExtraction(
+  opts: ModelFacingToolOptions,
+  input: {
+    readonly url: string;
+    readonly content: string;
+    readonly prompt: string;
+    readonly signal?: AbortSignal;
+  },
+): Promise<string | undefined> {
+  const provider = currentSessionProvider(opts);
+  if (!provider) return undefined;
+  try {
+    const cappedContent =
+      input.content.length > WEB_FETCH_EXTRACTION_INPUT_CHARS
+        ? `${input.content.slice(0, WEB_FETCH_EXTRACTION_INPUT_CHARS)}\n\n[content truncated for extraction]`
+        : input.content;
+    const response = await provider.chat(
+      [
+        {
+          role: "user",
+          content: `<page url="${input.url}">\n${cappedContent}\n</page>\n\nTask: ${input.prompt}`,
+        },
+      ],
+      {
+        systemPrompt:
+          "You are AgenC's web-fetch extraction step. Answer the task using ONLY the page content provided. Be concise and factual; quote exact values, names, and URLs from the page. If the page does not contain the requested information, say so explicitly.",
+        maxOutputTokens: 2_000,
+        tools: [],
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      },
+    );
+    const text = response.content.trim();
+    return text.length > 0 && response.finishReason !== "error"
+      ? text
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function createWebFetchTool(
+  toolName: string,
+  opts: ModelFacingToolOptions,
+): Tool {
   const isLegacy = toolName === LEGACY_WEB_FETCH_TOOL_NAME;
   return {
     name: toolName,
     description:
-      "Fetch an HTTPS URL and return readable text content plus status and final URL.",
+      "Fetch an HTTPS URL and return readable text content plus status and final URL. When `prompt` is provided, large pages are distilled: the prompt runs against the fetched content and the response carries the extraction plus a short raw preview (the full text is saved to disk for follow-up reads).",
     metadata: toolMetadata("web", {
       keywords: ["web", "fetch", "url", "http"],
       deferred: isLegacy,
@@ -1826,6 +1890,58 @@ function createWebFetchTool(toolName: string): Tool {
         } else if (raw.truncated) {
           textBody = `${body}\n\n[truncated response after ${raw.bytesRead} bytes]`;
         }
+        // Prompt-driven extraction: distill large pages instead of
+        // dumping the full markdown into context. Raw content is
+        // persisted to disk so the agent can still read it in full.
+        const prompt = stringValue(args.prompt);
+        if (
+          response.ok &&
+          prompt !== undefined &&
+          prompt.trim().length > 0 &&
+          textBody.length >= WEB_FETCH_EXTRACTION_MIN_CHARS
+        ) {
+          const extracted = await runWebFetchExtraction(opts, {
+            url: finalUrl,
+            content: textBody,
+            prompt,
+          });
+          if (extracted !== undefined) {
+            let fullContentPath: string | undefined;
+            try {
+              const { persistToolResult } = await import(
+                "../utils/toolResultStorage.js"
+              );
+              const persisted = await persistToolResult(
+                textBody,
+                `webfetch-${randomUUID()}`,
+              );
+              if (!("error" in persisted)) {
+                fullContentPath = persisted.filepath;
+              }
+            } catch {
+              /* extraction still useful without the persisted copy */
+            }
+            return json({
+              status: response.status,
+              ok: response.ok,
+              url: normalized,
+              final_url: finalUrl,
+              content_type: contentType,
+              preapproved,
+              rendered_as: renderedAs,
+              truncated: raw.truncated || body.length > maxChars,
+              prompt,
+              extracted,
+              ...(fullContentPath !== undefined
+                ? { full_content_path: fullContentPath }
+                : {}),
+              content_preview: textBody.slice(
+                0,
+                WEB_FETCH_EXTRACTION_PREVIEW_CHARS,
+              ),
+            });
+          }
+        }
         return json({
           status: response.status,
           ok: response.ok,
@@ -1835,7 +1951,7 @@ function createWebFetchTool(toolName: string): Tool {
           preapproved,
           rendered_as: renderedAs,
           truncated: raw.truncated || body.length > maxChars,
-          prompt: stringValue(args.prompt),
+          prompt,
           content: textBody,
         }, response.ok ? undefined : true);
       } catch (error) {
@@ -1845,10 +1961,222 @@ function createWebFetchTool(toolName: string): Tool {
   };
 }
 
+type WebSearchEndpointKind = "duckduckgo" | "searxng" | "brave" | "json";
+
+function webSearchEndpointKind(
+  opts: ModelFacingToolOptions,
+): WebSearchEndpointKind {
+  const raw = (
+    stringValue(opts.env?.AGENC_WEB_SEARCH_KIND) ??
+    stringValue(opts.toolsConfig?.web_search_endpoint_kind)
+  )?.toLowerCase();
+  if (raw === "searxng" || raw === "brave" || raw === "json") return raw;
+  return "duckduckgo";
+}
+
+/**
+ * Query a configured search endpoint and normalize its response.
+ * Kinds:
+ *   - duckduckgo (default): DDG instant-answer-compatible JSON
+ *     (`RelatedTopics`) — preserves the original custom-endpoint contract.
+ *   - searxng: a SearXNG instance (`?q=&format=json`, `results[]` with
+ *     title/url/content).
+ *   - brave: Brave Search API (`?q=`, `X-Subscription-Token` from
+ *     AGENC_WEB_SEARCH_API_KEY, `web.results[]`).
+ *   - json: plain `{results: [{title, url, snippet}]}`.
+ */
+async function runConfiguredEndpointSearch(
+  endpoint: string,
+  kind: WebSearchEndpointKind,
+  env: NodeJS.ProcessEnv | undefined,
+  query: string,
+): Promise<{
+  readonly results: WebSearchResultEntry[];
+  readonly answer?: string;
+  readonly heading?: string;
+}> {
+  const sep = endpoint.includes("?") ? "&" : "?";
+  const searchUrl =
+    kind === "searxng"
+      ? `${endpoint}${sep}q=${encodeURIComponent(query)}&format=json`
+      : `${endpoint}${sep}q=${encodeURIComponent(query)}`;
+  const apiKey = stringValue(env?.AGENC_WEB_SEARCH_API_KEY);
+  const headers: Record<string, string> =
+    kind === "brave" && apiKey !== undefined
+      ? { "X-Subscription-Token": apiKey, Accept: "application/json" }
+      : { Accept: "application/json" };
+  const response = await fetchWithTimeout(searchUrl, DEFAULT_TIMEOUT_MS, {
+    headers,
+  });
+  const raw = recordValue(await response.json().catch(() => undefined)) ?? {};
+  if (kind === "searxng") {
+    const results = arrayValue(raw.results)
+      .flatMap((entry) => {
+        const record = recordValue(entry);
+        return record ? [record] : [];
+      })
+      .map((entry) => ({
+        title: stringValue(entry.title) ?? "",
+        url: stringValue(entry.url) ?? "",
+        snippet: stringValue(entry.content) ?? "",
+      }))
+      .filter((entry) => entry.url.length > 0);
+    return { results };
+  }
+  if (kind === "brave") {
+    const web = recordValue(raw.web) ?? {};
+    const results = arrayValue(web.results)
+      .flatMap((entry) => {
+        const record = recordValue(entry);
+        return record ? [record] : [];
+      })
+      .map((entry) => ({
+        title: stringValue(entry.title) ?? "",
+        url: stringValue(entry.url) ?? "",
+        snippet: stringValue(entry.description) ?? "",
+      }))
+      .filter((entry) => entry.url.length > 0);
+    return { results };
+  }
+  if (kind === "json") {
+    const results = arrayValue(raw.results)
+      .flatMap((entry) => {
+        const record = recordValue(entry);
+        return record ? [record] : [];
+      })
+      .map((entry) => ({
+        title: stringValue(entry.title) ?? "",
+        url: stringValue(entry.url) ?? "",
+        snippet: stringValue(entry.snippet) ?? stringValue(entry.content) ?? "",
+      }))
+      .filter((entry) => entry.url.length > 0);
+    return { results };
+  }
+  return {
+    results: parseDuckDuckGoInstantAnswer(raw),
+    ...(stringValue(raw.AbstractText) !== undefined
+      ? { answer: stringValue(raw.AbstractText) }
+      : {}),
+    ...(stringValue(raw.Heading) !== undefined
+      ? { heading: stringValue(raw.Heading) }
+      : {}),
+  };
+}
+
+function parseDuckDuckGoInstantAnswer(
+  raw: Record<string, unknown>,
+): WebSearchResultEntry[] {
+  const related = arrayValue(raw.RelatedTopics);
+  return related
+    .flatMap((entry): Array<Record<string, unknown>> => {
+      const record = recordValue(entry);
+      if (!record) {
+        return [];
+      }
+      const topics = arrayValue(record.Topics)
+        .flatMap((topic): Array<Record<string, unknown>> => {
+          const topicRecord = recordValue(topic);
+          return topicRecord ? [topicRecord] : [];
+        });
+      if (topics.length > 0) {
+        return topics;
+      }
+      return [record];
+    })
+    .map((entry) => ({
+      title: stringValue(entry.Text)?.split(" - ")[0] ?? stringValue(entry.Result) ?? "",
+      url: stringValue(entry.FirstURL) ?? "",
+      snippet: stringValue(entry.Text) ?? "",
+    }))
+    .filter((entry) => entry.url.length > 0);
+}
+
+const DDG_HTML_SEARCH_URL = "https://html.duckduckgo.com/html/";
+
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Resolve DDG's `/l/?uddg=<encoded>` redirect wrapper to the real URL. */
+function resolveDdgResultUrl(href: string): string | null {
+  try {
+    const url = new URL(href, "https://duckduckgo.com");
+    if (url.pathname === "/l/" || url.pathname.startsWith("/l/")) {
+      const target = url.searchParams.get("uddg");
+      return target !== null && target.length > 0 ? target : null;
+    }
+    if (url.protocol === "https:" || url.protocol === "http:") {
+      return url.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keyless real-SERP fallback: scrape the DuckDuckGo HTML endpoint.
+ * The instant-answer API only returns encyclopedic abstracts and is
+ * near-empty for most real queries; the HTML endpoint returns actual
+ * ranked results. Returns an empty list on any parse/transport failure
+ * so callers can fall through to the instant-answer path.
+ */
+async function runDuckDuckGoHtmlSearch(
+  query: string,
+): Promise<WebSearchResultEntry[]> {
+  try {
+    const response = await fetchWithTimeout(
+      `${DDG_HTML_SEARCH_URL}?q=${encodeURIComponent(query)}`,
+      DEFAULT_TIMEOUT_MS,
+      {
+        headers: {
+          Accept: "text/html",
+          "User-Agent": "Mozilla/5.0 (compatible; agenc-cli)",
+        },
+      },
+    );
+    if (!response.ok) return [];
+    const html = await response.text();
+    const results: WebSearchResultEntry[] = [];
+    const anchorRe =
+      /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    const snippetRe =
+      /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+    const snippets: string[] = [];
+    for (const match of html.matchAll(snippetRe)) {
+      snippets.push(stripHtmlTags(match[1] ?? ""));
+    }
+    let index = 0;
+    for (const match of html.matchAll(anchorRe)) {
+      const url = resolveDdgResultUrl(match[1] ?? "");
+      const title = stripHtmlTags(match[2] ?? "");
+      if (url !== null && title.length > 0) {
+        results.push({
+          title,
+          url,
+          snippet: snippets[index] ?? "",
+        });
+      }
+      index += 1;
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   return [
-    createWebFetchTool(WEB_FETCH_TOOL_NAME),
-    createWebFetchTool(LEGACY_WEB_FETCH_TOOL_NAME),
+    createWebFetchTool(WEB_FETCH_TOOL_NAME, opts),
+    createWebFetchTool(LEGACY_WEB_FETCH_TOOL_NAME, opts),
     {
       name: "WebSearch",
       description:
@@ -1874,7 +2202,9 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const query = stringValue(args.query);
         if (!query) return json({ error: "query is required" }, true);
         const filters = webSearchFilters(args);
-        const endpoint = stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT);
+        const endpoint =
+          stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) ??
+          stringValue(opts.toolsConfig?.web_search_endpoint);
         const maxResults = Math.max(
           1,
           Math.min(numberValue(args.max_results) ?? MAX_SEARCH_RESULTS, MAX_SEARCH_RESULTS),
@@ -1889,39 +2219,57 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         if (nativeResult !== undefined) {
           return nativeResult;
         }
-        const searchUrl =
-          endpoint !== undefined
-            ? `${endpoint}${endpoint.includes("?") ? "&" : "?"}q=${encodeURIComponent(query)}`
-            : `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-        const response = await fetchWithTimeout(searchUrl);
+        // 1. Explicitly configured endpoint (env or config-bridged).
+        if (endpoint !== undefined) {
+          const kind = webSearchEndpointKind(opts);
+          const configured = await runConfiguredEndpointSearch(
+            endpoint,
+            kind,
+            opts.env,
+            query,
+          );
+          const results = filterWebSearchResults(
+            configured.results,
+            filters,
+          ).slice(0, maxResults);
+          return json({
+            query,
+            source: endpoint,
+            kind,
+            results,
+            ...(configured.answer !== undefined
+              ? { answer: configured.answer }
+              : {}),
+            ...(configured.heading !== undefined
+              ? { heading: configured.heading }
+              : {}),
+          });
+        }
+        // 2. Keyless real-SERP default: DuckDuckGo HTML.
+        const htmlResults = filterWebSearchResults(
+          await runDuckDuckGoHtmlSearch(query),
+          filters,
+        ).slice(0, maxResults);
+        if (htmlResults.length > 0) {
+          return json({
+            query,
+            source: "duckduckgo_html",
+            results: htmlResults,
+          });
+        }
+        // 3. Last resort: the instant-answer API (encyclopedic
+        // abstracts only — near-empty for most real queries).
+        const response = await fetchWithTimeout(
+          `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
+        );
         const raw = recordValue(await response.json().catch(() => undefined)) ?? {};
-        const related = arrayValue(raw.RelatedTopics);
-        const results = filterWebSearchResults(related
-          .flatMap((entry): Array<Record<string, unknown>> => {
-            const record = recordValue(entry);
-            if (!record) {
-              return [];
-            }
-            const topics = arrayValue(record.Topics)
-              .flatMap((topic): Array<Record<string, unknown>> => {
-                const topicRecord = recordValue(topic);
-                return topicRecord ? [topicRecord] : [];
-              });
-            if (topics.length > 0) {
-              return topics;
-            }
-            return [record];
-          })
-          .map((entry) => ({
-            title: stringValue(entry.Text)?.split(" - ")[0] ?? stringValue(entry.Result) ?? "",
-            url: stringValue(entry.FirstURL) ?? "",
-            snippet: stringValue(entry.Text) ?? "",
-          }))
-          .filter((entry) => entry.url.length > 0), filters)
-          .slice(0, maxResults);
+        const results = filterWebSearchResults(
+          parseDuckDuckGoInstantAnswer(raw),
+          filters,
+        ).slice(0, maxResults);
         return json({
           query,
-          source: endpoint !== undefined ? endpoint : "duckduckgo_instant_answer",
+          source: "duckduckgo_instant_answer",
           results,
           answer: stringValue(raw.AbstractText),
           heading: stringValue(raw.Heading),

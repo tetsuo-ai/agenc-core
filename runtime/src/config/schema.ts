@@ -105,6 +105,18 @@ export interface ShellEnvironmentPolicy {
 
 export interface ToolsConfig {
   readonly web_search?: boolean | PerToolConfig;
+  /**
+   * Search backend for the WebSearch tool on providers without native
+   * web search. `AGENC_WEB_SEARCH_ENDPOINT` env wins over this value.
+   */
+  readonly web_search_endpoint?: string;
+  /**
+   * Response format of `web_search_endpoint`:
+   * duckduckgo (instant-answer JSON, default) | searxng | brave | json.
+   * `AGENC_WEB_SEARCH_KIND` env wins. Brave API keys come from
+   * `AGENC_WEB_SEARCH_API_KEY` (secrets never live in config.toml).
+   */
+  readonly web_search_endpoint_kind?: "duckduckgo" | "searxng" | "brave" | "json";
   readonly view_image?: boolean | PerToolConfig;
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];

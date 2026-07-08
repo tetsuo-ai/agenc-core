@@ -4208,3 +4208,314 @@ describe("model-facing tools", () => {
     }
   });
 });
+
+describe("WebSearch real backends (task 4)", () => {
+  const withFetchMock = async (
+    fetchMock: ReturnType<typeof vi.fn>,
+    run: () => Promise<void>,
+  ) => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  };
+
+  it("keyless default scrapes DuckDuckGo HTML for real SERP results", async () => {
+    const html = [
+      '<div class="result">',
+      '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fagenc.tech%2Fdocs&amp;rut=abc">AgenC <b>Docs</b></a>',
+      '<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fagenc.tech%2Fdocs">The <b>docs</b> for AgenC.</a>',
+      "</div>",
+      '<div class="result">',
+      '<a rel="nofollow" class="result__a" href="https://example.com/page">Example Page</a>',
+      '<a class="result__snippet" href="https://example.com/page">An example snippet.</a>',
+      "</div>",
+    ].join("\n");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "text/html" },
+      text: async () => html,
+      json: async () => ({}),
+    });
+    await withFetchMock(fetchMock, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({ query: "agenc docs" });
+      const parsed = JSON.parse(result.content);
+      // Real SERP path, not the instant-answer API.
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+        "html.duckduckgo.com/html/",
+      );
+      expect(parsed.source).toBe("duckduckgo_html");
+      expect(parsed.results).toEqual([
+        {
+          title: "AgenC Docs",
+          url: "https://agenc.tech/docs",
+          snippet: "The docs for AgenC.",
+        },
+        {
+          title: "Example Page",
+          url: "https://example.com/page",
+          snippet: "An example snippet.",
+        },
+      ]);
+    });
+  });
+
+  it("falls back to the instant-answer API when the HTML scrape yields nothing", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/html" },
+        text: async () => "<html><body>captcha wall</body></html>",
+        json: async () => ({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          Heading: "AgenC",
+          AbstractText: "abstract",
+          RelatedTopics: [
+            { Text: "AgenC - protocol", FirstURL: "https://agenc.tech" },
+          ],
+        }),
+      });
+    await withFetchMock(fetchMock, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({ query: "agenc" });
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source).toBe("duckduckgo_instant_answer");
+      expect(parsed.results[0].url).toBe("https://agenc.tech");
+      expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
+        "api.duckduckgo.com",
+      );
+    });
+  });
+
+  it("supports SearXNG endpoints via AGENC_WEB_SEARCH_KIND=searxng", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        results: [
+          {
+            title: "Result One",
+            url: "https://one.example",
+            content: "first snippet",
+          },
+        ],
+      }),
+    });
+    await withFetchMock(fetchMock, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+        env: {
+          AGENC_WEB_SEARCH_ENDPOINT: "https://searx.local/search",
+          AGENC_WEB_SEARCH_KIND: "searxng",
+        } as NodeJS.ProcessEnv,
+      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({ query: "one" });
+      const parsed = JSON.parse(result.content);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+        "https://searx.local/search?q=one&format=json",
+      );
+      expect(parsed.kind).toBe("searxng");
+      expect(parsed.results).toEqual([
+        {
+          title: "Result One",
+          url: "https://one.example",
+          snippet: "first snippet",
+        },
+      ]);
+    });
+  });
+
+  it("supports Brave endpoints with the subscription token header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        web: {
+          results: [
+            {
+              title: "Brave Result",
+              url: "https://brave.example",
+              description: "brave snippet",
+            },
+          ],
+        },
+      }),
+    });
+    await withFetchMock(fetchMock, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+        env: {
+          AGENC_WEB_SEARCH_ENDPOINT:
+            "https://api.search.brave.com/res/v1/web/search",
+          AGENC_WEB_SEARCH_KIND: "brave",
+          AGENC_WEB_SEARCH_API_KEY: "brave-key",
+        } as NodeJS.ProcessEnv,
+      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({ query: "brave" });
+      const parsed = JSON.parse(result.content);
+      const init = fetchMock.mock.calls[0]?.[1] as
+        | { headers?: Record<string, string> }
+        | undefined;
+      expect(init?.headers?.["X-Subscription-Token"]).toBe("brave-key");
+      expect(parsed.results[0].url).toBe("https://brave.example");
+    });
+  });
+
+  it("reads the endpoint from config.toml tools config when env is unset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        results: [
+          { title: "Cfg", url: "https://cfg.example", snippet: "from config" },
+        ],
+      }),
+    });
+    await withFetchMock(fetchMock, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+        toolsConfig: {
+          web_search_endpoint: "https://cfg.local/search",
+          web_search_endpoint_kind: "json",
+        },
+      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({ query: "cfg" });
+      const parsed = JSON.parse(result.content);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+        "https://cfg.local/search?q=cfg",
+      );
+      expect(parsed.results[0].url).toBe("https://cfg.example");
+    });
+  });
+});
+
+describe("WebFetch prompt extraction (task 4)", () => {
+  it("runs the prompt against fetched content instead of echoing it", async () => {
+    const paragraph =
+      "<p>The current release is version 9.9.9 and it shipped today.</p>";
+    const html = `<!doctype html><html><body><h1>Release notes</h1>${paragraph.repeat(400)}</body></html>`;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://agenc.tech/releases",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/html" : null,
+      },
+      text: async () => html,
+    });
+    const chat = vi.fn().mockResolvedValue({
+      content: "The current release is 9.9.9.",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "test-model",
+      finishReason: "stop",
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const session = withProvider(fakeSession(), fakeProvider({}, chat));
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      });
+      const result = await tools
+        .find((tool) => tool.name === "web_fetch")!
+        .execute({
+          url: "https://agenc.tech/releases",
+          prompt: "What is the current release version?",
+        });
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      // The prompt was EXECUTED, not merely echoed back.
+      expect(parsed.extracted).toBe("The current release is 9.9.9.");
+      expect(parsed.content).toBeUndefined();
+      expect(String(parsed.content_preview).length).toBeLessThanOrEqual(2_000);
+      // Raw content is recoverable from disk.
+      expect(typeof parsed.full_content_path).toBe("string");
+      const { readFileSync } = await import("node:fs");
+      expect(readFileSync(parsed.full_content_path, "utf8")).toContain(
+        "version 9.9.9",
+      );
+      // The extraction model saw the page and the task.
+      const chatMessages = chat.mock.calls[0]?.[0] as Array<{
+        content: string;
+      }>;
+      expect(chatMessages[0]?.content).toContain("version 9.9.9");
+      expect(chatMessages[0]?.content).toContain(
+        "What is the current release version?",
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("keeps the raw-content shape when no prompt is given or content is small", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://agenc.tech/small",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/plain" : null,
+      },
+      text: async () => "tiny content",
+    });
+    const chat = vi.fn();
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const session = withProvider(fakeSession(), fakeProvider({}, chat));
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      });
+      const result = await tools
+        .find((tool) => tool.name === "web_fetch")!
+        .execute({
+          url: "https://agenc.tech/small",
+          prompt: "summarize",
+        });
+      const parsed = JSON.parse(result.content);
+      expect(parsed.content).toBe("tiny content");
+      expect(parsed.extracted).toBeUndefined();
+      expect(chat).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
