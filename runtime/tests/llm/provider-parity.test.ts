@@ -80,14 +80,15 @@ const ECHO_TOOL: LLMTool = {
  * dispatch. The literal is hardcoded on purpose: this suite pins the wire
  * contract instead of round-tripping through the encoder.
  *
- * Gemini, Bedrock, and Ollama use their own converters that pass tool
- * names through unencoded, so their wire form stays `system.echo`.
+ * Gemini and Ollama use their own converters that pass tool names
+ * through unencoded, so their wire form stays `system.echo`. Bedrock's
+ * Converse `ToolSpecification.name` pattern (`[a-zA-Z0-9_-]+`) rejects
+ * dots, so its converter encodes/decodes like the strict-regex shims.
  */
 const ECHO_TOOL_WIRE_NAME = "tool2__system_x2eecho";
 const PASSTHROUGH_WIRE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "ollama",
   "gemini",
-  "amazon-bedrock",
 ]);
 
 /**
@@ -513,7 +514,8 @@ function buildBedrockPayload(
     ...parityCase.expected.toolCalls.map((toolCall, index) => ({
       toolUse: {
         toolUseId: `toolu_${parityCase.id}_${index}`,
-        name: toolCall.name,
+        // Bedrock echoes the encoded wire name back in toolUse blocks.
+        name: encodedWireToolCallName(toolCall.name),
         input: JSON.parse(toolCall.arguments) as Record<string, unknown>,
       },
     })),

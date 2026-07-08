@@ -15,6 +15,7 @@ import type {
 } from "../types.js";
 import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
+import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -578,7 +579,10 @@ export function parseOpenAIToolChoice(
   return {
     type: "function",
     function: {
-      name: toolChoice.name,
+      // `tools[]` ships MCP names in the bijective wire encoding
+      // (mcp-tool-naming.ts); a named tool_choice must reference that
+      // encoded entry, not the dotted internal name the provider never saw.
+      name: encodeMcpToolNameForWire(toolChoice.name),
     },
   };
 }
@@ -591,7 +595,8 @@ export function parseAnthropicToolChoice(
   if (toolChoice === "none") return undefined;
   return {
     type: "tool",
-    name: toolChoice.name,
+    // Must match the encoded `tools[]` entry (see parseOpenAIToolChoice).
+    name: encodeMcpToolNameForWire(toolChoice.name),
   };
 }
 

@@ -233,6 +233,166 @@ describe("providers/bedrock", () => {
     );
   });
 
+  it("encodes dotted MCP tool names across tools, toolChoice, and replayed toolUse, and decodes responses", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        output: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                toolUse: {
+                  toolUseId: "call-2",
+                  // The model echoes the encoded wire name; the parser
+                  // must decode it back to the dotted internal form.
+                  name: "mcp__memory__search_nodes",
+                  input: { query: "next" },
+                },
+              },
+            ],
+          },
+        },
+        stopReason: "tool_use",
+        usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+      }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      region: "us-west-2",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+      now: () => new Date("2024-01-02T03:04:05Z"),
+    });
+
+    const response = await provider.chat(
+      [
+        { role: "user", content: "search" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "mcp.memory.search_nodes",
+              arguments: "{\"query\":\"AgenC\"}",
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call-1",
+          toolName: "mcp.memory.search_nodes",
+          content: "prior result",
+        },
+      ],
+      {
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "mcp.memory.search_nodes",
+              description: "Search the memory graph.",
+              parameters: {
+                type: "object",
+                properties: { query: { type: "string" } },
+              },
+            },
+          },
+        ],
+        toolChoice: { type: "function", name: "mcp.memory.search_nodes" },
+      },
+    );
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const request = JSON.parse(String(init?.body)) as {
+      messages: Array<{ content: unknown }>;
+      toolConfig: {
+        tools: Array<{ toolSpec: { name: string } }>;
+        toolChoice: { tool: { name: string } };
+      };
+    };
+
+    // The Converse ToolSpecification name pattern is `[a-zA-Z0-9_-]+`
+    // (1-64 chars) — dots are rejected, so the dotted internal name must
+    // ship in the bijective wire encoding. Hardcoded literal on purpose:
+    // pins the wire contract.
+    expect(request.toolConfig.tools[0]!.toolSpec.name).toBe(
+      "mcp__memory__search_nodes",
+    );
+    // toolChoice must reference the encoded toolSpec entry byte-for-byte.
+    expect(request.toolConfig.toolChoice).toEqual({
+      tool: { name: request.toolConfig.tools[0]!.toolSpec.name },
+    });
+    // Replayed assistant toolUse blocks carry the encoded name too, so the
+    // conversation history matches the toolSpec catalog.
+    expect(request.messages[1]!.content).toEqual([
+      {
+        toolUse: {
+          toolUseId: "call-1",
+          name: "mcp__memory__search_nodes",
+          input: { query: "AgenC" },
+        },
+      },
+    ]);
+    // The response parser decodes the echoed wire name back to the
+    // dotted internal-registry form before dispatch.
+    expect(response.toolCalls).toEqual([
+      {
+        id: "call-2",
+        name: "mcp.memory.search_nodes",
+        arguments: "{\"query\":\"next\"}",
+      },
+    ]);
+  });
+
+  it("decodes encoded MCP tool names from ConverseStream tool blocks", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      eventStreamResponse([
+        { messageStart: { role: "assistant" } },
+        {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: {
+              toolUse: {
+                toolUseId: "toolu-2",
+                name: "mcp__memory__search_nodes",
+              },
+            },
+          },
+        },
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 0,
+            delta: { toolUse: { input: "{\"query\":\"status\"}" } },
+          },
+        },
+        { contentBlockStop: { contentBlockIndex: 0 } },
+        { messageStop: { stopReason: "tool_use" } },
+      ]),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+      now: () => new Date("2024-01-02T03:04:05Z"),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+    );
+
+    expect(response.toolCalls).toEqual([
+      {
+        id: "toolu-2",
+        name: "mcp.memory.search_nodes",
+        arguments: "{\"query\":\"status\"}",
+      },
+    ]);
+  });
+
   it("encodes reserved characters in model identifiers before signing", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

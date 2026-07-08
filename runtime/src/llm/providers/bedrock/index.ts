@@ -23,6 +23,10 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import { nonEmptyString as nonBlankText } from "../../../utils/stringUtils.js";
+import {
+  decodeMcpToolNameFromWire,
+  encodeMcpToolNameForWire,
+} from "../../wire/mcp-tool-naming.js";
 
 const DEFAULT_REGION = "us-east-1";
 const BEDROCK_SERVICE = "bedrock";
@@ -326,7 +330,9 @@ function bedrockContentForMessage(message: LLMMessage): readonly BedrockContentB
     content.push({
       toolUse: {
         toolUseId: toolCall.id,
-        name: toolCall.name,
+        // Replayed history must carry the same encoded wire name as the
+        // toolSpec catalog (see buildToolConfig).
+        name: encodeMcpToolNameForWire(toolCall.name),
         input: parseToolArguments(toolCall),
       },
     });
@@ -378,7 +384,8 @@ function toBedrockToolChoice(
   if (toolChoice === undefined || toolChoice === "auto") return { auto: {} };
   if (toolChoice === "required") return { any: {} };
   if (toolChoice === "none") return undefined;
-  return { tool: { name: toolChoice.name } };
+  // Must reference the encoded toolSpec entry (see buildToolConfig).
+  return { tool: { name: encodeMcpToolNameForWire(toolChoice.name) } };
 }
 
 function buildToolConfig(
@@ -397,7 +404,13 @@ function buildToolConfig(
   const bedrockToolChoice = toBedrockToolChoice(toolChoice);
   const bedrockTools = tools.map((tool) => ({
     toolSpec: {
-      name: tool.function.name,
+      // The Converse `ToolSpecification.name` constraint is pattern
+      // `[a-zA-Z0-9_-]+`, length 1-64 (AWS Bedrock API Reference,
+      // API_runtime_ToolSpecification, checked 2026-07-08) — dots in the
+      // internal `mcp.<server>.<tool>` form are rejected, so ship the
+      // bijective wire encoding here and decode the echoed name in the
+      // response parsers.
+      name: encodeMcpToolNameForWire(tool.function.name),
       ...(tool.function.description.trim().length > 0
         ? { description: tool.function.description }
         : {}),
@@ -556,7 +569,10 @@ function parseResponse(
     if ("toolUse" in block && block.toolUse) {
       toolCalls.push({
         id: block.toolUse.toolUseId,
-        name: block.toolUse.name,
+        // Decode the encoded wire name back to the internal-registry
+        // form (`mcp.<server>.<tool>`) before dispatch. Non-MCP names
+        // pass through unchanged.
+        name: decodeMcpToolNameFromWire(block.toolUse.name),
         arguments: JSON.stringify(block.toolUse.input ?? {}),
       });
     }
@@ -753,7 +769,10 @@ async function parseStreamResponse(params: {
       const toolUse = isRecord(start.toolUse) ? start.toolUse : null;
       if (index >= 0 && toolUse !== null) {
         const id = String(toolUse.toolUseId ?? "");
-        const name = String(toolUse.name ?? "");
+        // Decode the encoded wire name back to the internal-registry
+        // form so downstream dispatch and progress chunks see the
+        // dotted name. Non-MCP names pass through unchanged.
+        const name = decodeMcpToolNameFromWire(String(toolUse.name ?? ""));
         toolBlocks.set(index, { id, name, arguments: "" });
         params.onChunk({
           content: "",
