@@ -149,13 +149,14 @@ import {
 } from "../llm/token-estimation.js";
 import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
 import {
-  createTransactionGuardContextFromEnv,
+  createTransactionGuardContext,
   evaluateToolInvocationTransactionGuard,
   formatTransactionGuardDenialMessage,
   formatTransactionGuardEventMessage,
   transactionGuardAuditMetadata,
   type TransactionGuardContext,
 } from "../transaction-guard/index.js";
+import type { TransactionGuardConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -1351,6 +1352,35 @@ function emitHookAttachment(
  * Execute one tool invocation end-to-end. See module comment for the
  * full AgenC-compatible ordering.
  */
+/**
+ * Read the `[transaction_guard]` block from the invocation session's
+ * ConfigStore when one is wired (T11 W3-A `services.configStore`).
+ * Duck-typed so minimal test fixtures (`session: { services: {} }`)
+ * keep working; `undefined` falls back to env-only resolution.
+ */
+function sessionTransactionGuardConfig(
+  invocation: ToolInvocation,
+): TransactionGuardConfig | undefined {
+  const services = (
+    invocation.session as
+      | {
+          readonly services?: {
+            readonly configStore?: {
+              current(): {
+                readonly transaction_guard?: TransactionGuardConfig;
+              };
+            };
+          };
+        }
+      | undefined
+  )?.services;
+  const store = services?.configStore;
+  if (store === undefined || typeof store.current !== "function") {
+    return undefined;
+  }
+  return store.current().transaction_guard;
+}
+
 export async function runToolUse(
   rawArgs: string,
   opts: RunToolUseOptions,
@@ -1782,7 +1812,9 @@ export async function runToolUse(
 
   const transactionGuardContext =
     opts.transactionGuardContext === undefined
-      ? createTransactionGuardContextFromEnv()
+      ? createTransactionGuardContext(
+          sessionTransactionGuardConfig(invocation),
+        )
       : opts.transactionGuardContext;
   const transactionGuardOutcome = await evaluateToolInvocationTransactionGuard({
     context: transactionGuardContext,
