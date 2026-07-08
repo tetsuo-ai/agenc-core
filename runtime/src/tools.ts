@@ -17,16 +17,18 @@ import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
 import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
 import { MonitorTool as RuntimeMonitorTool } from './tools/MonitorTool/MonitorTool.js'
 import * as coordinatorMode from './coordinator/coordinatorMode.js'
-// Dead code elimination: conditional import for internal-only tools
+// Dead code elimination: conditional import for internal-only tools.
+// Tools that are not part of this build at all (Sleep, RemoteTrigger,
+// SendUserFile, PushNotification, SubscribePR, OverflowTest,
+// TerminalCapture, WebBrowser, Snip, ListPeers, Workflow) used to sit
+// here as hard-null consts spread into getAllBaseTools() — pure dead
+// code that read like a second catalog. Deleted; the LIVE runtime
+// registry (tool-registry.ts + bin/model-facing-tools.ts) is where
+// those capabilities exist today.
 /* eslint-disable @typescript-eslint/no-require-imports */
-const SleepTool = null
-const RemoteTriggerTool = null
 const MonitorTool = feature('MONITOR_TOOL')
   ? RuntimeMonitorTool
   : null
-const SendUserFileTool = null
-const PushNotificationTool = null
-const SubscribePRTool = null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
@@ -66,20 +68,13 @@ export {
   ALL_AGENT_DISALLOWED_TOOLS,
 } from './constants/tools.js'
 import { feature } from 'bun:bundle'
-// Dead code elimination: conditional import for OVERFLOW_TEST_TOOL
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-const OverflowTestTool = null
 const CtxInspectTool = feature('CONTEXT_COLLAPSE')
   ? ContextCollapseInspectTool
   : null
-const TerminalCaptureTool = null
-const WebBrowserTool = null
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? coordinatorMode
   : null
-const SnipTool = null
-const ListPeersTool = null
-const WorkflowTool = null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './tools/Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
@@ -154,34 +149,23 @@ export function getAllBaseTools(): Tools {
     // one. Narrow type-level cast only; runtime shape is unchanged.
     AskUserQuestionTool as unknown as Tool,
     EnterPlanModeTool,
-    ...(WebBrowserTool ? [WebBrowserTool] : []),
     ...(isTodoV2Enabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),
-    ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
-    ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
     ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
-    ...(ListPeersTool ? [ListPeersTool] : []),
     ...(isAgentSwarmsEnabled()
       ? [getTeamCreateTool(), getTeamDeleteTool()]
       : []),
-    ...(WorkflowTool ? [WorkflowTool] : []),
-    ...(SleepTool ? [SleepTool] : []),
-    ...(RemoteTriggerTool ? [RemoteTriggerTool] : []),
     ...(MonitorTool ? [MonitorTool] : []),
     BriefTool,
-    ...(SendUserFileTool ? [SendUserFileTool] : []),
-    ...(PushNotificationTool ? [PushNotificationTool] : []),
-    ...(SubscribePRTool ? [SubscribePRTool] : []),
     // The two calls are independent at the type level so TS keeps the inner
     // result as `PowerShellTool | null`; the guard guarantees non-null at
     // runtime, so narrow the spread element to `Tool` (type-level only — call
     // count and behavior are unchanged).
     ...(getPowerShellTool() ? [getPowerShellTool() as Tool] : []),
-    ...(SnipTool ? [SnipTool] : []),
     ...(process.env.NODE_ENV === 'test' ? [TestingPermissionTool] : []),
     CronCreateTool,
     CronDeleteTool,
