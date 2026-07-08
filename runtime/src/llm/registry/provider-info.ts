@@ -121,7 +121,11 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   openai: mergeDerivedProviderModels("openai", {
     trailingExtras: ["o3"],
   }),
-  anthropic: Object.freeze(["claude-opus-4-8", "claude-opus-4-7"]),
+  anthropic: Object.freeze([
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+  ]),
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
   "openai-compatible": Object.freeze(["local-model"]),

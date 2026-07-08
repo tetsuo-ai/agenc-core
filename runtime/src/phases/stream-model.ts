@@ -504,12 +504,19 @@ function assistantMessageFromResponse(
   providerName: string,
 ): AssistantMessage {
   const visible = toVisibleAssistantText(response.content ?? "", planMode);
+  // Task 28: `content_filter` is the normalized form of the provider
+  // `refusal` stop reason (Claude Fable 5 safety classifiers return it on
+  // HTTP 200, often with EMPTY content). Without an apiError mapping the
+  // turn ended as a silent empty assistant message; surface it like the
+  // other terminal stop reasons instead.
   const apiError =
     response.finishReason === "length"
       ? "max_output_tokens"
       : response.finishReason === "error"
         ? "provider_error"
-        : undefined;
+        : response.finishReason === "content_filter"
+          ? "refusal"
+          : undefined;
   const allowToolCalls = response.finishReason !== "length";
   // I-55: normalize tool_use blocks into canonical shape before the
   // validator sees them (provider-family quirks collapsed here).
@@ -517,10 +524,16 @@ function assistantMessageFromResponse(
     providerName,
     allowToolCalls ? response.toolCalls ?? [] : [],
   );
+  // A pre-output refusal carries no content at all; give the message a
+  // clear user-visible body so the renderer doesn't show a blank turn.
+  const text =
+    apiError === "refusal" && visible.text.length === 0
+      ? "The model declined to answer this request (stop reason: refusal). No content was returned — rephrase the request or try a different model."
+      : visible.text;
   return {
     uuid: crypto.randomUUID(),
     role: "assistant",
-    text: visible.text,
+    text,
     toolCalls: normalizedToolCalls,
     apiError,
   };

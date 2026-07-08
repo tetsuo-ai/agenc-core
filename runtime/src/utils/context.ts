@@ -63,7 +63,7 @@ export function has1mContext(model: string): boolean {
  */
 export function claudeFamilyVersion(
   model: string,
-  family: 'opus' | 'sonnet' | 'haiku',
+  family: 'opus' | 'sonnet' | 'haiku' | 'fable',
 ): number | undefined {
   // Minor is capped at 2 digits with a no-digit lookahead so dated ids
   // ('claude-opus-4-20250514' = Opus 4.0) don't parse the date as a minor.
@@ -91,6 +91,12 @@ export function modelSupports1M(model: string): boolean {
   // for aliases/provider spellings the regex can't see.
   const canonical = getCanonicalName(model)
   for (const candidate of [model, canonical]) {
+    // Fable 5+: 1M context is the default (and maximum) window per the
+    // provider docs (verified 2026-07-08).
+    const fableVersion = claudeFamilyVersion(candidate, 'fable')
+    if (fableVersion !== undefined) {
+      return fableVersion >= 5
+    }
     const opusVersion = claudeFamilyVersion(candidate, 'opus')
     if (opusVersion !== undefined) {
       return opusVersion >= 4.06
@@ -278,9 +284,15 @@ export function getModelMaxOutputTokens(model: string): {
 
   // Raw-first for the same reason as modelSupports1M: canonicalization
   // collapses not-yet-known minors down to 'claude-opus-4'.
+  const fableVersion =
+    claudeFamilyVersion(model, 'fable') ?? claudeFamilyVersion(m, 'fable')
   const opusVersion =
     claudeFamilyVersion(model, 'opus') ?? claudeFamilyVersion(m, 'opus')
-  if (opusVersion !== undefined && opusVersion >= 4.06) {
+  if (fableVersion !== undefined && fableVersion >= 5) {
+    // Fable 5+: 128K max output (provider docs, verified 2026-07-08).
+    defaultTokens = 64_000
+    upperLimit = 128_000
+  } else if (opusVersion !== undefined && opusVersion >= 4.06) {
     // Opus 4.6+ (incl. 4.7/4.8): 128K max output. 4.7 previously fell
     // through to the generic opus-4 32K branch.
     defaultTokens = 64_000

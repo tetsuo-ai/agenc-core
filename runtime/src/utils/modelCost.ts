@@ -10,6 +10,7 @@ import {
   AGENC_OPUS_4_5_CONFIG,
   AGENC_OPUS_4_6_CONFIG,
   AGENC_OPUS_4_7_CONFIG,
+  AGENC_FABLE_5_CONFIG,
   AGENC_OPUS_4_8_CONFIG,
   AGENC_OPUS_4_CONFIG,
   AGENC_SONNET_4_5_CONFIG,
@@ -65,6 +66,17 @@ export const COST_TIER_30_150 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Pricing tier for Claude Fable 5: $10 input / $50 output per Mtok
+// (provider docs, verified 2026-07-08). Cache write = 1.25x input,
+// cache read = 0.1x input, matching the other first-party tiers.
+export const COST_TIER_10_50 = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheReadTokens: 1,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing for Haiku 3.5: $0.80 input / $4 output per Mtok
 export const COST_HAIKU_35 = {
   inputTokens: 0.8,
@@ -87,6 +99,7 @@ const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 function firstPartyNameToCanonicalForCost(name: string): ModelShortName {
   const normalized = name.toLowerCase()
+  if (normalized.includes('claude-fable-5')) return 'claude-fable-5'
   if (normalized.includes('claude-opus-4-8')) return 'claude-opus-4-8'
   if (normalized.includes('claude-opus-4-7')) return 'claude-opus-4-7'
   if (normalized.includes('claude-opus-4-6')) return 'claude-opus-4-6'
@@ -149,6 +162,10 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_5_25,
   [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_8_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  // Fable 5 has NO fast mode, so unlike Opus 4.6/4.7/4.8 it does not route
+  // through the fast-aware tier in getModelCosts.
+  [firstPartyNameToCanonicalForCost(AGENC_FABLE_5_CONFIG.firstParty)]:
+    COST_TIER_10_50,
 }
 
 /**

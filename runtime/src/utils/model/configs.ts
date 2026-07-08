@@ -187,6 +187,25 @@ export const AGENC_OPUS_4_8_CONFIG = {
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
+// Claude Fable 5: most capable widely released model (GA, $10/$50 per MTok,
+// 1M context default, 128K max output; verified against provider docs
+// 2026-07-08). Bedrock/Vertex/Foundry ids follow the family convention (the
+// migration docs confirm the family is served on those platforms, but the
+// exact provider id strings are not published — mirror of the opus48
+// convention).
+export const AGENC_FABLE_5_CONFIG = {
+  firstParty: 'claude-fable-5',
+  bedrock: 'us.anthropic.agenc-fable-5-v1',
+  vertex: 'claude-fable-5',
+  foundry: 'claude-fable-5',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.5-pro',
+  github: 'github:copilot',
+  agenc: 'gpt-5.5',
+  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  minimax: 'MiniMax-M2.5',
+} as const satisfies ModelConfig
+
 export const AGENC_SONNET_4_6_CONFIG = {
   firstParty: 'claude-sonnet-4-6',
   bedrock: 'us.anthropic.agenc-sonnet-4-6',
@@ -215,6 +234,7 @@ export const ALL_MODEL_CONFIGS = {
   opus46: AGENC_OPUS_4_6_CONFIG,
   opus47: AGENC_OPUS_4_7_CONFIG,
   opus48: AGENC_OPUS_4_8_CONFIG,
+  fable5: AGENC_FABLE_5_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS

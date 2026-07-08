@@ -482,6 +482,9 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.replaceAll('anthropic.agenc-', 'anthropic.claude-')
   // Special cases for AgenC 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-7 before 4-6 before 4-5 before 4)
+  if (name.includes('claude-fable-5')) {
+    return 'claude-fable-5'
+  }
   if (name.includes('claude-opus-4-8')) {
     return 'claude-opus-4-8'
   }
@@ -666,6 +669,10 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'GPT-5.4'
     case 'gpt-5.3-codex-spark':
       return 'GPT-5.3 Agenc Spark'
+    case getModelStrings().fable5 + '[1m]':
+      return 'Fable 5 (1M context)'
+    case getModelStrings().fable5:
+      return 'Fable 5'
     case getModelStrings().opus48 + '[1m]':
       return 'Opus 4.8 (1M context)'
     case getModelStrings().opus48:
@@ -912,6 +919,9 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const has1m = modelId.toLowerCase().includes('[1m]')
   const canonical = getCanonicalName(modelId)
 
+  if (canonical.includes('claude-fable-5')) {
+    return has1m ? 'Fable 5 (with 1M context)' : 'Fable 5'
+  }
   if (canonical.includes('claude-opus-4-8')) {
     return has1m ? 'Opus 4.8 (with 1M context)' : 'Opus 4.8'
   }

@@ -49,6 +49,7 @@ export function modelSupportsEffort(model: string): boolean {
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
     m.includes('opus-4-8') ||
+    m.includes('fable-5') ||
     m.includes('sonnet-4-6')
   ) {
     return true
@@ -76,7 +77,14 @@ export function modelSupportsMaxEffort(model: string): boolean {
     return supported3P
   }
   const m = model.toLowerCase()
-  if (m.includes('opus-4-6') || m.includes('opus-4-7') || m.includes('opus-4-8')) {
+  // Fable 5 supports the full effort range incl. 'max' (provider docs,
+  // verified 2026-07-08).
+  if (
+    m.includes('opus-4-6') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-8') ||
+    m.includes('fable-5')
+  ) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
