@@ -1,0 +1,52 @@
+{
+  "name": "@tetsuo-ai/agenc-sdk",
+  "version": "0.2.0",
+  "description": "Typed embedding SDK for the AgenC daemon protocol (socket, in-process, and subprocess transports)",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js",
+      "default": "./dist/protocol.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "keywords": [
+    "agenc",
+    "sdk",
+    "daemon",
+    "json-rpc"
+  ],
+  "author": "Tetsuo AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tetsuo-ai/agenc-core",
+    "directory": "packages/agenc-sdk"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}
