@@ -153,7 +153,17 @@ describe("AgenC auth CLI", () => {
 
   it("prints remote device-code login instructions from config", async () => {
     const agencHome = await tempAgencHome();
-    const env = { ...process.env, AGENC_HOME: agencHome, HOME: agencHome };
+    // This test deliberately exercises the remote backend (with a mocked
+    // fetchImpl — no real network). The hermetic suite setup
+    // (vitest.setup.ts, TODO task 30) pins AGENC_AUTH_BACKEND=local in
+    // process.env, and that env override outranks config.toml, so the
+    // remote intent must be explicit here.
+    const env = {
+      ...process.env,
+      AGENC_HOME: agencHome,
+      HOME: agencHome,
+      AGENC_AUTH_BACKEND: "remote",
+    };
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(
@@ -216,7 +226,14 @@ describe("AgenC auth CLI", () => {
 
   it("opens the remote login URL after Enter in an interactive terminal", async () => {
     const agencHome = await tempAgencHome();
-    const env = { ...process.env, AGENC_HOME: agencHome, HOME: agencHome };
+    // Explicit remote-backend intent; see the comment in the previous test
+    // (the hermetic suite setup pins AGENC_AUTH_BACKEND=local by default).
+    const env = {
+      ...process.env,
+      AGENC_HOME: agencHome,
+      HOME: agencHome,
+      AGENC_AUTH_BACKEND: "remote",
+    };
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(

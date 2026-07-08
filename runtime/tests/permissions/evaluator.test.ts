@@ -699,6 +699,11 @@ describe("hasPermissionsToUseTool — step 4 auto mode activates classifier", ()
   });
 
   it("passes session history into the classifier transcript", async () => {
+    // The classifier pipeline requires a resolvable grok API key before the
+    // (stubbed) remote stage runs. Set one explicitly — the hermetic suite
+    // setup (vitest.setup.ts, TODO task 30) strips ambient provider keys,
+    // and this test previously depended on a developer's real XAI_API_KEY.
+    await withEnv({ XAI_API_KEY: "test-classifier-key" }, async () => {
     const prompts: string[] = [];
     const restoreGate = __setAutoModeGateResolverForTesting(() => true);
     const restoreRunner = __setRemoteClassifierStageRunnerForTesting(
@@ -744,6 +749,7 @@ describe("hasPermissionsToUseTool — step 4 auto mode activates classifier", ()
       restoreRunner();
       restoreGate();
     }
+    });
   });
 });
 

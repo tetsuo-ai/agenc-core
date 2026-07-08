@@ -298,6 +298,14 @@ describe("app-server-client daemon helpers", () => {
   });
 
   it("dispatches daemon-only TUI slash commands without local session services", async () => {
+    // `/provider grok` must clear the BYOK subscription gate (which reads
+    // process.env directly, not the context env) to reach the daemon-mode
+    // "not yet supported" branch asserted below. Set an explicit test key:
+    // the hermetic suite setup (vitest.setup.ts, TODO task 30) strips
+    // ambient provider keys, and this assertion previously depended on a
+    // developer's real XAI_API_KEY.
+    const previousXaiKey = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = "test-key";
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-cwd-"));
     const pidFile = join(agencHome, "mcp", "audit-ping.pid");
@@ -388,6 +396,11 @@ describe("app-server-client daemon helpers", () => {
         },
       });
     } finally {
+      if (previousXaiKey === undefined) {
+        delete process.env.XAI_API_KEY;
+      } else {
+        process.env.XAI_API_KEY = previousXaiKey;
+      }
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });

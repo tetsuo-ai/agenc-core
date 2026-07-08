@@ -1,12 +1,26 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { sanitizeHermeticEnv } from '../tests/helpers/hermetic-env.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const runtimeRoot = dirname(scriptDir)
 const testsRoot = join(runtimeRoot, 'tests')
+
+// Suite-level hermeticity (TODO task 30): `bun test` children never load
+// vitest's setupFiles, so apply the same explicit sanitization here — strip
+// ambient provider keys / developer AgenC state, point AGENC_HOME at a
+// throwaway temp dir, and pin AGENC_AUTH_BACKEND=local so no child performs
+// a real device-code login against https://id.agenc.ag.
+// See tests/helpers/hermetic-env.mjs for the documented strip list.
+const hermeticEnv = sanitizeHermeticEnv(
+  { ...process.env },
+  mkdtempSync(join(tmpdir(), 'agenc-bun-hermetic-home-')),
+)
 
 function walk(dir) {
   const entries = readdirSync(dir, { withFileTypes: true })
@@ -46,7 +60,7 @@ for (const file of files) {
   const result = spawnSync('bun', ['test', file], {
     cwd: runtimeRoot,
     encoding: 'utf8',
-    env: process.env,
+    env: hermeticEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
