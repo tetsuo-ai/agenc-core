@@ -122,11 +122,11 @@ describe("runAgentsOnCsv", () => {
     });
     expect(result.stoppedEarly).toBe(true);
     expect(result.items[0]!.status).toBe("completed");
-    // The reference run loop stops dispatching new workers when
-    // cancellation is requested but does not auto-cancel pending items;
-    // they remain in `pending` status. AgenC matches that behavior:
-    // row2 and row3 never dispatch and stay pending.
-    expect(result.items.slice(1).every((it) => it.status === "pending")).toBe(
+    // Deliberate divergence from the reference loop (which left
+    // never-dispatched items in `pending` forever): a cancelled job
+    // marks its outstanding rows `cancelled` so the job's terminal
+    // state is unambiguous. row2 and row3 never dispatch.
+    expect(result.items.slice(1).every((it) => it.status === "cancelled")).toBe(
       true,
     );
   });

@@ -51,6 +51,7 @@ import { delegate } from "../agents/delegate.js";
 import {
   runAgentsOnCsv,
   recordAgentJobResult,
+  resumeAgentJobsFromRepository,
   type AgentJobProgressEmitter,
   type AgentJobSpawn,
   type AgentJobSpawnContext,
@@ -1043,6 +1044,7 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
         ? (args.output_schema as Record<string, unknown>)
         : undefined;
 
+    const outstandingThreadIds = new Set<string>();
     const spawn: AgentJobSpawn = {
       async spawn(ctx: AgentJobSpawnContext) {
         const outcome = await delegate({
@@ -1060,6 +1062,7 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
           );
         }
         const thread = outcome.thread;
+        outstandingThreadIds.add(thread.threadId);
         // AgenC `agent_jobs.rs:704` subscribes to thread status to detect
         // a worker that terminates without calling `report_agent_job_result`
         // (handled by `finalize_finished_item`). AgenC mirrors this by
@@ -1069,15 +1072,21 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
         const threadFinished = thread
           .join()
           .then(() => undefined)
-          .catch(() => undefined);
+          .catch(() => undefined)
+          .finally(() => outstandingThreadIds.delete(thread.threadId));
         return { threadId: thread.threadId, threadFinished };
       },
       async cancelOutstanding() {
-        // In-memory orchestrator: workers self-terminate when they
-        // observe a stop=true report. Outstanding agents will be
-        // bounded by `max_runtime_seconds`. Hard-cancel via the
-        // control plane is deferred (agenc SQLite-backed lifecycle
-        // not ported).
+        // Hard-cancel: shut down every worker thread this job still has
+        // in flight. The orchestrator then finalizes their items as
+        // cancelled via the stopRequested finalize guard.
+        const ids = [...outstandingThreadIds];
+        outstandingThreadIds.clear();
+        await Promise.all(
+          ids.map((id) =>
+            control.shutdown(id, "agent_job_cancelled").catch(() => {}),
+          ),
+        );
       },
     };
 
@@ -2648,6 +2657,74 @@ function validateCron(schedule: string): boolean {
  * the wiring that makes CronCreate definitions actually FIRE: due jobs
  * enqueue their prompt onto the session command queue as a new turn.
  */
+/**
+ * Resume CSV agent jobs orphaned by a daemon restart. In-flight jobs
+ * survive in the DB with `running` items whose Promise resolvers died
+ * with the old process; this reconstructs each job from the repository
+ * and re-dispatches the unfinished rows through the normal loop.
+ * Resumed worker threads register task pills like any other background
+ * agent work.
+ */
+export async function resumeInterruptedAgentJobs(opts: {
+  readonly session: Session;
+  readonly workspaceRoot: string;
+}): Promise<number> {
+  const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+  if (repository.listJobs({ status: "running" }).length === 0) {
+    return 0;
+  }
+  const { control, registry } = ensureAgentControl(opts.session);
+  const { backgroundTaskLifecycle, registerAgentThreadTask } = await import(
+    "../tasks/index.js"
+  );
+  const outstandingThreadIds = new Set<string>();
+  const spawn: AgentJobSpawn = {
+    async spawn(ctx: AgentJobSpawnContext) {
+      const outcome = await delegate({
+        parent: opts.session,
+        parentPath: ROOT_AGENT_PATH,
+        control,
+        registry,
+        taskPrompt: ctx.workerPrompt,
+        agentName: ctx.itemId,
+        runInBackground: true,
+      });
+      if (outcome.kind === "rejected") {
+        throw new Error(
+          `agent-jobs resume spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
+        );
+      }
+      const thread = outcome.thread;
+      outstandingThreadIds.add(thread.threadId);
+      try {
+        registerAgentThreadTask(backgroundTaskLifecycle, thread as never, {
+          description: `csv-job:${ctx.itemId}`,
+          prompt: ctx.workerPrompt,
+        });
+      } catch {
+        /* pill registration is best-effort */
+      }
+      const threadFinished = thread
+        .join()
+        .then(() => undefined)
+        .catch(() => undefined)
+        .finally(() => outstandingThreadIds.delete(thread.threadId));
+      return { threadId: thread.threadId, threadFinished };
+    },
+    async cancelOutstanding() {
+      const ids = [...outstandingThreadIds];
+      outstandingThreadIds.clear();
+      await Promise.all(
+        ids.map((id) =>
+          control.shutdown(id, "agent_job_cancelled").catch(() => {}),
+        ),
+      );
+    },
+  };
+  const resumed = await resumeAgentJobsFromRepository({ repository, spawn });
+  return resumed.length;
+}
+
 export async function startCronSchedulerRunner(): Promise<void> {
   const { setScheduledTasksEnabled } = await import("../bootstrap/state.js");
   const { getCronScheduler } = await import("../utils/cronScheduler.js");

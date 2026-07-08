@@ -1560,6 +1560,23 @@ export async function bootstrapLocalRuntimeSession(
             /* cron re-arm is best-effort; tools re-arm on next CronCreate */
           }
         })();
+
+        // Resume CSV agent jobs orphaned by a daemon restart: rows left
+        // `running` in the DB are re-dispatched once a session exists to
+        // spawn workers from.
+        void (async () => {
+          try {
+            const { resumeInterruptedAgentJobs } = await import(
+              "./model-facing-tools.js"
+            );
+            await resumeInterruptedAgentJobs({
+              session: s,
+              workspaceRoot,
+            });
+          } catch {
+            /* resume is best-effort; jobs stay visible in the DB */
+          }
+        })();
         sidecarManager.register(
           new ErrorLogSidecar({
             projectDir,

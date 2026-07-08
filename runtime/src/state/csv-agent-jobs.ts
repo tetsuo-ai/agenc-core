@@ -28,7 +28,8 @@ export type CsvAgentJobItemStatus =
   | "pending"
   | "running"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 const JOB_STATUSES: ReadonlySet<CsvAgentJobStatus> = new Set([
   "pending",
@@ -43,6 +44,7 @@ const ITEM_STATUSES: ReadonlySet<CsvAgentJobItemStatus> = new Set([
   "running",
   "completed",
   "failed",
+  "cancelled",
 ]);
 
 function parseJobStatus(raw: string): CsvAgentJobStatus {
@@ -488,6 +490,20 @@ export class CsvAgentJobsRepository {
          WHERE job_id = ? AND item_id = ?`,
       )
       .run(error, now, now, now, jobId, itemId);
+  }
+
+  markItemCancelled(jobId: string, itemId: string, reason: string): void {
+    const now = nowSeconds();
+    this.driver
+      .prepareState(
+        `UPDATE csv_agent_job_items
+         SET status = 'cancelled',
+             last_error = ?,
+             completed_at = ?,
+             updated_at = ?
+         WHERE job_id = ? AND item_id = ?`,
+      )
+      .run(reason, now, now, jobId, itemId);
   }
 
   getJobProgress(jobId: string): CsvAgentJobProgress {
