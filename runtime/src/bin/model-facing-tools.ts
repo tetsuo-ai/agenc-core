@@ -2774,11 +2774,11 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
     {
       name: "WorkflowTool",
       description:
-        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows.",
+        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows. A workflow with a `steps` array is a DETERMINISTIC multi-agent pipeline: each step spawns an agent; steps with satisfied `after` dependencies run in parallel; `{{steps.<id>}}` / `{{group.<name>}}` in a step's message receive earlier results. A workflow with only `command` runs that single shell command (legacy shape).",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
-        keywords: ["workflow", "run"],
+        keywords: ["workflow", "run", "pipeline", "fan-out"],
       }),
       requiresApproval: true,
       recoveryCategory: "side-effecting",
@@ -2805,9 +2805,44 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         const workflow = JSON.parse(await readFile(workflowPath, "utf8")) as {
           command?: string;
           description?: string;
+          steps?: unknown;
         };
+        if (Array.isArray(workflow.steps) && workflow.steps.length > 0) {
+          const session = opts.getSession();
+          if (!session) {
+            return json(
+              { error: "agent workflows require an active session" },
+              true,
+            );
+          }
+          const { control, registry } = ensureAgentControl(session);
+          const {
+            runAgentWorkflow,
+            WorkflowValidationError,
+          } = await import("../agents/workflow-runner.js");
+          try {
+            const run = await runAgentWorkflow({
+              session,
+              control,
+              registry,
+              steps: workflow.steps as never,
+            });
+            const failed = run.steps.some(
+              (step) => step.outcome !== "completed",
+            );
+            return json(
+              { workflow: name, steps: run.steps },
+              failed ? true : undefined,
+            );
+          } catch (error) {
+            if (error instanceof WorkflowValidationError) {
+              return json({ error: error.message, workflow: name }, true);
+            }
+            throw error;
+          }
+        }
         if (!workflow.command) {
-          return json({ error: `workflow ${name} has no command` }, true);
+          return json({ error: `workflow ${name} has no command or steps` }, true);
         }
         if (!opts.unifiedExecManager) {
           return json({ error: "unified exec manager is not available" }, true);
