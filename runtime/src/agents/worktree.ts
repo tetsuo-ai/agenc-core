@@ -323,7 +323,11 @@ export async function hasWorktreeChanges(opts: {
   readonly hasCommits: boolean;
   readonly isDirty: boolean;
 }> {
-  const status = await runGit(["status", "--porcelain", "-uno"], opts.path);
+  // NOT `-uno`: untracked files count as dirty. A subagent whose whole
+  // work product is NEW files (a fresh test, a generated report) must
+  // not have its worktree judged "unchanged" and deleted on close.
+  // Ignored files are already excluded by `--porcelain`.
+  const status = await runGit(["status", "--porcelain"], opts.path);
   if (status.code !== 0) {
     throw new Error(
       `git status failed for ${opts.path}: ${formatGitFailure(status)}`,

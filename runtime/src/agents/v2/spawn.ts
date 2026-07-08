@@ -357,6 +357,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         description:
           "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.",
       },
+      isolation: {
+        type: "string",
+        enum: ["none", "worktree"],
+        description:
+          "Optional filesystem isolation. `worktree` runs the agent in its own git worktree (branch + directory derived from task_name), so parallel agents that WRITE files never clobber each other or your working tree. Requires the cwd to be inside a git repository. Unchanged worktrees are removed automatically when the agent closes; worktrees with commits or dirty files are kept for review. Default `none` (shared cwd).",
+      },
     },
     required: ["message", "task_name"],
     additionalProperties: false,
@@ -378,6 +384,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "service_tier",
         "fork_turns",
         "fork_context",
+        "isolation",
       ]),
       required: ["message", "task_name"],
     });
@@ -390,6 +397,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       "reasoning_effort",
       "service_tier",
       "fork_turns",
+      "isolation",
     ]) {
       if (args[key] !== undefined && typeof args[key] !== "string") {
         return json({ error: `${key} must be a string` }, true);
@@ -435,6 +443,21 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           error:
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
         },
+        true,
+      );
+    }
+    const rawIsolation = stringValue(args.isolation);
+    if (
+      args.isolation !== undefined &&
+      rawIsolation !== "none" &&
+      rawIsolation !== "worktree"
+    ) {
+      return json({ error: "isolation must be `none` or `worktree`" }, true);
+    }
+    const isolation = rawIsolation === "worktree" ? ("worktree" as const) : undefined;
+    if (isolation !== undefined && (!taskName || taskName.length === 0)) {
+      return json(
+        { error: "worktree isolation requires a non-empty task_name (it names the worktree)" },
         true,
       );
     }
@@ -607,6 +630,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(serviceTierResult.serviceTier !== undefined
           ? { serviceTier: serviceTierResult.serviceTier }
           : {}),
+        ...(isolation !== undefined
+          ? { isolation, worktreeSlug: taskName }
+          : {}),
       });
       if (outcome.kind === "rejected") {
         throw new Error(outcome.reason);
@@ -724,6 +750,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       task_name: live.agentPath,
       ...(!hideSpawnAgentMetadata(session)
         ? { nickname: live.nickname ?? null }
+        : {}),
+      ...(thread.worktree !== undefined
+        ? {
+            isolation: "worktree",
+            worktree_path: thread.worktree.path,
+            worktree_branch: thread.worktree.branch,
+          }
         : {}),
     });
   };
