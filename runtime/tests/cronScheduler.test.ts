@@ -303,4 +303,66 @@ describe('cronEnqueueToCommandQueue (production wiring)', () => {
     const command = vi.mocked(enqueuePendingNotification).mock.calls[0]?.[0]
     expect(command).not.toHaveProperty('agentId')
   })
+
+  test('drain() after stop() waits for the in-flight tick (teardown race guard)', async () => {
+    // stop() only clears the NEXT wake; a tick already executing keeps
+    // running and writes fire state to disk. Callers that delete the state
+    // dir right after stopping must be able to await quiescence — without
+    // it, teardown races the tick's scheduled_tasks.json write (observed as
+    // an unhandled ENOENT rejection from the bare timer callback).
+    setScheduledTasksEnabled(true) // start() is a no-op without the flag
+    const start = 59 * 60_000 // 00:59:00, hourly task fires at 01:00:00
+    const clock = new FakeClock(start)
+    let releaseTick!: () => void
+    const gate = new Promise<void>(resolve => {
+      releaseTick = resolve
+    })
+    let tickFinished = false
+    let loadCalls = 0
+    const sched = new CronScheduler(
+      {
+        now: () => clock.nowMs,
+        monotonicNow: () => clock.monoMs,
+        setTimer: clock.setTimer,
+        clearTimer: clock.clearTimer,
+        // Call 1 is start()'s reschedule (earliest-due scan) — return the
+        // task so a wake gets armed. Call 2 is the timer tick's dispatch
+        // path — park it on the gate, simulating slow disk I/O mid-tick.
+        loadTasks: async () => {
+          loadCalls += 1
+          if (loadCalls === 1) {
+            return [task({ id: 'dddd0004', cron: '0 * * * *' })]
+          }
+          await gate
+          tickFinished = true
+          return []
+        },
+        enqueue: vi.fn(),
+      },
+      { minIntervalFloorMs: 1_000, dir: undefined },
+    )
+
+    sched.start()
+    await flush()
+
+    // Fire the armed wake; the tick enters loadTasks and parks on the gate.
+    clock.advance(12 * 60_000)
+    await flush()
+
+    sched.stop()
+
+    // drain() must NOT resolve while the tick is still parked.
+    let drained = false
+    const drainPromise = sched.drain().then(() => {
+      drained = true
+    })
+    await flush()
+    expect(drained).toBe(false)
+    expect(tickFinished).toBe(false)
+
+    // Release the tick; drain() now completes AFTER the tick finished.
+    releaseTick()
+    await drainPromise
+    expect(tickFinished).toBe(true)
+  })
 })

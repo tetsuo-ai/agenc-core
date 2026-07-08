@@ -127,11 +127,15 @@ describe("StaticModelsManager", () => {
     });
 
     const listed = await manager.listModels();
+    // Seed routes follow the curated managed Pro set (b461d139 "use OpenRouter
+    // for managed Pro models" replaced the original gpt-5-mini/grok-code-fast-1
+    // seeds with this catalog).
     expect(listed.map((entry) => entry.slug)).toEqual(
       expect.arrayContaining([
+        "x-ai/grok-4.3",
         "openai/gpt-5",
-        "openai/gpt-5-mini",
-        "x-ai/grok-code-fast-1",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-oss-120b",
       ]),
     );
   });

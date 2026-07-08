@@ -663,11 +663,14 @@ describe("buildAnthropicMessagesRequest", () => {
     });
 
     expect(request.tools).toHaveLength(2);
+    // `system.echo` ships in its bijectively encoded wire form
+    // (mcp-tool-naming.ts) because Anthropic enforces
+    // `^[a-zA-Z0-9_-]{1,64}$` on tool names. Literal pinned on purpose.
     expect(
       (request.tools as Array<Record<string, unknown>>).map(
         (tool) => tool.name,
       ),
-    ).toEqual(["system.echo", ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME]);
+    ).toEqual(["tool2__system_x2eecho", ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME]);
     expect(request.tool_choice).toBeUndefined();
   });
 

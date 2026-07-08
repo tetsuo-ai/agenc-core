@@ -8,6 +8,7 @@ const authHarness = vi.hoisted(() => {
     authEnabled: true,
     key: undefined as string | undefined,
     nonInteractive: false,
+    remoteSession: false,
     source: undefined as string | undefined,
     subscriber: false,
   }
@@ -25,6 +26,7 @@ const authHarness = vi.hoisted(() => {
       state.authEnabled = true
       state.key = undefined
       state.nonInteractive = false
+      state.remoteSession = false
       state.source = undefined
       state.subscriber = false
       this.getApiKeyFromApiKeyHelper.mockClear()
@@ -43,6 +45,14 @@ vi.mock('../../../src/bootstrap/state', async importOriginal => ({
 
 vi.mock('../../../src/services/api/anthropic', () => ({
   verifyApiKey: authHarness.verifyApiKey,
+}))
+
+// The hook treats a live hosted (remote) auth session as already-valid and
+// never touches the anthropic key sources. Keep it harness-controlled so the
+// tests are hermetic against the developer's real ~/.agenc/auth.json.
+vi.mock('../../../src/auth/session-state', async importOriginal => ({
+  ...(await importOriginal()),
+  hasRemoteAuthSessionSync: () => authHarness.state.remoteSession,
 }))
 
 vi.mock('../../../src/utils/auth.js', () => ({
@@ -187,6 +197,10 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
     {
       name: 'subscriber auth',
       patch: { subscriber: true },
+    },
+    {
+      name: 'remote auth session',
+      patch: { remoteSession: true },
     },
   ])('treats $name as already valid', async ({ patch }) => {
     Object.assign(authHarness.state, patch)

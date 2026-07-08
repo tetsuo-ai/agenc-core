@@ -23,7 +23,7 @@ async function setTempProjectRoot(): Promise<void> {
 }
 
 afterEach(async () => {
-  resetCronSchedulerForTests()
+  await resetCronSchedulerForTests()
   resetStateForTests()
   if (tempRoot) {
     await rm(tempRoot, { recursive: true, force: true })

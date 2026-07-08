@@ -75,6 +75,26 @@ function mkctx(
   };
 }
 
+// Ambient BYOK credentials (e.g. a developer's real XAI_API_KEY) would add
+// legitimate BYOK provider rows to the managed model menu and break the
+// hermetic managed-only expectations, so they are stripped for the duration
+// of each pro-session test.
+const PROVIDER_KEY_ENV_VARS = [
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "LMSTUDIO_API_KEY",
+  "OPENAI_COMPATIBLE_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GROQ_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GEMINI_API_KEY",
+  "MISTRAL_API_KEY",
+  "NVIDIA_API_KEY",
+  "MINIMAX_API_KEY",
+] as const;
+
 function withProAuthSession<T>(fn: () => T): T {
   const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-pro-"));
   writeFileSync(
@@ -88,6 +108,11 @@ function withProAuthSession<T>(fn: () => T): T {
   );
   const previousHome = process.env.AGENC_HOME;
   process.env.AGENC_HOME = agencHome;
+  const previousKeys = new Map<string, string | undefined>();
+  for (const envVar of PROVIDER_KEY_ENV_VARS) {
+    previousKeys.set(envVar, process.env[envVar]);
+    delete process.env[envVar];
+  }
   try {
     return fn();
   } finally {
@@ -95,6 +120,13 @@ function withProAuthSession<T>(fn: () => T): T {
       delete process.env.AGENC_HOME;
     } else {
       process.env.AGENC_HOME = previousHome;
+    }
+    for (const [envVar, value] of previousKeys) {
+      if (value === undefined) {
+        delete process.env[envVar];
+      } else {
+        process.env[envVar] = value;
+      }
     }
   }
 }

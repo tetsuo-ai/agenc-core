@@ -63,6 +63,8 @@ vi.mock('../context/notifications', () => ({
 
 vi.mock('../context/overlayContext', () => ({
   useIsOverlayActive: () => fixture.overlayActive,
+  // the hook's Escape guard now keys off the modal-only variant
+  useIsModalOverlayActive: () => fixture.overlayActive,
 }))
 
 vi.mock('./useCommandQueue', () => ({
@@ -84,6 +86,11 @@ vi.mock('../keybindings/useKeybinding.js', () => ({
       isActive: options?.isActive,
     })
   },
+  // useCancelRequest also registers a raw urgent-cancel input capture;
+  // this test drives handlers through fixture.keybindings, so a no-op
+  // capture is sufficient (without it the module mock is missing an
+  // export and the hook render throws before registering any binding).
+  useInputCapture: () => {},
 }))
 
 vi.mock('../state/teammateViewHelpers', () => ({
@@ -165,7 +172,9 @@ describe('CancelRequestHandler teammate-view interrupt coverage', () => {
 
     const interrupt = getKeybinding('app:interrupt')
     expect(interrupt.isActive).toBe(true)
-    expect(getKeybinding('chat:cancel').isActive).toBe(false)
+    // The active turn overrides the Escape-to-teammate-navigation deferral so
+    // the user can always interrupt AgenC (98af9cb21 / 2af458c7e).
+    expect(getKeybinding('chat:cancel').isActive).toBe(true)
 
     interrupt.handler()
 
@@ -211,5 +220,33 @@ describe('CancelRequestHandler teammate-view interrupt coverage', () => {
       expect.any(Function),
     )
     expect(fixture.onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  test('Escape defers to teammate navigation while idle; Ctrl+C still stops agents and exits', async () => {
+    const { CancelRequestHandler } = await import('./useCancelRequest.js')
+
+    // No abortSignal: AgenC is idle, so Escape is left for
+    // useBackgroundTaskNavigation even though stoppable agents exist.
+    await renderToString(
+      <CancelRequestHandler
+        setToolUseConfirmQueue={fixture.setToolUseConfirmQueue}
+        onCancel={fixture.onCancel}
+        onAgentsKilled={fixture.onAgentsKilled}
+        isMessageSelectorVisible={false}
+        screen="prompt"
+      />,
+      100,
+    )
+
+    expect(getKeybinding('chat:cancel').isActive).toBe(false)
+    const interrupt = getKeybinding('app:interrupt')
+    expect(interrupt.isActive).toBe(true)
+
+    interrupt.handler()
+
+    expect(fixture.killAllRunningAgentTasks).toHaveBeenCalledTimes(1)
+    expect(fixture.exitTeammateView).toHaveBeenCalledWith(expect.any(Function))
+    // No active turn and no queue: nothing to cancel on the main thread.
+    expect(fixture.onCancel).not.toHaveBeenCalled()
   })
 })

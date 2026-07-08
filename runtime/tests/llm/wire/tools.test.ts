@@ -27,13 +27,19 @@ const TOOL: LLMTool = {
   },
 };
 
+// Providers enforce `^[a-zA-Z0-9_-]{1,64}$` on function names, so the wire
+// layer bijectively encodes the dotted internal name (mcp-tool-naming.ts).
+// The literal is hardcoded on purpose: these tests pin the wire contract
+// rather than round-tripping through the encoder.
+const TOOL_WIRE_NAME = "tool2__system_x2einspect";
+
 describe("wire tool conversion", () => {
   test("preserves prompt-derived descriptions for chat completions tools", () => {
     expect(toChatCompletionsTools([TOOL])).toEqual([
       {
         type: "function",
         function: {
-          name: "system.inspect",
+          name: TOOL_WIRE_NAME,
           description:
             "Inspect the current project state and return a concise structured summary.",
           parameters: TOOL.function.parameters,
@@ -46,7 +52,7 @@ describe("wire tool conversion", () => {
     const expected = [
       {
         type: "function",
-        name: "system.inspect",
+        name: TOOL_WIRE_NAME,
         description:
           "Inspect the current project state and return a concise structured summary.",
         parameters: TOOL.function.parameters,
@@ -60,7 +66,7 @@ describe("wire tool conversion", () => {
   test("maps tools to the Messages input_schema envelope", () => {
     expect(toAnthropicTools([TOOL])).toEqual([
       {
-        name: "system.inspect",
+        name: TOOL_WIRE_NAME,
         description:
           "Inspect the current project state and return a concise structured summary.",
         input_schema: TOOL.function.parameters,

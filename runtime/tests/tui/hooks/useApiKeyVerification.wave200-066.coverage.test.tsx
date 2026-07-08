@@ -44,6 +44,14 @@ vi.mock('../../services/api/anthropic', () => ({
   verifyApiKey: authHarness.verifyApiKey,
 }))
 
+// A live hosted (remote) auth session short-circuits the hook to 'valid'.
+// Pin it to absent so these tests stay hermetic against the developer's
+// real ~/.agenc/auth.json and keep exercising the anthropic key path.
+vi.mock('../../auth/session-state', async importOriginal => ({
+  ...(await importOriginal()),
+  hasRemoteAuthSessionSync: () => false,
+}))
+
 vi.mock('../../utils/auth.js', () => ({
   getAnthropicApiKeyWithSource: authHarness.getAnthropicApiKeyWithSource,
   getApiKeyFromApiKeyHelper: authHarness.getApiKeyFromApiKeyHelper,

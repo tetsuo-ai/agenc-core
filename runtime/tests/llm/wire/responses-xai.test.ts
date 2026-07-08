@@ -9,6 +9,11 @@ import {
   XAI_ENCRYPTED_REASONING_INCLUDE,
 } from "./responses-xai.js";
 
+// Wire form of `system.echo` under the bijective MCP tool-name encoding
+// (mcp-tool-naming.ts) — xAI enforces `^[a-zA-Z0-9_-]{1,64}$` on function
+// names. Hardcoded literal on purpose so this test pins the wire contract.
+const TEST_TOOL_WIRE_NAME = "tool2__system_x2eecho";
+
 const TEST_TOOL: LLMTool = {
   type: "function",
   function: {
@@ -55,7 +60,7 @@ describe("responses-xai wire shim", () => {
         {
           type: "function_call",
           call_id: "call_echo",
-          name: "system.echo",
+          name: TEST_TOOL_WIRE_NAME,
           arguments: "{\"text\":\"hi\"}",
         },
         {
@@ -258,6 +263,12 @@ describe("responses-xai wire shim", () => {
       prompt_cache_key: "session-1",
       include: [XAI_ENCRYPTED_REASONING_INCLUDE],
       parallel_tool_calls: false,
+      // NOTE: tool_choice is currently NOT run through the MCP wire-name
+      // encoding (normalizeXaiResponsesToolChoice passes the name through),
+      // so a named tool_choice for a dotted tool references a name the
+      // provider never saw in `tools`. This pins today's behavior; if the
+      // shim starts encoding tool_choice too, update this to
+      // TEST_TOOL_WIRE_NAME.
       tool_choice: {
         type: "function",
         function: { name: "system.echo" },
@@ -265,7 +276,7 @@ describe("responses-xai wire shim", () => {
       tools: [
         {
           type: "function",
-          name: "system.echo",
+          name: TEST_TOOL_WIRE_NAME,
           description: "Echo text.",
         },
       ],

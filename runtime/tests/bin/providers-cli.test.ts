@@ -222,9 +222,17 @@ describe("providers CLI", () => {
     });
     const entries = byProvider(report.entries);
 
-    expect(entries.get("grok")).toMatchObject({
+    // Managed key vending is restricted to OpenRouter (b461d139 "use
+    // OpenRouter for managed Pro models"); grok/openai rows are no longer
+    // vended and fall back to BYOK-missing.
+    expect(entries.get("openrouter")).toMatchObject({
       usable: true,
       keyStatus: "managed",
+      subscriptionTier: "pro",
+    });
+    expect(entries.get("grok")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
       subscriptionTier: "pro",
     });
     expect(entries.get("agenc")).toMatchObject({
@@ -232,15 +240,20 @@ describe("providers CLI", () => {
       keyStatus: "not-required",
       subscriptionTier: "pro",
     });
-    expect(calls).toContain("vendKey:grok:cli");
-    expect(calls).toContain("vendKey:openai:cli");
+    // Exactly two vends happen: the managed OpenRouter provider row, and the
+    // hosted agenc route verifying its inferred grok delegate. No other
+    // provider row (openai, anthropic, ...) is vended anymore.
+    expect([...calls].sort()).toEqual([
+      "vendKey:grok:cli",
+      "vendKey:openrouter:cli",
+    ]);
   });
 
   it("marks managed-key provider rows unusable when vending fails", async () => {
     const report = await collectProviderAvailability({
       authBackend: authBackend("remote", "pro", {
         vendKey: (provider, sessionId) => {
-          if (provider === "grok") throw new Error("grok denied");
+          if (provider === "openrouter") throw new Error("openrouter denied");
           return { provider, sessionId, apiKey: "managed-key" };
         },
       }),
@@ -250,42 +263,53 @@ describe("providers CLI", () => {
     });
     const entries = byProvider(report.entries);
 
-    expect(entries.get("grok")).toMatchObject({
+    expect(entries.get("openrouter")).toMatchObject({
       usable: false,
       keyStatus: "unavailable",
     });
-    expect(entries.get("grok")?.detail).toContain("grok denied");
+    expect(entries.get("openrouter")?.detail).toContain("openrouter denied");
   });
 
   it("rejects managed-key vending with an empty or mismatched key response", async () => {
-    const report = await collectProviderAvailability({
+    // OpenRouter is the only provider with a live managed vending route, so
+    // the mismatch and empty-key rejections are exercised in two passes.
+    const mismatchReport = await collectProviderAvailability({
       authBackend: authBackend("remote", "team", {
-        vendKey: (provider, sessionId) => {
-          if (provider === "openai") {
-            return { provider: "grok", sessionId, apiKey: "managed-key" };
-          }
-          if (provider === "anthropic") {
-            return { provider, sessionId, apiKey: " " };
-          }
-          return { provider, sessionId, apiKey: "managed-key" };
-        },
+        vendKey: (_provider, sessionId) => ({
+          provider: "grok",
+          sessionId,
+          apiKey: "managed-key",
+        }),
       }),
       checkLocal: false,
       config: defaultConfig(),
       env: {},
     });
-    const entries = byProvider(report.entries);
+    const mismatchEntries = byProvider(mismatchReport.entries);
 
-    expect(entries.get("openai")).toMatchObject({
+    expect(mismatchEntries.get("openrouter")).toMatchObject({
       usable: false,
       keyStatus: "unavailable",
     });
-    expect(entries.get("openai")?.detail).toContain("provider mismatch");
-    expect(entries.get("anthropic")).toMatchObject({
+    expect(mismatchEntries.get("openrouter")?.detail).toContain(
+      "provider mismatch",
+    );
+
+    const emptyKeyReport = await collectProviderAvailability({
+      authBackend: authBackend("remote", "team", {
+        vendKey: (provider, sessionId) => ({ provider, sessionId, apiKey: " " }),
+      }),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {},
+    });
+    const emptyKeyEntries = byProvider(emptyKeyReport.entries);
+
+    expect(emptyKeyEntries.get("openrouter")).toMatchObject({
       usable: false,
       keyStatus: "unavailable",
     });
-    expect(entries.get("anthropic")?.detail).toContain("empty key");
+    expect(emptyKeyEntries.get("openrouter")?.detail).toContain("empty key");
   });
 
   it("marks hosted AgenC routing unusable when inference fails", async () => {
