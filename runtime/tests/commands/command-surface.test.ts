@@ -40,6 +40,7 @@ const MINIMAL_NAMES = [
   "plan",
   "agents",
   "tasks",
+  "todos",
   "config",
   "hooks",
   "skills",

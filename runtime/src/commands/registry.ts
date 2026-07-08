@@ -27,6 +27,7 @@ import { mcpCommand } from "./mcp.js";
 import { skillsCommand } from "./skills.js";
 import { agentsCommand } from "./agent-management.js";
 import { tasksCommand } from "./tasks.js";
+import { todosCommand } from "./todos.js";
 import { resumeCommand } from "./resume.js";
 import { rewindCommand } from "./rewind.js";
 import { coordinatorCommand } from "./coordinator.js";
@@ -138,9 +139,9 @@ function commandSupportsSurface(
  *
  * Presentation order matches the runtime stabilization minimal surface:
  * /help, /status, auth commands, /cost, /model, /provider, /permissions, /plan,
- * /agents, /tasks, /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
- * /init, /output-style, /clear, /compact, /context, /diff, protocol commands,
- * /exit.
+ * /agents, /tasks, /todos, /config, /hooks, /skills, /mcp, /plugins, /memory,
+ * /resume, /init, /output-style, /clear, /compact, /context, /diff, protocol
+ * commands, /exit.
  */
 export function buildDefaultRegistry(
   options: BuildDefaultRegistryOptions = {},
@@ -156,6 +157,7 @@ export function buildDefaultRegistry(
     planCommand,
     agentsCommand,
     tasksCommand,
+    todosCommand,
     configCommand,
     hooksCommand,
     skillsCommand,

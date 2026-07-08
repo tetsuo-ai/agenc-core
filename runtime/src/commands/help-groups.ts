@@ -30,7 +30,7 @@ export const HELP_WORKFLOW_GROUPS: readonly HelpWorkflowGroup[] = [
   },
   {
     title: "Agents / Tasks",
-    commands: ["agents", "tasks"],
+    commands: ["agents", "tasks", "todos"],
   },
   {
     title: "Permissions",
