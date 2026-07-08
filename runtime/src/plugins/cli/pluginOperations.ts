@@ -2,7 +2,9 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } f
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { resolveAgencHome } from "../../config/env.js";
-import { loadConfig } from "../../config/loader.js";
+import { cloneRecord, stableJson, type JsonRecord } from "../../config/json.js";
+import { loadConfig, parseToml } from "../../config/loader.js";
+import { serializeConfigToml } from "../../config/migrate.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
 import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
@@ -642,7 +644,13 @@ async function writePluginConfigEntry(
   const marker = managedMarker(pluginId);
   const block = renderManagedPluginBlock(pluginId, entry, marker);
   const text = await readOptionalText(path);
-  const base = removeManagedBlock(text, marker);
+  let base = removeManagedBlock(text, marker);
+  if (base === text.trimEnd()) {
+    // No managed block found (config migrations strip the comment markers
+    // when they canonically rewrite config.toml). Remove any bare entry so
+    // the appended managed block does not create duplicate TOML tables.
+    base = removePluginEntryFromToml(text, pluginId) ?? base;
+  }
   const next = appendManagedBlock(
     entry.enabled === false ? base : ensurePluginsFeatureEnabled(base),
     block,
@@ -658,10 +666,142 @@ async function removePluginConfigEntry(
   const path = pluginConfigPath(options);
   const marker = managedMarker(pluginId);
   const text = await readOptionalText(path);
-  const next = removeManagedBlock(text, marker);
-  if (next === text) return false;
-  await writeTextAtomic(path, next);
+  const withoutBlock = removeManagedBlock(text, marker);
+  if (withoutBlock !== text.trimEnd()) {
+    await writeTextAtomic(path, withoutBlock);
+    return true;
+  }
+  // No managed block found. Config migrations canonically rewrite
+  // config.toml and strip the managed-block comment markers, so fall back
+  // to TOML-aware removal of the plugin entry itself.
+  const withoutEntry = removePluginEntryFromToml(text, pluginId);
+  if (withoutEntry === undefined) return false;
+  await writeTextAtomic(path, withoutEntry);
   return true;
+}
+
+/**
+ * Remove `plugins.plugins.<pluginId>` from a config.toml that no longer has
+ * managed-block markers (config migrations strip comments when rewriting).
+ *
+ * Prefers a surgical, formatting-preserving removal of the entry's table
+ * section; falls back to a canonical re-serialization without the entry.
+ * Every candidate is verified by re-parsing and comparing against the
+ * expected parse result, so a failed edit never corrupts the file.
+ * Returns `undefined` when the entry is absent or cannot be removed safely.
+ */
+function removePluginEntryFromToml(
+  text: string,
+  pluginId: string,
+): string | undefined {
+  if (text.trim().length === 0) return undefined;
+  let sawDuplicateKey = false;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseToml(text, {
+      onDuplicateKey: () => {
+        sawDuplicateKey = true;
+      },
+    });
+  } catch {
+    return undefined;
+  }
+  if (sawDuplicateKey) return undefined;
+  const pluginsTable = isRecord(parsed.plugins) ? parsed.plugins : undefined;
+  const entries = pluginsTable !== undefined && isRecord(pluginsTable.plugins)
+    ? pluginsTable.plugins
+    : undefined;
+  if (entries === undefined || !Object.hasOwn(entries, pluginId)) {
+    return undefined;
+  }
+  // Accept either shape after removal: an empty `plugins.plugins` table can
+  // legitimately disappear entirely (its only declaration was the removed
+  // table header) or stay as an explicit empty table.
+  const expected = [
+    expectedConfigWithoutPluginEntry(parsed, pluginId, true),
+    expectedConfigWithoutPluginEntry(parsed, pluginId, false),
+  ];
+  const surgical = removePluginTableSection(text, pluginId);
+  if (surgical !== undefined && parsesToOneOf(surgical, expected)) {
+    return surgical;
+  }
+  const canonical = serializeConfigToml(expected[0]!);
+  return parsesToOneOf(canonical, expected) ? canonical : undefined;
+}
+
+function expectedConfigWithoutPluginEntry(
+  parsed: Readonly<Record<string, unknown>>,
+  pluginId: string,
+  dropEmptyEntryTable: boolean,
+): JsonRecord {
+  const next = cloneRecord(parsed);
+  const pluginsTable = cloneRecord(next.plugins as Record<string, unknown>);
+  const entries = cloneRecord(pluginsTable.plugins as Record<string, unknown>);
+  delete entries[pluginId];
+  if (dropEmptyEntryTable && Object.keys(entries).length === 0) {
+    delete pluginsTable.plugins;
+  } else {
+    pluginsTable.plugins = entries;
+  }
+  next.plugins = pluginsTable;
+  return next;
+}
+
+function parsesToOneOf(
+  candidate: string,
+  expected: readonly JsonRecord[],
+): boolean {
+  let sawDuplicateKey = false;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseToml(candidate, {
+      onDuplicateKey: () => {
+        sawDuplicateKey = true;
+      },
+    });
+  } catch {
+    return false;
+  }
+  if (sawDuplicateKey) return false;
+  const json = stableJson(parsed);
+  return expected.some((variant) => stableJson(variant) === json);
+}
+
+/**
+ * Delete the `[plugins.plugins.<pluginId>]` table header line and its body
+ * (up to the next table header or EOF), leaving every other line untouched.
+ * Only the header spellings our own writers emit are matched; anything more
+ * exotic falls through to the canonical re-serialization path, and the
+ * result is always verified by the caller before being written.
+ */
+function removePluginTableSection(
+  text: string,
+  pluginId: string,
+): string | undefined {
+  const quoted = tomlString(pluginId);
+  const headers = new Set([
+    `["plugins"."plugins".${quoted}]`,
+    `[plugins.plugins.${quoted}]`,
+  ]);
+  if (/^[A-Za-z0-9_-]+$/u.test(pluginId)) {
+    headers.add(`[plugins.plugins.${pluginId}]`);
+  }
+  const lines = text.split("\n");
+  let start = -1;
+  for (const [index, line] of lines.entries()) {
+    if (!headers.has(line.trim())) continue;
+    if (start !== -1) return undefined;
+    start = index;
+  }
+  if (start === -1) return undefined;
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/u.test(lines[index]!)) {
+      end = index;
+      break;
+    }
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
 }
 
 async function readOptionalText(path: string): Promise<string> {
