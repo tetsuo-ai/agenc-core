@@ -5,6 +5,7 @@
   "packageManager": "npm@11.7.0",
   "workspaces": [
     "packages/agenc",
+    "packages/agenc-sdk",
     "runtime",
     "test-fixtures/plugin-kit-channel-adapter"
   ],
