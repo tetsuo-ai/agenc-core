@@ -540,6 +540,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     };
   }
 
+  /**
+   * Terminate one live background process by id (the model-facing
+   * kill half of the run-in-background / poll / kill trio). Unknown or
+   * already-exited ids report `terminated: false` rather than throwing —
+   * killing a finished process is a benign race, not an error.
+   */
+  terminateProcess(processId: number): { terminated: boolean } {
+    const entry = this.processes.get(processId);
+    if (!entry || entry.exitState !== null) {
+      return { terminated: false };
+    }
+    this.forceTerminate(entry);
+    return { terminated: true };
+  }
+
   async closeAll(_reason = "session_shutdown"): Promise<void> {
     const entries = [...this.processes.values()];
     for (const entry of entries) {

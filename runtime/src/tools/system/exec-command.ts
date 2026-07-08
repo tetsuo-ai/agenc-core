@@ -239,7 +239,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   return {
     name: "exec_command",
     description:
-      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits. Never use this to print commentary, placeholders, or reminders to yourself; call the relevant tool directly instead.",
+      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits. Never use this to print commentary, placeholders, or reminders to yourself; call the relevant tool directly instead.\n\nLong-running commands: set a short yield_time_ms to run in the BACKGROUND — when the command outlives the yield window the result carries a session_id and the process keeps running. Poll for more output with write_stdin(session_id, chars='') and stop it with kill_process(session_id). Prefer this over trailing '&' (a shell-backgrounded child has no session_id, so its output is unrecoverable).",
     metadata: {
       family: "terminal",
       source: "builtin",

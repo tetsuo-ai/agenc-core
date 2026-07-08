@@ -37,6 +37,7 @@ import { createCodingTools, SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./tools/sy
 import { createBashTool } from "./tools/system/bash.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
 import { createWriteStdinTool } from "./tools/system/write-stdin.js";
+import { createKillProcessTool } from "./tools/system/kill-process.js";
 import { createPlanningTools } from "./tools/system/planning.js";
 import { createAskUserQuestionTool } from "./tools/ask-user-question/tool.js";
 import { createSleepTool } from "./tools/system/sleep.js";
@@ -581,6 +582,10 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
     }),
+    createKillProcessTool({
+      cwd: options.workspaceRoot,
+      unifiedExecManager,
+    }),
     createBashTool({
       cwd: options.workspaceRoot,
       ...(options.bashExecObserver !== undefined
@@ -712,6 +717,7 @@ export function buildToolRegistry(
       visibleByDefault: [
         shellToolSurface.execCommand,
         shellToolSurface.writeStdin,
+        "kill_process",
       ],
       stringArgumentFields: {
         [shellToolSurface.execCommand]: "cmd",
