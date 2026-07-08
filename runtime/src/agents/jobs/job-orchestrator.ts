@@ -558,6 +558,11 @@ async function processItems(
       const item = state.items.get(itemId)!;
       item.status = "cancelled";
       item.completedAt = new Date();
+      state.repository?.markItemCancelled(
+        state.config.jobId,
+        itemId,
+        "job cancelled before dispatch",
+      );
       return {};
     }
     const item = state.items.get(itemId)!;
@@ -608,16 +613,31 @@ async function processItems(
       // (or after the wait resolved without `recordAgentJobResult`),
       // mark failed with the reference message.
       if (item.status === "pending") {
-        const message =
-          "worker finished without calling report_agent_job_result";
-        item.status = "failed";
-        item.error = message;
-        item.completedAt = new Date();
-        state.repository?.markItemFailed(
-          state.config.jobId,
-          itemId,
-          message,
-        );
+        if (state.stopRequested) {
+          // The job was cancelled while this item was in flight and its
+          // worker was terminated by cancelOutstanding — that's a
+          // cancellation, not a worker failure.
+          const message = "job cancelled while item was in flight";
+          item.status = "cancelled";
+          item.error = message;
+          item.completedAt = new Date();
+          state.repository?.markItemCancelled(
+            state.config.jobId,
+            itemId,
+            message,
+          );
+        } else {
+          const message =
+            "worker finished without calling report_agent_job_result";
+          item.status = "failed";
+          item.error = message;
+          item.completedAt = new Date();
+          state.repository?.markItemFailed(
+            state.config.jobId,
+            itemId,
+            message,
+          );
+        }
       }
       return {};
     } catch (err) {
@@ -635,6 +655,7 @@ async function processItems(
     }
   };
 
+  let cancelIssued = false;
   while (queue.length > 0 || inflight.size > 0) {
     // reference `run_agent_job_loop` polls `is_agent_job_cancelled` at the
     // top of each loop iteration (agent_jobs.rs:611) so external
@@ -644,6 +665,22 @@ async function processItems(
       const dbJob = state.repository.getJob(state.config.jobId);
       if (dbJob?.status === "cancelled") {
         state.stopRequested = true;
+      }
+    }
+    // Cancel must fire while items are still in flight — waiting for the
+    // in-flight set to drain first (the old tail-call placement) blocks
+    // on the very work cancellation is supposed to stop. Terminate the
+    // worker threads, then release the report waiters so the finalize
+    // guard can mark still-pending items cancelled.
+    if (state.stopRequested && !cancelIssued) {
+      cancelIssued = true;
+      try {
+        await spawn.cancelOutstanding(state.config.jobId);
+      } catch {
+        /* cancellation is best-effort; the runtime timeout still bounds workers */
+      }
+      for (const waiter of state.pending.values()) {
+        waiter.resolve();
       }
     }
     while (!state.stopRequested && inflight.size < max && queue.length > 0) {
@@ -668,7 +705,27 @@ async function processItems(
   }
 
   if (state.stopRequested) {
-    await spawn.cancelOutstanding(state.config.jobId);
+    if (!cancelIssued) {
+      try {
+        await spawn.cancelOutstanding(state.config.jobId);
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Rows that were still queued when the job was cancelled were never
+    // dispatched (the dispatch loop skips on stopRequested) — mark them
+    // cancelled instead of leaving them pending forever.
+    for (const [itemId, item] of state.items) {
+      if (item.status === "pending" && !state.pending.has(itemId)) {
+        item.status = "cancelled";
+        item.completedAt = new Date();
+        state.repository?.markItemCancelled(
+          state.config.jobId,
+          itemId,
+          "job cancelled before dispatch",
+        );
+      }
+    }
   }
 }
 
@@ -752,6 +809,143 @@ async function writeOutputCsv(
       return row;
     });
   await writeFile(path, writeCsv({ headers, rows }), "utf8");
+}
+
+export interface ResumeAgentJobsOpts {
+  readonly repository: CsvAgentJobsRepository;
+  readonly spawn: AgentJobSpawn;
+  readonly threadOps?: AgentJobThreadOps;
+  readonly progressEmitter?: AgentJobProgressEmitter;
+  readonly maxConcurrency?: number;
+}
+
+/**
+ * Resume jobs left `running` in the DB by a daemon that died mid-flight.
+ *
+ * The in-process resolvers are gone after a restart, so every orphaned
+ * `running` item is reset to `pending` (unless it already carries a
+ * reported result, in which case it is finalized as completed) and
+ * re-dispatched through the normal loop respecting `maxConcurrency`.
+ * Row execution is idempotent by construction: the output CSV is
+ * rendered from the full item map at completion, so a re-run row
+ * overwrites its output instead of appending a duplicate.
+ */
+export async function resumeAgentJobsFromRepository(
+  opts: ResumeAgentJobsOpts,
+): Promise<RunAgentsOnCsvResult[]> {
+  const results: RunAgentsOnCsvResult[] = [];
+  for (const job of opts.repository.listJobs({ status: "running" })) {
+    if (jobs.has(job.id)) continue; // already live in this process
+    results.push(await resumeSingleJob(job.id, opts));
+  }
+  return results;
+}
+
+async function resumeSingleJob(
+  jobId: JobId,
+  opts: ResumeAgentJobsOpts,
+): Promise<RunAgentsOnCsvResult> {
+  const repository = opts.repository;
+  const job = repository.getJob(jobId);
+  if (job === null) {
+    throw new Error(`cannot resume unknown agent job ${jobId}`);
+  }
+  const config: JobConfig = {
+    jobId,
+    instruction: job.instruction,
+    ...(job.outputSchema !== undefined ? { outputSchema: job.outputSchema } : {}),
+    maxConcurrency: clampConcurrency(opts.maxConcurrency),
+    maxRuntimeSeconds: job.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS,
+  };
+  const items = new Map<ItemId, JobItemRecord>();
+  for (const dbItem of repository.listItems({ jobId })) {
+    const mutableRow: { [column: string]: string } = {};
+    for (const [key, value] of Object.entries(dbItem.row)) {
+      mutableRow[key] = typeof value === "string" ? value : String(value ?? "");
+    }
+    const row: CsvRow = mutableRow;
+    let status: JobItemStatus;
+    switch (dbItem.status) {
+      case "completed":
+        status = "completed";
+        break;
+      case "failed":
+        status = "failed";
+        break;
+      case "cancelled":
+        status = "cancelled";
+        break;
+      case "running":
+        // Orphaned by the dead daemon: its resolver no longer exists.
+        // A result on the row means the worker reported before the
+        // crash — finalize; otherwise the row goes back to pending
+        // for re-dispatch.
+        if (dbItem.result !== undefined) {
+          repository.markItemCompleted(jobId, dbItem.itemId, dbItem.result);
+          status = "completed";
+        } else {
+          repository.markItemPending(jobId, dbItem.itemId);
+          status = "pending";
+        }
+        break;
+      default:
+        status = "pending";
+    }
+    items.set(dbItem.itemId, {
+      jobId,
+      itemId: dbItem.itemId,
+      rowIndex: dbItem.rowIndex,
+      ...(dbItem.sourceId !== undefined ? { sourceId: dbItem.sourceId } : {}),
+      row,
+      instruction: renderInstructionTemplate(job.instruction, row),
+      status,
+      attemptCount: dbItem.attemptCount,
+      ...(dbItem.result !== undefined ? { result: dbItem.result } : {}),
+      ...(dbItem.lastError !== undefined ? { error: dbItem.lastError } : {}),
+    });
+  }
+  const state: JobRuntimeState = {
+    config,
+    items,
+    pending: new Map(),
+    repository,
+    ...(opts.threadOps !== undefined ? { threadOps: opts.threadOps } : {}),
+    progress: new JobProgressEmitterImpl(opts.progressEmitter),
+    stopRequested: false,
+  };
+  jobs.set(jobId, state);
+  try {
+    state.progress.maybeEmit(jobId, computeProgressSnapshot(state), true);
+    await processItems(state, opts.spawn);
+    if (job.autoExport && job.outputCsvPath.length > 0) {
+      await writeOutputCsv(job.outputCsvPath, job.inputHeaders, items);
+    }
+    if (state.stopRequested) {
+      const current = repository.getJob(jobId);
+      if (current?.status !== "cancelled") {
+        repository.markJobCancelled(jobId, "cancelled by worker request");
+      }
+    } else {
+      repository.markJobCompleted(jobId);
+    }
+    state.progress.maybeEmit(jobId, computeProgressSnapshot(state), true);
+    return {
+      jobId,
+      items: Array.from(items.values()),
+      stoppedEarly: state.stopRequested,
+      ...(job.autoExport && job.outputCsvPath.length > 0
+        ? { outputCsvPath: job.outputCsvPath }
+        : {}),
+    };
+  } catch (err) {
+    repository.markJobFailed(
+      jobId,
+      err instanceof Error ? err.message : String(err),
+    );
+    throw err;
+  } finally {
+    jobs.delete(jobId);
+  }
 }
 
 export interface RecordAgentJobResultArgs {
