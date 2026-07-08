@@ -315,6 +315,34 @@ export interface McpConfig {
   readonly server?: McpServerModeConfig;
 }
 
+/**
+ * A1 — `[protocol]` block: AgenC marketplace protocol transport.
+ *
+ * Controls whether the `/claim` protocol slash command may attach a
+ * READ-ONLY transport. Defaults to fully disabled: with no `[protocol]`
+ * block (or `enabled = false`) the protocol commands keep today's honest
+ * "transport not attached" stub behavior.
+ *
+ * `adapter = "marketplace-cli"` shells out to the installed
+ * `agenc-marketplace` kit binary for LISTING/DETAIL only — no in-process
+ * `@solana/web3.js`/Anchor, no wallet reads, no signing. Mutating
+ * protocol verbs stay owner-gated regardless of this block.
+ */
+export type ProtocolAdapterKind = "null" | "marketplace-cli";
+
+export interface ProtocolConfig {
+  /** Master switch. Default false — protocol commands stay stubs. */
+  readonly enabled?: boolean;
+  /** Transport adapter to construct. Default "null" (typed no-op). */
+  readonly adapter?: ProtocolAdapterKind;
+  /**
+   * Trusted local path override for the `agenc-marketplace` binary.
+   * Resolution order: this value → `AGENC_MARKETPLACE_CLI` env →
+   * `node_modules/.bin/agenc-marketplace`. `npx` is never used.
+   */
+  readonly cli_path?: string;
+}
+
 export type DaemonTransport = "unix" | "stdio";
 
 export interface DaemonConfig {
@@ -550,6 +578,7 @@ export interface AgenCConfig {
   readonly mcp?: McpConfig;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly daemon?: DaemonConfig;
+  readonly protocol?: ProtocolConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
   readonly plugins?: PluginsConfig;
 
@@ -700,6 +729,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "mcp",
   "mcp_servers",
   "daemon",
+  "protocol",
   "lsp_servers",
   "plugins",
   "autoUpdates",
@@ -1030,6 +1060,12 @@ export class InvalidMcpServerModeConfigError extends InvalidNamedConfigError {
 export class InvalidMcpConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("mcp", "InvalidMcpConfigError", field, detail);
+  }
+}
+
+export class InvalidProtocolConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("protocol", "InvalidProtocolConfigError", field, detail);
   }
 }
 
@@ -1841,6 +1877,53 @@ export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
   return Object.freeze(out) as PluginsConfig;
 }
 
+const PROTOCOL_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "adapter",
+  "cli_path",
+]);
+
+/**
+ * Validate the `[protocol]` block (A1). Deny-by-default on nested
+ * fields: a misspelled key can never silently enable a transport.
+ */
+export function validateProtocolConfig(raw: unknown): ProtocolConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidProtocolConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PROTOCOL_KEYS,
+    (field, detail) => new InvalidProtocolConfigError(field, detail),
+  );
+  const out: { -readonly [K in keyof ProtocolConfig]: ProtocolConfig[K] } = {};
+  const enabled = optionalBoolean(
+    record.enabled,
+    "enabled",
+    (field, detail) => new InvalidProtocolConfigError(field, detail),
+  );
+  if (enabled !== undefined) out.enabled = enabled;
+  if (record.adapter !== undefined) {
+    if (record.adapter !== "null" && record.adapter !== "marketplace-cli") {
+      throw new InvalidProtocolConfigError(
+        "adapter",
+        "expected \"null\" or \"marketplace-cli\"",
+      );
+    }
+    out.adapter = record.adapter;
+  }
+  const cliPath = optionalString(
+    record.cli_path,
+    "cli_path",
+    (field, detail) => new InvalidProtocolConfigError(field, detail),
+  );
+  if (cliPath !== undefined) out.cli_path = cliPath;
+  return Object.freeze(out as ProtocolConfig);
+}
+
 const MCP_SERVER_MODE_KEYS: ReadonlySet<string> = new Set([
   "enabled",
   "transport",
@@ -1998,6 +2081,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     out.transaction_guard = validateTransactionGuardConfig(
       config.transaction_guard,
     );
+    changed = true;
+  }
+  if (config.protocol !== undefined) {
+    out.protocol = validateProtocolConfig(config.protocol);
     changed = true;
   }
 
