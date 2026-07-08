@@ -52,20 +52,55 @@ export function has1mContext(model: string): boolean {
   return /\[1m\]/i.test(model)
 }
 
-// @[MODEL LAUNCH]: Update this pattern if the new model supports 1M context
+/**
+ * Parse the numeric version of a Claude family model out of a canonical
+ * model id. `claude-opus-4-6` -> 4.06, `claude-opus-4-10` -> 4.10,
+ * `claude-sonnet-5` -> 5. Returns undefined when the string does not
+ * name that family. Version-threshold comparisons replace per-release
+ * string allowlists so a new minor release (e.g. a hypothetical
+ * opus-4-9) inherits family capabilities instead of silently regressing
+ * — the Opus 4.7 half-onboarding failure mode.
+ */
+export function claudeFamilyVersion(
+  model: string,
+  family: 'opus' | 'sonnet' | 'haiku',
+): number | undefined {
+  // Minor is capped at 2 digits with a no-digit lookahead so dated ids
+  // ('claude-opus-4-20250514' = Opus 4.0) don't parse the date as a minor.
+  const match = model
+    .toLowerCase()
+    .match(
+      new RegExp(`(?:claude|agenc)-${family}-(\\d+)(?:[.-](\\d{1,2})(?!\\d))?`),
+    )
+  if (!match) return undefined
+  const major = parseInt(match[1]!, 10)
+  const minor = match[2] !== undefined ? parseInt(match[2], 10) : 0
+  return major + minor / 100
+}
+
+// @[MODEL LAUNCH]: 1M support is threshold-based (opus >= 4.6, sonnet >= 4);
+// new minor releases inherit automatically. Only touch this for a NEW family
+// or a capability regression.
 export function modelSupports1M(model: string): boolean {
   if (is1mContextDisabled()) {
     return false
   }
+  // Parse the RAW model string first: getCanonicalName collapses minors
+  // it doesn't know yet ('claude-opus-4-9' -> 'claude-opus-4'), which
+  // would defeat the future-release threshold. Canonical is the fallback
+  // for aliases/provider spellings the regex can't see.
   const canonical = getCanonicalName(model)
-  // 1M context: Sonnet 4 family + Opus 4.6 and up. Opus 4.7 (the current
-  // default opus) was missing here, which silently dropped 1M for opus skills
-  // and the CONTEXT_1M_BETA_HEADER path.
-  return (
-    canonical.includes('claude-sonnet-4') ||
-    canonical.includes('opus-4-6') ||
-    canonical.includes('opus-4-7')
-  )
+  for (const candidate of [model, canonical]) {
+    const opusVersion = claudeFamilyVersion(candidate, 'opus')
+    if (opusVersion !== undefined) {
+      return opusVersion >= 4.06
+    }
+    const sonnetVersion = claudeFamilyVersion(candidate, 'sonnet')
+    if (sonnetVersion !== undefined) {
+      return sonnetVersion >= 4
+    }
+  }
+  return false
 }
 
 export function getContextWindowForModel(
@@ -241,7 +276,13 @@ export function getModelMaxOutputTokens(model: string): {
 
   const m = getCanonicalName(model)
 
-  if (m.includes('opus-4-6')) {
+  // Raw-first for the same reason as modelSupports1M: canonicalization
+  // collapses not-yet-known minors down to 'claude-opus-4'.
+  const opusVersion =
+    claudeFamilyVersion(model, 'opus') ?? claudeFamilyVersion(m, 'opus')
+  if (opusVersion !== undefined && opusVersion >= 4.06) {
+    // Opus 4.6+ (incl. 4.7/4.8): 128K max output. 4.7 previously fell
+    // through to the generic opus-4 32K branch.
     defaultTokens = 64_000
     upperLimit = 128_000
   } else if (m.includes('sonnet-4-6')) {

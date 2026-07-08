@@ -10,6 +10,7 @@ import {
   AGENC_OPUS_4_5_CONFIG,
   AGENC_OPUS_4_6_CONFIG,
   AGENC_OPUS_4_7_CONFIG,
+  AGENC_OPUS_4_8_CONFIG,
   AGENC_OPUS_4_CONFIG,
   AGENC_SONNET_4_5_CONFIG,
   AGENC_SONNET_4_6_CONFIG,
@@ -86,6 +87,7 @@ const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 function firstPartyNameToCanonicalForCost(name: string): ModelShortName {
   const normalized = name.toLowerCase()
+  if (normalized.includes('claude-opus-4-8')) return 'claude-opus-4-8'
   if (normalized.includes('claude-opus-4-7')) return 'claude-opus-4-7'
   if (normalized.includes('claude-opus-4-6')) return 'claude-opus-4-6'
   if (normalized.includes('claude-opus-4-5')) return 'claude-opus-4-5'
@@ -145,6 +147,8 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_5_25,
   [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_7_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_8_CONFIG.firstParty)]:
+    COST_TIER_5_25,
 }
 
 /**
@@ -166,12 +170,13 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const shortName = getCanonicalNameForCost(model)
 
-  // Opus 4.6 / 4.7 share base pricing ($5/$25); both carry the fast-mode
-  // premium ($30/$150). Route both through the fast-aware tier so 4.7 fast
-  // usage (now enabled in fastMode.ts) is billed correctly instead of at base.
+  // Opus 4.6 / 4.7 / 4.8 share base pricing ($5/$25); all carry the fast-mode
+  // premium ($30/$150). Route them through the fast-aware tier so fast usage
+  // is billed correctly instead of at base.
   if (
     shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_6_CONFIG.firstParty) ||
-    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_7_CONFIG.firstParty)
+    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_7_CONFIG.firstParty) ||
+    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_8_CONFIG.firstParty)
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)

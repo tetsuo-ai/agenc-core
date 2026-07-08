@@ -162,7 +162,11 @@ export function isFastModeSupportedByModel(
   const model = modelSetting ?? getDefaultMainLoopModelSetting()
   const parsedModel = parseUserSpecifiedModel(model)
   const m = parsedModel.toLowerCase()
-  return m.includes('opus-4-6') || m.includes('opus-4-7')
+  // Fast mode: Opus 4.6/4.7/4.8. 4.8 is the durable fast-capable tier
+  // (4.7 fast mode is deprecated upstream).
+  return (
+    m.includes('opus-4-6') || m.includes('opus-4-7') || m.includes('opus-4-8')
+  )
 }
 
 // --- Fast mode runtime state ---
