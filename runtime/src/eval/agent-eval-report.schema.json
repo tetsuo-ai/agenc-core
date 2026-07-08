@@ -80,6 +80,14 @@
             },
             "localOnly": {
               "type": "boolean"
+            },
+            "executor": {
+              "type": "string",
+              "minLength": 1
+            },
+            "configFingerprint": {
+              "type": "string",
+              "minLength": 1
             }
           }
         }

@@ -1,0 +1,138 @@
+{
+  "benchmark": "agenc-local-coding-v1",
+  "timeoutMs": 120000,
+  "tasks": [
+    {
+      "id": "fix-off-by-one",
+      "source": "agenc-local",
+      "title": "Fix off-by-one loop bound in sum()",
+      "dir": "fix-off-by-one",
+      "fixture": "fixture",
+      "prompt": "sum() in sum.js returns NaN because the loop reads one element past the end of the array. Fix the loop bounds so sum([1,2,3]) returns 6 and sum([]) returns 0.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "fix-null-guard",
+      "source": "agenc-local",
+      "title": "Guard greet() against missing users",
+      "dir": "fix-null-guard",
+      "fixture": "fixture",
+      "prompt": "greet() in greet.js throws when called with null, undefined, or a user without a name. It should fall back to the name \"guest\" in those cases and keep returning \"hello, <name>\" for users with a non-empty string name.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "add-clamp",
+      "source": "agenc-local",
+      "title": "Add a clamp() helper to math.js",
+      "dir": "add-clamp",
+      "fixture": "fixture",
+      "prompt": "Add an exported clamp(value, min, max) function to math.js that returns min when value < min, max when value > max, and value otherwise. Do not break the existing add() export.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "add-cli-upper-flag",
+      "source": "agenc-local",
+      "title": "Add an --upper flag to cli.mjs",
+      "dir": "add-cli-upper-flag",
+      "fixture": "fixture",
+      "prompt": "cli.mjs prints \"hello, <name>\" using the first CLI argument (default \"world\"). Add support for an --upper flag that uppercases the entire output line. The flag may appear before or after the name and must not be treated as the name itself.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "refactor-no-var",
+      "source": "agenc-local",
+      "title": "Replace var declarations in counter.js",
+      "dir": "refactor-no-var",
+      "fixture": "fixture",
+      "prompt": "counter.js uses var declarations. Replace every var with const or let (whichever is correct) without changing the module's behavior: increment() advances the counter and reset() sets it back to 0.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "refactor-extract-helper",
+      "source": "agenc-local",
+      "title": "Extract duplicated name formatting into a helper",
+      "dir": "refactor-extract-helper",
+      "fixture": "fixture",
+      "prompt": "customerLabel() and employeeLabel() in report.js duplicate the same name-formatting expression. Extract it into an exported formatFullName(person) helper and make both label functions delegate to it. Output behavior must stay identical (trimmed first and last name, joined by a space, uppercased).",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "write-slugify-tests",
+      "source": "agenc-local",
+      "title": "Write assert-based tests for slugify()",
+      "dir": "write-slugify-tests",
+      "fixture": "fixture",
+      "prompt": "Create slugify.test.mjs in the repo root. It must import { slugify } from ./slugify.js and use node:assert to verify at least: slugify(\"Hello World\") === \"hello-world\", slugify(\"  spaced  \") === \"spaced\", and slugify(\"a--b\") === \"a-b\". The script must exit nonzero when an assertion fails and exit 0 otherwise.",
+      "verifiers": [
+        { "name": "tests-pass-and-catch-mutations", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "find-config-port",
+      "source": "agenc-local",
+      "title": "Locate the configured HTTP port",
+      "dir": "find-config-port",
+      "fixture": "fixture",
+      "prompt": "This repo configures its HTTP port in an ini settings file; other numbers in the tree are red herrings. Find the port the app actually uses and write just that number (no other text) to a new ANSWER.txt file in the repo root.",
+      "verifiers": [
+        { "name": "answer", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "fix-config-json",
+      "source": "agenc-local",
+      "title": "Repair invalid config.json",
+      "dir": "fix-config-json",
+      "fixture": "fixture",
+      "prompt": "config.json fails JSON.parse because of a trailing comma. Fix the file so it parses, preserving every existing key and value exactly.",
+      "verifiers": [
+        { "name": "parses", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "rename-typo-symbol",
+      "source": "agenc-local",
+      "title": "Rename the misspelled procesData symbol",
+      "dir": "rename-typo-symbol",
+      "fixture": "fixture",
+      "prompt": "The function procesData in lib/data.js is misspelled. Rename it to processData everywhere it appears (definition, import, and call site in index.js) without changing behavior.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "docs-usage-section",
+      "source": "agenc-local",
+      "title": "Replace the README TODO with a Usage section",
+      "dir": "docs-usage-section",
+      "fixture": "fixture",
+      "prompt": "README.md contains a TODO placeholder. Replace it with a \"## Usage\" section that shows how to run the widget with the exact command node index.js. Remove the TODO text entirely.",
+      "verifiers": [
+        { "name": "readme", "command": "node {taskDir}/verify.mjs" }
+      ]
+    },
+    {
+      "id": "fix-fizzbuzz-order",
+      "source": "agenc-local",
+      "title": "Fix fizzbuzz branch ordering",
+      "dir": "fix-fizzbuzz-order",
+      "fixture": "fixture",
+      "prompt": "fizzbuzz() in fizzbuzz.js returns \"Fizz\" for multiples of 15 because the divisibility checks run in the wrong order. Fix it so multiples of 15 return \"FizzBuzz\" while multiples of only 3 or only 5 still return \"Fizz\" and \"Buzz\", and other numbers return their decimal string.",
+      "verifiers": [
+        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+      ]
+    }
+  ]
+}

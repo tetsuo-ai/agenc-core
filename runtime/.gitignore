@@ -9,3 +9,5 @@ build/
 # match the top-level `build/` build-artifact rule.
 !src/build/
 !src/build/**
+# Agent-eval run outputs (baseline-report.json stays committed)
+eval/reports/
