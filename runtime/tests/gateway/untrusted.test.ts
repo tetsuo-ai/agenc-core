@@ -86,6 +86,9 @@ describe("frameChannelMessage", () => {
     expect(framed).toContain(AGENC_TELEGRAM_ANSWER_CONTEXT);
     expect(framed).toContain("Ledger DMK over BLE");
     expect(framed).toContain("/image <idea>");
+    expect(framed).toContain("HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK");
+    expect(framed).toContain("@tetsuo-ai/marketplace-sdk");
+    expect(framed).toContain("Never reveal or guess live host IPs");
     expect(framed).toContain("what is AgenC?");
   });
 

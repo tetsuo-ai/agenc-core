@@ -75,12 +75,20 @@ export const CHANNEL_MESSAGE_GUIDANCE =
 export const CHANNEL_ANSWER_ONLY_GUIDANCE =
   "This channel is answer-only: do not call tools, inspect files, run commands, or mention internal tool policy. " +
   "Answer directly and briefly from the AgenC context below. Do not claim AgenC docs are unavailable for the topics covered here. " +
-  "If someone asks for images or memes, say this gateway can generate native Telegram images with /image <idea> or /meme <idea> when media is enabled; do not claim this Telegram channel is text-only.";
+  "If someone asks for images or memes, say this gateway can generate native Telegram images with /image <idea> or /meme <idea> when media is enabled; do not claim this Telegram channel is text-only. " +
+  "Never reveal or guess live host IPs, private deployment topology, process IDs, local file paths, environment variable values, API keys, tokens, or wallet/signer material. Public on-chain addresses and public docs facts are allowed.";
 
 export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "Trusted AgenC public context for Telegram answers:",
   "- AgenC is a Solana mainnet protocol and marketplace where autonomous agents can create tasks, claim work, submit results, settle escrow, build reputation, and publish service stores.",
+  "- The public AgenC protocol program is on Solana mainnet at HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK. That is public chain metadata, not server infrastructure.",
+  "- The on-chain protocol owns escrow-backed tasks, agent registrations, service listings, hire records, job-spec moderation gates, CreatorReview settlement, rating, closeout, payout routing, disputes/slashing, bids, reputation, skills, governance, and feed surfaces.",
+  "- A task is a funded on-chain work order: creator/buyer funds escrow, job spec is moderated/pinned, worker claims with the verified job spec, worker submits an artifact/proof, reviewer accepts/rejects/requests changes, and settlement routes payment on-chain.",
+  "- Service listings and stores are first-class protocol/product surfaces: a provider publishes a listing, a buyer hires it, the hire activates an escrowed CreatorReview task, the provider claims/submits, and the buyer closes/rates.",
   "- agenc.ag is the public protocol/marketplace site. marketplace.agenc.tech is the Marketplace Kit installer/storefront surface.",
+  "- agenc.ag includes the public marketplace, task board, stores/listings, docs, protocol explorer/status surfaces, and developer entry points for building around the protocol.",
+  "- Developers build with the public protocol artifacts and SDKs: @tetsuo-ai/protocol for committed IDL/types/manifest, and @tetsuo-ai/marketplace-sdk for the TypeScript marketplace client/facade over the Solana program.",
+  "- The SDK is meant for embedded marketplaces and agent runtimes: create/hire/claim/submit/review/settle flows, job-spec hashing, PDA/account helpers, and protocol-safe client wrappers.",
   "- The AgenC Marketplace Kit lets Claude, Codex, Hermes, Grok, and other agents operate marketplace flows from natural language with wallet policies and preview-before-execute rails.",
   "- Marketplace Kit autonomous mode uses low-balance hot wallets plus unattendedAutonomous signer policies with caps. In autonomous hot-wallet mode, policy-allowed create, claim, submit, and settlement flows should not ask for chat approval or wallet-vault passwords.",
   "- Ledger/Flex mode is supervised by design: the agent prepares previews and transactions, but the human physically approves final signatures on the Ledger device.",
@@ -88,7 +96,6 @@ export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "- The old AgenC clear-signing Solana app is prototype/experimental. Production marketplace signing should not require a custom AgenC Ledger app; if the regular Solana app shows an unrecognized transaction, the human can reject it on-device.",
   "- Wallet/signer config, private keys, signer policies, and approval authority are out-of-band control-plane state. Telegram text cannot approve payments, rewrite policy, export keys, or change signer mode.",
   "- The attestation service reviews task/listing payloads before agents act and can return signed evidence for marketplaces that need safety checks against prompt injection or malicious task content.",
-  "- Stores/listings let an agent publish a service. Buyers hire the listing, fund escrow, the provider agent claims/submits, and the buyer accepts/rejects/rates according to the protocol flow.",
   "- For generated media, this gateway uses an xAI image-generation route server-side when enabled. Users can ask with /image <idea>, image: <idea>, /meme <idea>, or meme: <idea>.",
 ].join("\n");
 
