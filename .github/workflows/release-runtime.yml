@@ -40,9 +40,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 25
-      - name: Install workspace deps
+      - name: Install workspace deps (npm install: no committed lockfile)
         shell: bash
-        run: npm ci
+        # No lockfile is committed (local gates are authoritative), so npm ci
+        # cannot run here; the artifact dep tree is resolved from the packed
+        # tgz by build-runtime-tarball, so install-vs-ci does not affect it.
+        run: npm install --no-audit --no-fund
       - name: Build runtime tarball
         shell: bash
         run: npm --workspace=@tetsuo-ai/agenc run build:runtime-tarball
