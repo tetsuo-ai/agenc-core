@@ -150,7 +150,9 @@ describe("channel gateway", () => {
     client.script = [{ text: "hi alice" }];
     await adapter.receive(dmMessage("alice", "do the thing"));
     expect(client.sessions).toHaveLength(1);
-    expect(client.sessions[0].prompts).toEqual(["do the thing"]);
+    // The prompt is the framed, untrusted-wrapped form of the user's text.
+    expect(client.sessions[0].prompts[0]).toContain("do the thing");
+    expect(client.sessions[0].prompts[0]).toContain('trust="external"');
     expect(adapter.lastText()).toBe("hi alice");
   });
 

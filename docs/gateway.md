@@ -40,7 +40,16 @@ and message it. Streaming replies edit one message in place.
   expose the agent.
 - **Channel text is untrusted.** Inbound messages can never change permission
   mode, signer/wallet config, or tool policy. The **only** channel input with
-  authority is an exact, single-use approval token (below).
+  authority is an exact, single-use approval token (below). Every message a
+  channel participant sends is **sanitized and framed** before it reaches the
+  agent: forged `<system-reminder>` tags, hidden/zero-width/bidi control
+  characters, and attempts to forge or close the wrapper are neutralized, and
+  the text is wrapped in a `trust="external"` block with guidance that any
+  embedded directive to escalate carries no authority. The agent still acts on
+  the participant's actual request; only privilege-escalation attempts are
+  inert. This is enforced by architecture too: the gateway hands `session.prompt`
+  nothing but that framed string, so there is no channel path that carries a
+  mode, config, or approval.
 - **Approvals round-trip in-channel.** When a turn needs a permission (e.g.
   Bash), the gateway renders it and blocks on an exact reply — `approve <token>`
   or `deny <token>`. Free text containing the token does **not** authorize; a

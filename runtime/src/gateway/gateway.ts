@@ -18,6 +18,7 @@ import { ApprovalRegistry, formatApprovalPrompt } from "./approvals.js";
 import { resolveBinding } from "./bindings.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
 import { SessionRouter } from "./session-router.js";
+import { frameChannelMessage } from "./untrusted.js";
 import type {
   ChannelAdapter,
   GatewayConfig,
@@ -165,6 +166,17 @@ export class ChannelGateway {
     });
 
     // 5. Session routing + turn execution with the approval round-trip.
+    // Channel text is untrusted: it is sanitized + framed here so it can never
+    // forge system framing or be read as a privilege-escalation directive.
+    // This is the ONLY form in which channel text reaches session.prompt.
+    const framedText = frameChannelMessage({
+      channelId: message.channelId,
+      peerId: message.sender.peerId,
+      ...(message.sender.displayName !== undefined
+        ? { displayName: message.sender.displayName }
+        : {}),
+      text: message.text,
+    });
     const key = SessionRouter.conversationKey({
       channelId: message.channelId,
       agent: resolved.agent,
@@ -173,7 +185,7 @@ export class ChannelGateway {
     try {
       await this.#router.runTurn({
         key,
-        text: message.text,
+        text: framedText,
         adapter,
         conversationId: message.conversation.id,
         onPermissionRequest: async (request) => {
