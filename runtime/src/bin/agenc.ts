@@ -153,6 +153,13 @@ import {
   runAgenCOnboardCli,
 } from "./onboard-cli.js";
 import {
+  buildSecurityAuditReport,
+  formatAgenCSecurityCliHelpText,
+  formatSecurityAuditSummaryLine,
+  parseAgenCSecurityCliArgs,
+  runAgenCSecurityCli,
+} from "./security-cli.js";
+import {
   formatAgenCInitCliHelpText,
   parseAgenCInitCliArgs,
   runAgenCInitCli,
@@ -307,6 +314,7 @@ export function formatCliHelpText(): string {
     "       agenc -p|--print [options] [PROMPT]",
     "       agenc help [command]",
     "       agenc onboard [--status [--json] | --reset]",
+    "       agenc security audit [--json] [--fix]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
     "       agenc providers [--json] [--no-local-check]",
@@ -327,6 +335,7 @@ export function formatCliHelpText(): string {
     "",
     "Commands:",
     "  onboard                                 Set up AgenC: provider, key, theme, first chat",
+    "  security                                Audit local exposure; --fix applies safe fixes",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness and local health",
@@ -403,6 +412,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCDoctorCliHelpText();
     case "onboard":
       return formatAgenCOnboardCliHelpText();
+    case "security":
+      return formatAgenCSecurityCliHelpText();
     case "permissions":
       return formatAgenCPermissionsCliHelpText();
     case "plugin":
@@ -3931,6 +3942,25 @@ export async function main(): Promise<number> {
   }
   const daemonCommand = parseAgenCDaemonCliArgs(argv);
   if (daemonCommand !== null) {
+    if (
+      daemonCommand.kind === "command" &&
+      (daemonCommand.action === "start" ||
+        daemonCommand.action === "run" ||
+        daemonCommand.action === "restart")
+    ) {
+      // Warn (never block) when starting the daemon with critical audit
+      // findings — exposure misconfigurations matter most at startup.
+      try {
+        const audit = await buildSecurityAuditReport({ env: process.env });
+        if (audit.criticalCount > 0) {
+          process.stderr.write(
+            `agenc: WARNING — ${formatSecurityAuditSummaryLine(audit)}\n`,
+          );
+        }
+      } catch {
+        // Advisory only.
+      }
+    }
     return runAgenCDaemonCli(daemonCommand);
   }
   const remoteCommand = parseAgenCRemoteCliArgs(argv);
@@ -4017,10 +4047,24 @@ export async function main(): Promise<number> {
         ? `agenc: daemon running (pid ${daemonStatus.pid})\n`
         : "agenc: daemon not running — it starts automatically with the session\n",
     );
+    // Onboarding is the moment defaults get set: surface the audit posture
+    // up front (read-only; never blocks the wizard).
+    try {
+      const audit = await buildSecurityAuditReport({ env: process.env });
+      process.stderr.write(
+        `agenc: ${formatSecurityAuditSummaryLine(audit)}\n`,
+      );
+    } catch {
+      // Audit is advisory here; the wizard must not be blocked by it.
+    }
     // Force the first-run wizard for this process only (never persisted);
     // consumed by shouldShowFirstRunOnboarding via the TUI's env snapshot.
     process.env.AGENC_ONBOARDING = "force";
     return runDefaultAgenCCliRoute(process.argv.slice(0, 2));
+  }
+  const securityCommand = parseAgenCSecurityCliArgs(argv);
+  if (securityCommand !== null) {
+    return runAgenCSecurityCli(securityCommand);
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
