@@ -1,9 +1,9 @@
 /**
  * Telegram/WebChat gateway image route backed by xAI image generation.
  *
- * This is deliberately explicit (`/image ...`, `/meme ...`, `image: ...`, or `meme: ...`) so normal agent
- * turns never surprise-spend image credits. It also keeps the image API key
- * server-side and sends only a public generated image URL back to the channel.
+ * Slash commands remain supported, but clear natural-language image requests
+ * are routed here too. Normal questions about images still fall through to the
+ * agent so media credits are not spent by surprise.
  */
 
 import {
@@ -52,7 +52,30 @@ export function parseMemePrompt(text: string): string | null {
   if (slash !== null) return slash[1]?.trim() ?? "";
   const labeled = trimmed.match(/^(?:meme|image)\s*:\s*([\s\S]+)$/i);
   if (labeled !== null) return labeled[1]?.trim() ?? "";
+  const natural = parseNaturalImagePrompt(trimmed);
+  if (natural !== null) return natural;
   return null;
+}
+
+function parseNaturalImagePrompt(trimmed: string): string | null {
+  const english = trimmed.match(
+    /^(?:(?:please\s+)?(?:can|could|would)\s+you\s+)?(?:i\s+(?:want|need|would\s+like)\s+|make|create|generate|draw|design|render|build)\s+(?:me\s+)?(?:an?\s+)?(?:(?:16:9|1:1|square|vertical|wide)\s+)?(?:image|picture|pic|meme|poster|banner|visual|graphic|card)\s*(?:of|about|for|showing|that\s+shows|with)?\s*([\s\S]*)$/i,
+  );
+  if (english !== null) return cleanNaturalMediaPrompt(english[1] ?? "");
+
+  const spanish = trimmed.match(
+    /^(?:(?:por\s+favor\s+)?(?:puedes|podrias|podrías)\s+(?:hacer|crear|generar|dibujar|diseñar)\s+|(?:quiero|necesito)\s+|(?:haz|hace|crea|genera|dibuja|diseña)\s+)(?:me\s+)?(?:un|una)?\s*(?:(?:16:9|1:1|cuadrada|vertical|wide)\s+)?(?:imagen|foto|meme|p[oó]ster|banner|visual|gr[aá]fico|card|tarjeta)\s*(?:de|sobre|para|con|que\s+muestre|mostrando)?\s*([\s\S]*)$/i,
+  );
+  if (spanish !== null) return cleanNaturalMediaPrompt(spanish[1] ?? "");
+
+  return null;
+}
+
+function cleanNaturalMediaPrompt(prompt: string): string {
+  return prompt
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:,-]+/u, "")
+    .trim();
 }
 
 function readUsage(path: string, day: string): MemeUsageState {

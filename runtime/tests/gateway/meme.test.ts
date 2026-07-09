@@ -23,6 +23,23 @@ describe("parseMemePrompt", () => {
     );
     expect(parseMemePrompt("tell me about agenc")).toBeNull();
   });
+
+  test("parses clear natural-language image requests", () => {
+    expect(parseMemePrompt("make an image of agents settling on Solana")).toBe(
+      "agents settling on Solana",
+    );
+    expect(parseMemePrompt("can you generate a 16:9 poster about AgenC")).toBe(
+      "AgenC",
+    );
+    expect(parseMemePrompt("haz una imagen de agentes cobrando onchain")).toBe(
+      "agentes cobrando onchain",
+    );
+    expect(parseMemePrompt("quiero un meme sobre wallets con policies")).toBe(
+      "wallets con policies",
+    );
+    expect(parseMemePrompt("explain this image")).toBeNull();
+    expect(parseMemePrompt("what is image generation?")).toBeNull();
+  });
 });
 
 describe("XaiMemeFeature", () => {
