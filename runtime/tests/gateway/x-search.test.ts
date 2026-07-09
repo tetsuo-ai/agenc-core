@@ -21,7 +21,11 @@ function xaiResponse(options: {
     JSON.stringify({
       status: "completed",
       output: [
-        { type: "x_search_call", status: "completed" },
+        {
+          type: "custom_tool_call",
+          name: "x_user_search",
+          status: "completed",
+        },
         {
           type: "message",
           content: [
@@ -165,7 +169,7 @@ describe("XaiXSearchFeature", () => {
     ]);
   });
 
-  test("requires proof that the server-side x_search tool actually ran", async () => {
+  test("requires proof that an allowed server-side x_search tool actually ran", async () => {
     const replies: string[] = [];
     const feature = new XaiXSearchFeature({
       apiKey: "xai-test-key-that-is-long-enough",
@@ -211,6 +215,103 @@ describe("XaiXSearchFeature", () => {
     ]);
   });
 
+  test("accepts the documented x_search_call response shape", async () => {
+    const replies: string[] = [];
+    const feature = new XaiXSearchFeature({
+      apiKey: "xai-test-key-that-is-long-enough",
+      usageFile: join(home, "usage.json"),
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            status: "completed",
+            output: [
+              { type: "x_search_call", status: "completed" },
+              {
+                type: "message",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "Verified result",
+                    annotations: [
+                      {
+                        type: "url_citation",
+                        url: "https://x.com/example/status/123",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as typeof fetch,
+    });
+
+    await feature.handle({
+      text: "latest post from @example",
+      channelId: "telegram",
+      peerId: "alice",
+      reply: async (text) => {
+        replies.push(text);
+        return "out-1";
+      },
+    });
+
+    expect(replies[0]).toContain("Verified result");
+    expect(replies[0]).toContain("https://x.com/example/status/123");
+  });
+
+  test("rejects unrelated custom tools even when their output carries an X citation", async () => {
+    const replies: string[] = [];
+    const feature = new XaiXSearchFeature({
+      apiKey: "xai-test-key-that-is-long-enough",
+      usageFile: join(home, "usage.json"),
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            status: "completed",
+            output: [
+              {
+                type: "custom_tool_call",
+                name: "code_execution",
+                status: "completed",
+              },
+              {
+                type: "message",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "Untrusted tool result",
+                    annotations: [
+                      {
+                        type: "url_citation",
+                        url: "https://x.com/example/status/123",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as typeof fetch,
+    });
+
+    await feature.handle({
+      text: "latest post from @example",
+      channelId: "telegram",
+      peerId: "alice",
+      reply: async (text) => {
+        replies.push(text);
+        return "out-1";
+      },
+    });
+
+    expect(replies).toEqual([
+      "I could not verify that X result with a direct public source, so I will not guess. Check the handle and try again.",
+    ]);
+  });
+
   test("fails closed when xAI does not report a completed response", async () => {
     const replies: string[] = [];
     const feature = new XaiXSearchFeature({
@@ -221,7 +322,11 @@ describe("XaiXSearchFeature", () => {
           JSON.stringify({
             status: "in_progress",
             output: [
-              { type: "x_search_call", status: "completed" },
+              {
+                type: "custom_tool_call",
+                name: "x_keyword_search",
+                status: "completed",
+              },
               {
                 type: "message",
                 content: [

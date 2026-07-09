@@ -123,12 +123,14 @@ handle-specific question cannot silently broaden into unrelated accounts.
 The gateway treats the query and all X content as untrusted data, applies
 per-peer and daily limits, bounds response size and latency, and caches repeated
 reads briefly. A response is returned only when xAI reports completion and
-includes a completed `x_search_call` plus a structured public
+includes completed server-side X-search evidence plus a structured public
 `x.com`/`twitter.com` citation; post-specific questions additionally require a
-cited status URL. Unverified links from model text are removed. Requests set
-`store: false`, so the Responses API does not retain them. The xAI API key
-remains in the private authorization header and is never included in prompts,
-replies, usage files, or logs.
+cited status URL. Both documented `x_search_call` output and xAI's current
+`custom_tool_call` names are accepted through a four-name X-search allowlist.
+Unverified links from model text are removed. Requests set `store: false`, so
+the Responses API does not retain them. The xAI API key remains in the private
+authorization header and is never included in prompts, replies, usage files, or
+logs.
 
 ### Read-only Solana research
 
