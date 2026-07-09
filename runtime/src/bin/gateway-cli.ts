@@ -1,22 +1,26 @@
 /**
- * `agenc gateway` — inspect and operate the channel gateway (TODO task 6).
+ * `agenc gateway` — inspect and operate the channel gateway (tasks 6-7).
  *
+ *   agenc gateway run [--stdio]       start the gateway with configured
+ *                                     channels (stdio dev channel + Telegram
+ *                                     when AGENC_TELEGRAM_BOT_TOKEN is set)
  *   agenc gateway status              config summary (channels, policies,
  *                                     bindings, paired counts)
  *   agenc gateway pairing list        paired senders, per channel
  *   agenc gateway pairing revoke <channel> <peerId>
  *
- * The gateway daemon run-loop (starting real channels) arrives with the
- * first channel adapter (task 7). This CLI is the readonly + pairing-admin
- * surface; it never signs, spends, or mutates daemon/agent state.
+ * Pairing/status never sign, spend, or mutate daemon state. `run` is a daemon
+ * CLIENT: it opens no listener of its own (Telegram uses outbound long-poll).
  */
 
 import { resolveAgencHome } from "../config/env.js";
 import { loadGatewayConfig, resolveGatewayConfigPath } from "../gateway/config.js";
 import { PairingStore } from "../gateway/pairing.js";
+import { startGateway } from "../gateway/run.js";
 import type { GatewayConfig } from "../gateway/types.js";
 
 export type AgenCGatewayCliCommand =
+  | { readonly kind: "run"; readonly stdio: boolean }
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "pairing-list"; readonly json: boolean }
   | {
@@ -32,6 +36,10 @@ export function formatAgenCGatewayCliHelpText(): string {
     "agenc gateway — inspect and operate the channel gateway",
     "",
     "Usage:",
+    "  agenc gateway run [--stdio]           Start the gateway. Enables the",
+    "                                        stdio dev channel with --stdio and",
+    "                                        Telegram when AGENC_TELEGRAM_BOT_TOKEN",
+    "                                        is set. Runs until Ctrl-C.",
     "  agenc gateway status [--json]         Channels, DM policies, bindings,",
     "                                        paired-sender counts",
     "  agenc gateway pairing list [--json]   Paired senders per channel",
@@ -55,6 +63,9 @@ export function parseAgenCGatewayCliArgs(
   const json = rest.includes("--json");
   const positional = rest.filter((a) => !a.startsWith("-"));
 
+  if (positional[0] === "run") {
+    return { kind: "run", stdio: rest.includes("--stdio") };
+  }
   if (positional[0] === "status") {
     return { kind: "status", json };
   }
@@ -88,6 +99,24 @@ export interface GatewayCliDeps {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
+  /**
+   * `run` blocks until this resolves (default: SIGINT/SIGTERM). Test seam.
+   */
+  readonly waitForShutdown?: () => Promise<void>;
+  /** `run` daemon-client + adapter injection. Test seam. */
+  readonly startGateway?: typeof startGateway;
+}
+
+function waitForSignals(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const onSignal = (): void => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      resolve();
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+  });
 }
 
 interface GatewayStatusReport {
@@ -146,6 +175,31 @@ export async function runAgenCGatewayCli(
 
   const env = deps.env ?? process.env;
   const agencHome = resolveAgencHome(env);
+
+  if (command.kind === "run") {
+    const start = deps.startGateway ?? startGateway;
+    let handle: Awaited<ReturnType<typeof startGateway>>;
+    try {
+      handle = await start({
+        agencHome,
+        env,
+        stdio: command.stdio,
+        log: (line) => stderr(line),
+      });
+    } catch (error) {
+      stderr(`agenc: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+    stdout(`gateway running (channels: ${handle.channels.join(", ")}). Ctrl-C to stop.`);
+    try {
+      await (deps.waitForShutdown ?? waitForSignals)();
+    } finally {
+      await handle.stop();
+    }
+    stdout("gateway stopped.");
+    return 0;
+  }
+
   const config = loadGatewayConfig({ agencHome, onWarn: (m) => stderr(m) });
   const store = new PairingStore({ agencHome });
 

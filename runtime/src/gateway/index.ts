@@ -29,3 +29,33 @@ export {
   InMemoryChannelAdapter,
   type RecordedOutbound,
 } from "./test-channel.js";
+export {
+  loadGatewayConfig,
+  resolveGatewayConfigPath,
+  type LoadGatewayConfigOptions,
+} from "./config.js";
+export {
+  StdioChannelAdapter,
+  STDIO_CHANNEL_ID,
+  STDIO_PEER_ID,
+  STDIO_CONVERSATION_ID,
+  type StdioChannelOptions,
+} from "./stdio-channel.js";
+export {
+  TelegramChannelAdapter,
+  FetchTelegramTransport,
+  TelegramBotApiError,
+  TELEGRAM_CHANNEL_ID,
+  type TelegramTransport,
+  type TelegramUpdate,
+  type TelegramChannelOptions,
+} from "./telegram-channel.js";
+export {
+  startGateway,
+  type GatewayRunOptions,
+  type GatewayRunHandle,
+} from "./run.js";
+export {
+  createSdkDaemonClient,
+  type SdkDaemonClientOptions,
+} from "./sdk-daemon-client.js";

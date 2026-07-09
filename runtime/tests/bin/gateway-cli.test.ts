@@ -23,6 +23,16 @@ describe("parseAgenCGatewayCliArgs", () => {
       text: formatAgenCGatewayCliHelpText(),
     });
   });
+  test("run + --stdio", () => {
+    expect(parseAgenCGatewayCliArgs(["gateway", "run"])).toEqual({
+      kind: "run",
+      stdio: false,
+    });
+    expect(parseAgenCGatewayCliArgs(["gateway", "run", "--stdio"])).toEqual({
+      kind: "run",
+      stdio: true,
+    });
+  });
   test("status + json", () => {
     expect(parseAgenCGatewayCliArgs(["gateway", "status"])).toEqual({
       kind: "status",
@@ -153,5 +163,69 @@ describe("gateway CLI against a temp home", () => {
     expect(ids).toContain("good");
     expect(ids).not.toContain("bad");
     expect(warn.join("\n")).toContain("invalid dmPolicy");
+  });
+});
+
+describe("gateway run (CLI wiring)", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "agenc-gw-run-"));
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  test("run: starts via injected startGateway, waits, then stops", async () => {
+    const env = { AGENC_HOME: home, HOME: home };
+    let stopped = false;
+    let releaseShutdown!: () => void;
+    const shutdown = new Promise<void>((r) => (releaseShutdown = r));
+    const out: string[] = [];
+
+    const fakeStart = (async () => ({
+      gateway: {} as never,
+      channels: ["stdio"],
+      async stop() {
+        stopped = true;
+      },
+    })) as unknown as typeof import("../../src/gateway/run.js").startGateway;
+
+    const runPromise = runAgenCGatewayCli(
+      { kind: "run", stdio: true },
+      {
+        env,
+        stdout: (l) => out.push(l),
+        stderr: () => {},
+        startGateway: fakeStart,
+        waitForShutdown: () => shutdown,
+      },
+    );
+    // Let the gateway "start" and print before we trigger shutdown.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(out.join("\n")).toContain("gateway running (channels: stdio)");
+    releaseShutdown();
+
+    const code = await runPromise;
+    expect(code).toBe(0);
+    expect(stopped).toBe(true);
+    expect(out.join("\n")).toContain("gateway stopped.");
+  });
+
+  test("run: a start failure exits 1 with the message", async () => {
+    const env = { AGENC_HOME: home, HOME: home };
+    const err: string[] = [];
+    const fakeStart = (async () => {
+      throw new Error("no channels enabled");
+    }) as unknown as typeof import("../../src/gateway/run.js").startGateway;
+
+    const code = await runAgenCGatewayCli(
+      { kind: "run", stdio: false },
+      {
+        env,
+        stderr: (l) => err.push(l),
+        startGateway: fakeStart,
+        waitForShutdown: async () => {},
+      },
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("no channels enabled");
   });
 });

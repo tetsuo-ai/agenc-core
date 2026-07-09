@@ -6,10 +6,29 @@ client** — it talks to the daemon only through the embedding SDK
 (`@tetsuo-ai/agenc-sdk`), never runtime internals — so channels are a
 client-side addition, not a runtime change.
 
-This page documents the **core** (task 6). The first real channel adapter
-(Telegram) and the `agenc gateway run` daemon loop arrive next; today the core
-is exercised by the in-memory adapter in tests, and the pairing/status surface
-is operable via `agenc gateway`.
+## Running it
+
+```bash
+agenc gateway run --stdio          # local dev channel: type to your agent
+AGENC_TELEGRAM_BOT_TOKEN=123:ABC \
+  agenc gateway run                # start the Telegram channel
+```
+
+`agenc gateway run` connects to the daemon (starting one if needed), loads
+`gateway/config.json`, and starts the enabled channels: `--stdio` for the
+local line-oriented dev channel, and Telegram whenever
+`AGENC_TELEGRAM_BOT_TOKEN` is set. It runs until Ctrl-C. The gateway opens no
+listener of its own — Telegram is outbound long-poll — so there is no new bind
+surface to expose.
+
+The **stdio channel** is the fastest way to see the whole pipeline: run
+`agenc gateway run --stdio`, and if the `stdio` channel has no allowlist entry
+you'll get a pairing code on your first line (pair from another terminal with
+`agenc gateway pairing`, or allowlist `local` in config).
+
+The **Telegram channel** uses the official Bot API (no reverse-engineered
+client, no account-ban risk). Create a bot with @BotFather, export the token,
+and message it. Streaming replies edit one message in place.
 
 ## Security model (non-negotiable)
 
@@ -56,6 +75,7 @@ coerced into something more permissive.
 ## Operating it
 
 ```bash
+agenc gateway run [--stdio]              # start the gateway (Ctrl-C to stop)
 agenc gateway status                     # channels, policies, bindings, paired counts
 agenc gateway pairing list               # paired senders per channel
 agenc gateway pairing revoke <ch> <peer> # remove a paired sender
@@ -71,4 +91,6 @@ Implement `ChannelAdapter` (`runtime/src/gateway/types.ts`): `start` (register
 the inbound callback), `stop`, and `send` (return the channel-native message
 id; adapters that report `supportsEdit: true` get streaming coalesced into an
 edited message, others get one message per completed turn). See
-`InMemoryChannelAdapter` for the reference shape.
+`StdioChannelAdapter` (line-oriented, no edit) and `TelegramChannelAdapter`
+(long-poll, edit-in-place, transport injected for testing) for reference
+shapes, then register it in `startGateway` (`runtime/src/gateway/run.js`).
