@@ -23,6 +23,10 @@ import { resolveHeartbeatPolicy } from "../heartbeat/config.js";
 import { startHeartbeat } from "../heartbeat/wire.js";
 import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
 import { startCronDelivery, type CronDeliveryHandle } from "./cron-delivery.js";
+import {
+  TELEGRAM_OWNER_COMMANDS,
+  TelegramOwnerControl,
+} from "./control-plane.js";
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
 import { XaiMemeFeature } from "./meme.js";
@@ -105,6 +109,14 @@ function envPositiveInt(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function envList(value: string | undefined): readonly string[] {
+  if (value === undefined) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 export interface GatewayRunHandle {
   readonly gateway: ChannelGateway;
   readonly channels: readonly string[];
@@ -135,9 +147,11 @@ export async function startGateway(
   const telegramToken =
     options.telegramToken ?? env.AGENC_TELEGRAM_BOT_TOKEN?.trim();
   if (telegramToken !== undefined && telegramToken.length > 0) {
+    const telegramTransport = new FetchTelegramTransport({ token: telegramToken });
     adapters.push(
       new TelegramChannelAdapter({
-        transport: new FetchTelegramTransport({ token: telegramToken }),
+        transport: telegramTransport,
+        commands: TELEGRAM_OWNER_COMMANDS,
         log,
       }),
     );
@@ -219,12 +233,29 @@ export async function startGateway(
           : {}),
       }));
 
+  const telegramAdminPeerIds = envList(env.AGENC_TELEGRAM_ADMIN_PEER_IDS);
+  const telegramOwnerClaimCode = env.AGENC_TELEGRAM_OWNER_CLAIM_CODE?.trim();
+  const controlPlane =
+    telegramAdminPeerIds.length > 0 ||
+    (telegramOwnerClaimCode !== undefined && telegramOwnerClaimCode.length > 0)
+      ? new TelegramOwnerControl({
+          agencHome: options.agencHome,
+          adminPeerIds: telegramAdminPeerIds,
+          ...(telegramOwnerClaimCode !== undefined &&
+          telegramOwnerClaimCode.length > 0
+            ? { ownerClaimCode: telegramOwnerClaimCode }
+            : {}),
+          log,
+        })
+      : undefined;
+
   const gateway = new ChannelGateway({
     agencHome: options.agencHome,
     client,
     config,
     log,
     ...(memeFeature !== undefined ? { memeFeature } : {}),
+    ...(controlPlane !== undefined ? { controlPlane } : {}),
   });
 
   const started: string[] = [];

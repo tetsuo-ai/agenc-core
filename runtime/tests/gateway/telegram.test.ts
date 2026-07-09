@@ -21,6 +21,7 @@ class FakeTransport implements TelegramTransport {
   readonly sent: { chatId: string; text: string }[] = [];
   readonly photos: { chatId: string; photoUrl: string; caption?: string }[] = [];
   readonly edits: { chatId: string; messageId: number; text: string }[] = [];
+  readonly commands: { commands: unknown; scope?: unknown }[] = [];
   #nextId = 100;
   editShouldThrow = false;
 
@@ -30,6 +31,9 @@ class FakeTransport implements TelegramTransport {
   async sendMessage(chatId: string, text: string) {
     this.sent.push({ chatId, text });
     return { message_id: ++this.#nextId };
+  }
+  async setMyCommands(commands: unknown, scope?: unknown): Promise<void> {
+    this.commands.push({ commands, ...(scope !== undefined ? { scope } : {}) });
   }
   async sendPhoto(chatId: string, photoUrl: string, caption?: string) {
     this.photos.push({ chatId, photoUrl, ...(caption !== undefined ? { caption } : {}) });
@@ -85,6 +89,29 @@ describe("TelegramChannelAdapter", () => {
       conversation: { kind: "dm", id: "42" },
       text: "hello agent",
     });
+  });
+
+  test("installs Telegram command menu when commands are configured", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      commands: [{ command: "status", description: "show bot control status" }],
+    });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+    await adapter.stop();
+
+    expect(transport.commands).toEqual([
+      {
+        commands: [{ command: "status", description: "show bot control status" }],
+        scope: { type: "all_private_chats" },
+      },
+      {
+        commands: [{ command: "status", description: "show bot control status" }],
+        scope: { type: "all_group_chats" },
+      },
+    ]);
   });
 
   test("maps a supergroup update to a group conversation", async () => {

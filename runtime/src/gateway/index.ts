@@ -87,6 +87,13 @@ export {
   type XaiMemeFeatureOptions,
 } from "./meme.js";
 export {
+  TELEGRAM_OWNER_COMMANDS,
+  TelegramOwnerControl,
+  type TelegramOwnerControlDecision,
+  type TelegramOwnerControlOptions,
+  type TelegramOwnerControlState,
+} from "./control-plane.js";
+export {
   WebChatChannelAdapter,
   renderWebChatHtml,
   WEBCHAT_CHANNEL_ID,

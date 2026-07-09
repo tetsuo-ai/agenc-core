@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import { TelegramOwnerControl } from "../../src/gateway/control-plane.js";
 import { ChannelGateway } from "../../src/gateway/gateway.js";
 import { InMemoryChannelAdapter } from "../../src/gateway/test-channel.js";
 import type {
@@ -86,6 +87,18 @@ function dmMessage(
   return {
     sender: { peerId },
     conversation: { kind: "dm", id: conversationId },
+    text,
+  };
+}
+
+function groupMessage(
+  peerId: string,
+  text: string,
+  conversationId = "group-1",
+): Omit<InboundChannelMessage, "channelId"> {
+  return {
+    sender: { peerId },
+    conversation: { kind: "group", id: conversationId },
     text,
   };
 }
@@ -335,5 +348,97 @@ describe("channel gateway", () => {
       behavior: "deny",
       reason: "approval timed out in the channel",
     });
+  });
+
+  test("telegram owner control blocks non-owner private DMs before the agent", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "pairing", allowlist: [] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      controlPlane: new TelegramOwnerControl({
+        agencHome: home,
+        adminPeerIds: ["owner"],
+      }),
+    });
+    await gw.registerAdapter(telegram);
+
+    await telegram.receive(dmMessage("mallory", "hello", "mallory-dm"));
+
+    expect(client.sessions).toHaveLength(0);
+    expect(telegram.lastText("mallory-dm")).toContain("owner-only");
+  });
+
+  test("telegram owner can pause and resume public group traffic", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "pairing", allowlist: [] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      controlPlane: new TelegramOwnerControl({
+        agencHome: home,
+        adminPeerIds: ["owner"],
+      }),
+    });
+    await gw.registerAdapter(telegram);
+
+    await telegram.receive(groupMessage("owner", "/stop"));
+    expect(telegram.lastText("group-1")).toContain("PAUSED");
+
+    await telegram.receive(groupMessage("alice", "ignored while paused"));
+    expect(client.sessions).toHaveLength(0);
+
+    await telegram.receive(groupMessage("owner", "/start"));
+    expect(telegram.lastText("group-1")).toContain("ON");
+
+    client.script = [{ text: "group live" }];
+    await telegram.receive(groupMessage("alice", "now public"));
+    expect(client.sessions).toHaveLength(1);
+    expect(client.sessions[0].prompts[0]).toContain("now public");
+    expect(telegram.lastText("group-1")).toBe("group live");
+  });
+
+  test("telegram first-owner claim enables private owner controls only", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "pairing", allowlist: [] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      controlPlane: new TelegramOwnerControl({
+        agencHome: home,
+        ownerClaimCode: "CLAIM123",
+      }),
+    });
+    await gw.registerAdapter(telegram);
+
+    await telegram.receive(dmMessage("owner", "/owner wrong", "owner-dm"));
+    expect(telegram.lastText("owner-dm")).toContain("Wrong owner code");
+    await telegram.receive(dmMessage("owner", "/owner CLAIM123", "owner-dm"));
+    expect(telegram.lastText("owner-dm")).toContain("Owner claimed");
+
+    await telegram.receive(dmMessage("owner", "/status", "owner-dm"));
+    expect(telegram.lastText("owner-dm")).toContain("Owners: 1");
+
+    await telegram.receive(dmMessage("mallory", "hi", "mallory-dm"));
+    expect(client.sessions).toHaveLength(0);
+    expect(telegram.lastText("mallory-dm")).toContain("owner-only");
   });
 });
