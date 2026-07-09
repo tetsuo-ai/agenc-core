@@ -16,6 +16,7 @@
 
 import { ApprovalRegistry, formatApprovalPrompt } from "./approvals.js";
 import { resolveBinding } from "./bindings.js";
+import type { TelegramOwnerControl } from "./control-plane.js";
 import type { GatewayMemeFeature, GatewayMemeReplyOptions } from "./meme.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
 import { detectPromptInjectionAttempt } from "./prompt-injection.js";
@@ -40,6 +41,7 @@ export interface GatewayOptions {
   readonly approvalTimeoutMs?: number;
   readonly flushIntervalMs?: number;
   readonly memeFeature?: GatewayMemeFeature;
+  readonly controlPlane?: TelegramOwnerControl;
 }
 
 export class ChannelGateway {
@@ -50,11 +52,13 @@ export class ChannelGateway {
   readonly #adapters = new Map<string, ChannelAdapter>();
   readonly #log: (line: string) => void;
   readonly #memeFeature?: GatewayMemeFeature;
+  readonly #controlPlane?: TelegramOwnerControl;
 
   constructor(options: GatewayOptions) {
     this.#config = options.config;
     this.#log = options.log ?? (() => {});
     this.#memeFeature = options.memeFeature;
+    this.#controlPlane = options.controlPlane;
     this.#pairing = new PairingStore({
       agencHome: options.agencHome,
       ...(options.now !== undefined ? { now: options.now } : {}),
@@ -130,38 +134,44 @@ export class ChannelGateway {
       return;
     }
 
+    const control = await this.#controlPlane?.handle({ message, reply });
+    if (control?.handled === true) return;
+    const bypassAccess = control?.bypassAccess === true;
+
     // 2 + 3. DM policy gate (groups follow the same sender gate: an
     //    unpaired sender in a group cannot drive the agent either).
-    const policy = this.#config.channels[message.channelId];
-    const access = evaluateDmAccess({
-      ...(policy !== undefined ? { policy } : {}),
-      channelId: message.channelId,
-      sender: message.sender,
-      store: this.#pairing,
-    });
-    if (access.kind === "denied") {
-      this.#log(
-        `gateway: denied '${message.sender.peerId}' on '${message.channelId}': ${access.reason}`,
-      );
-      return;
-    }
-    if (access.kind === "pairing_challenge") {
-      // A pending challenge exists (or was just minted). An exact code
-      // reply redeems it; anything else re-renders the challenge.
-      if (this.#pairing.redeem(message.channelId, message.sender, message.text)) {
-        await reply(
-          "Paired. This conversation now reaches your AgenC agent — send a message to begin.",
+    if (!bypassAccess) {
+      const policy = this.#config.channels[message.channelId];
+      const access = evaluateDmAccess({
+        ...(policy !== undefined ? { policy } : {}),
+        channelId: message.channelId,
+        sender: message.sender,
+        store: this.#pairing,
+      });
+      if (access.kind === "denied") {
+        this.#log(
+          `gateway: denied '${message.sender.peerId}' on '${message.channelId}': ${access.reason}`,
         );
         return;
       }
-      await reply(
-        [
-          "This agent is pairing-protected.",
-          `Your pairing code: ${access.code}`,
-          "Confirm it on the gateway host (agenc gateway pairing list), then reply with the code to pair.",
-        ].join("\n"),
-      );
-      return;
+      if (access.kind === "pairing_challenge") {
+        // A pending challenge exists (or was just minted). An exact code
+        // reply redeems it; anything else re-renders the challenge.
+        if (this.#pairing.redeem(message.channelId, message.sender, message.text)) {
+          await reply(
+            "Paired. This conversation now reaches your AgenC agent — send a message to begin.",
+          );
+          return;
+        }
+        await reply(
+          [
+            "This agent is pairing-protected.",
+            `Your pairing code: ${access.code}`,
+            "Confirm it on the gateway host (agenc gateway pairing list), then reply with the code to pair.",
+          ].join("\n"),
+        );
+        return;
+      }
     }
 
     const injection = detectPromptInjectionAttempt(message.text);

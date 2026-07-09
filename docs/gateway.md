@@ -43,6 +43,27 @@ The **Telegram channel** uses the official Bot API (no reverse-engineered
 client, no account-ban risk). Create a bot with @BotFather, export the token,
 and message it. Streaming replies edit one message in place.
 
+Telegram can also run with **owner controls**:
+
+```bash
+AGENC_TELEGRAM_BOT_TOKEN=123:ABC \
+AGENC_TELEGRAM_OWNER_CLAIM_CODE=<random-one-time-code> \
+  agenc gateway run
+```
+
+The first owner DMs `/owner <code>` to claim the bot. After that:
+
+- private DMs are owner-only; everyone else is told to use the public group;
+- `/stop` pauses public group replies without stopping the process;
+- `/start` turns public group replies back on;
+- `/status` shows whether the public group is live or paused;
+- group traffic bypasses pairing while public replies are on, so the bot works
+  naturally in the public chat you added it to.
+
+For fixed operators, set `AGENC_TELEGRAM_ADMIN_PEER_IDS=123,456`. Owner/control
+state is stored at `<AGENC_HOME>/gateway/control.json` (0600). Telegram command
+menus are installed for private chats and groups when the Bot API allows it.
+
 ## Heartbeat (proactive ticks)
 
 `agenc gateway run --heartbeat` (or `[heartbeat] enabled = true`) runs a
@@ -70,6 +91,10 @@ default.
 - **Pairing by default.** An unknown DM sender gets a one-time, expiring
   pairing code and **no agent access** until it is redeemed. `dmPolicy` can be
   `pairing` (default), `allowlist`, `open`, or `disabled`.
+- **Telegram owner controls override public/private routing.** When configured,
+  non-owner private DMs are blocked before they reach pairing or the agent.
+  Public group messages can reach the agent only while the owner-controlled
+  public state is on; `/stop` pauses them process-wide.
 - **`open` requires an explicit `"*"`.** Setting `dmPolicy: "open"` alone still
   denies; the allowlist must literally contain `"*"`. A lone config typo can't
   expose the agent.

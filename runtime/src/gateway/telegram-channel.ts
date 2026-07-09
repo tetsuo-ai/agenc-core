@@ -34,10 +34,23 @@ export interface TelegramSentMessage {
   readonly message_id: number;
 }
 
+export interface TelegramBotCommand {
+  readonly command: string;
+  readonly description: string;
+}
+
+export interface TelegramBotCommandScope {
+  readonly type: string;
+}
+
 /** The slice of the Bot API the adapter uses. */
 export interface TelegramTransport {
   getUpdates(offset: number, timeoutSeconds: number): Promise<TelegramUpdate[]>;
   sendMessage(chatId: string, text: string): Promise<TelegramSentMessage>;
+  setMyCommands?(
+    commands: readonly TelegramBotCommand[],
+    scope?: TelegramBotCommandScope,
+  ): Promise<void>;
   sendPhoto?(
     chatId: string,
     photoUrl: string,
@@ -97,6 +110,16 @@ export class FetchTelegramTransport implements TelegramTransport {
     });
   }
 
+  async setMyCommands(
+    commands: readonly TelegramBotCommand[],
+    scope?: TelegramBotCommandScope,
+  ): Promise<void> {
+    await this.#call("setMyCommands", {
+      commands,
+      ...(scope !== undefined ? { scope } : {}),
+    });
+  }
+
   async sendPhoto(
     chatId: string,
     photoUrl: string,
@@ -129,6 +152,7 @@ export interface TelegramChannelOptions {
   /** Bounded backoff after a transport error, ms. */
   readonly errorBackoffMs?: number;
   readonly log?: (line: string) => void;
+  readonly commands?: readonly TelegramBotCommand[];
   /**
    * Launch the background long-poll loop on start(). Default true. Tests set
    * false to drive pollOnce() deterministically without a competing loop.
@@ -150,6 +174,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #backoffMs: number;
   readonly #log: (line: string) => void;
   readonly #autoPoll: boolean;
+  readonly #commands: readonly TelegramBotCommand[];
   readonly #editTargets = new Map<string, EditTarget>();
   #context: ChannelAdapterContext | null = null;
   #offset = 0;
@@ -164,10 +189,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#backoffMs = options.errorBackoffMs ?? 1000;
     this.#log = options.log ?? (() => {});
     this.#autoPoll = options.autoPoll ?? true;
+    this.#commands = options.commands ?? [];
   }
 
   async start(context: ChannelAdapterContext): Promise<void> {
     this.#context = context;
+    await this.#installCommands();
     if (this.#autoPoll) {
       this.#running = true;
       this.#loop = this.#pollLoop();
@@ -190,6 +217,25 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     for (const update of updates) {
       this.#offset = Math.max(this.#offset, update.update_id + 1);
       await this.#handleUpdate(update);
+    }
+  }
+
+  async #installCommands(): Promise<void> {
+    if (
+      this.#commands.length === 0 ||
+      this.#transport.setMyCommands === undefined
+    ) {
+      return;
+    }
+    try {
+      await this.#transport.setMyCommands(this.#commands, {
+        type: "all_private_chats",
+      });
+      await this.#transport.setMyCommands(this.#commands, {
+        type: "all_group_chats",
+      });
+    } catch (error) {
+      this.#log(`telegram: command menu setup failed: ${String(error)}`);
     }
   }
 
