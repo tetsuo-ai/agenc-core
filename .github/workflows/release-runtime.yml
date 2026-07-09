@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 25
-      - name: Install workspace deps (npm install: no committed lockfile)
+      - name: Install workspace deps
         shell: bash
         # No lockfile is committed (local gates are authoritative), so npm ci
         # cannot run here; the artifact dep tree is resolved from the packed
