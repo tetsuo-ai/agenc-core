@@ -43,6 +43,14 @@ The **Telegram channel** uses the official Bot API (no reverse-engineered
 client, no account-ban risk). Create a bot with @BotFather, export the token,
 and message it. Streaming replies edit one message in place.
 
+Text replies prefer Telegram Bot API Rich Messages (`sendRichMessage` and
+`editMessageText` with `rich_message.markdown`) so headings, lists, links,
+inline code, and Markdown tables render as native Telegram rich content. If a
+Bot API deployment or a specific payload rejects Rich Messages, the gateway
+falls back to the legacy safe HTML renderer; in that fallback, Markdown tables
+are escaped and rendered as preformatted blocks. Native media captions still use
+the safe HTML renderer because Telegram captions do not accept `rich_message`.
+
 Telegram can also run with **owner controls**:
 
 ```bash
