@@ -141,8 +141,16 @@ export interface GatewaySession {
   ): Promise<GatewayPromptResult>;
 }
 
+export interface GatewaySessionCreateOptions {
+  /**
+   * Operator-facing label for the daemon agent backing this session (e.g.
+   * the conversation key or "heartbeat") — shows up in `agenc agents list`.
+   */
+  readonly label?: string;
+}
+
 export interface GatewayDaemonClient {
-  createSession(): Promise<GatewaySession>;
+  createSession(options?: GatewaySessionCreateOptions): Promise<GatewaySession>;
   attachSession(sessionId: string): Promise<GatewaySession>;
   close(): Promise<void>;
 }

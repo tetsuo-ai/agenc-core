@@ -12,6 +12,9 @@
  * is the safety boundary and is fully live regardless of which model runs.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import type { AgenCConfig } from "../config/schema.js";
 import {
   BudgetEnforcer,
@@ -19,7 +22,12 @@ import {
   createModelPriceResolver,
   resolveBudgetPolicy,
 } from "../budget/index.js";
-import type { ChannelAdapter, GatewayDaemonClient } from "../gateway/types.js";
+import { isDaemonAgentGoneError } from "../gateway/sdk-daemon-client.js";
+import type {
+  ChannelAdapter,
+  GatewayDaemonClient,
+  GatewaySession,
+} from "../gateway/types.js";
 import { resolveHeartbeatPolicy } from "./config.js";
 import { WorkspaceHeartbeatFileReader } from "./heartbeat-file.js";
 import { HeartbeatRunner } from "./runner.js";
@@ -70,24 +78,82 @@ function budgetGate(
   };
 }
 
-/** A turn runner backed by a single gateway session (isolated heartbeat ctx). */
-function gatewayTurnRunner(
-  session: Awaited<ReturnType<GatewayDaemonClient["createSession"]>>,
-): HeartbeatTurnRunner {
+const HEARTBEAT_SESSION_LABEL = "heartbeat";
+
+/**
+ * Session supplier for heartbeat turns: reuses one daemon session across
+ * gateway restarts via a persisted id (`gateway/heartbeat-session`, 0600) so
+ * each `gateway run` does not accumulate a fresh daemon agent, and
+ * provisions a new one when the persisted session's agent is gone.
+ */
+function heartbeatSessionSupplier(options: {
+  readonly agencHome: string;
+  readonly client: GatewayDaemonClient;
+}): { get(): Promise<GatewaySession>; invalidate(): void } {
+  const path = join(options.agencHome, "gateway", "heartbeat-session");
+  let live: GatewaySession | null = null;
+  return {
+    async get() {
+      if (live !== null) return live;
+      if (existsSync(path)) {
+        const persistedId = readFileSync(path, "utf8").trim();
+        if (persistedId.length > 0) {
+          try {
+            live = await options.client.attachSession(persistedId);
+            return live;
+          } catch {
+            // Stale persisted id (daemon state pruned): fall through.
+          }
+        }
+      }
+      live = await options.client.createSession({
+        label: HEARTBEAT_SESSION_LABEL,
+      });
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, `${live.sessionId}\n`, { mode: 0o600 });
+      return live;
+    },
+    invalidate() {
+      live = null;
+      try {
+        writeFileSync(path, "", { mode: 0o600 });
+      } catch {
+        // Best-effort: a stale id is re-detected on the next attach.
+      }
+    },
+  };
+}
+
+/** A turn runner backed by a persistent gateway session (isolated heartbeat ctx). */
+function gatewayTurnRunner(supplier: {
+  get(): Promise<GatewaySession>;
+  invalidate(): void;
+}): HeartbeatTurnRunner {
+  const runOnce = async (session: GatewaySession, prompt: string) => {
+    const result = await session.prompt(prompt, {
+      onEvent: () => {},
+      // Autonomous, no human watching → deny permission requests (fail safe).
+      onPermissionRequest: async () => ({
+        behavior: "deny",
+        reason: "heartbeat turns do not grant tool permissions",
+      }),
+    });
+    return {
+      finalMessage: result.finalMessage,
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+    };
+  };
   return {
     async run(prompt) {
-      const result = await session.prompt(prompt, {
-        onEvent: () => {},
-        // Autonomous, no human watching → deny permission requests (fail safe).
-        onPermissionRequest: async () => ({
-          behavior: "deny",
-          reason: "heartbeat turns do not grant tool permissions",
-        }),
-      });
-      return {
-        finalMessage: result.finalMessage,
-        ...(result.usage !== undefined ? { usage: result.usage } : {}),
-      };
+      const session = await supplier.get();
+      try {
+        return await runOnce(session, prompt);
+      } catch (error) {
+        // Backing agent gone (daemon restart): reprovision and retry once.
+        if (!isDaemonAgentGoneError(error)) throw error;
+        supplier.invalidate();
+        return await runOnce(await supplier.get(), prompt);
+      }
     },
   };
 }
@@ -121,11 +187,15 @@ export async function startHeartbeat(
     notify: (e) => log(`heartbeat/budget: ${e.message}`),
   });
 
-  const session = await options.client.createSession();
   const runner = new HeartbeatRunner({
     policy,
     clock: options.clock ?? REAL_CLOCK,
-    turnRunner: gatewayTurnRunner(session),
+    turnRunner: gatewayTurnRunner(
+      heartbeatSessionSupplier({
+        agencHome: options.agencHome,
+        client: options.client,
+      }),
+    ),
     delivery: delivery(options.adapters),
     file: new WorkspaceHeartbeatFileReader(options.workspaceDir),
     budget: budgetGate(enforcer),

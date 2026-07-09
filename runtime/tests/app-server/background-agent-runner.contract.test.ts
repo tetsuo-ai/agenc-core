@@ -704,6 +704,27 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("[managed-thread] empty initialContent provisions a passive agent with no turn-1 submit", async () => {
+    // The channel gateway (task 34) relies on this contract: agent.create
+    // with `initialContent: []` bootstraps a live, runnable agent WITHOUT
+    // submitting the objective as a first turn — zero LLM calls until the
+    // first real message arrives via message.send.
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-passive-gateway",
+    });
+
+    const result = await runner.startAgent({
+      objective: "gateway session",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(result.agentId).toBe("session-passive-gateway");
+    expect(result.status).toBe("running");
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] emits visible user message before routing attached input", async () => {
     const { runner, control } = makeTopLevelRunner({
       conversationId: "session-user-order",

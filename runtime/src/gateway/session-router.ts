@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { isDaemonAgentGoneError } from "./sdk-daemon-client.js";
 import type {
   ChannelAdapter,
   GatewayDaemonClient,
@@ -112,11 +113,24 @@ export class SessionRouter {
         // Stale persisted id (daemon state pruned): fall through to create.
       }
     }
-    const created = await this.#client.createSession();
+    const created = await this.#client.createSession({ label: key });
     this.#sessions.set(key, created);
     this.#persisted.sessions[key] = created.sessionId;
     this.#save();
     return created;
+  }
+
+  /**
+   * Drop a conversation's session from the live cache and the persisted map.
+   * Used when the daemon reports its backing agent gone (daemon restart,
+   * agent stopped) so the next turn provisions a fresh session.
+   */
+  #evictSession(key: string): void {
+    this.#sessions.delete(key);
+    if (this.#persisted.sessions[key] !== undefined) {
+      delete this.#persisted.sessions[key];
+      this.#save();
+    }
   }
 
   /**
@@ -143,55 +157,71 @@ export class SessionRouter {
     );
     await previous;
     try {
-      const session = await this.#sessionFor(options.key);
+      const attempt = async (
+        session: GatewaySession,
+      ): Promise<GatewayPromptResult> => {
+        let buffer = "";
+        let sentMessageId: string | null = null;
+        let lastFlush = 0;
+        let flushing = Promise.resolve();
 
-      let buffer = "";
-      let sentMessageId: string | null = null;
-      let lastFlush = 0;
-      let flushing = Promise.resolve();
-
-      const flush = (force: boolean): Promise<void> => {
-        if (buffer.length === 0) return flushing;
-        if (!options.adapter.supportsEdit && !force) return flushing;
-        const now = Date.now();
-        if (!force && now - lastFlush < this.#flushIntervalMs) {
-          return flushing;
-        }
-        lastFlush = now;
-        const text = buffer;
-        flushing = flushing.then(async () => {
-          if (options.adapter.supportsEdit && sentMessageId !== null) {
-            await options.adapter.send({
-              conversationId: options.conversationId,
-              text,
-              editMessageId: sentMessageId,
-            });
-          } else {
-            sentMessageId = await options.adapter.send({
-              conversationId: options.conversationId,
-              text,
-            });
+        const flush = (force: boolean): Promise<void> => {
+          if (buffer.length === 0) return flushing;
+          if (!options.adapter.supportsEdit && !force) return flushing;
+          const now = Date.now();
+          if (!force && now - lastFlush < this.#flushIntervalMs) {
+            return flushing;
           }
+          lastFlush = now;
+          const text = buffer;
+          flushing = flushing.then(async () => {
+            if (options.adapter.supportsEdit && sentMessageId !== null) {
+              await options.adapter.send({
+                conversationId: options.conversationId,
+                text,
+                editMessageId: sentMessageId,
+              });
+            } else {
+              sentMessageId = await options.adapter.send({
+                conversationId: options.conversationId,
+                text,
+              });
+            }
+          });
+          return flushing;
+        };
+
+        const result = await session.prompt(options.text, {
+          onEvent: (event) => {
+            if (event.type === "text") {
+              buffer += event.delta;
+              void flush(false);
+            }
+          },
+          onPermissionRequest: options.onPermissionRequest,
         });
-        return flushing;
+
+        // Final state always lands, even for non-edit adapters.
+        if (result.finalMessage.length > 0) {
+          buffer = result.finalMessage;
+        }
+        await flush(true);
+        return result;
       };
 
-      const result = await session.prompt(options.text, {
-        onEvent: (event) => {
-          if (event.type === "text") {
-            buffer += event.delta;
-            void flush(false);
-          }
-        },
-        onPermissionRequest: options.onPermissionRequest,
-      });
-
-      // Final state always lands, even for non-edit adapters.
-      if (result.finalMessage.length > 0) {
-        buffer = result.finalMessage;
+      const session = await this.#sessionFor(options.key);
+      try {
+        return await attempt(session);
+      } catch (error) {
+        // The daemon lost this session's backing agent (daemon restart,
+        // agent stopped). Provision fresh and retry ONCE; a second failure
+        // propagates. History is gone with the agent — acceptable, the
+        // alternative is a permanently dead conversation.
+        if (!isDaemonAgentGoneError(error)) throw error;
+        this.#evictSession(options.key);
+        const fresh = await this.#sessionFor(options.key);
+        return await attempt(fresh);
       }
-      await flush(true);
-      return result;
     } finally {
       release();
     }
