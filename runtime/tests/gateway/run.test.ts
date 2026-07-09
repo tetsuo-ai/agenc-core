@@ -138,8 +138,10 @@ describe("startGateway", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(client.sessions).toHaveLength(1);
-    expect(client.sessions[0].prompts).toEqual(["run the tests"]);
-    expect(transport.sent.at(-1)?.text).toBe("echo: run the tests");
+    // The prompt is the framed form of the inbound text.
+    expect(client.sessions[0].prompts[0]).toContain("run the tests");
+    expect(client.sessions[0].prompts[0]).toContain('trust="external"');
+    expect(transport.sent.at(-1)?.text).toContain("echo:");
 
     await handle.stop();
   });

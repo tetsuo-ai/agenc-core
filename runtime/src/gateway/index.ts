@@ -59,3 +59,9 @@ export {
   createSdkDaemonClient,
   type SdkDaemonClientOptions,
 } from "./sdk-daemon-client.js";
+export {
+  frameChannelMessage,
+  sanitizeChannelText,
+  CHANNEL_MESSAGE_GUIDANCE,
+  type FrameChannelMessageInput,
+} from "./untrusted.js";
