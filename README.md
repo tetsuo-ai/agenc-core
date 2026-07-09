@@ -337,6 +337,7 @@ plugins/        plugin manifests, registration, marketplaces, and CLI
 hooks/          configured hooks and hook execution engine
 elicitation/    structured user-input requests and responses
 memory/ memdir/ project/session memory storage and retrieval
+gateway/        channel gateway: pairing, bindings, in-channel approvals (docs/gateway.md)
 transaction-guard/  opt-in SLM tool-call guard (see Security)
 unified-exec/ pty/  process execution and PTY helpers
 tui/            the custom React terminal UI

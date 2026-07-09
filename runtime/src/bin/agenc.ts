@@ -160,6 +160,11 @@ import {
   runAgenCSecurityCli,
 } from "./security-cli.js";
 import {
+  formatAgenCGatewayCliHelpText,
+  parseAgenCGatewayCliArgs,
+  runAgenCGatewayCli,
+} from "./gateway-cli.js";
+import {
   formatAgenCInitCliHelpText,
   parseAgenCInitCliArgs,
   runAgenCInitCli,
@@ -315,6 +320,7 @@ export function formatCliHelpText(): string {
     "       agenc help [command]",
     "       agenc onboard [--status [--json] | --reset]",
     "       agenc security audit [--json] [--fix]",
+    "       agenc gateway <status|pairing> [args]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
     "       agenc providers [--json] [--no-local-check]",
@@ -336,6 +342,7 @@ export function formatCliHelpText(): string {
     "Commands:",
     "  onboard                                 Set up AgenC: provider, key, theme, first chat",
     "  security                                Audit local exposure; --fix applies safe fixes",
+    "  gateway                                 Inspect/operate the channel gateway (pairing)",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness and local health",
@@ -414,6 +421,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCOnboardCliHelpText();
     case "security":
       return formatAgenCSecurityCliHelpText();
+    case "gateway":
+      return formatAgenCGatewayCliHelpText();
     case "permissions":
       return formatAgenCPermissionsCliHelpText();
     case "plugin":
@@ -4065,6 +4074,10 @@ export async function main(): Promise<number> {
   const securityCommand = parseAgenCSecurityCliArgs(argv);
   if (securityCommand !== null) {
     return runAgenCSecurityCli(securityCommand);
+  }
+  const gatewayCommand = parseAgenCGatewayCliArgs(argv);
+  if (gatewayCommand !== null) {
+    return runAgenCGatewayCli(gatewayCommand);
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
