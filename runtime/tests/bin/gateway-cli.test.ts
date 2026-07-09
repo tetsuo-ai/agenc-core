@@ -23,15 +23,20 @@ describe("parseAgenCGatewayCliArgs", () => {
       text: formatAgenCGatewayCliHelpText(),
     });
   });
-  test("run + --stdio", () => {
+  test("run + --stdio + --webchat", () => {
     expect(parseAgenCGatewayCliArgs(["gateway", "run"])).toEqual({
       kind: "run",
       stdio: false,
+      webchat: false,
     });
     expect(parseAgenCGatewayCliArgs(["gateway", "run", "--stdio"])).toEqual({
       kind: "run",
       stdio: true,
+      webchat: false,
     });
+    expect(
+      parseAgenCGatewayCliArgs(["gateway", "run", "--webchat"]),
+    ).toEqual({ kind: "run", stdio: false, webchat: true });
   });
   test("status + json", () => {
     expect(parseAgenCGatewayCliArgs(["gateway", "status"])).toEqual({

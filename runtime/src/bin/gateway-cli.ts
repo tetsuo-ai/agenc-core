@@ -20,7 +20,7 @@ import { startGateway } from "../gateway/run.js";
 import type { GatewayConfig } from "../gateway/types.js";
 
 export type AgenCGatewayCliCommand =
-  | { readonly kind: "run"; readonly stdio: boolean }
+  | { readonly kind: "run"; readonly stdio: boolean; readonly webchat: boolean }
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "pairing-list"; readonly json: boolean }
   | {
@@ -36,8 +36,10 @@ export function formatAgenCGatewayCliHelpText(): string {
     "agenc gateway — inspect and operate the channel gateway",
     "",
     "Usage:",
-    "  agenc gateway run [--stdio]           Start the gateway. Enables the",
-    "                                        stdio dev channel with --stdio and",
+    "  agenc gateway run [--stdio] [--webchat]",
+    "                                        Start the gateway. --stdio enables",
+    "                                        the local dev channel; --webchat a",
+    "                                        loopback token-gated browser UI;",
     "                                        Telegram when AGENC_TELEGRAM_BOT_TOKEN",
     "                                        is set. Runs until Ctrl-C.",
     "  agenc gateway status [--json]         Channels, DM policies, bindings,",
@@ -64,7 +66,11 @@ export function parseAgenCGatewayCliArgs(
   const positional = rest.filter((a) => !a.startsWith("-"));
 
   if (positional[0] === "run") {
-    return { kind: "run", stdio: rest.includes("--stdio") };
+    return {
+      kind: "run",
+      stdio: rest.includes("--stdio"),
+      webchat: rest.includes("--webchat"),
+    };
   }
   if (positional[0] === "status") {
     return { kind: "status", json };
@@ -184,6 +190,7 @@ export async function runAgenCGatewayCli(
         agencHome,
         env,
         stdio: command.stdio,
+        webchat: command.webchat,
         log: (line) => stderr(line),
       });
     } catch (error) {
@@ -191,6 +198,9 @@ export async function runAgenCGatewayCli(
       return 1;
     }
     stdout(`gateway running (channels: ${handle.channels.join(", ")}). Ctrl-C to stop.`);
+    if (handle.webchatUrl !== undefined) {
+      stdout(`  WebChat: ${handle.webchatUrl}`);
+    }
     try {
       await (deps.waitForShutdown ?? waitForSignals)();
     } finally {
