@@ -45,7 +45,9 @@ export interface TelegramMessage {
   };
   readonly chat: { readonly id: number; readonly type: string };
   readonly text?: string;
+  readonly entities?: readonly TelegramMessageEntity[];
   readonly caption?: string;
+  readonly caption_entities?: readonly TelegramMessageEntity[];
   readonly reply_to_message?: {
     readonly text?: string;
     readonly caption?: string;
@@ -61,6 +63,18 @@ export interface TelegramMessage {
       readonly username?: string;
       readonly title?: string;
     };
+  };
+}
+
+export interface TelegramMessageEntity {
+  readonly type: string;
+  readonly offset: number;
+  readonly length: number;
+  readonly user?: {
+    readonly id: number;
+    readonly is_bot?: boolean;
+    readonly username?: string;
+    readonly first_name?: string;
   };
 }
 
@@ -581,11 +595,10 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     rawText: string | undefined,
   ): void {
     if (!this.#debugUpdates) return;
-    const username = this.#botIdentity?.username;
     const hasMention =
-      username !== undefined &&
       rawText !== undefined &&
-      new RegExp(`(^|\\s)@${escapeRegExp(username)}\\b`, "i").test(rawText);
+      message !== undefined &&
+      telegramMentionsBot(rawText, message, this.#botIdentity);
     const isCommand = rawText?.trimStart().startsWith("/") ?? false;
     this.#log(
       [
@@ -611,17 +624,18 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (text.trimStart().startsWith("/")) return text;
 
     const username = this.#botIdentity?.username;
-    if (username !== undefined && username.length > 0) {
-      const mention = new RegExp(`(^|\\s)@${escapeRegExp(username)}\\b`, "i");
-      if (mention.test(text)) {
-        const stripped = text.replace(mention, " ").replace(/\s+/g, " ").trim();
-        return withTelegramReplyContext(
-          message,
-          stripped.length > 0
-            ? stripped
-            : "User mentioned the bot while replying to this message.",
-        );
-      }
+    if (telegramMentionsBot(text, message, this.#botIdentity)) {
+      const stripped = stripTelegramBotMentions(
+        text,
+        message,
+        this.#botIdentity,
+      );
+      return withTelegramReplyContext(
+        message,
+        stripped.length > 0
+          ? stripped
+          : "User mentioned the bot while replying to this message.",
+      );
     }
 
     const replyFrom = message.reply_to_message?.from;
@@ -740,6 +754,94 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function telegramMentionsBot(
+  text: string,
+  message: TelegramMessage,
+  identity: TelegramBotIdentity | null | undefined,
+): boolean {
+  return telegramBotMentionRanges(text, message, identity).length > 0;
+}
+
+function stripTelegramBotMentions(
+  text: string,
+  message: TelegramMessage,
+  identity: TelegramBotIdentity | null | undefined,
+): string {
+  const ranges = telegramBotMentionRanges(text, message, identity);
+  if (ranges.length === 0) return text.trim();
+  let stripped = text;
+  for (const range of [...ranges].sort((a, b) => b.offset - a.offset)) {
+    stripped =
+      stripped.slice(0, range.offset) +
+      " " +
+      stripped.slice(range.offset + range.length);
+  }
+  return stripped.replace(/\s+/g, " ").trim();
+}
+
+function telegramBotMentionRanges(
+  text: string,
+  message: TelegramMessage,
+  identity: TelegramBotIdentity | null | undefined,
+): Array<{ offset: number; length: number }> {
+  if (identity == null) return [];
+  const ranges: Array<{ offset: number; length: number }> = [];
+  const username = identity.username?.toLowerCase();
+  const entities = telegramEntitiesForText(message, text);
+  for (const entity of entities) {
+    if (!isValidTelegramEntityRange(text, entity)) continue;
+    if (entity.type === "text_mention" && entity.user?.id === identity.id) {
+      ranges.push({ offset: entity.offset, length: entity.length });
+      continue;
+    }
+    if (entity.type !== "mention" || username === undefined) continue;
+    const mentionText = text
+      .slice(entity.offset, entity.offset + entity.length)
+      .toLowerCase();
+    if (mentionText === `@${username}`) {
+      ranges.push({ offset: entity.offset, length: entity.length });
+    }
+  }
+  if (ranges.length > 0 || username === undefined || username.length === 0) {
+    return ranges;
+  }
+
+  const mention = new RegExp(
+    `@${escapeRegExp(username)}(?=$|[^A-Za-z0-9_])`,
+    "gi",
+  );
+  for (const match of text.matchAll(mention)) {
+    const offset = match.index ?? -1;
+    if (offset < 0) continue;
+    const before = offset === 0 ? "" : text[offset - 1];
+    if (before !== "" && /[A-Za-z0-9_]/.test(before)) continue;
+    ranges.push({ offset, length: match[0].length });
+  }
+  return ranges;
+}
+
+function telegramEntitiesForText(
+  message: TelegramMessage,
+  text: string,
+): readonly TelegramMessageEntity[] {
+  if (message.text === text) return message.entities ?? [];
+  if (message.caption === text) return message.caption_entities ?? [];
+  return [];
+}
+
+function isValidTelegramEntityRange(
+  text: string,
+  entity: TelegramMessageEntity,
+): boolean {
+  return (
+    Number.isInteger(entity.offset) &&
+    Number.isInteger(entity.length) &&
+    entity.offset >= 0 &&
+    entity.length > 0 &&
+    entity.offset + entity.length <= text.length
+  );
 }
 
 async function sendTelegramTextMessage(
