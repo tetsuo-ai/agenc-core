@@ -542,6 +542,24 @@ export interface TransactionGuardConfig {
   readonly fail_mode?: TransactionGuardFailMode;
 }
 
+/**
+ * `[budget]` — cost-bounded autonomy (task 15). Per-agent hard spend caps
+ * enforced daemon-side around autonomous turns. Disabled by default; a cap of
+ * 0/absent means no cap. `AGENC_BUDGET*` env vars override
+ * (see `budget/config.ts`).
+ */
+export interface BudgetConfig {
+  readonly enabled?: boolean;
+  readonly daily_usd?: number;
+  readonly monthly_usd?: number;
+  readonly daily_tokens?: number;
+  readonly monthly_tokens?: number;
+  /** Soft-warning fraction [0,1); default 0.8. */
+  readonly soft_threshold?: number;
+  /** Also enforce on interactive turns (default false: autonomous only). */
+  readonly enforce_interactive?: boolean;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -621,6 +639,11 @@ export interface AgenCConfig {
    * defaults to disabled; `AGENC_TRANSACTION_GUARD*` env vars override.
    */
   readonly transaction_guard?: TransactionGuardConfig;
+  /**
+   * Cost-bounded autonomy (`[budget]`). Optional — disabled by default;
+   * `AGENC_BUDGET*` env vars override. See `budget/config.ts`.
+   */
+  readonly budget?: BudgetConfig;
   readonly agenc_home?: string;
   readonly workspace?: string;
   readonly simpleMode?: boolean;
@@ -758,6 +781,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "autonomous_mode",
   "coordinator_mode",
   "transaction_guard",
+  "budget",
   "agenc_home",
   "workspace",
   "simpleMode",

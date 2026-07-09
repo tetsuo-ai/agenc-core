@@ -165,6 +165,11 @@ import {
   runAgenCGatewayCli,
 } from "./gateway-cli.js";
 import {
+  formatAgenCBudgetCliHelpText,
+  parseAgenCBudgetCliArgs,
+  runAgenCBudgetCli,
+} from "./budget-cli.js";
+import {
   formatAgenCInitCliHelpText,
   parseAgenCInitCliArgs,
   runAgenCInitCli,
@@ -321,6 +326,7 @@ export function formatCliHelpText(): string {
     "       agenc onboard [--status [--json] | --reset]",
     "       agenc security audit [--json] [--fix]",
     "       agenc gateway <status|pairing> [args]",
+    "       agenc budget <status|reset> [args]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
     "       agenc providers [--json] [--no-local-check]",
@@ -343,6 +349,7 @@ export function formatCliHelpText(): string {
     "  onboard                                 Set up AgenC: provider, key, theme, first chat",
     "  security                                Audit local exposure; --fix applies safe fixes",
     "  gateway                                 Inspect/operate the channel gateway (pairing)",
+    "  budget                                  Inspect/operate cost-bounded autonomy",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness and local health",
@@ -423,6 +430,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCSecurityCliHelpText();
     case "gateway":
       return formatAgenCGatewayCliHelpText();
+    case "budget":
+      return formatAgenCBudgetCliHelpText();
     case "permissions":
       return formatAgenCPermissionsCliHelpText();
     case "plugin":
@@ -4078,6 +4087,10 @@ export async function main(): Promise<number> {
   const gatewayCommand = parseAgenCGatewayCliArgs(argv);
   if (gatewayCommand !== null) {
     return runAgenCGatewayCli(gatewayCommand);
+  }
+  const budgetCommand = parseAgenCBudgetCliArgs(argv);
+  if (budgetCommand !== null) {
+    return runAgenCBudgetCli(budgetCommand);
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
