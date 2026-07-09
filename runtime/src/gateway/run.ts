@@ -183,6 +183,7 @@ export async function startGateway(
         groupAddressing: envGroupAddressing(
           env.AGENC_TELEGRAM_GROUP_ADDRESSING,
         ),
+        debugUpdates: envFlag(env.AGENC_TELEGRAM_DEBUG_UPDATES),
         ...(env.AGENC_TELEGRAM_BOT_USERNAME !== undefined
           ? { botUsername: env.AGENC_TELEGRAM_BOT_USERNAME.trim() }
           : {}),

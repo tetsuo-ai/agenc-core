@@ -298,6 +298,34 @@ describe("TelegramChannelAdapter", () => {
     expect(messages).toHaveLength(0);
   });
 
+  test("mention-only group addressing forwards caption mentions", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 48,
+          message: {
+            message_id: 88,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            caption: "@core_69_bot explain this image",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("explain this image");
+  });
+
   test("mention-only group addressing forwards replies to the bot", async () => {
     const transport = new FakeTransport();
     transport.updates = [
