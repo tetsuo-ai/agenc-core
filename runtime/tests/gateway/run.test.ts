@@ -256,6 +256,71 @@ describe("startGateway", () => {
     await handle.stop();
   });
 
+  test("cron delivery: a deliver-tagged task fires through the run loop to a channel", async () => {
+    writeConfig({ channels: { mem: { dmPolicy: "allowlist", allowlist: ["x"] } } });
+    const ws = join(home, "ws");
+    mkdirSync(join(ws, ".agenc"), { recursive: true });
+    const startMs = Date.parse("2026-07-09T10:00:30Z");
+    writeFileSync(
+      join(ws, ".agenc", "scheduled_tasks.json"),
+      JSON.stringify({
+        tasks: [
+          {
+            id: "runcron1",
+            cron: "* * * * *",
+            prompt: "cron says hi",
+            createdAt: startMs - 1_000,
+            recurring: true,
+            deliver: { channel: "mem", to: "c9" },
+          },
+        ],
+      }),
+    );
+
+    const client = new FakeClient();
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+
+    // Manual cron clock: capture armed timers, fire the earliest by hand.
+    let now = startMs;
+    const timers = new Map<number, { at: number; fn: () => void }>();
+    let nextTimer = 1;
+    const cronClock = {
+      now: () => new Date(now),
+      setTimer: (fn: () => void, ms: number) => {
+        const id = nextTimer++;
+        timers.set(id, { at: now + ms, fn });
+        return id as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: (handle: ReturnType<typeof setTimeout>) => {
+        timers.delete(handle as unknown as number);
+      },
+    };
+
+    const handle = await startGateway({
+      agencHome: home,
+      workspaceDir: ws,
+      clientFactory: async () => client,
+      extraAdapters: [mem],
+      cronClock,
+    });
+
+    // Let arm() finish its async file read, then fire the armed timer.
+    await new Promise((r) => setTimeout(r, 20));
+    const armed = [...timers.values()].sort((a, b) => a.at - b.at)[0];
+    expect(armed).toBeDefined();
+    now = armed.at;
+    timers.delete([...timers.keys()][0]);
+    armed.fn();
+    await new Promise((r) => setTimeout(r, 30));
+
+    // The cron turn ran in its own gateway session and delivered in-channel.
+    expect(mem.sent.some((m) => m.conversationId === "c9")).toBe(true);
+    expect(
+      client.sessions.some((s) => s.prompts.includes("cron says hi")),
+    ).toBe(true);
+    await handle.stop();
+  });
+
   test("heartbeat: a config-enabled tick runs a turn and delivers to a channel", async () => {
     // Gateway channel + config.toml heartbeat targeting the in-memory channel.
     writeConfig({ channels: { mem: { dmPolicy: "allowlist", allowlist: ["x"] } } });

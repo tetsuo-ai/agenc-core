@@ -208,6 +208,33 @@ describe('CronScheduler', () => {
     sched.stop()
   })
 
+  test('delivery-tagged tasks are gateway-owned: NEVER enqueued in-session', async () => {
+    // Same due-hourly shape as the test above, but the task carries a
+    // `deliver` route — the gateway's cron-delivery runner is its exclusive
+    // executor, so the in-session driver must neither enqueue it nor arm a
+    // wake for it (a second executor would double-fire every occurrence).
+    const start = 59 * 60_000
+    const clock = new FakeClock(start)
+    const enqueue = vi.fn()
+    const sched = makeScheduler(
+      clock,
+      [
+        task({
+          id: 'ddddd016',
+          cron: '0 * * * *',
+          deliver: { channel: 'stdio', to: 'stdio' },
+        }),
+      ],
+      enqueue,
+    )
+
+    sched.start()
+    await advanceAndFlush(clock, 12 * 60_000)
+
+    expect(enqueue).toHaveBeenCalledTimes(0)
+    sched.stop()
+  })
+
   test('coalesce: multiple missed occurrences collapse to a SINGLE enqueue', async () => {
     // Per-minute task created at t=0, but the process was "asleep" until
     // t=10min — 10 slots (00:01..00:10) are all in the past. They MUST collapse

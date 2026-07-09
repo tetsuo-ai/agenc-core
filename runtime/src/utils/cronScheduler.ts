@@ -315,12 +315,24 @@ export class CronScheduler {
   }
 
   /**
+   * Tasks this in-session scheduler is allowed to run. Delivery-tagged tasks
+   * (`deliver` set) are OWNED by the gateway's cron-delivery runner — they run
+   * in an isolated gateway daemon session and route their result to a channel
+   * or webhook. Running them here too would double-fire every occurrence, so
+   * they are excluded from BOTH dispatch and the wake computation.
+   */
+  private async loadRunnableTasks(): Promise<CronTask[]> {
+    const tasks = await this.deps.loadTasks(this.opts.dir)
+    return tasks.filter(task => task.deliver === undefined)
+  }
+
+  /**
    * Find tasks whose due time is now in the past, coalesce each to a single
    * enqueue, persist lastFiredAt / delete one-shots, and emit telemetry.
    */
   private async dispatchDue(): Promise<void> {
     const now = this.deps.now()
-    const tasks = await this.deps.loadTasks(this.opts.dir)
+    const tasks = await this.loadRunnableTasks()
 
     let dispatched = 0
     let coalescedMisses = 0
@@ -453,7 +465,7 @@ export class CronScheduler {
    */
   private async earliestDueAt(): Promise<number | null> {
     const now = this.deps.now()
-    const tasks = await this.deps.loadTasks(this.opts.dir)
+    const tasks = await this.loadRunnableTasks()
     let earliest: number | null = null
     for (const task of tasks) {
       const due = this.nextDueForTask(task, now)
