@@ -23,7 +23,7 @@ import { evaluateDmAccess, PairingStore } from "./pairing.js";
 import { detectPromptInjectionAttempt } from "./prompt-injection.js";
 import { SessionRouter } from "./session-router.js";
 import { TELEGRAM_CHANNEL_ID } from "./telegram-channel.js";
-import { frameChannelMessage } from "./untrusted.js";
+import { frameChannelMessage, sanitizeChannelText } from "./untrusted.js";
 import type { GatewayVoiceFeature } from "./voice.js";
 import type { GatewayXSearchFeature } from "./x-search.js";
 import type {
@@ -275,6 +275,7 @@ export class ChannelGateway {
       await this.#router.runTurn({
         key,
         text: framedText,
+        memoryText: sanitizeChannelText(message.text),
         adapter,
         conversationId: message.conversation.id,
         onPermissionRequest: async (request) => {
