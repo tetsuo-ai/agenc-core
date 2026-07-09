@@ -1,7 +1,7 @@
 /**
- * Telegram/WebChat gateway meme route backed by xAI image generation.
+ * Telegram/WebChat gateway image route backed by xAI image generation.
  *
- * This is deliberately explicit (`/meme ...` or `meme: ...`) so normal agent
+ * This is deliberately explicit (`/image ...`, `/meme ...`, `image: ...`, or `meme: ...`) so normal agent
  * turns never surprise-spend image credits. It also keeps the image API key
  * server-side and sends only a public generated image URL back to the channel.
  */
@@ -48,9 +48,11 @@ interface MemeUsageState {
 
 export function parseMemePrompt(text: string): string | null {
   const trimmed = text.trim();
-  const slash = trimmed.match(/^\/meme(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+  const slash = trimmed.match(
+    /^\/(?:meme|image)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i,
+  );
   if (slash !== null) return slash[1]?.trim() ?? "";
-  const labeled = trimmed.match(/^meme\s*:\s*([\s\S]+)$/i);
+  const labeled = trimmed.match(/^(?:meme|image)\s*:\s*([\s\S]+)$/i);
   if (labeled !== null) return labeled[1]?.trim() ?? "";
   return null;
 }
@@ -109,7 +111,7 @@ export class XaiMemeFeature implements GatewayMemeFeature {
 
     const prompt = trimPrompt(parsed);
     if (prompt.length === 0) {
-      await input.reply("Use `/meme your idea` and give me something to work with.");
+      await input.reply("Use `/image your idea` or `/meme your idea` and give me something to work with.");
       return true;
     }
 
@@ -120,11 +122,11 @@ export class XaiMemeFeature implements GatewayMemeFeature {
       return true;
     }
 
-    await input.reply("Building the meme. Keep your tabs on.");
+    await input.reply("Building the image. Keep your tabs on.");
     try {
       const imageUrl = await this.#generate(prompt);
       writeUsage(this.#usageFile, { day, count: usage.count + 1 });
-      const caption = `AgenC meme: ${prompt}`.slice(0, 1024);
+      const caption = `AgenC image: ${prompt}`.slice(0, 1024);
       await input.reply(caption, { photoUrl: imageUrl, caption });
     } catch (error) {
       this.#log(`gateway meme: xAI generation failed: ${String(error)}`);

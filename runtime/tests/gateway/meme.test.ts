@@ -11,7 +11,14 @@ describe("parseMemePrompt", () => {
     expect(parseMemePrompt("/meme@core_69_bot agent economy")).toBe(
       "agent economy",
     );
+    expect(parseMemePrompt("/image agent economy")).toBe("agent economy");
+    expect(parseMemePrompt("/image@core_69_bot agent economy")).toBe(
+      "agent economy",
+    );
     expect(parseMemePrompt("meme: solana agents getting paid")).toBe(
+      "solana agents getting paid",
+    );
+    expect(parseMemePrompt("image: solana agents getting paid")).toBe(
       "solana agents getting paid",
     );
     expect(parseMemePrompt("tell me about agenc")).toBeNull();
@@ -58,6 +65,7 @@ describe("XaiMemeFeature", () => {
     expect(calls[0].body).toMatchObject({ model: "grok-imagine-image", n: 1 });
     expect(replies.at(-1)).toMatchObject({
       photoUrl: "https://img.example/meme.png",
+      caption: "AgenC image: autonomous agents paid onchain",
     });
   });
 
