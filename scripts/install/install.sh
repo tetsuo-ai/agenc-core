@@ -301,5 +301,5 @@ fi
 # --- done --------------------------------------------------------------------
 
 log "install complete"
-printf '\n  AgenC %s installed.\n\n  Next steps:\n    %s              # start the interactive TUI\n    %s doctor       # verify the installation\n    %s daemon status\n\n' \
+printf '\n  AgenC %s installed.\n\n  Next steps:\n    %s onboard      # guided setup: provider, key, theme, first chat\n    %s doctor       # verify the installation\n    %s daemon status\n\n' \
   "$VERSION" "$WRAPPER" "$WRAPPER" "$WRAPPER"
