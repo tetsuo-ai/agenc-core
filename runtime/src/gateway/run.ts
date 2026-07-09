@@ -180,6 +180,9 @@ export async function startGateway(
     ? options.clientFactory()
     : createSdkDaemonClient({
         autostart: true,
+        // Gateway daemon agents work in the gateway's workspace so channel
+        // turns and heartbeat ticks see the same files HEARTBEAT.md lives in.
+        cwd: options.workspaceDir ?? process.cwd(),
         ...(options.agencCommand !== undefined
           ? { agencCommand: options.agencCommand }
           : {}),

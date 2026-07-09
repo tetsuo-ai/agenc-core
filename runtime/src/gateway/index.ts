@@ -57,7 +57,9 @@ export {
 } from "./run.js";
 export {
   createSdkDaemonClient,
+  isDaemonAgentGoneError,
   type SdkDaemonClientOptions,
+  type SdkModule,
 } from "./sdk-daemon-client.js";
 export {
   frameChannelMessage,

@@ -321,4 +321,77 @@ describe("SessionRouter", () => {
     expect(client2.created).toBe(0);
     expect(client2.attached).toEqual(["sess-1"]);
   });
+
+  test("dead backing agent: evicts the session and retries the turn once", async () => {
+    // First session's daemon agent is gone (daemon restarted): its prompt
+    // throws the daemon's AGENT_NOT_FOUND. The router must evict the cached
+    // + persisted session, provision a fresh one, and complete the turn.
+    class GoneSession implements GatewaySession {
+      readonly sessionId = "sess-1";
+      async prompt(): Promise<GatewayPromptResult> {
+        throw Object.assign(
+          new Error("AgenC daemon agent not found: sess-1"),
+          { data: { code: "AGENT_NOT_FOUND" } },
+        );
+      }
+    }
+    const client = new RecordingClient((id) =>
+      id === "sess-1"
+        ? new GoneSession()
+        : new ScriptedSession(id, ["ok"], "recovered"),
+    );
+    const router = new SessionRouter({ agencHome: home, client });
+    const adapter = new InMemoryChannelAdapter({ id: "tg" });
+    const key = SessionRouter.conversationKey({
+      channelId: "tg",
+      agent: "default",
+      conversationId: "c1",
+    });
+
+    const result = await router.runTurn({
+      key,
+      text: "hi",
+      adapter,
+      conversationId: "c1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+
+    expect(result.finalMessage).toBe("recovered");
+    expect(client.created).toBe(2);
+    expect(adapter.lastText("c1")).toBe("recovered");
+    // The persisted map now points at the fresh session, so a restart
+    // reattaches the live one instead of the dead one.
+    const persisted = JSON.parse(
+      readFileSync(join(home, "gateway", "sessions.json"), "utf8"),
+    ) as { sessions: Record<string, string> };
+    expect(persisted.sessions[key]).toBe("sess-2");
+  });
+
+  test("non-agent-gone turn errors propagate without a retry", async () => {
+    class FlakySession implements GatewaySession {
+      readonly sessionId = "sess-1";
+      async prompt(): Promise<GatewayPromptResult> {
+        throw new Error("network timeout");
+      }
+    }
+    const client = new RecordingClient(() => new FlakySession());
+    const router = new SessionRouter({ agencHome: home, client });
+    const adapter = new InMemoryChannelAdapter({ id: "tg" });
+    const key = SessionRouter.conversationKey({
+      channelId: "tg",
+      agent: "default",
+      conversationId: "c1",
+    });
+
+    await expect(
+      router.runTurn({
+        key,
+        text: "hi",
+        adapter,
+        conversationId: "c1",
+        onPermissionRequest: async () => ({ behavior: "deny" }),
+      }),
+    ).rejects.toThrow("network timeout");
+    expect(client.created).toBe(1);
+  });
 });
