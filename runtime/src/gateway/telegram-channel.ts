@@ -533,6 +533,15 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             ? { username: configuredUsername }
             : {}),
       };
+      if (this.#debugUpdates) {
+        this.#log(
+          [
+            "telegram: bot identity resolved",
+            `idResolved=${resolved.id > 0}`,
+            `hasUsername=${this.#botIdentity.username !== undefined}`,
+          ].join(" "),
+        );
+      }
     } catch (error) {
       this.#log(`telegram: getMe failed: ${String(error)}`);
     }
@@ -604,6 +613,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     rawText: string | undefined,
   ): void {
     if (!this.#debugUpdates) return;
+    const entities =
+      rawText !== undefined && message !== undefined
+        ? telegramEntitiesForText(message, rawText)
+        : [];
+    const username = this.#botIdentity?.username?.toLowerCase();
+    const normalizedText = rawText?.toLowerCase();
     const hasMention =
       rawText !== undefined &&
       message !== undefined &&
@@ -620,6 +635,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         `hasSenderChat=${message?.sender_chat !== undefined}`,
         `isCommand=${isCommand}`,
         `mentionsBot=${hasMention}`,
+        `botIdResolved=${(this.#botIdentity?.id ?? -1) > 0}`,
+        `entityTypes=${entities.map((entity) => entity.type).join(",") || "none"}`,
+        `startsWithAt=${rawText?.trimStart().startsWith("@") ?? false}`,
+        `containsBotUsername=${
+          username !== undefined && normalizedText !== undefined
+            ? normalizedText.includes(`@${username}`)
+            : false
+        }`,
       ].join(" "),
     );
   }
