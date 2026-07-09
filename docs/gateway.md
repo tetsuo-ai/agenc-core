@@ -64,6 +64,14 @@ For fixed operators, set `AGENC_TELEGRAM_ADMIN_PEER_IDS=123,456`. Owner/control
 state is stored at `<AGENC_HOME>/gateway/control.json` (0600). Telegram command
 menus are installed for private chats and groups when the Bot API allows it.
 
+Telegram gateway agents are spawned with a tiny unattended tool allowlist by
+default: `SendUserMessage` and `Brief`. That lets the bot answer normally
+without leaking approval prompts into chat, while privileged tools still pause
+and are denied by the Telegram gateway instead of rendering `approve <token>`
+to public users. Operators may override the list with
+`AGENC_GATEWAY_AGENT_UNATTENDED_ALLOW` and
+`AGENC_GATEWAY_AGENT_UNATTENDED_DENY`.
+
 ## Heartbeat (proactive ticks)
 
 `agenc gateway run --heartbeat` (or `[heartbeat] enabled = true`) runs a

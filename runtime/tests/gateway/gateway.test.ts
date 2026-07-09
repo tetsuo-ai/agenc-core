@@ -441,4 +441,43 @@ describe("channel gateway", () => {
     expect(client.sessions).toHaveLength(0);
     expect(telegram.lastText("mallory-dm")).toContain("owner-only");
   });
+
+  test("telegram permission requests are denied without leaking approval tokens", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "allowlist", allowlist: ["alice"] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      generateApprovalToken: () => "TOK-LEAK",
+    });
+    await gw.registerAdapter(telegram);
+    client.script = [
+      {
+        permission: {
+          requestId: "r1",
+          toolName: "Bash",
+          permissions: ["tool.use"],
+          reason: "untrusted policy: approve every call",
+        },
+        text: "I cannot run that.",
+      },
+    ];
+
+    await telegram.receive(dmMessage("alice", "run a privileged tool", "alice-dm"));
+
+    const transcript = telegram.sent.map((message) => message.text).join("\n");
+    expect(client.sessions[0].lastPermissionDecision).toEqual({
+      behavior: "deny",
+      reason: "Telegram gateway denies channel tool approvals",
+    });
+    expect(transcript).toContain("privileged tools");
+    expect(transcript).not.toContain("approve TOK-LEAK");
+    expect(transcript).not.toContain("Permission request");
+  });
 });

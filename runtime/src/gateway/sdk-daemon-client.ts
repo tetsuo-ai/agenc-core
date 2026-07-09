@@ -45,6 +45,22 @@ export interface SdkDaemonClientOptions {
   readonly autostart?: boolean;
   /** Working directory for gateway daemon agents (default: daemon's choice). */
   readonly cwd?: string;
+  /**
+   * Permission mode for daemon agents spawned by the gateway. Leave undefined
+   * for the daemon default; unattended allow/deny still installs a policy.
+   */
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
+  /**
+   * Tools the gateway daemon agent may use without channel approval prompts.
+   * In production Telegram this is intentionally tiny: SendUserMessage/Brief.
+   */
+  readonly unattendedAllow?: readonly string[];
+  /** Tools the gateway daemon agent must never run unattended. */
+  readonly unattendedDeny?: readonly string[];
   /** Test seam: inject the SDK module instead of importing it. */
   readonly sdk?: SdkModule;
 }
@@ -85,6 +101,13 @@ interface SdkClient {
     readonly objective: string;
     readonly initialContent: readonly never[];
     readonly cwd?: string;
+    readonly permissionMode?:
+      | "default"
+      | "plan"
+      | "acceptEdits"
+      | "bypassPermissions";
+    readonly unattendedAllow?: readonly string[];
+    readonly unattendedDeny?: readonly string[];
     readonly metadata?: Record<string, string>;
   }): Promise<SdkAgentCreateResult>;
   resumeSession(sessionId: string): Promise<SdkSession>;
@@ -210,9 +233,24 @@ export async function createSdkDaemonClient(
           label !== undefined ? `gateway: ${label}` : "gateway session",
         initialContent: [],
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+        ...(options.permissionMode !== undefined
+          ? { permissionMode: options.permissionMode }
+          : {}),
+        ...(options.unattendedAllow !== undefined
+          ? { unattendedAllow: options.unattendedAllow }
+          : {}),
+        ...(options.unattendedDeny !== undefined
+          ? { unattendedDeny: options.unattendedDeny }
+          : {}),
         metadata: {
           source: "agenc-gateway",
           ...(label !== undefined ? { gatewayLabel: label } : {}),
+          ...(options.unattendedAllow !== undefined
+            ? { unattendedAllow: options.unattendedAllow.join(",") }
+            : {}),
+          ...(options.unattendedDeny !== undefined
+            ? { unattendedDeny: options.unattendedDeny.join(",") }
+            : {}),
         },
       });
       if (created.sessionId === undefined) {
