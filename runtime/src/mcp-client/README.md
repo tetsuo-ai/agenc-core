@@ -90,7 +90,7 @@ Consumers should treat `MCPManager` (`manager.ts`, with its
 `MCPManagerStartOpts`) as the public entry point. After `start()`, the
 `ToolRegistry` ingests the aggregated, resilient-wrapped tools via
 `manager.getTools()` (wired in as the registry's `mcpToolsProvider` in
-`bin/bootstrap-tool-registry.ts`); resources and prompts are reached through
+`src/bin/bootstrap-tool-registry.ts`); resources and prompts are reached through
 the manager's own `listResources` / `readResource` / `listPrompts` /
 `renderPrompt`. Direct transport-factory calls are reserved for tests and for
 `connection.ts` itself; everything else flows through the manager so permission

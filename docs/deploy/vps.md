@@ -29,17 +29,24 @@ this reason; a red audit on a VPS is an exposed agent.
 
 ## Shape 2 — Docker
 
+Pull the published image (recommended — no source checkout needed):
+
 ```bash
-git clone <repo> && cd agenc-core
-docker build -f packaging/docker/Dockerfile -t agenc:local .
 docker run -d --restart unless-stopped -v agenc-data:/data \
-  -e XAI_API_KEY agenc:local
+  -e XAI_API_KEY ghcr.io/tetsuo-ai/agenc:latest
 # one-shot commands against the same state:
-docker run --rm -v agenc-data:/data agenc:local security audit
+docker run --rm -v agenc-data:/data ghcr.io/tetsuo-ai/agenc:latest security audit
 ```
 
-Or `docker compose -f packaging/docker/docker-compose.yml up -d` (no ports
-published by default; see the file's exposure note).
+Or build from a source checkout (requires access to this repo):
+
+```bash
+docker build -f packaging/docker/Dockerfile -t agenc:local .
+```
+
+Compose (from a checkout): `docker compose -f
+packaging/docker/docker-compose.yml up -d` — no ports published by default,
+see the file's exposure note.
 
 ## Provider credentials
 

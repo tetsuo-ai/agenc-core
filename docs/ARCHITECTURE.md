@@ -26,7 +26,7 @@ Everything past the launcher lives in the single runtime workspace
 
 | Dir | Responsibility |
 | --- | --- |
-| `bin/` | CLI entrypoint (`agenc.ts`) + subcommand adapters (auth, config, mcp, doctor, init, providers, state, daemon). |
+| `bin/` | CLI entrypoint (`agenc.ts`) + subcommand adapters (auth, config, mcp, doctor, init, providers, state, daemon, onboard, security, gateway, remote, permissions, plugins, trajectories). |
 | `app-server/`, `app-server-client/`, `app-server-protocol/` | The daemon: transports, JSON-RPC dispatch, auth, lifecycle, health, and the client side. |
 | `session/` | Session engine: turn loop, transcript, the append-only rollout store + `index.json` snapshot, autonomous mode, resume. |
 | `agents/` | Background-agent state, registry, worktree isolation, status. |
@@ -37,6 +37,7 @@ Everything past the launcher lives in the single runtime workspace
 | `permissions/` | Trust, approval policy, permission rules, sandbox policy, the `unattended` background-agent policy. Permission types are single-sourced in `types/permissions.ts`. |
 | `sandbox/` | OS sandbox launch helpers (wraps `@anthropic-ai/sandbox-runtime`: bubblewrap/Landlock on Linux, Seatbelt on macOS). |
 | `mcp-client/` / `mcp-server/` | Outbound MCP client (tool/resource/prompt bridges) and the MCP server framework. |
+| `gateway/` | Channel gateway: turns messaging surfaces into daemon-owned agent conversations. Pairing, per-channel bindings, in-channel token approvals, session routing, untrusted-content sanitize/frame, and the stdio/Telegram/WebChat channels. A daemon client (speaks the SDK, never runtime internals); exposed via `agenc gateway`. See [`gateway.md`](gateway.md). |
 | `commands/` | Slash-command registry and command implementations for TUI/headless dispatch. |
 | `plugins/`, `skills/`, `outputStyles/` | Plugin manifests, marketplace sources, registration for commands/tools/hooks/MCP/LSP/agents/output styles, and skill loading. |
 | `hooks/`, `elicitation/` | Configured hook execution and structured user-input request/response plumbing. |
@@ -102,17 +103,19 @@ dependency, not vendored source.
   declarations, `dist/VERSION` is stamped, policy assets are copied, and the 4
   package entrypoints are verified.
 - **Type-check** — `tsc --noEmit`, kept at **0 errors** with **0 `@ts-nocheck`**.
-- **Tests** — ~12,000 vitest tests, plus an isolated Bun suite (one file per
+- **Tests** — ~14,000 vitest tests, plus an isolated Bun suite (one file per
   process) and PTY/e2e scenario gates.
-- **Remote CI** — no `.github` workflow is present in this checkout; local gates
-  are authoritative.
+- **CI** — `.github/workflows/release-runtime.yml` builds the per-platform
+  runtime tarballs on demand (workflow_dispatch); local gates remain
+  authoritative for correctness (no hosted test CI).
 
 ## Current status
 
 The codebase is type-clean (0 `@ts-nocheck`, `tsc` 0), the full suite is green,
 and the daemon/persistence/permission cores are mature (WAL SQLite, atomic
 rollout writes, an AST-backed Bash permission layer, transactional file edits).
-The public launcher package is published, the repository has a top-level MIT
-license, and known pre-GA gaps are tracked separately: cross-platform runtime
-artifacts, release hardening, and deciding whether hosted CI is worth
-re-enabling.
+The public launcher package is published (npm `@tetsuo-ai/agenc`, `get.agenc.ag`
+one-line installer, `ghcr.io/tetsuo-ai/agenc` image, Homebrew tap) with
+per-platform runtime tarballs on the public `tetsuo-ai/agenc-releases` repo. The
+repository has a top-level MIT license. Remaining pre-GA gaps are tracked in
+`TODO.md`.

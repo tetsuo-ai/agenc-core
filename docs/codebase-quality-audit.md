@@ -1,5 +1,9 @@
 # Codebase Quality Audit
 
+> **Archived log (closed 2026-06-22, issue #1276).** A point-in-time record of
+> one quality sweep, kept for provenance. Not a current-state document and not
+> a to-do list; nothing here is open work.
+
 This log tracks concrete slices of the ongoing agenc-core quality pass. It is
 not a completion claim for the whole repository. Each entry records the code
 paths traced, the defect or risk found, and the validation run before commit.

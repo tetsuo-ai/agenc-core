@@ -1,10 +1,27 @@
 # AgenC Core: Parity-and-Beyond Roadmap vs Hermes Agent and OpenClaw
 
-**Date:** 2026-07-08. **Status:** proposal for owner review, nothing here is started.
-**Inputs:** full repo inventory of agenc-core (this repo, TODO backlog cleared as of
-2026-07-08), full repo inventory of `hermes-agent` (workspace checkout, v0.17.0),
-web research on OpenClaw (docs.openclaw.ai, GitHub, security postmortems) and on
+**Date:** 2026-07-08 (plan). **Inputs:** full repo inventory of agenc-core, full
+repo inventory of `hermes-agent` (v0.17.0), web research on OpenClaw and on
 adoption drivers/complaints for both (HN Algolia + GitHub API verified where noted).
+
+> ## Progress (updated 2026-07-09)
+>
+> The strategy below is unchanged; this header tracks execution against it.
+>
+> - **Phase 0 (onboarding) — COMPLETE and PUBLISHED.** One-line installer
+>   (`get.agenc.ag`), `agenc onboard`, `agenc security audit --fix`, Docker
+>   (`ghcr.io/tetsuo-ai/agenc`), Homebrew tap, quickstart + migration guides.
+>   Binaries ship from the public `tetsuo-ai/agenc-releases` repo (5 platforms).
+> - **Phase 1 (channels) — IN PROGRESS.** Done: channel gateway core (pairing,
+>   bindings, in-channel token approvals), stdio + Telegram channels + the
+>   `agenc gateway run` loop, WebChat (loopback + token-gated browser UI), and
+>   untrusted-content hardening (sanitize + frame every inbound message).
+>   Pending in Phase 1: Discord/Slack, Signal/email, iMessage/WhatsApp.
+> - **Phases 2-6** — not started (persona/heartbeat, browser/exec, auditable
+>   learning, the marketplace moat, growth).
+>
+> Per-task detail (PR + SHA + what shipped/deferred) lives in `TODO.md`'s
+> Completed section. See `docs/gateway.md` for the shipped channel surface.
 
 ---
 
