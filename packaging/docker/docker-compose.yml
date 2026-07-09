@@ -1,0 +1,28 @@
+# AgenC daemon via compose (TODO task 4).
+#
+#   docker compose -f packaging/docker/docker-compose.yml up -d
+#
+# Loopback-only by default: no ports are published. For remote access prefer
+# a tailnet sidecar or SSH tunnel into the host; publishing the daemon port
+# directly re-creates the exposed-agent-gateway disaster class and requires
+# the explicit AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK override on top.
+services:
+  agenc-daemon:
+    build:
+      context: ../..
+      dockerfile: packaging/docker/Dockerfile
+    image: agenc:local
+    restart: unless-stopped
+    volumes:
+      - agenc-data:/data
+    environment:
+      # Pass through whichever provider credential you use (unset ones are
+      # ignored). BYOK stays on your host env, never baked into the image.
+      - XAI_API_KEY
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      - OPENROUTER_API_KEY
+    # ports: []   # intentionally none — see the note above
+
+volumes:
+  agenc-data:

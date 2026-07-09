@@ -1,0 +1,12 @@
+# Keep the Docker build context small and hermetic: npm ci + npm run build
+# inside the image produce everything; host artifacts must not leak in.
+.git
+.worktrees
+node_modules
+**/node_modules
+runtime/dist
+packages/agenc/release-artifacts
+packages/agenc/release
+logs
+*.log
+TODO.md

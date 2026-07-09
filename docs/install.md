@@ -48,6 +48,24 @@ npm install -g @tetsuo-ai/agenc
 The launcher's postinstall resolves the same runtime contract via
 `packages/agenc/lib/runtime-manager.mjs`.
 
+## Docker
+
+```bash
+docker build -f packaging/docker/Dockerfile -t agenc:local .
+docker run -it -v agenc-data:/data -e XAI_API_KEY agenc:local
+```
+
+Or `docker compose -f packaging/docker/docker-compose.yml up -d`. Non-root
+image, state in the `/data` volume, no published ports by default (see the
+exposure note in the compose file). VPS deployment shapes:
+[`docs/deploy/vps.md`](deploy/vps.md).
+
+## Homebrew (owner-publish pending)
+
+`packaging/homebrew/agenc.rb` is the tap formula template; it wraps
+`install.sh` so every path shares one verified contract. It ships with
+placeholder URL/sha and must not be published until a release fills them.
+
 ## Release/publish steps (owner-gated — do not automate from an agent session)
 
 For the one-line installers to work against a release tag:
