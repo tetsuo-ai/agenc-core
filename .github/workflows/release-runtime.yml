@@ -1,0 +1,55 @@
+# Build per-platform runtime tarballs (TODO Phase 0 publish).
+#
+# Runs on demand (workflow_dispatch). Each matrix job runs
+# packages/agenc/scripts/build-runtime-tarball.mjs on its native runner —
+# native deps (better-sqlite3, node-pty) must compile per OS/arch — and
+# uploads the tarball + .meta.json as workflow artifacts.
+#
+# Publishing stays local/operator-driven (no cross-repo secrets in CI):
+#   gh workflow run release-runtime.yml
+#   gh run download <run-id> --dir packages/agenc/release-artifacts --pattern 'agenc-runtime-*'
+#   node packages/agenc/scripts/gen-manifest.mjs --repo tetsuo-ai/agenc-releases --tag agenc-v<version>
+#   gh release upload agenc-v<version> --repo tetsuo-ai/agenc-releases --clobber \
+#     packages/agenc/release-artifacts/agenc-runtime-*.tar.gz \
+#     packages/agenc/generated/agenc-runtime-manifest.json
+
+name: release-runtime
+on:
+  workflow_dispatch:
+
+jobs:
+  tarball:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            slug: linux-x64
+          - runner: ubuntu-24.04-arm
+            slug: linux-arm64
+          - runner: macos-15
+            slug: darwin-arm64
+          - runner: macos-15-intel
+            slug: darwin-x64
+          - runner: windows-2025
+            slug: win-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+      - name: Install workspace deps
+        shell: bash
+        run: npm ci
+      - name: Build runtime tarball
+        shell: bash
+        run: npm --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agenc-runtime-${{ matrix.slug }}
+          path: |
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz
+            packages/agenc/release-artifacts/agenc-runtime-*.meta.json
+          if-no-files-found: error

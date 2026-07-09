@@ -8,7 +8,7 @@ Two supported shapes:
 
 ```bash
 # as a normal user (never root) on Ubuntu 24.04 / Debian 12:
-curl -fsSL <installer-url>/install.sh | sh     # verifies sha256, installs the
+curl -fsSL https://get.agenc.ag/install.sh | sh     # verifies sha256, installs the
                                                # systemd user service
 agenc onboard                                  # provider + key + first chat
 agenc security audit --fix                     # must be green before you leave

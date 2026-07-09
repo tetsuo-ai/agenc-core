@@ -147,6 +147,9 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     const { marker, wrapper } = paths(home);
     expect(readFileSync(marker, "utf8")).toBe(artifact.sha);
     expect(statSync(wrapper).mode & 0o111).not.toBe(0);
+    // The created AGENC_HOME must be owner-only regardless of umask — a
+    // stranger-install container test caught mkdir -p leaving it 755.
+    expect(statSync(join(home, ".agenc")).mode & 0o777).toBe(0o700);
     // The wrapper actually launches the installed runtime bin.
     const out = execFileSync(wrapper, ["--version"], { encoding: "utf8" });
     expect(out).toContain("ok --version");
@@ -252,6 +255,17 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(res.status).not.toBe(0);
     expect(res.stderr).toContain("no runtime build for linux-riscv64");
     expect(res.stderr).toContain("linux-x64");
+  });
+
+  test("default release repo is the PUBLIC releases repo", () => {
+    // agenc-core is private: defaulting the manifest fetch to it 404s for
+    // every stranger. The public binary repo is the only valid default.
+    const sh = readFileSync(INSTALL_SH, "utf8");
+    expect(sh).toContain('AGENC_INSTALL_REPO:-tetsuo-ai/agenc-releases}');
+    expect(sh).not.toContain("agenc-core/releases");
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(ps1).toContain('"tetsuo-ai/agenc-releases"');
+    expect(ps1).not.toContain("agenc-core/releases");
   });
 
   test("node version gate: refuses Node older than 25", () => {

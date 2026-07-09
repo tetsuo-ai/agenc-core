@@ -7,7 +7,7 @@ xAI/OpenAI/Anthropic/OpenRouter key, or a local Ollama/LM Studio endpoint —
 ## 1. Install
 
 ```bash
-curl -fsSL <installer-url>/install.sh | sh
+curl -fsSL https://get.agenc.ag/install.sh | sh
 ```
 
 This verifies the runtime tarball's sha256, installs the `agenc` wrapper into
