@@ -17,14 +17,16 @@
 import { ApprovalRegistry, formatApprovalPrompt } from "./approvals.js";
 import { resolveBinding } from "./bindings.js";
 import type { TelegramOwnerControl } from "./control-plane.js";
-import type { GatewayMemeFeature, GatewayMemeReplyOptions } from "./meme.js";
+import type { GatewayMemeFeature } from "./meme.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
 import { detectPromptInjectionAttempt } from "./prompt-injection.js";
 import { SessionRouter } from "./session-router.js";
 import { TELEGRAM_CHANNEL_ID } from "./telegram-channel.js";
 import { frameChannelMessage } from "./untrusted.js";
+import type { GatewayVoiceFeature } from "./voice.js";
 import type {
   ChannelAdapter,
+  ChannelReplyOptions,
   GatewayConfig,
   GatewayDaemonClient,
   InboundChannelMessage,
@@ -42,6 +44,7 @@ export interface GatewayOptions {
   readonly approvalTimeoutMs?: number;
   readonly flushIntervalMs?: number;
   readonly memeFeature?: GatewayMemeFeature;
+  readonly voiceFeature?: GatewayVoiceFeature;
   readonly controlPlane?: TelegramOwnerControl;
 }
 
@@ -53,12 +56,14 @@ export class ChannelGateway {
   readonly #adapters = new Map<string, ChannelAdapter>();
   readonly #log: (line: string) => void;
   readonly #memeFeature?: GatewayMemeFeature;
+  readonly #voiceFeature?: GatewayVoiceFeature;
   readonly #controlPlane?: TelegramOwnerControl;
 
   constructor(options: GatewayOptions) {
     this.#config = options.config;
     this.#log = options.log ?? (() => {});
     this.#memeFeature = options.memeFeature;
+    this.#voiceFeature = options.voiceFeature;
     this.#controlPlane = options.controlPlane;
     this.#pairing = new PairingStore({
       agencHome: options.agencHome,
@@ -117,7 +122,7 @@ export class ChannelGateway {
     }
     const reply = (
       text: string,
-      options: GatewayMemeReplyOptions = {},
+      options: ChannelReplyOptions = {},
     ): Promise<string> =>
       adapter.send({ conversationId: message.conversation.id, text, ...options });
 
@@ -186,6 +191,14 @@ export class ChannelGateway {
 
     if (this.#memeFeature !== undefined) {
       const handled = await this.#memeFeature.handle({
+        text: message.text,
+        reply,
+      });
+      if (handled) return;
+    }
+
+    if (this.#voiceFeature !== undefined) {
+      const handled = await this.#voiceFeature.handle({
         text: message.text,
         reply,
       });

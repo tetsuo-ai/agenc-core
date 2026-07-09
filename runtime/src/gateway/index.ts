@@ -87,7 +87,15 @@ export {
   type XaiMemeFeatureOptions,
 } from "./meme.js";
 export {
+  XaiVoiceFeature,
+  parseVoicePrompt,
+  type GatewayVoiceFeature,
+  type ParsedVoicePrompt,
+  type XaiVoiceFeatureOptions,
+} from "./voice.js";
+export {
   TELEGRAM_OWNER_COMMANDS,
+  TELEGRAM_PUBLIC_MEDIA_COMMANDS,
   TelegramOwnerControl,
   type TelegramOwnerControlDecision,
   type TelegramOwnerControlOptions,

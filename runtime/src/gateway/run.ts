@@ -25,11 +25,13 @@ import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
 import { startCronDelivery, type CronDeliveryHandle } from "./cron-delivery.js";
 import {
   TELEGRAM_OWNER_COMMANDS,
+  TELEGRAM_PUBLIC_MEDIA_COMMANDS,
   TelegramOwnerControl,
 } from "./control-plane.js";
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
 import { XaiMemeFeature } from "./meme.js";
+import { XaiVoiceFeature } from "./voice.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
 import { StdioChannelAdapter } from "./stdio-channel.js";
 import {
@@ -172,6 +174,27 @@ export async function startGateway(
     adapters.push(new StdioChannelAdapter());
   }
 
+  const xaiKey = env.XAI_API_KEY?.trim();
+  const memeEnabled =
+    envFlag(env.AGENC_GATEWAY_MEME_ENABLED) &&
+    xaiKey !== undefined &&
+    xaiKey.length > 0;
+  const voiceEnabled =
+    envFlag(env.AGENC_GATEWAY_VOICE_ENABLED) &&
+    xaiKey !== undefined &&
+    xaiKey.length > 0;
+  const telegramAdminPeerIds = envList(env.AGENC_TELEGRAM_ADMIN_PEER_IDS);
+  const telegramOwnerClaimCode = env.AGENC_TELEGRAM_OWNER_CLAIM_CODE?.trim();
+  const publicTelegramCommands = TELEGRAM_PUBLIC_MEDIA_COMMANDS.filter((entry) => {
+    if (entry.command === "image" || entry.command === "meme") return memeEnabled;
+    if (entry.command === "voice" || entry.command === "song") return voiceEnabled;
+    return false;
+  });
+  const ownerTelegramCommands = [
+    ...TELEGRAM_OWNER_COMMANDS,
+    ...publicTelegramCommands,
+  ];
+
   const telegramToken =
     options.telegramToken ?? env.AGENC_TELEGRAM_BOT_TOKEN?.trim();
   if (telegramToken !== undefined && telegramToken.length > 0) {
@@ -179,7 +202,21 @@ export async function startGateway(
     adapters.push(
       new TelegramChannelAdapter({
         transport: telegramTransport,
-        commands: TELEGRAM_OWNER_COMMANDS,
+        commandMenus: [
+          // Clear stale global private menus from older builds. Owner controls
+          // are installed only on configured owner/admin chats below.
+          { commands: [], scope: { type: "all_private_chats" } },
+          // Replace the group menu every start so owner controls never appear
+          // as public slash-command suggestions.
+          {
+            commands: publicTelegramCommands,
+            scope: { type: "all_group_chats" },
+          },
+          ...telegramAdminPeerIds.map((peerId) => ({
+            commands: ownerTelegramCommands,
+            scope: { type: "chat", chat_id: peerId },
+          })),
+        ],
         groupAddressing: envGroupAddressing(
           env.AGENC_TELEGRAM_GROUP_ADDRESSING,
         ),
@@ -192,12 +229,9 @@ export async function startGateway(
     );
   }
 
-  const xaiKey = env.XAI_API_KEY?.trim();
   const memeDailyLimit = envPositiveInt(env.AGENC_GATEWAY_MEME_DAILY_LIMIT);
   const memeFeature =
-    envFlag(env.AGENC_GATEWAY_MEME_ENABLED) &&
-    xaiKey !== undefined &&
-    xaiKey.length > 0
+    memeEnabled && xaiKey !== undefined
       ? new XaiMemeFeature({
           apiKey: xaiKey,
           usageFile: join(options.agencHome, "gateway", "meme-usage.json"),
@@ -205,6 +239,28 @@ export async function startGateway(
             ? { model: env.AGENC_GATEWAY_MEME_MODEL }
             : {}),
           ...(memeDailyLimit !== undefined ? { dailyLimit: memeDailyLimit } : {}),
+          log,
+        })
+      : undefined;
+  const voiceDailyLimit = envPositiveInt(env.AGENC_GATEWAY_VOICE_DAILY_LIMIT);
+  const voiceFeature =
+    voiceEnabled && xaiKey !== undefined
+      ? new XaiVoiceFeature({
+          apiKey: xaiKey,
+          usageFile: join(options.agencHome, "gateway", "voice-usage.json"),
+          ...(voiceDailyLimit !== undefined ? { dailyLimit: voiceDailyLimit } : {}),
+          ...(env.AGENC_GATEWAY_VOICE_DEFAULT_VOICE !== undefined
+            ? { defaultVoice: env.AGENC_GATEWAY_VOICE_DEFAULT_VOICE }
+            : {}),
+          ...(env.AGENC_GATEWAY_VOICE_MALE_VOICE !== undefined
+            ? { maleVoice: env.AGENC_GATEWAY_VOICE_MALE_VOICE }
+            : {}),
+          ...(env.AGENC_GATEWAY_VOICE_FEMALE_VOICE !== undefined
+            ? { femaleVoice: env.AGENC_GATEWAY_VOICE_FEMALE_VOICE }
+            : {}),
+          ...(env.AGENC_GATEWAY_VOICE_LANGUAGE !== undefined
+            ? { language: env.AGENC_GATEWAY_VOICE_LANGUAGE }
+            : {}),
           log,
         })
       : undefined;
@@ -278,8 +334,6 @@ export async function startGateway(
           envOptionalList(env.AGENC_GATEWAY_AGENT_UNATTENDED_DENY) ?? [],
       }));
 
-  const telegramAdminPeerIds = envList(env.AGENC_TELEGRAM_ADMIN_PEER_IDS);
-  const telegramOwnerClaimCode = env.AGENC_TELEGRAM_OWNER_CLAIM_CODE?.trim();
   const controlPlane =
     telegramAdminPeerIds.length > 0 ||
     (telegramOwnerClaimCode !== undefined && telegramOwnerClaimCode.length > 0)
@@ -300,6 +354,7 @@ export async function startGateway(
     config,
     log,
     ...(memeFeature !== undefined ? { memeFeature } : {}),
+    ...(voiceFeature !== undefined ? { voiceFeature } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
   });
 

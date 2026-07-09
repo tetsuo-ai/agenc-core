@@ -13,11 +13,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import type { ChannelReplyOptions } from "./types.js";
 
-export interface GatewayMemeReplyOptions {
-  readonly photoUrl?: string;
-  readonly caption?: string;
-}
+export type GatewayMemeReplyOptions = ChannelReplyOptions;
 
 export interface GatewayMemeFeature {
   handle(input: {

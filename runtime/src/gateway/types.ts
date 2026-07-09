@@ -51,6 +51,12 @@ export interface OutboundChannelMessage {
   readonly photoUrl?: string;
   /** Optional media caption; defaults to `text` when omitted. */
   readonly caption?: string;
+  /** Optional audio bytes to deliver as a native audio file. */
+  readonly audioBytes?: Uint8Array;
+  readonly audioFileName?: string;
+  readonly audioContentType?: string;
+  readonly audioTitle?: string;
+  readonly audioPerformer?: string;
   /**
    * When set, adapters that support edit-in-place update the message they
    * previously returned this id for (streaming coalescing); adapters without
@@ -58,6 +64,11 @@ export interface OutboundChannelMessage {
    */
   readonly editMessageId?: string;
 }
+
+export type ChannelReplyOptions = Omit<
+  OutboundChannelMessage,
+  "conversationId" | "text" | "editMessageId"
+>;
 
 export interface ChannelAdapterContext {
   /** Deliver an inbound message into the gateway pipeline. */

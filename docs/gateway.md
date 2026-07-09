@@ -51,7 +51,8 @@ AGENC_TELEGRAM_OWNER_CLAIM_CODE=<random-one-time-code> \
   agenc gateway run
 ```
 
-The first owner DMs `/owner <code>` to claim the bot. After that:
+The first owner DMs `/owner <code>` to claim the bot. After that, owner
+controls are private-DM controls:
 
 - private DMs are owner-only; non-owner DMs are ignored silently;
 - `/stop` pauses public group replies without stopping the process;
@@ -62,7 +63,26 @@ The first owner DMs `/owner <code>` to claim the bot. After that:
 
 For fixed operators, set `AGENC_TELEGRAM_ADMIN_PEER_IDS=123,456`. Owner/control
 state is stored at `<AGENC_HOME>/gateway/control.json` (0600). Telegram command
-menus are installed for private chats and groups when the Bot API allows it.
+menus install public media commands in groups, and owner controls only for
+configured owner/admin chats when the Bot API allows it. `/start` and `/stop`
+must not be advertised as public group commands.
+
+Optional generated media routes are available when the server-side xAI key and
+feature flags are configured:
+
+```bash
+AGENC_GATEWAY_MEME_ENABLED=1
+AGENC_GATEWAY_MEME_DAILY_LIMIT=20
+AGENC_GATEWAY_VOICE_ENABLED=1
+AGENC_GATEWAY_VOICE_DAILY_LIMIT=10
+```
+
+The gateway then handles `/image <idea>`, `image: <idea>`, `/meme <idea>`,
+`meme: <idea>`, `/voice <line>`, `voice: <line>`, `/song <idea>`, and
+`song: <idea>` before the prompt reaches the agent. Image routes generate a
+native Telegram photo through the xAI image API; voice routes generate a
+native Telegram audio file through the xAI TTS API. Both enforce local soft
+daily caps.
 
 Telegram gateway agents are spawned with a tiny unattended tool allowlist by
 default: `SendUserMessage` and `Brief`. That lets the bot answer normally
@@ -109,7 +129,8 @@ default.
 - **Telegram owner controls override public/private routing.** When configured,
   non-owner private DMs are blocked before they reach pairing or the agent.
   Public group messages can reach the agent only while the owner-controlled
-  public state is on; `/stop` pauses them process-wide.
+  public state is on; `/stop` pauses them process-wide, but owner controls are
+  accepted only from the owner's private DM.
 - **`open` requires an explicit `"*"`.** Setting `dmPolicy: "open"` alone still
   denies; the allowlist must literally contain `"*"`. A lone config typo can't
   expose the agent.

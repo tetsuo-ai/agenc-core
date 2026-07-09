@@ -8,6 +8,7 @@ import {
   FetchTelegramTransport,
   TelegramBotApiError,
   TelegramChannelAdapter,
+  type TelegramAudioOptions,
   type TelegramBotIdentity,
   type TelegramSendOptions,
   type TelegramTransport,
@@ -30,6 +31,17 @@ class FakeTransport implements TelegramTransport {
     chatId: string;
     photoUrl: string;
     caption?: string;
+    messageThreadId?: number;
+    parseMode?: "HTML";
+  }[] = [];
+  readonly audios: {
+    chatId: string;
+    audioBytes: Uint8Array;
+    caption?: string;
+    fileName?: string;
+    contentType?: string;
+    title?: string;
+    performer?: string;
     messageThreadId?: number;
     parseMode?: "HTML";
   }[] = [];
@@ -78,6 +90,26 @@ class FakeTransport implements TelegramTransport {
       chatId,
       photoUrl,
       ...(caption !== undefined ? { caption } : {}),
+      ...(options.messageThreadId !== undefined
+        ? { messageThreadId: options.messageThreadId }
+        : {}),
+      ...(options.parseMode !== undefined ? { parseMode: options.parseMode } : {}),
+    });
+    return { message_id: ++this.#nextId };
+  }
+  async sendAudio(
+    chatId: string,
+    audioBytes: Uint8Array,
+    options: TelegramAudioOptions = {},
+  ) {
+    this.audios.push({
+      chatId,
+      audioBytes,
+      ...(options.caption !== undefined ? { caption: options.caption } : {}),
+      ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
+      ...(options.contentType !== undefined ? { contentType: options.contentType } : {}),
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.performer !== undefined ? { performer: options.performer } : {}),
       ...(options.messageThreadId !== undefined
         ? { messageThreadId: options.messageThreadId }
         : {}),
@@ -147,12 +179,21 @@ describe("TelegramChannelAdapter", () => {
     });
   });
 
-  test("installs Telegram command menu when commands are configured", async () => {
+  test("installs Telegram command menus by configured scope", async () => {
     const transport = new FakeTransport();
     const adapter = new TelegramChannelAdapter({
       transport,
       autoPoll: false,
-      commands: [{ command: "status", description: "show bot control status" }],
+      commandMenus: [
+        {
+          commands: [{ command: "image", description: "generate image" }],
+          scope: { type: "all_group_chats" },
+        },
+        {
+          commands: [{ command: "stop", description: "pause public group replies" }],
+          scope: { type: "chat", chat_id: "42" },
+        },
+      ],
     });
     const { ctx } = collector();
     await adapter.start(ctx);
@@ -160,12 +201,12 @@ describe("TelegramChannelAdapter", () => {
 
     expect(transport.commands).toEqual([
       {
-        commands: [{ command: "status", description: "show bot control status" }],
-        scope: { type: "all_private_chats" },
+        commands: [{ command: "image", description: "generate image" }],
+        scope: { type: "all_group_chats" },
       },
       {
-        commands: [{ command: "status", description: "show bot control status" }],
-        scope: { type: "all_group_chats" },
+        commands: [{ command: "stop", description: "pause public group replies" }],
+        scope: { type: "chat", chat_id: "42" },
       },
     ]);
   });
@@ -589,6 +630,39 @@ describe("TelegramChannelAdapter", () => {
         chatId: "42",
         photoUrl: "https://img.example/meme.png",
         caption: "AgenC meme",
+        parseMode: "HTML",
+      },
+    ]);
+    await adapter.stop();
+  });
+
+  test("sends audio messages through Telegram native media", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    await adapter.send({
+      conversationId: "42",
+      text: "AgenC voice",
+      audioBytes: new Uint8Array([1, 2, 3]),
+      audioFileName: "voice.mp3",
+      audioContentType: "audio/mpeg",
+      audioTitle: "AgenC voice",
+      audioPerformer: "AgenC",
+      caption: "**AgenC voice**",
+    });
+
+    expect(transport.sent).toEqual([]);
+    expect(transport.audios).toEqual([
+      {
+        chatId: "42",
+        audioBytes: new Uint8Array([1, 2, 3]),
+        fileName: "voice.mp3",
+        contentType: "audio/mpeg",
+        title: "AgenC voice",
+        performer: "AgenC",
+        caption: "<b>AgenC voice</b>",
         parseMode: "HTML",
       },
     ]);

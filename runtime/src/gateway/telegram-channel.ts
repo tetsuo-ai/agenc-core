@@ -71,11 +71,25 @@ export interface TelegramBotCommand {
 
 export interface TelegramBotCommandScope {
   readonly type: string;
+  readonly chat_id?: string | number;
 }
 
 export interface TelegramSendOptions {
   readonly messageThreadId?: number;
   readonly parseMode?: "HTML";
+}
+
+export interface TelegramAudioOptions extends TelegramSendOptions {
+  readonly caption?: string;
+  readonly contentType?: string;
+  readonly fileName?: string;
+  readonly title?: string;
+  readonly performer?: string;
+}
+
+export interface TelegramCommandMenu {
+  readonly commands: readonly TelegramBotCommand[];
+  readonly scope: TelegramBotCommandScope;
 }
 
 /** The slice of the Bot API the adapter uses. */
@@ -96,6 +110,11 @@ export interface TelegramTransport {
     photoUrl: string,
     caption?: string,
     options?: TelegramSendOptions,
+  ): Promise<TelegramSentMessage>;
+  sendAudio?(
+    chatId: string,
+    audioBytes: Uint8Array,
+    options?: TelegramAudioOptions,
   ): Promise<TelegramSentMessage>;
   editMessageText(
     chatId: string,
@@ -131,6 +150,42 @@ export class FetchTelegramTransport implements TelegramTransport {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as BotApiResponse<T>;
+    if (!json.ok) {
+      throw new TelegramBotApiError(
+        `Telegram ${method} failed: ${json.description ?? res.status}`,
+      );
+    }
+    return json.result as T;
+  }
+
+  async #callMultipart<T>(
+    method: string,
+    fields: Record<string, string | number | undefined>,
+    files: readonly {
+      readonly name: string;
+      readonly bytes: Uint8Array;
+      readonly fileName: string;
+      readonly contentType: string;
+    }[],
+  ): Promise<T> {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) form.append(key, String(value));
+    }
+    for (const file of files) {
+      const bytes = new ArrayBuffer(file.bytes.byteLength);
+      new Uint8Array(bytes).set(file.bytes);
+      form.append(
+        file.name,
+        new Blob([bytes], { type: file.contentType }),
+        file.fileName,
+      );
+    }
+    const res = await this.#fetch(`${this.#base}/${method}`, {
+      method: "POST",
+      body: form,
     });
     const json = (await res.json()) as BotApiResponse<T>;
     if (!json.ok) {
@@ -202,6 +257,40 @@ export class FetchTelegramTransport implements TelegramTransport {
     });
   }
 
+  async sendAudio(
+    chatId: string,
+    audioBytes: Uint8Array,
+    options: TelegramAudioOptions = {},
+  ): Promise<TelegramSentMessage> {
+    return this.#callMultipart<TelegramSentMessage>(
+      "sendAudio",
+      {
+        chat_id: chatId,
+        ...(options.messageThreadId !== undefined
+          ? { message_thread_id: options.messageThreadId }
+          : {}),
+        ...(options.parseMode !== undefined ? { parse_mode: options.parseMode } : {}),
+        ...(options.caption !== undefined && options.caption.length > 0
+          ? { caption: options.caption.slice(0, 1024) }
+          : {}),
+        ...(options.title !== undefined && options.title.length > 0
+          ? { title: options.title.slice(0, 64) }
+          : {}),
+        ...(options.performer !== undefined && options.performer.length > 0
+          ? { performer: options.performer.slice(0, 64) }
+          : {}),
+      },
+      [
+        {
+          name: "audio",
+          bytes: audioBytes,
+          fileName: options.fileName ?? "agenc-audio.mp3",
+          contentType: options.contentType ?? "audio/mpeg",
+        },
+      ],
+    );
+  }
+
   async editMessageText(
     chatId: string,
     messageId: number,
@@ -227,6 +316,7 @@ export interface TelegramChannelOptions {
   readonly errorBackoffMs?: number;
   readonly log?: (line: string) => void;
   readonly commands?: readonly TelegramBotCommand[];
+  readonly commandMenus?: readonly TelegramCommandMenu[];
   /** Log sanitized inbound update routing metadata, never raw text or ids. */
   readonly debugUpdates?: boolean;
   /**
@@ -257,7 +347,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #backoffMs: number;
   readonly #log: (line: string) => void;
   readonly #autoPoll: boolean;
-  readonly #commands: readonly TelegramBotCommand[];
+  readonly #commandMenus: readonly TelegramCommandMenu[];
   readonly #debugUpdates: boolean;
   readonly #groupAddressing: "all" | "mentions";
   readonly #editTargets = new Map<string, EditTarget>();
@@ -275,7 +365,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#backoffMs = options.errorBackoffMs ?? 1000;
     this.#log = options.log ?? (() => {});
     this.#autoPoll = options.autoPoll ?? true;
-    this.#commands = options.commands ?? [];
+    this.#commandMenus =
+      options.commandMenus ??
+      (options.commands !== undefined
+        ? [
+            { commands: options.commands, scope: { type: "all_private_chats" } },
+            { commands: options.commands, scope: { type: "all_group_chats" } },
+          ]
+        : []);
     this.#debugUpdates = options.debugUpdates ?? false;
     this.#groupAddressing = options.groupAddressing ?? "all";
     if (options.botUsername !== undefined && options.botUsername.length > 0) {
@@ -314,18 +411,15 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   async #installCommands(): Promise<void> {
     if (
-      this.#commands.length === 0 ||
+      this.#commandMenus.length === 0 ||
       this.#transport.setMyCommands === undefined
     ) {
       return;
     }
     try {
-      await this.#transport.setMyCommands(this.#commands, {
-        type: "all_private_chats",
-      });
-      await this.#transport.setMyCommands(this.#commands, {
-        type: "all_group_chats",
-      });
+      for (const menu of this.#commandMenus) {
+        await this.#transport.setMyCommands(menu.commands, menu.scope);
+      }
     } catch (error) {
       this.#log(`telegram: command menu setup failed: ${String(error)}`);
     }
@@ -493,6 +587,24 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       }
     }
     const sent =
+      message.audioBytes !== undefined && this.#transport.sendAudio !== undefined
+        ? await this.#transport.sendAudio(target.chatId, message.audioBytes, {
+            ...sendOptions,
+            caption: telegramRichText(message.caption ?? message.text),
+            ...(message.audioFileName !== undefined
+              ? { fileName: message.audioFileName }
+              : {}),
+            ...(message.audioContentType !== undefined
+              ? { contentType: message.audioContentType }
+              : {}),
+            ...(message.audioTitle !== undefined
+              ? { title: message.audioTitle }
+              : {}),
+            ...(message.audioPerformer !== undefined
+              ? { performer: message.audioPerformer }
+              : {}),
+          })
+        :
       message.photoUrl !== undefined && this.#transport.sendPhoto !== undefined
         ? await this.#transport.sendPhoto(
             target.chatId,
