@@ -139,7 +139,9 @@ export class TelegramOwnerControl {
 
     if (command !== undefined && CONTROL_COMMANDS.has(command.name)) {
       if (!isOwner) {
-        await reply(this.#ownerOnlyMessage(ownerCount));
+        if (!isDm) {
+          await reply(this.#ownerOnlyMessage(ownerCount));
+        }
         this.#log(
           `telegram-control: denied owner command '/${command.name}' from '${message.sender.peerId}'`,
         );
@@ -151,7 +153,6 @@ export class TelegramOwnerControl {
 
     if (isDm) {
       if (isOwner) return { handled: false, bypassAccess: true };
-      await reply(this.#privateDeniedMessage(ownerCount));
       this.#log(
         `telegram-control: denied private DM from non-owner '${message.sender.peerId}'`,
       );
@@ -300,10 +301,4 @@ export class TelegramOwnerControl {
     return "Owner-only command.";
   }
 
-  #privateDeniedMessage(ownerCount: number): string {
-    if (ownerCount === 0 && this.#ownerClaimCode !== undefined) {
-      return "Private DMs are locked. The owner must DM /owner <code> first.";
-    }
-    return "Private DMs are owner-only. Use the public group.";
-  }
 }

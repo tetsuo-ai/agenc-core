@@ -53,7 +53,7 @@ AGENC_TELEGRAM_OWNER_CLAIM_CODE=<random-one-time-code> \
 
 The first owner DMs `/owner <code>` to claim the bot. After that:
 
-- private DMs are owner-only; everyone else is told to use the public group;
+- private DMs are owner-only; non-owner DMs are ignored silently;
 - `/stop` pauses public group replies without stopping the process;
 - `/start` turns public group replies back on;
 - `/status` shows whether the public group is live or paused;
@@ -71,6 +71,13 @@ and are denied by the Telegram gateway instead of rendering `approve <token>`
 to public users. Operators may override the list with
 `AGENC_GATEWAY_AGENT_UNATTENDED_ALLOW` and
 `AGENC_GATEWAY_AGENT_UNATTENDED_DENY`.
+
+For group chats, set `AGENC_TELEGRAM_GROUP_ADDRESSING=mentions` and
+`AGENC_TELEGRAM_BOT_USERNAME=<bot_username>` to respond only when someone
+mentions `@bot_username`, replies to the bot, or uses a slash command. Telegram
+must have BotFather privacy mode disabled (`/setprivacy` → Disable) for normal
+`@bot_username hi` mention messages to be delivered to the bot; otherwise only
+slash commands and replies are delivered by Telegram.
 
 ## Heartbeat (proactive ticks)
 
