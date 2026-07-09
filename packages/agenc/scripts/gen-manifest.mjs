@@ -7,7 +7,7 @@
 // then the manifest is committed into the npm launcher before publish.
 //
 // Usage:
-//   node scripts/gen-manifest.mjs --repo tetsuo-ai/agenc-core --tag agenc-v0.2.0
+//   node scripts/gen-manifest.mjs --repo tetsuo-ai/agenc-releases --tag agenc-v0.2.0
 //   [--artifacts <dir>]   (default: packages/agenc/release-artifacts)
 //   [--base-url <url>]    (override; default: GitHub Releases download URL)
 
@@ -29,7 +29,7 @@ function arg(name, fallback) {
   return i !== -1 && i + 1 < process.argv.length ? process.argv[i + 1] : fallback;
 }
 
-const repo = arg("repo", "tetsuo-ai/agenc-core");
+const repo = arg("repo", "tetsuo-ai/agenc-releases");
 const tag = arg("tag");
 const artifactsDir = resolve(
   arg("artifacts", join(launcherDir, "release-artifacts")),

@@ -8,7 +8,7 @@ AgenC does **not** have yet.
 ## Install + first run
 
 ```bash
-curl -fsSL <installer-url>/install.sh | sh   # sha256-verified, daemon as user service
+curl -fsSL https://get.agenc.ag/install.sh | sh   # sha256-verified, daemon as user service
 agenc onboard                                # provider/key/theme wizard
 agenc security audit                         # green by default; --fix for chmods
 ```

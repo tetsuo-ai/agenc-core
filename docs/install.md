@@ -8,7 +8,7 @@ another one installed.
 ## One-line installer (macOS / Linux)
 
 ```bash
-curl -fsSL <installer-url>/install.sh | sh
+curl -fsSL https://get.agenc.ag/install.sh | sh
 ```
 
 The script (source: `scripts/install/install.sh`):
@@ -31,7 +31,7 @@ Re-running is idempotent: a verified existing install skips the download.
 ## One-line installer (Windows)
 
 ```powershell
-iwr -useb <installer-url>/install.ps1 | iex
+iwr -useb https://get.agenc.ag/install.ps1 | iex
 ```
 
 Source: `scripts/install/install.ps1`. Same manifest/verify/extract contract;
@@ -66,19 +66,35 @@ exposure note in the compose file). VPS deployment shapes:
 `install.sh` so every path shares one verified contract. It ships with
 placeholder URL/sha and must not be published until a release fills them.
 
-## Release/publish steps (owner-gated — do not automate from an agent session)
+## Release/publish procedure (as executed 2026-07-09)
 
-For the one-line installers to work against a release tag:
+Binaries publish to the **public** `tetsuo-ai/agenc-releases` repo (this repo
+is private, so its own release assets are not publicly downloadable). The
+installers default to `releases/latest/download/agenc-runtime-manifest.json`
+there — a regression test pins that default.
 
-1. Build per-platform tarballs (`npm --workspace=@tetsuo-ai/agenc run
-   build:runtime-tarball`) and generate the manifest
-   (`gen:manifest --repo <repo> --tag agenc-v<version>`).
-2. Upload the tarballs **and** `packages/agenc/generated/agenc-runtime-manifest.json`
-   as assets on the GitHub release (`agenc-v<version>`). The scripts default to
-   `releases/latest/download/agenc-runtime-manifest.json`.
-3. Host `scripts/install/install.sh` and `install.ps1` at a stable URL
-   (e.g. `get.agenc.ag`) or upload them as release assets on a public
-   releases repo.
+1. Build tarballs. Locally for this platform:
+   `npm --workspace=@tetsuo-ai/agenc run build:runtime-tarball`.
+   All platforms: `gh workflow run release-runtime.yml`, then
+   `gh run download <run-id> --dir packages/agenc/release-artifacts`
+   (matrix: linux x64/arm64, darwin x64/arm64, win x64; publishing stays
+   operator-driven so CI needs no cross-repo secrets).
+2. `node packages/agenc/scripts/gen-manifest.mjs --repo tetsuo-ai/agenc-releases
+   --tag agenc-v<version>` (reads every `.meta.json` present).
+3. `gh release create agenc-v<version> --repo tetsuo-ai/agenc-releases ...`
+   (or `upload --clobber` to extend) with: all tarballs, the manifest,
+   `scripts/install/install.sh`, `scripts/install/install.ps1`. The release
+   must NOT be marked prerelease — `releases/latest/download/` skips
+   prereleases and the installer default breaks.
+4. `https://get.agenc.ag/{install.sh,install.ps1,manifest.json}` 307-redirect
+   to those release assets — Vercel project `agenc-get`, source in
+   `packaging/get-agenc-ag/` (redeploy: `vercel deploy --prod` from that dir).
+5. Docker: `docker build -f packaging/docker/Dockerfile -t
+   ghcr.io/tetsuo-ai/agenc:<version> .`, push, and mark the ghcr package
+   public.
+6. Homebrew tap (`tetsuo-ai/homebrew-agenc`): fill `packaging/homebrew/agenc.rb`
+   url+sha from the release; only publish once darwin tarballs exist in the
+   manifest, otherwise mac installs fail.
 
 Tests: `runtime/tests/packaging/install-sh.test.ts` exercises the full sh flow
 (fresh install, checksum-mismatch abort, marker idempotency, systemd unit

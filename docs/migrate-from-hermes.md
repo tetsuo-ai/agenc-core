@@ -10,7 +10,7 @@ does not have yet.
 ## Install + first run
 
 ```bash
-curl -fsSL <installer-url>/install.sh | sh
+curl -fsSL https://get.agenc.ag/install.sh | sh
 agenc onboard          # provider/key wizard — BYOK or OAuth-backed providers
 agenc security audit   # fail-closed posture check, green on fresh installs
 ```

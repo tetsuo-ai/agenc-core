@@ -1,6 +1,6 @@
 # AgenC one-line installer (Windows).
 #
-#   iwr -useb <installer-url> | iex
+#   iwr -useb https://get.agenc.ag/install.ps1 | iex
 #
 # Same install contract as install.sh and the npm launcher's runtime-manager:
 # downloads the win-<arch> runtime tarball from the release manifest, verifies
@@ -9,7 +9,7 @@
 #
 # Environment overrides:
 #   AGENC_INSTALL_MANIFEST_URL  manifest override (file paths supported)
-#   AGENC_INSTALL_REPO          GitHub repo (default tetsuo-ai/agenc-core)
+#   AGENC_INSTALL_REPO          GitHub repo (default tetsuo-ai/agenc-releases)
 #   AGENC_INSTALL_VERSION       pin a release version
 #   AGENC_HOME                  runtime install root (default ~\.agenc)
 #   AGENC_INSTALL_PREFIX        shim prefix (default $env:LOCALAPPDATA\agenc)
@@ -37,7 +37,7 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 
 # --- resolve manifest --------------------------------------------------------
 
-$repo = if ($env:AGENC_INSTALL_REPO) { $env:AGENC_INSTALL_REPO } else { "tetsuo-ai/agenc-core" }
+$repo = if ($env:AGENC_INSTALL_REPO) { $env:AGENC_INSTALL_REPO } else { "tetsuo-ai/agenc-releases" }
 $manifestUrl = $env:AGENC_INSTALL_MANIFEST_URL
 if (-not $manifestUrl) {
   if ($env:AGENC_INSTALL_VERSION) {

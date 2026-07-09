@@ -95,7 +95,7 @@ tarball's sha256 and wires the daemon as a user service — see
 [`docs/install.md`](docs/install.md)):
 
 ```bash
-curl -fsSL <installer-url>/install.sh | sh
+curl -fsSL https://get.agenc.ag/install.sh | sh
 ```
 
 Or install the published launcher:

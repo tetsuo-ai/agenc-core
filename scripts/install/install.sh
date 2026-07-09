@@ -1,7 +1,7 @@
 #!/bin/sh
 # AgenC one-line installer (macOS / Linux).
 #
-#   curl -fsSL <installer-url> | sh
+#   curl -fsSL https://get.agenc.ag/install.sh | sh
 #
 # Downloads the per-platform runtime tarball listed in the release manifest,
 # verifies its sha256, extracts it under $AGENC_HOME/runtime/<version>/ using
@@ -17,7 +17,7 @@
 #   --manifest-url <url>    manifest override; supports file:// and plain paths
 #                           (env: AGENC_INSTALL_MANIFEST_URL)
 #   --repo <owner/name>     GitHub repo for release downloads
-#                           (env: AGENC_INSTALL_REPO, default tetsuo-ai/agenc-core)
+#                           (env: AGENC_INSTALL_REPO, default tetsuo-ai/agenc-releases)
 #   --prefix <dir>          wrapper install prefix (default: ~/.local)
 #   --no-daemon             skip user-service installation
 #   AGENC_HOME              runtime install root (default: ~/.agenc)
@@ -31,7 +31,7 @@
 
 set -u
 
-REPO="${AGENC_INSTALL_REPO:-tetsuo-ai/agenc-core}"
+REPO="${AGENC_INSTALL_REPO:-tetsuo-ai/agenc-releases}"
 MANIFEST_URL="${AGENC_INSTALL_MANIFEST_URL:-}"
 PIN_VERSION=""
 PREFIX="${HOME}/.local"
@@ -189,6 +189,10 @@ else
 
   rm -rf "$INSTALL_DIR"
   mkdir -p "$INSTALL_DIR"
+  # AGENC_HOME holds auth tokens, the daemon cookie, and transcripts: keep it
+  # owner-only (matches the runtime's own 0700 convention; `security audit`
+  # flags anything looser).
+  chmod 700 "$AGENC_HOME_DIR"
   tar -xzf "$TARBALL" -C "$INSTALL_DIR" || fail "extraction failed"
   [ -f "$RUNTIME_BIN" ] || fail "runtime extracted but entry missing: ${RUNTIME_BIN}"
   printf '%s' "$ARTIFACT_SHA" > "$MARKER"
