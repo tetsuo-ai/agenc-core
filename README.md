@@ -86,6 +86,10 @@ licensed; see [`LICENSE`](LICENSE).
 
 ## Quick start
 
+Five-minute path: [`docs/quickstart.md`](docs/quickstart.md). Coming from
+another assistant: [OpenClaw](docs/migrate-from-openclaw.md) ·
+[Hermes](docs/migrate-from-hermes.md).
+
 Install with the one-line installer (macOS/Linux; verifies the runtime
 tarball's sha256 and wires the daemon as a user service — see
 [`docs/install.md`](docs/install.md)):
