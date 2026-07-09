@@ -35,8 +35,16 @@ interface SdkPermissionRequest {
   readonly permissions: readonly string[];
   readonly reason?: string;
 }
+interface SdkUsage {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+}
 interface SdkPromptRun extends AsyncIterable<{ type: string; delta?: string; message?: string }> {
-  result(): Promise<{ stopReason: string; finalMessage: string }>;
+  result(): Promise<{
+    stopReason: string;
+    finalMessage: string;
+    usage?: SdkUsage;
+  }>;
 }
 interface SdkSession {
   readonly sessionId: string;
@@ -89,7 +97,18 @@ function wrapSession(sdkSession: SdkSession): GatewaySession {
         result.stopReason === "stopped"
           ? result.stopReason
           : "errored";
-      return { stopReason, finalMessage: result.finalMessage };
+      const usage =
+        result.usage !== undefined
+          ? {
+              inputTokens: result.usage.inputTokens ?? 0,
+              outputTokens: result.usage.outputTokens ?? 0,
+            }
+          : undefined;
+      return {
+        stopReason,
+        finalMessage: result.finalMessage,
+        ...(usage !== undefined ? { usage } : {}),
+      };
     },
   };
 }

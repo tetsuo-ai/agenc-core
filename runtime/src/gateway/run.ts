@@ -18,6 +18,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { loadConfig } from "../config/loader.js";
+import { resolveHeartbeatPolicy } from "../heartbeat/config.js";
+import { startHeartbeat } from "../heartbeat/wire.js";
+import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
@@ -48,6 +52,12 @@ export interface GatewayRunOptions {
   readonly telegramToken?: string;
   /** Enable the WebChat browser surface (loopback + token). */
   readonly webchat?: boolean;
+  /** Force the proactive heartbeat on for this run (else [heartbeat] config). */
+  readonly heartbeat?: boolean;
+  /** Workspace dir for HEARTBEAT.md (default process.cwd()). */
+  readonly workspaceDir?: string;
+  /** Test seam: inject the heartbeat clock (real timers by default). */
+  readonly heartbeatClock?: import("../heartbeat/types.js").HeartbeatClock;
   /** WebChat bind host (default 127.0.0.1) / port (default ephemeral). */
   readonly webchatHost?: string;
   readonly webchatPort?: number;
@@ -152,9 +162,17 @@ export async function startGateway(
     adapters.push(adapter);
   }
 
-  if (adapters.length === 0) {
+  // A heartbeat-only run (proactive ticks, no channel) is valid.
+  const heartbeatRequested =
+    options.heartbeat === true ||
+    resolveHeartbeatPolicy(
+      (await loadConfig({ home: options.agencHome, onWarn: log })).config
+        .heartbeat,
+      env,
+    ).enabled;
+  if (adapters.length === 0 && !heartbeatRequested) {
     throw new Error(
-      "gateway run: no channels enabled — pass --stdio, --webchat, set AGENC_TELEGRAM_BOT_TOKEN, or configure a channel",
+      "gateway run: no channels enabled — pass --stdio, --webchat, --heartbeat, set AGENC_TELEGRAM_BOT_TOKEN, or configure a channel",
     );
   }
 
@@ -201,6 +219,36 @@ export async function startGateway(
     log(`gateway: WebChat on ${webchat.url}`);
   }
 
+  // Heartbeat (task 14): proactive autonomous ticks, bounded by the budget
+  // layer. Enabled via [heartbeat] config or AGENC_HEARTBEAT; --heartbeat
+  // forces it on for this run. Uses the same daemon client + channel adapters.
+  let heartbeat: HeartbeatScheduler | null = null;
+  try {
+    const mainConfig = (await loadConfig({ home: options.agencHome, onWarn: log }))
+      .config;
+    const heartbeatConfig =
+      options.heartbeat === true
+        ? {
+            ...mainConfig,
+            heartbeat: { ...mainConfig.heartbeat, enabled: true },
+          }
+        : mainConfig;
+    heartbeat = await startHeartbeat({
+      agencHome: options.agencHome,
+      workspaceDir: options.workspaceDir ?? process.cwd(),
+      config: heartbeatConfig,
+      env,
+      client,
+      adapters,
+      log,
+      ...(options.heartbeatClock !== undefined
+        ? { clock: options.heartbeatClock }
+        : {}),
+    });
+  } catch (error) {
+    log(`heartbeat: failed to start (continuing without it): ${String(error)}`);
+  }
+
   log(`gateway: running with channels: ${started.join(", ")}`);
 
   return {
@@ -208,6 +256,7 @@ export async function startGateway(
     channels: started,
     ...(webchat !== undefined ? { webchatUrl: webchat.url } : {}),
     async stop() {
+      if (heartbeat !== null) await heartbeat.stop();
       await gateway.stop();
       await client.close();
     },

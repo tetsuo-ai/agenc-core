@@ -43,6 +43,28 @@ The **Telegram channel** uses the official Bot API (no reverse-engineered
 client, no account-ban risk). Create a bot with @BotFather, export the token,
 and message it. Streaming replies edit one message in place.
 
+## Heartbeat (proactive ticks)
+
+`agenc gateway run --heartbeat` (or `[heartbeat] enabled = true`) runs a
+periodic autonomous turn: on each tick the agent reads `HEARTBEAT.md` from the
+workspace and acts, replying `HEARTBEAT_OK` (delivery suppressed) when there is
+nothing to do. It is **bounded by the budget layer** (task 15): each tick is
+admitted pre-flight, and if the agent's daily/monthly cap would be exceeded the
+turn is skipped and a "heartbeat paused" notice is delivered instead of
+silently spending — so a heartbeat can never become the idle-burn furnace.
+
+Config (`[heartbeat]` / `AGENC_HEARTBEAT*`): `interval_seconds` (default 1800),
+`active_hours` (e.g. `8-22`, local), `skip_when_busy`, `model` (utility model),
+`target_channel`/`target_conversation` (or `none` to run without delivering),
+and `agent` (the budget envelope this heartbeat draws from). Disabled by
+default.
+
+> Note: live heartbeat turns (and live channel turns generally) currently
+> require the gateway's daemon-agent provisioning fix — see TODO task 34. The
+> heartbeat scheduling, gating, budget enforcement, suppression, and delivery
+> are complete and tested against a fake daemon client; the remaining piece is
+> the shared gateway↔daemon session-agent bootstrap.
+
 ## Security model (non-negotiable)
 
 - **Pairing by default.** An unknown DM sender gets a one-time, expiring
