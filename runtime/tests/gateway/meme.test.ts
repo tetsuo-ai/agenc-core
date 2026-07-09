@@ -8,11 +8,11 @@ import { parseMemePrompt, XaiMemeFeature } from "../../src/gateway/meme.js";
 describe("parseMemePrompt", () => {
   test("parses slash and label forms", () => {
     expect(parseMemePrompt("/meme agent economy")).toBe("agent economy");
-    expect(parseMemePrompt("/meme@core_69_bot agent economy")).toBe(
+    expect(parseMemePrompt("/meme@agenc_test_bot agent economy")).toBe(
       "agent economy",
     );
     expect(parseMemePrompt("/image agent economy")).toBe("agent economy");
-    expect(parseMemePrompt("/image@core_69_bot agent economy")).toBe(
+    expect(parseMemePrompt("/image@agenc_test_bot agent economy")).toBe(
       "agent economy",
     );
     expect(parseMemePrompt("meme: solana agents getting paid")).toBe(

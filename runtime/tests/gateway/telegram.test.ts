@@ -40,7 +40,7 @@ class FakeTransport implements TelegramTransport {
     parseMode?: "HTML";
   }[] = [];
   readonly commands: { commands: unknown; scope?: unknown }[] = [];
-  identity: TelegramBotIdentity = { id: 999, username: "core_69_bot" };
+  identity: TelegramBotIdentity = { id: 999, username: "agenc_test_bot" };
   #nextId = 100;
   editShouldThrow = false;
 
@@ -268,7 +268,7 @@ describe("TelegramChannelAdapter", () => {
             message_id: 8,
             from: { id: 7, first_name: "Bob" },
             chat: { id: -100200, type: "supergroup" },
-            text: "@core_69_bot hi there",
+            text: "@agenc_test_bot hi there",
           },
         },
       ],
@@ -300,7 +300,7 @@ describe("TelegramChannelAdapter", () => {
               title: "AgenC group",
             },
             chat: { id: -100200, type: "supergroup" },
-            text: "@core_69_bot hi from anonymous admin",
+            text: "@agenc_test_bot hi from anonymous admin",
           },
         },
       ],
@@ -336,7 +336,7 @@ describe("TelegramChannelAdapter", () => {
               title: "AgenC channel",
             },
             chat: { id: -100300, type: "channel" },
-            text: "@core_69_bot explain AgenC",
+            text: "@agenc_test_bot explain AgenC",
           },
         },
       ],
@@ -396,7 +396,7 @@ describe("TelegramChannelAdapter", () => {
             message_id: 88,
             from: { id: 7, first_name: "Bob" },
             chat: { id: -100200, type: "supergroup" },
-            caption: "@core_69_bot explain this image",
+            caption: "@agenc_test_bot explain this image",
           },
         },
       ],
@@ -426,7 +426,7 @@ describe("TelegramChannelAdapter", () => {
             chat: { id: -100200, type: "supergroup" },
             text: "answer this",
             reply_to_message: {
-              from: { id: 999, is_bot: true, username: "core_69_bot" },
+              from: { id: 999, is_bot: true, username: "agenc_test_bot" },
             },
           },
         },
