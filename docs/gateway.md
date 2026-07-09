@@ -113,12 +113,18 @@ AGENC_GATEWAY_X_SEARCH_ENABLED=1
 AGENC_GATEWAY_X_SEARCH_MODEL=grok-4.5
 AGENC_GATEWAY_X_SEARCH_DAILY_LIMIT=100
 AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT=4
+AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS=90000
 ```
 
 Examples include `what is the latest post from @xai?`, `dime el último
 comentario de @user`, and `what are people saying about AgenC on X?`. Exact
 handles are extracted and passed through `allowed_x_handles` (maximum 20), so a
 handle-specific question cannot silently broaden into unrelated accounts.
+
+Hosted X search can take tens of seconds. The default bounded wait is 90
+seconds; `AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS` can tune it between 15 and 120
+seconds. Timeout, rate-limit, and xAI-availability failures are reported
+separately without exposing provider responses or credentials.
 
 The gateway treats the query and all X content as untrusted data, applies
 per-peer and daily limits, bounds response size and latency, and caches repeated

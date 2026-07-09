@@ -445,4 +445,73 @@ describe("XaiXSearchFeature", () => {
       "gateway x-search: read failed (authentication_failed)",
     ]);
   });
+
+  test("reports a bounded timeout separately from other upstream failures", async () => {
+    const logs: string[] = [];
+    const replies: string[] = [];
+    const feature = new XaiXSearchFeature({
+      apiKey: "xai-test-key-that-is-long-enough",
+      usageFile: join(home, "usage.json"),
+      timeoutMs: 5,
+      fetchImpl: ((_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        })) as typeof fetch,
+      log: (line) => logs.push(line),
+    });
+
+    await feature.handle({
+      text: "latest post from @example",
+      channelId: "telegram",
+      peerId: "alice",
+      reply: async (text) => {
+        replies.push(text);
+        return "out";
+      },
+    });
+
+    expect(replies).toEqual([
+      "X search took longer than the bounded server wait, so no result was returned. Try the same question again.",
+    ]);
+    expect(logs).toEqual(["gateway x-search: read failed (timeout)"]);
+  });
+
+  test.each([
+    [429, "rate-limited upstream", "rate_limited"],
+    [503, "temporarily unavailable at xAI", "upstream_unavailable"],
+  ])(
+    "reports HTTP %i with a specific safe message",
+    async (status, expectedReply, expectedCode) => {
+      const logs: string[] = [];
+      const replies: string[] = [];
+      const feature = new XaiXSearchFeature({
+        apiKey: "xai-test-key-that-is-long-enough",
+        usageFile: join(home, "usage.json"),
+        fetchImpl: (async () =>
+          new Response("provider detail must stay private", { status })) as typeof fetch,
+        log: (line) => logs.push(line),
+      });
+
+      await feature.handle({
+        text: "latest post from @example",
+        channelId: "telegram",
+        peerId: "alice",
+        reply: async (text) => {
+          replies.push(text);
+          return "out";
+        },
+      });
+
+      expect(replies[0]).toContain(expectedReply);
+      expect(replies[0]).not.toContain("provider detail");
+      expect(logs).toEqual([
+        `gateway x-search: read failed (${expectedCode})`,
+      ]);
+    },
+  );
 });

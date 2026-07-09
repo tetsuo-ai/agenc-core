@@ -157,6 +157,17 @@ function envPositiveInt(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function envBoundedPositiveInt(
+  value: string | undefined,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  const parsed = envPositiveInt(value);
+  return parsed === undefined
+    ? undefined
+    : Math.min(maximum, Math.max(minimum, parsed));
+}
+
 function envList(value: string | undefined): readonly string[] {
   if (value === undefined) return [];
   return value
@@ -377,6 +388,11 @@ export async function startGateway(
   const xSearchPerPeerLimit = envPositiveInt(
     env.AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT,
   );
+  const xSearchTimeoutMs = envBoundedPositiveInt(
+    env.AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS,
+    15_000,
+    120_000,
+  );
   const xSearchFeature =
     xSearchEnabled && xaiKey !== undefined
       ? new XaiXSearchFeature({
@@ -390,6 +406,9 @@ export async function startGateway(
             : {}),
           ...(xSearchPerPeerLimit !== undefined
             ? { perPeerLimit: xSearchPerPeerLimit }
+            : {}),
+          ...(xSearchTimeoutMs !== undefined
+            ? { timeoutMs: xSearchTimeoutMs }
             : {}),
           log,
         })

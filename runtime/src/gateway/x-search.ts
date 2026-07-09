@@ -18,7 +18,8 @@ import { dirname } from "node:path";
 
 const XAI_RESPONSES_URL = "https://api.x.ai/v1/responses";
 const DEFAULT_MODEL = "grok-4.5";
-const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
+const MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_DAILY_LIMIT = 100;
 const DEFAULT_PER_PEER_LIMIT = 4;
 const DEFAULT_PER_PEER_WINDOW_MS = 60_000;
@@ -303,8 +304,14 @@ function publicErrorReply(error: unknown): string {
   if (code === "authentication_failed") {
     return "Live X search is temporarily unavailable. The server-side credential needs attention; no key was exposed.";
   }
-  if (code === "rate_limited" || code === "upstream_unavailable" || code === "timeout") {
-    return "X search is busy upstream right now. Try the same question again in a minute.";
+  if (code === "timeout") {
+    return "X search took longer than the bounded server wait, so no result was returned. Try the same question again.";
+  }
+  if (code === "rate_limited") {
+    return "X search is rate-limited upstream right now. Try the same question again in a minute.";
+  }
+  if (code === "upstream_unavailable") {
+    return "X search is temporarily unavailable at xAI. Try the same question again in a minute.";
   }
   return "I could not complete that read-only X search safely. Check the handle and try again.";
 }
@@ -333,7 +340,10 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
     this.#fetch = options.fetchImpl ?? fetch;
     this.#now = options.now ?? Date.now;
     this.#log = options.log ?? (() => {});
-    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#timeoutMs = Math.min(
+      MAX_TIMEOUT_MS,
+      Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    );
     this.#dailyLimit = options.dailyLimit ?? DEFAULT_DAILY_LIMIT;
     this.#perPeerLimit = options.perPeerLimit ?? DEFAULT_PER_PEER_LIMIT;
     this.#perPeerWindowMs =
