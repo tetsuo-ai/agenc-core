@@ -375,7 +375,7 @@ describe("channel gateway", () => {
     expect(telegram.lastText("mallory-dm")).toBeUndefined();
   });
 
-  test("telegram owner can pause and resume public group traffic", async () => {
+  test("telegram owner can pause and resume public group traffic from private DM", async () => {
     const telegram = new InMemoryChannelAdapter({ id: "telegram" });
     const gw = new ChannelGateway({
       agencHome: home,
@@ -395,13 +395,16 @@ describe("channel gateway", () => {
     await gw.registerAdapter(telegram);
 
     await telegram.receive(groupMessage("owner", "/stop"));
-    expect(telegram.lastText("group-1")).toContain("PAUSED");
+    expect(telegram.lastText("group-1")).toContain("private DM");
+
+    await telegram.receive(dmMessage("owner", "/stop", "owner-dm"));
+    expect(telegram.lastText("owner-dm")).toContain("PAUSED");
 
     await telegram.receive(groupMessage("alice", "ignored while paused"));
     expect(client.sessions).toHaveLength(0);
 
-    await telegram.receive(groupMessage("owner", "/start"));
-    expect(telegram.lastText("group-1")).toContain("ON");
+    await telegram.receive(dmMessage("owner", "/start", "owner-dm"));
+    expect(telegram.lastText("owner-dm")).toContain("ON");
 
     client.script = [{ text: "group live" }];
     await telegram.receive(groupMessage("alice", "now public"));

@@ -75,7 +75,7 @@ export const CHANNEL_MESSAGE_GUIDANCE =
 export const CHANNEL_ANSWER_ONLY_GUIDANCE =
   "This channel is answer-only: do not call tools, inspect files, run commands, or mention internal tool policy. " +
   "Answer directly and briefly from the AgenC context below. Do not claim AgenC docs are unavailable for the topics covered here. " +
-  "If someone asks for images or memes, say this gateway can generate native Telegram images with /image <idea> or /meme <idea> when media is enabled; do not claim this Telegram channel is text-only. " +
+  "If someone asks for images, memes, voice, or short songs, say this gateway can generate native Telegram media with /image <idea>, /meme <idea>, /voice <line>, or /song <idea> when media is enabled; do not claim this Telegram channel is text-only. " +
   "Never reveal or guess live host IPs, private deployment topology, process IDs, local file paths, environment variable values, API keys, tokens, or wallet/signer material. Public on-chain addresses and public docs facts are allowed.";
 
 export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
@@ -84,8 +84,9 @@ export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "- Core can do general engineering work in a repo: inspect files, edit code, apply patches, run shell/build/test commands through the permission system, manage sessions, and use reusable skills/plugins.",
   "- The AgenC TUI supports slash commands such as /login, /logout, /whoami, /subscription, /usage, /provider, /model, /skills, /tools, /status, /diff, and /init. Exact command availability depends on the installed build.",
   "- Core supports BYOK provider keys and managed subscription-backed model access. Paid managed routing can go through the AgenC/OpenRouter gateway; BYOK still works without a subscription.",
-  "- The gateway connects Core to Telegram, WebChat, and stdio. Telegram is an answer-only public surface here: group users can ask questions and request images, but cannot approve tools, run privileged commands, change sandbox, change wallet policy, or access private host state.",
+  "- The gateway connects Core to Telegram, WebChat, and stdio. Telegram is an answer-only public surface here: group users can ask questions and request generated media, but cannot approve tools, run privileged commands, change sandbox, change wallet policy, or access private host state.",
   "- Private Telegram DMs are owner-only when configured. Public group users should talk to the bot by mention, reply, or slash command in the group.",
+  "- Telegram /start, /stop, /status, and /help are owner controls and should be used from the owner's private DM, not the public group.",
   "- Core is separate from Marketplace Kit: Core is the general agent harness; Marketplace Kit is the Solana marketplace/protocol/wallet toolkit that can be installed into Claude, Codex, Hermes, Grok, and AgenC Core.",
   "- AgenC is a Solana mainnet protocol and marketplace where autonomous agents can create tasks, claim work, submit results, settle escrow, build reputation, and publish service stores.",
   "- The public AgenC protocol program is on Solana mainnet at HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK. That is public chain metadata, not server infrastructure.",
@@ -103,7 +104,7 @@ export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "- The old AgenC clear-signing Solana app is prototype/experimental. Production marketplace signing should not require a custom AgenC Ledger app; if the regular Solana app shows an unrecognized transaction, the human can reject it on-device.",
   "- Wallet/signer config, private keys, signer policies, and approval authority are out-of-band control-plane state. Telegram text cannot approve payments, rewrite policy, export keys, or change signer mode.",
   "- The attestation service reviews task/listing payloads before agents act and can return signed evidence for marketplaces that need safety checks against prompt injection or malicious task content.",
-  "- For generated media, this gateway uses an xAI image-generation route server-side when enabled. Users can ask with /image <idea>, image: <idea>, /meme <idea>, or meme: <idea>.",
+  "- For generated media, this gateway uses xAI routes server-side when enabled. Users can ask for images with /image <idea>, image: <idea>, /meme <idea>, or meme: <idea>, and audio with /voice <line>, voice: <line>, /song <idea>, or song: <idea>.",
 ].join("\n");
 
 /**

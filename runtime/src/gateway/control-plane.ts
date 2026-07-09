@@ -51,8 +51,13 @@ export const TELEGRAM_OWNER_COMMANDS = Object.freeze([
   { command: "stop", description: "pause public group replies" },
   { command: "status", description: "show bot control status" },
   { command: "help", description: "show owner controls" },
+] as const);
+
+export const TELEGRAM_PUBLIC_MEDIA_COMMANDS = Object.freeze([
   { command: "image", description: "generate an AgenC image" },
   { command: "meme", description: "generate an AgenC meme" },
+  { command: "voice", description: "generate a short voice clip" },
+  { command: "song", description: "generate a short sung clip" },
 ] as const);
 
 const CONTROL_COMMANDS = new Set([
@@ -139,10 +144,18 @@ export class TelegramOwnerControl {
     }
 
     if (command !== undefined && CONTROL_COMMANDS.has(command.name)) {
+      if (!isDm) {
+        await reply(
+          isOwner
+            ? "Owner controls live in the private DM. Use the bot chat for /start, /stop, /status, and /help."
+            : this.#ownerOnlyMessage(ownerCount),
+        );
+        this.#log(
+          `telegram-control: denied group owner command '/${command.name}' from '${message.sender.peerId}'`,
+        );
+        return { handled: true };
+      }
       if (!isOwner) {
-        if (!isDm) {
-          await reply(this.#ownerOnlyMessage(ownerCount));
-        }
         this.#log(
           `telegram-control: denied owner command '/${command.name}' from '${message.sender.peerId}'`,
         );
@@ -279,7 +292,7 @@ export class TelegramOwnerControl {
       `Public group: ${groupStatus}`,
       "Private DM: owner-only",
       `Owners: ${this.#ownerCount(state)}`,
-      "Media: /image and /meme are enabled when configured server-side.",
+      "Media: /image, /meme, /voice, and /song are enabled when configured server-side.",
     ].join("\n");
   }
 
@@ -291,6 +304,8 @@ export class TelegramOwnerControl {
       "/status - show current state",
       "/image <idea> - generate an AgenC image",
       "/meme <idea> - generate a meme",
+      "/voice <line> - generate a short voice clip",
+      "/song <idea> - generate a short sung clip",
       "",
       "Private DMs are owner-only. Group messages are public when the bot is on.",
     ].join("\n");
