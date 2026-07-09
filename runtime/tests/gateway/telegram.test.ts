@@ -198,6 +198,42 @@ describe("TelegramChannelAdapter", () => {
     expect(messages[0].text).toBe("hi there");
   });
 
+  test("mention-only group addressing forwards sender_chat mentions", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 45,
+          message: {
+            message_id: 85,
+            sender_chat: {
+              id: -100200,
+              type: "supergroup",
+              title: "AgenC group",
+            },
+            chat: { id: -100200, type: "supergroup" },
+            text: "@core_69_bot hi from anonymous admin",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].sender).toEqual({
+      peerId: "-100200",
+      displayName: "AgenC group",
+    });
+    expect(messages[0].text).toBe("hi from anonymous admin");
+  });
+
   test("mention-only group addressing forwards replies to the bot", async () => {
     const transport = new FakeTransport();
     transport.updates = [

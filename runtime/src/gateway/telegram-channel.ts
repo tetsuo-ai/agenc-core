@@ -30,6 +30,12 @@ export interface TelegramUpdate {
       readonly username?: string;
       readonly first_name?: string;
     };
+    readonly sender_chat?: {
+      readonly id: number;
+      readonly type: string;
+      readonly username?: string;
+      readonly title?: string;
+    };
     readonly chat: { readonly id: number; readonly type: string };
     readonly text?: string;
     readonly reply_to_message?: {
@@ -306,12 +312,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (
       this.#context === null ||
       message === undefined ||
-      message.text === undefined ||
-      message.from === undefined
+      message.text === undefined
     ) {
       return;
     }
-    const peerId = String(message.from.id);
+    const sender = message.from;
+    const senderChat = message.sender_chat;
+    if (sender === undefined && senderChat === undefined) {
+      return;
+    }
+    const peerId = String(sender?.id ?? senderChat?.id);
     const chatId = String(message.chat.id);
     const isGroup =
       message.chat.type === "group" || message.chat.type === "supergroup";
@@ -321,11 +331,15 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       channelId: this.id,
       sender: {
         peerId,
-        ...(message.from.username !== undefined
-          ? { displayName: message.from.username }
-          : message.from.first_name !== undefined
-            ? { displayName: message.from.first_name }
-            : {}),
+        ...(sender?.username !== undefined
+          ? { displayName: sender.username }
+          : sender?.first_name !== undefined
+            ? { displayName: sender.first_name }
+            : senderChat?.username !== undefined
+              ? { displayName: senderChat.username }
+              : senderChat?.title !== undefined
+                ? { displayName: senderChat.title }
+                : {}),
       },
       conversation: { kind: isGroup ? "group" : "dm", id: chatId },
       text,
