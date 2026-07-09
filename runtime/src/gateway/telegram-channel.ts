@@ -79,6 +79,11 @@ export interface TelegramSendOptions {
   readonly parseMode?: "HTML";
 }
 
+export interface TelegramRichMessageOptions {
+  readonly messageThreadId?: number;
+  readonly skipEntityDetection?: boolean;
+}
+
 export interface TelegramAudioOptions extends TelegramSendOptions {
   readonly caption?: string;
   readonly contentType?: string;
@@ -101,6 +106,11 @@ export interface TelegramTransport {
     text: string,
     options?: TelegramSendOptions,
   ): Promise<TelegramSentMessage>;
+  sendRichMessage?(
+    chatId: string,
+    markdown: string,
+    options?: TelegramRichMessageOptions,
+  ): Promise<TelegramSentMessage>;
   setMyCommands?(
     commands: readonly TelegramBotCommand[],
     scope?: TelegramBotCommandScope,
@@ -121,6 +131,12 @@ export interface TelegramTransport {
     messageId: number,
     text: string,
     options?: TelegramSendOptions,
+  ): Promise<void>;
+  editRichMessage?(
+    chatId: string,
+    messageId: number,
+    markdown: string,
+    options?: TelegramRichMessageOptions,
   ): Promise<void>;
 }
 
@@ -228,6 +244,25 @@ export class FetchTelegramTransport implements TelegramTransport {
     });
   }
 
+  async sendRichMessage(
+    chatId: string,
+    markdown: string,
+    options: TelegramRichMessageOptions = {},
+  ): Promise<TelegramSentMessage> {
+    return this.#call<TelegramSentMessage>("sendRichMessage", {
+      chat_id: chatId,
+      rich_message: {
+        markdown,
+        ...(options.skipEntityDetection === true
+          ? { skip_entity_detection: true }
+          : {}),
+      },
+      ...(options.messageThreadId !== undefined
+        ? { message_thread_id: options.messageThreadId }
+        : {}),
+    });
+  }
+
   async setMyCommands(
     commands: readonly TelegramBotCommand[],
     scope?: TelegramBotCommandScope,
@@ -302,6 +337,27 @@ export class FetchTelegramTransport implements TelegramTransport {
       message_id: messageId,
       text,
       ...(options.parseMode !== undefined ? { parse_mode: options.parseMode } : {}),
+    });
+  }
+
+  async editRichMessage(
+    chatId: string,
+    messageId: number,
+    markdown: string,
+    options: TelegramRichMessageOptions = {},
+  ): Promise<void> {
+    await this.#call("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      rich_message: {
+        markdown,
+        ...(options.skipEntityDetection === true
+          ? { skip_entity_detection: true }
+          : {}),
+      },
+      ...(options.messageThreadId !== undefined
+        ? { message_thread_id: options.messageThreadId }
+        : {}),
     });
   }
 }
@@ -560,6 +616,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     // Conversation id is Telegram chat id, optionally suffixed with the forum
     // topic thread id. Replies must stay in-topic or users never see them.
     const target = parseTelegramConversationId(message.conversationId);
+    const richOptions: TelegramRichMessageOptions = {
+      ...(target.messageThreadId !== undefined
+        ? { messageThreadId: target.messageThreadId }
+        : {}),
+      skipEntityDetection: true,
+    };
     const sendOptions: TelegramSendOptions = {
       ...(target.messageThreadId !== undefined
         ? { messageThreadId: target.messageThreadId }
@@ -570,6 +632,20 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (message.editMessageId !== undefined) {
       const target = this.#editTargets.get(message.editMessageId);
       if (target !== undefined) {
+        if (this.#transport.editRichMessage !== undefined) {
+          try {
+            await this.#transport.editRichMessage(
+              target.chatId,
+              target.messageId,
+              message.text,
+              richOptions,
+            );
+            return message.editMessageId;
+          } catch (error) {
+            if (isTelegramNoopEdit(error)) return message.editMessageId;
+            this.#log(`telegram: rich edit fallback: ${String(error)}`);
+          }
+        }
         try {
           await this.#transport.editMessageText(
             target.chatId,
@@ -612,10 +688,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             telegramRichText(message.caption ?? message.text),
             sendOptions,
           )
-        : await this.#transport.sendMessage(
+        : await sendTelegramTextMessage(
+            this.#transport,
             target.chatId,
+            message.text,
             formattedText,
+            richOptions,
             sendOptions,
+            this.#log,
           );
     const handle = `${this.id}-out-${++this.#outCounter}`;
     this.#editTargets.set(handle, {
@@ -628,6 +708,29 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function sendTelegramTextMessage(
+  transport: TelegramTransport,
+  chatId: string,
+  markdown: string,
+  fallbackHtml: string,
+  richOptions: TelegramRichMessageOptions,
+  fallbackOptions: TelegramSendOptions,
+  log: (line: string) => void,
+): Promise<TelegramSentMessage> {
+  if (transport.sendRichMessage !== undefined) {
+    try {
+      return await transport.sendRichMessage(chatId, markdown, richOptions);
+    } catch (error) {
+      log(`telegram: rich send fallback: ${String(error)}`);
+    }
+  }
+  return transport.sendMessage(chatId, fallbackHtml, fallbackOptions);
+}
+
+function isTelegramNoopEdit(error: unknown): boolean {
+  return /message is not modified/i.test(String(error));
 }
 
 function telegramRichText(value: string): string {

@@ -10,6 +10,7 @@ import {
   TelegramChannelAdapter,
   type TelegramAudioOptions,
   type TelegramBotIdentity,
+  type TelegramRichMessageOptions,
   type TelegramSendOptions,
   type TelegramTransport,
   type TelegramUpdate,
@@ -26,6 +27,12 @@ class FakeTransport implements TelegramTransport {
     text: string;
     messageThreadId?: number;
     parseMode?: "HTML";
+  }[] = [];
+  readonly richSent: {
+    chatId: string;
+    markdown: string;
+    messageThreadId?: number;
+    skipEntityDetection?: boolean;
   }[] = [];
   readonly photos: {
     chatId: string;
@@ -51,9 +58,18 @@ class FakeTransport implements TelegramTransport {
     text: string;
     parseMode?: "HTML";
   }[] = [];
+  readonly richEdits: {
+    chatId: string;
+    messageId: number;
+    markdown: string;
+    messageThreadId?: number;
+    skipEntityDetection?: boolean;
+  }[] = [];
   readonly commands: { commands: unknown; scope?: unknown }[] = [];
   identity: TelegramBotIdentity = { id: 999, username: "agenc_test_bot" };
   #nextId = 100;
+  richShouldThrow = false;
+  richEditShouldThrow = false;
   editShouldThrow = false;
 
   async getMe(): Promise<TelegramBotIdentity> {
@@ -74,6 +90,24 @@ class FakeTransport implements TelegramTransport {
         ? { messageThreadId: options.messageThreadId }
         : {}),
       ...(options.parseMode !== undefined ? { parseMode: options.parseMode } : {}),
+    });
+    return { message_id: ++this.#nextId };
+  }
+  async sendRichMessage(
+    chatId: string,
+    markdown: string,
+    options: TelegramRichMessageOptions = {},
+  ) {
+    if (this.richShouldThrow) throw new Error("rich message rejected");
+    this.richSent.push({
+      chatId,
+      markdown,
+      ...(options.messageThreadId !== undefined
+        ? { messageThreadId: options.messageThreadId }
+        : {}),
+      ...(options.skipEntityDetection !== undefined
+        ? { skipEntityDetection: options.skipEntityDetection }
+        : {}),
     });
     return { message_id: ++this.#nextId };
   }
@@ -129,6 +163,25 @@ class FakeTransport implements TelegramTransport {
       messageId,
       text,
       ...(options.parseMode !== undefined ? { parseMode: options.parseMode } : {}),
+    });
+  }
+  async editRichMessage(
+    chatId: string,
+    messageId: number,
+    markdown: string,
+    options: TelegramRichMessageOptions = {},
+  ) {
+    if (this.richEditShouldThrow) throw new Error("message is not modified");
+    this.richEdits.push({
+      chatId,
+      messageId,
+      markdown,
+      ...(options.messageThreadId !== undefined
+        ? { messageThreadId: options.messageThreadId }
+        : {}),
+      ...(options.skipEntityDetection !== undefined
+        ? { skipEntityDetection: options.skipEntityDetection }
+        : {}),
     });
   }
 }
@@ -264,11 +317,12 @@ describe("TelegramChannelAdapter", () => {
       kind: "group",
       id: "-100200:777",
     });
-    expect(transport.sent[0]).toEqual({
+    expect(transport.sent).toEqual([]);
+    expect(transport.richSent[0]).toEqual({
       chatId: "-100200",
-      text: "topic reply",
+      markdown: "topic reply",
       messageThreadId: 777,
-      parseMode: "HTML",
+      skipEntityDetection: true,
     });
   });
 
@@ -522,8 +576,8 @@ describe("TelegramChannelAdapter", () => {
     await adapter.start(ctx);
 
     const handle = await adapter.send({ conversationId: "42", text: "Hel" });
-    expect(transport.sent).toEqual([
-      { chatId: "42", text: "Hel", parseMode: "HTML" },
+    expect(transport.richSent).toEqual([
+      { chatId: "42", markdown: "Hel", skipEntityDetection: true },
     ]);
 
     await adapter.send({
@@ -531,36 +585,42 @@ describe("TelegramChannelAdapter", () => {
       text: "Hello world",
       editMessageId: handle,
     });
-    expect(transport.edits).toEqual([
-      { chatId: "42", messageId: 101, text: "Hello world", parseMode: "HTML" },
+    expect(transport.richEdits).toEqual([
+      {
+        chatId: "42",
+        messageId: 101,
+        markdown: "Hello world",
+        skipEntityDetection: true,
+      },
     ]);
     await adapter.stop();
   });
 
-  test("renders safe Markdown as Telegram HTML", async () => {
+  test("sends safe Markdown through Telegram Rich Messages", async () => {
     const transport = new FakeTransport();
     const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
     const { ctx } = collector();
     await adapter.start(ctx);
 
+    const text =
+      "**What else AgenC does**\n\n- **Code work** with `npm test`\nIn short: agents can *do* work. [docs](https://agenc.ag/docs)";
     await adapter.send({
       conversationId: "42",
-      text: "**What else AgenC does**\n\n- **Code work** with `npm test`\nIn short: agents can *do* work. [docs](https://agenc.ag/docs)",
+      text,
     });
 
-    expect(transport.sent[0]).toEqual({
+    expect(transport.sent).toEqual([]);
+    expect(transport.richSent[0]).toEqual({
       chatId: "42",
-      parseMode: "HTML",
-      text:
-        "<b>What else AgenC does</b>\n\n" +
-        "- <b>Code work</b> with <code>npm test</code>\n" +
-        'In short: agents can <i>do</i> work. <a href="https://agenc.ag/docs">docs</a>',
+      markdown: text,
+      skipEntityDetection: true,
     });
     await adapter.stop();
   });
 
-  test("escapes raw HTML before Telegram rich rendering", async () => {
+  test("escapes raw HTML in legacy fallback rendering", async () => {
     const transport = new FakeTransport();
+    transport.richShouldThrow = true;
     const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
     const { ctx } = collector();
     await adapter.start(ctx);
@@ -580,8 +640,35 @@ describe("TelegramChannelAdapter", () => {
     await adapter.stop();
   });
 
-  test("renders Markdown tables as Telegram preformatted blocks", async () => {
+  test("sends Markdown tables through Telegram Rich Messages", async () => {
     const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    const text =
+      "### AgenC protocol — public data table\n" +
+      "| Surface | What it is | Key details |\n" +
+      "|---|---|---|\n" +
+      "| **Protocol program** | On-chain Solana program | `HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK` |\n" +
+      "| **Network** | Chain | Solana mainnet |";
+    await adapter.send({
+      conversationId: "42",
+      text,
+    });
+
+    expect(transport.sent).toEqual([]);
+    expect(transport.richSent[0]).toEqual({
+      chatId: "42",
+      markdown: text,
+      skipEntityDetection: true,
+    });
+    await adapter.stop();
+  });
+
+  test("falls back to preformatted table blocks when Rich Messages fail", async () => {
+    const transport = new FakeTransport();
+    transport.richShouldThrow = true;
     const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
     const { ctx } = collector();
     await adapter.start(ctx);
@@ -671,7 +758,7 @@ describe("TelegramChannelAdapter", () => {
 
   test("a no-op edit rejection does not fail the turn", async () => {
     const transport = new FakeTransport();
-    transport.editShouldThrow = true;
+    transport.richEditShouldThrow = true;
     const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
     const { ctx } = collector();
     await adapter.start(ctx);
@@ -729,6 +816,33 @@ describe("FetchTelegramTransport", () => {
     await transport.sendMessage("42", "hi");
     expect(calls[0].url).toContain("/bot123456:ABC-DEF_ghi/sendMessage");
     expect(calls[0].body).toMatchObject({ chat_id: "42", text: "hi" });
+  });
+
+  test("posts Rich Markdown through sendRichMessage", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const fakeFetch = (async (url: string, init?: { body?: string }) => {
+      calls.push({ url, body: JSON.parse(init?.body ?? "{}") });
+      return {
+        json: async () => ({ ok: true, result: { message_id: 1 } }),
+      } as Response;
+    }) as unknown as typeof fetch;
+    const transport = new FetchTelegramTransport({
+      token: "123456:ABC-DEF_ghi",
+      fetchImpl: fakeFetch,
+    });
+    await transport.sendRichMessage("42", "| Metric | Value |\n|---|---|\n| SOL | 1 |", {
+      messageThreadId: 7,
+      skipEntityDetection: true,
+    });
+    expect(calls[0].url).toContain("/bot123456:ABC-DEF_ghi/sendRichMessage");
+    expect(calls[0].body).toMatchObject({
+      chat_id: "42",
+      message_thread_id: 7,
+      rich_message: {
+        markdown: "| Metric | Value |\n|---|---|\n| SOL | 1 |",
+        skip_entity_detection: true,
+      },
+    });
   });
 
   test("throws on a Bot API error response", async () => {
