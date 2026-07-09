@@ -33,8 +33,14 @@ const DEFAULT_REQUESTS_PER_SECOND = 8;
 const DEFAULT_MAX_HOLDERS = 50;
 const DEFAULT_MAX_TOKEN_ACCOUNTS_SCANNED = 50_000;
 const TOKEN_ACCOUNT_SCAN_PAGE_SIZE = 5_000;
+const RECENT_SWAP_WINDOW_SIZE = 20;
+const RECENT_TRADES_CACHE_TTL_MS = 30_000;
+const TOKEN_NET_EPSILON = 1e-12;
+const MAX_SAFE_UNIX_TIMESTAMP = 4_102_444_800;
 const LEGACY_TOKEN_PROGRAM_ID =
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const MAX_RPC_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_EVIDENCE_CHARS = 12_000;
 const MAX_CACHE_ENTRIES = 100;
@@ -47,6 +53,7 @@ export type SolanaOnchainIntent =
   | { readonly kind: "network_summary" }
   | { readonly kind: "token_holder_age"; readonly mint?: string }
   | { readonly kind: "token_holders"; readonly mint?: string }
+  | { readonly kind: "token_recent_trades"; readonly mint?: string }
   | { readonly kind: "token_summary"; readonly mint?: string }
   | { readonly kind: "wallet_summary"; readonly address?: string }
   | { readonly kind: "transaction_summary"; readonly signature?: string };
@@ -108,6 +115,42 @@ interface HeliusTransfer {
 
 interface HeliusTransfersResult {
   readonly data?: unknown;
+}
+
+interface EnhancedTokenTransfer {
+  readonly mint: string;
+  readonly amount: number;
+  readonly fromUserAccount?: string;
+  readonly toUserAccount?: string;
+}
+
+interface EnhancedNativeTransfer {
+  readonly lamports: number;
+  readonly fromUserAccount?: string;
+  readonly toUserAccount?: string;
+}
+
+interface EnhancedSwapTransaction {
+  readonly signature: string;
+  readonly timestamp?: number;
+  readonly source: string;
+  readonly feePayer?: string;
+  readonly tokenTransfers: readonly EnhancedTokenTransfer[];
+  readonly nativeTransfers: readonly EnhancedNativeTransfer[];
+}
+
+interface QuoteLeg {
+  readonly asset: "SOL" | "WSOL" | "USDC";
+  readonly amount: number;
+}
+
+interface ProbableTokenBuy {
+  readonly signature: string;
+  readonly timestamp?: number;
+  readonly source: string;
+  readonly buyer: string;
+  readonly targetAmount: number;
+  readonly quoteLegs: readonly QuoteLeg[];
 }
 
 interface HolderSnapshot {
@@ -311,6 +354,18 @@ export function parseSolanaOnchainIntent(
   const signatures = candidates.filter(isSolanaSignature);
   const mint = publicKeys[0] ?? findAliasMint(lower, tokenAliases);
 
+  const mentionsTrade =
+    /\b(?:buy|buys|buying|bought|purchase|purchases|swap|swaps|trade|trades|compra|compras|comprando|compr[oó]|intercambio|intercambios)\b/iu.test(
+      lower,
+    );
+  const mentionsRecentOrLarge =
+    /\b(?:latest|recent|last|newest|large|largest|big|biggest|whale|activity|[uú]ltim[oa]s?|reciente(?:s)?|nuev[oa]s?|grande(?:s)?|mayor(?:es)?|ballena(?:s)?|actividad)\b/iu.test(
+      lower,
+    );
+  if (mentionsTrade && mentionsRecentOrLarge) {
+    return { kind: "token_recent_trades", ...(mint ? { mint } : {}) };
+  }
+
   const holderAge =
     /(?:avg|average|mean|promedio).{0,40}(?:time held|holding (?:time|age)|tiempo (?:retenido|en cartera)|antig[uü]edad)/iu.test(
       lower,
@@ -359,6 +414,7 @@ function retryAfterMs(response: Response): number | undefined {
 class HeliusRpcClient {
   readonly #fetch: FetchLike;
   readonly #sleep: Sleep;
+  readonly #apiKey: string;
   readonly #endpoint: string;
   readonly #timeoutMs: number;
   readonly #minimumIntervalMs: number;
@@ -375,6 +431,7 @@ class HeliusRpcClient {
   }) {
     this.#fetch = options.fetchImpl ?? fetch;
     this.#sleep = options.sleep ?? sleepDefault;
+    this.#apiKey = options.apiKey;
     const endpoint = new URL("https://mainnet.helius-rpc.com/");
     endpoint.searchParams.set("api-key", options.apiKey);
     this.#endpoint = endpoint.toString();
@@ -383,10 +440,26 @@ class HeliusRpcClient {
   }
 
   async call<T>(method: string, params: unknown): Promise<T> {
+    return this.#withRetries(async () => {
+      await this.#waitForRateSlot();
+      return this.#fetchOnce<T>(method, params);
+    });
+  }
+
+  async enhancedSwapsByAddress(address: string): Promise<unknown[]> {
+    if (!isSolanaPublicKey(address)) {
+      throw new HeliusRequestError("invalid_token_mint");
+    }
+    return this.#withRetries(async () => {
+      await this.#waitForRateSlot();
+      return this.#fetchEnhancedSwapsOnce(address);
+    });
+  }
+
+  async #withRetries<T>(operation: () => Promise<T>): Promise<T> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        await this.#waitForRateSlot();
-        return await this.#fetchOnce<T>(method, params);
+        return await operation();
       } catch (error) {
         const safe =
           error instanceof HeliusRequestError
@@ -431,48 +504,8 @@ class HeliusRpcClient {
         }),
         signal: controller.signal,
       });
-      if (!response.ok) {
-        if (
-          response.status === 401 ||
-          response.status === 402 ||
-          response.status === 403
-        ) {
-          throw new HeliusRequestError("authentication_failed");
-        }
-        if (response.status === 429) {
-          const waitMs = retryAfterMs(response);
-          throw new HeliusRequestError("rate_limited", {
-            retryable: true,
-            ...(waitMs !== undefined ? { retryAfterMs: waitMs } : {}),
-          });
-        }
-        if (response.status === 408 || response.status >= 500) {
-          throw new HeliusRequestError("upstream_unavailable", {
-            retryable: true,
-          });
-        }
-        throw new HeliusRequestError("request_rejected");
-      }
-
-      const contentLength = Number(
-        response.headers.get("content-length") ?? "0",
-      );
-      if (
-        Number.isFinite(contentLength) &&
-        contentLength > MAX_RPC_RESPONSE_BYTES
-      ) {
-        throw new HeliusRequestError("response_too_large");
-      }
-      const text = await response.text();
-      if (text.length > MAX_RPC_RESPONSE_BYTES) {
-        throw new HeliusRequestError("response_too_large");
-      }
-      let envelope: unknown;
-      try {
-        envelope = JSON.parse(text);
-      } catch {
-        throw new HeliusRequestError("invalid_response");
-      }
+      this.#assertHttpSuccess(response);
+      const envelope = await this.#readBoundedJson(response);
       if (!isRecord(envelope)) throw new HeliusRequestError("invalid_response");
       if (isRecord(envelope.error)) {
         const code = integer(envelope.error.code);
@@ -491,6 +524,81 @@ class HeliusRpcClient {
       throw new HeliusRequestError("network_failure", { retryable: true });
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  async #fetchEnhancedSwapsOnce(address: string): Promise<unknown[]> {
+    const endpoint = new URL(
+      `https://mainnet.helius-rpc.com/v0/addresses/${address}/transactions`,
+    );
+    endpoint.searchParams.set("api-key", this.#apiKey);
+    endpoint.searchParams.set("type", "SWAP");
+    endpoint.searchParams.set("sort-order", "desc");
+    endpoint.searchParams.set("limit", String(RECENT_SWAP_WINDOW_SIZE));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+    try {
+      const response = await this.#fetch(endpoint, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        redirect: "error",
+        signal: controller.signal,
+      });
+      this.#assertHttpSuccess(response);
+      const payload = await this.#readBoundedJson(response);
+      if (!Array.isArray(payload)) {
+        throw new HeliusRequestError("invalid_response");
+      }
+      return payload.slice(0, RECENT_SWAP_WINDOW_SIZE);
+    } catch (error) {
+      if (error instanceof HeliusRequestError) throw error;
+      throw new HeliusRequestError("network_failure", { retryable: true });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  #assertHttpSuccess(response: Response): void {
+    if (response.ok) return;
+    if (
+      response.status === 401 ||
+      response.status === 402 ||
+      response.status === 403
+    ) {
+      throw new HeliusRequestError("authentication_failed");
+    }
+    if (response.status === 429) {
+      const waitMs = retryAfterMs(response);
+      throw new HeliusRequestError("rate_limited", {
+        retryable: true,
+        ...(waitMs !== undefined ? { retryAfterMs: waitMs } : {}),
+      });
+    }
+    if (response.status === 408 || response.status >= 500) {
+      throw new HeliusRequestError("upstream_unavailable", {
+        retryable: true,
+      });
+    }
+    throw new HeliusRequestError("request_rejected");
+  }
+
+  async #readBoundedJson(response: Response): Promise<unknown> {
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_RPC_RESPONSE_BYTES
+    ) {
+      throw new HeliusRequestError("response_too_large");
+    }
+    const text = await response.text();
+    if (text.length > MAX_RPC_RESPONSE_BYTES) {
+      throw new HeliusRequestError("response_too_large");
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new HeliusRequestError("invalid_response");
     }
   }
 }
@@ -532,6 +640,239 @@ function safeScalarString(value: unknown, maxLength = 64): string | undefined {
     return String(value).slice(0, maxLength);
   }
   return safeString(value, maxLength);
+}
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" &&
+          value.length <= 64 &&
+          /^[0-9]+(?:\.[0-9]+)?$/.test(value)
+        ? Number(value)
+        : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function safeUnixTimestamp(value: unknown): number | undefined {
+  const timestamp = integer(value);
+  return timestamp !== undefined &&
+    timestamp >= 0 &&
+    timestamp <= MAX_SAFE_UNIX_TIMESTAMP
+    ? timestamp
+    : undefined;
+}
+
+function safePublicKey(value: unknown): string | undefined {
+  const address = safeString(value, 64);
+  return address !== undefined && isSolanaPublicKey(address)
+    ? address
+    : undefined;
+}
+
+function safeSourceLabel(value: unknown): string {
+  const source = safeString(value, 48);
+  return source !== undefined && /^[A-Za-z0-9_-]+$/.test(source)
+    ? source
+    : "UNKNOWN";
+}
+
+function parseEnhancedSwapTransactions(
+  payload: readonly unknown[],
+): EnhancedSwapTransaction[] {
+  const transactions: EnhancedSwapTransaction[] = [];
+  for (const item of payload.slice(0, RECENT_SWAP_WINDOW_SIZE)) {
+    if (!isRecord(item) || safeString(item.type, 16)?.toUpperCase() !== "SWAP") {
+      continue;
+    }
+    const transactionSignature = safeString(item.signature, 96);
+    if (
+      transactionSignature === undefined ||
+      !isSolanaSignature(transactionSignature)
+    ) {
+      continue;
+    }
+    const tokenTransfers: EnhancedTokenTransfer[] = [];
+    if (Array.isArray(item.tokenTransfers)) {
+      for (const transfer of item.tokenTransfers.slice(0, 100)) {
+        if (!isRecord(transfer)) continue;
+        const mint = safePublicKey(transfer.mint);
+        const amount = positiveFiniteNumber(transfer.tokenAmount);
+        const fromUserAccount = safePublicKey(transfer.fromUserAccount);
+        const toUserAccount = safePublicKey(transfer.toUserAccount);
+        if (
+          mint === undefined ||
+          amount === undefined ||
+          (fromUserAccount === undefined && toUserAccount === undefined)
+        ) {
+          continue;
+        }
+        tokenTransfers.push({
+          mint,
+          amount,
+          ...(fromUserAccount !== undefined ? { fromUserAccount } : {}),
+          ...(toUserAccount !== undefined ? { toUserAccount } : {}),
+        });
+      }
+    }
+    const nativeTransfers: EnhancedNativeTransfer[] = [];
+    if (Array.isArray(item.nativeTransfers)) {
+      for (const transfer of item.nativeTransfers.slice(0, 100)) {
+        if (!isRecord(transfer)) continue;
+        const lamports = positiveFiniteNumber(transfer.amount);
+        const fromUserAccount = safePublicKey(transfer.fromUserAccount);
+        const toUserAccount = safePublicKey(transfer.toUserAccount);
+        if (
+          lamports === undefined ||
+          !Number.isSafeInteger(lamports) ||
+          (fromUserAccount === undefined && toUserAccount === undefined)
+        ) {
+          continue;
+        }
+        nativeTransfers.push({
+          lamports,
+          ...(fromUserAccount !== undefined ? { fromUserAccount } : {}),
+          ...(toUserAccount !== undefined ? { toUserAccount } : {}),
+        });
+      }
+    }
+    const feePayer = safePublicKey(item.feePayer);
+    const timestamp = safeUnixTimestamp(item.timestamp);
+    transactions.push({
+      signature: transactionSignature,
+      ...(timestamp !== undefined ? { timestamp } : {}),
+      source: safeSourceLabel(item.source),
+      ...(feePayer !== undefined ? { feePayer } : {}),
+      tokenTransfers,
+      nativeTransfers,
+    });
+  }
+  return transactions;
+}
+
+function addNetAmount(
+  nets: Map<string, Map<string, number>>,
+  account: string | undefined,
+  mint: string,
+  delta: number,
+): void {
+  if (account === undefined) return;
+  const accountNets = nets.get(account) ?? new Map<string, number>();
+  accountNets.set(mint, (accountNets.get(mint) ?? 0) + delta);
+  nets.set(account, accountNets);
+}
+
+function addNativeNetAmount(
+  nets: Map<string, number>,
+  account: string | undefined,
+  delta: number,
+): void {
+  if (account === undefined) return;
+  nets.set(account, (nets.get(account) ?? 0) + delta);
+}
+
+function classifyProbableTokenBuys(
+  transactions: readonly EnhancedSwapTransaction[],
+  targetMint: string,
+): {
+  readonly targetMatchedTransactions: number;
+  readonly buys: readonly ProbableTokenBuy[];
+} {
+  let targetMatchedTransactions = 0;
+  const buys: ProbableTokenBuy[] = [];
+  for (const transaction of transactions) {
+    if (!transaction.tokenTransfers.some((transfer) => transfer.mint === targetMint)) {
+      continue;
+    }
+    targetMatchedTransactions += 1;
+    const tokenNets = new Map<string, Map<string, number>>();
+    for (const transfer of transaction.tokenTransfers) {
+      addNetAmount(
+        tokenNets,
+        transfer.fromUserAccount,
+        transfer.mint,
+        -transfer.amount,
+      );
+      addNetAmount(
+        tokenNets,
+        transfer.toUserAccount,
+        transfer.mint,
+        transfer.amount,
+      );
+    }
+    const nativeNets = new Map<string, number>();
+    for (const transfer of transaction.nativeTransfers) {
+      addNativeNetAmount(
+        nativeNets,
+        transfer.fromUserAccount,
+        -transfer.lamports,
+      );
+      addNativeNetAmount(
+        nativeNets,
+        transfer.toUserAccount,
+        transfer.lamports,
+      );
+    }
+
+    for (const [account, accountNets] of tokenNets) {
+      const targetAmount = accountNets.get(targetMint) ?? 0;
+      if (
+        targetAmount <= TOKEN_NET_EPSILON ||
+        transaction.feePayer !== account
+      ) {
+        continue;
+      }
+      const quoteLegs: QuoteLeg[] = [];
+      if (targetMint !== WRAPPED_SOL_MINT) {
+        const wrappedSolOutflow = -(accountNets.get(WRAPPED_SOL_MINT) ?? 0);
+        if (wrappedSolOutflow > TOKEN_NET_EPSILON) {
+          quoteLegs.push({ asset: "WSOL", amount: wrappedSolOutflow });
+        }
+      }
+      if (targetMint !== USDC_MINT) {
+        const usdcOutflow = -(accountNets.get(USDC_MINT) ?? 0);
+        if (usdcOutflow > TOKEN_NET_EPSILON) {
+          quoteLegs.push({ asset: "USDC", amount: usdcOutflow });
+        }
+      }
+      if (quoteLegs.length === 0) {
+        const nativeOutflowLamports = -(nativeNets.get(account) ?? 0);
+        if (nativeOutflowLamports > 0) {
+          quoteLegs.push({
+            asset: "SOL",
+            amount: nativeOutflowLamports / 1_000_000_000,
+          });
+        }
+      }
+      if (quoteLegs.length === 0) continue;
+      buys.push({
+        signature: transaction.signature,
+        ...(transaction.timestamp !== undefined
+          ? { timestamp: transaction.timestamp }
+          : {}),
+        source: transaction.source,
+        buyer: account,
+        targetAmount,
+        quoteLegs,
+      });
+    }
+  }
+  return {
+    targetMatchedTransactions,
+    buys: buys.sort(
+      (left, right) => (right.timestamp ?? 0) - (left.timestamp ?? 0),
+    ),
+  };
+}
+
+function formatObservedAmount(value: number): string {
+  return Number(value.toPrecision(12)).toString();
+}
+
+function formatQuoteLegs(legs: readonly QuoteLeg[]): string {
+  return legs
+    .map((leg) => `${formatObservedAmount(leg.amount)} ${leg.asset}`)
+    .join(" + ");
 }
 
 function positiveIntegerString(value: unknown): string | undefined {
@@ -714,6 +1055,7 @@ function intentTarget(intent: SolanaOnchainIntent): string {
       return "solana-mainnet";
     case "token_holder_age":
     case "token_holders":
+    case "token_recent_trades":
     case "token_summary":
       return intent.mint ?? "missing";
     case "wallet_summary":
@@ -724,7 +1066,13 @@ function intentTarget(intent: SolanaOnchainIntent): string {
 }
 
 function intentCost(intent: SolanaOnchainIntent): number {
-  return intent.kind === "token_holder_age" ? 10 : intent.kind === "network_summary" ? 1 : 2;
+  return intent.kind === "token_holder_age"
+    ? 10
+    : intent.kind === "token_recent_trades"
+      ? 5
+      : intent.kind === "network_summary"
+        ? 1
+        : 2;
 }
 
 function missingTargetReply(intent: SolanaOnchainIntent): string | undefined {
@@ -733,6 +1081,7 @@ function missingTargetReply(intent: SolanaOnchainIntent): string | undefined {
       return undefined;
     case "token_holder_age":
     case "token_holders":
+    case "token_recent_trades":
     case "token_summary":
       return intent.mint === undefined
         ? "Send the exact Solana token mint (or a verified Solscan link) so I can read the chain without guessing the asset."
@@ -875,7 +1224,11 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
     this.#inflight.set(cacheKey, request);
     try {
       const context = truncateEvidence(await request);
-      this.#remember(cacheKey, { expiresAt: nowMs + this.#cacheTtlMs, context });
+      const cacheTtlMs =
+        intent.kind === "token_recent_trades"
+          ? Math.min(this.#cacheTtlMs, RECENT_TRADES_CACHE_TTL_MS)
+          : this.#cacheTtlMs;
+      this.#remember(cacheKey, { expiresAt: nowMs + cacheTtlMs, context });
       return { kind: "context", context };
     } catch (error) {
       this.#log(
@@ -927,6 +1280,8 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
         return this.#tokenHolderAge(intent.mint!, observedAtMs);
       case "token_holders":
         return this.#tokenHolders(intent.mint!, observedAtMs);
+      case "token_recent_trades":
+        return this.#tokenRecentTrades(intent.mint!, observedAtMs);
       case "token_summary":
         return this.#tokenSummary(intent.mint!, observedAtMs);
       case "wallet_summary":
@@ -1293,6 +1648,67 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
     });
     lines.push(
       "The owner list is public chain data. Exchange, LP, treasury, burn, and program-controlled addresses are not automatically excluded.",
+    );
+    return lines.join("\n");
+  }
+
+  async #tokenRecentTrades(
+    mint: string,
+    observedAtMs: number,
+  ): Promise<string> {
+    const payload = await this.#rpc.enhancedSwapsByAddress(mint);
+    const transactions = parseEnhancedSwapTransactions(payload);
+    const classified = classifyProbableTokenBuys(transactions, mint);
+    const lines = [
+      "Source: Helius read-only Solana mainnet enhanced transactions",
+      `Observed at: ${new Date(observedAtMs).toISOString()}`,
+      "Result type: recent probable token buys",
+      `Mint: ${mint}`,
+      `Search window: latest ${RECENT_SWAP_WINDOW_SIZE} Helius-indexed SWAP rows for the mint address`,
+      `Valid SWAP rows returned: ${transactions.length}`,
+      `Rows containing the target mint: ${classified.targetMatchedTransactions}`,
+      `Probable buyer legs found: ${classified.buys.length}`,
+    ];
+
+    if (classified.buys.length > 0) {
+      lines.push("Newest probable buys:");
+      for (const buy of classified.buys.slice(0, 10)) {
+        lines.push(
+          `- ${buy.timestamp === undefined ? "time unknown" : new Date(buy.timestamp * 1_000).toISOString()} | buyer ${buy.buyer} | received ${formatObservedAmount(buy.targetAmount)} target tokens | paid ${formatQuoteLegs(buy.quoteLegs)} | source ${buy.source} | signature ${buy.signature}`,
+        );
+      }
+
+      const largestByQuote = new Map<
+        QuoteLeg["asset"],
+        { readonly buy: ProbableTokenBuy; readonly leg: QuoteLeg }
+      >();
+      for (const buy of classified.buys) {
+        for (const leg of buy.quoteLegs) {
+          const current = largestByQuote.get(leg.asset);
+          if (current === undefined || leg.amount > current.leg.amount) {
+            largestByQuote.set(leg.asset, { buy, leg });
+          }
+        }
+      }
+      lines.push("Largest probable buy in this returned window by quote asset:");
+      for (const asset of ["SOL", "WSOL", "USDC"] as const) {
+        const largest = largestByQuote.get(asset);
+        if (largest === undefined) continue;
+        lines.push(
+          `- ${formatObservedAmount(largest.leg.amount)} ${asset} paid for ${formatObservedAmount(largest.buy.targetAmount)} target tokens | buyer ${largest.buy.buyer} | ${largest.buy.timestamp === undefined ? "time unknown" : new Date(largest.buy.timestamp * 1_000).toISOString()} | signature ${largest.buy.signature}`,
+        );
+      }
+    } else {
+      lines.push(
+        "No probable buy met the conservative same-account classification in the returned window.",
+      );
+    }
+
+    lines.push(
+      "Classification rule: the transaction fee payer must be the same public account with a net target-token inflow and a net SOL, WSOL, or USDC outflow in the indexed swap.",
+      "Limitations: sponsored, router, aggregator, pool, transfer-tax, or multi-account flows can be missed or split. These are probable buys, not definitive beneficial-owner attribution.",
+      "SOL, WSOL, and USDC sizes are reported separately; no cross-asset size comparison or USD conversion was invented.",
+      "Only typed addresses, amounts, timestamps, sources, and signatures were retained. Helius descriptions, logs, memos, and arbitrary instruction text were excluded from model context.",
     );
     return lines.join("\n");
   }
