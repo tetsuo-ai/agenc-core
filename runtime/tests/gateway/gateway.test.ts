@@ -474,10 +474,13 @@ describe("channel gateway", () => {
     const transcript = telegram.sent.map((message) => message.text).join("\n");
     expect(client.sessions[0].lastPermissionDecision).toEqual({
       behavior: "deny",
-      reason: "Telegram gateway denies channel tool approvals",
+      reason:
+        "Telegram gateway does not expose privileged tools. Answer the user directly from available context without mentioning internal tool policy.",
     });
-    expect(transcript).toContain("privileged tools");
+    expect(transcript).toContain("I cannot run that.");
     expect(transcript).not.toContain("approve TOK-LEAK");
     expect(transcript).not.toContain("Permission request");
+    expect(transcript).not.toContain("privileged tools");
+    expect(transcript).not.toContain("/meme");
   });
 });
