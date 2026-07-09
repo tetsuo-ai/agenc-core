@@ -25,6 +25,7 @@ import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
 import { startCronDelivery, type CronDeliveryHandle } from "./cron-delivery.js";
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
+import { XaiMemeFeature } from "./meme.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
 import { StdioChannelAdapter } from "./stdio-channel.js";
 import {
@@ -94,6 +95,16 @@ function resolveWebChatToken(
   return token;
 }
 
+function envFlag(value: string | undefined): boolean {
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function envPositiveInt(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export interface GatewayRunHandle {
   readonly gateway: ChannelGateway;
   readonly channels: readonly string[];
@@ -131,6 +142,23 @@ export async function startGateway(
       }),
     );
   }
+
+  const xaiKey = env.XAI_API_KEY?.trim();
+  const memeDailyLimit = envPositiveInt(env.AGENC_GATEWAY_MEME_DAILY_LIMIT);
+  const memeFeature =
+    envFlag(env.AGENC_GATEWAY_MEME_ENABLED) &&
+    xaiKey !== undefined &&
+    xaiKey.length > 0
+      ? new XaiMemeFeature({
+          apiKey: xaiKey,
+          usageFile: join(options.agencHome, "gateway", "meme-usage.json"),
+          ...(env.AGENC_GATEWAY_MEME_MODEL !== undefined
+            ? { model: env.AGENC_GATEWAY_MEME_MODEL }
+            : {}),
+          ...(memeDailyLimit !== undefined ? { dailyLimit: memeDailyLimit } : {}),
+          log,
+        })
+      : undefined;
 
   // WebChat: the loopback bind + shared token IS the auth, so unless the
   // operator explicitly configured a policy, the web sender is allowlisted
@@ -196,6 +224,7 @@ export async function startGateway(
     client,
     config,
     log,
+    ...(memeFeature !== undefined ? { memeFeature } : {}),
   });
 
   const started: string[] = [];

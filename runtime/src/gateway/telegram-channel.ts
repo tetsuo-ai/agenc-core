@@ -38,6 +38,11 @@ export interface TelegramSentMessage {
 export interface TelegramTransport {
   getUpdates(offset: number, timeoutSeconds: number): Promise<TelegramUpdate[]>;
   sendMessage(chatId: string, text: string): Promise<TelegramSentMessage>;
+  sendPhoto?(
+    chatId: string,
+    photoUrl: string,
+    caption?: string,
+  ): Promise<TelegramSentMessage>;
   editMessageText(chatId: string, messageId: number, text: string): Promise<void>;
 }
 
@@ -89,6 +94,20 @@ export class FetchTelegramTransport implements TelegramTransport {
     return this.#call<TelegramSentMessage>("sendMessage", {
       chat_id: chatId,
       text,
+    });
+  }
+
+  async sendPhoto(
+    chatId: string,
+    photoUrl: string,
+    caption?: string,
+  ): Promise<TelegramSentMessage> {
+    return this.#call<TelegramSentMessage>("sendPhoto", {
+      chat_id: chatId,
+      photo: photoUrl,
+      ...(caption !== undefined && caption.length > 0
+        ? { caption: caption.slice(0, 1024) }
+        : {}),
     });
   }
 
@@ -235,7 +254,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         }
       }
     }
-    const sent = await this.#transport.sendMessage(chatId, message.text);
+    const sent =
+      message.photoUrl !== undefined && this.#transport.sendPhoto !== undefined
+        ? await this.#transport.sendPhoto(
+            chatId,
+            message.photoUrl,
+            message.caption ?? message.text,
+          )
+        : await this.#transport.sendMessage(chatId, message.text);
     const handle = `${this.id}-out-${++this.#outCounter}`;
     this.#editTargets.set(handle, { chatId, messageId: sent.message_id });
     return handle;
