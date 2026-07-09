@@ -23,7 +23,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -156,7 +156,14 @@ async function main() {
     // 4. Tar node_modules into the release artifact.
     const artifactName = `agenc-runtime-${version}-${slug}.tar.gz`;
     const artifactPath = join(outDir, artifactName);
-    run("tar", ["-czf", artifactPath, "-C", installRoot, "node_modules"]);
+    // Windows: bash-on-PATH resolves `tar` to GNU tar, which parses drive
+    // letters (D:\...) as remote hosts ("Cannot connect to D:"). The system
+    // bsdtar handles Windows paths natively — use it explicitly.
+    const tarBin =
+      IS_WINDOWS && existsSync("C:\\Windows\\System32\\tar.exe")
+        ? "C:\\Windows\\System32\\tar.exe"
+        : "tar";
+    run(tarBin, ["-czf", artifactPath, "-C", installRoot, "node_modules"]);
 
     // 5. Hash + report.
     const digest = await sha256(artifactPath);
