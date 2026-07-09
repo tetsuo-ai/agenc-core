@@ -30,6 +30,7 @@ export interface TelegramUpdate {
 
 export interface TelegramMessage {
   readonly message_id: number;
+  readonly message_thread_id?: number;
   readonly from?: {
     readonly id: number;
     readonly is_bot?: boolean;
@@ -72,11 +73,19 @@ export interface TelegramBotCommandScope {
   readonly type: string;
 }
 
+export interface TelegramSendOptions {
+  readonly messageThreadId?: number;
+}
+
 /** The slice of the Bot API the adapter uses. */
 export interface TelegramTransport {
   getMe?(): Promise<TelegramBotIdentity>;
   getUpdates(offset: number, timeoutSeconds: number): Promise<TelegramUpdate[]>;
-  sendMessage(chatId: string, text: string): Promise<TelegramSentMessage>;
+  sendMessage(
+    chatId: string,
+    text: string,
+    options?: TelegramSendOptions,
+  ): Promise<TelegramSentMessage>;
   setMyCommands?(
     commands: readonly TelegramBotCommand[],
     scope?: TelegramBotCommandScope,
@@ -85,6 +94,7 @@ export interface TelegramTransport {
     chatId: string,
     photoUrl: string,
     caption?: string,
+    options?: TelegramSendOptions,
   ): Promise<TelegramSentMessage>;
   editMessageText(chatId: string, messageId: number, text: string): Promise<void>;
 }
@@ -142,10 +152,17 @@ export class FetchTelegramTransport implements TelegramTransport {
     return this.#call<TelegramBotIdentity>("getMe", {});
   }
 
-  async sendMessage(chatId: string, text: string): Promise<TelegramSentMessage> {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    options: TelegramSendOptions = {},
+  ): Promise<TelegramSentMessage> {
     return this.#call<TelegramSentMessage>("sendMessage", {
       chat_id: chatId,
       text,
+      ...(options.messageThreadId !== undefined
+        ? { message_thread_id: options.messageThreadId }
+        : {}),
     });
   }
 
@@ -163,10 +180,14 @@ export class FetchTelegramTransport implements TelegramTransport {
     chatId: string,
     photoUrl: string,
     caption?: string,
+    options: TelegramSendOptions = {},
   ): Promise<TelegramSentMessage> {
     return this.#call<TelegramSentMessage>("sendPhoto", {
       chat_id: chatId,
       photo: photoUrl,
+      ...(options.messageThreadId !== undefined
+        ? { message_thread_id: options.messageThreadId }
+        : {}),
       ...(caption !== undefined && caption.length > 0
         ? { caption: caption.slice(0, 1024) }
         : {}),
@@ -346,6 +367,10 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const peerId = String(sender?.id ?? senderChat?.id);
     const chatId = String(message.chat.id);
     const isPrivate = message.chat.type === "private";
+    const conversationId = telegramConversationId(
+      chatId,
+      isPrivate ? undefined : message.message_thread_id,
+    );
     const text = this.#normalizedTextForAddressing(rawText, message);
     if (text === null) return;
     await this.#context.onMessage({
@@ -362,7 +387,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
                 ? { displayName: senderChat.title }
                 : {}),
       },
-      conversation: { kind: isPrivate ? "dm" : "group", id: chatId },
+      conversation: { kind: isPrivate ? "dm" : "group", id: conversationId },
       text,
     });
   }
@@ -424,8 +449,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async send(message: OutboundChannelMessage): Promise<string> {
-    // Conversation id IS the Telegram chat id.
-    const chatId = message.conversationId;
+    // Conversation id is Telegram chat id, optionally suffixed with the forum
+    // topic thread id. Replies must stay in-topic or users never see them.
+    const target = parseTelegramConversationId(message.conversationId);
+    const sendOptions: TelegramSendOptions = {
+      ...(target.messageThreadId !== undefined
+        ? { messageThreadId: target.messageThreadId }
+        : {}),
+    };
     if (message.editMessageId !== undefined) {
       const target = this.#editTargets.get(message.editMessageId);
       if (target !== undefined) {
@@ -447,13 +478,21 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const sent =
       message.photoUrl !== undefined && this.#transport.sendPhoto !== undefined
         ? await this.#transport.sendPhoto(
-            chatId,
+            target.chatId,
             message.photoUrl,
             message.caption ?? message.text,
+            sendOptions,
           )
-        : await this.#transport.sendMessage(chatId, message.text);
+        : await this.#transport.sendMessage(
+            target.chatId,
+            message.text,
+            sendOptions,
+          );
     const handle = `${this.id}-out-${++this.#outCounter}`;
-    this.#editTargets.set(handle, { chatId, messageId: sent.message_id });
+    this.#editTargets.set(handle, {
+      chatId: target.chatId,
+      messageId: sent.message_id,
+    });
     return handle;
   }
 }
@@ -468,4 +507,23 @@ function telegramUpdateKind(update: TelegramUpdate): string {
   if (update.edited_message !== undefined) return "edited_message";
   if (update.edited_channel_post !== undefined) return "edited_channel_post";
   return "unknown";
+}
+
+function telegramConversationId(
+  chatId: string,
+  messageThreadId: number | undefined,
+): string {
+  return messageThreadId === undefined ? chatId : `${chatId}:${messageThreadId}`;
+}
+
+function parseTelegramConversationId(value: string): {
+  readonly chatId: string;
+  readonly messageThreadId?: number;
+} {
+  const match = /^(?<chatId>-?\d+):(?<threadId>\d+)$/u.exec(value);
+  if (match?.groups === undefined) return { chatId: value };
+  return {
+    chatId: match.groups.chatId,
+    messageThreadId: Number.parseInt(match.groups.threadId, 10),
+  };
 }
