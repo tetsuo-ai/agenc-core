@@ -47,10 +47,19 @@ export interface TelegramMessage {
   readonly text?: string;
   readonly caption?: string;
   readonly reply_to_message?: {
+    readonly text?: string;
+    readonly caption?: string;
     readonly from?: {
       readonly id: number;
       readonly is_bot?: boolean;
       readonly username?: string;
+      readonly first_name?: string;
+    };
+    readonly sender_chat?: {
+      readonly id: number;
+      readonly type: string;
+      readonly username?: string;
+      readonly title?: string;
     };
   };
 }
@@ -83,6 +92,8 @@ export interface TelegramRichMessageOptions {
   readonly messageThreadId?: number;
   readonly skipEntityDetection?: boolean;
 }
+
+export type TelegramRichMessageMode = "all" | "private" | "off";
 
 export interface TelegramAudioOptions extends TelegramSendOptions {
   readonly caption?: string;
@@ -383,6 +394,12 @@ export interface TelegramChannelOptions {
   /** Optional bot username override, without @. */
   readonly botUsername?: string;
   /**
+   * Telegram Rich Messages are still rolling out across clients. "private"
+   * keeps the richer DM experience while avoiding unsupported-message banners
+   * in public groups. Default: "private".
+   */
+  readonly richMessages?: TelegramRichMessageMode;
+  /**
    * Launch the background long-poll loop on start(). Default true. Tests set
    * false to drive pollOnce() deterministically without a competing loop.
    */
@@ -406,6 +423,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #commandMenus: readonly TelegramCommandMenu[];
   readonly #debugUpdates: boolean;
   readonly #groupAddressing: "all" | "mentions";
+  readonly #richMessages: TelegramRichMessageMode;
   readonly #editTargets = new Map<string, EditTarget>();
   #botIdentity: TelegramBotIdentity | null = null;
   #context: ChannelAdapterContext | null = null;
@@ -431,6 +449,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         : []);
     this.#debugUpdates = options.debugUpdates ?? false;
     this.#groupAddressing = options.groupAddressing ?? "all";
+    this.#richMessages = options.richMessages ?? "private";
     if (options.botUsername !== undefined && options.botUsername.length > 0) {
       this.#botIdentity = { id: -1, username: options.botUsername.replace(/^@/, "") };
     }
@@ -596,7 +615,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       const mention = new RegExp(`(^|\\s)@${escapeRegExp(username)}\\b`, "i");
       if (mention.test(text)) {
         const stripped = text.replace(mention, " ").replace(/\s+/g, " ").trim();
-        return stripped.length > 0 ? stripped : text;
+        return withTelegramReplyContext(
+          message,
+          stripped.length > 0
+            ? stripped
+            : "User mentioned the bot while replying to this message.",
+        );
       }
     }
 
@@ -629,10 +653,17 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       parseMode: "HTML",
     };
     const formattedText = telegramRichText(message.text);
+    const useRichMessages = shouldUseTelegramRichMessages(
+      this.#richMessages,
+      target.chatId,
+    );
     if (message.editMessageId !== undefined) {
       const target = this.#editTargets.get(message.editMessageId);
       if (target !== undefined) {
-        if (this.#transport.editRichMessage !== undefined) {
+        if (
+          useRichMessages &&
+          this.#transport.editRichMessage !== undefined
+        ) {
           try {
             await this.#transport.editRichMessage(
               target.chatId,
@@ -696,6 +727,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             richOptions,
             sendOptions,
             this.#log,
+            useRichMessages,
           );
     const handle = `${this.id}-out-${++this.#outCounter}`;
     this.#editTargets.set(handle, {
@@ -718,8 +750,9 @@ async function sendTelegramTextMessage(
   richOptions: TelegramRichMessageOptions,
   fallbackOptions: TelegramSendOptions,
   log: (line: string) => void,
+  useRichMessages: boolean,
 ): Promise<TelegramSentMessage> {
-  if (transport.sendRichMessage !== undefined) {
+  if (useRichMessages && transport.sendRichMessage !== undefined) {
     try {
       return await transport.sendRichMessage(chatId, markdown, richOptions);
     } catch (error) {
@@ -731,6 +764,15 @@ async function sendTelegramTextMessage(
 
 function isTelegramNoopEdit(error: unknown): boolean {
   return /message is not modified/i.test(String(error));
+}
+
+function shouldUseTelegramRichMessages(
+  mode: TelegramRichMessageMode,
+  chatId: string,
+): boolean {
+  if (mode === "off") return false;
+  if (mode === "all") return true;
+  return !chatId.startsWith("-");
 }
 
 function telegramRichText(value: string): string {
@@ -895,6 +937,31 @@ function isSafeTelegramLink(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function withTelegramReplyContext(
+  message: TelegramMessage,
+  text: string,
+): string {
+  const reply = message.reply_to_message;
+  const replyText = reply?.text ?? reply?.caption;
+  if (reply === undefined || replyText === undefined || replyText.trim().length === 0) {
+    return text;
+  }
+  if (reply.from?.is_bot === true) return text;
+  const displayName =
+    reply.from?.username ??
+    reply.from?.first_name ??
+    reply.sender_chat?.username ??
+    reply.sender_chat?.title ??
+    "replied message";
+  return [
+    "Context from the message this user replied to:",
+    `${displayName}: ${replyText.trim()}`,
+    "",
+    "User message:",
+    text,
+  ].join("\n");
 }
 
 function telegramUpdateKind(update: TelegramUpdate): string {

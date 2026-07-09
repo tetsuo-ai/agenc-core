@@ -43,13 +43,18 @@ The **Telegram channel** uses the official Bot API (no reverse-engineered
 client, no account-ban risk). Create a bot with @BotFather, export the token,
 and message it. Streaming replies edit one message in place.
 
-Text replies prefer Telegram Bot API Rich Messages (`sendRichMessage` and
+Text replies can use Telegram Bot API Rich Messages (`sendRichMessage` and
 `editMessageText` with `rich_message.markdown`) so headings, lists, links,
-inline code, and Markdown tables render as native Telegram rich content. If a
-Bot API deployment or a specific payload rejects Rich Messages, the gateway
-falls back to the legacy safe HTML renderer; in that fallback, Markdown tables
-are escaped and rendered as preformatted blocks. Native media captions still use
-the safe HTML renderer because Telegram captions do not accept `rich_message`.
+inline code, and Markdown tables render as native Telegram rich content. Because
+some current Telegram clients still show unsupported-message banners for Rich
+Messages in groups/forwards, the default is conservative:
+`AGENC_TELEGRAM_RICH_MESSAGES=private` (Rich Messages in DMs, safe HTML in
+groups). Set `AGENC_TELEGRAM_RICH_MESSAGES=all` to force Rich Messages
+everywhere, or `off` to disable them completely. If a Bot API deployment or a
+specific payload rejects Rich Messages, the gateway falls back to the legacy
+safe HTML renderer; in that fallback, Markdown tables are escaped and rendered
+as preformatted blocks. Native media captions still use the safe HTML renderer
+because Telegram captions do not accept `rich_message`.
 
 Telegram can also run with **owner controls**:
 
@@ -82,7 +87,7 @@ feature flags are configured:
 AGENC_GATEWAY_MEME_ENABLED=1
 AGENC_GATEWAY_MEME_DAILY_LIMIT=20
 AGENC_GATEWAY_VOICE_ENABLED=1
-AGENC_GATEWAY_VOICE_DAILY_LIMIT=10
+AGENC_GATEWAY_VOICE_DAILY_LIMIT=20
 ```
 
 The gateway then handles explicit shortcuts such as `/image <idea>`,
@@ -110,6 +115,9 @@ mentions `@bot_username`, replies to the bot, or uses a slash command. Telegram
 must have BotFather privacy mode disabled (`/setprivacy` → Disable) for normal
 `@bot_username hi` mention messages to be delivered to the bot; otherwise only
 slash commands and replies are delivered by Telegram.
+When someone replies to another user's message and mentions the bot, the
+gateway forwards both the user's message and the replied-to message as context,
+so the agent can answer the actual thread instead of seeing only the mention.
 
 ## Heartbeat (proactive ticks)
 

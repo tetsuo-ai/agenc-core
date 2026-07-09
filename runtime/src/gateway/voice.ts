@@ -287,7 +287,7 @@ export class XaiVoiceFeature implements GatewayVoiceFeature {
   constructor(options: XaiVoiceFeatureOptions) {
     this.#apiKey = options.apiKey;
     this.#usageFile = options.usageFile;
-    this.#dailyLimit = options.dailyLimit ?? 10;
+    this.#dailyLimit = options.dailyLimit ?? 20;
     this.#defaultVoice = options.defaultVoice ?? DEFAULT_VOICE_CONFIG.defaultVoice;
     this.#maleVoice = options.maleVoice ?? DEFAULT_VOICE_CONFIG.maleVoice;
     this.#femaleVoice = options.femaleVoice ?? DEFAULT_VOICE_CONFIG.femaleVoice;
@@ -317,7 +317,7 @@ export class XaiVoiceFeature implements GatewayVoiceFeature {
     const day = today(this.#now());
     const usage = readUsage(this.#usageFile, day);
     if (usage.count >= this.#dailyLimit) {
-      await input.reply("Voice cap hit for today. The audio wallet is taking a breather.");
+      await input.reply("Daily voice limit reached. Try again later.");
       return true;
     }
 

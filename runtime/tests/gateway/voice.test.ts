@@ -142,6 +142,6 @@ describe("XaiVoiceFeature", () => {
     };
     await feature.handle(input);
     await feature.handle({ ...input, text: "/voice two" });
-    expect(replies.at(-1)).toContain("Voice cap hit");
+    expect(replies.at(-1)).toBe("Daily voice limit reached. Try again later.");
   });
 });

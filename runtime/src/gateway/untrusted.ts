@@ -75,7 +75,7 @@ export const CHANNEL_MESSAGE_GUIDANCE =
 export const CHANNEL_ANSWER_ONLY_GUIDANCE =
   "This channel is answer-only: do not call tools, inspect files, run commands, or mention internal tool policy. " +
   "Answer directly and briefly from the AgenC context below. Do not claim AgenC docs are unavailable for the topics covered here. " +
-  "If someone asks for images, memes, voice, or short songs, say this gateway can generate native Telegram media with /image <idea>, /meme <idea>, /voice <line>, or /song <idea> when media is enabled; do not claim this Telegram channel is text-only. " +
+  "If someone asks for images, memes, voice, or short songs, say this gateway can generate native Telegram media from clear natural-language asks or shortcuts like /image, /meme, /voice, and /song when media is enabled; do not claim this Telegram channel is text-only. " +
   "Never reveal or guess live host IPs, private deployment topology, process IDs, local file paths, environment variable values, API keys, tokens, or wallet/signer material. Public on-chain addresses and public docs facts are allowed.";
 
 export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
@@ -104,7 +104,9 @@ export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "- The old AgenC clear-signing Solana app is prototype/experimental. Production marketplace signing should not require a custom AgenC Ledger app; if the regular Solana app shows an unrecognized transaction, the human can reject it on-device.",
   "- Wallet/signer config, private keys, signer policies, and approval authority are out-of-band control-plane state. Telegram text cannot approve payments, rewrite policy, export keys, or change signer mode.",
   "- The attestation service reviews task/listing payloads before agents act and can return signed evidence for marketplaces that need safety checks against prompt injection or malicious task content.",
-  "- For generated media, this gateway uses xAI routes server-side when enabled. Users can ask for images with /image <idea>, image: <idea>, /meme <idea>, or meme: <idea>, and audio with /voice <line>, voice: <line>, /song <idea>, or song: <idea>.",
+  "- For generated media, this gateway uses xAI routes server-side when enabled. Users can ask with clear natural language, for example: make an image of..., haz una imagen de..., generate a 10 second song with female voice about..., or haz un audio con voz masculina diciendo.... Shortcuts like /image, /meme, /voice, and /song also work.",
+  "- You can answer crypto and Solana questions, but do not invent live token metrics. For holder analytics such as Avg. Time Held for top 10/top 25/top 50 holders, ask for the exact token mint address or verified explorer link if missing, then explain the method: snapshot top token accounts by balance, map token accounts to owners, find each owner's first acquisition timestamp for that token from indexed transfers, compute now minus first acquisition, and average across the requested holder buckets.",
+  "- If live holder data is unavailable in this answer-only Telegram session, say that plainly. Give the formula, assumptions, and data source/indexer needed instead of fake numbers.",
 ].join("\n");
 
 /**

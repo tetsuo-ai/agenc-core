@@ -317,12 +317,12 @@ describe("TelegramChannelAdapter", () => {
       kind: "group",
       id: "-100200:777",
     });
-    expect(transport.sent).toEqual([]);
-    expect(transport.richSent[0]).toEqual({
+    expect(transport.richSent).toEqual([]);
+    expect(transport.sent[0]).toEqual({
       chatId: "-100200",
-      markdown: "topic reply",
+      text: "topic reply",
       messageThreadId: 777,
-      skipEntityDetection: true,
+      parseMode: "HTML",
     });
   });
 
@@ -379,6 +379,46 @@ describe("TelegramChannelAdapter", () => {
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("hi there");
+  });
+
+  test("mention-only group addressing includes replied-message context", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 41,
+          message: {
+            message_id: 81,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "@agenc_test_bot answer this",
+            reply_to_message: {
+              text: "Can agents get paid onchain?",
+              from: { id: 8, first_name: "Alice", username: "alice" },
+            },
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe(
+      [
+        "Context from the message this user replied to:",
+        "alice: Can agents get paid onchain?",
+        "",
+        "User message:",
+        "answer this",
+      ].join("\n"),
+    );
   });
 
   test("mention-only group addressing forwards sender_chat mentions", async () => {
@@ -661,6 +701,30 @@ describe("TelegramChannelAdapter", () => {
     expect(transport.richSent[0]).toEqual({
       chatId: "42",
       markdown: text,
+      skipEntityDetection: true,
+    });
+    await adapter.stop();
+  });
+
+  test("can opt groups into Telegram Rich Messages explicitly", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      richMessages: "all",
+    });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    await adapter.send({
+      conversationId: "-100200",
+      text: "| Surface | Status |\n|---|---|\n| group | rich |",
+    });
+
+    expect(transport.sent).toEqual([]);
+    expect(transport.richSent[0]).toEqual({
+      chatId: "-100200",
+      markdown: "| Surface | Status |\n|---|---|\n| group | rich |",
       skipEntityDetection: true,
     });
     await adapter.stop();
