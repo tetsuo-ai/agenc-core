@@ -166,6 +166,7 @@ agenc help [command]
 agenc onboard [--status [--json] | --reset]
 agenc security audit [--json] [--fix]
 agenc gateway <run [--stdio] [--webchat]|status|pairing <list|revoke>>
+agenc budget <status [--json]|reset <agent>>
 agenc init [--force]
 agenc <login|logout|whoami>
 agenc providers [--json] [--no-local-check]
@@ -350,6 +351,7 @@ hooks/          configured hooks and hook execution engine
 elicitation/    structured user-input requests and responses
 memory/ memdir/ project/session memory storage and retrieval
 gateway/        channel gateway: pairing, bindings, in-channel approvals (docs/gateway.md)
+budget/         cost-bounded autonomy: per-agent daily/monthly spend caps (docs/design/budget-enforcement.md)
 transaction-guard/  opt-in SLM tool-call guard (see Security)
 unified-exec/ pty/  process execution and PTY helpers
 tui/            the custom React terminal UI
