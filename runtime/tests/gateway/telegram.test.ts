@@ -9,6 +9,7 @@ import {
   TelegramBotApiError,
   TelegramChannelAdapter,
   type TelegramBotIdentity,
+  type TelegramSendOptions,
   type TelegramTransport,
   type TelegramUpdate,
 } from "../../src/gateway/telegram-channel.js";
@@ -19,8 +20,17 @@ import type {
 
 class FakeTransport implements TelegramTransport {
   updates: TelegramUpdate[][] = [];
-  readonly sent: { chatId: string; text: string }[] = [];
-  readonly photos: { chatId: string; photoUrl: string; caption?: string }[] = [];
+  readonly sent: {
+    chatId: string;
+    text: string;
+    messageThreadId?: number;
+  }[] = [];
+  readonly photos: {
+    chatId: string;
+    photoUrl: string;
+    caption?: string;
+    messageThreadId?: number;
+  }[] = [];
   readonly edits: { chatId: string; messageId: number; text: string }[] = [];
   readonly commands: { commands: unknown; scope?: unknown }[] = [];
   identity: TelegramBotIdentity = { id: 999, username: "core_69_bot" };
@@ -33,15 +43,37 @@ class FakeTransport implements TelegramTransport {
   async getUpdates(): Promise<TelegramUpdate[]> {
     return this.updates.shift() ?? [];
   }
-  async sendMessage(chatId: string, text: string) {
-    this.sent.push({ chatId, text });
+  async sendMessage(
+    chatId: string,
+    text: string,
+    options: TelegramSendOptions = {},
+  ) {
+    this.sent.push({
+      chatId,
+      text,
+      ...(options.messageThreadId !== undefined
+        ? { messageThreadId: options.messageThreadId }
+        : {}),
+    });
     return { message_id: ++this.#nextId };
   }
   async setMyCommands(commands: unknown, scope?: unknown): Promise<void> {
     this.commands.push({ commands, ...(scope !== undefined ? { scope } : {}) });
   }
-  async sendPhoto(chatId: string, photoUrl: string, caption?: string) {
-    this.photos.push({ chatId, photoUrl, ...(caption !== undefined ? { caption } : {}) });
+  async sendPhoto(
+    chatId: string,
+    photoUrl: string,
+    caption?: string,
+    options: TelegramSendOptions = {},
+  ) {
+    this.photos.push({
+      chatId,
+      photoUrl,
+      ...(caption !== undefined ? { caption } : {}),
+      ...(options.messageThreadId !== undefined
+        ? { messageThreadId: options.messageThreadId }
+        : {}),
+    });
     return { message_id: ++this.#nextId };
   }
   async editMessageText(chatId: string, messageId: number, text: string) {
@@ -141,6 +173,42 @@ describe("TelegramChannelAdapter", () => {
     await adapter.stop();
     expect(messages[0].conversation).toEqual({ kind: "group", id: "-100200" });
     expect(messages[0].sender.displayName).toBe("Bob");
+  });
+
+  test("keeps forum topic replies in the same Telegram thread", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 25,
+          message: {
+            message_id: 12,
+            message_thread_id: 777,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "topic hello",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.send({
+      conversationId: messages[0].conversation.id,
+      text: "topic reply",
+    });
+    await adapter.stop();
+    expect(messages[0].conversation).toEqual({
+      kind: "group",
+      id: "-100200:777",
+    });
+    expect(transport.sent[0]).toEqual({
+      chatId: "-100200",
+      text: "topic reply",
+      messageThreadId: 777,
+    });
   });
 
   test("mention-only group addressing ignores ambient group chatter", async () => {
