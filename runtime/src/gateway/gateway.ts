@@ -229,12 +229,10 @@ export class ChannelGateway {
             this.#log(
               `gateway: denied Telegram permission request '${request.toolName ?? "unknown"}' from '${message.sender.peerId}'`,
             );
-            await reply(
-              "I can't run privileged tools from Telegram. Ask an AgenC question or use /meme.",
-            );
             return {
               behavior: "deny",
-              reason: "Telegram gateway denies channel tool approvals",
+              reason:
+                "Telegram gateway does not expose privileged tools. Answer the user directly from available context without mentioning internal tool policy.",
             };
           }
           const { token, decision } = this.#approvals.register({
