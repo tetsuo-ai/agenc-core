@@ -25,6 +25,9 @@ interface SpawnCall {
   readonly objective: string;
   readonly initialContent: readonly never[];
   readonly cwd?: string;
+  readonly permissionMode?: string;
+  readonly unattendedAllow?: readonly string[];
+  readonly unattendedDeny?: readonly string[];
   readonly metadata?: Record<string, string>;
 }
 
@@ -110,6 +113,26 @@ describe("createSdkDaemonClient (daemon agent provisioning)", () => {
     await client.createSession();
 
     expect(sdk.spawnCalls[0].cwd).toBe("/work/space");
+  });
+
+  test("createSession threads gateway unattended policy to the agent", async () => {
+    const sdk = fakeSdk();
+    const client = await createSdkDaemonClient({
+      sdk: sdk.module,
+      unattendedAllow: ["SendUserMessage", "Brief"],
+      unattendedDeny: ["Bash"],
+    });
+
+    await client.createSession({ label: "telegram|agent|group" });
+
+    expect(sdk.spawnCalls[0]).toMatchObject({
+      unattendedAllow: ["SendUserMessage", "Brief"],
+      unattendedDeny: ["Bash"],
+    });
+    expect(sdk.spawnCalls[0].metadata).toMatchObject({
+      unattendedAllow: "SendUserMessage,Brief",
+      unattendedDeny: "Bash",
+    });
   });
 
   test("createSession fails loudly when the agent has no session", async () => {

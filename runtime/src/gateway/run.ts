@@ -117,6 +117,30 @@ function envList(value: string | undefined): readonly string[] {
     .filter(Boolean);
 }
 
+function envOptionalList(value: string | undefined): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  return envList(value);
+}
+
+function envPermissionMode(
+  value: string | undefined,
+):
+  | "default"
+  | "plan"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | undefined {
+  if (
+    value === "default" ||
+    value === "plan" ||
+    value === "acceptEdits" ||
+    value === "bypassPermissions"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
 export interface GatewayRunHandle {
   readonly gateway: ChannelGateway;
   readonly channels: readonly string[];
@@ -231,6 +255,16 @@ export async function startGateway(
         ...(options.agencCommand !== undefined
           ? { agencCommand: options.agencCommand }
           : {}),
+        permissionMode: envPermissionMode(
+          env.AGENC_GATEWAY_AGENT_PERMISSION_MODE,
+        ),
+        unattendedAllow:
+          envOptionalList(env.AGENC_GATEWAY_AGENT_UNATTENDED_ALLOW) ?? [
+            "SendUserMessage",
+            "Brief",
+          ],
+        unattendedDeny:
+          envOptionalList(env.AGENC_GATEWAY_AGENT_UNATTENDED_DENY) ?? [],
       }));
 
   const telegramAdminPeerIds = envList(env.AGENC_TELEGRAM_ADMIN_PEER_IDS);

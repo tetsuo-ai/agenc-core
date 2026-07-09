@@ -21,6 +21,7 @@ import type { GatewayMemeFeature, GatewayMemeReplyOptions } from "./meme.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
 import { detectPromptInjectionAttempt } from "./prompt-injection.js";
 import { SessionRouter } from "./session-router.js";
+import { TELEGRAM_CHANNEL_ID } from "./telegram-channel.js";
 import { frameChannelMessage } from "./untrusted.js";
 import type {
   ChannelAdapter,
@@ -224,6 +225,18 @@ export class ChannelGateway {
         adapter,
         conversationId: message.conversation.id,
         onPermissionRequest: async (request) => {
+          if (message.channelId === TELEGRAM_CHANNEL_ID) {
+            this.#log(
+              `gateway: denied Telegram permission request '${request.toolName ?? "unknown"}' from '${message.sender.peerId}'`,
+            );
+            await reply(
+              "I can't run privileged tools from Telegram. Ask an AgenC question or use /meme.",
+            );
+            return {
+              behavior: "deny",
+              reason: "Telegram gateway denies channel tool approvals",
+            };
+          }
           const { token, decision } = this.#approvals.register({
             channelId: message.channelId,
             conversationId: message.conversation.id,
