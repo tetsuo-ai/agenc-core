@@ -162,7 +162,7 @@ AGENC_GATEWAY_HELIUS_DAILY_LIMIT=500
 AGENC_GATEWAY_HELIUS_PER_PEER_LIMIT=4
 AGENC_GATEWAY_HELIUS_REQUESTS_PER_SECOND=8
 AGENC_GATEWAY_HELIUS_MAX_TOKEN_ACCOUNTS=50000
-AGENC_GATEWAY_HELIUS_TOKEN_ALIASES=agenc=<official-mint>,usdc=<official-mint>
+AGENC_GATEWAY_HELIUS_TOKEN_ALIASES=agenc=5yC9BM8KUsJTPbWPLfA2N8qH1s9V8DQ3Vcw1G6Jdpump,usdc=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 ```
 
 `AGENC_GATEWAY_HELIUS_API_KEY` exists for local development, but the key-file
@@ -175,14 +175,17 @@ The natural-language read surface currently covers:
 
 - token holder snapshots and top-10/top-25/top-50 concentration;
 - estimated top-10/top-25/top-50 holder age with observed-history coverage;
-- recent probable token buys from a fixed latest-20 enhanced-SWAP window;
+- recent probable token buys from a latest-20 enhanced-SWAP window, plus
+  newest-first bounded pagination (up to 500 rows) for explicit SOL/WSOL/USDC
+  thresholds such as `last buy over 10 SOL`;
 - token supply/metadata summaries;
 - wallet SOL balance, token accounts, and recent normalized transfers;
 - bounded transaction summaries without raw logs or arbitrary instruction text;
 - Solana mainnet health, finalized slot, block height, and epoch.
 
 Unknown tickers are never guessed; the bot asks for an exact mint or verified
-explorer link. Configured aliases are explicit operator mappings. Reads use a
+explorer link. Configured aliases are explicit operator mappings and are not
+learned from chat history. Reads use a
 short shared cache, per-peer throttling, a persistent daily analysis budget,
 timeouts, bounded retries, bounded response sizes, and a fixed method surface.
 The API key is used only in the private outbound Helius request. Prompts,
@@ -200,6 +203,11 @@ The gateway filters rows that do not contain the target
 mint, reports quote assets separately, caches this fast-moving surface for at
 most 30 seconds, and never passes Helius descriptions, logs, memos, or arbitrary
 instruction text to the model.
+
+The enhanced-transactions history endpoint is a bounded compatibility path.
+New indexer work should target Helius `getTransactionsForAddress` or a
+webhook-backed trade index, but it must preserve the same typed evidence and
+credential boundary before replacing this parser.
 
 The holder-age result is deliberately labeled an estimate: it uses the current
 top owner snapshot and each owner's earliest inbound transfer for that mint.
@@ -322,7 +330,12 @@ agenc gateway pairing revoke <ch> <peer> # remove a paired sender
 
 Pairing state persists to `<AGENC_HOME>/gateway/pairing.json` (0600); session
 mappings to `gateway/sessions.json`, so a gateway restart reattaches existing
-conversations instead of forking their history.
+conversations instead of forking their history. The daemon session remains the
+source of truth for conversation history. A separate bounded
+`gateway/conversation-recovery.json` journal (0600, six successful turns per
+conversation, 24-hour TTL by default) is replayed only when a daemon session
+cannot be reattached. It stores sanitized channel text and final replies, never
+server evidence, environment values, signer data, or API credentials.
 
 ## Writing a channel adapter
 

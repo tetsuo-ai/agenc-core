@@ -19,6 +19,7 @@ import {
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
+const AGENC_MINT = "5yC9BM8KUsJTPbWPLfA2N8qH1s9V8DQ3Vcw1G6Jdpump";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TEST_API_KEY = "helius-test-key-that-must-never-leak";
 
@@ -98,6 +99,39 @@ function restResponse(payload: unknown, status = 200): Response {
   });
 }
 
+function enhancedSolBuy(input: {
+  readonly mint: string;
+  readonly pool: string;
+  readonly buyer: string;
+  readonly signature: string;
+  readonly timestamp: number;
+  readonly solAmount: number;
+  readonly targetAmount?: number;
+}): Record<string, unknown> {
+  return {
+    type: "SWAP",
+    signature: input.signature,
+    timestamp: input.timestamp,
+    source: "TEST_AMM",
+    feePayer: input.buyer,
+    tokenTransfers: [
+      {
+        mint: input.mint,
+        tokenAmount: input.targetAmount ?? 1_000,
+        fromUserAccount: input.pool,
+        toUserAccount: input.buyer,
+      },
+    ],
+    nativeTransfers: [
+      {
+        amount: Math.round(input.solAmount * 1_000_000_000),
+        fromUserAccount: input.buyer,
+        toUserAccount: input.pool,
+      },
+    ],
+  };
+}
+
 describe("Solana on-chain intent parsing", () => {
   test("recognizes the holder-age question and requires an exact mint", () => {
     expect(
@@ -116,13 +150,44 @@ describe("Solana on-chain intent parsing", () => {
   });
 
   test("recognizes a recent large-buy question by exact mint", () => {
-    const mint = "5yC9BM8KUsJTPbWPLfA2N8qH1s9V8DQ3Vcw1G6Jdpump";
+    const mint = AGENC_MINT;
     expect(
       parseSolanaOnchainIntent(`summarize the latest large buy for ${mint}`),
     ).toEqual({ kind: "token_recent_trades", mint });
     expect(
       parseSolanaOnchainIntent(`muéstrame la última compra grande de ${mint}`),
     ).toEqual({ kind: "token_recent_trades", mint });
+  });
+
+  test("parses exact SOL and USDC quote thresholds for a trusted alias", () => {
+    const aliases = parseHeliusTokenAliases(`agenc=${AGENC_MINT}`);
+    expect(
+      parseSolanaOnchainIntent(
+        "What was the last buy over 10 Solana on $AgenC?",
+        aliases,
+      ),
+    ).toEqual({
+      kind: "token_recent_trades",
+      mint: AGENC_MINT,
+      quoteThreshold: { asset: "SOL", amount: 10, comparison: "gt" },
+    });
+    expect(
+      parseSolanaOnchainIntent(
+        "muéstrame la última compra de al menos 250 USDC de $AgenC",
+        aliases,
+      ),
+    ).toEqual({
+      kind: "token_recent_trades",
+      mint: AGENC_MINT,
+      quoteThreshold: { asset: "USDC", amount: 250, comparison: "gte" },
+    });
+    expect(
+      parseSolanaOnchainIntent("latest buy >= 2.5 WSOL for $agenc", aliases),
+    ).toEqual({
+      kind: "token_recent_trades",
+      mint: AGENC_MINT,
+      quoteThreshold: { asset: "SOL", amount: 2.5, comparison: "gte" },
+    });
   });
 
   test("resolves configured ticker aliases without guessing unknown tickers", () => {
@@ -374,6 +439,159 @@ describe("HeliusOnchainFeature", () => {
     expect(url.searchParams.get("api-key")).toBe(TEST_API_KEY);
     expect(request.init?.method).toBe("GET");
     expect(request.init?.redirect).toBe("error");
+  });
+
+  test("paginates newest-first until it finds the latest buy over a SOL threshold", async () => {
+    const nowMs = Date.parse("2026-07-09T12:00:00.000Z");
+    const mint = AGENC_MINT;
+    const pool = publicKey(4_500);
+    const buyer = publicKey(4_501);
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      enhancedSolBuy({
+        mint,
+        pool,
+        buyer,
+        signature: signature(4_600 + index),
+        timestamp: Math.floor(nowMs / 1_000) - index,
+        solAmount: 0.5,
+      }),
+    );
+    const matchingSignature = signature(4_800);
+    const requested: string[] = [];
+    const feature = new HeliusOnchainFeature({
+      apiKey: TEST_API_KEY,
+      usageFile: join(home, "usage.json"),
+      tokenAliases: parseHeliusTokenAliases(`agenc=${mint}`),
+      fetchImpl: async (input) => {
+        requested.push(String(input));
+        return restResponse(
+          requested.length === 1
+            ? firstPage
+            : [
+                enhancedSolBuy({
+                  mint,
+                  pool,
+                  buyer,
+                  signature: matchingSignature,
+                  timestamp: Math.floor(nowMs / 1_000) - 101,
+                  solAmount: 12.25,
+                  targetAmount: 25_000,
+                }),
+              ],
+        );
+      },
+      now: () => nowMs,
+      sleep: async () => {},
+      requestsPerSecond: 100_000,
+    });
+
+    const result = await feature.inspect({
+      text: "What was the last buy over 10 Solana on $AgenC?",
+      channelId: "telegram",
+      peerId: "42",
+    });
+
+    expect(result.kind).toBe("context");
+    const context = result.kind === "context" ? result.context : "";
+    expect(context).toContain("Requested quote filter: > 10 SOL or WSOL");
+    expect(context).toContain("Pages scanned: 2");
+    expect(context).toContain("Indexed rows scanned: 101");
+    expect(context).toContain("paid 12.25 SOL");
+    expect(context).toContain(matchingSignature);
+    expect(context).toContain(`https://solscan.io/tx/${matchingSignature}`);
+    expect(context).not.toContain(TEST_API_KEY);
+    expect(requested).toHaveLength(2);
+    const first = new URL(requested[0]);
+    const second = new URL(requested[1]);
+    expect(first.searchParams.get("limit")).toBe("100");
+    expect(first.searchParams.get("before-signature")).toBeNull();
+    expect(second.searchParams.get("before-signature")).toBe(
+      signature(4_699),
+    );
+  });
+
+  test("stops a threshold search after five bounded pages without claiming global absence", async () => {
+    const mint = AGENC_MINT;
+    const pool = publicKey(4_900);
+    const buyer = publicKey(4_901);
+    let requests = 0;
+    const feature = new HeliusOnchainFeature({
+      apiKey: TEST_API_KEY,
+      usageFile: join(home, "usage.json"),
+      tokenAliases: parseHeliusTokenAliases(`agenc=${mint}`),
+      fetchImpl: async () => {
+        const page = requests;
+        requests += 1;
+        return restResponse(
+          Array.from({ length: 100 }, (_, index) =>
+            enhancedSolBuy({
+              mint,
+              pool,
+              buyer,
+              signature: signature(5_000 + page * 100 + index),
+              timestamp: 1_800_000_000 - page * 100 - index,
+              solAmount: 1,
+            }),
+          ),
+        );
+      },
+      sleep: async () => {},
+      requestsPerSecond: 100_000,
+    });
+
+    const result = await feature.inspect({
+      text: "last buy over 10 SOL for $agenc",
+      channelId: "telegram",
+      peerId: "42",
+    });
+
+    expect(requests).toBe(5);
+    expect(result.kind).toBe("context");
+    const context = result.kind === "context" ? result.context : "";
+    expect(context).toContain("Pages scanned: 5");
+    expect(context).toContain("Indexed rows scanned: 500");
+    expect(context).toContain("No probable buy matched > 10 SOL or WSOL");
+    expect(context).toContain("not proof that no older matching trade exists");
+  });
+
+  test("keeps filtered and unfiltered recent-trade cache entries separate", async () => {
+    const mint = AGENC_MINT;
+    const pool = publicKey(5_700);
+    const buyer = publicKey(5_701);
+    let requests = 0;
+    const feature = new HeliusOnchainFeature({
+      apiKey: TEST_API_KEY,
+      usageFile: join(home, "usage.json"),
+      tokenAliases: parseHeliusTokenAliases(`agenc=${mint}`),
+      fetchImpl: async () => {
+        requests += 1;
+        return restResponse([
+          enhancedSolBuy({
+            mint,
+            pool,
+            buyer,
+            signature: signature(5_702),
+            timestamp: 1_800_000_000,
+            solAmount: 1,
+          }),
+        ]);
+      },
+      sleep: async () => {},
+      requestsPerSecond: 100_000,
+    });
+
+    await feature.inspect({
+      text: "latest large buy for $agenc",
+      channelId: "telegram",
+      peerId: "42",
+    });
+    await feature.inspect({
+      text: "latest buy over 10 SOL for $agenc",
+      channelId: "telegram",
+      peerId: "42",
+    });
+
+    expect(requests).toBe(2);
   });
 
   test("redacts enhanced-transaction authentication failures", async () => {

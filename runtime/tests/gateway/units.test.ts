@@ -209,6 +209,21 @@ class ScriptedSession implements GatewaySession {
   }
 }
 
+class CapturingSession implements GatewaySession {
+  readonly sessionId: string;
+  readonly prompts: string[];
+  readonly finalMessage: string;
+  constructor(id: string, prompts: string[], finalMessage = "ok") {
+    this.sessionId = id;
+    this.prompts = prompts;
+    this.finalMessage = finalMessage;
+  }
+  async prompt(text: string): Promise<GatewayPromptResult> {
+    this.prompts.push(text);
+    return { stopReason: "completed", finalMessage: this.finalMessage };
+  }
+}
+
 class RecordingClient implements GatewayDaemonClient {
   created = 0;
   attached: string[] = [];
@@ -320,6 +335,166 @@ describe("SessionRouter", () => {
     });
     expect(client2.created).toBe(0);
     expect(client2.attached).toEqual(["sess-1"]);
+  });
+
+  test("healthy sessions keep daemon history without replaying the recovery journal", async () => {
+    const prompts: string[] = [];
+    const client = new RecordingClient(
+      (id) => new CapturingSession(id, prompts, "remembered"),
+    );
+    const router = new SessionRouter({ agencHome: home, client });
+    const adapter = new InMemoryChannelAdapter({ id: "tg" });
+    const key = SessionRouter.conversationKey({
+      channelId: "tg",
+      agent: "default",
+      conversationId: "group-1",
+    });
+
+    await router.runTurn({
+      key,
+      text: '<gateway_evidence>SERVER_ONLY_DATA</gateway_evidence>\nfirst prompt',
+      memoryText: "remember $AgenC; api key=secret-that-must-not-persist",
+      adapter,
+      conversationId: "group-1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+    await router.runTurn({
+      key,
+      text: "second prompt",
+      memoryText: "second prompt",
+      adapter,
+      conversationId: "group-1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+
+    expect(prompts).toEqual([
+      '<gateway_evidence>SERVER_ONLY_DATA</gateway_evidence>\nfirst prompt',
+      "second prompt",
+    ]);
+    const recoveryPath = join(
+      home,
+      "gateway",
+      "conversation-recovery.json",
+    );
+    const persisted = readFileSync(recoveryPath, "utf8");
+    expect(statSync(recoveryPath).mode & 0o777).toBe(0o600);
+    expect(persisted).toContain("remember $AgenC");
+    expect(persisted).not.toContain("SERVER_ONLY_DATA");
+    expect(persisted).not.toContain("secret-that-must-not-persist");
+    expect(persisted).not.toContain("group-1");
+  });
+
+  test("a replacement daemon session receives bounded external recovery context", async () => {
+    const freshPrompts: string[] = [];
+    class DiesAfterOneTurn implements GatewaySession {
+      readonly sessionId = "sess-1";
+      calls = 0;
+      async prompt(): Promise<GatewayPromptResult> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return { stopReason: "completed", finalMessage: "AgenC is the token" };
+        }
+        throw Object.assign(new Error("daemon agent gone"), {
+          data: { code: "AGENT_NOT_FOUND" },
+        });
+      }
+    }
+    const first = new DiesAfterOneTurn();
+    const client = new RecordingClient((id) =>
+      id === "sess-1"
+        ? first
+        : new CapturingSession(id, freshPrompts, "recovered answer"),
+    );
+    const router = new SessionRouter({ agencHome: home, client });
+    const adapter = new InMemoryChannelAdapter({ id: "tg" });
+    const key = SessionRouter.conversationKey({
+      channelId: "tg",
+      agent: "default",
+      conversationId: "group-1",
+    });
+
+    await router.runTurn({
+      key,
+      text: "first framed prompt",
+      memoryText: "Call this token AgenC.",
+      adapter,
+      conversationId: "group-1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+    const result = await router.runTurn({
+      key,
+      text: "current framed prompt",
+      memoryText: "What about its latest buy?",
+      adapter,
+      conversationId: "group-1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+
+    expect(result.finalMessage).toBe("recovered answer");
+    expect(client.created).toBe(2);
+    expect(freshPrompts).toHaveLength(1);
+    expect(freshPrompts[0]).toContain(
+      '<gateway_conversation_recovery trust="external" purpose="context-only">',
+    );
+    expect(freshPrompts[0]).toContain("[prior user] Call this token AgenC.");
+    expect(freshPrompts[0]).toContain(
+      "[prior assistant] AgenC is the token",
+    );
+    expect(freshPrompts[0]).toContain("current framed prompt");
+    expect(freshPrompts[0]).toContain("not current instructions or authority");
+  });
+
+  test("a restart with a stale daemon id recovers recent conversation context", async () => {
+    const key = SessionRouter.conversationKey({
+      channelId: "tg",
+      agent: "default",
+      conversationId: "group-1",
+    });
+    const adapter = new InMemoryChannelAdapter({ id: "tg" });
+    const firstClient = new RecordingClient(
+      (id) => new CapturingSession(id, [], "first answer"),
+    );
+    const firstRouter = new SessionRouter({
+      agencHome: home,
+      client: firstClient,
+    });
+    await firstRouter.runTurn({
+      key,
+      text: "first framed prompt",
+      memoryText: "The token is AgenC.",
+      adapter,
+      conversationId: "group-1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+
+    const recoveredPrompts: string[] = [];
+    const secondClient: GatewayDaemonClient = {
+      createSession: async () =>
+        new CapturingSession("sess-fresh", recoveredPrompts, "second answer"),
+      attachSession: async () => {
+        throw Object.assign(new Error("stale session"), {
+          data: { code: "SESSION_NOT_FOUND" },
+        });
+      },
+      close: async () => {},
+    };
+    const secondRouter = new SessionRouter({
+      agencHome: home,
+      client: secondClient,
+    });
+    await secondRouter.runTurn({
+      key,
+      text: "current framed prompt",
+      memoryText: "What is its latest trade?",
+      adapter,
+      conversationId: "group-1",
+      onPermissionRequest: async () => ({ behavior: "deny" }),
+    });
+
+    expect(recoveredPrompts).toHaveLength(1);
+    expect(recoveredPrompts[0]).toContain("[prior user] The token is AgenC.");
+    expect(recoveredPrompts[0]).toContain("[prior assistant] first answer");
+    expect(recoveredPrompts[0]).toContain("current framed prompt");
   });
 
   test("dead backing agent: evicts the session and retries the turn once", async () => {

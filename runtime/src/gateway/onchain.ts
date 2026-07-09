@@ -34,6 +34,9 @@ const DEFAULT_MAX_HOLDERS = 50;
 const DEFAULT_MAX_TOKEN_ACCOUNTS_SCANNED = 50_000;
 const TOKEN_ACCOUNT_SCAN_PAGE_SIZE = 5_000;
 const RECENT_SWAP_WINDOW_SIZE = 20;
+const FILTERED_SWAP_PAGE_SIZE = 100;
+const FILTERED_SWAP_MAX_PAGES = 5;
+const MAX_ENHANCED_SWAP_PAGE_SIZE = 100;
 const RECENT_TRADES_CACHE_TTL_MS = 30_000;
 const TOKEN_NET_EPSILON = 1e-12;
 const MAX_SAFE_UNIX_TIMESTAMP = 4_102_444_800;
@@ -53,10 +56,20 @@ export type SolanaOnchainIntent =
   | { readonly kind: "network_summary" }
   | { readonly kind: "token_holder_age"; readonly mint?: string }
   | { readonly kind: "token_holders"; readonly mint?: string }
-  | { readonly kind: "token_recent_trades"; readonly mint?: string }
+  | {
+      readonly kind: "token_recent_trades";
+      readonly mint?: string;
+      readonly quoteThreshold?: QuoteThreshold;
+    }
   | { readonly kind: "token_summary"; readonly mint?: string }
   | { readonly kind: "wallet_summary"; readonly address?: string }
   | { readonly kind: "transaction_summary"; readonly signature?: string };
+
+export interface QuoteThreshold {
+  readonly asset: "SOL" | "USDC";
+  readonly amount: number;
+  readonly comparison: "gt" | "gte";
+}
 
 export type GatewayOnchainResult =
   | { readonly kind: "none" }
@@ -278,6 +291,58 @@ function findAliasMint(
   return undefined;
 }
 
+function parseQuoteThreshold(text: string): QuoteThreshold | undefined {
+  const amount = "([0-9]+(?:\\.[0-9]+)?)";
+  const asset = "(wsol|solana|sol|usdc)";
+  const patterns: readonly {
+    readonly comparison: QuoteThreshold["comparison"];
+    readonly expression: RegExp;
+  }[] = [
+    {
+      comparison: "gte",
+      expression: new RegExp(
+        `(?:at\\s+least|minimum(?:\\s+of)?|al\\s+menos|como\\s+m[ií]nimo|>=|≥)\\s*${amount}\\s*${asset}\\b`,
+        "iu",
+      ),
+    },
+    {
+      comparison: "gt",
+      expression: new RegExp(
+        `(?:over|above|more\\s+than|greater\\s+than|m[aá]s\\s+de|por\\s+encima\\s+de|>)\\s*${amount}\\s*${asset}\\b`,
+        "iu",
+      ),
+    },
+    {
+      comparison: "gte",
+      expression: new RegExp(
+        `\\b${amount}\\s*(?:\\+\\s*${asset}|${asset}\\s*\\+)`,
+        "iu",
+      ),
+    },
+  ];
+
+  for (const { comparison, expression } of patterns) {
+    const match = expression.exec(text);
+    if (match === null) continue;
+    const parsedAmount = Number(match[1]);
+    const parsedAsset = (match[2] ?? match[3])?.toLowerCase();
+    if (
+      !Number.isFinite(parsedAmount) ||
+      parsedAmount <= 0 ||
+      parsedAmount > 1_000_000_000_000 ||
+      parsedAsset === undefined
+    ) {
+      continue;
+    }
+    return {
+      asset: parsedAsset === "usdc" ? "USDC" : "SOL",
+      amount: parsedAmount,
+      comparison,
+    };
+  }
+  return undefined;
+}
+
 export function parseHeliusTokenAliases(
   value: string | undefined,
 ): Readonly<Record<string, string>> {
@@ -355,15 +420,20 @@ export function parseSolanaOnchainIntent(
   const mint = publicKeys[0] ?? findAliasMint(lower, tokenAliases);
 
   const mentionsTrade =
-    /\b(?:buy|buys|buying|bought|purchase|purchases|swap|swaps|trade|trades|compra|compras|comprando|compr[oó]|intercambio|intercambios)\b/iu.test(
+    /(?:^|[^\p{L}\p{N}_])(?:buy|buys|buying|bought|purchase|purchases|swap|swaps|trade|trades|compra|compras|comprando|compr[oó]|intercambio|intercambios)(?=$|[^\p{L}\p{N}_])/iu.test(
       lower,
     );
   const mentionsRecentOrLarge =
-    /\b(?:latest|recent|last|newest|large|largest|big|biggest|whale|activity|[uú]ltim[oa]s?|reciente(?:s)?|nuev[oa]s?|grande(?:s)?|mayor(?:es)?|ballena(?:s)?|actividad)\b/iu.test(
+    /(?:^|[^\p{L}\p{N}_])(?:latest|recent|last|newest|large|largest|big|biggest|whale|activity|[uú]ltim[oa]s?|reciente(?:s)?|nuev[oa]s?|grande(?:s)?|mayor(?:es)?|ballena(?:s)?|actividad)(?=$|[^\p{L}\p{N}_])/iu.test(
       lower,
     );
   if (mentionsTrade && mentionsRecentOrLarge) {
-    return { kind: "token_recent_trades", ...(mint ? { mint } : {}) };
+    const quoteThreshold = parseQuoteThreshold(lower);
+    return {
+      kind: "token_recent_trades",
+      ...(mint ? { mint } : {}),
+      ...(quoteThreshold !== undefined ? { quoteThreshold } : {}),
+    };
   }
 
   const holderAge =
@@ -446,13 +516,25 @@ class HeliusRpcClient {
     });
   }
 
-  async enhancedSwapsByAddress(address: string): Promise<unknown[]> {
+  async enhancedSwapsPageByAddress(
+    address: string,
+    options: { readonly limit: number; readonly beforeSignature?: string },
+  ): Promise<unknown[]> {
     if (!isSolanaPublicKey(address)) {
       throw new HeliusRequestError("invalid_token_mint");
     }
+    if (
+      !Number.isSafeInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > MAX_ENHANCED_SWAP_PAGE_SIZE ||
+      (options.beforeSignature !== undefined &&
+        !isSolanaSignature(options.beforeSignature))
+    ) {
+      throw new HeliusRequestError("invalid_request");
+    }
     return this.#withRetries(async () => {
       await this.#waitForRateSlot();
-      return this.#fetchEnhancedSwapsOnce(address);
+      return this.#fetchEnhancedSwapsOnce(address, options);
     });
   }
 
@@ -527,14 +609,20 @@ class HeliusRpcClient {
     }
   }
 
-  async #fetchEnhancedSwapsOnce(address: string): Promise<unknown[]> {
+  async #fetchEnhancedSwapsOnce(
+    address: string,
+    options: { readonly limit: number; readonly beforeSignature?: string },
+  ): Promise<unknown[]> {
     const endpoint = new URL(
       `https://mainnet.helius-rpc.com/v0/addresses/${address}/transactions`,
     );
     endpoint.searchParams.set("api-key", this.#apiKey);
     endpoint.searchParams.set("type", "SWAP");
     endpoint.searchParams.set("sort-order", "desc");
-    endpoint.searchParams.set("limit", String(RECENT_SWAP_WINDOW_SIZE));
+    endpoint.searchParams.set("limit", String(options.limit));
+    if (options.beforeSignature !== undefined) {
+      endpoint.searchParams.set("before-signature", options.beforeSignature);
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
@@ -550,7 +638,7 @@ class HeliusRpcClient {
       if (!Array.isArray(payload)) {
         throw new HeliusRequestError("invalid_response");
       }
-      return payload.slice(0, RECENT_SWAP_WINDOW_SIZE);
+      return payload.slice(0, options.limit);
     } catch (error) {
       if (error instanceof HeliusRequestError) throw error;
       throw new HeliusRequestError("network_failure", { retryable: true });
@@ -681,7 +769,7 @@ function parseEnhancedSwapTransactions(
   payload: readonly unknown[],
 ): EnhancedSwapTransaction[] {
   const transactions: EnhancedSwapTransaction[] = [];
-  for (const item of payload.slice(0, RECENT_SWAP_WINDOW_SIZE)) {
+  for (const item of payload.slice(0, MAX_ENHANCED_SWAP_PAGE_SIZE)) {
     if (!isRecord(item) || safeString(item.type, 16)?.toUpperCase() !== "SWAP") {
       continue;
     }
@@ -875,6 +963,43 @@ function formatQuoteLegs(legs: readonly QuoteLeg[]): string {
     .join(" + ");
 }
 
+function lastEnhancedSignature(payload: readonly unknown[]): string | undefined {
+  for (let index = payload.length - 1; index >= 0; index -= 1) {
+    const item = payload[index];
+    if (!isRecord(item)) continue;
+    const candidate = safeString(item.signature, 96);
+    if (candidate !== undefined && isSolanaSignature(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function thresholdQuoteLeg(
+  buy: ProbableTokenBuy,
+  threshold: QuoteThreshold,
+): QuoteLeg | undefined {
+  const candidates = buy.quoteLegs
+    .filter((leg) =>
+      threshold.asset === "SOL"
+        ? leg.asset === "SOL" || leg.asset === "WSOL"
+        : leg.asset === "USDC",
+    )
+    .filter((leg) =>
+      threshold.comparison === "gt"
+        ? leg.amount > threshold.amount
+        : leg.amount >= threshold.amount,
+    )
+    .sort((left, right) => right.amount - left.amount);
+  return candidates[0];
+}
+
+function formatQuoteThreshold(threshold: QuoteThreshold): string {
+  const comparison = threshold.comparison === "gt" ? ">" : ">=";
+  const asset = threshold.asset === "SOL" ? "SOL or WSOL" : "USDC";
+  return `${comparison} ${formatObservedAmount(threshold.amount)} ${asset}`;
+}
+
 function positiveIntegerString(value: unknown): string | undefined {
   if (typeof value === "bigint") return value > 0n ? value.toString() : undefined;
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
@@ -1055,9 +1180,14 @@ function intentTarget(intent: SolanaOnchainIntent): string {
       return "solana-mainnet";
     case "token_holder_age":
     case "token_holders":
-    case "token_recent_trades":
     case "token_summary":
       return intent.mint ?? "missing";
+    case "token_recent_trades": {
+      const threshold = intent.quoteThreshold;
+      return threshold === undefined
+        ? intent.mint ?? "missing"
+        : `${intent.mint ?? "missing"}:${threshold.asset}:${threshold.comparison}:${formatObservedAmount(threshold.amount)}`;
+    }
     case "wallet_summary":
       return intent.address ?? "missing";
     case "transaction_summary":
@@ -1185,6 +1315,9 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
     const intent = parseSolanaOnchainIntent(input.text, this.#aliases);
     if (intent === null) return { kind: "none" };
     const missing = missingTargetReply(intent);
+    this.#log(
+      `gateway onchain: intent parsed (${intent.kind}, target=${missing === undefined ? "resolved" : "missing"}${intent.kind === "token_recent_trades" && intent.quoteThreshold !== undefined ? `, filter=${intent.quoteThreshold.asset.toLowerCase()}_${intent.quoteThreshold.comparison}` : ""})`,
+    );
     if (missing !== undefined) return { kind: "reply", text: missing };
 
     const nowMs = this.#now();
@@ -1229,6 +1362,7 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
           ? Math.min(this.#cacheTtlMs, RECENT_TRADES_CACHE_TTL_MS)
           : this.#cacheTtlMs;
       this.#remember(cacheKey, { expiresAt: nowMs + cacheTtlMs, context });
+      this.#log(`gateway onchain: read complete (${intent.kind})`);
       return { kind: "context", context };
     } catch (error) {
       this.#log(
@@ -1281,7 +1415,11 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
       case "token_holders":
         return this.#tokenHolders(intent.mint!, observedAtMs);
       case "token_recent_trades":
-        return this.#tokenRecentTrades(intent.mint!, observedAtMs);
+        return this.#tokenRecentTrades(
+          intent.mint!,
+          observedAtMs,
+          intent.quoteThreshold,
+        );
       case "token_summary":
         return this.#tokenSummary(intent.mint!, observedAtMs);
       case "wallet_summary":
@@ -1655,24 +1793,94 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
   async #tokenRecentTrades(
     mint: string,
     observedAtMs: number,
+    quoteThreshold?: QuoteThreshold,
   ): Promise<string> {
-    const payload = await this.#rpc.enhancedSwapsByAddress(mint);
-    const transactions = parseEnhancedSwapTransactions(payload);
-    const classified = classifyProbableTokenBuys(transactions, mint);
+    const pageSize =
+      quoteThreshold === undefined
+        ? RECENT_SWAP_WINDOW_SIZE
+        : FILTERED_SWAP_PAGE_SIZE;
+    const maxPages = quoteThreshold === undefined ? 1 : FILTERED_SWAP_MAX_PAGES;
+    const seenCursors = new Set<string>();
+    let beforeSignature: string | undefined;
+    let pagesScanned = 0;
+    let rowsReturned = 0;
+    let validTransactions = 0;
+    let targetMatchedTransactions = 0;
+    let probableBuyerLegs = 0;
+    let recentBuys: readonly ProbableTokenBuy[] = [];
+    let thresholdMatch:
+      | { readonly buy: ProbableTokenBuy; readonly leg: QuoteLeg }
+      | undefined;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const payload = await this.#rpc.enhancedSwapsPageByAddress(mint, {
+        limit: pageSize,
+        ...(beforeSignature !== undefined ? { beforeSignature } : {}),
+      });
+      pagesScanned += 1;
+      rowsReturned += payload.length;
+      const transactions = parseEnhancedSwapTransactions(payload);
+      const classified = classifyProbableTokenBuys(transactions, mint);
+      validTransactions += transactions.length;
+      targetMatchedTransactions += classified.targetMatchedTransactions;
+      probableBuyerLegs += classified.buys.length;
+
+      if (quoteThreshold === undefined) {
+        recentBuys = classified.buys;
+        break;
+      }
+
+      for (const buy of classified.buys) {
+        const leg = thresholdQuoteLeg(buy, quoteThreshold);
+        if (leg !== undefined) {
+          thresholdMatch = { buy, leg };
+          break;
+        }
+      }
+      if (thresholdMatch !== undefined || payload.length < pageSize) break;
+
+      const cursor = lastEnhancedSignature(payload);
+      if (cursor === undefined || seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+      beforeSignature = cursor;
+    }
+
     const lines = [
       "Source: Helius read-only Solana mainnet enhanced transactions",
       `Observed at: ${new Date(observedAtMs).toISOString()}`,
       "Result type: recent probable token buys",
       `Mint: ${mint}`,
-      `Search window: latest ${RECENT_SWAP_WINDOW_SIZE} Helius-indexed SWAP rows for the mint address`,
-      `Valid SWAP rows returned: ${transactions.length}`,
-      `Rows containing the target mint: ${classified.targetMatchedTransactions}`,
-      `Probable buyer legs found: ${classified.buys.length}`,
+      ...(quoteThreshold === undefined
+        ? [
+            `Search window: latest ${RECENT_SWAP_WINDOW_SIZE} Helius-indexed SWAP rows for the mint address`,
+          ]
+        : [
+            `Requested quote filter: ${formatQuoteThreshold(quoteThreshold)}`,
+            `Search window: newest-first, up to ${FILTERED_SWAP_MAX_PAGES} pages / ${FILTERED_SWAP_MAX_PAGES * FILTERED_SWAP_PAGE_SIZE} Helius-indexed SWAP rows for the mint address`,
+            `Pages scanned: ${pagesScanned}`,
+            `Indexed rows scanned: ${rowsReturned}`,
+          ]),
+      `Valid SWAP rows returned: ${validTransactions}`,
+      `Rows containing the target mint: ${targetMatchedTransactions}`,
+      `Probable buyer legs found: ${probableBuyerLegs}`,
     ];
 
-    if (classified.buys.length > 0) {
+    if (quoteThreshold !== undefined) {
+      if (thresholdMatch !== undefined) {
+        const { buy, leg } = thresholdMatch;
+        lines.push(
+          "Latest probable buy matching the requested filter:",
+          `- ${buy.timestamp === undefined ? "time unknown" : new Date(buy.timestamp * 1_000).toISOString()} | buyer ${buy.buyer} | paid ${formatObservedAmount(leg.amount)} ${leg.asset} | received ${formatObservedAmount(buy.targetAmount)} target tokens | source ${buy.source} | signature ${buy.signature}`,
+          `Explorer: https://solscan.io/tx/${buy.signature}`,
+        );
+      } else {
+        lines.push(
+          `No probable buy matched ${formatQuoteThreshold(quoteThreshold)} inside the bounded newest-first search window. This is not proof that no older matching trade exists.`,
+        );
+      }
+    } else if (recentBuys.length > 0) {
       lines.push("Newest probable buys:");
-      for (const buy of classified.buys.slice(0, 10)) {
+      for (const buy of recentBuys.slice(0, 10)) {
         lines.push(
           `- ${buy.timestamp === undefined ? "time unknown" : new Date(buy.timestamp * 1_000).toISOString()} | buyer ${buy.buyer} | received ${formatObservedAmount(buy.targetAmount)} target tokens | paid ${formatQuoteLegs(buy.quoteLegs)} | source ${buy.source} | signature ${buy.signature}`,
         );
@@ -1682,7 +1890,7 @@ export class HeliusOnchainFeature implements GatewayOnchainFeature {
         QuoteLeg["asset"],
         { readonly buy: ProbableTokenBuy; readonly leg: QuoteLeg }
       >();
-      for (const buy of classified.buys) {
+      for (const buy of recentBuys) {
         for (const leg of buy.quoteLegs) {
           const current = largestByQuote.get(leg.asset);
           if (current === undefined || leg.amount > current.leg.amount) {

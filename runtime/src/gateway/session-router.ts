@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { ConversationRecoveryStore } from "./conversation-recovery.js";
 import { isDaemonAgentGoneError } from "./sdk-daemon-client.js";
 import type {
   ChannelAdapter,
@@ -39,12 +40,22 @@ export interface SessionRouterOptions {
   readonly agencHome: string;
   readonly client: GatewayDaemonClient;
   readonly flushIntervalMs?: number;
+  readonly now?: () => number;
+  readonly recoveryTtlMs?: number;
+  readonly recoveryMaxConversations?: number;
+  readonly recoveryMaxTurns?: number;
+}
+
+interface RoutedSession {
+  readonly session: GatewaySession;
+  readonly created: boolean;
 }
 
 export class SessionRouter {
   readonly #path: string;
   readonly #client: GatewayDaemonClient;
   readonly #flushIntervalMs: number;
+  readonly #recovery: ConversationRecoveryStore;
   readonly #sessions = new Map<string, GatewaySession>();
   #persisted: SessionMapState;
   /** Serializes turns per conversation key: one in-flight turn at a time. */
@@ -55,6 +66,23 @@ export class SessionRouter {
     this.#client = options.client;
     this.#flushIntervalMs =
       options.flushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+    this.#recovery = new ConversationRecoveryStore({
+      path: join(
+        options.agencHome,
+        "gateway",
+        "conversation-recovery.json",
+      ),
+      ...(options.now !== undefined ? { now: options.now } : {}),
+      ...(options.recoveryTtlMs !== undefined
+        ? { ttlMs: options.recoveryTtlMs }
+        : {}),
+      ...(options.recoveryMaxConversations !== undefined
+        ? { maxConversations: options.recoveryMaxConversations }
+        : {}),
+      ...(options.recoveryMaxTurns !== undefined
+        ? { maxTurns: options.recoveryMaxTurns }
+        : {}),
+    });
     this.#persisted = this.#load();
   }
 
@@ -100,15 +128,15 @@ export class SessionRouter {
     return `${options.channelId}|${options.agent}|${options.conversationId}`;
   }
 
-  async #sessionFor(key: string): Promise<GatewaySession> {
+  async #sessionFor(key: string): Promise<RoutedSession> {
     const live = this.#sessions.get(key);
-    if (live !== undefined) return live;
+    if (live !== undefined) return { session: live, created: false };
     const persistedId = this.#persisted.sessions[key];
     if (persistedId !== undefined) {
       try {
         const attached = await this.#client.attachSession(persistedId);
         this.#sessions.set(key, attached);
-        return attached;
+        return { session: attached, created: false };
       } catch {
         // Stale persisted id (daemon state pruned): fall through to create.
       }
@@ -117,7 +145,13 @@ export class SessionRouter {
     this.#sessions.set(key, created);
     this.#persisted.sessions[key] = created.sessionId;
     this.#save();
-    return created;
+    return { session: created, created: true };
+  }
+
+  #textForSession(key: string, text: string, created: boolean): string {
+    if (!created) return text;
+    const recovery = this.#recovery.recoveryPrompt(key);
+    return recovery === undefined ? text : `${recovery}\n\n${text}`;
   }
 
   /**
@@ -141,6 +175,8 @@ export class SessionRouter {
   async runTurn(options: {
     readonly key: string;
     readonly text: string;
+    /** Sanitized user-visible text only; never pass server evidence here. */
+    readonly memoryText?: string;
     readonly adapter: ChannelAdapter;
     readonly conversationId: string;
     onPermissionRequest(
@@ -149,16 +185,15 @@ export class SessionRouter {
   }): Promise<GatewayPromptResult> {
     const previous = this.#turnLocks.get(options.key) ?? Promise.resolve();
     let release!: () => void;
-    this.#turnLocks.set(
-      options.key,
-      new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-    );
+    const lock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#turnLocks.set(options.key, lock);
     await previous;
     try {
       const attempt = async (
         session: GatewaySession,
+        promptText: string,
       ): Promise<GatewayPromptResult> => {
         let buffer = "";
         let sentMessageId: string | null = null;
@@ -191,7 +226,7 @@ export class SessionRouter {
           return flushing;
         };
 
-        const result = await session.prompt(options.text, {
+        const result = await session.prompt(promptText, {
           onEvent: (event) => {
             if (event.type === "text") {
               buffer += event.delta;
@@ -209,21 +244,44 @@ export class SessionRouter {
         return result;
       };
 
-      const session = await this.#sessionFor(options.key);
+      const routed = await this.#sessionFor(options.key);
+      let result: GatewayPromptResult;
       try {
-        return await attempt(session);
+        result = await attempt(
+          routed.session,
+          this.#textForSession(options.key, options.text, routed.created),
+        );
       } catch (error) {
         // The daemon lost this session's backing agent (daemon restart,
         // agent stopped). Provision fresh and retry ONCE; a second failure
-        // propagates. History is gone with the agent — acceptable, the
-        // alternative is a permanently dead conversation.
+        // propagates. The bounded recovery journal supplies recent context
+        // to the fresh session without replaying server evidence or secrets.
         if (!isDaemonAgentGoneError(error)) throw error;
         this.#evictSession(options.key);
         const fresh = await this.#sessionFor(options.key);
-        return await attempt(fresh);
+        result = await attempt(
+          fresh.session,
+          this.#textForSession(options.key, options.text, fresh.created),
+        );
       }
+      if (options.memoryText !== undefined) {
+        try {
+          this.#recovery.record(
+            options.key,
+            options.memoryText,
+            result.finalMessage,
+          );
+        } catch {
+          // Recovery is best-effort and must never turn a completed answer
+          // into a failed gateway turn (for example on a read-only disk).
+        }
+      }
+      return result;
     } finally {
       release();
+      if (this.#turnLocks.get(options.key) === lock) {
+        this.#turnLocks.delete(options.key);
+      }
     }
   }
 }
