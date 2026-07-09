@@ -51,6 +51,35 @@ export {
   type TelegramChannelOptions,
 } from "./telegram-channel.js";
 export {
+  DiscordChannelAdapter,
+  FetchDiscordTransport,
+  DiscordApiError,
+  DISCORD_CHANNEL_ID,
+  DISCORD_INTENTS,
+  DISCORD_MESSAGE_LIMIT,
+  chunkDiscordText,
+  type DiscordTransport,
+  type DiscordSocket,
+  type DiscordSocketHandlers,
+  type DiscordGatewayPayload,
+  type DiscordMessageEvent,
+  type DiscordChannelOptions,
+} from "./discord-channel.js";
+export {
+  SlackChannelAdapter,
+  FetchSlackTransport,
+  SlackApiError,
+  SLACK_CHANNEL_ID,
+  SLACK_MESSAGE_LIMIT,
+  parseSlackConversationId,
+  type SlackTransport,
+  type SlackSocket,
+  type SlackSocketHandlers,
+  type SlackEnvelope,
+  type SlackMessageEvent,
+  type SlackChannelOptions,
+} from "./slack-channel.js";
+export {
   startGateway,
   type GatewayRunOptions,
   type GatewayRunHandle,

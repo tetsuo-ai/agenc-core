@@ -29,7 +29,7 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
 | Webhooks (`/hooks/agent`) | Roadmap | Planned with header-only bearer auth |
 | `SOUL.md` / `IDENTITY.md` persona | Shipped | Same convention, same filenames — see "Persona workspace files" below |
 | Heartbeat (`HEARTBEAT.md`) | Shipped | `agenc gateway run --heartbeat` (or `[heartbeat]` config): periodic turns read `HEARTBEAT.md`, deliver only non-OK results to a channel, and every tick is gated by the `[budget]` daily/monthly spend envelope — a refusal pauses instead of silently burning |
-| Channels (Telegram, WhatsApp, …) | Shipped (Telegram, WebChat, stdio) | `agenc gateway run`; pairing-gated, with in-channel token approvals and untrusted-content framing. Discord/Slack/Signal and WhatsApp still roadmap |
+| Channels (Telegram, WhatsApp, …) | Shipped (Telegram, Discord, Slack, WebChat, stdio) | `agenc gateway run`; pairing-gated, with in-channel token approvals and untrusted-content framing. Discord rides the official Gateway WS + REST (`AGENC_DISCORD_BOT_TOKEN`); Slack rides Socket Mode — no inbound listener (`AGENC_SLACK_BOT_TOKEN` + `AGENC_SLACK_APP_TOKEN`); guild/channel messages are mention-gated by default. Signal and WhatsApp still roadmap |
 | Nodes (phone/Canvas) | Roadmap | Realtime voice (WebRTC) already exists in the TUI |
 | `openclaw security audit` | `agenc security audit --fix` | Fail-closed exit codes; runs automatically around onboard/daemon start |
 | Docker install | `packaging/docker/` | Non-root image, no published ports by default |
@@ -73,6 +73,6 @@ ritual completion apply from the next new conversation. Copy your existing
 ## What you lose today (roadmap, in priority order)
 
 Webhooks, browser automation, a mobile app, and channel breadth beyond
-Telegram/WebChat (Discord, Slack, Signal, WhatsApp). If any of these is your
+Telegram/Discord/Slack/WebChat (Signal, WhatsApp). If any of these is your
 daily driver, run both: several of the gaps are next on the roadmap, and the
 daemon architecture is built for exactly those clients.

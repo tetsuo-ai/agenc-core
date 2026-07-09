@@ -30,6 +30,16 @@ import {
 } from "./control-plane.js";
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
+import {
+  DISCORD_CHANNEL_ID,
+  DiscordChannelAdapter,
+  FetchDiscordTransport,
+} from "./discord-channel.js";
+import { SLACK_CHANNEL_ID } from "./slack-channel.js";
+import {
+  FetchSlackTransport,
+  SlackChannelAdapter,
+} from "./slack-channel.js";
 import { XaiMemeFeature } from "./meme.js";
 import {
   HeliusOnchainFeature,
@@ -64,6 +74,12 @@ export interface GatewayRunOptions {
   readonly stdio?: boolean;
   /** Telegram bot token; falls back to env AGENC_TELEGRAM_BOT_TOKEN. */
   readonly telegramToken?: string;
+  /** Discord bot token; falls back to env AGENC_DISCORD_BOT_TOKEN. */
+  readonly discordToken?: string;
+  /** Slack bot token (xoxb-); falls back to env AGENC_SLACK_BOT_TOKEN. */
+  readonly slackBotToken?: string;
+  /** Slack app-level token (xapp-, Socket Mode); falls back to env AGENC_SLACK_APP_TOKEN. */
+  readonly slackAppToken?: string;
   /** Enable the WebChat browser surface (loopback + token). */
   readonly webchat?: boolean;
   /** Force the proactive heartbeat on for this run (else [heartbeat] config). */
@@ -264,6 +280,54 @@ export async function startGateway(
     );
   }
 
+  // Discord (task 9): outbound Gateway WebSocket + REST — no listener.
+  const discordToken =
+    options.discordToken ?? env.AGENC_DISCORD_BOT_TOKEN?.trim();
+  if (discordToken !== undefined && discordToken.length > 0) {
+    adapters.push(
+      new DiscordChannelAdapter({
+        transport: new FetchDiscordTransport({ token: discordToken }),
+        token: discordToken,
+        groupAddressing:
+          env.AGENC_DISCORD_GROUP_ADDRESSING === "all" ? "all" : "mentions",
+        log,
+      }),
+    );
+  }
+
+  // Slack (task 9): Socket Mode (outbound WebSocket) + Web API — no
+  // listener. Needs BOTH tokens: bot (xoxb-) for the Web API and app-level
+  // (xapp-) for apps.connections.open.
+  const slackBotToken =
+    options.slackBotToken ?? env.AGENC_SLACK_BOT_TOKEN?.trim();
+  const slackAppToken =
+    options.slackAppToken ?? env.AGENC_SLACK_APP_TOKEN?.trim();
+  if (
+    slackBotToken !== undefined &&
+    slackBotToken.length > 0 &&
+    slackAppToken !== undefined &&
+    slackAppToken.length > 0
+  ) {
+    adapters.push(
+      new SlackChannelAdapter({
+        transport: new FetchSlackTransport({
+          botToken: slackBotToken,
+          appToken: slackAppToken,
+        }),
+        groupAddressing:
+          env.AGENC_SLACK_GROUP_ADDRESSING === "all" ? "all" : "mentions",
+        log,
+      }),
+    );
+  } else if (
+    (slackBotToken !== undefined && slackBotToken.length > 0) !==
+    (slackAppToken !== undefined && slackAppToken.length > 0)
+  ) {
+    log(
+      "gateway: slack needs BOTH AGENC_SLACK_BOT_TOKEN (xoxb-) and AGENC_SLACK_APP_TOKEN (xapp-, Socket Mode) — channel not started",
+    );
+  }
+
   const memeDailyLimit = envPositiveInt(env.AGENC_GATEWAY_MEME_DAILY_LIMIT);
   const memeFeature =
     memeEnabled && xaiKey !== undefined
@@ -448,15 +512,18 @@ export async function startGateway(
     throw error;
   }
 
-  // Warn (do not block) if Telegram is enabled but its channel has no policy:
-  // it inherits the fail-closed pairing default, which is safe but surprising.
-  if (
-    started.includes(TELEGRAM_CHANNEL_ID) &&
-    config.channels[TELEGRAM_CHANNEL_ID] === undefined
-  ) {
-    log(
-      "gateway: telegram channel has no policy in gateway/config.json — using the pairing default (unknown senders must pair)",
-    );
+  // Warn (do not block) when a networked channel has no policy: it inherits
+  // the fail-closed pairing default, which is safe but surprising.
+  for (const channelId of [
+    TELEGRAM_CHANNEL_ID,
+    DISCORD_CHANNEL_ID,
+    SLACK_CHANNEL_ID,
+  ]) {
+    if (started.includes(channelId) && config.channels[channelId] === undefined) {
+      log(
+        `gateway: ${channelId} channel has no policy in gateway/config.json — using the pairing default (unknown senders must pair)`,
+      );
+    }
   }
 
   if (webchat !== undefined && started.includes(WEBCHAT_CHANNEL_ID)) {
