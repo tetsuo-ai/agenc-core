@@ -75,6 +75,7 @@ export interface TelegramBotCommandScope {
 
 export interface TelegramSendOptions {
   readonly messageThreadId?: number;
+  readonly parseMode?: "HTML";
 }
 
 /** The slice of the Bot API the adapter uses. */
@@ -96,7 +97,12 @@ export interface TelegramTransport {
     caption?: string,
     options?: TelegramSendOptions,
   ): Promise<TelegramSentMessage>;
-  editMessageText(chatId: string, messageId: number, text: string): Promise<void>;
+  editMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    options?: TelegramSendOptions,
+  ): Promise<void>;
 }
 
 interface BotApiResponse<T> {
@@ -160,6 +166,7 @@ export class FetchTelegramTransport implements TelegramTransport {
     return this.#call<TelegramSentMessage>("sendMessage", {
       chat_id: chatId,
       text,
+      ...(options.parseMode !== undefined ? { parse_mode: options.parseMode } : {}),
       ...(options.messageThreadId !== undefined
         ? { message_thread_id: options.messageThreadId }
         : {}),
@@ -188,17 +195,24 @@ export class FetchTelegramTransport implements TelegramTransport {
       ...(options.messageThreadId !== undefined
         ? { message_thread_id: options.messageThreadId }
         : {}),
+      ...(options.parseMode !== undefined ? { parse_mode: options.parseMode } : {}),
       ...(caption !== undefined && caption.length > 0
         ? { caption: caption.slice(0, 1024) }
         : {}),
     });
   }
 
-  async editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
+  async editMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    options: TelegramSendOptions = {},
+  ): Promise<void> {
     await this.#call("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
       text,
+      ...(options.parseMode !== undefined ? { parse_mode: options.parseMode } : {}),
     });
   }
 }
@@ -456,7 +470,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       ...(target.messageThreadId !== undefined
         ? { messageThreadId: target.messageThreadId }
         : {}),
+      parseMode: "HTML",
     };
+    const formattedText = telegramRichText(message.text);
     if (message.editMessageId !== undefined) {
       const target = this.#editTargets.get(message.editMessageId);
       if (target !== undefined) {
@@ -464,7 +480,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           await this.#transport.editMessageText(
             target.chatId,
             target.messageId,
-            message.text,
+            formattedText,
+            sendOptions,
           );
           return message.editMessageId;
         } catch (error) {
@@ -480,12 +497,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         ? await this.#transport.sendPhoto(
             target.chatId,
             message.photoUrl,
-            message.caption ?? message.text,
+            telegramRichText(message.caption ?? message.text),
             sendOptions,
           )
         : await this.#transport.sendMessage(
             target.chatId,
-            message.text,
+            formattedText,
             sendOptions,
           );
     const handle = `${this.id}-out-${++this.#outCounter}`;
@@ -499,6 +516,89 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function telegramRichText(value: string): string {
+  let output = "";
+  let index = 0;
+  while (index < value.length) {
+    if (value.startsWith("`", index)) {
+      const end = value.indexOf("`", index + 1);
+      if (end > index + 1) {
+        output += `<code>${escapeTelegramHtml(value.slice(index + 1, end))}</code>`;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    if (value.startsWith("**", index)) {
+      const end = value.indexOf("**", index + 2);
+      if (end > index + 2) {
+        output += `<b>${escapeTelegramHtml(value.slice(index + 2, end))}</b>`;
+        index = end + 2;
+        continue;
+      }
+    }
+
+    if (value.startsWith("[", index)) {
+      const labelEnd = value.indexOf("]", index + 1);
+      const urlStart = labelEnd >= 0 ? labelEnd + 1 : -1;
+      if (urlStart >= 0 && value.startsWith("(", urlStart)) {
+        const urlEnd = value.indexOf(")", urlStart + 1);
+        if (urlEnd > urlStart + 1) {
+          const label = value.slice(index + 1, labelEnd);
+          const url = value.slice(urlStart + 1, urlEnd);
+          if (isSafeTelegramLink(url)) {
+            output += `<a href="${escapeTelegramAttribute(url)}">${escapeTelegramHtml(label)}</a>`;
+            index = urlEnd + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    if (value.startsWith("*", index) && !value.startsWith("**", index)) {
+      const end = value.indexOf("*", index + 1);
+      const previous = index === 0 ? "\n" : value[index - 1] ?? "\n";
+      const next = value[index + 1] ?? "";
+      const beforeClose = end > 0 ? value[end - 1] ?? "" : "";
+      if (
+        end > index + 1 &&
+        !/\s/u.test(next) &&
+        !/\s/u.test(beforeClose) &&
+        previous !== "\n" &&
+        previous !== "\r"
+      ) {
+        output += `<i>${escapeTelegramHtml(value.slice(index + 1, end))}</i>`;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    output += escapeTelegramHtml(value[index] ?? "");
+    index += 1;
+  }
+  return output;
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeTelegramAttribute(value: string): string {
+  return escapeTelegramHtml(value).replace(/"/g, "&quot;");
+}
+
+function isSafeTelegramLink(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 function telegramUpdateKind(update: TelegramUpdate): string {

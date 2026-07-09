@@ -24,14 +24,21 @@ class FakeTransport implements TelegramTransport {
     chatId: string;
     text: string;
     messageThreadId?: number;
+    parseMode?: "HTML";
   }[] = [];
   readonly photos: {
     chatId: string;
     photoUrl: string;
     caption?: string;
     messageThreadId?: number;
+    parseMode?: "HTML";
   }[] = [];
-  readonly edits: { chatId: string; messageId: number; text: string }[] = [];
+  readonly edits: {
+    chatId: string;
+    messageId: number;
+    text: string;
+    parseMode?: "HTML";
+  }[] = [];
   readonly commands: { commands: unknown; scope?: unknown }[] = [];
   identity: TelegramBotIdentity = { id: 999, username: "core_69_bot" };
   #nextId = 100;
@@ -54,6 +61,7 @@ class FakeTransport implements TelegramTransport {
       ...(options.messageThreadId !== undefined
         ? { messageThreadId: options.messageThreadId }
         : {}),
+      ...(options.parseMode !== undefined ? { parseMode: options.parseMode } : {}),
     });
     return { message_id: ++this.#nextId };
   }
@@ -73,12 +81,23 @@ class FakeTransport implements TelegramTransport {
       ...(options.messageThreadId !== undefined
         ? { messageThreadId: options.messageThreadId }
         : {}),
+      ...(options.parseMode !== undefined ? { parseMode: options.parseMode } : {}),
     });
     return { message_id: ++this.#nextId };
   }
-  async editMessageText(chatId: string, messageId: number, text: string) {
+  async editMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    options: TelegramSendOptions = {},
+  ) {
     if (this.editShouldThrow) throw new Error("message is not modified");
-    this.edits.push({ chatId, messageId, text });
+    this.edits.push({
+      chatId,
+      messageId,
+      text,
+      ...(options.parseMode !== undefined ? { parseMode: options.parseMode } : {}),
+    });
   }
 }
 
@@ -208,6 +227,7 @@ describe("TelegramChannelAdapter", () => {
       chatId: "-100200",
       text: "topic reply",
       messageThreadId: 777,
+      parseMode: "HTML",
     });
   });
 
@@ -461,7 +481,9 @@ describe("TelegramChannelAdapter", () => {
     await adapter.start(ctx);
 
     const handle = await adapter.send({ conversationId: "42", text: "Hel" });
-    expect(transport.sent).toEqual([{ chatId: "42", text: "Hel" }]);
+    expect(transport.sent).toEqual([
+      { chatId: "42", text: "Hel", parseMode: "HTML" },
+    ]);
 
     await adapter.send({
       conversationId: "42",
@@ -469,8 +491,51 @@ describe("TelegramChannelAdapter", () => {
       editMessageId: handle,
     });
     expect(transport.edits).toEqual([
-      { chatId: "42", messageId: 101, text: "Hello world" },
+      { chatId: "42", messageId: 101, text: "Hello world", parseMode: "HTML" },
     ]);
+    await adapter.stop();
+  });
+
+  test("renders safe Markdown as Telegram HTML", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    await adapter.send({
+      conversationId: "42",
+      text: "**What else AgenC does**\n\n- **Code work** with `npm test`\nIn short: agents can *do* work. [docs](https://agenc.ag/docs)",
+    });
+
+    expect(transport.sent[0]).toEqual({
+      chatId: "42",
+      parseMode: "HTML",
+      text:
+        "<b>What else AgenC does</b>\n\n" +
+        "- <b>Code work</b> with <code>npm test</code>\n" +
+        'In short: agents can <i>do</i> work. <a href="https://agenc.ag/docs">docs</a>',
+    });
+    await adapter.stop();
+  });
+
+  test("escapes raw HTML before Telegram rich rendering", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    await adapter.send({
+      conversationId: "42",
+      text: "**Safe** <script>alert(1)</script> [bad](javascript:alert(1))",
+    });
+
+    expect(transport.sent[0]).toEqual({
+      chatId: "42",
+      parseMode: "HTML",
+      text:
+        "<b>Safe</b> &lt;script&gt;alert(1)&lt;/script&gt; " +
+        "[bad](javascript:alert(1))",
+    });
     await adapter.stop();
   });
 
@@ -493,6 +558,7 @@ describe("TelegramChannelAdapter", () => {
         chatId: "42",
         photoUrl: "https://img.example/meme.png",
         caption: "AgenC meme",
+        parseMode: "HTML",
       },
     ]);
     await adapter.stop();
