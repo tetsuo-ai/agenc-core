@@ -27,6 +27,16 @@ export type { RelevantMemory } from './find-relevant.js'
 export type { ExternalAgenCMdInclude, MemoryFileInfo } from './agencmd.js'
 
 export {
+  ALL_PERSONA_FILE_NAMES,
+  BOOTSTRAP_FILE_NAME,
+  capPersonaContent,
+  getPersonaMemoryFiles,
+  IDENTITY_FILE_NAME,
+  PERSONA_FILE_MAX_BYTES,
+  PERSONA_FILE_NAMES,
+} from './persona.js'
+
+export {
   clearMemoryFileCaches,
   filterInjectedMemoryFiles,
   getAgenCMds,

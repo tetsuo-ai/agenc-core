@@ -52,6 +52,7 @@ import {
   getOriginalCwd,
 } from '../bootstrap/state.js'
 import { truncateEntrypointContent } from './memdir.js'
+import { ALL_PERSONA_FILE_NAMES, getPersonaMemoryFiles } from './persona.js'
 import {
   getAutoMemEntrypoint,
   getGlobalMemoryEntrypoint,
@@ -1001,6 +1002,17 @@ export const getMemoryFiles = memoize(
       }
     }
 
+    // Persona workspace files (task 13): USER.md / SOUL.md / IDENTITY.md and
+    // the one-time BOOTSTRAP.md ritual, from the workspace root ONLY (never
+    // ancestor dirs). Loaded after the Project/Local walk so identity ranks
+    // above generic project instructions (later = higher priority). Absent
+    // files cost one existsSync each — zero prompt overhead.
+    if (isSettingSourceEnabled('projectSettings')) {
+      result.push(
+        ...(await getPersonaMemoryFiles(originalCwd, processedPaths)),
+      )
+    }
+
     // Durable memory entrypoints - only if feature is on and files exist.
     if (isAutoMemoryEnabled()) {
       const { info: globalMemEntry } = await safelyReadMemoryFileAsync(
@@ -1491,6 +1503,12 @@ export function isMemoryFilePath(filePath: string): boolean {
 
   // Root instruction files or AGENC.local.md anywhere
   if (isProjectInstructionFileName(name) || name === 'AGENC.local.md') {
+    return true
+  }
+
+  // Persona workspace files (task 13) — same "anywhere" tradeoff as
+  // AGENC.local.md: edits to these must invalidate/reload memory context.
+  if (ALL_PERSONA_FILE_NAMES.includes(name)) {
     return true
   }
 
