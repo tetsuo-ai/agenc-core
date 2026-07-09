@@ -84,6 +84,10 @@ describe("frameChannelMessage", () => {
     });
     expect(framed).toContain(CHANNEL_ANSWER_ONLY_GUIDANCE);
     expect(framed).toContain(AGENC_TELEGRAM_ANSWER_CONTEXT);
+    expect(framed).toContain("AgenC Core is AgenC's own agent harness/runtime");
+    expect(framed).toContain("/provider");
+    expect(framed).toContain("Private Telegram DMs are owner-only");
+    expect(framed).toContain("Core is separate from Marketplace Kit");
     expect(framed).toContain("Ledger DMK over BLE");
     expect(framed).toContain("/image <idea>");
     expect(framed).toContain("HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK");

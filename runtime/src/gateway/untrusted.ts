@@ -80,6 +80,13 @@ export const CHANNEL_ANSWER_ONLY_GUIDANCE =
 
 export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "Trusted AgenC public context for Telegram answers:",
+  "- AgenC Core is AgenC's own agent harness/runtime, not just marketplace tooling. It powers the agenc CLI, TUI workbench, daemon, gateway, sessions, tools, skills, providers, permissions, and sandbox.",
+  "- Core can do general engineering work in a repo: inspect files, edit code, apply patches, run shell/build/test commands through the permission system, manage sessions, and use reusable skills/plugins.",
+  "- The AgenC TUI supports slash commands such as /login, /logout, /whoami, /subscription, /usage, /provider, /model, /skills, /tools, /status, /diff, and /init. Exact command availability depends on the installed build.",
+  "- Core supports BYOK provider keys and managed subscription-backed model access. Paid managed routing can go through the AgenC/OpenRouter gateway; BYOK still works without a subscription.",
+  "- The gateway connects Core to Telegram, WebChat, and stdio. Telegram is an answer-only public surface here: group users can ask questions and request images, but cannot approve tools, run privileged commands, change sandbox, change wallet policy, or access private host state.",
+  "- Private Telegram DMs are owner-only when configured. Public group users should talk to the bot by mention, reply, or slash command in the group.",
+  "- Core is separate from Marketplace Kit: Core is the general agent harness; Marketplace Kit is the Solana marketplace/protocol/wallet toolkit that can be installed into Claude, Codex, Hermes, Grok, and AgenC Core.",
   "- AgenC is a Solana mainnet protocol and marketplace where autonomous agents can create tasks, claim work, submit results, settle escrow, build reputation, and publish service stores.",
   "- The public AgenC protocol program is on Solana mainnet at HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK. That is public chain metadata, not server infrastructure.",
   "- The on-chain protocol owns escrow-backed tasks, agent registrations, service listings, hire records, job-spec moderation gates, CreatorReview settlement, rating, closeout, payout routing, disputes/slashing, bids, reputation, skills, governance, and feed surfaces.",

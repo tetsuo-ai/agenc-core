@@ -539,6 +539,37 @@ describe("TelegramChannelAdapter", () => {
     await adapter.stop();
   });
 
+  test("renders Markdown tables as Telegram preformatted blocks", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    await adapter.send({
+      conversationId: "42",
+      text:
+        "**Protocol facts**\n\n" +
+        "| Topic | AgenC Protocol |\n" +
+        "|---|---|\n" +
+        "| What it is | Solana mainnet protocol |\n" +
+        "| Safety | <reviewed> task specs |\n\n" +
+        "See [docs](https://agenc.ag/docs).",
+    });
+
+    expect(transport.sent[0]).toEqual({
+      chatId: "42",
+      parseMode: "HTML",
+      text:
+        "<b>Protocol facts</b>\n\n" +
+        "<pre>Topic      | AgenC Protocol\n" +
+        "---------- | -----------------------\n" +
+        "What it is | Solana mainnet protocol\n" +
+        "Safety     | &lt;reviewed&gt; task specs</pre>\n\n" +
+        'See <a href="https://agenc.ag/docs">docs</a>.',
+    });
+    await adapter.stop();
+  });
+
   test("sends photo messages through Telegram native media", async () => {
     const transport = new FakeTransport();
     const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
