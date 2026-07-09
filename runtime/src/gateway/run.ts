@@ -141,6 +141,10 @@ function envPermissionMode(
   return undefined;
 }
 
+function envGroupAddressing(value: string | undefined): "all" | "mentions" {
+  return value === "mentions" ? "mentions" : "all";
+}
+
 export interface GatewayRunHandle {
   readonly gateway: ChannelGateway;
   readonly channels: readonly string[];
@@ -176,6 +180,12 @@ export async function startGateway(
       new TelegramChannelAdapter({
         transport: telegramTransport,
         commands: TELEGRAM_OWNER_COMMANDS,
+        groupAddressing: envGroupAddressing(
+          env.AGENC_TELEGRAM_GROUP_ADDRESSING,
+        ),
+        ...(env.AGENC_TELEGRAM_BOT_USERNAME !== undefined
+          ? { botUsername: env.AGENC_TELEGRAM_BOT_USERNAME.trim() }
+          : {}),
         log,
       }),
     );

@@ -350,7 +350,7 @@ describe("channel gateway", () => {
     });
   });
 
-  test("telegram owner control blocks non-owner private DMs before the agent", async () => {
+  test("telegram owner control silently blocks non-owner private DMs before the agent", async () => {
     const telegram = new InMemoryChannelAdapter({ id: "telegram" });
     const gw = new ChannelGateway({
       agencHome: home,
@@ -372,7 +372,7 @@ describe("channel gateway", () => {
     await telegram.receive(dmMessage("mallory", "hello", "mallory-dm"));
 
     expect(client.sessions).toHaveLength(0);
-    expect(telegram.lastText("mallory-dm")).toContain("owner-only");
+    expect(telegram.lastText("mallory-dm")).toBeUndefined();
   });
 
   test("telegram owner can pause and resume public group traffic", async () => {
@@ -439,7 +439,7 @@ describe("channel gateway", () => {
 
     await telegram.receive(dmMessage("mallory", "hi", "mallory-dm"));
     expect(client.sessions).toHaveLength(0);
-    expect(telegram.lastText("mallory-dm")).toContain("owner-only");
+    expect(telegram.lastText("mallory-dm")).toBeUndefined();
   });
 
   test("telegram permission requests are denied without leaking approval tokens", async () => {

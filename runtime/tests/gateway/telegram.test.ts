@@ -8,6 +8,7 @@ import {
   FetchTelegramTransport,
   TelegramBotApiError,
   TelegramChannelAdapter,
+  type TelegramBotIdentity,
   type TelegramTransport,
   type TelegramUpdate,
 } from "../../src/gateway/telegram-channel.js";
@@ -22,9 +23,13 @@ class FakeTransport implements TelegramTransport {
   readonly photos: { chatId: string; photoUrl: string; caption?: string }[] = [];
   readonly edits: { chatId: string; messageId: number; text: string }[] = [];
   readonly commands: { commands: unknown; scope?: unknown }[] = [];
+  identity: TelegramBotIdentity = { id: 999, username: "core_69_bot" };
   #nextId = 100;
   editShouldThrow = false;
 
+  async getMe(): Promise<TelegramBotIdentity> {
+    return this.identity;
+  }
   async getUpdates(): Promise<TelegramUpdate[]> {
     return this.updates.shift() ?? [];
   }
@@ -136,6 +141,92 @@ describe("TelegramChannelAdapter", () => {
     await adapter.stop();
     expect(messages[0].conversation).toEqual({ kind: "group", id: "-100200" });
     expect(messages[0].sender.displayName).toBe("Bob");
+  });
+
+  test("mention-only group addressing ignores ambient group chatter", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 3,
+          message: {
+            message_id: 7,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "hi everyone",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(0);
+  });
+
+  test("mention-only group addressing forwards @bot mentions with mention stripped", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 4,
+          message: {
+            message_id: 8,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "@core_69_bot hi there",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("hi there");
+  });
+
+  test("mention-only group addressing forwards replies to the bot", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 5,
+          message: {
+            message_id: 9,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "answer this",
+            reply_to_message: {
+              from: { id: 999, is_bot: true, username: "core_69_bot" },
+            },
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("answer this");
   });
 
   test("advances the offset so updates are not reprocessed", async () => {

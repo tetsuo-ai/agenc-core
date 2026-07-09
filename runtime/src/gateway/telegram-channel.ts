@@ -24,14 +24,31 @@ export interface TelegramUpdate {
   readonly update_id: number;
   readonly message?: {
     readonly message_id: number;
-    readonly from?: { readonly id: number; readonly username?: string; readonly first_name?: string };
+    readonly from?: {
+      readonly id: number;
+      readonly is_bot?: boolean;
+      readonly username?: string;
+      readonly first_name?: string;
+    };
     readonly chat: { readonly id: number; readonly type: string };
     readonly text?: string;
+    readonly reply_to_message?: {
+      readonly from?: {
+        readonly id: number;
+        readonly is_bot?: boolean;
+        readonly username?: string;
+      };
+    };
   };
 }
 
 export interface TelegramSentMessage {
   readonly message_id: number;
+}
+
+export interface TelegramBotIdentity {
+  readonly id: number;
+  readonly username?: string;
 }
 
 export interface TelegramBotCommand {
@@ -45,6 +62,7 @@ export interface TelegramBotCommandScope {
 
 /** The slice of the Bot API the adapter uses. */
 export interface TelegramTransport {
+  getMe?(): Promise<TelegramBotIdentity>;
   getUpdates(offset: number, timeoutSeconds: number): Promise<TelegramUpdate[]>;
   sendMessage(chatId: string, text: string): Promise<TelegramSentMessage>;
   setMyCommands?(
@@ -103,6 +121,10 @@ export class FetchTelegramTransport implements TelegramTransport {
     });
   }
 
+  async getMe(): Promise<TelegramBotIdentity> {
+    return this.#call<TelegramBotIdentity>("getMe", {});
+  }
+
   async sendMessage(chatId: string, text: string): Promise<TelegramSentMessage> {
     return this.#call<TelegramSentMessage>("sendMessage", {
       chat_id: chatId,
@@ -154,6 +176,13 @@ export interface TelegramChannelOptions {
   readonly log?: (line: string) => void;
   readonly commands?: readonly TelegramBotCommand[];
   /**
+   * In groups, "mentions" means only slash commands, @bot mentions, and
+   * replies to this bot reach the agent. Use "all" for broadcast rooms.
+   */
+  readonly groupAddressing?: "all" | "mentions";
+  /** Optional bot username override, without @. */
+  readonly botUsername?: string;
+  /**
    * Launch the background long-poll loop on start(). Default true. Tests set
    * false to drive pollOnce() deterministically without a competing loop.
    */
@@ -175,7 +204,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #log: (line: string) => void;
   readonly #autoPoll: boolean;
   readonly #commands: readonly TelegramBotCommand[];
+  readonly #groupAddressing: "all" | "mentions";
   readonly #editTargets = new Map<string, EditTarget>();
+  #botIdentity: TelegramBotIdentity | null = null;
   #context: ChannelAdapterContext | null = null;
   #offset = 0;
   #running = false;
@@ -190,10 +221,15 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#log = options.log ?? (() => {});
     this.#autoPoll = options.autoPoll ?? true;
     this.#commands = options.commands ?? [];
+    this.#groupAddressing = options.groupAddressing ?? "all";
+    if (options.botUsername !== undefined && options.botUsername.length > 0) {
+      this.#botIdentity = { id: -1, username: options.botUsername.replace(/^@/, "") };
+    }
   }
 
   async start(context: ChannelAdapterContext): Promise<void> {
     this.#context = context;
+    await this.#resolveBotIdentity();
     await this.#installCommands();
     if (this.#autoPoll) {
       this.#running = true;
@@ -239,6 +275,21 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
   }
 
+  async #resolveBotIdentity(): Promise<void> {
+    if (
+      this.#groupAddressing !== "mentions" ||
+      this.#botIdentity !== null ||
+      this.#transport.getMe === undefined
+    ) {
+      return;
+    }
+    try {
+      this.#botIdentity = await this.#transport.getMe();
+    } catch (error) {
+      this.#log(`telegram: getMe failed: ${String(error)}`);
+    }
+  }
+
   async #pollLoop(): Promise<void> {
     while (this.#running) {
       try {
@@ -264,6 +315,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const chatId = String(message.chat.id);
     const isGroup =
       message.chat.type === "group" || message.chat.type === "supergroup";
+    const text = this.#normalizedTextForAddressing(message.text, message);
+    if (text === null) return;
     await this.#context.onMessage({
       channelId: this.id,
       sender: {
@@ -275,8 +328,38 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             : {}),
       },
       conversation: { kind: isGroup ? "group" : "dm", id: chatId },
-      text: message.text,
+      text,
     });
+  }
+
+  #normalizedTextForAddressing(
+    text: string,
+    message: NonNullable<TelegramUpdate["message"]>,
+  ): string | null {
+    const isGroup =
+      message.chat.type === "group" || message.chat.type === "supergroup";
+    if (!isGroup || this.#groupAddressing === "all") return text;
+    if (text.trimStart().startsWith("/")) return text;
+
+    const username = this.#botIdentity?.username;
+    if (username !== undefined && username.length > 0) {
+      const mention = new RegExp(`(^|\\s)@${escapeRegExp(username)}\\b`, "i");
+      if (mention.test(text)) {
+        const stripped = text.replace(mention, " ").replace(/\s+/g, " ").trim();
+        return stripped.length > 0 ? stripped : text;
+      }
+    }
+
+    const replyFrom = message.reply_to_message?.from;
+    if (
+      replyFrom !== undefined &&
+      (replyFrom.id === this.#botIdentity?.id ||
+        (username !== undefined &&
+          replyFrom.username?.toLowerCase() === username.toLowerCase()))
+    ) {
+      return text;
+    }
+    return null;
   }
 
   async send(message: OutboundChannelMessage): Promise<string> {
@@ -312,4 +395,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#editTargets.set(handle, { chatId, messageId: sent.message_id });
     return handle;
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
