@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { TelegramOwnerControl } from "../../src/gateway/control-plane.js";
 import { ChannelGateway } from "../../src/gateway/gateway.js";
+import type { GatewayOnchainFeature } from "../../src/gateway/onchain.js";
 import { InMemoryChannelAdapter } from "../../src/gateway/test-channel.js";
 import type {
   GatewayDaemonClient,
@@ -416,6 +417,77 @@ describe("channel gateway", () => {
       "clear natural language",
     );
     expect(telegram.lastText("group-1")).toBe("group live");
+  });
+
+  test("telegram frames server on-chain evidence separately from user text", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const onchainFeature: GatewayOnchainFeature = {
+      async inspect() {
+        return {
+          kind: "context",
+          context:
+            "Source: Helius read-only Solana mainnet data\nTop 10: average 21.5 days",
+        };
+      },
+    };
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "allowlist", allowlist: ["alice"] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      onchainFeature,
+    });
+    await gw.registerAdapter(telegram);
+    client.script = [{ text: "21.5 days with the stated coverage caveat." }];
+
+    await telegram.receive(
+      groupMessage("alice", "what is the average holder age?"),
+    );
+
+    const prompt = client.sessions[0]?.prompts[0] ?? "";
+    expect(prompt).toContain('source="server-readonly" trust="data-only"');
+    expect(prompt).toContain("Top 10: average 21.5 days");
+    expect(prompt).toContain('trust="external"');
+    expect(prompt).toContain("what is the average holder age?");
+    expect(prompt.indexOf("<gateway_evidence")).toBeLessThan(
+      prompt.indexOf("<channel_message"),
+    );
+  });
+
+  test("telegram contains unexpected on-chain feature failures", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const logs: string[] = [];
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "allowlist", allowlist: ["alice"] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      onchainFeature: {
+        async inspect() {
+          throw new Error("upstream detail that must not escape");
+        },
+      },
+      log: (line) => logs.push(line),
+    });
+    await gw.registerAdapter(telegram);
+
+    await telegram.receive(groupMessage("alice", "read Solana live"));
+
+    expect(client.sessions).toHaveLength(0);
+    expect(telegram.lastText("group-1")).toBe(
+      "I could not complete that live Solana read safely. Try again in a minute.",
+    );
+    expect(logs.join("\n")).not.toContain("upstream detail");
   });
 
   test("telegram first-owner claim enables private owner controls only", async () => {

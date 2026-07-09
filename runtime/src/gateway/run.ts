@@ -31,6 +31,11 @@ import {
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
 import { XaiMemeFeature } from "./meme.js";
+import {
+  HeliusOnchainFeature,
+  loadHeliusGatewayApiKey,
+  parseHeliusTokenAliases,
+} from "./onchain.js";
 import { XaiVoiceFeature } from "./voice.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
 import { StdioChannelAdapter } from "./stdio-channel.js";
@@ -104,6 +109,26 @@ function resolveWebChatToken(
 
 function envFlag(value: string | undefined): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+const GATEWAY_SECRET_ENV_NAMES = [
+  "AGENC_GATEWAY_HELIUS_API_KEY",
+  "AGENC_GATEWAY_HELIUS_KEY_FILE",
+  "AGENC_TELEGRAM_BOT_TOKEN",
+  "AGENC_TELEGRAM_OWNER_CLAIM_CODE",
+  "AGENC_WEBCHAT_TOKEN",
+] as const;
+
+/** Keep gateway transport/data credentials out of an autostarted agent daemon. */
+export function sanitizeGatewayDaemonEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): NodeJS.ProcessEnv {
+  const sanitized: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined) sanitized[name] = value;
+  }
+  for (const name of GATEWAY_SECRET_ENV_NAMES) delete sanitized[name];
+  return sanitized;
 }
 
 function envPositiveInt(value: string | undefined): number | undefined {
@@ -274,6 +299,47 @@ export async function startGateway(
           log,
         })
       : undefined;
+  const heliusEnabled = envFlag(env.AGENC_GATEWAY_HELIUS_ENABLED);
+  const heliusKey = loadHeliusGatewayApiKey({
+    enabled: heliusEnabled,
+    keyFile: env.AGENC_GATEWAY_HELIUS_KEY_FILE,
+    inlineKey: env.AGENC_GATEWAY_HELIUS_API_KEY,
+  });
+  const heliusDailyLimit = envPositiveInt(
+    env.AGENC_GATEWAY_HELIUS_DAILY_LIMIT,
+  );
+  const heliusPerPeerLimit = envPositiveInt(
+    env.AGENC_GATEWAY_HELIUS_PER_PEER_LIMIT,
+  );
+  const heliusRequestsPerSecond = envPositiveInt(
+    env.AGENC_GATEWAY_HELIUS_REQUESTS_PER_SECOND,
+  );
+  const heliusMaxTokenAccounts = envPositiveInt(
+    env.AGENC_GATEWAY_HELIUS_MAX_TOKEN_ACCOUNTS,
+  );
+  const onchainFeature =
+    heliusKey !== undefined
+      ? new HeliusOnchainFeature({
+          apiKey: heliusKey,
+          usageFile: join(options.agencHome, "gateway", "helius-usage.json"),
+          tokenAliases: parseHeliusTokenAliases(
+            env.AGENC_GATEWAY_HELIUS_TOKEN_ALIASES,
+          ),
+          ...(heliusDailyLimit !== undefined
+            ? { dailyLimit: heliusDailyLimit }
+            : {}),
+          ...(heliusPerPeerLimit !== undefined
+            ? { perPeerLimit: heliusPerPeerLimit }
+            : {}),
+          ...(heliusRequestsPerSecond !== undefined
+            ? { requestsPerSecond: heliusRequestsPerSecond }
+            : {}),
+          ...(heliusMaxTokenAccounts !== undefined
+            ? { maxTokenAccountsScanned: heliusMaxTokenAccounts }
+            : {}),
+          log,
+        })
+      : undefined;
 
   // WebChat: the loopback bind + shared token IS the auth, so unless the
   // operator explicitly configured a policy, the web sender is allowlisted
@@ -326,6 +392,7 @@ export async function startGateway(
     ? options.clientFactory()
     : createSdkDaemonClient({
         autostart: true,
+        env: sanitizeGatewayDaemonEnv(env),
         // Gateway daemon agents work in the gateway's workspace so channel
         // turns and heartbeat ticks see the same files HEARTBEAT.md lives in.
         cwd: options.workspaceDir ?? process.cwd(),
@@ -365,6 +432,7 @@ export async function startGateway(
     log,
     ...(memeFeature !== undefined ? { memeFeature } : {}),
     ...(voiceFeature !== undefined ? { voiceFeature } : {}),
+    ...(onchainFeature !== undefined ? { onchainFeature } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
   });
 

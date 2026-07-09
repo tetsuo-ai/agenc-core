@@ -101,6 +101,60 @@ to the agent. Image routes generate a native Telegram photo through the xAI
 image API; voice routes generate a native Telegram audio file through the xAI
 TTS API. Both enforce local soft daily caps.
 
+### Read-only Solana research
+
+The gateway can enrich crypto questions with bounded, server-side Helius reads.
+The credential stays outside the model process context: production should use
+an absolute `0600` regular file, not a key pasted into prompts, config JSON, or
+client-side code.
+
+```bash
+AGENC_GATEWAY_HELIUS_ENABLED=1
+AGENC_GATEWAY_HELIUS_KEY_FILE=/run/credentials/agenc-helius
+AGENC_GATEWAY_HELIUS_DAILY_LIMIT=500
+AGENC_GATEWAY_HELIUS_PER_PEER_LIMIT=4
+AGENC_GATEWAY_HELIUS_REQUESTS_PER_SECOND=8
+AGENC_GATEWAY_HELIUS_MAX_TOKEN_ACCOUNTS=50000
+AGENC_GATEWAY_HELIUS_TOKEN_ALIASES=agenc=<official-mint>,usdc=<official-mint>
+```
+
+`AGENC_GATEWAY_HELIUS_API_KEY` exists for local development, but the key-file
+path is the production route. The gateway refuses symlinks, non-regular files,
+group/world-readable permissions, malformed keys, arbitrary RPC methods, and
+arbitrary upstream URLs. Configure IP restrictions for the production key in
+the Helius dashboard as a second boundary.
+
+The natural-language read surface currently covers:
+
+- token holder snapshots and top-10/top-25/top-50 concentration;
+- estimated top-10/top-25/top-50 holder age with observed-history coverage;
+- token supply/metadata summaries;
+- wallet SOL balance, token accounts, and recent normalized transfers;
+- bounded transaction summaries without raw logs or arbitrary instruction text;
+- Solana mainnet health, finalized slot, block height, and epoch.
+
+Unknown tickers are never guessed; the bot asks for an exact mint or verified
+explorer link. Configured aliases are explicit operator mappings. Reads use a
+short shared cache, per-peer throttling, a persistent daily analysis budget,
+timeouts, bounded retries, bounded response sizes, and a fixed method surface.
+The API key is used only in the private outbound Helius request. Prompts,
+Telegram replies, and logs receive normalized results and safe error codes.
+Gateway-only credentials, including the Helius key and key-file path, are
+removed from the environment passed to an autostarted AgenC daemon, so agent
+sessions cannot discover them through inherited process configuration.
+
+The holder-age result is deliberately labeled an estimate: it uses the current
+top owner snapshot and each owner's earliest inbound transfer for that mint.
+It is not FIFO lot accounting, and Helius `getTransfersByAddress` currently has
+one-year retention, so the answer includes observed coverage instead of
+inventing ages for holders with no returned history. Exact top-50 owner ranking
+requires a complete bounded token-account scan. If a token exceeds that cap,
+the gateway falls back to Solana's exact top-20 token-account method and
+withholds top-25/top-50 metrics instead of presenting a partial page as global.
+If the upstream index rejects both bounded paths for an exceptionally large
+mint, holder ranking is reported as unavailable; metadata and supply can still
+be returned without a fabricated concentration value.
+
 Telegram gateway agents are spawned with a tiny unattended tool allowlist by
 default: `SendUserMessage` and `Brief`. That lets the bot answer normally
 without leaking approval prompts into chat, while privileged tools still pause
