@@ -133,6 +133,9 @@ const GATEWAY_SECRET_ENV_NAMES = [
   "AGENC_TELEGRAM_BOT_TOKEN",
   "AGENC_TELEGRAM_OWNER_CLAIM_CODE",
   "AGENC_WEBCHAT_TOKEN",
+  "AGENC_DISCORD_BOT_TOKEN",
+  "AGENC_SLACK_BOT_TOKEN",
+  "AGENC_SLACK_APP_TOKEN",
 ] as const;
 
 /** Keep gateway transport/data credentials out of an autostarted agent daemon. */

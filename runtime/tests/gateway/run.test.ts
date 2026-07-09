@@ -96,6 +96,9 @@ describe("startGateway", () => {
       AGENC_TELEGRAM_BOT_TOKEN: "telegram-secret",
       AGENC_TELEGRAM_OWNER_CLAIM_CODE: "owner-secret",
       AGENC_WEBCHAT_TOKEN: "webchat-secret",
+      AGENC_DISCORD_BOT_TOKEN: "discord-secret",
+      AGENC_SLACK_BOT_TOKEN: "slack-bot-secret",
+      AGENC_SLACK_APP_TOKEN: "slack-app-secret",
     });
 
     expect(sanitized.PATH).toBe("/usr/bin");
@@ -105,6 +108,9 @@ describe("startGateway", () => {
     expect(sanitized.AGENC_TELEGRAM_BOT_TOKEN).toBeUndefined();
     expect(sanitized.AGENC_TELEGRAM_OWNER_CLAIM_CODE).toBeUndefined();
     expect(sanitized.AGENC_WEBCHAT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_DISCORD_BOT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_SLACK_BOT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_SLACK_APP_TOKEN).toBeUndefined();
   });
 
   test("no channels enabled → throws before touching the daemon client", async () => {
