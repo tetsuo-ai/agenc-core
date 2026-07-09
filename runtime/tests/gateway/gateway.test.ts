@@ -407,6 +407,7 @@ describe("channel gateway", () => {
     await telegram.receive(groupMessage("alice", "now public"));
     expect(client.sessions).toHaveLength(1);
     expect(client.sessions[0].prompts[0]).toContain("now public");
+    expect(client.sessions[0].prompts[0]).toContain("This channel is answer-only");
     expect(telegram.lastText("group-1")).toBe("group live");
   });
 

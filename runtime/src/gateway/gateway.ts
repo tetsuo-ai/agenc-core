@@ -212,6 +212,7 @@ export class ChannelGateway {
         ? { displayName: message.sender.displayName }
         : {}),
       text: message.text,
+      answerOnly: message.channelId === TELEGRAM_CHANNEL_ID,
     });
     const key = SessionRouter.conversationKey({
       channelId: message.channelId,
