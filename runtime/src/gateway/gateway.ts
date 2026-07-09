@@ -18,6 +18,7 @@ import { ApprovalRegistry, formatApprovalPrompt } from "./approvals.js";
 import { resolveBinding } from "./bindings.js";
 import type { TelegramOwnerControl } from "./control-plane.js";
 import type { GatewayMemeFeature } from "./meme.js";
+import type { GatewayOnchainFeature } from "./onchain.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
 import { detectPromptInjectionAttempt } from "./prompt-injection.js";
 import { SessionRouter } from "./session-router.js";
@@ -45,6 +46,7 @@ export interface GatewayOptions {
   readonly flushIntervalMs?: number;
   readonly memeFeature?: GatewayMemeFeature;
   readonly voiceFeature?: GatewayVoiceFeature;
+  readonly onchainFeature?: GatewayOnchainFeature;
   readonly controlPlane?: TelegramOwnerControl;
 }
 
@@ -57,6 +59,7 @@ export class ChannelGateway {
   readonly #log: (line: string) => void;
   readonly #memeFeature?: GatewayMemeFeature;
   readonly #voiceFeature?: GatewayVoiceFeature;
+  readonly #onchainFeature?: GatewayOnchainFeature;
   readonly #controlPlane?: TelegramOwnerControl;
 
   constructor(options: GatewayOptions) {
@@ -64,6 +67,7 @@ export class ChannelGateway {
     this.#log = options.log ?? (() => {});
     this.#memeFeature = options.memeFeature;
     this.#voiceFeature = options.voiceFeature;
+    this.#onchainFeature = options.onchainFeature;
     this.#controlPlane = options.controlPlane;
     this.#pairing = new PairingStore({
       agencHome: options.agencHome,
@@ -205,6 +209,26 @@ export class ChannelGateway {
       if (handled) return;
     }
 
+    let gatewayEvidence: string | undefined;
+    if (this.#onchainFeature !== undefined) {
+      try {
+        const result = await this.#onchainFeature.inspect({
+          text: message.text,
+          channelId: message.channelId,
+          peerId: message.sender.peerId,
+        });
+        if (result.kind === "reply") {
+          await reply(result.text);
+          return;
+        }
+        if (result.kind === "context") gatewayEvidence = result.context;
+      } catch {
+        this.#log("gateway onchain: feature failed safely (unexpected_failure)");
+        await reply("I could not complete that live Solana read safely. Try again in a minute.");
+        return;
+      }
+    }
+
     // 4. Binding resolution.
     const resolved = resolveBinding({
       bindings: this.#config.bindings,
@@ -226,6 +250,7 @@ export class ChannelGateway {
         : {}),
       text: message.text,
       answerOnly: message.channelId === TELEGRAM_CHANNEL_ID,
+      ...(gatewayEvidence !== undefined ? { gatewayEvidence } : {}),
     });
     const key = SessionRouter.conversationKey({
       channelId: message.channelId,

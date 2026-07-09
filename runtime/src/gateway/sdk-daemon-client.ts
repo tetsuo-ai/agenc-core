@@ -43,6 +43,8 @@ export interface SdkDaemonClientOptions {
   readonly socketPath?: string;
   readonly cookiePath?: string;
   readonly autostart?: boolean;
+  /** Explicit environment for daemon autostart. Gateway-only secrets are removed upstream. */
+  readonly env?: NodeJS.ProcessEnv;
   /** Working directory for gateway daemon agents (default: daemon's choice). */
   readonly cwd?: string;
   /**
@@ -115,6 +117,7 @@ interface SdkClient {
 }
 export interface SdkModule {
   connect(opts: {
+    readonly env?: NodeJS.ProcessEnv;
     readonly agencCommand?: string;
     readonly socketPath?: string;
     readonly cookiePath?: string;
@@ -211,6 +214,7 @@ export async function createSdkDaemonClient(
     options.sdk ??
     ((await import("@tetsuo-ai/agenc-sdk")) as unknown as SdkModule);
   const client = await sdk.connect({
+    ...(options.env !== undefined ? { env: options.env } : {}),
     ...(options.agencCommand !== undefined
       ? { agencCommand: options.agencCommand }
       : {}),

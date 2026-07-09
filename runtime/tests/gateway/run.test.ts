@@ -8,7 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { startGateway } from "../../src/gateway/run.js";
+import {
+  sanitizeGatewayDaemonEnv,
+  startGateway,
+} from "../../src/gateway/run.js";
 import {
   TelegramChannelAdapter,
   type TelegramTransport,
@@ -81,6 +84,26 @@ describe("startGateway", () => {
     mkdirSync(join(home, "gateway"), { recursive: true });
     writeFileSync(join(home, "gateway", "config.json"), JSON.stringify(config));
   }
+
+  test("strips gateway-only credentials from daemon autostart env", () => {
+    const sanitized = sanitizeGatewayDaemonEnv({
+      PATH: "/usr/bin",
+      XAI_API_KEY: "provider-key-required-by-agent",
+      AGENC_GATEWAY_HELIUS_API_KEY: "helius-secret",
+      AGENC_GATEWAY_HELIUS_KEY_FILE: "/run/credentials/helius",
+      AGENC_TELEGRAM_BOT_TOKEN: "telegram-secret",
+      AGENC_TELEGRAM_OWNER_CLAIM_CODE: "owner-secret",
+      AGENC_WEBCHAT_TOKEN: "webchat-secret",
+    });
+
+    expect(sanitized.PATH).toBe("/usr/bin");
+    expect(sanitized.XAI_API_KEY).toBe("provider-key-required-by-agent");
+    expect(sanitized.AGENC_GATEWAY_HELIUS_API_KEY).toBeUndefined();
+    expect(sanitized.AGENC_GATEWAY_HELIUS_KEY_FILE).toBeUndefined();
+    expect(sanitized.AGENC_TELEGRAM_BOT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_TELEGRAM_OWNER_CLAIM_CODE).toBeUndefined();
+    expect(sanitized.AGENC_WEBCHAT_TOKEN).toBeUndefined();
+  });
 
   test("no channels enabled → throws before touching the daemon client", async () => {
     let factoryCalled = false;

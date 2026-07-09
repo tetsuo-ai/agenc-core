@@ -35,8 +35,10 @@ function fakeSdk(options: { sessionIdForSpawn?: string | null } = {}) {
   const spawnCalls: SpawnCall[] = [];
   const resumedIds: string[] = [];
   let closed = false;
+  let connectOptions: Record<string, unknown> | undefined;
   const module: SdkModule = {
-    async connect() {
+    async connect(connectArgs) {
+      connectOptions = connectArgs;
       return {
         async spawnAgent(params: SpawnCall) {
           spawnCalls.push(params);
@@ -69,6 +71,7 @@ function fakeSdk(options: { sessionIdForSpawn?: string | null } = {}) {
     spawnCalls,
     resumedIds,
     isClosed: () => closed,
+    connectOptions: () => connectOptions,
   };
 }
 
@@ -113,6 +116,14 @@ describe("createSdkDaemonClient (daemon agent provisioning)", () => {
     await client.createSession();
 
     expect(sdk.spawnCalls[0].cwd).toBe("/work/space");
+  });
+
+  test("threads an explicit sanitized environment to SDK daemon autostart", async () => {
+    const sdk = fakeSdk();
+    const env = { PATH: "/usr/bin", SAFE_VALUE: "yes" };
+    await createSdkDaemonClient({ sdk: sdk.module, env });
+
+    expect(sdk.connectOptions()).toMatchObject({ env });
   });
 
   test("createSession threads gateway unattended policy to the agent", async () => {

@@ -94,6 +94,18 @@ export {
   type XaiVoiceFeatureOptions,
 } from "./voice.js";
 export {
+  HeliusOnchainFeature,
+  isSolanaPublicKey,
+  isSolanaSignature,
+  loadHeliusGatewayApiKey,
+  parseHeliusTokenAliases,
+  parseSolanaOnchainIntent,
+  type GatewayOnchainFeature,
+  type GatewayOnchainResult,
+  type HeliusOnchainFeatureOptions,
+  type SolanaOnchainIntent,
+} from "./onchain.js";
+export {
   TELEGRAM_OWNER_COMMANDS,
   TELEGRAM_PUBLIC_MEDIA_COMMANDS,
   TelegramOwnerControl,
