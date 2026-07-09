@@ -12,6 +12,8 @@ import {
   sanitizeGatewayDaemonEnv,
   startGateway,
 } from "../../src/gateway/run.js";
+import { DiscordChannelAdapter } from "../../src/gateway/discord-channel.js";
+import { SlackChannelAdapter } from "../../src/gateway/slack-channel.js";
 import {
   TelegramChannelAdapter,
   type TelegramTransport,
@@ -94,6 +96,9 @@ describe("startGateway", () => {
       AGENC_TELEGRAM_BOT_TOKEN: "telegram-secret",
       AGENC_TELEGRAM_OWNER_CLAIM_CODE: "owner-secret",
       AGENC_WEBCHAT_TOKEN: "webchat-secret",
+      AGENC_DISCORD_BOT_TOKEN: "discord-secret",
+      AGENC_SLACK_BOT_TOKEN: "slack-bot-secret",
+      AGENC_SLACK_APP_TOKEN: "slack-app-secret",
     });
 
     expect(sanitized.PATH).toBe("/usr/bin");
@@ -103,6 +108,9 @@ describe("startGateway", () => {
     expect(sanitized.AGENC_TELEGRAM_BOT_TOKEN).toBeUndefined();
     expect(sanitized.AGENC_TELEGRAM_OWNER_CLAIM_CODE).toBeUndefined();
     expect(sanitized.AGENC_WEBCHAT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_DISCORD_BOT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_SLACK_BOT_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_SLACK_APP_TOKEN).toBeUndefined();
   });
 
   test("no channels enabled → throws before touching the daemon client", async () => {
@@ -134,6 +142,133 @@ describe("startGateway", () => {
     expect(handle.channels).toEqual(["stdio"]);
     await handle.stop();
     expect(client.closed).toBe(true);
+  });
+
+  test("discord via extraAdapters: allowlisted DM drives a real turn; unpaired gets challenged", async () => {
+    writeConfig({
+      channels: { discord: { dmPolicy: "allowlist", allowlist: ["u-42"] } },
+    });
+    const client = new FakeClient();
+    const created: { channelId: string; text: string }[] = [];
+    const transport = {
+      async getGatewayUrl() {
+        return "wss://unused";
+      },
+      async connect() {
+        throw new Error("autoConnect is off in this test");
+      },
+      async createMessage(channelId: string, text: string) {
+        created.push({ channelId, text });
+        return { id: "900" };
+      },
+      async editMessage(channelId: string, _messageId: string, text: string) {
+        created.push({ channelId, text });
+      },
+    };
+    const adapter = new DiscordChannelAdapter({
+      transport,
+      token: "t",
+      autoConnect: false,
+    });
+    const handle = await startGateway({
+      agencHome: home,
+      clientFactory: async () => client,
+      extraAdapters: [adapter],
+    });
+    expect(handle.channels).toContain("discord");
+
+    // Allowlisted DM → framed turn, streamed reply lands via REST.
+    adapter.handleGatewayPayload({
+      op: 0,
+      t: "MESSAGE_CREATE",
+      s: 1,
+      d: {
+        id: "m1",
+        channel_id: "dm-chan",
+        author: { id: "u-42", username: "alice" },
+        content: "run the tests",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(client.sessions).toHaveLength(1);
+    expect(client.sessions[0].prompts[0]).toContain("run the tests");
+    expect(client.sessions[0].prompts[0]).toContain('trust="external"');
+    expect(created.some((m) => m.text.includes("echo:"))).toBe(true);
+
+    // Unlisted sender under an allowlist policy → silently denied: no turn,
+    // no reply (pairing challenges only come from the pairing default).
+    const sentBefore = created.length;
+    adapter.handleGatewayPayload({
+      op: 0,
+      t: "MESSAGE_CREATE",
+      s: 2,
+      d: {
+        id: "m2",
+        channel_id: "dm-other",
+        author: { id: "u-99" },
+        content: "let me in",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(client.sessions).toHaveLength(1); // still just the first turn
+    expect(created.length).toBe(sentBefore);
+
+    await handle.stop();
+  });
+
+  test("slack via extraAdapters: allowlisted DM drives a real turn end to end", async () => {
+    writeConfig({
+      channels: { slack: { dmPolicy: "allowlist", allowlist: ["U42"] } },
+    });
+    const client = new FakeClient();
+    const posted: { channel: string; text: string }[] = [];
+    const transport = {
+      async openSocketUrl() {
+        return "wss://unused";
+      },
+      async connect() {
+        throw new Error("autoConnect is off in this test");
+      },
+      async authTest() {
+        return { userId: "UBOT" };
+      },
+      async postMessage(channel: string, text: string) {
+        posted.push({ channel, text });
+        return { ts: "1.1" };
+      },
+      async updateMessage(channel: string, _ts: string, text: string) {
+        posted.push({ channel, text });
+      },
+    };
+    const adapter = new SlackChannelAdapter({ transport, autoConnect: false });
+    const handle = await startGateway({
+      agencHome: home,
+      clientFactory: async () => client,
+      extraAdapters: [adapter],
+    });
+    expect(handle.channels).toContain("slack");
+
+    adapter.handleEnvelope({
+      type: "events_api",
+      envelope_id: "e1",
+      payload: {
+        event: {
+          type: "message",
+          user: "U42",
+          text: "summarize the incident",
+          channel: "D1",
+          channel_type: "im",
+          ts: "1.0",
+        },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(client.sessions).toHaveLength(1);
+    expect(client.sessions[0].prompts[0]).toContain("summarize the incident");
+    expect(client.sessions[0].prompts[0]).toContain('trust="external"');
+    expect(posted.some((m) => m.text.includes("echo:"))).toBe(true);
+
+    await handle.stop();
   });
 
   test("telegram via extraAdapters: inbound update drives a real turn", async () => {
