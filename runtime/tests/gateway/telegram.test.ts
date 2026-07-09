@@ -381,6 +381,77 @@ describe("TelegramChannelAdapter", () => {
     expect(messages[0].text).toBe("hi there");
   });
 
+  test("mention-only group addressing uses Telegram mention entities", async () => {
+    const transport = new FakeTransport();
+    transport.identity = { id: 999, username: "core_69_bot" };
+    const text =
+      "@core_69_bot can you give me the Avg. Time Held for top 10 holders, Top 25 Holders and Top 50 Holders";
+    transport.updates = [
+      [
+        {
+          update_id: 40,
+          message: {
+            message_id: 80,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text,
+            entities: [{ type: "mention", offset: 0, length: 12 }],
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe(
+      "can you give me the Avg. Time Held for top 10 holders, Top 25 Holders and Top 50 Holders",
+    );
+  });
+
+  test("mention-only group addressing uses Telegram text_mention entities", async () => {
+    const transport = new FakeTransport();
+    const text = "AgenC can you explain the top holder data?";
+    transport.updates = [
+      [
+        {
+          update_id: 42,
+          message: {
+            message_id: 82,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text,
+            entities: [
+              {
+                type: "text_mention",
+                offset: 0,
+                length: 5,
+                user: { id: 999, is_bot: true, username: "agenc_test_bot" },
+              },
+            ],
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("can you explain the top holder data?");
+  });
+
   test("mention-only group addressing includes replied-message context", async () => {
     const transport = new FakeTransport();
     transport.updates = [
