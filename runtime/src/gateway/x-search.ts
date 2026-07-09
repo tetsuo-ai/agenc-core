@@ -29,6 +29,12 @@ const MAX_ANSWER_CHARS = 3_200;
 const MAX_CACHE_ENTRIES = 100;
 const MAX_PEER_RATE_ENTRIES = 10_000;
 const MAX_X_HANDLES = 20;
+const X_SEARCH_CUSTOM_CALL_NAMES = new Set([
+  "x_user_search",
+  "x_keyword_search",
+  "x_semantic_search",
+  "x_thread_fetch",
+]);
 
 const X_SEARCH_SYSTEM_PROMPT = [
   "You are a read-only X research function. You cannot post, reply, like, follow, delete, or modify anything.",
@@ -240,14 +246,20 @@ function extractOutputText(response: Record<string, unknown>): string {
   return parts.join("\n").trim();
 }
 
-function hasCompletedXSearchCall(response: Record<string, unknown>): boolean {
+function hasCompletedXSearchEvidence(response: Record<string, unknown>): boolean {
   if (!Array.isArray(response.output)) return false;
-  return response.output.some(
-    (item) =>
-      isRecord(item) &&
-      item.type === "x_search_call" &&
-      (item.status === undefined || item.status === "completed"),
-  );
+  return response.output.some((item) => {
+    if (!isRecord(item) || item.status === "failed") return false;
+    if (item.type === "x_search_call") {
+      return item.status === undefined || item.status === "completed";
+    }
+    return (
+      item.type === "custom_tool_call" &&
+      item.status === "completed" &&
+      typeof item.name === "string" &&
+      X_SEARCH_CUSTOM_CALL_NAMES.has(item.name)
+    );
+  });
 }
 
 function sourceMatchesPost(url: string): boolean {
@@ -483,7 +495,7 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
       const text = extractOutputText(parsed);
       const sources = collectStructuredXUrls(parsed);
       if (
-        !hasCompletedXSearchCall(parsed) ||
+        !hasCompletedXSearchEvidence(parsed) ||
         text.length === 0 ||
         sources.length === 0 ||
         (intent.requiresPostCitation && !sources.some(sourceMatchesPost))
