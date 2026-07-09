@@ -19,6 +19,7 @@ import type {
 class FakeTransport implements TelegramTransport {
   updates: TelegramUpdate[][] = [];
   readonly sent: { chatId: string; text: string }[] = [];
+  readonly photos: { chatId: string; photoUrl: string; caption?: string }[] = [];
   readonly edits: { chatId: string; messageId: number; text: string }[] = [];
   #nextId = 100;
   editShouldThrow = false;
@@ -28,6 +29,10 @@ class FakeTransport implements TelegramTransport {
   }
   async sendMessage(chatId: string, text: string) {
     this.sent.push({ chatId, text });
+    return { message_id: ++this.#nextId };
+  }
+  async sendPhoto(chatId: string, photoUrl: string, caption?: string) {
+    this.photos.push({ chatId, photoUrl, ...(caption !== undefined ? { caption } : {}) });
     return { message_id: ++this.#nextId };
   }
   async editMessageText(chatId: string, messageId: number, text: string) {
@@ -151,6 +156,30 @@ describe("TelegramChannelAdapter", () => {
     });
     expect(transport.edits).toEqual([
       { chatId: "42", messageId: 101, text: "Hello world" },
+    ]);
+    await adapter.stop();
+  });
+
+  test("sends photo messages through Telegram native media", async () => {
+    const transport = new FakeTransport();
+    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const { ctx } = collector();
+    await adapter.start(ctx);
+
+    await adapter.send({
+      conversationId: "42",
+      text: "AgenC meme",
+      photoUrl: "https://img.example/meme.png",
+      caption: "AgenC meme",
+    });
+
+    expect(transport.sent).toEqual([]);
+    expect(transport.photos).toEqual([
+      {
+        chatId: "42",
+        photoUrl: "https://img.example/meme.png",
+        caption: "AgenC meme",
+      },
     ]);
     await adapter.stop();
   });

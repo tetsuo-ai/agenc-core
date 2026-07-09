@@ -16,7 +16,9 @@
 
 import { ApprovalRegistry, formatApprovalPrompt } from "./approvals.js";
 import { resolveBinding } from "./bindings.js";
+import type { GatewayMemeFeature, GatewayMemeReplyOptions } from "./meme.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
+import { detectPromptInjectionAttempt } from "./prompt-injection.js";
 import { SessionRouter } from "./session-router.js";
 import { frameChannelMessage } from "./untrusted.js";
 import type {
@@ -37,6 +39,7 @@ export interface GatewayOptions {
   readonly generateApprovalToken?: () => string;
   readonly approvalTimeoutMs?: number;
   readonly flushIntervalMs?: number;
+  readonly memeFeature?: GatewayMemeFeature;
 }
 
 export class ChannelGateway {
@@ -46,10 +49,12 @@ export class ChannelGateway {
   readonly #router: SessionRouter;
   readonly #adapters = new Map<string, ChannelAdapter>();
   readonly #log: (line: string) => void;
+  readonly #memeFeature?: GatewayMemeFeature;
 
   constructor(options: GatewayOptions) {
     this.#config = options.config;
     this.#log = options.log ?? (() => {});
+    this.#memeFeature = options.memeFeature;
     this.#pairing = new PairingStore({
       agencHome: options.agencHome,
       ...(options.now !== undefined ? { now: options.now } : {}),
@@ -105,8 +110,11 @@ export class ChannelGateway {
       );
       return;
     }
-    const reply = (text: string): Promise<string> =>
-      adapter.send({ conversationId: message.conversation.id, text });
+    const reply = (
+      text: string,
+      options: GatewayMemeReplyOptions = {},
+    ): Promise<string> =>
+      adapter.send({ conversationId: message.conversation.id, text, ...options });
 
     // 1. Approval replies always take precedence and are always consumed —
     //    settled or rejected, they never become prompt text.
@@ -154,6 +162,23 @@ export class ChannelGateway {
         ].join("\n"),
       );
       return;
+    }
+
+    const injection = detectPromptInjectionAttempt(message.text);
+    if (injection.blocked) {
+      this.#log(
+        `gateway: blocked prompt injection from '${message.sender.peerId}' on '${message.channelId}': ${injection.reason ?? "unknown"}`,
+      );
+      await reply(injection.reply ?? "Prompt injection blocked.");
+      return;
+    }
+
+    if (this.#memeFeature !== undefined) {
+      const handled = await this.#memeFeature.handle({
+        text: message.text,
+        reply,
+      });
+      if (handled) return;
     }
 
     // 4. Binding resolution.

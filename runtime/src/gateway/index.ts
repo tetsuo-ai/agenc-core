@@ -68,6 +68,18 @@ export {
   type FrameChannelMessageInput,
 } from "./untrusted.js";
 export {
+  detectPromptInjectionAttempt,
+  normalizeForPromptInjectionScan,
+  type PromptInjectionDecision,
+} from "./prompt-injection.js";
+export {
+  XaiMemeFeature,
+  parseMemePrompt,
+  type GatewayMemeFeature,
+  type GatewayMemeReplyOptions,
+  type XaiMemeFeatureOptions,
+} from "./meme.js";
+export {
   WebChatChannelAdapter,
   renderWebChatHtml,
   WEBCHAT_CHANNEL_ID,

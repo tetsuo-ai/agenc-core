@@ -45,6 +45,13 @@ export interface OutboundChannelMessage {
   readonly conversationId: string;
   readonly text: string;
   /**
+   * Optional public image URL to deliver as native media on channels that
+   * support it. Adapters without media support may ignore it and send `text`.
+   */
+  readonly photoUrl?: string;
+  /** Optional media caption; defaults to `text` when omitted. */
+  readonly caption?: string;
+  /**
    * When set, adapters that support edit-in-place update the message they
    * previously returned this id for (streaming coalescing); adapters without
    * edit support may ignore it and send a new message.
