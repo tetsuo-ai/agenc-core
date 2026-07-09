@@ -20,6 +20,12 @@ const XAI_RESPONSES_URL = "https://api.x.ai/v1/responses";
 const DEFAULT_MODEL = "grok-4.5";
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_TURNS = 2;
+const MAX_TURNS = 5;
+const DEFAULT_MAX_ATTEMPTS = 2;
+const MAX_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 750;
+const MAX_RETRY_AFTER_MS = 5_000;
 const DEFAULT_DAILY_LIMIT = 100;
 const DEFAULT_PER_PEER_LIMIT = 4;
 const DEFAULT_PER_PEER_WINDOW_MS = 60_000;
@@ -45,6 +51,7 @@ const X_SEARCH_SYSTEM_PROMPT = [
 ].join("\n");
 
 type FetchLike = typeof fetch;
+type Sleep = (milliseconds: number) => Promise<void>;
 
 export interface XSearchIntent {
   readonly query: string;
@@ -69,6 +76,9 @@ export interface XaiXSearchFeatureOptions {
   readonly now?: () => number;
   readonly log?: (line: string) => void;
   readonly timeoutMs?: number;
+  readonly maxTurns?: number;
+  readonly maxAttempts?: number;
+  readonly sleep?: Sleep;
   readonly dailyLimit?: number;
   readonly perPeerLimit?: number;
   readonly perPeerWindowMs?: number;
@@ -87,12 +97,52 @@ interface CacheEntry {
 
 class XSearchRequestError extends Error {
   readonly code: string;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
+  readonly httpStatus?: number;
 
-  constructor(code: string) {
+  constructor(
+    code: string,
+    options: {
+      readonly retryable?: boolean;
+      readonly retryAfterMs?: number;
+      readonly httpStatus?: number;
+    } = {},
+  ) {
     super(code);
     this.name = "XSearchRequestError";
     this.code = code;
+    this.retryable = options.retryable ?? false;
+    if (options.retryAfterMs !== undefined) {
+      this.retryAfterMs = options.retryAfterMs;
+    }
+    if (options.httpStatus !== undefined) {
+      this.httpStatus = options.httpStatus;
+    }
   }
+}
+
+function sleepDefault(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function retryAfterMilliseconds(response: Response): number | undefined {
+  const value = response.headers.get("retry-after")?.trim();
+  if (value === undefined || value === "") return undefined;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+  return Math.round(seconds * 1_000);
+}
+
+function safeErrorLog(error: unknown): string {
+  const code = errorCode(error);
+  if (
+    error instanceof XSearchRequestError &&
+    error.httpStatus !== undefined
+  ) {
+    return `${code}, status=${error.httpStatus}`;
+  }
+  return code;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -324,6 +374,9 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
   readonly #now: () => number;
   readonly #log: (line: string) => void;
   readonly #timeoutMs: number;
+  readonly #maxTurns: number;
+  readonly #maxAttempts: number;
+  readonly #sleep: Sleep;
   readonly #dailyLimit: number;
   readonly #perPeerLimit: number;
   readonly #perPeerWindowMs: number;
@@ -344,6 +397,15 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
       MAX_TIMEOUT_MS,
       Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
     );
+    this.#maxTurns = Math.min(
+      MAX_TURNS,
+      Math.max(1, options.maxTurns ?? DEFAULT_MAX_TURNS),
+    );
+    this.#maxAttempts = Math.min(
+      MAX_ATTEMPTS,
+      Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS),
+    );
+    this.#sleep = options.sleep ?? sleepDefault;
     this.#dailyLimit = options.dailyLimit ?? DEFAULT_DAILY_LIMIT;
     this.#perPeerLimit = options.perPeerLimit ?? DEFAULT_PER_PEER_LIMIT;
     this.#perPeerWindowMs =
@@ -406,7 +468,7 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
       });
       await input.reply(answer);
     } catch (error) {
-      this.#log(`gateway x-search: read failed (${errorCode(error)})`);
+      this.#log(`gateway x-search: read failed (${safeErrorLog(error)})`);
       await input.reply(publicErrorReply(error));
     } finally {
       this.#inflight.delete(cacheKey);
@@ -441,6 +503,27 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
   }
 
   async #search(intent: XSearchIntent, observedAtMs: number): Promise<string> {
+    for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
+      try {
+        return await this.#searchOnce(intent, observedAtMs);
+      } catch (error) {
+        if (
+          !(error instanceof XSearchRequestError) ||
+          !error.retryable ||
+          attempt >= this.#maxAttempts
+        ) {
+          throw error;
+        }
+        await this.#sleep(error.retryAfterMs ?? DEFAULT_RETRY_DELAY_MS);
+      }
+    }
+    throw new XSearchRequestError("request_failed");
+  }
+
+  async #searchOnce(
+    intent: XSearchIntent,
+    observedAtMs: number,
+  ): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
     const tool: Record<string, unknown> = { type: "x_search" };
@@ -470,19 +553,37 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
             },
           ],
           tools: [tool],
+          max_turns: this.#maxTurns,
           max_output_tokens: 700,
           store: false,
         }),
         signal: controller.signal,
       });
       if (response.status === 401 || response.status === 403) {
-        throw new XSearchRequestError("authentication_failed");
+        throw new XSearchRequestError("authentication_failed", {
+          httpStatus: response.status,
+        });
       }
-      if (response.status === 429) throw new XSearchRequestError("rate_limited");
+      if (response.status === 429) {
+        const retryAfterMs = retryAfterMilliseconds(response);
+        throw new XSearchRequestError("rate_limited", {
+          retryable:
+            retryAfterMs === undefined || retryAfterMs <= MAX_RETRY_AFTER_MS,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+          httpStatus: response.status,
+        });
+      }
       if (response.status >= 500) {
-        throw new XSearchRequestError("upstream_unavailable");
+        throw new XSearchRequestError("upstream_unavailable", {
+          retryable: true,
+          httpStatus: response.status,
+        });
       }
-      if (!response.ok) throw new XSearchRequestError("request_failed");
+      if (!response.ok) {
+        throw new XSearchRequestError("request_failed", {
+          httpStatus: response.status,
+        });
+      }
 
       const contentLength = Number(response.headers.get("content-length") ?? "0");
       if (contentLength > MAX_RESPONSE_BYTES) {
@@ -518,7 +619,7 @@ export class XaiXSearchFeature implements GatewayXSearchFeature {
       if (error instanceof Error && error.name === "AbortError") {
         throw new XSearchRequestError("timeout");
       }
-      throw new XSearchRequestError("network_failure");
+      throw new XSearchRequestError("network_failure", { retryable: true });
     } finally {
       clearTimeout(timeout);
     }

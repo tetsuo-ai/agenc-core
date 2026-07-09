@@ -120,12 +120,14 @@ describe("XaiXSearchFeature", () => {
     const body = JSON.parse(String(calls[0]?.init?.body)) as {
       tools: readonly Record<string, unknown>[];
       input: readonly { role: string; content: string }[];
+      max_turns?: number;
       store?: boolean;
     };
     expect(body.tools).toEqual([
       { type: "x_search", allowed_x_handles: ["example"] },
     ]);
     expect(JSON.stringify(body.tools)).not.toMatch(/post|like|follow|delete/i);
+    expect(body.max_turns).toBe(2);
     expect(body.store).toBe(false);
     expect(body.input).toHaveLength(2);
     expect(body.input[0]?.role).toBe("system");
@@ -442,7 +444,7 @@ describe("XaiXSearchFeature", () => {
     expect(replies[0]).toContain("server-side credential needs attention");
     expect(replies.join("\n")).not.toContain("account secret");
     expect(logs).toEqual([
-      "gateway x-search: read failed (authentication_failed)",
+      "gateway x-search: read failed (authentication_failed, status=401)",
     ]);
   });
 
@@ -492,6 +494,7 @@ describe("XaiXSearchFeature", () => {
       const feature = new XaiXSearchFeature({
         apiKey: "xai-test-key-that-is-long-enough",
         usageFile: join(home, "usage.json"),
+        maxAttempts: 1,
         fetchImpl: (async () =>
           new Response("provider detail must stay private", { status })) as typeof fetch,
         log: (line) => logs.push(line),
@@ -510,8 +513,71 @@ describe("XaiXSearchFeature", () => {
       expect(replies[0]).toContain(expectedReply);
       expect(replies[0]).not.toContain("provider detail");
       expect(logs).toEqual([
-        `gateway x-search: read failed (${expectedCode})`,
+        `gateway x-search: read failed (${expectedCode}, status=${status})`,
       ]);
     },
   );
+
+  test("retries one transient xAI failure and returns the cited result", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("temporary", { status: 503 }))
+      .mockResolvedValueOnce(xaiResponse());
+    const sleep = vi.fn(async () => {});
+    const logs: string[] = [];
+    const replies: string[] = [];
+    const feature = new XaiXSearchFeature({
+      apiKey: "xai-test-key-that-is-long-enough",
+      usageFile: join(home, "usage.json"),
+      fetchImpl,
+      sleep,
+      log: (line) => logs.push(line),
+    });
+
+    await feature.handle({
+      text: "latest post from @example",
+      channelId: "telegram",
+      peerId: "alice",
+      reply: async (text) => {
+        replies.push(text);
+        return "out";
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(750);
+    expect(replies[0]).toContain("https://x.com/example/status/123");
+    expect(logs).toEqual([]);
+  });
+
+  test("does not retry a long provider rate-limit delay", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response("slow down", {
+        status: 429,
+        headers: { "retry-after": "30" },
+      }),
+    );
+    const sleep = vi.fn(async () => {});
+    const replies: string[] = [];
+    const feature = new XaiXSearchFeature({
+      apiKey: "xai-test-key-that-is-long-enough",
+      usageFile: join(home, "usage.json"),
+      fetchImpl: fetchImpl as typeof fetch,
+      sleep,
+    });
+
+    await feature.handle({
+      text: "latest post from @example",
+      channelId: "telegram",
+      peerId: "alice",
+      reply: async (text) => {
+        replies.push(text);
+        return "out";
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(replies[0]).toContain("rate-limited upstream");
+  });
 });

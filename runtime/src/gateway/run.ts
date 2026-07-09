@@ -393,6 +393,16 @@ export async function startGateway(
     15_000,
     120_000,
   );
+  const xSearchMaxTurns = envBoundedPositiveInt(
+    env.AGENC_GATEWAY_X_SEARCH_MAX_TURNS,
+    1,
+    5,
+  );
+  const xSearchMaxAttempts = envBoundedPositiveInt(
+    env.AGENC_GATEWAY_X_SEARCH_MAX_ATTEMPTS,
+    1,
+    3,
+  );
   const xSearchFeature =
     xSearchEnabled && xaiKey !== undefined
       ? new XaiXSearchFeature({
@@ -409,6 +419,12 @@ export async function startGateway(
             : {}),
           ...(xSearchTimeoutMs !== undefined
             ? { timeoutMs: xSearchTimeoutMs }
+            : {}),
+          ...(xSearchMaxTurns !== undefined
+            ? { maxTurns: xSearchMaxTurns }
+            : {}),
+          ...(xSearchMaxAttempts !== undefined
+            ? { maxAttempts: xSearchMaxAttempts }
             : {}),
           log,
         })

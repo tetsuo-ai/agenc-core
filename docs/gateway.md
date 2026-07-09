@@ -114,6 +114,8 @@ AGENC_GATEWAY_X_SEARCH_MODEL=grok-4.5
 AGENC_GATEWAY_X_SEARCH_DAILY_LIMIT=100
 AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT=4
 AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS=90000
+AGENC_GATEWAY_X_SEARCH_MAX_TURNS=2
+AGENC_GATEWAY_X_SEARCH_MAX_ATTEMPTS=2
 ```
 
 Examples include `what is the latest post from @xai?`, `dime el último
@@ -123,8 +125,16 @@ handle-specific question cannot silently broaden into unrelated accounts.
 
 Hosted X search can take tens of seconds. The default bounded wait is 90
 seconds; `AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS` can tune it between 15 and 120
-seconds. Timeout, rate-limit, and xAI-availability failures are reported
-separately without exposing provider responses or credentials.
+seconds. Quick Telegram reads use at most two xAI assistant/tool turns by
+default, matching xAI's guidance for quick lookups; the configurable maximum is
+five. A transient network, HTTP 5xx, or short rate-limit response receives one
+bounded retry by default. Timeout, rate-limit, and xAI-availability failures are
+reported separately without exposing provider responses or credentials.
+
+xAI's Docs MCP searches xAI documentation, while Remote MCP connects Grok to an
+external tool server. Neither is the X data source used here. Public X reads use
+xAI's built-in server-side `x_search` tool directly through the Responses API,
+which is the smallest read-only surface for this route.
 
 The gateway treats the query and all X content as untrusted data, applies
 per-peer and daily limits, bounds response size and latency, and caches repeated
