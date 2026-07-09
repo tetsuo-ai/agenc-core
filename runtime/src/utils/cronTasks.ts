@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'crypto'
 import { readFileSync } from 'fs'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import {
   addSessionCronTask,
@@ -20,12 +20,8 @@ import {
   removeSessionCronTasks,
 } from '../bootstrap/state.js'
 import { computeNextCronRun, parseCronExpression } from './cron.js'
-import { logForDebugging } from 'src/utils/debug.js'
+import { logForDebugging } from './debug.js'
 import { isFsInaccessible } from './errors.js'
-import { getFsImplementation } from './fsOperations.js'
-import { safeParseJSON } from './json.js'
-import { logError } from './log.js'
-import { jsonStringify } from './slowOperations.js'
 
 /**
  * Delivery routing for gateway-executed cron tasks (TODO task 16). A task
@@ -95,6 +91,14 @@ type CronFile = { tasks: CronTask[] }
 
 const CRON_FILE_REL = join('.agenc', 'scheduled_tasks.json')
 
+function parseCronJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw.replace(/^\uFEFF/, ''))
+  } catch {
+    return null
+  }
+}
+
 /**
  * Path to the cron file. `dir` defaults to getProjectRoot() — pass it
  * explicitly from contexts that don't run through main.tsx (e.g. the Agent
@@ -111,17 +115,15 @@ export function getCronFilePath(dir?: string): string {
  * blocks the whole file.
  */
 export async function readCronTasks(dir?: string): Promise<CronTask[]> {
-  const fs = getFsImplementation()
   let raw: string
   try {
-    raw = await fs.readFile(getCronFilePath(dir), { encoding: 'utf-8' })
+    raw = await readFile(getCronFilePath(dir), { encoding: 'utf-8' })
   } catch (e: unknown) {
     if (isFsInaccessible(e)) return []
-    logError(e)
     return []
   }
 
-  const parsed = safeParseJSON(raw, false)
+  const parsed = parseCronJson(raw)
   if (!parsed || typeof parsed !== 'object') return []
   const file = parsed as Partial<CronFile>
   if (!Array.isArray(file.tasks)) return []
@@ -136,7 +138,7 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
       typeof t.createdAt !== 'number'
     ) {
       logForDebugging(
-        `[ScheduledTasks] skipping malformed task: ${jsonStringify(t)}`,
+        `[ScheduledTasks] skipping malformed task: ${JSON.stringify(t)}`,
       )
       continue
     }
@@ -175,7 +177,7 @@ export function hasCronTasksSync(dir?: string): boolean {
   } catch {
     return false
   }
-  const parsed = safeParseJSON(raw, false)
+  const parsed = parseCronJson(raw)
   if (!parsed || typeof parsed !== 'object') return false
   const tasks = (parsed as Partial<CronFile>).tasks
   return Array.isArray(tasks) && tasks.length > 0
@@ -200,7 +202,7 @@ export async function writeCronTasks(
   }
   await writeFile(
     getCronFilePath(root),
-    jsonStringify(body, null, 2) + '\n',
+    JSON.stringify(body, null, 2) + '\n',
     'utf-8',
   )
 }
