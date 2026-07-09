@@ -1,10 +1,10 @@
 /**
  * Telegram/WebChat gateway audio route backed by xAI Text to Speech.
  *
- * Audio generation is deliberately explicit (`/voice`, `/audio`, `/song`,
- * `voice:`, `audio:`, `song:`) with a small natural-language affordance for
- * "make a short song for..." and "say ... with a female/male voice". This
- * avoids surprise-spending TTS credits on normal chat turns.
+ * Audio generation supports slash commands and clear natural-language asks,
+ * including English/Spanish requests for voice notes and short songs. Normal
+ * questions still fall through to the agent so TTS credits are not spent by
+ * surprise.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -95,6 +95,9 @@ export function parseVoicePrompt(
     };
   }
 
+  const broadSong = parseNaturalSongPrompt(trimmed, voices);
+  if (broadSong !== null) return broadSong;
+
   const prefixVoice = trimmed.match(
     /^(?:say|tell|read|speak)\s+(?:with|in)\s+(?:the\s+)?(?:voice\s+of\s+)?(female|woman|girl|feminine|male|man|guy|masculine|deep)\s+voice?\s*:?\s+([\s\S]+)$/i,
   );
@@ -121,13 +124,113 @@ export function parseVoicePrompt(
     };
   }
 
+  const spanishPrefixVoice = trimmed.match(
+    /^(?:di|dime|lee|habla|narra)\s+([\s\S]+?)\s+con\s+voz\s+(?:de\s+)?(mujer|femenina|chica|hombre|masculina|tipo|profunda)\.?$/i,
+  );
+  if (spanishPrefixVoice !== null) {
+    const raw = spanishPrefixVoice[1]?.trim() ?? "";
+    const voiceHint = spanishPrefixVoice[2] ?? "";
+    return {
+      text: raw,
+      voiceId: inferVoiceId(voiceHint, voices),
+      song: false,
+    };
+  }
+
+  const naturalAudio = parseNaturalAudioPrompt(trimmed, voices);
+  if (naturalAudio !== null) return naturalAudio;
+
   return null;
+}
+
+function parseNaturalSongPrompt(
+  trimmed: string,
+  voices: VoiceConfig,
+): ParsedVoicePrompt | null {
+  if (!hasMediaAction(trimmed) || !/\b(song|canci[oó]n)\b/iu.test(trimmed)) {
+    return null;
+  }
+  const topic = extractSongTopic(trimmed);
+  return {
+    text: shortSongText(topic),
+    voiceId: inferVoiceId(trimmed, voices),
+    song: true,
+  };
+}
+
+function parseNaturalAudioPrompt(
+  trimmed: string,
+  voices: VoiceConfig,
+): ParsedVoicePrompt | null {
+  const english = trimmed.match(
+    /^(?:(?:please\s+)?(?:can|could|would)\s+you\s+)?(?:make|create|generate|record)\s+(?:me\s+)?(?:an?\s+)?(?:audio|voice\s*note|voiceover|tts)(?:\s+(?:of|around|about)?\s*\d+\s*(?:seconds?|secs?|s))?(?:\s+(?:with|in)\s+(?:a\s+|the\s+)?(?:female|woman|girl|feminine|male|man|guy|masculine|deep)\s+voice)?\s*(?:saying|that\s+says|to\s+say|for|about|with\s+the\s+text)?\s*:?\s+([\s\S]+)$/i,
+  );
+  if (english !== null) {
+    return {
+      text: normalizeVoiceText(english[1] ?? ""),
+      voiceId: inferVoiceId(trimmed, voices),
+      song: false,
+    };
+  }
+
+  const spanish = trimmed.match(
+    /^(?:(?:por\s+favor\s+)?(?:puedes|podrias|podrías)\s+(?:hacer|crear|generar|grabar)\s+|(?:quiero|necesito)\s+|(?:haz|hace|crea|genera|graba)\s+)(?:me\s+)?(?:un\s+)?(?:audio|mensaje\s+de\s+voz|nota\s+de\s+voz|voice\s*note)(?:\s+de\s+\d+\s*segundos?)?(?:\s+con\s+voz\s+(?:de\s+)?(?:mujer|femenina|chica|hombre|masculina|tipo|profunda))?\s*(?:diciendo|que\s+diga|para\s+decir|con\s+el\s+texto)?\s*:?\s+([\s\S]+)$/i,
+  );
+  if (spanish !== null) {
+    return {
+      text: normalizeVoiceText(spanish[1] ?? ""),
+      voiceId: inferVoiceId(trimmed, voices),
+      song: false,
+    };
+  }
+
+  return null;
+}
+
+function hasMediaAction(text: string): boolean {
+  return /\b(make|create|generate|write|sing|record|want|need|haz|hace|crea|genera|escribe|canta|graba|quiero|necesito|puedes|podrias|podrías)\b/iu.test(
+    text,
+  );
+}
+
+function extractSongTopic(text: string): string {
+  const strong = text.match(/\b(?:about|for|sobre|para)\s+([\s\S]+)$/iu);
+  if (strong !== null) return cleanSongTopic(strong[1] ?? "");
+
+  const afterSong = text.match(/\b(?:song|canci[oó]n)\s+(?:de|about|for)\s+([\s\S]+)$/iu);
+  if (afterSong !== null) return cleanSongTopic(afterSong[1] ?? "");
+
+  return cleanSongTopic(text);
+}
+
+function cleanSongTopic(text: string): string {
+  return text
+    .replace(/\b(?:make|create|generate|write|sing|record|want|need)\b/giu, " ")
+    .replace(
+      /\b(?:haz|hace|crea|genera|escribe|canta|graba|quiero|necesito|puedes|podrias|podrías)\b/giu,
+      " ",
+    )
+    .replace(/\b(?:a|an|un|una|short|quick|corta|corto|song|canci[oó]n)\b/giu, " ")
+    .replace(/\b\d+\s*(?:seconds?|secs?|s|segundos?)\b/giu, " ")
+    .replace(
+      /\b(?:with|in|con)\s+(?:a\s+|the\s+)?(?:voice\s+of\s+)?(?:female|woman|girl|feminine|male|man|guy|masculine|deep|mujer|femenina|chica|hombre|masculina|tipo|profunda)\s*(?:voice|voz)?\b/giu,
+      " ",
+    )
+    .replace(/\bvoz\s+(?:de\s+)?(?:mujer|femenina|chica|hombre|masculina|tipo|profunda)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:,-]+/u, "")
+    .trim()
+    .slice(0, 180);
 }
 
 function inferVoiceId(text: string, config: VoiceConfig): string {
   const lower = text.toLowerCase();
-  if (/\b(female|woman|girl|feminine)\b/u.test(lower)) return config.femaleVoice;
-  if (/\b(male|man|guy|masculine|deep)\b/u.test(lower)) return config.maleVoice;
+  if (/\b(female|woman|girl|feminine|mujer|femenina|chica)\b/u.test(lower)) {
+    return config.femaleVoice;
+  }
+  if (/\b(male|man|guy|masculine|deep|hombre|masculina|tipo|profunda)\b/u.test(lower)) {
+    return config.maleVoice;
+  }
   if (/\b(warm|soft|calm|conversational)\b/u.test(lower)) return "ara";
   if (/\b(professional|clear|crisp)\b/u.test(lower)) return "rex";
   if (/\b(smooth|balanced)\b/u.test(lower)) return "sal";

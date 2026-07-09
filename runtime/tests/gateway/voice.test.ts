@@ -36,6 +36,32 @@ describe("parseVoicePrompt", () => {
     });
     expect(parseVoicePrompt("what is AgenC?")).toBeNull();
   });
+
+  test("parses casual English and Spanish voice/song requests", () => {
+    expect(
+      parseVoicePrompt("generate a 10 second song with female voice about AgenC"),
+    ).toMatchObject({
+      voiceId: "eve",
+      song: true,
+    });
+    expect(
+      parseVoicePrompt("quiero una canción de 10 segundos con voz de mujer sobre Solana agents"),
+    ).toMatchObject({
+      voiceId: "eve",
+      song: true,
+    });
+    expect(parseVoicePrompt("haz un audio con voz masculina diciendo hello AgenC")).toMatchObject({
+      text: "hello AgenC",
+      voiceId: "leo",
+      song: false,
+    });
+    expect(parseVoicePrompt("di hello onchain con voz de hombre")).toMatchObject({
+      text: "hello onchain",
+      voiceId: "leo",
+      song: false,
+    });
+    expect(parseVoicePrompt("tell me what a song is")).toBeNull();
+  });
 });
 
 describe("XaiVoiceFeature", () => {

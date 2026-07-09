@@ -85,12 +85,16 @@ AGENC_GATEWAY_VOICE_ENABLED=1
 AGENC_GATEWAY_VOICE_DAILY_LIMIT=10
 ```
 
-The gateway then handles `/image <idea>`, `image: <idea>`, `/meme <idea>`,
-`meme: <idea>`, `/voice <line>`, `voice: <line>`, `/song <idea>`, and
-`song: <idea>` before the prompt reaches the agent. Image routes generate a
-native Telegram photo through the xAI image API; voice routes generate a
-native Telegram audio file through the xAI TTS API. Both enforce local soft
-daily caps.
+The gateway then handles explicit shortcuts such as `/image <idea>`,
+`image: <idea>`, `/meme <idea>`, `meme: <idea>`, `/voice <line>`,
+`voice: <line>`, `/song <idea>`, and `song: <idea>` before the prompt reaches
+the agent. It also detects clear natural-language media requests like
+`make an image of ...`, `haz una imagen de ...`, `generate a 10 second song
+with female voice about ...`, or `haz un audio con voz masculina diciendo ...`.
+Normal questions such as `explain this image` or `what is a song?` still route
+to the agent. Image routes generate a native Telegram photo through the xAI
+image API; voice routes generate a native Telegram audio file through the xAI
+TTS API. Both enforce local soft daily caps.
 
 Telegram gateway agents are spawned with a tiny unattended tool allowlist by
 default: `SendUserMessage` and `Brief`. That lets the bot answer normally
