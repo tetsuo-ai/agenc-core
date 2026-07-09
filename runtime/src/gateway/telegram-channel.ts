@@ -22,7 +22,11 @@ export const TELEGRAM_CHANNEL_ID = "telegram";
 
 export interface TelegramUpdate {
   readonly update_id: number;
-  readonly message?: {
+  readonly message?: TelegramMessage;
+  readonly channel_post?: TelegramMessage;
+}
+
+export interface TelegramMessage {
     readonly message_id: number;
     readonly from?: {
       readonly id: number;
@@ -45,7 +49,6 @@ export interface TelegramUpdate {
         readonly username?: string;
       };
     };
-  };
 }
 
 export interface TelegramSentMessage {
@@ -123,7 +126,7 @@ export class FetchTelegramTransport implements TelegramTransport {
     return this.#call<TelegramUpdate[]>("getUpdates", {
       offset,
       timeout: timeoutSeconds,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "channel_post"],
     });
   }
 
@@ -308,7 +311,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async #handleUpdate(update: TelegramUpdate): Promise<void> {
-    const message = update.message;
+    const message = update.message ?? update.channel_post;
     if (
       this.#context === null ||
       message === undefined ||
@@ -323,8 +326,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
     const peerId = String(sender?.id ?? senderChat?.id);
     const chatId = String(message.chat.id);
-    const isGroup =
-      message.chat.type === "group" || message.chat.type === "supergroup";
+    const isPrivate = message.chat.type === "private";
     const text = this.#normalizedTextForAddressing(message.text, message);
     if (text === null) return;
     await this.#context.onMessage({
@@ -341,18 +343,17 @@ export class TelegramChannelAdapter implements ChannelAdapter {
                 ? { displayName: senderChat.title }
                 : {}),
       },
-      conversation: { kind: isGroup ? "group" : "dm", id: chatId },
+      conversation: { kind: isPrivate ? "dm" : "group", id: chatId },
       text,
     });
   }
 
   #normalizedTextForAddressing(
     text: string,
-    message: NonNullable<TelegramUpdate["message"]>,
+    message: TelegramMessage,
   ): string | null {
-    const isGroup =
-      message.chat.type === "group" || message.chat.type === "supergroup";
-    if (!isGroup || this.#groupAddressing === "all") return text;
+    const isPrivate = message.chat.type === "private";
+    if (isPrivate || this.#groupAddressing === "all") return text;
     if (text.trimStart().startsWith("/")) return text;
 
     const username = this.#botIdentity?.username;

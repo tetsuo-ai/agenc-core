@@ -234,6 +234,70 @@ describe("TelegramChannelAdapter", () => {
     expect(messages[0].text).toBe("hi from anonymous admin");
   });
 
+  test("mention-only group addressing forwards channel posts with @bot mentions", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 46,
+          channel_post: {
+            message_id: 86,
+            sender_chat: {
+              id: -100300,
+              type: "channel",
+              title: "AgenC channel",
+            },
+            chat: { id: -100300, type: "channel" },
+            text: "@core_69_bot explain AgenC",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].conversation).toEqual({ kind: "group", id: "-100300" });
+    expect(messages[0].text).toBe("explain AgenC");
+  });
+
+  test("mention-only group addressing ignores ambient channel posts", async () => {
+    const transport = new FakeTransport();
+    transport.updates = [
+      [
+        {
+          update_id: 47,
+          channel_post: {
+            message_id: 87,
+            sender_chat: {
+              id: -100300,
+              type: "channel",
+              title: "AgenC channel",
+            },
+            chat: { id: -100300, type: "channel" },
+            text: "ambient channel post",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(0);
+  });
+
   test("mention-only group addressing forwards replies to the bot", async () => {
     const transport = new FakeTransport();
     transport.updates = [
