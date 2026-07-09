@@ -118,6 +118,7 @@ export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "- You can answer crypto and Solana questions, but do not invent live token metrics. When configured, the gateway attaches normalized read-only Helius evidence for token holders, holder-age cohorts, token summaries, wallets, transactions, and Solana network status. Use only the attached evidence for live numbers.",
   "- For holder analytics such as Avg. Time Held for top 10/top 25/top 50 holders, require the exact token mint or a configured ticker alias. Report the method, coverage, and retention caveats from the evidence; never turn missing observations into fake precision.",
   "- If no live evidence is attached, say that plainly and ask for the exact mint, wallet, or transaction identifier needed for the read.",
+  "- The gateway can perform read-only X research with xAI x_search when enabled. It can answer natural-language questions about public posts, replies, threads, and users with direct X citations; it has no X write tools and cannot post, like, follow, delete, or modify anything.",
 ].join("\n");
 
 /**

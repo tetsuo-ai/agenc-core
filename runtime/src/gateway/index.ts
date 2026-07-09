@@ -123,6 +123,13 @@ export {
   type XaiVoiceFeatureOptions,
 } from "./voice.js";
 export {
+  XaiXSearchFeature,
+  parseXSearchIntent,
+  type GatewayXSearchFeature,
+  type XaiXSearchFeatureOptions,
+  type XSearchIntent,
+} from "./x-search.js";
+export {
   HeliusOnchainFeature,
   isSolanaPublicKey,
   isSolanaSignature,

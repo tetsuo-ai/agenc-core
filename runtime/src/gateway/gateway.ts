@@ -25,6 +25,7 @@ import { SessionRouter } from "./session-router.js";
 import { TELEGRAM_CHANNEL_ID } from "./telegram-channel.js";
 import { frameChannelMessage } from "./untrusted.js";
 import type { GatewayVoiceFeature } from "./voice.js";
+import type { GatewayXSearchFeature } from "./x-search.js";
 import type {
   ChannelAdapter,
   ChannelReplyOptions,
@@ -47,6 +48,7 @@ export interface GatewayOptions {
   readonly memeFeature?: GatewayMemeFeature;
   readonly voiceFeature?: GatewayVoiceFeature;
   readonly onchainFeature?: GatewayOnchainFeature;
+  readonly xSearchFeature?: GatewayXSearchFeature;
   readonly controlPlane?: TelegramOwnerControl;
 }
 
@@ -60,6 +62,7 @@ export class ChannelGateway {
   readonly #memeFeature?: GatewayMemeFeature;
   readonly #voiceFeature?: GatewayVoiceFeature;
   readonly #onchainFeature?: GatewayOnchainFeature;
+  readonly #xSearchFeature?: GatewayXSearchFeature;
   readonly #controlPlane?: TelegramOwnerControl;
 
   constructor(options: GatewayOptions) {
@@ -68,6 +71,7 @@ export class ChannelGateway {
     this.#memeFeature = options.memeFeature;
     this.#voiceFeature = options.voiceFeature;
     this.#onchainFeature = options.onchainFeature;
+    this.#xSearchFeature = options.xSearchFeature;
     this.#controlPlane = options.controlPlane;
     this.#pairing = new PairingStore({
       agencHome: options.agencHome,
@@ -204,6 +208,16 @@ export class ChannelGateway {
     if (this.#voiceFeature !== undefined) {
       const handled = await this.#voiceFeature.handle({
         text: message.text,
+        reply,
+      });
+      if (handled) return;
+    }
+
+    if (this.#xSearchFeature !== undefined) {
+      const handled = await this.#xSearchFeature.handle({
+        text: message.text,
+        channelId: message.channelId,
+        peerId: message.sender.peerId,
         reply,
       });
       if (handled) return;
