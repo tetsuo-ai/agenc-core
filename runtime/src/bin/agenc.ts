@@ -147,6 +147,12 @@ import {
   runAgenCDoctorCli,
 } from "./doctor-cli.js";
 import {
+  formatAgenCOnboardCliHelpText,
+  parseAgenCOnboardCliArgs,
+  readOnboardDaemonStatus,
+  runAgenCOnboardCli,
+} from "./onboard-cli.js";
+import {
   formatAgenCInitCliHelpText,
   parseAgenCInitCliArgs,
   runAgenCInitCli,
@@ -300,6 +306,7 @@ export function formatCliHelpText(): string {
     "Usage: agenc [options] [PROMPT]",
     "       agenc -p|--print [options] [PROMPT]",
     "       agenc help [command]",
+    "       agenc onboard [--status [--json] | --reset]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
     "       agenc providers [--json] [--no-local-check]",
@@ -319,6 +326,7 @@ export function formatCliHelpText(): string {
     "       agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor|xaa>",
     "",
     "Commands:",
+    "  onboard                                 Set up AgenC: provider, key, theme, first chat",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness and local health",
@@ -393,6 +401,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCMcpCliHelpText();
     case "doctor":
       return formatAgenCDoctorCliHelpText();
+    case "onboard":
+      return formatAgenCOnboardCliHelpText();
     case "permissions":
       return formatAgenCPermissionsCliHelpText();
     case "plugin":
@@ -3989,6 +3999,28 @@ export async function main(): Promise<number> {
   const doctorCommand = parseAgenCDoctorCliArgs(argv);
   if (doctorCommand !== null) {
     return runAgenCDoctorCli(doctorCommand);
+  }
+  const onboardCommand = parseAgenCOnboardCliArgs(argv);
+  if (onboardCommand !== null) {
+    if (onboardCommand.kind !== "launch") {
+      return runAgenCOnboardCli(onboardCommand);
+    }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write(
+        "agenc: onboard needs an interactive terminal (use 'agenc onboard --status' in scripts)\n",
+      );
+      return 1;
+    }
+    const daemonStatus = await readOnboardDaemonStatus(process.env);
+    process.stderr.write(
+      daemonStatus.running
+        ? `agenc: daemon running (pid ${daemonStatus.pid})\n`
+        : "agenc: daemon not running — it starts automatically with the session\n",
+    );
+    // Force the first-run wizard for this process only (never persisted);
+    // consumed by shouldShowFirstRunOnboarding via the TUI's env snapshot.
+    process.env.AGENC_ONBOARDING = "force";
+    return runDefaultAgenCCliRoute(process.argv.slice(0, 2));
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {

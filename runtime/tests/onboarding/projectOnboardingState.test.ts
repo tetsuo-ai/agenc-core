@@ -10,6 +10,7 @@ import {
   maybeMarkProjectOnboardingComplete,
   markFirstRunOnboardingComplete,
   readOnboardingState,
+  resetFirstRunOnboarding,
   shouldShowFirstRunOnboarding,
   shouldShowProjectOnboarding,
 } from "./projectOnboardingState.js";
@@ -78,6 +79,77 @@ describe("first-run onboarding display state", () => {
           isInteractive: true,
         }),
       ).toBe(false);
+    });
+  });
+
+  test("AGENC_ONBOARDING=force re-shows the wizard after completion (agenc onboard)", () => {
+    withTempDir("agenc-onboarding-state-", (agencHome) => {
+      markFirstRunOnboardingComplete({
+        agencHome,
+        now: new Date("2026-01-03T00:00:00.000Z"),
+      });
+      // Completed state suppresses the wizard normally...
+      expect(
+        shouldShowFirstRunOnboarding({
+          agencHome,
+          env: {},
+          isInteractive: true,
+        }),
+      ).toBe(false);
+      // ...force bypasses completion, the seen limit, and an initial prompt.
+      expect(
+        shouldShowFirstRunOnboarding({
+          agencHome,
+          env: { AGENC_ONBOARDING: "force" },
+          isInteractive: true,
+          hasInitialPrompt: true,
+        }),
+      ).toBe(true);
+      // Force never overrides the interactive/home requirements.
+      expect(
+        shouldShowFirstRunOnboarding({
+          agencHome,
+          env: { AGENC_ONBOARDING: "force" },
+          isInteractive: false,
+        }),
+      ).toBe(false);
+      expect(
+        shouldShowFirstRunOnboarding({
+          env: { AGENC_ONBOARDING: "force" },
+          isInteractive: true,
+        }),
+      ).toBe(false);
+    });
+  });
+
+  test("resetFirstRunOnboarding clears flags but keeps selections", () => {
+    withTempDir("agenc-onboarding-state-", (agencHome) => {
+      incrementFirstRunOnboardingSeenCount({ agencHome });
+      markFirstRunOnboardingComplete({
+        agencHome,
+        selectedProvider: "grok",
+        selectedModel: "grok-4.3",
+        selectedTheme: "dark",
+        completedStepIds: ["preflight", "theme"],
+        now: new Date("2026-01-03T00:00:00.000Z"),
+      });
+
+      resetFirstRunOnboarding({ agencHome });
+
+      const state = readOnboardingState({ agencHome });
+      expect(state.completed).toBe(false);
+      expect(state.completedAt).toBeUndefined();
+      expect(state.seenCount).toBe(0);
+      expect(state.completedStepIds).toEqual([]);
+      expect(state.selectedProvider).toBe("grok");
+      expect(state.selectedTheme).toBe("dark");
+      expect(
+        shouldShowFirstRunOnboarding({
+          agencHome,
+          env: {},
+          isInteractive: true,
+        }),
+      ).toBe(true);
     });
   });
 

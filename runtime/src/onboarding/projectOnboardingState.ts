@@ -188,13 +188,36 @@ export function shouldShowFirstRunOnboarding(
   options: FirstRunDisplayOptions,
 ): boolean {
   if (options.agencHome === undefined) return false;
-  if (options.hasInitialPrompt === true) return false;
   if (options.isInteractive !== true) return false;
   const flag = options.env?.AGENC_ONBOARDING?.trim().toLowerCase();
+  // `force` is set process-internally by `agenc onboard`: re-run the wizard
+  // even after completion / past the seen limit. Still requires a resolvable
+  // home and an interactive session; never persisted to config.
+  if (flag === "force") return true;
+  if (options.hasInitialPrompt === true) return false;
   if (flag === "0" || flag === "false" || flag === "off") return false;
   const state = readOnboardingState({ agencHome: options.agencHome });
   if (state.completed) return false;
   return state.seenCount < (options.maxSeenCount ?? DEFAULT_FIRST_RUN_SEEN_LIMIT);
+}
+
+/**
+ * Reset the first-run wizard flags (`agenc onboard --reset`) so the wizard
+ * shows again on the next interactive start. Keeps prior provider/model/theme
+ * selections as defaults; per-project onboarding records are untouched.
+ */
+export function resetFirstRunOnboarding(
+  options: ReadOnboardingStateOptions,
+): FirstRunOnboardingState {
+  const { completedAt: _completedAt, ...state } = readOnboardingState(options);
+  const next: FirstRunOnboardingState = {
+    ...state,
+    completed: false,
+    seenCount: 0,
+    completedStepIds: [],
+  };
+  writeOnboardingState(options, next);
+  return next;
 }
 
 export function incrementFirstRunOnboardingSeenCount(
