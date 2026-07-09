@@ -67,12 +67,14 @@ class FakeTransport implements TelegramTransport {
   }[] = [];
   readonly commands: { commands: unknown; scope?: unknown }[] = [];
   identity: TelegramBotIdentity = { id: 999, username: "agenc_test_bot" };
+  getMeCalls = 0;
   #nextId = 100;
   richShouldThrow = false;
   richEditShouldThrow = false;
   editShouldThrow = false;
 
   async getMe(): Promise<TelegramBotIdentity> {
+    this.getMeCalls += 1;
     return this.identity;
   }
   async getUpdates(): Promise<TelegramUpdate[]> {
@@ -450,6 +452,77 @@ describe("TelegramChannelAdapter", () => {
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("can you explain the top holder data?");
+  });
+
+  test("configured username still resolves the live bot id for text_mention entities", async () => {
+    const transport = new FakeTransport();
+    transport.identity = { id: 8514910485, username: "core_69_bot" };
+    transport.updates = [
+      [
+        {
+          update_id: 43,
+          message: {
+            message_id: 83,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "AgenC explain this",
+            entities: [
+              {
+                type: "text_mention",
+                offset: 0,
+                length: 5,
+                user: { id: 8514910485, is_bot: true },
+              },
+            ],
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+      botUsername: "@core_69_bot",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(transport.getMeCalls).toBe(1);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("explain this");
+  });
+
+  test("configured username remains a fallback when getMe fails", async () => {
+    const transport = new FakeTransport();
+    transport.getMe = async () => {
+      throw new Error("temporary Telegram API failure");
+    };
+    transport.updates = [
+      [
+        {
+          update_id: 44,
+          message: {
+            message_id: 84,
+            from: { id: 7, first_name: "Bob" },
+            chat: { id: -100200, type: "supergroup" },
+            text: "@core_69_bot explain this",
+          },
+        },
+      ],
+    ];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      groupAddressing: "mentions",
+      botUsername: "core_69_bot",
+    });
+    const { ctx, messages } = collector();
+    await adapter.start(ctx);
+    await adapter.pollOnce();
+    await adapter.stop();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("explain this");
   });
 
   test("mention-only group addressing includes replied-message context", async () => {

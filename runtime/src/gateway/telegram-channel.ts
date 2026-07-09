@@ -464,8 +464,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#debugUpdates = options.debugUpdates ?? false;
     this.#groupAddressing = options.groupAddressing ?? "all";
     this.#richMessages = options.richMessages ?? "private";
-    if (options.botUsername !== undefined && options.botUsername.length > 0) {
-      this.#botIdentity = { id: -1, username: options.botUsername.replace(/^@/, "") };
+    const configuredBotUsername = options.botUsername?.trim().replace(/^@/, "");
+    if (configuredBotUsername !== undefined && configuredBotUsername.length > 0) {
+      this.#botIdentity = { id: -1, username: configuredBotUsername };
     }
   }
 
@@ -517,13 +518,21 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   async #resolveBotIdentity(): Promise<void> {
     if (
       this.#groupAddressing !== "mentions" ||
-      this.#botIdentity !== null ||
       this.#transport.getMe === undefined
     ) {
       return;
     }
     try {
-      this.#botIdentity = await this.#transport.getMe();
+      const configuredUsername = this.#botIdentity?.username;
+      const resolved = await this.#transport.getMe();
+      this.#botIdentity = {
+        id: resolved.id,
+        ...(resolved.username !== undefined
+          ? { username: resolved.username }
+          : configuredUsername !== undefined
+            ? { username: configuredUsername }
+            : {}),
+      };
     } catch (error) {
       this.#log(`telegram: getMe failed: ${String(error)}`);
     }
@@ -792,8 +801,14 @@ function telegramBotMentionRanges(
   const entities = telegramEntitiesForText(message, text);
   for (const entity of entities) {
     if (!isValidTelegramEntityRange(text, entity)) continue;
-    if (entity.type === "text_mention" && entity.user?.id === identity.id) {
-      ranges.push({ offset: entity.offset, length: entity.length });
+    if (entity.type === "text_mention") {
+      const mentionedUsername = entity.user?.username?.toLowerCase();
+      if (
+        entity.user?.id === identity.id ||
+        (username !== undefined && mentionedUsername === username)
+      ) {
+        ranges.push({ offset: entity.offset, length: entity.length });
+      }
       continue;
     }
     if (entity.type !== "mention" || username === undefined) continue;
