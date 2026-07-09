@@ -159,6 +159,7 @@ The natural-language read surface currently covers:
 
 - token holder snapshots and top-10/top-25/top-50 concentration;
 - estimated top-10/top-25/top-50 holder age with observed-history coverage;
+- recent probable token buys from a fixed latest-20 enhanced-SWAP window;
 - token supply/metadata summaries;
 - wallet SOL balance, token accounts, and recent normalized transfers;
 - bounded transaction summaries without raw logs or arbitrary instruction text;
@@ -173,6 +174,16 @@ Telegram replies, and logs receive normalized results and safe error codes.
 Gateway-only credentials, including the Helius key and key-file path, are
 removed from the environment passed to an autostarted AgenC daemon, so agent
 sessions cannot discover them through inherited process configuration.
+
+Recent-buy classification is conservative: the transaction fee payer must be
+the same public account with a net target-token inflow and a net SOL, wrapped
+SOL, or USDC outflow in one Helius-indexed swap. Results are labeled probable
+because sponsored transactions, routers, aggregators, pools, transfer-tax
+tokens, and multi-account execution can split or obscure the beneficial buyer.
+The gateway filters rows that do not contain the target
+mint, reports quote assets separately, caches this fast-moving surface for at
+most 30 seconds, and never passes Helius descriptions, logs, memos, or arbitrary
+instruction text to the model.
 
 The holder-age result is deliberately labeled an estimate: it uses the current
 top owner snapshot and each owner's earliest inbound transfer for that mint.
