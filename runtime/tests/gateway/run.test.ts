@@ -82,12 +82,19 @@ describe("startGateway", () => {
     writeFileSync(join(home, "gateway", "config.json"), JSON.stringify(config));
   }
 
-  test("no channels enabled → throws and closes the client", async () => {
-    const client = new FakeClient();
+  test("no channels enabled → throws before touching the daemon client", async () => {
+    let factoryCalled = false;
     await expect(
-      startGateway({ agencHome: home, clientFactory: async () => client }),
+      startGateway({
+        agencHome: home,
+        clientFactory: async () => {
+          factoryCalled = true;
+          return new FakeClient();
+        },
+      }),
     ).rejects.toThrow(/no channels enabled/);
-    expect(client.closed).toBe(true);
+    // The channel check runs first, so no daemon connection is opened.
+    expect(factoryCalled).toBe(false);
   });
 
   test("stdio channel: a paired sender's message runs a turn end to end", async () => {
@@ -191,6 +198,61 @@ describe("startGateway", () => {
       extraAdapters: [mem],
     });
     expect(handle.channels.sort()).toEqual(["mem", "stdio"]);
+    await handle.stop();
+  });
+
+  test("webchat: token-gated browser message runs a turn end to end", async () => {
+    // No webchat policy in config → run loop injects allowlist:[web] because
+    // the loopback + token gate is the auth.
+    writeConfig({});
+    const client = new FakeClient();
+    const handle = await startGateway({
+      agencHome: home,
+      webchat: true,
+      env: { AGENC_WEBCHAT_TOKEN: "run-loop-token-abcdef123456" },
+      clientFactory: async () => client,
+    });
+    expect(handle.channels).toContain("webchat");
+    expect(handle.webchatUrl).toContain("token=run-loop-token-abcdef123456");
+
+    const url = new URL(handle.webchatUrl!);
+    const base = `http://127.0.0.1:${url.port}`;
+    const res = await fetch(`${base}/message`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer run-loop-token-abcdef123456",
+      },
+      body: JSON.stringify({ conversation: "web", text: "do it" }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(client.sessions).toHaveLength(1);
+    // Framed (task 11) but carries the user's text.
+    expect(client.sessions[0].prompts[0]).toContain("do it");
+    expect(client.sessions[0].prompts[0]).toContain('trust="external"');
+    await handle.stop();
+  });
+
+  test("webchat: an unauthenticated message never reaches the agent", async () => {
+    writeConfig({});
+    const client = new FakeClient();
+    const handle = await startGateway({
+      agencHome: home,
+      webchat: true,
+      env: { AGENC_WEBCHAT_TOKEN: "run-loop-token-abcdef123456" },
+      clientFactory: async () => client,
+    });
+    const url = new URL(handle.webchatUrl!);
+    const res = await fetch(`http://127.0.0.1:${url.port}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ conversation: "web", text: "sneak" }),
+    });
+    expect(res.status).toBe(401);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(client.sessions).toHaveLength(0);
     await handle.stop();
   });
 });

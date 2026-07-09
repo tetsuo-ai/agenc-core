@@ -10,21 +10,33 @@ client-side addition, not a runtime change.
 
 ```bash
 agenc gateway run --stdio          # local dev channel: type to your agent
+agenc gateway run --webchat        # browser UI (prints a loopback URL + token)
 AGENC_TELEGRAM_BOT_TOKEN=123:ABC \
   agenc gateway run                # start the Telegram channel
 ```
 
 `agenc gateway run` connects to the daemon (starting one if needed), loads
 `gateway/config.json`, and starts the enabled channels: `--stdio` for the
-local line-oriented dev channel, and Telegram whenever
-`AGENC_TELEGRAM_BOT_TOKEN` is set. It runs until Ctrl-C. The gateway opens no
-listener of its own — Telegram is outbound long-poll — so there is no new bind
-surface to expose.
+local line-oriented dev channel, `--webchat` for the browser UI, and Telegram
+whenever `AGENC_TELEGRAM_BOT_TOKEN` is set. It runs until Ctrl-C.
 
 The **stdio channel** is the fastest way to see the whole pipeline: run
 `agenc gateway run --stdio`, and if the `stdio` channel has no allowlist entry
 you'll get a pairing code on your first line (pair from another terminal with
 `agenc gateway pairing`, or allowlist `local` in config).
+
+The **WebChat channel** serves a minimal browser chat from the gateway itself.
+It **binds loopback (127.0.0.1) and refuses a non-loopback host** without an
+explicit override, and every request is gated by a shared token — the run
+command prints `http://127.0.0.1:<port>/?token=<token>`; open that. The token
+is persisted under `gateway/webchat-token` (0600) so the URL survives
+restarts, or set `AGENC_WEBCHAT_TOKEN`. Because the loopback bind + token is
+the auth, the web sender is allowlisted by default (no pairing with your own
+browser). Streaming replies update in place over Server-Sent Events, and an
+approval request renders Approve/Deny buttons that send the exact token reply
+— so the approval still settles only through the round-trip. To reach it from
+another device, prefer a tailnet or SSH tunnel to the loopback port, not a
+non-loopback bind.
 
 The **Telegram channel** uses the official Bot API (no reverse-engineered
 client, no account-ban risk). Create a bot with @BotFather, export the token,

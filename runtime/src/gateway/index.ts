@@ -65,3 +65,11 @@ export {
   CHANNEL_MESSAGE_GUIDANCE,
   type FrameChannelMessageInput,
 } from "./untrusted.js";
+export {
+  WebChatChannelAdapter,
+  renderWebChatHtml,
+  WEBCHAT_CHANNEL_ID,
+  WEBCHAT_PEER_ID,
+  WEBCHAT_CONVERSATION_ID,
+  type WebChatChannelOptions,
+} from "./webchat-channel.js";
