@@ -47,6 +47,7 @@ import {
   parseHeliusTokenAliases,
 } from "./onchain.js";
 import { XaiVoiceFeature } from "./voice.js";
+import { XaiXSearchFeature } from "./x-search.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
 import { StdioChannelAdapter } from "./stdio-channel.js";
 import {
@@ -236,6 +237,10 @@ export async function startGateway(
     envFlag(env.AGENC_GATEWAY_VOICE_ENABLED) &&
     xaiKey !== undefined &&
     xaiKey.length > 0;
+  const xSearchEnabled =
+    envFlag(env.AGENC_GATEWAY_X_SEARCH_ENABLED) &&
+    xaiKey !== undefined &&
+    xaiKey.length > 0;
   const telegramAdminPeerIds = envList(env.AGENC_TELEGRAM_ADMIN_PEER_IDS);
   const telegramOwnerClaimCode = env.AGENC_TELEGRAM_OWNER_CLAIM_CODE?.trim();
   const publicTelegramCommands = TELEGRAM_PUBLIC_MEDIA_COMMANDS.filter((entry) => {
@@ -362,6 +367,29 @@ export async function startGateway(
             : {}),
           ...(env.AGENC_GATEWAY_VOICE_LANGUAGE !== undefined
             ? { language: env.AGENC_GATEWAY_VOICE_LANGUAGE }
+            : {}),
+          log,
+        })
+      : undefined;
+  const xSearchDailyLimit = envPositiveInt(
+    env.AGENC_GATEWAY_X_SEARCH_DAILY_LIMIT,
+  );
+  const xSearchPerPeerLimit = envPositiveInt(
+    env.AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT,
+  );
+  const xSearchFeature =
+    xSearchEnabled && xaiKey !== undefined
+      ? new XaiXSearchFeature({
+          apiKey: xaiKey,
+          usageFile: join(options.agencHome, "gateway", "x-search-usage.json"),
+          ...(env.AGENC_GATEWAY_X_SEARCH_MODEL !== undefined
+            ? { model: env.AGENC_GATEWAY_X_SEARCH_MODEL }
+            : {}),
+          ...(xSearchDailyLimit !== undefined
+            ? { dailyLimit: xSearchDailyLimit }
+            : {}),
+          ...(xSearchPerPeerLimit !== undefined
+            ? { perPeerLimit: xSearchPerPeerLimit }
             : {}),
           log,
         })
@@ -499,6 +527,7 @@ export async function startGateway(
     log,
     ...(memeFeature !== undefined ? { memeFeature } : {}),
     ...(voiceFeature !== undefined ? { voiceFeature } : {}),
+    ...(xSearchFeature !== undefined ? { xSearchFeature } : {}),
     ...(onchainFeature !== undefined ? { onchainFeature } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
   });

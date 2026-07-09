@@ -101,6 +101,35 @@ to the agent. Image routes generate a native Telegram photo through the xAI
 image API; voice routes generate a native Telegram audio file through the xAI
 TTS API. Both enforce local soft daily caps.
 
+### Read-only X research
+
+The gateway can answer natural-language questions about public X posts, replies,
+threads, and users using the same server-side xAI credential as the Grok
+provider. This route calls only xAI's hosted `x_search` tool; it does not install
+XMCP, X Developer OAuth credentials, or any post/like/follow/delete operation.
+
+```bash
+AGENC_GATEWAY_X_SEARCH_ENABLED=1
+AGENC_GATEWAY_X_SEARCH_MODEL=grok-4.5
+AGENC_GATEWAY_X_SEARCH_DAILY_LIMIT=100
+AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT=4
+```
+
+Examples include `what is the latest post from @xai?`, `dime el último
+comentario de @user`, and `what are people saying about AgenC on X?`. Exact
+handles are extracted and passed through `allowed_x_handles` (maximum 20), so a
+handle-specific question cannot silently broaden into unrelated accounts.
+
+The gateway treats the query and all X content as untrusted data, applies
+per-peer and daily limits, bounds response size and latency, and caches repeated
+reads briefly. A response is returned only when xAI reports completion and
+includes a completed `x_search_call` plus a structured public
+`x.com`/`twitter.com` citation; post-specific questions additionally require a
+cited status URL. Unverified links from model text are removed. Requests set
+`store: false`, so the Responses API does not retain them. The xAI API key
+remains in the private authorization header and is never included in prompts,
+replies, usage files, or logs.
+
 ### Read-only Solana research
 
 The gateway can enrich crypto questions with bounded, server-side Helius reads.
@@ -169,6 +198,8 @@ mentions `@bot_username`, replies to the bot, or uses a slash command. Telegram
 must have BotFather privacy mode disabled (`/setprivacy` → Disable) for normal
 `@bot_username hi` mention messages to be delivered to the bot; otherwise only
 slash commands and replies are delivered by Telegram.
+After changing privacy mode, remove and re-add the bot to existing groups (or
+promote it to an administrator) so Telegram applies the new delivery mode.
 When someone replies to another user's message and mentions the bot, the
 gateway forwards both the user's message and the replied-to message as context,
 so the agent can answer the actual thread instead of seeing only the mention.

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { TelegramOwnerControl } from "../../src/gateway/control-plane.js";
 import { ChannelGateway } from "../../src/gateway/gateway.js";
 import type { GatewayOnchainFeature } from "../../src/gateway/onchain.js";
+import type { GatewayXSearchFeature } from "../../src/gateway/x-search.js";
 import { InMemoryChannelAdapter } from "../../src/gateway/test-channel.js";
 import type {
   GatewayDaemonClient,
@@ -456,6 +457,39 @@ describe("channel gateway", () => {
     expect(prompt).toContain("what is the average holder age?");
     expect(prompt.indexOf("<gateway_evidence")).toBeLessThan(
       prompt.indexOf("<channel_message"),
+    );
+  });
+
+  test("telegram routes read-only X questions before the agent session", async () => {
+    const telegram = new InMemoryChannelAdapter({ id: "telegram" });
+    const xSearchFeature: GatewayXSearchFeature = {
+      async handle(input) {
+        if (!input.text.includes("@xai")) return false;
+        await input.reply(
+          "Latest verified post: https://x.com/xai/status/123",
+        );
+        return true;
+      },
+    };
+    const gw = new ChannelGateway({
+      agencHome: home,
+      client,
+      config: {
+        channels: {
+          telegram: { dmPolicy: "allowlist", allowlist: ["alice"] },
+        },
+        bindings: [],
+        defaultAgent: "default",
+      },
+      xSearchFeature,
+    });
+    await gw.registerAdapter(telegram);
+
+    await telegram.receive(groupMessage("alice", "latest post from @xai"));
+
+    expect(client.sessions).toHaveLength(0);
+    expect(telegram.lastText("group-1")).toBe(
+      "Latest verified post: https://x.com/xai/status/123",
     );
   });
 
