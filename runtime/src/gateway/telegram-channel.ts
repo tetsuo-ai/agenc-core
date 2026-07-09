@@ -519,6 +519,30 @@ function escapeRegExp(value: string): string {
 }
 
 function telegramRichText(value: string): string {
+  const lines = value.split(/\r?\n/u);
+  const output: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const table = readMarkdownTable(lines, index);
+    if (table !== null) {
+      output.push(`<pre>${escapeTelegramHtml(formatMarkdownTable(table.rows))}</pre>`);
+      index = table.nextIndex;
+      continue;
+    }
+
+    const start = index;
+    index += 1;
+    while (index < lines.length && readMarkdownTable(lines, index) === null) {
+      index += 1;
+    }
+    output.push(telegramInlineRichText(lines.slice(start, index).join("\n")));
+  }
+
+  return output.join("\n");
+}
+
+function telegramInlineRichText(value: string): string {
   let output = "";
   let index = 0;
   while (index < value.length) {
@@ -579,6 +603,63 @@ function telegramRichText(value: string): string {
     index += 1;
   }
   return output;
+}
+
+function readMarkdownTable(
+  lines: readonly string[],
+  startIndex: number,
+): { readonly rows: readonly (readonly string[])[]; readonly nextIndex: number } | null {
+  if (
+    startIndex + 1 >= lines.length ||
+    !looksLikeMarkdownTableRow(lines[startIndex] ?? "") ||
+    !isMarkdownTableSeparator(lines[startIndex + 1] ?? "")
+  ) {
+    return null;
+  }
+
+  const rows: string[][] = [parseMarkdownTableRow(lines[startIndex] ?? "")];
+  let index = startIndex + 2;
+  while (index < lines.length && looksLikeMarkdownTableRow(lines[index] ?? "")) {
+    rows.push(parseMarkdownTableRow(lines[index] ?? ""));
+    index += 1;
+  }
+
+  return { rows, nextIndex: index };
+}
+
+function looksLikeMarkdownTableRow(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.includes("|") && parseMarkdownTableRow(trimmed).length >= 2;
+}
+
+function isMarkdownTableSeparator(value: string): boolean {
+  const cells = parseMarkdownTableRow(value);
+  return (
+    cells.length >= 2 &&
+    cells.every((cell) => /^:?-{3,}:?$/u.test(cell.trim()))
+  );
+}
+
+function parseMarkdownTableRow(value: string): string[] {
+  let trimmed = value.trim();
+  if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function formatMarkdownTable(rows: readonly (readonly string[])[]): string {
+  const widthCount = Math.max(...rows.map((row) => row.length));
+  const widths = Array.from({ length: widthCount }, (_, column) =>
+    Math.max(...rows.map((row) => (row[column] ?? "").length)),
+  );
+  const renderedRows = rows.map((row) =>
+    widths
+      .map((width, column) => (row[column] ?? "").padEnd(width))
+      .join(" | ")
+      .trimEnd(),
+  );
+  const separator = widths.map((width) => "-".repeat(Math.max(width, 3))).join(" | ");
+  return [renderedRows[0], separator, ...renderedRows.slice(1)].join("\n");
 }
 
 function escapeTelegramHtml(value: string): string {
