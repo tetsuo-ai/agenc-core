@@ -86,7 +86,15 @@ licensed; see [`LICENSE`](LICENSE).
 
 ## Quick start
 
-Install the published launcher:
+Install with the one-line installer (macOS/Linux; verifies the runtime
+tarball's sha256 and wires the daemon as a user service — see
+[`docs/install.md`](docs/install.md)):
+
+```bash
+curl -fsSL <installer-url>/install.sh | sh
+```
+
+Or install the published launcher:
 
 ```bash
 npm install -g @tetsuo-ai/agenc
