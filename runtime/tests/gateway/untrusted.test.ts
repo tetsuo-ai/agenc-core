@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
+  CHANNEL_ANSWER_ONLY_GUIDANCE,
   CHANNEL_MESSAGE_GUIDANCE,
   frameChannelMessage,
   sanitizeChannelText,
@@ -71,6 +72,17 @@ describe("frameChannelMessage", () => {
     expect(framed).toContain('sender="42"');
     expect(framed).toContain('name="alice"');
     expect(framed).toContain("run the tests");
+  });
+
+  test("can add answer-only guidance for messaging channels", () => {
+    const framed = frameChannelMessage({
+      channelId: "telegram",
+      peerId: "42",
+      text: "what is AgenC?",
+      answerOnly: true,
+    });
+    expect(framed).toContain(CHANNEL_ANSWER_ONLY_GUIDANCE);
+    expect(framed).toContain("what is AgenC?");
   });
 
   test("escapes attributes so a sender id cannot forge markup", () => {
