@@ -25,10 +25,10 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
 | `AGENTS.md` (workspace instructions) | `AGENC.md` | Generated/analyzed by `agenc init`; per-project instructions |
 | `MEMORY.md` + daily notes | `memory/` + memdir | Automatic project/session memory with aging + retrieval |
 | Skills (`SKILL.md` dirs, ClawHub) | Skills + plugins | Bundled + local skills; plugins add commands/tools/hooks/MCP via `agenc plugin` and `/plugins`. No public registry yet — by design until publishing is signed + attested |
-| Cron (`openclaw cron`) | Cron tools + live scheduler | Create/list/delete from the agent; jobs re-arm on daemon restart |
+| Cron (`openclaw cron`) | Cron tools + live scheduler | Create/list/delete from the agent; jobs re-arm on daemon restart. Delivery-routed jobs (`announceChannel`/`webhook` on CronCreate) run in isolated gateway sessions and post their result to a channel or webhook |
 | Webhooks (`/hooks/agent`) | Roadmap | Planned with header-only bearer auth |
-| `SOUL.md` / `IDENTITY.md` persona | Roadmap | Persona workspace files are planned; today AGENC.md carries operating instructions |
-| Heartbeat (`HEARTBEAT.md`) | Roadmap | Planned budget-first (cheap utility model + hard daily caps) — idle-burn horror stories are a design input, not a surprise |
+| `SOUL.md` / `IDENTITY.md` persona | Shipped | Same convention, same filenames — see "Persona workspace files" below |
+| Heartbeat (`HEARTBEAT.md`) | Shipped | `agenc gateway run --heartbeat` (or `[heartbeat]` config): periodic turns read `HEARTBEAT.md`, deliver only non-OK results to a channel, and every tick is gated by the `[budget]` daily/monthly spend envelope — a refusal pauses instead of silently burning |
 | Channels (Telegram, WhatsApp, …) | Shipped (Telegram, WebChat, stdio) | `agenc gateway run`; pairing-gated, with in-channel token approvals and untrusted-content framing. Discord/Slack/Signal and WhatsApp still roadmap |
 | Nodes (phone/Canvas) | Roadmap | Realtime voice (WebRTC) already exists in the TUI |
 | `openclaw security audit` | `agenc security audit --fix` | Fail-closed exit codes; runs automatically around onboard/daemon start |
@@ -45,10 +45,34 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
   agents in isolated worktrees, an eval-regression harness, and 16 model
   providers including Ollama/LM Studio.
 
+## Persona workspace files
+
+The OpenClaw persona convention works as-is, from the workspace root (the
+directory the agent runs in):
+
+- **`USER.md`** — who the human is: name, preferences, context.
+- **`SOUL.md`** — the agent's persona, tone, and boundaries.
+- **`IDENTITY.md`** — the agent's own established identity, usually written
+  by the agent itself during the bootstrap ritual.
+- **`BOOTSTRAP.md`** — a one-time ritual (typically a naming ceremony). It is
+  injected only while `IDENTITY.md` does not exist, framed with instructions
+  to complete the ritual, write `IDENTITY.md`, and delete `BOOTSTRAP.md`.
+  Once `IDENTITY.md` exists the ritual is never injected again — the
+  exactly-once guarantee is mechanical, not honor-system.
+
+All four are injected into the system prompt as a dedicated persona section
+(and ride the memory bootstrap as project-tier instructions). Files are
+loaded from the workspace root only (never ancestor directories), absent
+files cost nothing, and each file is budget-capped at 16 KiB in the prompt —
+oversized content is truncated in context with a marker while the file on
+disk stays intact. The section is computed at conversation start and stays
+stable for that conversation (prompt-cache stability); persona edits and
+ritual completion apply from the next new conversation. Copy your existing
+`SOUL.md`/`USER.md`/`IDENTITY.md` over unchanged; they just work.
+
 ## What you lose today (roadmap, in priority order)
 
-Heartbeat/proactive behavior, persona files, webhooks, browser automation, a
-mobile app, and channel breadth beyond Telegram/WebChat (Discord, Slack,
-Signal, WhatsApp). If any of these is your daily driver, run both: several of
-the gaps are next on the roadmap, and the daemon architecture is built for
-exactly those clients.
+Webhooks, browser automation, a mobile app, and channel breadth beyond
+Telegram/WebChat (Discord, Slack, Signal, WhatsApp). If any of these is your
+daily driver, run both: several of the gaps are next on the roadmap, and the
+daemon architecture is built for exactly those clients.

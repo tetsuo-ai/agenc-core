@@ -59,6 +59,7 @@ import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { loadMemoryPrompt } from '../memory/memdir.js'
+import { loadPersonaPromptSection } from '../memory/persona.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/compact/cachedMicrocompact.js'
@@ -491,6 +492,7 @@ export async function getSystemPrompt(
 ${CYBER_RISK_INSTRUCTION}`,
       getSystemRemindersSection(),
       await loadMemoryPrompt(),
+      await loadPersonaPromptSection(cwd),
       envInfo,
       getLanguageSection(settings.language),
       // When delta enabled, instructions are announced via persisted
@@ -510,6 +512,12 @@ ${CYBER_RISK_INSTRUCTION}`,
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
     ),
     systemPromptSection('memory', () => loadMemoryPrompt()),
+    // Persona workspace files (task 13): USER.md / SOUL.md / IDENTITY.md +
+    // the one-time BOOTSTRAP.md ritual. Memoized per session like every
+    // section (cached until /clear), so the BOOTSTRAP gate is evaluated at
+    // session start — exactly-once per workspace, mechanical via the
+    // IDENTITY.md existence check inside the loader.
+    systemPromptSection('persona', () => loadPersonaPromptSection(cwd)),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),
