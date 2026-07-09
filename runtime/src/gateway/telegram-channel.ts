@@ -24,31 +24,34 @@ export interface TelegramUpdate {
   readonly update_id: number;
   readonly message?: TelegramMessage;
   readonly channel_post?: TelegramMessage;
+  readonly edited_message?: TelegramMessage;
+  readonly edited_channel_post?: TelegramMessage;
 }
 
 export interface TelegramMessage {
-    readonly message_id: number;
+  readonly message_id: number;
+  readonly from?: {
+    readonly id: number;
+    readonly is_bot?: boolean;
+    readonly username?: string;
+    readonly first_name?: string;
+  };
+  readonly sender_chat?: {
+    readonly id: number;
+    readonly type: string;
+    readonly username?: string;
+    readonly title?: string;
+  };
+  readonly chat: { readonly id: number; readonly type: string };
+  readonly text?: string;
+  readonly caption?: string;
+  readonly reply_to_message?: {
     readonly from?: {
       readonly id: number;
       readonly is_bot?: boolean;
       readonly username?: string;
-      readonly first_name?: string;
     };
-    readonly sender_chat?: {
-      readonly id: number;
-      readonly type: string;
-      readonly username?: string;
-      readonly title?: string;
-    };
-    readonly chat: { readonly id: number; readonly type: string };
-    readonly text?: string;
-    readonly reply_to_message?: {
-      readonly from?: {
-        readonly id: number;
-        readonly is_bot?: boolean;
-        readonly username?: string;
-      };
-    };
+  };
 }
 
 export interface TelegramSentMessage {
@@ -126,7 +129,12 @@ export class FetchTelegramTransport implements TelegramTransport {
     return this.#call<TelegramUpdate[]>("getUpdates", {
       offset,
       timeout: timeoutSeconds,
-      allowed_updates: ["message", "channel_post"],
+      allowed_updates: [
+        "message",
+        "channel_post",
+        "edited_message",
+        "edited_channel_post",
+      ],
     });
   }
 
@@ -184,6 +192,8 @@ export interface TelegramChannelOptions {
   readonly errorBackoffMs?: number;
   readonly log?: (line: string) => void;
   readonly commands?: readonly TelegramBotCommand[];
+  /** Log sanitized inbound update routing metadata, never raw text or ids. */
+  readonly debugUpdates?: boolean;
   /**
    * In groups, "mentions" means only slash commands, @bot mentions, and
    * replies to this bot reach the agent. Use "all" for broadcast rooms.
@@ -213,6 +223,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #log: (line: string) => void;
   readonly #autoPoll: boolean;
   readonly #commands: readonly TelegramBotCommand[];
+  readonly #debugUpdates: boolean;
   readonly #groupAddressing: "all" | "mentions";
   readonly #editTargets = new Map<string, EditTarget>();
   #botIdentity: TelegramBotIdentity | null = null;
@@ -230,6 +241,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#log = options.log ?? (() => {});
     this.#autoPoll = options.autoPoll ?? true;
     this.#commands = options.commands ?? [];
+    this.#debugUpdates = options.debugUpdates ?? false;
     this.#groupAddressing = options.groupAddressing ?? "all";
     if (options.botUsername !== undefined && options.botUsername.length > 0) {
       this.#botIdentity = { id: -1, username: options.botUsername.replace(/^@/, "") };
@@ -311,11 +323,18 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async #handleUpdate(update: TelegramUpdate): Promise<void> {
-    const message = update.message ?? update.channel_post;
+    const updateKind = telegramUpdateKind(update);
+    const message =
+      update.message ??
+      update.channel_post ??
+      update.edited_message ??
+      update.edited_channel_post;
+    const rawText = message?.text ?? message?.caption;
+    this.#debugUpdate(updateKind, message, rawText);
     if (
       this.#context === null ||
       message === undefined ||
-      message.text === undefined
+      rawText === undefined
     ) {
       return;
     }
@@ -327,7 +346,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const peerId = String(sender?.id ?? senderChat?.id);
     const chatId = String(message.chat.id);
     const isPrivate = message.chat.type === "private";
-    const text = this.#normalizedTextForAddressing(message.text, message);
+    const text = this.#normalizedTextForAddressing(rawText, message);
     if (text === null) return;
     await this.#context.onMessage({
       channelId: this.id,
@@ -346,6 +365,33 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       conversation: { kind: isPrivate ? "dm" : "group", id: chatId },
       text,
     });
+  }
+
+  #debugUpdate(
+    updateKind: string,
+    message: TelegramMessage | undefined,
+    rawText: string | undefined,
+  ): void {
+    if (!this.#debugUpdates) return;
+    const username = this.#botIdentity?.username;
+    const hasMention =
+      username !== undefined &&
+      rawText !== undefined &&
+      new RegExp(`(^|\\s)@${escapeRegExp(username)}\\b`, "i").test(rawText);
+    const isCommand = rawText?.trimStart().startsWith("/") ?? false;
+    this.#log(
+      [
+        "telegram: update",
+        `kind=${updateKind}`,
+        `chatType=${message?.chat.type ?? "none"}`,
+        `hasText=${message?.text !== undefined}`,
+        `hasCaption=${message?.caption !== undefined}`,
+        `hasFrom=${message?.from !== undefined}`,
+        `hasSenderChat=${message?.sender_chat !== undefined}`,
+        `isCommand=${isCommand}`,
+        `mentionsBot=${hasMention}`,
+      ].join(" "),
+    );
   }
 
   #normalizedTextForAddressing(
@@ -414,4 +460,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function telegramUpdateKind(update: TelegramUpdate): string {
+  if (update.message !== undefined) return "message";
+  if (update.channel_post !== undefined) return "channel_post";
+  if (update.edited_message !== undefined) return "edited_message";
+  if (update.edited_channel_post !== undefined) return "edited_channel_post";
+  return "unknown";
 }
