@@ -21,7 +21,7 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
 | OpenClaw | AgenC | Notes |
 |---|---|---|
 | Gateway daemon | `agenc daemon` | Unix socket + loopback WebSocket; **non-loopback binds are refused** without an explicit override (audited) |
-| Control UI chat | TUI (`agenc`) | Terminal-native; a web chat surface is on the roadmap |
+| Control UI chat | TUI (`agenc`) + WebChat | Terminal-native, plus a loopback token-gated browser chat via `agenc gateway run --webchat` |
 | `AGENTS.md` (workspace instructions) | `AGENC.md` | Generated/analyzed by `agenc init`; per-project instructions |
 | `MEMORY.md` + daily notes | `memory/` + memdir | Automatic project/session memory with aging + retrieval |
 | Skills (`SKILL.md` dirs, ClawHub) | Skills + plugins | Bundled + local skills; plugins add commands/tools/hooks/MCP via `agenc plugin` and `/plugins`. No public registry yet — by design until publishing is signed + attested |
@@ -29,7 +29,7 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
 | Webhooks (`/hooks/agent`) | Roadmap | Planned with header-only bearer auth |
 | `SOUL.md` / `IDENTITY.md` persona | Roadmap | Persona workspace files are planned; today AGENC.md carries operating instructions |
 | Heartbeat (`HEARTBEAT.md`) | Roadmap | Planned budget-first (cheap utility model + hard daily caps) — idle-burn horror stories are a design input, not a surprise |
-| Channels (Telegram/WhatsApp/…) | Roadmap | Channel gateway is the next major phase; the daemon protocol + SDK already expose everything an adapter needs |
+| Channels (Telegram, WhatsApp, …) | Shipped (Telegram, WebChat, stdio) | `agenc gateway run`; pairing-gated, with in-channel token approvals and untrusted-content framing. Discord/Slack/Signal and WhatsApp still roadmap |
 | Nodes (phone/Canvas) | Roadmap | Realtime voice (WebRTC) already exists in the TUI |
 | `openclaw security audit` | `agenc security audit --fix` | Fail-closed exit codes; runs automatically around onboard/daemon start |
 | Docker install | `packaging/docker/` | Non-root image, no published ports by default |
@@ -47,7 +47,8 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
 
 ## What you lose today (roadmap, in priority order)
 
-Messaging channels, heartbeat/proactive behavior, persona files, webhooks,
-browser automation, a mobile app. If any of these is your daily driver,
-run both: several of the gaps are next on the roadmap, and the daemon
-architecture is built for exactly those clients.
+Heartbeat/proactive behavior, persona files, webhooks, browser automation, a
+mobile app, and channel breadth beyond Telegram/WebChat (Discord, Slack,
+Signal, WhatsApp). If any of these is your daily driver, run both: several of
+the gaps are next on the roadmap, and the daemon architecture is built for
+exactly those clients.

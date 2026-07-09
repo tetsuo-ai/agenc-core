@@ -7,7 +7,7 @@
 ![version](https://img.shields.io/badge/version-0.2.0-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2025-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
-![tests](https://img.shields.io/badge/tests-12k%2B%20vitest-brightgreen)
+![tests](https://img.shields.io/badge/tests-14k%2B%20vitest-brightgreen)
 
 **AgenC Core** is the implementation repository for the `agenc` CLI — an agent
 that reads your code, runs commands, and edits files from the terminal. It is
@@ -59,11 +59,11 @@ For the subsystem map and how the pieces fit together, see
 
 ## Project status
 
-Pre-release (`0.2.0`). The public launcher package
+Pre-release (`0.2.x`). The public launcher package
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc) is
-published at `0.2.0`; the root repo and runtime workspace remain private
+published at `0.2.1`; the root repo and runtime workspace remain private
 implementation packages. The codebase is **type-clean** (`0` `@ts-nocheck`,
-`tsc` at 0 errors) with 12k+ passing tests, and the daemon / persistence /
+`tsc` at 0 errors) with 14k+ passing tests, and the daemon / persistence /
 permission cores are mature (WAL SQLite, atomic rollout writes, an AST-backed
 Bash permission layer, transactional file edits). The repository is MIT
 licensed; see [`LICENSE`](LICENSE).
@@ -163,6 +163,9 @@ instructions. Use `agenc init --force` to replace an existing file.
 agenc [options] [PROMPT]
 agenc -p|--print [options] [PROMPT]
 agenc help [command]
+agenc onboard [--status [--json] | --reset]
+agenc security audit [--json] [--fix]
+agenc gateway <run [--stdio] [--webchat]|status|pairing <list|revoke>>
 agenc init [--force]
 agenc <login|logout|whoami>
 agenc providers [--json] [--no-local-check]
@@ -170,11 +173,20 @@ agenc config <show|get|set|unset|validate|edit|path>
 agenc plugin <command> [options]
 agenc permissions <command>
 agenc state <export <agent-id>|import>
+agenc trajectories export [--format sft|dpo] [--dir <path>] [--out <file>]
 agenc daemon <start [--foreground]|stop|status|reload|restart>
 agenc agent <start <objective>|list|attach <id>|stop <id>|logs <id>>
 agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor|xaa>
 agenc doctor [--json]
 ```
+
+`agenc onboard` runs the guided setup (provider, key, theme, first chat);
+`--status` reports setup + daemon state for scripts. `agenc security audit`
+checks daemon exposure and file permissions (fail-closed exit codes; `--fix`
+applies safe permission fixes). `agenc gateway` runs and operates the channel
+gateway — `run [--stdio] [--webchat]` starts it, `status`/`pairing` inspect and
+manage paired senders (see [`docs/gateway.md`](docs/gateway.md)).
+`agenc trajectories export` curates recorded turns into SFT/DPO training JSONL.
 
 `agenc doctor` diagnoses the installation and environment (version, install
 type, ripgrep status, auto-update permissions, PATH/glob warnings + fixes);
@@ -314,7 +326,7 @@ after the primary session log has been durably written.
 | --- | --- | --- |
 | `runtime/` | `@tetsuo-ai/runtime` | The runtime: CLI, daemon, TUI, agent/session engine, providers, MCP, permissions, sandbox, tools, tests. |
 | `packages/agenc/` | `@tetsuo-ai/agenc` | Public launcher: installs `agenc`, autostarts the daemon, delegates to the runtime. |
-| `packaging/` | — | systemd / launchd / Windows service templates for `agenc daemon start --foreground`. |
+| `packaging/` | — | Service supervisor templates (systemd/launchd/Windows) plus the installer (`get-agenc-ag/`), Docker build (`docker/`), and Homebrew formula (`homebrew/`). |
 
 Principal runtime subsystems (`runtime/src`):
 

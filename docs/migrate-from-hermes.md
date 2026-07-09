@@ -29,7 +29,7 @@ agenc security audit   # fail-closed posture check, green on fresh installs
 | `delegate_task` / async children | Subagents + teams + jobs | Worktree-isolated background agents, workflow runner (waves/deps), CSV fan-out |
 | Checkpoints `/undo` `/retry` | `/rewind` | Sidecar-based file restore to any message barrier |
 | Sandboxing (docker/ssh/modal/…) | OS sandbox (bwrap/Landlock/Seatbelt) | Kernel-level confinement locally; docker/ssh execution targets are on the roadmap |
-| Messaging platforms (~21) | Roadmap | The next major phase; the typed daemon protocol + zero-dep SDK already expose session attach/stream/permission round-trips for channel adapters |
+| Messaging platforms (~21) | Partially shipped | Telegram, WebChat, and stdio via `agenc gateway run`, with in-channel token approvals and untrusted-content framing; broader platform breadth (Discord/Slack/Signal/WhatsApp) still roadmap |
 | ACP (Zed/IDE) | IDE-as-MCP seam | No shipped editor extension yet |
 | `hermes update` | Launcher-managed | Runtime tarballs are sha256-verified on install; `agenc doctor` reports update permissions |
 | Cost `/usage` | `/cost` | Per-agent cost attribution, cache metrics |
@@ -42,13 +42,14 @@ agenc security audit   # fail-closed posture check, green on fresh installs
    same capability as draft diffs gated by the eval harness, with one-command
    revert.
 2. **External content is untrusted, always.** Web results, task text, and
-   (when they ship) channel messages are wrapped and can never escalate
+   channel messages are sanitized and wrapped and can never escalate
    permissions or approve a previewed action. That rule is enforced in code
    and tested, not stated in a system prompt.
 
 ## What you lose today
 
-The messaging gateway, voice/TTS breadth, ACP editor integration, the
-self-improving loop, and remote execution backends. If those are your daily
-drivers, run both while the roadmap closes the gap — the phases are public in
+Voice/TTS breadth, ACP editor integration, the self-improving loop, remote
+execution backends, and channel breadth beyond Telegram/WebChat. If those are
+your daily drivers, run both while the roadmap closes the gap — the phases are
+public in
 this repo's parity roadmap.

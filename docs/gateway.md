@@ -1,6 +1,6 @@
 # Channel gateway
 
-The gateway turns messaging surfaces (Telegram, Discord, WebChat, …) into
+The gateway turns messaging surfaces (Telegram, WebChat, stdio, …) into
 conversations with agents owned by your local daemon. It is a **daemon
 client** — it talks to the daemon only through the embedding SDK
 (`@tetsuo-ai/agenc-sdk`), never runtime internals — so channels are a
@@ -22,8 +22,9 @@ whenever `AGENC_TELEGRAM_BOT_TOKEN` is set. It runs until Ctrl-C.
 
 The **stdio channel** is the fastest way to see the whole pipeline: run
 `agenc gateway run --stdio`, and if the `stdio` channel has no allowlist entry
-you'll get a pairing code on your first line (pair from another terminal with
-`agenc gateway pairing`, or allowlist `local` in config).
+you'll get a pairing code on your first line. Confirm it on the host with
+`agenc gateway pairing list`, then reply with the code in the channel to pair
+(or allowlist `local` in config to skip pairing).
 
 The **WebChat channel** serves a minimal browser chat from the gateway itself.
 It **binds loopback (127.0.0.1) and refuses a non-loopback host** without an
