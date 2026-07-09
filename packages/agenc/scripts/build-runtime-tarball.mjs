@@ -34,8 +34,18 @@ const launcherDir = resolve(__dirname, "..");
 const repoRoot = resolve(launcherDir, "..", "..");
 const runtimeDir = join(repoRoot, "runtime");
 
+// On Windows, npm/tar-style launchers are .cmd shims that spawnSync cannot
+// exec directly (ENOENT surfaces as a null status — exactly the CI matrix
+// failure mode). `shell: true` resolves them through cmd.exe; argv here is
+// always static, never user input.
+const IS_WINDOWS = process.platform === "win32";
+
 function run(cmd, args, opts = {}) {
-  const res = spawnSync(cmd, args, { stdio: "inherit", ...opts });
+  const res = spawnSync(cmd, args, {
+    stdio: "inherit",
+    shell: IS_WINDOWS,
+    ...opts,
+  });
   if (res.status !== 0) {
     throw new Error(
       `command failed (${res.status ?? res.signal}): ${cmd} ${args.join(" ")}`,
@@ -45,7 +55,11 @@ function run(cmd, args, opts = {}) {
 }
 
 function capture(cmd, args, opts = {}) {
-  const res = spawnSync(cmd, args, { encoding: "utf8", ...opts });
+  const res = spawnSync(cmd, args, {
+    encoding: "utf8",
+    shell: IS_WINDOWS,
+    ...opts,
+  });
   if (res.status !== 0) {
     throw new Error(
       `command failed (${res.status ?? res.signal}): ${cmd} ${args.join(" ")}\n${res.stderr ?? ""}`,
@@ -106,10 +120,16 @@ async function main() {
     const installRoot = join(stage, "install");
     mkdirSync(installRoot, { recursive: true });
     // A bare package.json so npm installs into install/node_modules.
-    run("node", [
-      "-e",
-      `require('fs').writeFileSync(${JSON.stringify(join(installRoot, "package.json"))}, JSON.stringify({name:"agenc-runtime-bundle",private:true,version:"0.0.0"}))`,
-    ]);
+    // (Written in-process: a `node -e` child with embedded quotes breaks
+    // under the Windows shell resolution above.)
+    writeFileSync(
+      join(installRoot, "package.json"),
+      JSON.stringify({
+        name: "agenc-runtime-bundle",
+        private: true,
+        version: "0.0.0",
+      }),
+    );
     run(
       "npm",
       [
