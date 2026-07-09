@@ -412,7 +412,9 @@ describe("channel gateway", () => {
     expect(client.sessions[0].prompts[0]).toContain("now public");
     expect(client.sessions[0].prompts[0]).toContain("This channel is answer-only");
     expect(client.sessions[0].prompts[0]).toContain("Ledger DMK over BLE");
-    expect(client.sessions[0].prompts[0]).toContain("/image <idea>");
+    expect(client.sessions[0].prompts[0]).toContain(
+      "clear natural language",
+    );
     expect(telegram.lastText("group-1")).toBe("group live");
   });
 

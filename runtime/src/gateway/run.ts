@@ -38,6 +38,7 @@ import {
   FetchTelegramTransport,
   TelegramChannelAdapter,
   TELEGRAM_CHANNEL_ID,
+  type TelegramRichMessageMode,
 } from "./telegram-channel.js";
 import {
   WebChatChannelAdapter,
@@ -147,6 +148,14 @@ function envGroupAddressing(value: string | undefined): "all" | "mentions" {
   return value === "mentions" ? "mentions" : "all";
 }
 
+function envTelegramRichMessages(
+  value: string | undefined,
+): TelegramRichMessageMode {
+  if (value === "all" || value === "off" || value === "private") return value;
+  if (envFlag(value)) return "all";
+  return "private";
+}
+
 export interface GatewayRunHandle {
   readonly gateway: ChannelGateway;
   readonly channels: readonly string[];
@@ -221,6 +230,7 @@ export async function startGateway(
           env.AGENC_TELEGRAM_GROUP_ADDRESSING,
         ),
         debugUpdates: envFlag(env.AGENC_TELEGRAM_DEBUG_UPDATES),
+        richMessages: envTelegramRichMessages(env.AGENC_TELEGRAM_RICH_MESSAGES),
         ...(env.AGENC_TELEGRAM_BOT_USERNAME !== undefined
           ? { botUsername: env.AGENC_TELEGRAM_BOT_USERNAME.trim() }
           : {}),
