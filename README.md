@@ -382,6 +382,11 @@ source.
 
 ## Security
 
+Run `agenc security audit` (add `--fix` for safe permission fixes) to check
+daemon exposure, AgenC-state file permissions, config integrity, and
+permission-mode blast radius; it exits non-zero on critical findings and warns
+automatically on `agenc daemon start`.
+
 Shell execution and file mutation flow through a mode-based permission layer; an
 opt-in OS sandbox confines shell commands at the kernel level (bubblewrap /
 Landlock on Linux, Seatbelt on macOS). Mutating tools are guarded — file edits
