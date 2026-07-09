@@ -122,6 +122,8 @@ export type GatewayPromptEvent =
 export interface GatewayPromptResult {
   readonly stopReason: "completed" | "errored" | "stopped";
   readonly finalMessage: string;
+  /** Real token usage, when the daemon reports it (used for budget reconcile). */
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
 }
 
 export interface GatewayPromptHandlers {

@@ -255,4 +255,53 @@ describe("startGateway", () => {
     expect(client.sessions).toHaveLength(0);
     await handle.stop();
   });
+
+  test("heartbeat: a config-enabled tick runs a turn and delivers to a channel", async () => {
+    // Gateway channel + config.toml heartbeat targeting the in-memory channel.
+    writeConfig({ channels: { mem: { dmPolicy: "allowlist", allowlist: ["x"] } } });
+    require("node:fs").writeFileSync(
+      join(home, "config.toml"),
+      [
+        "[heartbeat]",
+        "enabled = true",
+        "interval_seconds = 10",
+        'target_channel = "mem"',
+        'target_conversation = "c1"',
+      ].join("\n"),
+    );
+    require("node:fs").mkdirSync(join(home, "ws"), { recursive: true });
+    require("node:fs").writeFileSync(join(home, "ws", "HEARTBEAT.md"), "summarize");
+
+    const client = new FakeClient();
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+
+    // A manual clock: capture the armed timer callback so we fire it by hand.
+    let armed: (() => void) | null = null;
+    const clock = {
+      now: () => new Date("2026-07-09T10:00:00"),
+      setTimer: (fn: () => void) => {
+        armed = fn;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: () => {},
+    };
+
+    const handle = await startGateway({
+      agencHome: home,
+      workspaceDir: join(home, "ws"),
+      clientFactory: async () => client,
+      extraAdapters: [mem],
+      heartbeatClock: clock,
+    });
+    // The scheduler armed a timer. Fire one tick.
+    expect(armed).not.toBeNull();
+    armed!();
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The heartbeat created its own session, ran a turn, and delivered the
+    // (non-OK echo) reply to the mem channel's c1 conversation.
+    expect(client.sessions.length).toBeGreaterThanOrEqual(1);
+    expect(mem.sent.some((m) => m.conversationId === "c1")).toBe(true);
+    await handle.stop();
+  });
 });

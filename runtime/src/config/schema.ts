@@ -543,6 +543,22 @@ export interface TransactionGuardConfig {
 }
 
 /**
+ * `[heartbeat]` — proactive autonomous ticks (task 14). Disabled by default.
+ * `AGENC_HEARTBEAT*` env vars override (see `heartbeat/config.ts`).
+ */
+export interface HeartbeatConfig {
+  readonly enabled?: boolean;
+  readonly interval_seconds?: number;
+  readonly model?: string;
+  /** [startHour, endHour) in local 24h; omit for always-active. */
+  readonly active_hours?: readonly number[];
+  readonly skip_when_busy?: boolean;
+  readonly agent?: string;
+  readonly target_channel?: string;
+  readonly target_conversation?: string;
+}
+
+/**
  * `[budget]` — cost-bounded autonomy (task 15). Per-agent hard spend caps
  * enforced daemon-side around autonomous turns. Disabled by default; a cap of
  * 0/absent means no cap. `AGENC_BUDGET*` env vars override
@@ -644,6 +660,11 @@ export interface AgenCConfig {
    * `AGENC_BUDGET*` env vars override. See `budget/config.ts`.
    */
   readonly budget?: BudgetConfig;
+  /**
+   * Proactive heartbeat (`[heartbeat]`). Optional — disabled by default;
+   * `AGENC_HEARTBEAT*` env vars override. See `heartbeat/config.ts`.
+   */
+  readonly heartbeat?: HeartbeatConfig;
   readonly agenc_home?: string;
   readonly workspace?: string;
   readonly simpleMode?: boolean;
@@ -782,6 +803,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "coordinator_mode",
   "transaction_guard",
   "budget",
+  "heartbeat",
   "agenc_home",
   "workspace",
   "simpleMode",

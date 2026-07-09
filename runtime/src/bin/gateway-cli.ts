@@ -20,7 +20,12 @@ import { startGateway } from "../gateway/run.js";
 import type { GatewayConfig } from "../gateway/types.js";
 
 export type AgenCGatewayCliCommand =
-  | { readonly kind: "run"; readonly stdio: boolean; readonly webchat: boolean }
+  | {
+      readonly kind: "run";
+      readonly stdio: boolean;
+      readonly webchat: boolean;
+      readonly heartbeat: boolean;
+    }
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "pairing-list"; readonly json: boolean }
   | {
@@ -36,12 +41,14 @@ export function formatAgenCGatewayCliHelpText(): string {
     "agenc gateway — inspect and operate the channel gateway",
     "",
     "Usage:",
-    "  agenc gateway run [--stdio] [--webchat]",
+    "  agenc gateway run [--stdio] [--webchat] [--heartbeat]",
     "                                        Start the gateway. --stdio enables",
     "                                        the local dev channel; --webchat a",
     "                                        loopback token-gated browser UI;",
-    "                                        Telegram when AGENC_TELEGRAM_BOT_TOKEN",
-    "                                        is set. Runs until Ctrl-C.",
+    "                                        --heartbeat proactive budget-bounded",
+    "                                        ticks (HEARTBEAT.md); Telegram when",
+    "                                        AGENC_TELEGRAM_BOT_TOKEN is set.",
+    "                                        Runs until Ctrl-C.",
     "  agenc gateway status [--json]         Channels, DM policies, bindings,",
     "                                        paired-sender counts",
     "  agenc gateway pairing list [--json]   Paired senders per channel",
@@ -70,6 +77,7 @@ export function parseAgenCGatewayCliArgs(
       kind: "run",
       stdio: rest.includes("--stdio"),
       webchat: rest.includes("--webchat"),
+      heartbeat: rest.includes("--heartbeat"),
     };
   }
   if (positional[0] === "status") {
@@ -191,13 +199,16 @@ export async function runAgenCGatewayCli(
         env,
         stdio: command.stdio,
         webchat: command.webchat,
+        heartbeat: command.heartbeat,
         log: (line) => stderr(line),
       });
     } catch (error) {
       stderr(`agenc: ${error instanceof Error ? error.message : String(error)}`);
       return 1;
     }
-    stdout(`gateway running (channels: ${handle.channels.join(", ")}). Ctrl-C to stop.`);
+    const channelsLabel =
+      handle.channels.length > 0 ? handle.channels.join(", ") : "none";
+    stdout(`gateway running (channels: ${channelsLabel}). Ctrl-C to stop.`);
     if (handle.webchatUrl !== undefined) {
       stdout(`  WebChat: ${handle.webchatUrl}`);
     }
