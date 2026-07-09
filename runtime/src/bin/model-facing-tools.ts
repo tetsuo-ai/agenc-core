@@ -2750,7 +2750,7 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
     {
       name: "CronCreate",
       description:
-        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session.",
+        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook — they require durable and a running `agenc gateway run`.",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -2769,6 +2769,21 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
               "true (default) reschedules after each fire; false fires once and deletes itself.",
           },
           durable: { type: "boolean" },
+          announceChannel: {
+            type: "string",
+            description:
+              "Gateway channel id to deliver the result to (e.g. \"telegram\", \"stdio\"). Requires announceTo. The job then runs in an isolated gateway session, not this one.",
+          },
+          announceTo: {
+            type: "string",
+            description:
+              "Conversation id on announceChannel to deliver to (e.g. a Telegram chat id).",
+          },
+          webhook: {
+            type: "string",
+            description:
+              "http(s) URL to POST the result to as JSON ({taskId, prompt, finalMessage, ...}). Combinable with announceChannel.",
+          },
         },
         required: ["prompt"],
         additionalProperties: false,
@@ -2782,19 +2797,52 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         if (!validateCron(schedule)) {
           return json({ error: "cron expression must have five fields" }, true);
         }
-        const { addCronTask, nextCronRunMs } = await import(
+        const { addCronTask, nextCronRunMs, normalizeDelivery } = await import(
           "../utils/cronTasks.js"
         );
         if (nextCronRunMs(schedule, Date.now()) === null) {
           return json({ error: `invalid cron expression: ${schedule}` }, true);
         }
         const recurring = boolValue(args.recurring) ?? true;
-        const durable = boolValue(args.durable) ?? true;
-        const id = await addCronTask(schedule, prompt, recurring, durable);
+        const announceChannel = stringValue(args.announceChannel);
+        const announceTo = stringValue(args.announceTo);
+        const webhookUrl = stringValue(args.webhook);
+        if (announceChannel !== undefined && announceTo === undefined) {
+          return json({ error: "announceChannel requires announceTo" }, true);
+        }
+        if (webhookUrl !== undefined && !/^https?:\/\//i.test(webhookUrl)) {
+          return json({ error: "webhook must be an http(s) URL" }, true);
+        }
+        const deliver = normalizeDelivery({
+          channel: announceChannel,
+          to: announceTo,
+          webhook: webhookUrl,
+        });
+        // Delivery-routed jobs are executed by the gateway from the persisted
+        // task file — they must be durable or the gateway can never see them.
+        const durable =
+          deliver !== undefined ? true : (boolValue(args.durable) ?? true);
+        const id = await addCronTask(
+          schedule,
+          prompt,
+          recurring,
+          durable,
+          undefined,
+          deliver,
+        );
         // Arm the real runner: without this the definition is inert.
+        // (Delivery-routed jobs are skipped by this in-session runner and
+        // picked up by the gateway's cron-delivery scan.)
         await startCronSchedulerRunner();
         return json({
-          cron: { id, cron: schedule, prompt, recurring, durable },
+          cron: {
+            id,
+            cron: schedule,
+            prompt,
+            recurring,
+            durable,
+            ...(deliver !== undefined ? { deliver } : {}),
+          },
         });
       },
     },

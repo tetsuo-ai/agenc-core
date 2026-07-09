@@ -22,6 +22,7 @@ import { loadConfig } from "../config/loader.js";
 import { resolveHeartbeatPolicy } from "../heartbeat/config.js";
 import { startHeartbeat } from "../heartbeat/wire.js";
 import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
+import { startCronDelivery, type CronDeliveryHandle } from "./cron-delivery.js";
 import { ChannelGateway } from "./gateway.js";
 import { loadGatewayConfig } from "./config.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
@@ -58,6 +59,8 @@ export interface GatewayRunOptions {
   readonly workspaceDir?: string;
   /** Test seam: inject the heartbeat clock (real timers by default). */
   readonly heartbeatClock?: import("../heartbeat/types.js").HeartbeatClock;
+  /** Test seam: inject the cron-delivery clock (real timers by default). */
+  readonly cronClock?: import("./cron-delivery.js").CronDeliveryClock;
   /** WebChat bind host (default 127.0.0.1) / port (default ephemeral). */
   readonly webchatHost?: string;
   readonly webchatPort?: number;
@@ -222,20 +225,40 @@ export async function startGateway(
     log(`gateway: WebChat on ${webchat.url}`);
   }
 
+  // Cron delivery (task 16): delivery-tagged cron tasks run in isolated
+  // gateway sessions and announce to channels / POST to webhooks. Restart
+  // re-arms from the persisted .agenc/scheduled_tasks.json.
+  let cronDelivery: CronDeliveryHandle | null = null;
+  const mainConfigLoaded = (
+    await loadConfig({ home: options.agencHome, onWarn: log })
+  ).config;
+  try {
+    cronDelivery = startCronDelivery({
+      agencHome: options.agencHome,
+      workspaceDir: options.workspaceDir ?? process.cwd(),
+      config: mainConfigLoaded,
+      env,
+      client,
+      adapters,
+      log,
+      ...(options.cronClock !== undefined ? { clock: options.cronClock } : {}),
+    });
+  } catch (error) {
+    log(`cron: failed to start delivery (continuing without it): ${String(error)}`);
+  }
+
   // Heartbeat (task 14): proactive autonomous ticks, bounded by the budget
   // layer. Enabled via [heartbeat] config or AGENC_HEARTBEAT; --heartbeat
   // forces it on for this run. Uses the same daemon client + channel adapters.
   let heartbeat: HeartbeatScheduler | null = null;
   try {
-    const mainConfig = (await loadConfig({ home: options.agencHome, onWarn: log }))
-      .config;
     const heartbeatConfig =
       options.heartbeat === true
         ? {
-            ...mainConfig,
-            heartbeat: { ...mainConfig.heartbeat, enabled: true },
+            ...mainConfigLoaded,
+            heartbeat: { ...mainConfigLoaded.heartbeat, enabled: true },
           }
-        : mainConfig;
+        : mainConfigLoaded;
     heartbeat = await startHeartbeat({
       agencHome: options.agencHome,
       workspaceDir: options.workspaceDir ?? process.cwd(),
@@ -244,6 +267,9 @@ export async function startGateway(
       client,
       adapters,
       log,
+      // skip-when-busy: a heartbeat tick defers while a cron delivery turn
+      // is in flight (both are autonomous turns on the same daemon).
+      isCronRunning: () => cronDelivery?.isRunning() === true,
       ...(options.heartbeatClock !== undefined
         ? { clock: options.heartbeatClock }
         : {}),
@@ -260,6 +286,7 @@ export async function startGateway(
     ...(webchat !== undefined ? { webchatUrl: webchat.url } : {}),
     async stop() {
       if (heartbeat !== null) await heartbeat.stop();
+      if (cronDelivery !== null) await cronDelivery.stop();
       await gateway.stop();
       await client.close();
     },

@@ -8,6 +8,7 @@ import {
   getCronFilePath,
   listAllCronTasks,
   nextCronRunMs,
+  normalizeDelivery,
 } from '../../utils/cronTasks.js'
 import { getCronScheduler } from '../../utils/cronScheduler.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -39,6 +40,24 @@ const inputSchema = lazySchema(() =>
     durable: semanticBoolean(z.boolean().optional()).describe(
       'true = persist to .agenc/scheduled_tasks.json and survive restarts. false (default) = in-memory only, dies when this AgenC session ends. Use true only when the user asks the task to survive across sessions.',
     ),
+    announceChannel: z
+      .string()
+      .optional()
+      .describe(
+        'Gateway channel id to deliver the result to (e.g. "telegram", "stdio"). Requires announceTo. The job then runs in an isolated gateway session (needs a running `agenc gateway run`), not this one.',
+      ),
+    announceTo: z
+      .string()
+      .optional()
+      .describe(
+        'Conversation id on announceChannel to deliver to (e.g. a Telegram chat id).',
+      ),
+    webhook: z
+      .string()
+      .optional()
+      .describe(
+        'http(s) URL to POST the result to as JSON. Combinable with announceChannel.',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -113,18 +132,49 @@ export const CronCreateTool = buildTool({
         errorCode: 4,
       }
     }
+    if (input.announceChannel !== undefined && input.announceTo === undefined) {
+      return {
+        result: false,
+        message: 'announceChannel requires announceTo (the conversation id).',
+        errorCode: 5,
+      }
+    }
+    if (input.webhook !== undefined && !/^https?:\/\//i.test(input.webhook)) {
+      return {
+        result: false,
+        message: 'webhook must be an http(s) URL.',
+        errorCode: 6,
+      }
+    }
     return { result: true }
   },
-  async call({ cron, prompt, recurring = true, durable = false }) {
+  async call({
+    cron,
+    prompt,
+    recurring = true,
+    durable = false,
+    announceChannel,
+    announceTo,
+    webhook,
+  }) {
+    const deliver = normalizeDelivery({
+      channel: announceChannel,
+      to: announceTo,
+      webhook,
+    })
     // Kill switch forces session-only; schema stays stable so the model sees
     // no validation errors when the gate flips mid-session.
-    const effectiveDurable = durable && isDurableCronEnabled()
+    // Delivery-routed jobs are executed by the GATEWAY from the persisted
+    // task file, so they are always durable.
+    const effectiveDurable =
+      deliver !== undefined ? true : durable && isDurableCronEnabled()
     const id = await addCronTask(
       cron,
       prompt,
       recurring,
       effectiveDurable,
       getTeammateContext()?.agentId,
+      deliver,
     )
     // Enable the scheduler so the task fires in this session, then start the
     // timer-driven driver and reschedule it to the new task's next-due moment.

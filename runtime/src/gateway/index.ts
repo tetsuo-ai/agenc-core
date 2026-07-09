@@ -62,6 +62,13 @@ export {
   type SdkModule,
 } from "./sdk-daemon-client.js";
 export {
+  startCronDelivery,
+  CRON_DELIVERY_SCAN_CAP_MS,
+  type CronDeliveryClock,
+  type CronDeliveryHandle,
+  type StartCronDeliveryOptions,
+} from "./cron-delivery.js";
+export {
   frameChannelMessage,
   sanitizeChannelText,
   CHANNEL_MESSAGE_GUIDANCE,

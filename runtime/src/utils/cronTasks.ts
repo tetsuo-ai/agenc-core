@@ -27,6 +27,22 @@ import { safeParseJSON } from './json.js'
 import { logError } from './log.js'
 import { jsonStringify } from './slowOperations.js'
 
+/**
+ * Delivery routing for gateway-executed cron tasks (TODO task 16). A task
+ * with `deliver` set is OWNED by the channel gateway: it runs in an isolated
+ * gateway daemon session (heartbeat parity) and its result is delivered to a
+ * channel and/or POSTed to a webhook. The in-session scheduler SKIPS these
+ * tasks so a fire is never double-executed.
+ */
+export type CronDelivery = {
+  /** Channel adapter id to announce the result on (e.g. "stdio", "telegram"). */
+  channel?: string
+  /** Conversation id on that channel (required when channel is set). */
+  to?: string
+  /** http(s) URL to POST the result to as JSON. */
+  webhook?: string
+}
+
 export type CronTask = {
   id: string
   /** 5-field cron string (local time) — validated on write, re-validated on read. */
@@ -67,6 +83,12 @@ export type CronTask = {
    * REPL's. Never written to disk (teammate crons are always session-only).
    */
   agentId?: string
+  /**
+   * Gateway delivery routing (TODO task 16). Persisted. When set the task is
+   * executed by the gateway's cron-delivery runner, NOT the in-session
+   * scheduler (which skips it — see cronScheduler loadRunnableTasks).
+   */
+  deliver?: CronDelivery
 }
 
 type CronFile = { tasks: CronTask[] }
@@ -124,6 +146,7 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
       )
       continue
     }
+    const deliver = normalizeDelivery(t.deliver)
     out.push({
       id: t.id,
       cron: t.cron,
@@ -134,6 +157,7 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
         : {}),
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.permanent ? { permanent: true } : {}),
+      ...(deliver !== undefined ? { deliver } : {}),
     })
   }
   return out
@@ -197,16 +221,19 @@ export async function addCronTask(
   recurring: boolean,
   durable: boolean,
   agentId?: string,
+  deliver?: CronDelivery,
 ): Promise<string> {
   // Short ID — 8 hex chars is plenty for MAX_JOBS=50, avoids slice/prefix
   // juggling between the tool layer (shows short IDs) and disk.
   const id = randomUUID().slice(0, 8)
+  const normalizedDelivery = normalizeDelivery(deliver)
   const task = {
     id,
     cron,
     prompt,
     createdAt: Date.now(),
     ...(recurring ? { recurring: true } : {}),
+    ...(normalizedDelivery !== undefined ? { deliver: normalizedDelivery } : {}),
   }
   if (!durable) {
     addSessionCronTask({ ...task, ...(agentId ? { agentId } : {}) })
@@ -216,6 +243,36 @@ export async function addCronTask(
   tasks.push(task)
   await writeCronTasks(tasks)
   return id
+}
+
+/**
+ * Validate/normalize a delivery spec: strings only, channel requires to,
+ * webhook must be http(s). Returns undefined when nothing valid remains, so
+ * malformed on-disk data degrades to a normal in-session task instead of a
+ * task the gateway would misroute.
+ */
+export function normalizeDelivery(value: unknown): CronDelivery | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const raw = value as { channel?: unknown; to?: unknown; webhook?: unknown }
+  const channel =
+    typeof raw.channel === 'string' && raw.channel.trim().length > 0
+      ? raw.channel.trim()
+      : undefined
+  const to =
+    typeof raw.to === 'string' && raw.to.trim().length > 0
+      ? raw.to.trim()
+      : undefined
+  const webhook =
+    typeof raw.webhook === 'string' && /^https?:\/\//i.test(raw.webhook.trim())
+      ? raw.webhook.trim()
+      : undefined
+  const out: CronDelivery = {
+    ...(channel !== undefined && to !== undefined ? { channel, to } : {}),
+    ...(webhook !== undefined ? { webhook } : {}),
+  }
+  return out.channel !== undefined || out.webhook !== undefined
+    ? out
+    : undefined
 }
 
 /**
