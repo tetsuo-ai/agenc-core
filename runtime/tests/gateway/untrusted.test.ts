@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
+  AGENC_TELEGRAM_ANSWER_CONTEXT,
   CHANNEL_ANSWER_ONLY_GUIDANCE,
   CHANNEL_MESSAGE_GUIDANCE,
   frameChannelMessage,
@@ -82,6 +83,9 @@ describe("frameChannelMessage", () => {
       answerOnly: true,
     });
     expect(framed).toContain(CHANNEL_ANSWER_ONLY_GUIDANCE);
+    expect(framed).toContain(AGENC_TELEGRAM_ANSWER_CONTEXT);
+    expect(framed).toContain("Ledger DMK over BLE");
+    expect(framed).toContain("/image <idea>");
     expect(framed).toContain("what is AgenC?");
   });
 

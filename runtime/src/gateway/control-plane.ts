@@ -51,6 +51,7 @@ export const TELEGRAM_OWNER_COMMANDS = Object.freeze([
   { command: "stop", description: "pause public group replies" },
   { command: "status", description: "show bot control status" },
   { command: "help", description: "show owner controls" },
+  { command: "image", description: "generate an AgenC image" },
   { command: "meme", description: "generate an AgenC meme" },
 ] as const);
 
@@ -278,7 +279,7 @@ export class TelegramOwnerControl {
       `Public group: ${groupStatus}`,
       "Private DM: owner-only",
       `Owners: ${this.#ownerCount(state)}`,
-      "Media: /meme is enabled when configured server-side.",
+      "Media: /image and /meme are enabled when configured server-side.",
     ].join("\n");
   }
 
@@ -288,6 +289,7 @@ export class TelegramOwnerControl {
       "/start - turn public group replies on",
       "/stop - pause public group replies",
       "/status - show current state",
+      "/image <idea> - generate an AgenC image",
       "/meme <idea> - generate a meme",
       "",
       "Private DMs are owner-only. Group messages are public when the bot is on.",
