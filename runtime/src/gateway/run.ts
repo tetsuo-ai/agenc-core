@@ -29,6 +29,7 @@ import {
   TelegramOwnerControl,
 } from "./control-plane.js";
 import { ChannelGateway } from "./gateway.js";
+import { HooksServer } from "./hooks.js";
 import { loadGatewayConfig } from "./config.js";
 import {
   DISCORD_CHANNEL_ID,
@@ -95,6 +96,10 @@ export interface GatewayRunOptions {
   readonly webchatHost?: string;
   readonly webchatPort?: number;
   readonly webchatAllowNonLoopback?: boolean;
+  /** Force the inbound-webhooks endpoint on for this run (else gateway config `hooks`). */
+  readonly hooks?: boolean;
+  readonly hooksHost?: string;
+  readonly hooksPort?: number;
   readonly log?: (line: string) => void;
   /** Test seam: inject a daemon client instead of connecting via the SDK. */
   readonly clientFactory?: () => Promise<GatewayDaemonClient>;
@@ -104,16 +109,17 @@ export interface GatewayRunOptions {
 }
 
 /**
- * Resolve the WebChat token: env override, else a persisted per-home token
- * (0600) so the browser URL survives restarts, else generate + persist.
+ * Resolve a gateway surface token: env override, else a persisted per-home
+ * token file (0600) so URLs/callers survive restarts, else generate+persist.
  */
-function resolveWebChatToken(
+function resolveGatewayToken(
   agencHome: string,
-  env: Readonly<Record<string, string | undefined>>,
+  fromEnv: string | undefined,
+  fileName: string,
 ): string {
-  const fromEnv = env.AGENC_WEBCHAT_TOKEN?.trim();
-  if (fromEnv !== undefined && fromEnv.length >= 16) return fromEnv;
-  const path = join(agencHome, "gateway", "webchat-token");
+  const envToken = fromEnv?.trim();
+  if (envToken !== undefined && envToken.length >= 16) return envToken;
+  const path = join(agencHome, "gateway", fileName);
   if (existsSync(path)) {
     const existing = readFileSync(path, "utf8").trim();
     if (existing.length >= 16) return existing;
@@ -123,6 +129,24 @@ function resolveWebChatToken(
   writeFileSync(path, token, { mode: 0o600 });
   return token;
 }
+
+function resolveWebChatToken(
+  agencHome: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  return resolveGatewayToken(agencHome, env.AGENC_WEBCHAT_TOKEN, "webchat-token");
+}
+
+/** Persisted at gateway/hooks-token; AGENC_HOOKS_TOKEN overrides. */
+export function resolveHooksToken(
+  agencHome: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  return resolveGatewayToken(agencHome, env.AGENC_HOOKS_TOKEN, "hooks-token");
+}
+
+/** On-disk hooks token file name (shared with the security audit). */
+export const HOOKS_TOKEN_FILENAME = "hooks-token";
 
 function envFlag(value: string | undefined): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
@@ -137,6 +161,7 @@ const GATEWAY_SECRET_ENV_NAMES = [
   "AGENC_DISCORD_BOT_TOKEN",
   "AGENC_SLACK_BOT_TOKEN",
   "AGENC_SLACK_APP_TOKEN",
+  "AGENC_HOOKS_TOKEN",
 ] as const;
 
 /** Keep gateway transport/data credentials out of an autostarted agent daemon. */
@@ -217,6 +242,8 @@ export interface GatewayRunHandle {
   readonly channels: readonly string[];
   /** Operator URL (with token) when WebChat is running. */
   readonly webchatUrl?: string;
+  /** Bound port when the inbound-webhooks endpoint is running. */
+  readonly hooksPort?: number;
   stop(): Promise<void>;
 }
 
@@ -650,13 +677,52 @@ export async function startGateway(
     log(`heartbeat: failed to start (continuing without it): ${String(error)}`);
   }
 
+  // Inbound webhooks (task 17): disabled by default; enabled via the gateway
+  // config `hooks` section or the --hooks flag. Loopback + bearer token; the
+  // payload rides the task-11 untrusted framing and the task-15 budget.
+  let hooksServer: HooksServer | null = null;
+  const hooksConfig = config.hooks;
+  if (options.hooks === true || hooksConfig?.enabled === true) {
+    try {
+      hooksServer = new HooksServer({
+        agencHome: options.agencHome,
+        token: resolveHooksToken(options.agencHome, env),
+        client,
+        adapters,
+        config: mainConfigLoaded,
+        env,
+        defaultAgent: config.defaultAgent,
+        ...(options.hooksHost !== undefined
+          ? { host: options.hooksHost }
+          : hooksConfig?.host !== undefined
+            ? { host: hooksConfig.host }
+            : {}),
+        ...(options.hooksPort !== undefined
+          ? { port: options.hooksPort }
+          : hooksConfig?.port !== undefined
+            ? { port: hooksConfig.port }
+            : {}),
+        ...(hooksConfig?.allowNonLoopback === true
+          ? { allowNonLoopback: true }
+          : {}),
+        log,
+      });
+      await hooksServer.start();
+    } catch (error) {
+      hooksServer = null;
+      log(`hooks: failed to start (continuing without them): ${String(error)}`);
+    }
+  }
+
   log(`gateway: running with channels: ${started.join(", ")}`);
 
   return {
     gateway,
     channels: started,
     ...(webchat !== undefined ? { webchatUrl: webchat.url } : {}),
+    ...(hooksServer !== null ? { hooksPort: hooksServer.port } : {}),
     async stop() {
+      if (hooksServer !== null) await hooksServer.stop();
       if (heartbeat !== null) await heartbeat.stop();
       if (cronDelivery !== null) await cronDelivery.stop();
       await gateway.stop();

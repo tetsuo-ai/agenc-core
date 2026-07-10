@@ -16,6 +16,7 @@ import {
   type GatewayBinding,
   type GatewayChannelPolicy,
   type GatewayConfig,
+  type GatewayHooksConfig,
 } from "./types.js";
 
 const DM_POLICIES: readonly DmPolicy[] = [
@@ -66,6 +67,40 @@ function normalizeBinding(
   };
 }
 
+/**
+ * Normalize the `hooks` section fail-closed: anything malformed disables the
+ * endpoint (never coerced into an enabled state), and a non-loopback bind
+ * survives only as expressed intent — the server itself still refuses it
+ * without `allowNonLoopback`.
+ */
+function normalizeHooksConfig(
+  value: unknown,
+  onWarn: (m: string) => void,
+): GatewayHooksConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null) {
+    onWarn("gateway: invalid hooks section — hooks disabled");
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.enabled !== true) return { enabled: false };
+  const port =
+    typeof record.port === "number" &&
+    Number.isInteger(record.port) &&
+    record.port >= 0 &&
+    record.port <= 65535
+      ? record.port
+      : undefined;
+  return {
+    enabled: true,
+    ...(typeof record.host === "string" && record.host.length > 0
+      ? { host: record.host }
+      : {}),
+    ...(port !== undefined ? { port } : {}),
+    ...(record.allowNonLoopback === true ? { allowNonLoopback: true } : {}),
+  };
+}
+
 export function resolveGatewayConfigPath(agencHome: string): string {
   return join(agencHome, "gateway", "config.json");
 }
@@ -109,6 +144,8 @@ export function loadGatewayConfig(
     }
   }
 
+  const hooks = normalizeHooksConfig(record.hooks, onWarn);
+
   return {
     channels,
     bindings,
@@ -116,5 +153,6 @@ export function loadGatewayConfig(
       typeof record.defaultAgent === "string" && record.defaultAgent.length > 0
         ? record.defaultAgent
         : DEFAULT_GATEWAY_CONFIG.defaultAgent,
+    ...(hooks !== undefined ? { hooks } : {}),
   };
 }

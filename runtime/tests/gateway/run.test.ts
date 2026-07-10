@@ -3,7 +3,7 @@
 // Telegram adapter over a fake transport. This is the "prove the run loop"
 // coverage the stdio channel exists for.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -142,6 +142,53 @@ describe("startGateway", () => {
     expect(handle.channels).toEqual(["stdio"]);
     await handle.stop();
     expect(client.closed).toBe(true);
+  });
+
+  test("hooks: --hooks mints a 0600 token, binds loopback, and an authed POST runs a turn end to end", async () => {
+    writeConfig({});
+    const client = new FakeClient();
+    const handle = await startGateway({
+      agencHome: home,
+      stdio: true,
+      hooks: true,
+      hooksPort: 0, // ephemeral for the test
+      clientFactory: async () => client,
+    });
+    expect(handle.hooksPort).toBeGreaterThan(0);
+
+    // The token was minted and persisted 0600 under gateway/.
+    const tokenPath = join(home, "gateway", "hooks-token");
+    const token = readFileSync(tokenPath, "utf8").trim();
+    expect(token.length).toBeGreaterThanOrEqual(16);
+    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+
+    const url = `http://127.0.0.1:${handle.hooksPort}/hooks/agent`;
+    // Unauthenticated → rejected.
+    const denied = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "nope" }),
+    });
+    expect(denied.status).toBe(401);
+    // Authenticated → framed turn with the reply in the response.
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ message: "ship it", name: "ci" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(String(body.finalMessage)).toContain("echo:");
+    expect(client.sessions.at(-1)?.prompts.at(-1)).toContain('trust="external"');
+
+    await handle.stop();
+    // The listener is actually gone after stop.
+    await expect(
+      fetch(url, { method: "POST" }).then((r) => r.status),
+    ).rejects.toThrow();
   });
 
   test("discord via extraAdapters: allowlisted DM drives a real turn; unpaired gets challenged", async () => {

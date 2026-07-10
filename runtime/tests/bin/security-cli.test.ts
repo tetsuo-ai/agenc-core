@@ -176,6 +176,63 @@ describe("security audit against a temp home", () => {
     ).toBe("warn");
   });
 
+  test("hooks enabled WITHOUT a token is critical (task 17 acceptance)", async () => {
+    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "gateway", "config.json"),
+      JSON.stringify({ hooks: { enabled: true } }),
+      { mode: 0o600 },
+    );
+    const report = await buildSecurityAuditReport({ env });
+    const finding = report.findings.find((f) => f.id === "hooks-exposure");
+    expect(finding?.severity).toBe("critical");
+    expect(finding?.title).toContain("without a bearer token");
+    expect(securityAuditExitCode(report)).toBe(1);
+  });
+
+  test("hooks enabled WITH a persisted token is ok", async () => {
+    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "gateway", "config.json"),
+      JSON.stringify({ hooks: { enabled: true } }),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(home, "gateway", "hooks-token"),
+      "hooks-token-0123456789abcdef",
+      { mode: 0o600 },
+    );
+    const report = await buildSecurityAuditReport({ env });
+    expect(
+      report.findings.find((f) => f.id === "hooks-exposure")?.severity,
+    ).toBe("ok");
+  });
+
+  test("hooks bound non-loopback is critical even with a token", async () => {
+    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "gateway", "config.json"),
+      JSON.stringify({ hooks: { enabled: true, host: "0.0.0.0" } }),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(home, "gateway", "hooks-token"),
+      "hooks-token-0123456789abcdef",
+      { mode: 0o600 },
+    );
+    const report = await buildSecurityAuditReport({ env });
+    expect(
+      report.findings.find((f) => f.id === "hooks-exposure:bind")?.severity,
+    ).toBe("critical");
+  });
+
+  test("hooks disabled (or absent) is ok", async () => {
+    const report = await buildSecurityAuditReport({ env });
+    expect(
+      report.findings.find((f) => f.id === "hooks-exposure")?.severity,
+    ).toBe("ok");
+  });
+
   test("runner: audit prints text and returns the exit code", async () => {
     chmodSync(home, 0o755);
     const out: string[] = [];

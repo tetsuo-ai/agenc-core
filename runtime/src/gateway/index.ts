@@ -81,9 +81,17 @@ export {
 } from "./slack-channel.js";
 export {
   startGateway,
+  resolveHooksToken,
   type GatewayRunOptions,
   type GatewayRunHandle,
 } from "./run.js";
+export {
+  HooksServer,
+  HOOKS_CHANNEL_ID,
+  HOOKS_DEFAULT_PORT,
+  HOOKS_PATH,
+  type HooksServerOptions,
+} from "./hooks.js";
 export {
   createSdkDaemonClient,
   isDaemonAgentGoneError,

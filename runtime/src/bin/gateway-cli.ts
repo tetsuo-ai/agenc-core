@@ -25,6 +25,7 @@ export type AgenCGatewayCliCommand =
       readonly stdio: boolean;
       readonly webchat: boolean;
       readonly heartbeat: boolean;
+      readonly hooks: boolean;
     }
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "pairing-list"; readonly json: boolean }
@@ -41,7 +42,7 @@ export function formatAgenCGatewayCliHelpText(): string {
     "agenc gateway — inspect and operate the channel gateway",
     "",
     "Usage:",
-    "  agenc gateway run [--stdio] [--webchat] [--heartbeat]",
+    "  agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]",
     "                                        Start the gateway. --stdio enables",
     "                                        the local dev channel; --webchat a",
     "                                        loopback token-gated browser UI;",
@@ -78,6 +79,7 @@ export function parseAgenCGatewayCliArgs(
       stdio: rest.includes("--stdio"),
       webchat: rest.includes("--webchat"),
       heartbeat: rest.includes("--heartbeat"),
+      hooks: rest.includes("--hooks"),
     };
   }
   if (positional[0] === "status") {
@@ -200,6 +202,7 @@ export async function runAgenCGatewayCli(
         stdio: command.stdio,
         webchat: command.webchat,
         heartbeat: command.heartbeat,
+        hooks: command.hooks,
         log: (line) => stderr(line),
       });
     } catch (error) {

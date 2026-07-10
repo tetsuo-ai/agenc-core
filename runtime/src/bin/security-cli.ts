@@ -13,12 +13,14 @@
  *   sensitive-file-perms     auth.json/daemon.cookie/config/vaults [fixable]
  *   config-integrity         config.toml unparseable (falls back to defaults)
  *   default-permission-mode  configured approval-bypass default    (warn)
+ *   hooks-exposure           inbound webhooks enabled without a bearer
+ *                            token, or bound non-loopback (task 17)
  *
  * The check registry is deliberately extensible: channel DM policies
- * (task 6), webhook token posture (task 17), and skill/plugin provenance
- * (task 26) land here as those surfaces ship.
+ * (task 6) and skill/plugin provenance (task 26) land here as those
+ * surfaces ship.
  */
-import { chmodSync, readdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { resolveAgencHome } from "../config/env.js";
@@ -265,12 +267,97 @@ const checkDefaultPermissionMode: SecurityCheck = (ctx) => {
   ];
 };
 
+/**
+ * Inbound webhooks (task 17): enabled without a reachable bearer token is
+ * critical — the endpoint would refuse to start, but the configuration
+ * expresses an unauthenticated-automation intent that must not survive
+ * unnoticed. A non-loopback bind is the daemon-ws exposure class.
+ */
+const checkHooksExposure: SecurityCheck = (ctx) => {
+  const configPath = join(ctx.agencHome, "gateway", "config.json");
+  let hooks: Record<string, unknown> | null = null;
+  try {
+    if (existsSync(configPath)) {
+      const raw = JSON.parse(readFileSync(configPath, "utf8")) as {
+        hooks?: unknown;
+      };
+      if (typeof raw.hooks === "object" && raw.hooks !== null) {
+        hooks = raw.hooks as Record<string, unknown>;
+      }
+    }
+  } catch {
+    // Unparseable gateway config is its own (fail-closed) problem; the
+    // hooks endpoint cannot be enabled by a file that does not parse.
+    hooks = null;
+  }
+  if (hooks === null || hooks.enabled !== true) {
+    return [
+      {
+        id: "hooks-exposure",
+        title: "Inbound webhooks disabled",
+        severity: "ok",
+        detail: "The /hooks/agent endpoint is not enabled in gateway config.",
+        fixable: false,
+      },
+    ];
+  }
+
+  const findings: SecurityFinding[] = [];
+  const envToken = ctx.env.AGENC_HOOKS_TOKEN?.trim() ?? "";
+  let fileToken = "";
+  try {
+    const tokenPath = join(ctx.agencHome, "gateway", "hooks-token");
+    if (existsSync(tokenPath)) {
+      fileToken = readFileSync(tokenPath, "utf8").trim();
+    }
+  } catch {
+    fileToken = "";
+  }
+  if (envToken.length < 16 && fileToken.length < 16) {
+    findings.push({
+      id: "hooks-exposure",
+      title: "Inbound webhooks enabled without a bearer token",
+      severity: "critical",
+      detail:
+        "gateway/config.json enables the /hooks/agent endpoint but neither AGENC_HOOKS_TOKEN nor gateway/hooks-token provides a token (>=16 chars). The endpoint will mint one on next start, but until callers hold a token this configuration expresses unauthenticated-automation intent.",
+      remediation:
+        "Set AGENC_HOOKS_TOKEN or start `agenc gateway run` once to mint gateway/hooks-token, then configure callers with it.",
+      fixable: false,
+    });
+  }
+
+  const host = typeof hooks.host === "string" ? hooks.host : "";
+  if (host.length > 0 && !isLoopbackHostValue(host)) {
+    findings.push({
+      id: "hooks-exposure:bind",
+      title: "Inbound webhooks host is not loopback",
+      severity: "critical",
+      detail: `gateway/config.json binds /hooks/agent to '${host}'. An exposed automation endpoint on an agent host is the daemon-exposure disaster class.`,
+      remediation:
+        "Bind 127.0.0.1 and reach it via a tailnet or SSH tunnel instead.",
+      fixable: false,
+    });
+  }
+
+  if (findings.length === 0) {
+    findings.push({
+      id: "hooks-exposure",
+      title: "Inbound webhooks enabled with token, loopback-bound",
+      severity: "ok",
+      detail: "The /hooks/agent endpoint has a bearer token and a loopback bind.",
+      fixable: false,
+    });
+  }
+  return findings;
+};
+
 export const SECURITY_CHECKS: readonly SecurityCheck[] = [
   checkDaemonWsExposure,
   checkHomeDirPerms,
   checkSensitiveFilePerms,
   checkConfigIntegrity,
   checkDefaultPermissionMode,
+  checkHooksExposure,
 ];
 
 export function runSecurityChecks(
