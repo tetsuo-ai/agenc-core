@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import process from "node:process";
@@ -117,7 +117,33 @@ function runDeclarations() {
   }
 }
 
+// The runtime bundles @tetsuo-ai/agenc-sdk (the gateway's daemon client), but
+// the SDK workspace commits only src/ — its dist/, which the package exports
+// point at, is a build artifact. A fresh checkout (release CI, new clone) has
+// no dist and esbuild fails with "Could not resolve @tetsuo-ai/agenc-sdk", so
+// build it first when its entry is missing.
+function ensureSdkWorkspaceBuilt() {
+  const sdkRoot = resolve(runtimeRoot, "..", "packages", "agenc-sdk");
+  if (existsSync(resolve(sdkRoot, "dist", "index.js"))) {
+    return;
+  }
+  console.log("[build] @tetsuo-ai/agenc-sdk dist missing — building the SDK workspace");
+  const res = spawnSync(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["--workspace=@tetsuo-ai/agenc-sdk", "run", "build"],
+    {
+      cwd: resolve(runtimeRoot, ".."),
+      stdio: "inherit",
+      shell: process.platform === "win32",
+    },
+  );
+  if (res.status !== 0 || !existsSync(resolve(sdkRoot, "dist", "index.js"))) {
+    throw new Error("agenc-sdk workspace build failed; runtime bundle cannot resolve @tetsuo-ai/agenc-sdk");
+  }
+}
+
 async function main() {
+  ensureSdkWorkspaceBuilt();
   const config = normalizeConfig(await loadConfig());
   await runBundle(config);
   runDeclarations();
