@@ -11,7 +11,8 @@ narratives live under [`archive/`](archive/) and are **not** product truth.
 | [`archive/onboarding-plan-2026-07.md`](archive/onboarding-plan-2026-07.md) | Onboarding implementation plan (superseded by shipped acts + quickstart) |
 | [`archive/README.md`](archive/README.md) | Archive index |
 
-Operational task tracking for engineers remains in root [`TODO.md`](../TODO.md)
+Operational task tracking for local engineers may use a gitignored root
+`TODO.md` when present; public product truth for shipped vs open is this file
 (open backlog + completed log with SHAs). This roadmap is the **product-facing**
 shipped / open summary.
 
@@ -68,7 +69,7 @@ shipped / open summary.
 ## Open backlog
 
 Grouped to match current product priority. Detail + acceptance criteria live in
-[`TODO.md`](../TODO.md).
+`TODO.md` (local/gitignored).
 
 ### Channels still open
 
@@ -134,6 +135,6 @@ Carried from the archived parity plan (still policy):
 | Layer | Use |
 | --- | --- |
 | This file | Shipped vs open product summary |
-| [`TODO.md`](../TODO.md) | Engineer backlog, gates, completed SHAs |
+| `TODO.md` (local/gitignored) | Engineer backlog, gates, completed SHAs |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How the system is put together |
 | [`archive/`](archive/) | Historical plans only |

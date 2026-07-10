@@ -287,7 +287,7 @@ check:unused                # knip (informational)
 builds multi-platform runtime tarballs on `workflow_dispatch`. There is no
 hosted test CI in this checkout — **local gates are authoritative**.
 
-Contributor guide: [`AGENTS.md`](AGENTS.md). Doc index: [`docs/INDEX.md`](docs/INDEX.md).
+Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 
 ## Security
 

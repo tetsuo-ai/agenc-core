@@ -16,14 +16,15 @@ Related: [onboarding](onboarding.md) · [quickstart](quickstart.md) ·
 | `auth.managedKeys.enabled` | **`true`** (default) |
 | Default paid managed model | `openrouter` / `x-ai/grok-4.3` |
 | Free-tier managed routes | OpenRouter `:free` models (see below) |
-| Default max output tokens | **`32_000`** (`DEFAULT_MAX_OUTPUT_TOKENS`) |
-| Upper limit | **`64_000`** |
-| Capped default (when `capped_default_max_output_tokens` is set) | **`8_000`** (`CAPPED_DEFAULT_MAX_OUTPUT_TOKENS`) |
+| **Managed OpenRouter default max output** | **`2_048`** (`MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS` in `session.ts` / `bootstrap.ts`) |
+| Generic openai-compatible catalog default | `32_000` (`DEFAULT_MAX_OUTPUT_TOKENS`) — **not** the managed path |
+| Generic upper limit | `64_000` |
+| Generic capped default flag | `8_000` when `capped_default_max_output_tokens` is set |
 
-There is **no product default of 2048 output tokens** for managed chat.
-Catalog/metadata defaults use the 32k/64k path above; operators can opt into
-the 8k capped default or set an explicit cap with `max_output_tokens` /
-`AGENC_MAX_OUTPUT_TOKENS`.
+Managed chat **does** apply a **2048** default/ceiling when no explicit
+`max_output_tokens` / `AGENC_MAX_OUTPUT_TOKENS` is set. That hard-cap is
+separate from the generic 32k/64k openai-compatible metadata defaults used
+for non-managed routes.
 
 **BYOK always wins.** If `OPENROUTER_API_KEY` or a provider-config API key is
 present, those credentials are used instead of the subscription-managed route.
@@ -93,12 +94,12 @@ After a successful `/login`:
 
 | Source | Effect |
 |---|---|
-| Explicit `max_output_tokens` / `AGENC_MAX_OUTPUT_TOKENS` | Wins (bounded by model upper limit) |
-| `capped_default_max_output_tokens = true` | Default **8_000** |
-| Metadata / compatible default | **32_000** default, **64_000** upper limit |
+| Explicit `max_output_tokens` / `AGENC_MAX_OUTPUT_TOKENS` | Wins (still bounded by model upper limit) |
+| Managed OpenRouter with no explicit max | **Default and ceiling `2_048`** |
+| Non-managed openai-compatible metadata | **32_000** default, **64_000** upper; optional **8_000** capped default |
 
-Managed chat does **not** force a 2048-token ceiling. Prefer an explicit
-operator cap when you need smaller reserved budgets for allowance headroom.
+Raise managed output size with an explicit max when the 2048 default is too
+small for the task (and the hosted allowance can reserve it).
 
 ## Budget and error messages
 
@@ -118,5 +119,5 @@ When debugging production, check in order:
 5. `/v1/auth/llm-usage` can read spend for `/usage`.
 6. LiteLLM allowlist includes the selected `openrouter/...` model.
 7. OpenRouter workspace has credits / free-pool capacity.
-8. Request `max_tokens` matches the intended default (32k / 8k capped /
-   explicit), not an outdated hard-coded 2048 assumption.
+8. Request `max_tokens` matches intent: managed default is **2048** unless
+   you set an explicit max; generic 32k/8k paths are for non-managed routes.
