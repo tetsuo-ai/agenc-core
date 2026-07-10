@@ -12,6 +12,7 @@
  *     JSON-RPC over a caller-provided WebSocket endpoint.
  */
 
+import { VERSION } from "../../version.js";
 import WebSocket, { type RawData } from "ws";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -182,7 +183,7 @@ export async function createWebSocketMCPConnection(
   const timeout = config.timeout ?? 30_000;
   const transport = createWebSocketMCPTransport(config);
   const client = new Client(
-    { name: "agenc-runtime", version: "0.2.0" },
+    { name: "agenc-runtime", version: VERSION },
     {
       capabilities: buildMcpHostClientCapabilities(
         elicitationHandlers === undefined ? "none" : "form-url",

@@ -15,6 +15,7 @@
  * that back the integration.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { VERSION } from "../../src/version.js";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1595,7 +1596,7 @@ describe("main() smoke", () => {
       expect(code).toBe(0);
       expect(
         stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain("agenc 0.2.0");
+      ).toContain(`agenc ${VERSION}`);
     } finally {
       process.argv = prevArgv;
       stdoutSpy.mockRestore();
