@@ -1,9 +1,11 @@
 # AgenC First-Run Onboarding — Complete Plan (2026-07)
 
-> **Audience:** an AI code assistant (or the owner) implementing onboarding
-> work in `agenc-core`. Same conventions as `docs/parity-roadmap-2026-07.md`;
-> workstreams below are written in TODO.md task format so they can be lifted
-> straight into the backlog.
+> **ARCHIVED — NOT PRODUCT TRUTH.** Superseded by
+> [`../onboarding.md`](../onboarding.md) and [`../roadmap.md`](../roadmap.md).
+> Historical implementation plan only.
+>
+> **Audience (historical):** an AI code assistant implementing onboarding
+> work. Related archive: [`parity-roadmap-2026-07.md`](parity-roadmap-2026-07.md).
 >
 > **Delivery status (2026-07-10):** O-2/O-3/O-4/O-5/O-6 shipped (PR #1454);
 > O-1 shipped (detection + annotation + guaranteed first turn); O-7 shipped

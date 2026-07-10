@@ -1,27 +1,29 @@
 # AgenC Core: Parity-and-Beyond Roadmap vs Hermes Agent and OpenClaw
 
+> **ARCHIVED — NOT PRODUCT TRUTH.** Historical plan only. Do not use the
+> progress header below to decide what is shipped. Current product truth:
+> [`../roadmap.md`](../roadmap.md), [`../gateway.md`](../gateway.md),
+> [`../INDEX.md`](../INDEX.md). Discord/Slack, heartbeat, budget, personas,
+> and hooks have since shipped (0.3.0 line).
+
 **Date:** 2026-07-08 (plan). **Inputs:** full repo inventory of agenc-core, full
 repo inventory of `hermes-agent` (v0.17.0), web research on OpenClaw and on
 adoption drivers/complaints for both (HN Algolia + GitHub API verified where noted).
 
-> ## Progress (updated 2026-07-09)
+> ## Progress (updated 2026-07-09) — STALE SNAPSHOT
 >
-> The strategy below is unchanged; this header tracks execution against it.
+> Frozen historical header. **Superseded** by [`../roadmap.md`](../roadmap.md).
 >
 > - **Phase 0 (onboarding) — COMPLETE and PUBLISHED.** One-line installer
 >   (`get.agenc.ag`), `agenc onboard`, `agenc security audit --fix`, Docker
 >   (`ghcr.io/tetsuo-ai/agenc`), Homebrew tap, quickstart + migration guides.
 >   Binaries ship from the public `tetsuo-ai/agenc-releases` repo (5 platforms).
-> - **Phase 1 (channels) — IN PROGRESS.** Done: channel gateway core (pairing,
->   bindings, in-channel token approvals), stdio + Telegram channels + the
->   `agenc gateway run` loop, WebChat (loopback + token-gated browser UI), and
->   untrusted-content hardening (sanitize + frame every inbound message).
->   Pending in Phase 1: Discord/Slack, Signal/email, iMessage/WhatsApp.
-> - **Phases 2-6** — not started (persona/heartbeat, browser/exec, auditable
->   learning, the marketplace moat, growth).
->
-> Per-task detail (PR + SHA + what shipped/deferred) lives in `TODO.md`'s
-> Completed section. See `docs/gateway.md` for the shipped channel surface.
+> - **Phase 1 (channels) — IN PROGRESS (as of 2026-07-09 only).** Done then:
+>   channel gateway core, stdio + Telegram, WebChat, untrusted-content hardening.
+>   Listed as pending then: Discord/Slack (since shipped), Signal/email,
+>   iMessage/WhatsApp (still open).
+> - **Phases 2-6** — were “not started” on that date; much of Phase 2 has since
+>   landed (see current roadmap).
 
 ---
 
