@@ -26,6 +26,9 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
 } as const;
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY =
   "daemon.methods" as const;
+/** Explicit opt-in for unsolicited, cross-session mobile agent-status notifications. */
+export const AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY =
+  "portal.mobile.status.push.v1" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonArray = readonly JsonValue[];
@@ -1064,6 +1067,8 @@ export interface ToolApproveParams extends JsonObject {
   readonly sessionId: string;
   readonly requestId: string;
   readonly scope?: "once" | "session" | "agent";
+  /** Opt in to bypassing future tool prompts for this daemon session only. */
+  readonly allowAllToolsForSession?: boolean;
   readonly exitPlan?: ExitPlanApprovalPayload;
 }
 
@@ -1195,6 +1200,7 @@ export interface EventUserInputRequestParams extends AgenCEventBaseParams {
   readonly callId: string;
   readonly turnId: string;
   readonly questions: readonly JsonObject[];
+  readonly clientAction?: JsonObject;
 }
 
 export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
@@ -1832,6 +1838,7 @@ export interface DaemonReloadResult extends JsonObject {
 export interface AuthIdentity extends JsonObject {
   readonly accountId?: string;
   readonly email?: string;
+  readonly handle?: string;
   readonly displayName?: string;
   readonly plan?: string;
   readonly daemon?: AuthDaemonSocketIdentity;
@@ -1849,6 +1856,7 @@ export interface AuthWhoamiResult extends JsonObject {
   readonly authenticated: boolean;
   readonly provider?: string;
   readonly identity?: AuthIdentity;
+  readonly subscriptionTier?: "free" | "pro" | "team" | "enterprise";
 }
 
 export interface AuthLoginResult extends JsonObject {

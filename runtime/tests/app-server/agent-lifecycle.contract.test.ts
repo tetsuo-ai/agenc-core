@@ -4849,6 +4849,91 @@ describe("AgenC background agent lifecycle", () => {
     );
   });
 
+  it("promotes allow-all to bypass mode before releasing the pending tool", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_allow_all"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const order: string[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_allow_all",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      setAgentPermissionMode: async (agentId, params) => {
+        order.push(`mode:${agentId}:${params.sessionId}:${params.mode}`);
+        return {
+          applied: true,
+          previousMode: "default",
+          mode: params.mode,
+        };
+      },
+      resolveToolDecision: async (agentId, params) => {
+        order.push(`resolve:${agentId}:${params.requestId}:${params.decision.kind}`);
+        return true;
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await agents.createAgent({ objective: "wait for all-tool approval" });
+
+    await expect(
+      agents.approveTool({
+        sessionId: "session_allow_all",
+        requestId: "call_allow_all",
+        scope: "session",
+        allowAllToolsForSession: true,
+      }),
+    ).resolves.toEqual({ requestId: "call_allow_all", decision: "approved" });
+
+    expect(order).toEqual([
+      "mode:agent_allow_all:session_allow_all:bypassPermissions",
+      "resolve:agent_allow_all:call_allow_all:approved_for_session",
+    ]);
+  });
+
+  it("rolls back allow-all mode when the pending request is stale", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_stale_allow_all"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const modes: string[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_stale_allow_all",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      setAgentPermissionMode: async (_agentId, params) => {
+        modes.push(params.mode);
+        return {
+          applied: true,
+          previousMode: "default",
+          mode: params.mode,
+        };
+      },
+      resolveToolDecision: async () => false,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await agents.createAgent({ objective: "stale approval" });
+
+    await expect(
+      agents.approveTool({
+        sessionId: "session_stale_allow_all",
+        requestId: "missing_call",
+        scope: "session",
+        allowAllToolsForSession: true,
+      }),
+    ).rejects.toThrow(/not pending/);
+    expect(modes).toEqual(["bypassPermissions", "default"]);
+  });
+
   it("keeps daemon tool decisions successful when audit logging fails", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),

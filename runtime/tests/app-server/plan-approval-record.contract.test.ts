@@ -138,6 +138,11 @@ describe("validateToolApproveParams accepts/rejects exitPlan (contract #3)", () 
         startedAt: "2026-05-01T12:00:00.500Z",
         status: "running",
       }),
+      setAgentPermissionMode: async (_agentId, modeParams) => ({
+        applied: true,
+        previousMode: "default",
+        mode: modeParams.mode,
+      }),
       resolveToolDecision: async () => true,
     };
     const agents = new AgenCDaemonAgentManager({
@@ -181,6 +186,39 @@ describe("validateToolApproveParams accepts/rejects exitPlan (contract #3)", () 
     });
     expect(response.error).toBeUndefined();
     expect(response.result).toEqual({ requestId: "call_v2", decision: "approved" });
+  });
+
+  it("accepts explicit all-tool session approval", async () => {
+    const response = await dispatchApprove({
+      sessionId: "session_1",
+      requestId: "call_all",
+      scope: "session",
+      allowAllToolsForSession: true,
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({ requestId: "call_all", decision: "approved" });
+  });
+
+  it("rejects all-tool approval outside session scope", async () => {
+    const response = await dispatchApprove({
+      sessionId: "session_1",
+      requestId: "call_bad_scope",
+      scope: "once",
+      allowAllToolsForSession: true,
+    });
+    expect(response.result).toBeUndefined();
+    expect(response.error?.message ?? "").toMatch(/requires scope 'session'/);
+  });
+
+  it("rejects a non-boolean all-tool flag", async () => {
+    const response = await dispatchApprove({
+      sessionId: "session_1",
+      requestId: "call_bad_flag",
+      scope: "session",
+      allowAllToolsForSession: "yes",
+    });
+    expect(response.result).toBeUndefined();
+    expect(response.error?.message ?? "").toMatch(/must be a boolean/);
   });
 
   it("rejects a bad exitPlan.action with invalidParams", async () => {

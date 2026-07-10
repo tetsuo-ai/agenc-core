@@ -33,10 +33,32 @@ const DAEMON_CONTROL_METHODS = new Set<string>([
   "commandExec.terminate",
 ]);
 
+const DAEMON_PREEMPTIVE_METHODS = new Set<string>([
+  ...DAEMON_CONTROL_METHODS,
+  "tool.approve",
+  "tool.deny",
+  "elicitation.respond",
+]);
+
 export function isDaemonControlMessage(message: JsonObject): boolean {
   return (
     typeof message.method === "string" &&
     DAEMON_CONTROL_METHODS.has(message.method)
+  );
+}
+
+/**
+ * Requests that must bypass a connection's normal FIFO because they resolve a
+ * decision awaited by the request currently at the head of that FIFO.
+ *
+ * This is deliberately broader than {@link isDaemonControlMessage}: approval
+ * and elicitation replies stay subject to the normal connection limiter, while
+ * abort controls retain their existing overload exemption.
+ */
+export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
+  return (
+    typeof message.method === "string" &&
+    DAEMON_PREEMPTIVE_METHODS.has(message.method)
   );
 }
 

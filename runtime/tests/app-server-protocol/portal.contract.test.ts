@@ -66,6 +66,7 @@ describe("AgenC portal protocol contract", () => {
     expect(AGENC_PORTAL_CLIENT_CAPABILITIES).toEqual([
       "portal.dashboard.read",
       "portal.mobile.status.read",
+      "portal.mobile.status.push.v1",
       "portal.auth.read",
       "portal.auth.login",
       "portal.auth.logout",
@@ -80,6 +81,7 @@ describe("AgenC portal protocol contract", () => {
     expect(AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS).toEqual({
       "portal.dashboard.read": true,
       "portal.mobile.status.read": true,
+      "portal.mobile.status.push.v1": true,
       "portal.auth.read": true,
       "portal.auth.login": true,
       "portal.auth.logout": true,

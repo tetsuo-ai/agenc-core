@@ -331,6 +331,11 @@ export interface ActiveTurn {
   readonly tasks: Map<string, RunningTask>;
   /** Upstream `turn_state: Arc<Mutex<TurnState>>` per translation-conventions. */
   readonly turnState: AsyncLock<ActiveTurnState>;
+  /** Root human input bound to this exact turn; absent for synthetic turns. */
+  readonly rootHumanTurn?: {
+    readonly turnId: string;
+    readonly text: string;
+  };
 }
 
 /** agenc runtime `Mailbox` + `MailboxReceiver`. T9 (subagents) provides the
@@ -3417,6 +3422,14 @@ export class Session {
       abortController,
       tasks: new Map([[task.subId, task]]),
       turnState,
+      ...(opts.rootHumanTurnText !== undefined
+        ? {
+            rootHumanTurn: {
+              turnId: task.subId,
+              text: opts.rootHumanTurnText,
+            },
+          }
+        : {}),
     });
 
     if (
@@ -3578,6 +3591,26 @@ export class Session {
     return current.turnState.with(fn);
   }
 
+  /**
+   * Authoritative current root-human turn. Callers must not fall back to
+   * durable history: the active seed message is not guaranteed to be there
+   * before model tools execute.
+   */
+  currentRootHumanTurn(): NonNullable<ActiveTurn["rootHumanTurn"]> | null {
+    return this.activeTurn.unsafePeek()?.rootHumanTurn ?? null;
+  }
+
+  /** Atomically consume the single Ledger-transfer authorization for a turn. */
+  async claimLedgerTransferAuthorization(turnId: string): Promise<boolean> {
+    const current = this.activeTurn.unsafePeek();
+    if (current === null || current.turnId !== turnId) return false;
+    return current.turnState.with((state) => {
+      if (state.ledgerTransferClaimed) return false;
+      state.ledgerTransferClaimed = true;
+      return true;
+    });
+  }
+
   async requestUserInput(
     callId: string,
     args: RequestUserInputArgs,
@@ -3592,6 +3625,9 @@ export class Session {
       callId,
       turnId,
       questions: args.questions,
+      ...(args.clientAction !== undefined
+        ? { clientAction: args.clientAction }
+        : {}),
     };
     const directResolver = this.services.requestUserInputResolver;
     if (directResolver !== undefined) {

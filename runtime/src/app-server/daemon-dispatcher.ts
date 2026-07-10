@@ -46,6 +46,7 @@ import {
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
+  AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   isAgenCDaemonKnownMethod,
   JSON_RPC_VERSION,
   type AgentAttachParams,
@@ -105,6 +106,7 @@ import {
   type ToolDenyParams,
 } from "./protocol/index.js";
 import { isRecord } from "../utils/record.js";
+import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 
 export interface AgenCDaemonConnectionInitializeState {
   readonly protocol: {
@@ -536,6 +538,10 @@ export class AgenCDaemonJsonRpcDispatcher {
             authResult === true ? undefined : authResult,
           );
         }
+        await this.#registerInitializedCapabilityClient(
+          connection,
+          negotiated.state.clientCapabilities,
+        );
         connection.markInitialized(negotiated.state);
         return successResponse(id, {
           type: "initialized",
@@ -1038,6 +1044,31 @@ export class AgenCDaemonJsonRpcDispatcher {
     );
   }
 
+  async #registerInitializedCapabilityClient(
+    connection: AgenCDaemonJsonRpcConnection,
+    capabilities: JsonObject,
+  ): Promise<void> {
+    const receivesLedgerActions =
+      capabilities[LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY] === true;
+    const receivesMobileStatus =
+      capabilities[AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY] === true;
+    if (
+      (!receivesLedgerActions && !receivesMobileStatus) ||
+      this.#clientMultiplexer === undefined ||
+      connection.sendNotification === undefined
+    ) {
+      return;
+    }
+    const clientId = `initialized_${connection.cancellationScope}`;
+    await this.#clientMultiplexer.registerClient({
+      clientId,
+      deliveryKey: connection.cancellationScope,
+      send: (message) => connection.sendNotification!(message),
+      capabilities,
+    });
+    connection.trackClientId(clientId);
+  }
+
   async #attachTrackedClientToSession(
     connection: AgenCDaemonJsonRpcConnection,
     clientId: string | undefined,
@@ -1055,6 +1086,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       await this.#clientMultiplexer
         .registerClient({
           clientId,
+          deliveryKey: connection.cancellationScope,
           send: (message) => connection.sendNotification!(message),
         })
         .catch((error) => {
@@ -2156,6 +2188,7 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
     methodName: "tool.approve",
     stringFields: ["sessionId", "requestId", "scope"],
     objectFields: ["exitPlan"],
+    valueFields: ["allowAllToolsForSession"],
   });
   validateRequiredString(validated, "tool.approve", "sessionId");
   validateRequiredString(validated, "tool.approve", "requestId");
@@ -2167,6 +2200,22 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   ) {
     throw invalidParams(
       "tool.approve param 'scope' must be once, session, or agent",
+    );
+  }
+  if (
+    validated.allowAllToolsForSession !== undefined &&
+    typeof validated.allowAllToolsForSession !== "boolean"
+  ) {
+    throw invalidParams(
+      "tool.approve param 'allowAllToolsForSession' must be a boolean",
+    );
+  }
+  if (
+    validated.allowAllToolsForSession === true &&
+    validated.scope !== "session"
+  ) {
+    throw invalidParams(
+      "tool.approve param 'allowAllToolsForSession' requires scope 'session'",
     );
   }
   if (validated.exitPlan !== undefined) {

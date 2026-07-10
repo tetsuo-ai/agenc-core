@@ -28,7 +28,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
-  isDaemonControlMessage,
+  isDaemonPreemptiveMessage,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
@@ -422,14 +422,13 @@ export class AgenCWebSocketServer {
       return;
     }
 
-    if (isDaemonControlMessage(message)) {
-      // Abort controls must NOT queue behind the in-flight long request they
-      // target, or cancellation can never run. They carry no ordering
-      // dependency on normal requests because they reference an explicit target,
-      // so dispatch them off-chain. The promise is still tracked in
-      // pendingMessages so close() drains it.
+    if (isDaemonPreemptiveMessage(message)) {
+      // Abort controls and interactive decisions must NOT queue behind the
+      // in-flight request they unblock. They reference an explicit target, so
+      // dispatch them off-chain while keeping normal requests FIFO. The promise
+      // is still tracked in pendingMessages so close() drains it.
       //
-      // gaphunt3 #47: a control message cannot itself satisfy the accept-auth
+      // gaphunt3 #47: a preemptive message cannot itself satisfy the accept-auth
       // gate (it is not an `initialize`), so on a not-yet-accepted connection
       // it must not run — it is dropped until the connection authenticates.
       const pending = Promise.resolve()
@@ -655,14 +654,6 @@ function closeHttpServer(server: HttpServer): Promise<void> {
   });
 }
 
-/**
- * Pure-control messages that must bypass the per-connection dispatch FIFO.
- *
- * Abort controls reference an explicit target by request/session/process id and
- * have no ordering dependency on normal requests, so queuing them behind a
- * long-running request would let that request starve the cancellation meant to
- * abort it. Never extend this predicate to anything that depends on FIFO order.
- */
 /**
  * gaphunt3 #47: a socket that can be force-closed after the accept-auth window
  * lapses. Structural so the teardown path is unit-testable without a live ws.

@@ -15,6 +15,7 @@ export type AuthSubscriptionTier = "free" | "pro" | "team" | "enterprise";
 export interface AuthIdentity extends AuthJsonObject {
   readonly accountId?: string;
   readonly email?: string;
+  readonly handle?: string;
   readonly displayName?: string;
   readonly plan?: string;
   readonly daemon?: AuthDaemonSocketIdentity;
@@ -65,6 +66,7 @@ export interface AuthWhoamiResult extends AuthJsonObject {
   readonly authenticated: boolean;
   readonly provider?: AuthBackendKind;
   readonly identity?: AuthIdentity;
+  readonly subscriptionTier?: AuthSubscriptionTier;
 }
 
 export interface AuthLogoutResult extends AuthJsonObject {

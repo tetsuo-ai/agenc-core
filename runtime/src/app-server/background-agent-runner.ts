@@ -257,6 +257,8 @@ export interface AgenCBackgroundAgentSetPermissionModeResult {
   readonly applied: boolean;
   readonly previousMode: string;
   readonly mode: string;
+  /** Internal transaction hook; never serialized by session.setPermissionMode. */
+  readonly rollback?: () => Promise<void>;
 }
 
 export interface AgenCBackgroundAgentHooksStatusResult {
@@ -1611,7 +1613,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const transitioned = transitionPermissionMode(current.mode, target, current);
     const nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
     await registry.update(nextCtx);
-    return { applied: true, previousMode: current.mode, mode: target };
+    const result: AgenCBackgroundAgentSetPermissionModeResult = {
+      applied: true,
+      previousMode: current.mode,
+      mode: target,
+    };
+    // Keep the transaction hook out of JSON and ordinary result equality;
+    // session.setPermissionMode's public result remains unchanged.
+    Object.defineProperty(result, "rollback", {
+      value: async () => registry.update(current),
+      enumerable: false,
+    });
+    return result;
   }
 
   async getAgentHooksStatus(
@@ -2964,6 +2977,9 @@ export function notificationFromDaemonEvent(
         callId: payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
+        ...(isJsonObject(payload.clientAction)
+          ? { clientAction: payload.clientAction }
+          : {}),
       },
     };
   }
@@ -3659,6 +3675,9 @@ export function daemonEventFromUnboundSessionEvent(event: {
             : payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
+        ...(isJsonObject(payload.clientAction)
+          ? { clientAction: payload.clientAction }
+          : {}),
       },
     };
   }
@@ -4428,7 +4447,10 @@ function installDaemonTurnDriverHooks(
       installTurnDriverHooks?: (hooks: {
         readonly submit: (
           message: string | readonly LLMContentPart[],
-          opts?: unknown,
+          opts?: {
+            readonly source?: string;
+            readonly displayUserMessage?: string | null;
+          },
         ) => Promise<void>;
         readonly flushEventLog?: () => Promise<void> | void;
       }) => void;
@@ -4436,10 +4458,21 @@ function installDaemonTurnDriverHooks(
   ).installTurnDriverHooks;
   if (typeof installer !== "function") return;
   installer.call(session, {
-    submit: async (message) => {
+    submit: async (message, opts) => {
       const ctx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
+      const rootHumanTurnText =
+        opts?.source !== "autonomous_tick" &&
+        opts?.displayUserMessage !== null
+          ? (opts?.displayUserMessage ??
+            (typeof message === "string"
+              ? message
+              : message
+                  .map((part) => (part.type === "text" ? part.text : ""))
+                  .filter((part) => part.trim().length > 0)
+                  .join("\n")))
+          : undefined;
       // displayUserMessage: null suppresses the run-turn user_message
       // emit. On the daemon path, submitAgentMessage above already
       // emits the user_message event (with the displayUserMessage
@@ -4450,7 +4483,16 @@ function installDaemonTurnDriverHooks(
         session as never,
         ctx as never,
         message,
-        { displayUserMessage: null },
+        {
+          // This runner owns a root ManagedThread fed by daemon/phone human input. Bootstrap may
+          // carry an agent-scoped querySource, which would make runTurn treat the same human prompt
+          // as synthetic and omit ActiveTurn.rootHumanTurn. Pin the root daemon driver to the SDK
+          // main-thread source; subagents use their own sessions and autonomous ticks are still
+          // excluded by rootHumanTurnText below.
+          querySource: "sdk",
+          displayUserMessage: null,
+          ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
+        },
       )) {
         (
           session as unknown as { emitPhaseEvent: (e: unknown) => void }

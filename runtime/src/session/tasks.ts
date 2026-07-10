@@ -248,6 +248,8 @@ export interface ActiveTurnState {
   // `on_task_finished` for turn-complete telemetry.
   /** Upstream `tool_calls` counter. WIRED-NOW (dispatchModelToolCall). */
   toolCalls: number;
+  /** One-shot claim preventing duplicate Ledger transfers in one human turn. */
+  ledgerTransferClaimed: boolean;
   // RESERVED: upstream agenc runtime session/mod.rs:3046
   // (record_memory_citation_for_turn write), tasks/mod.rs:485
   // (on_task_finished read). Gut has no memory subsystem yet.
@@ -282,6 +284,7 @@ export function createActiveTurnState(): ActiveTurnState {
     grantedPermissions: null,
     strictAutoReviewEnabled: false,
     toolCalls: 0,
+    ledgerTransferClaimed: false,
     hasMemoryCitation: false,
     tokenUsageAtTurnStart: {
       promptTokens: 0,
@@ -349,6 +352,12 @@ export interface SpawnTaskOptions {
   readonly input?: readonly unknown[];
   readonly autoStart?: boolean;
   readonly startedAtMs?: number;
+  /**
+   * Exact user-visible text for the root human input that created this turn.
+   * Kept on ActiveTurn (rather than inferred from history) because tools can
+   * execute before the current seed message is committed to session history.
+   */
+  readonly rootHumanTurnText?: string;
   /**
    * Optional externally-supplied controller. When omitted, spawnTask
    * allocates a fresh one so the caller can pull `.signal` for the

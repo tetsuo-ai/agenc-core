@@ -133,6 +133,19 @@ describe("request_user_input", () => {
     });
   });
 
+  it("does not let the generic model-facing tool forge clientAction", () => {
+    expect(() =>
+      normalizeRequestUserInputArgs({
+        ...VALID_ARGS,
+        clientAction: {
+          type: "ledger_solana_transfer_v1",
+          to: "11111111111111111111111111111111",
+          lamports: "1",
+        },
+      }),
+    ).toThrow("request_user_input cannot set clientAction");
+  });
+
   it("enforces question and option cardinality", () => {
     expect(() => normalizeRequestUserInputArgs({ questions: [] })).toThrow(
       "request_user_input requires 1-3 questions",

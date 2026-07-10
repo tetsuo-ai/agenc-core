@@ -1128,6 +1128,22 @@ export class AgenCDaemonAgentManager {
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
     );
+    const allowAllToolsForSession = params.allowAllToolsForSession === true;
+    if (allowAllToolsForSession && params.scope !== "session") {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "allowAllToolsForSession requires session approval scope",
+      );
+    }
+    if (
+      allowAllToolsForSession &&
+      this.#runner?.setAgentPermissionMode === undefined
+    ) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session-wide all-tool approval requires a permission-mode capable runner",
+      );
+    }
     // Record the plan-mode approval choice BEFORE resolving the decision so the
     // deferred ExitPlanMode tool (same daemon process) can consume it via
     // consumeExitPlanModeApproval({ __callId: requestId }). requestId === the
@@ -1136,14 +1152,39 @@ export class AgenCDaemonAgentManager {
       const approval = toExitPlanModeApproval(params.exitPlan);
       recordExitPlanModeApproval(params.requestId, approval);
     }
-    const resolved = await this.#runner!.resolveToolDecision!(agentId, {
-      requestId: params.requestId,
-      decision:
-        params.scope === "session" || params.scope === "agent"
-          ? APPROVED_FOR_SESSION
-          : APPROVED,
-    });
+    // `tool.approve` is a preemptive daemon RPC. Apply the real session mode
+    // inside this same request before releasing the currently-blocked tool so
+    // a second tool in the same model turn cannot race ahead and prompt again.
+    // Plain scope=session intentionally retains its historic per-rule cache.
+    const modeChange = allowAllToolsForSession
+      ? await this.#runner!.setAgentPermissionMode!(agentId, {
+          sessionId: params.sessionId,
+          mode: "bypassPermissions",
+        })
+      : undefined;
+    let resolved = false;
+    try {
+      resolved = await this.#runner!.resolveToolDecision!(agentId, {
+        requestId: params.requestId,
+        decision:
+          params.scope === "session" || params.scope === "agent"
+            ? APPROVED_FOR_SESSION
+            : APPROVED,
+      });
+    } catch (error) {
+      await this.#rollbackAllToolsPermissionMode(
+        agentId,
+        params.sessionId,
+        modeChange,
+      );
+      throw error;
+    }
     if (!resolved) {
+      await this.#rollbackAllToolsPermissionMode(
+        agentId,
+        params.sessionId,
+        modeChange,
+      );
       // The request is no longer pending, so the deferred ExitPlanMode tool will
       // never run to consume the approval recorded above. Drop it here so it does
       // not leak permanently into the module-global approvals Map (consume's
@@ -1163,11 +1204,42 @@ export class AgenCDaemonAgentManager {
       requestId: params.requestId,
       ...(params.scope !== undefined ? { scope: params.scope } : {}),
       reasonCode:
-        params.scope === "session" || params.scope === "agent"
+        allowAllToolsForSession
+          ? "rpc_approved_all_tools_for_session"
+          : params.scope === "session" || params.scope === "agent"
           ? "rpc_approved_for_scope"
           : "rpc_approved_once",
     });
     return { requestId: params.requestId, decision: "approved" };
+  }
+
+  /** Undo a mode promotion if the pending request disappeared mid-approval. */
+  async #rollbackAllToolsPermissionMode(
+    agentId: string,
+    sessionId: string,
+    modeChange:
+      | {
+          readonly applied: boolean;
+          readonly previousMode: string;
+          readonly rollback?: () => Promise<void>;
+        }
+      | undefined,
+  ): Promise<void> {
+    if (!modeChange?.applied) return;
+    try {
+      if (modeChange.rollback !== undefined) {
+        await modeChange.rollback();
+        return;
+      }
+      await this.#runner!.setAgentPermissionMode!(agentId, {
+        sessionId,
+        mode: modeChange.previousMode,
+      });
+    } catch {
+      // Preserve the original stale/failed decision error. The production
+      // runner supplies an exact-context rollback; this fallback exists for
+      // third-party/test runners and must not mask the actionable failure.
+    }
   }
 
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {

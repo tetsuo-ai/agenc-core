@@ -206,10 +206,24 @@ export class RemoteAuthBackend implements AuthBackend {
   async whoami(_params: AuthWhoamiParams = {}): Promise<AuthWhoamiResult> {
     const state = await readRemoteAuthState(this.#authFilePath);
     if (state !== null) {
+      const identity = state.identity === undefined
+        ? undefined
+        : {
+            ...state.identity,
+            // Older login responses kept the authoritative tier beside identity. Surface it in
+            // both the typed top-level field and the compatibility `identity.plan` field so mobile
+            // clients can render one complete account snapshot after `/login`.
+            ...(state.subscriptionTier !== undefined && state.identity.plan === undefined
+              ? { plan: state.subscriptionTier }
+              : {}),
+          };
       return {
         authenticated: true,
         provider: "remote",
-        ...(state.identity !== undefined ? { identity: state.identity } : {}),
+        ...(identity !== undefined ? { identity } : {}),
+        ...(state.subscriptionTier !== undefined
+          ? { subscriptionTier: state.subscriptionTier }
+          : {}),
       };
     }
     return { authenticated: false, provider: "remote" };

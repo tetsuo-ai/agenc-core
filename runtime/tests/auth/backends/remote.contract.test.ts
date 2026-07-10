@@ -104,6 +104,39 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
+  it("whoami preserves the persisted subscription tier in the account snapshot", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-whoami-"));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({
+        token: "remote-token",
+        identity: {
+          accountId: "acct-linked",
+          email: "linked@agenc.tech",
+          displayName: "Linked User",
+        },
+        subscriptionTier: "pro",
+      }),
+    });
+
+    try {
+      await backend.login({ sessionId: "cli" });
+      await expect(backend.whoami()).resolves.toMatchObject({
+        authenticated: true,
+        provider: "remote",
+        subscriptionTier: "pro",
+        identity: {
+          accountId: "acct-linked",
+          email: "linked@agenc.tech",
+          displayName: "Linked User",
+          plan: "pro",
+        },
+      });
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("uses a persisted remote login token for later HTTP LLM usage calls", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const fetchImpl = vi.fn(async () =>

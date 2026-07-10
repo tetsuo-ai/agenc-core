@@ -45,6 +45,76 @@ describe("respondToSessionElicitation", () => {
     expect(session.notifyUserInputResponse).toHaveBeenCalledWith("call-1", null);
   });
 
+  it("strictly normalizes a typed Ledger client result without requiring answers", () => {
+    expect(
+      normalizeRequestUserInputResponse({
+        clientResult: {
+          type: "ledger_solana_transfer_receipt_v1",
+          intentId: "ledger-1",
+          responseNonce: "nonce-1",
+          status: "submitted",
+          network: "mainnet-beta",
+          from: "11111111111111111111111111111111",
+          to: "11111111111111111111111111111111",
+          lamports: "1",
+          signature: "1".repeat(64),
+        },
+      }),
+    ).toEqual({
+      answers: {},
+      clientResult: {
+        type: "ledger_solana_transfer_receipt_v1",
+        intentId: "ledger-1",
+        responseNonce: "nonce-1",
+        status: "submitted",
+        network: "mainnet-beta",
+        from: "11111111111111111111111111111111",
+        to: "11111111111111111111111111111111",
+        lamports: "1",
+        signature: "1".repeat(64),
+      },
+    });
+  });
+
+  it("rejects malformed typed Ledger client results", () => {
+    const valid = {
+      type: "ledger_solana_transfer_receipt_v1",
+      intentId: "ledger-1",
+      responseNonce: "nonce-1",
+      status: "submitted",
+      network: "mainnet-beta",
+      from: "11111111111111111111111111111111",
+      to: "11111111111111111111111111111111",
+      lamports: "1",
+      signature: "1".repeat(64),
+    };
+    expect(() => normalizeRequestUserInputResponse({
+      clientResult: { ...valid, responseNonce: undefined },
+    })).toThrow("clientResult.responseNonce must be a non-empty string");
+    expect(() => normalizeRequestUserInputResponse({
+      clientResult: { ...valid, status: "confirmed" },
+    })).toThrow("clientResult.status must be submitted or cancelled");
+    expect(() => normalizeRequestUserInputResponse({
+      clientResult: { ...valid, unexpected: true },
+    })).toThrow("clientResult contains unsupported field: unexpected");
+    const cancelled = {
+      ...valid,
+      status: "cancelled",
+      from: undefined,
+      signature: undefined,
+      reason: "rejected_on_device",
+    };
+    expect(() => normalizeRequestUserInputResponse({
+      clientResult: { ...cancelled, reason: undefined },
+    })).toThrow("cancelled clientResult.reason must match [a-z0-9_]{1,80}");
+    expect(() => normalizeRequestUserInputResponse({
+      clientResult: { ...cancelled, reason: "Not valid" },
+    })).toThrow("cancelled clientResult.reason must match [a-z0-9_]{1,80}");
+    expect(() => normalizeRequestUserInputResponse({
+      clientResult: { ...cancelled, signature: "1".repeat(64) },
+    })).toThrow("cancelled clientResult cannot include signature");
+  });
+
   it("normalizes and forwards MCP elicitation responses", async () => {
     const session = {
       notifyUserInputResponse: vi.fn(),
