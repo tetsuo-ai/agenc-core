@@ -37,6 +37,7 @@ obj/
 *.swo
 
 # Keys (CRITICAL - never commit private keys)
+/.wallet/
 *.json
 !.mcp.json
 !Anchor.toml
