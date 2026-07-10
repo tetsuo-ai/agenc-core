@@ -107,6 +107,8 @@ export interface FirstRunOnboardingState {
   readonly pendingApiKeyApproval: PendingApiKeyApproval | null;
   readonly error: string | null;
   readonly isCheckingConnection: boolean;
+  /** Local runtimes found listening (O-1): annotated in the provider step. */
+  readonly detectedLocalProviders: readonly BuiltInProviderSlug[];
 }
 
 export interface FirstRunByokAuthBackend {
@@ -258,7 +260,36 @@ export function createInitialFirstRunOnboardingState(
     pendingApiKeyApproval: null,
     error: null,
     isCheckingConnection: false,
+    detectedLocalProviders: [],
   };
+}
+
+
+/**
+ * Probe the well-known local runtimes (O-1, onboarding-plan-2026-07): a user
+ * with Ollama or LM Studio already running has a ZERO-KEY path to a working
+ * agent — the provider step must say so instead of walling them at the
+ * api-key step. Short-timeout, parallel, never throws.
+ */
+export async function detectRunningLocalProviders(
+  context: Pick<FirstRunOnboardingContext, "config" | "env" | "fetchImpl" | "checkLocalProviders">,
+): Promise<readonly BuiltInProviderSlug[]> {
+  if (context.checkLocalProviders === false) return [];
+  const candidates: readonly BuiltInProviderSlug[] = ["ollama", "lmstudio"];
+  const results = await Promise.all(
+    candidates.map(async (provider) => {
+      const settings = resolveProviderSettings(provider, context.config, context.env);
+      const baseURL = settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
+      const reachable = await probeLocalProvider({
+        provider,
+        baseURL,
+        ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
+        timeoutMs: 600,
+      }).catch(() => false);
+      return reachable ? provider : null;
+    }),
+  );
+  return results.filter((p): p is BuiltInProviderSlug => p !== null);
 }
 
 function providerChoices(
@@ -1050,6 +1081,22 @@ export function useFirstRunOnboardingController(
   }, [state]);
 
   useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    void detectRunningLocalProviders(options).then((detected) => {
+      if (cancelled || detected.length === 0) return;
+      setState((current) => {
+        const next = { ...current, detectedLocalProviders: detected };
+        stateRef.current = next;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, options.config, options.env]);
+
+  useEffect(() => {
     if (!active || recordedSeen.current || options.agencHome === undefined) {
       return;
     }
@@ -1200,13 +1247,20 @@ export function detailLinesForStep(
         ),
         "Type a number or theme name.",
       ];
-    case "provider":
+    case "provider": {
+      const detected = new Set(state.detectedLocalProviders);
       return [
         ...providerChoices(context).map((provider, index) =>
-          `${index + 1}. ${provider}${provider === state.selectedProvider ? " (current)" : ""}`
+          `${index + 1}. ${provider}${provider === state.selectedProvider ? " (current)" : ""}${detected.has(provider) ? " — detected, running locally, no key needed" : ""}`
         ),
+        ...(detected.size > 0
+          ? [
+              `Tip: ${[...detected][0]} is already running on this machine — pick it for a zero-key start.`,
+            ]
+          : []),
         "Type a number or provider slug.",
       ];
+    }
     case "connection-test":
       return state.isCheckingConnection
         ? ["Checking provider readiness..."]

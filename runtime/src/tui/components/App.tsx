@@ -2104,6 +2104,26 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }
   }, [transcript.isStreaming, transcript.streamingText, assistantMessageCount]);
   useInitialSubmit(props.session, submit, props.initialPrompt, props.initialUserMessages);
+  // O-1 (onboarding-plan-2026-07): guaranteed first magic. When the first-run
+  // wizard completes IN THIS SESSION and the user brought no prompt of their
+  // own, run one starter turn for them — the first reply is a certainty, not
+  // a blank input box. Never fires for returning users (wizard never active)
+  // or when an initial prompt/messages were provided.
+  const onboardingWasActiveRef = useRef(false);
+  useEffect(() => {
+    const hadPrompt =
+      (props.initialPrompt?.length ?? 0) > 0 ||
+      (props.initialUserMessages?.length ?? 0) > 0;
+    if (onboarding.active) {
+      onboardingWasActiveRef.current = true;
+      return;
+    }
+    if (!onboardingWasActiveRef.current || hadPrompt) return;
+    onboardingWasActiveRef.current = false;
+    void submit(
+      "Introduce yourself in a sentence, then take a quick look at the current directory and suggest one useful thing you could help with here.",
+    ).catch(logError);
+  }, [onboarding.active, submit, props.initialPrompt, props.initialUserMessages]);
   useEffect(() => {
     if (queueDrainActiveRef.current) return;
     if (effectiveInputBusy) return;

@@ -5,6 +5,11 @@
 > workstreams below are written in TODO.md task format so they can be lifted
 > straight into the backlog.
 >
+> **Delivery status (2026-07-10):** O-2/O-3/O-4/O-5/O-6 shipped (PR #1454);
+> O-1 shipped (detection + annotation + guaranteed first turn); O-7 shipped
+> (this doc + quickstart Acts 2–3); O-8 deferred by design; O-9 partial (see
+> its section).
+>
 > **Status of the ground this stands on (verified 2026-07-09):** Phase 0
 > install/onboard/audit shipped (PRs #1401–#1411). Phase 1–2 shipped live:
 > channels (Telegram #1413, Discord/Slack #1444, WebChat #1415, stdio),
@@ -289,7 +294,7 @@ card (5 curated prompts exercising channels/cron/memory) and pointers:
   bare VPS. Take up only if §7 funnel data shows the Node ≥ 25
   prerequisite is the biggest drop.
 
-### O-9. First-week retention loop — S **[AFTER O-1..O-6]**
+### O-9. First-week retention loop — S **[PARTIAL — act-completion hints + recap prompts + --status next-act shipped; TUI-greeting and heartbeat-morning hints remain]**
 - **Build:** day-2+ nudges through surfaces we already own: heartbeat's
   first morning message includes "3 things you can ask me"; `agenc` TUI
   greeting shows one unexplored-capability hint (local state only).

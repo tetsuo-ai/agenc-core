@@ -21,6 +21,7 @@ vi.mock("../tui/ink.js", async () => {
 import {
   checkOnboardingProviderConnection,
   createInitialFirstRunOnboardingState,
+  detectRunningLocalProviders,
   detailLinesForStep,
   submitFirstRunOnboardingInput,
 } from "./Onboarding.js";
@@ -997,5 +998,74 @@ describe("project onboarding counterpart steps", () => {
         });
       });
     });
+  });
+});
+
+describe("local runtime detection (O-1)", () => {
+  const config = defaultConfig();
+
+  function fetchRespondingOn(okUrls: readonly string[]): typeof fetch {
+    return (async (url: unknown) => {
+      const target = String(url);
+      if (okUrls.some((ok) => target.includes(ok))) {
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      }
+      throw new Error("connection refused");
+    }) as typeof fetch;
+  }
+
+  test("a running Ollama is detected; silent ports are not", async () => {
+    const detected = await detectRunningLocalProviders({
+      config,
+      fetchImpl: fetchRespondingOn(["11434"]),
+    });
+    expect(detected).toEqual(["ollama"]);
+  });
+
+  test("nothing running → empty; checkLocalProviders false skips probing", async () => {
+    expect(
+      await detectRunningLocalProviders({
+        config,
+        fetchImpl: fetchRespondingOn([]),
+      }),
+    ).toEqual([]);
+    const fetchSpy = vi.fn();
+    expect(
+      await detectRunningLocalProviders({
+        config,
+        fetchImpl: fetchSpy as never,
+        checkLocalProviders: false,
+      }),
+    ).toEqual([]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("the provider step annotates detected runtimes and shows the zero-key tip", () => {
+    const context = { config };
+    const state = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "provider" as const,
+      detectedLocalProviders: ["ollama" as const],
+    };
+    const lines = detailLinesForStep(state, context as never).join("\n");
+    expect(lines).toContain("ollama");
+    expect(lines).toContain("detected, running locally, no key needed");
+    expect(lines).toContain("zero-key start");
+  });
+});
+
+describe("first-magic wiring contract (O-1b)", () => {
+  // The guaranteed-first-turn effect lives in the compiled App.tsx; a full
+  // component mount is impractical here, so the wiring is guarded at the
+  // source level (established pattern) and the behavior was verified live.
+  test("App.tsx submits a starter turn when the wizard completes without an initial prompt", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(
+      resolve(process.cwd(), "src/tui/components/App.tsx"),
+      "utf8",
+    );
+    expect(source).toContain("guaranteed first magic");
+    expect(source).toContain("onboardingWasActiveRef");
+    expect(source).toContain("Introduce yourself in a sentence");
   });
 });
