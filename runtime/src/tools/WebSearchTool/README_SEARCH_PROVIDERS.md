@@ -1,79 +1,118 @@
 # Web Search Providers
 
-AgenC supports multiple search backends through a provider adapter system.
+AgenC supports multiple search backends through a provider adapter system in
+`runtime/src/tools/WebSearchTool/providers/`.
 
-## Supported Providers
+## Selection model (read this first)
 
-| Provider | Env Var | Auth Header | Method |
-|---|---|---|---|
-| Custom API | `WEB_SEARCH_API` | Configurable | GET/POST |
-| SearXNG | `WEB_PROVIDER=searxng` | — | GET |
-| Google | `WEB_PROVIDER=google` | `Authorization: Bearer` | GET |
-| Brave | `WEB_PROVIDER=brave` | `X-Subscription-Token` | GET |
-| SerpAPI | `WEB_PROVIDER=serpapi` | `Authorization: Bearer` | GET |
-| Firecrawl | `FIRECRAWL_API_KEY` | Internal | SDK |
-| Tavily | `TAVILY_API_KEY` | `Authorization: Bearer` | POST |
-| Exa | `EXA_API_KEY` | `x-api-key` | POST |
-| You.com | `YOU_API_KEY` | `X-API-Key` | GET |
-| Jina | `JINA_API_KEY` | `Authorization: Bearer` | GET |
-| Bing | `BING_API_KEY` | `Ocp-Apim-Subscription-Key` | GET |
-| Mojeek | `MOJEEK_API_KEY` | `Authorization: Bearer` (optional) | GET |
-| Linkup | `LINKUP_API_KEY` | `Authorization: Bearer` | POST |
-| DuckDuckGo | *(default)* | — | SDK |
+`WEB_SEARCH_PROVIDER` chooses **how** backends are selected:
 
-## Quick Start
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Try **configured** first-party providers in priority order; fall through on failure |
+| `firecrawl` / `tavily` / `exa` / `you` / `jina` / `bing` / `mojeek` / `linkup` / `ddg` | That provider only — throws on failure |
+| `custom` | Custom HTTP / `WEB_PROVIDER` preset only — throws on failure. **Not in the auto chain** |
+| `native` | Provider-native web search only (requires firstParty / Vertex / Foundry provider) |
+
+**Auto chain (only):**
+
+```text
+firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → ddg
+```
+
+DuckDuckGo is last (free, rate-limited). Each step runs only when that
+provider `isConfigured()` (API key present for key-based providers; DDG is
+always available).
+
+> **Critical:** Brave, Google Custom Search, SearXNG, and SerpAPI are **custom
+> presets**, not auto-chain members. They only run when
+> `WEB_SEARCH_PROVIDER=custom` **and** `WEB_PROVIDER=<preset>` (or a fully
+> hand-configured custom endpoint). Setting `WEB_PROVIDER=brave` alone under
+> `auto` does nothing for those presets.
+
+## Supported providers
+
+| Provider | Mode / env | Auth | Method | In auto chain? |
+|---|---|---|---|---|
+| Firecrawl | `FIRECRAWL_API_KEY` | Internal SDK | SDK | yes |
+| Tavily | `TAVILY_API_KEY` | `Authorization: Bearer` | POST | yes |
+| Exa | `EXA_API_KEY` | `x-api-key` | POST | yes |
+| You.com | `YOU_API_KEY` | `X-API-Key` | GET | yes |
+| Jina | `JINA_API_KEY` | `Authorization: Bearer` | GET | yes |
+| Bing | `BING_API_KEY` | `Ocp-Apim-Subscription-Key` | GET | yes |
+| Mojeek | `MOJEEK_API_KEY` | `Authorization: Bearer` (optional) | GET | yes |
+| Linkup | `LINKUP_API_KEY` | `Authorization: Bearer` | POST | yes |
+| DuckDuckGo | *(no key)* | — | SDK | yes (last) |
+| Custom HTTP | `WEB_SEARCH_PROVIDER=custom` + `WEB_SEARCH_API` / `WEB_URL_TEMPLATE` | Configurable | GET/POST | **no** |
+| SearXNG preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=searxng` | — | GET | **no** |
+| Google CSE preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=google` | `Authorization: Bearer` | GET | **no** |
+| Brave preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=brave` | `X-Subscription-Token` | GET | **no** |
+| SerpAPI preset | `WEB_SEARCH_PROVIDER=custom` + `WEB_PROVIDER=serpapi` | `Authorization: Bearer` | GET | **no** |
+
+## Quick start
+
+### Auto-chain providers (recommended)
 
 ```bash
-# Tavily (recommended for AI — fast, RAG-ready)
+# Tavily (fast, RAG-ready) — participates in auto when the key is set
 export TAVILY_API_KEY=tvly-your-key
 
-# Exa (neural search, semantic queries)
+# Exa (neural / semantic)
 export EXA_API_KEY=your-exa-key
-
-# Brave (traditional web search, good coverage)
-export WEB_PROVIDER=brave
-export WEB_KEY=your-brave-key
 
 # Bing
 export BING_API_KEY=your-bing-key
 
-# Self-hosted SearXNG (free, private)
-export WEB_PROVIDER=searxng
-export WEB_SEARCH_API=https://search.example.com/search
-```
+# Firecrawl / You.com / Jina / Mojeek / Linkup — same pattern: set their *_API_KEY
+# DuckDuckGo needs no key and is the auto fallback when nothing else is configured
 
-## Provider Selection Mode
-
-`WEB_SEARCH_PROVIDER` controls fallback behavior:
-
-| Mode | Behavior |
-|---|---|
-| `auto` (default) | Try all configured providers in order, fall through on failure |
-| `firecrawl` | Firecrawl only — throws on failure |
-| `tavily` | Tavily only — throws on failure |
-| `exa` | Exa only — throws on failure |
-| `you` | You.com only — throws on failure |
-| `jina` | Jina only — throws on failure |
-| `bing` | Bing only — throws on failure |
-| `mojeek` | Mojeek only — throws on failure |
-| `linkup` | Linkup only — throws on failure |
-| `ddg` | DuckDuckGo only — throws on failure |
-| `custom` | Custom API only — throws on failure. **Not in the auto chain** — must be explicitly selected |
-| `native` | Provider-native web search only (requires firstParty/Vertex/Foundry provider) |
-
-**Auto mode priority:** firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → ddg
-
-> **Note:** The `custom` provider is excluded from the `auto` chain. It is only used when `WEB_SEARCH_PROVIDER=custom` is explicitly set. This prevents the generic outbound provider from silently becoming the default backend.
-
-```bash
-# Fail loudly if Tavily is down (don't silently switch backends)
+# Fail loudly if Tavily is down (don't fall through)
 export WEB_SEARCH_PROVIDER=tavily
 
-# Try everything, fall through gracefully
+# Explicit auto (default)
 export WEB_SEARCH_PROVIDER=auto
 ```
 
-## Provider Request & Response Formats
+### Custom-mode presets (Brave / Google / SearXNG / SerpAPI)
+
+These **require** `WEB_SEARCH_PROVIDER=custom`. Without it, `WEB_PROVIDER` is
+ignored by the selection chain.
+
+```bash
+# Brave
+export WEB_SEARCH_PROVIDER=custom
+export WEB_PROVIDER=brave
+export WEB_KEY=your-brave-key
+
+# Google Custom Search
+export WEB_SEARCH_PROVIDER=custom
+export WEB_PROVIDER=google
+export WEB_KEY=your-google-api-key
+# Optional: override endpoint / cx via WEB_SEARCH_API / WEB_PARAMS if needed
+
+# Self-hosted SearXNG (free, private)
+export WEB_SEARCH_PROVIDER=custom
+export WEB_PROVIDER=searxng
+export WEB_SEARCH_API=https://search.example.com/search
+# If SearXNG is on a private IP:
+export WEB_CUSTOM_ALLOW_PRIVATE=true
+
+# SerpAPI
+export WEB_SEARCH_PROVIDER=custom
+export WEB_PROVIDER=serpapi
+export WEB_KEY=your-serpapi-key
+```
+
+### Fully custom HTTP endpoint
+
+```bash
+export WEB_SEARCH_PROVIDER=custom
+export WEB_SEARCH_API=https://api.example.com/search
+export WEB_QUERY_PARAM=q
+export WEB_KEY=your-key   # optional; Authorization: Bearer by default
+```
+
+## Provider request & response formats
 
 ### Tavily
 
@@ -275,9 +314,10 @@ Content-Type: application/json
 }
 ```
 
-### SearXNG (Built-in Preset)
+### SearXNG (custom preset)
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_PROVIDER=searxng
 export WEB_SEARCH_API=https://search.example.com/search
 ```
@@ -301,9 +341,10 @@ GET https://search.example.com/search?q=search+terms
 }
 ```
 
-### Google Custom Search (Built-in Preset)
+### Google Custom Search (custom preset)
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_PROVIDER=google
 export WEB_KEY=your-google-api-key
 ```
@@ -328,9 +369,10 @@ Authorization: Bearer your-google-api-key
 }
 ```
 
-### Brave (Built-in Preset)
+### Brave (custom preset)
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_PROVIDER=brave
 export WEB_KEY=your-brave-key
 ```
@@ -356,9 +398,10 @@ X-Subscription-Token: your-brave-key
 }
 ```
 
-### SerpAPI (Built-in Preset)
+### SerpAPI (custom preset)
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_PROVIDER=serpapi
 export WEB_KEY=your-serpapi-key
 ```
@@ -383,18 +426,20 @@ Authorization: Bearer your-serpapi-key
 }
 ```
 
-### DuckDuckGo (Default Fallback)
+### DuckDuckGo (default free fallback)
 
-No configuration needed. Uses the `duck-duck-scrape` npm package.
+No configuration needed. Uses the `duck-duck-scrape` npm package. Always last
+in the auto chain; also available as an explicit-only backend:
 
 ```bash
-# Set as explicit-only backend
 export WEB_SEARCH_PROVIDER=ddg
 ```
 
 ---
 
-## Custom API Configuration
+## Custom API configuration
+
+Always set `WEB_SEARCH_PROVIDER=custom` for these paths.
 
 ### Standard GET
 
@@ -403,21 +448,23 @@ GET https://api.example.com/search?q=hello
 ```
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_SEARCH_API=https://api.example.com/search
 export WEB_QUERY_PARAM=q
 ```
 
-### Query in URL Path
+### Query in URL path
 
 ```
 GET https://api.example.com/v2/search/hello
 ```
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_URL_TEMPLATE=https://api.example.com/v2/search/{query}
 ```
 
-### POST with Custom Body
+### POST with custom body
 
 ```
 POST https://api.example.com/v1/query
@@ -427,12 +474,13 @@ Content-Type: application/json
 ```
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_SEARCH_API=https://api.example.com/v1/query
 export WEB_METHOD=POST
 export WEB_BODY_TEMPLATE='{"input":{"text":"{query}"}}'
 ```
 
-### Extra Static Params
+### Extra static params
 
 ```bash
 export WEB_PARAMS='{"lang":"en","count":"10"}'
@@ -440,7 +488,8 @@ export WEB_PARAMS='{"lang":"en","count":"10"}'
 
 ## Auth
 
-API keys are sent in HTTP headers, **never** in query strings.
+API keys for the **custom** path are sent in HTTP headers, **never** in query
+strings.
 
 ```bash
 # Default: Authorization: Bearer <key>
@@ -454,9 +503,9 @@ export WEB_AUTH_SCHEME=""
 export WEB_HEADERS="X-Tenant: acme; Accept: application/json"
 ```
 
-## Response Parsing
+## Response parsing
 
-The tool auto-detects many response formats:
+The custom tool auto-detects many response formats:
 
 ```jsonc
 { "results": [{ "title": "...", "url": "..." }] }     // flat array
@@ -476,19 +525,27 @@ Field name aliases (first non-empty string wins):
 - source: `source` / `domain` / `displayLink` / `displayed_link` / `engine`
 
 For deeply nested responses:
+
 ```bash
 export WEB_JSON_PATH=response.payload.results
 ```
 
 ## Retry
 
-For the **custom** provider, failed requests (network errors, 5xx) are retried once after 500ms; client errors (4xx) are not retried, and the request has a default 120s timeout (`WEB_CUSTOM_TIMEOUT_SEC`).
+For the **custom** provider, failed requests (network errors, 5xx) are retried
+once after 500ms; client errors (4xx) are not retried, and the request has a
+default 120s timeout (`WEB_CUSTOM_TIMEOUT_SEC`).
 
-**DuckDuckGo** has its own retry path: up to 3 attempts with exponential backoff (1s/2s/4s ±20% jitter) on transient errors (rate-limit, timeout, connection reset). A hard "anomaly in the request" block surfaces an actionable error listing the API-key env vars to configure instead.
+**DuckDuckGo** has its own retry path: up to 3 attempts with exponential
+backoff (1s/2s/4s ±20% jitter) on transient errors (rate-limit, timeout,
+connection reset). A hard "anomaly in the request" block surfaces an actionable
+error listing the API-key env vars to configure instead.
 
-The first-party direct providers (Tavily, Exa, You.com, Jina, Bing, Mojeek, Linkup, Firecrawl) do a single request with no internal retry — in `auto` mode the chain itself falls through to the next provider on failure.
+The first-party direct providers (Tavily, Exa, You.com, Jina, Bing, Mojeek,
+Linkup, Firecrawl) do a single request with no internal retry — in `auto` mode
+the chain itself falls through to the next provider on failure.
 
-## Custom Provider Security Guardrails
+## Custom provider security guardrails
 
 The custom provider enforces the following guardrails by default:
 
@@ -504,6 +561,7 @@ The custom provider enforces the following guardrails by default:
 ### Self-hosted SearXNG example
 
 ```bash
+export WEB_SEARCH_PROVIDER=custom
 export WEB_PROVIDER=searxng
 export WEB_SEARCH_API=https://search.mydomain.com/search
 export WEB_CUSTOM_ALLOW_PRIVATE=true   # needed if SearXNG is on a private IP
@@ -512,9 +570,11 @@ export WEB_CUSTOM_ALLOW_PRIVATE=true   # needed if SearXNG is on a private IP
 ### Header allowlist
 
 By default only these headers are permitted:
-`accept`, `accept-encoding`, `accept-language`, `authorization`, `cache-control`, `content-type`, `if-modified-since`, `if-none-match`, `ocp-apim-subscription-key`, `user-agent`, `x-api-key`, `x-subscription-token`, `x-tenant-id`
+`accept`, `accept-encoding`, `accept-language`, `authorization`, `cache-control`,
+`content-type`, `if-modified-since`, `if-none-match`, `ocp-apim-subscription-key`,
+`user-agent`, `x-api-key`, `x-subscription-token`, `x-tenant-id`
 
-## Adding a Provider
+## Adding a provider
 
 1. Create `providers/myprovider.ts`:
 
@@ -537,4 +597,10 @@ export const myProvider: SearchProvider = {
 }
 ```
 
-2. Register in `providers/index.ts` — add import and push to `ALL_PROVIDERS`.
+2. Register in `providers/index.ts` — add the import, push onto `ALL_PROVIDERS`
+   **only if** it should participate in the auto chain, and add a named entry
+   to `PROVIDER_BY_NAME` for explicit `WEB_SEARCH_PROVIDER=<name>` mode.
+
+Custom / preset adapters that must never become the silent default belong
+behind `WEB_SEARCH_PROVIDER=custom` only (like Brave/Google/SearXNG/SerpAPI
+today) — do not add them to `ALL_PROVIDERS`.
