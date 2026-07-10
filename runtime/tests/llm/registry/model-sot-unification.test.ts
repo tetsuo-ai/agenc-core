@@ -38,6 +38,7 @@ import {
 import { resetSettingsCache } from "../../../src/utils/settings/settingsCache.js";
 
 const NEW_MODEL = "grok-build-0.1";
+const GROK_45 = "grok-4.5";
 const ONE_MILLION = 1_000_000;
 
 const TOUCHED_ENV_KEYS = [
@@ -103,8 +104,10 @@ describe("model SoT: one catalog entry surfaces everywhere", () => {
     // the registry, so the new entry appears with no separate edit.
     expect(deriveFlatCatalog().grok).toContain(NEW_MODEL);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.grok).toContain(NEW_MODEL);
-    // grok-build-0.1 leads (highest priority).
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.grok[0]).toBe(NEW_MODEL);
+    // It remains ahead of the legacy catalog rows; Grok 4.5 now leads.
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.grok.indexOf(NEW_MODEL)).toBeLessThan(
+      BUILT_IN_PROVIDER_MODEL_CATALOG.grok.indexOf("grok-4.3"),
+    );
   });
 
   it("(a)+(b) lists grok-build-0.1 via ModelsManager (spawn_agent surface)", async () => {
@@ -184,5 +187,31 @@ describe("model SoT: grok-4.3 context window is consistent (1M everywhere)", () 
       (await manager.getModelInfo("grok-4.20-0309-reasoning"))
         .supportedReasoningLevels,
     ).toEqual([]);
+  });
+});
+
+describe("model SoT: grok-4.5", () => {
+  it("is listed with its official context and reasoning controls", async () => {
+    expect(deriveFlatCatalog().grok[0]).toBe(GROK_45);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.grok).toContain(GROK_45);
+
+    const adapter = await resolveContextWindowProfile({
+      provider: "grok",
+      model: GROK_45,
+    });
+    expect(adapter?.contextWindowTokens).toBe(500_000);
+    expect(getContextWindowForModel(GROK_45)).toBe(500_000);
+
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "grok",
+    });
+    expect(await manager.getModelInfo(GROK_45)).toMatchObject({
+      slug: GROK_45,
+      contextWindow: 500_000,
+      supportedReasoningLevels: ["low", "medium", "high"],
+      defaultReasoningLevel: "high",
+      showInPicker: true,
+    });
   });
 });

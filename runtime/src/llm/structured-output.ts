@@ -5,12 +5,9 @@
  * xAI MCP source of truth:
  * - Structured outputs are supported by all language models.
  * - Structured outputs with tools are only supported by the Grok 4 family.
- * - `reasoning_effort` is not supported by `grok-4.20` or `grok-4-1-fast`.
- *   Per xAI docs (developers/model-capabilities/text/reasoning), the
- *   ONLY model that accepts a `reasoning` parameter is
- *   `grok-4.20-multi-agent` — and there it controls agent count, not
- *   thinking depth. Sending `reasoning_effort` on any other current
- *   Grok 4 model returns an API error.
+ * - `reasoning_effort` is supported by Grok 4.3 and Grok 4.5, where it
+ *   controls reasoning depth, and by `grok-4.20-multi-agent`, where it
+ *   controls agent count. Other Grok families remain fail-closed.
  *
  * @module
  */
@@ -99,18 +96,28 @@ export function resolveProviderStructuredOutputMode(input: {
 }
 
 /**
- * Returns true when the xAI model accepts the `reasoning_effort`
- * request parameter. Only `grok-4.20-multi-agent*` variants accept it.
+ * Returns true when the xAI model accepts the `reasoning_effort` request
+ * parameter. Grok 4.3 and Grok 4.5 use it for reasoning depth;
+ * `grok-4.20-multi-agent*` uses it for agent count.
  *
- * All other Grok 4 reasoning models reason automatically and reject
- * the parameter with an API error; non-reasoning Grok 4 models
- * (`*-non-reasoning`) naturally reject it too.
+ * Keep this model allowlist fail-closed. xAI's OpenAI-compatible surfaces
+ * reject unsupported request fields, so unknown Grok variants must not
+ * inherit the parameter merely because their name starts with `grok-4`.
  */
 export function supportsXaiReasoningEffortParam(
   model: string | undefined,
 ): boolean {
   if (typeof model !== "string") return false;
-  return /^grok-4[.-]20-multi-agent/i.test(model.trim());
+  const normalized = model.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  const unqualified = normalized.slice(
+    Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf(":")) + 1,
+  );
+  return (
+    /^grok-4\.(?:3|5)(?:$|[-_.])/.test(unqualified) ||
+    /^grok-4[.-]20-multi-agent(?:$|[-_.])/.test(unqualified) ||
+    unqualified === "grok-build-latest"
+  );
 }
 
 function validateStructuredValue(

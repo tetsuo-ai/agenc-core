@@ -16,7 +16,7 @@ describe("normalizeProviderSlug", () => {
 });
 
 describe("resolveProviderModelCapabilities", () => {
-  it("uses documented xAI model metadata and enables reasoning effort on multi-agent variants", () => {
+  it("uses documented xAI model metadata and enables reasoning effort on supported variants", () => {
     const caps = resolveProviderModelCapabilities({
       provider: "xai",
       model: "grok-4.20-multi-agent-latest",
@@ -39,8 +39,19 @@ describe("resolveProviderModelCapabilities", () => {
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
-      // grok-4.20-multi-agent* is the one Grok family that accepts the
-      // `reasoning_effort` request param; all others reject it.
+      acceptsReasoningEffort: true,
+    });
+
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "grok",
+        model: "grok-4.5",
+      }),
+    ).toMatchObject({
+      provider: "grok",
+      supportsToolUse: true,
+      supportsImageInput: true,
+      supportsStructuredOutput: true,
       acceptsReasoningEffort: true,
     });
   });

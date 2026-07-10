@@ -245,6 +245,7 @@ describe("cost helpers", () => {
     // DEFAULT_UNKNOWN_MODEL_COST. Since DEFAULT_MODEL_COSTS feeds dollar_cap
     // enforcement, mispricing here enforces budgets at the wrong threshold.
     const nonReasoningModels = [
+      "grok-4.5",
       "grok-4.3",
       "grok-build-0.1",
       "grok-4.20-0309-non-reasoning",
@@ -306,6 +307,23 @@ describe("cost helpers", () => {
       DEFAULT_MODEL_COSTS,
     );
     expect(reasoning?.entry.reasoningOutputUsdPer1K).toBe(0.012);
+  });
+
+  test("grok-4.5 uses official input, cached-input, and output pricing", () => {
+    const match = resolveModelCostEntry(
+      { model: "grok-4.5-latest", provider: "grok" },
+      DEFAULT_MODEL_COSTS,
+    );
+
+    expect(match).toMatchObject({
+      key: "grok-4.5",
+      entry: {
+        inputUsdPer1K: 0.002,
+        cachedInputUsdPer1K: 0.0005,
+        outputUsdPer1K: 0.006,
+      },
+    });
+    expect(match?.entry.reasoningOutputUsdPer1K).toBeUndefined();
   });
 
   test("computeUsdCost prices cache writes and web search requests", () => {

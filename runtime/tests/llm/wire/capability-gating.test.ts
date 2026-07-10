@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { chatCompletionsCapabilityHintsForProvider } from "./capability-gating.js";
+import { buildChatCompletionsRequest } from "./chat-completions.js";
 
 describe("chatCompletionsCapabilityHintsForProvider", () => {
   describe("acceptsReasoningEffort", () => {
@@ -32,8 +33,16 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       ).toBe(false);
     });
 
-    test("grok multi-agent models accept reasoning_effort", () => {
+    test("documented grok reasoning models accept reasoning_effort", () => {
       // branding-scan: allow real model identifiers used as test fixtures
+      expect(
+        chatCompletionsCapabilityHintsForProvider("grok", "grok-4.3")
+          .acceptsReasoningEffort,
+      ).toBe(true);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("grok", "grok-4.5")
+          .acceptsReasoningEffort,
+      ).toBe(true);
       expect(
         chatCompletionsCapabilityHintsForProvider(
           "grok",
@@ -42,7 +51,23 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       ).toBe(true);
     });
 
-    test("grok non-multi-agent models do not accept reasoning_effort", () => {
+    test.each(["low", "medium", "high"] as const)(
+      "grok-4.5 chat completions serializes reasoning_effort=%s",
+      (reasoningEffort) => {
+        const request = buildChatCompletionsRequest({
+          model: "grok-4.5",
+          messages: [{ role: "user", content: "hello" }],
+          tools: [],
+          options: { reasoningEffort },
+          providerCapabilityHints:
+            chatCompletionsCapabilityHintsForProvider("grok", "grok-4.5"),
+        });
+
+        expect(request.reasoning_effort).toBe(reasoningEffort);
+      },
+    );
+
+    test("undocumented grok models do not accept reasoning_effort", () => {
       // branding-scan: allow real model identifiers used as test fixtures
       expect(
         chatCompletionsCapabilityHintsForProvider("grok", "grok-4")

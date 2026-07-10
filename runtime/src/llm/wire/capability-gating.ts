@@ -84,7 +84,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   const slug = normalizeProviderSlug(providerName);
 
   // reasoning_effort: documented for the upstream-provider reasoning
-  // model family and for the xAI multi-agent Grok variants. Every
+  // model family and for documented xAI Grok reasoning variants. Every
   // other provider/model combination either rejects it or silently
   // ignores it. Default to the safe "strip" for anything
   // unrecognized.

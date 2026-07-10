@@ -164,8 +164,9 @@ export function buildXaiResponsesRequest(input: {
   ) {
     params.max_turns = Math.floor(input.options.maxTurns);
   }
-  // Only `grok-4.20-multi-agent*` accepts `reasoning_effort`; strip it for
-  // every other Grok model rather than letting xAI reject the request.
+  // Send the Responses API `reasoning.effort` shape only for documented
+  // models; strip it from unknown Grok variants rather than letting xAI
+  // reject the request.
   if (
     input.options?.reasoningEffort &&
     supportsXaiReasoningEffortParam(input.model)

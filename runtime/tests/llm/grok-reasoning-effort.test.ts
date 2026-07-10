@@ -1,14 +1,9 @@
 /**
  * Regression tests for the grok reasoning_effort capability gate.
  *
- * Bug: spawning a subagent with effort=high on grok-4.3 threw
- * "xAI reasoning_effort is only supported on grok-4.20-multi-agent models".
- *
- * Root cause: the capability stub `resolveGrokReasoningEffort` always
- * returned false, so inherited effort was never stripped, and the grok
- * adapter then THREW (instead of omitting the field) for unsupported
- * models. These tests pin the strip-not-throw behavior across the
- * capability resolver, the responses-xai wire builder, and the adapter.
+ * These tests pin xAI's documented Grok 4.3/4.5 reasoning-depth controls
+ * across the capability resolver, Responses API wire builder, and adapter,
+ * while preserving fail-closed stripping for unknown models.
  *
  * @module
  */
@@ -22,6 +17,7 @@ import { GrokProvider } from "./providers/grok/adapter.js";
 import type { LLMMessage } from "./types.js";
 
 const USER_TURN: readonly LLMMessage[] = [{ role: "user", content: "hi" }];
+const DEPTH_EFFORTS = ["low", "medium", "high"] as const;
 
 type BuildParamsAccess = {
   buildParams: (
@@ -31,11 +27,19 @@ type BuildParamsAccess = {
 };
 
 describe("grok reasoning_effort capability gate", () => {
-  it("predicate: grok-4.3 rejects the param, grok-4.20-multi-agent accepts it", () => {
-    expect(supportsXaiReasoningEffortParam("grok-4.3")).toBe(false);
+  it("predicate: accepts documented depth and multi-agent models only", () => {
+    expect(supportsXaiReasoningEffortParam("grok-4.3")).toBe(true);
+    expect(supportsXaiReasoningEffortParam("grok-4.5")).toBe(true);
+    expect(supportsXaiReasoningEffortParam("grok-4.5-latest")).toBe(true);
+    expect(supportsXaiReasoningEffortParam("x-ai/grok-4.5")).toBe(true);
+    expect(supportsXaiReasoningEffortParam("grok-build-latest")).toBe(true);
     expect(supportsXaiReasoningEffortParam("grok-4.20-multi-agent")).toBe(
       true,
     );
+    expect(supportsXaiReasoningEffortParam("grok-build-0.1")).toBe(false);
+    expect(
+      supportsXaiReasoningEffortParam("grok-4.20-0309-non-reasoning"),
+    ).toBe(false);
   });
 
   it("capability resolver: acceptsReasoningEffort tracks the model", () => {
@@ -44,7 +48,14 @@ describe("grok reasoning_effort capability gate", () => {
         provider: "grok",
         model: "grok-4.3",
       }).acceptsReasoningEffort,
-    ).toBe(false);
+    ).toBe(true);
+
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "xai",
+        model: "grok-4.5",
+      }).acceptsReasoningEffort,
+    ).toBe(true);
 
     expect(
       resolveProviderModelCapabilities({
@@ -54,13 +65,25 @@ describe("grok reasoning_effort capability gate", () => {
     ).toBe(true);
   });
 
-  it("wire builder: omits reasoning for grok-4.3 with effort set", () => {
+  it.each(DEPTH_EFFORTS)(
+    "wire builder: attaches Grok 4.5 reasoning effort %s",
+    (reasoningEffort) => {
+      const params = buildXaiResponsesRequest({
+        model: "grok-4.5",
+        messages: USER_TURN,
+        options: { reasoningEffort },
+      });
+      expect(params.reasoning).toEqual({ effort: reasoningEffort });
+    },
+  );
+
+  it("wire builder: attaches reasoning for grok-4.3", () => {
     const params = buildXaiResponsesRequest({
       model: "grok-4.3",
       messages: USER_TURN,
       options: { reasoningEffort: "high" },
     });
-    expect(params.reasoning).toBeUndefined();
+    expect(params.reasoning).toEqual({ effort: "high" });
   });
 
   it("wire builder: attaches reasoning for grok-4.20-multi-agent", () => {
@@ -72,10 +95,29 @@ describe("grok reasoning_effort capability gate", () => {
     expect(params.reasoning).toEqual({ effort: "high" });
   });
 
-  it("adapter: omits reasoning_effort for grok-4.3 with effort set (no throw)", () => {
+  it.each(DEPTH_EFFORTS)(
+    "adapter: attaches Grok 4.5 reasoning effort %s",
+    (reasoningEffort) => {
+      const provider = new GrokProvider({
+        apiKey: "test-key",
+        model: "grok-4.5",
+        reasoningEffort,
+      });
+
+      const built = (provider as unknown as BuildParamsAccess).buildParams(
+        USER_TURN,
+        { reasoningEffort },
+      );
+
+      expect(built.params.reasoning).toEqual({ effort: reasoningEffort });
+      expect(built.params.model).toBe("grok-4.5");
+    },
+  );
+
+  it("adapter: strips reasoning_effort for an unsupported model", () => {
     const provider = new GrokProvider({
       apiKey: "test-key",
-      model: "grok-4.3",
+      model: "grok-build-0.1",
       reasoningEffort: "high",
     });
 
@@ -88,7 +130,7 @@ describe("grok reasoning_effort capability gate", () => {
     );
 
     expect(built.params.reasoning).toBeUndefined();
-    expect(built.params.model).toBe("grok-4.3");
+    expect(built.params.model).toBe("grok-build-0.1");
   });
 
   it("adapter: attaches reasoning_effort for grok-4.20-multi-agent", () => {
