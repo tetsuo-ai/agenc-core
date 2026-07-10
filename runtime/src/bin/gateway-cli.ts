@@ -14,9 +14,14 @@
  */
 
 import { resolveAgencHome } from "../config/env.js";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { loadGatewayConfig, resolveGatewayConfigPath } from "../gateway/config.js";
 import { PairingStore } from "../gateway/pairing.js";
 import { startGateway } from "../gateway/run.js";
+import { mergeGatewayEnv } from "../gateway/env-file.js";
 import type { GatewayConfig } from "../gateway/types.js";
 
 export type AgenCGatewayCliCommand =
@@ -28,6 +33,7 @@ export type AgenCGatewayCliCommand =
       readonly hooks: boolean;
     }
   | { readonly kind: "status"; readonly json: boolean }
+  | { readonly kind: "install-service" }
   | { readonly kind: "pairing-list"; readonly json: boolean }
   | {
       readonly kind: "pairing-revoke";
@@ -43,6 +49,9 @@ export function formatAgenCGatewayCliHelpText(): string {
     "",
     "Usage:",
     "  agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]",
+    "  agenc gateway install-service         Install + start the always-on",
+    "                                        gateway user service (systemd or",
+    "                                        launchd; reads gateway/env)",
     "                                        Start the gateway. --stdio enables",
     "                                        the local dev channel; --webchat a",
     "                                        loopback token-gated browser UI;",
@@ -84,6 +93,9 @@ export function parseAgenCGatewayCliArgs(
   }
   if (positional[0] === "status") {
     return { kind: "status", json };
+  }
+  if (positional[0] === "install-service") {
+    return { kind: "install-service" };
   }
   if (positional[0] === "pairing") {
     if (positional[1] === "list") {
@@ -192,13 +204,19 @@ export async function runAgenCGatewayCli(
   const env = deps.env ?? process.env;
   const agencHome = resolveAgencHome(env);
 
+  if (command.kind === "install-service") {
+    return installGatewayService({ agencHome, stdout, stderr });
+  }
+
   if (command.kind === "run") {
     const start = deps.startGateway ?? startGateway;
     let handle: Awaited<ReturnType<typeof startGateway>>;
     try {
       handle = await start({
         agencHome,
-        env,
+        // Channel tokens from the 0600 gateway/env file, under the real env
+        // (an explicitly exported variable always wins).
+        env: mergeGatewayEnv(agencHome, env),
         stdio: command.stdio,
         webchat: command.webchat,
         heartbeat: command.heartbeat,
@@ -287,4 +305,127 @@ export async function runAgenCGatewayCli(
       return 1;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Always-on gateway service (onboarding-plan-2026-07 O-4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Install the gateway as a per-user service so channels/heartbeat/cron/hooks
+ * survive reboots. systemd (Linux) or launchd (macOS); both read the 0600
+ * `gateway/env` secrets file, keeping tokens out of unit files and shells.
+ * User-scoped only — no sudo, no system daemons.
+ */
+export async function installGatewayService(options: {
+  readonly agencHome: string;
+  readonly stdout: (line: string) => void;
+  readonly stderr: (line: string) => void;
+  /** Test seams. */
+  readonly platform?: NodeJS.Platform;
+  readonly home?: string;
+  readonly execPath?: string;
+  readonly entryPath?: string;
+  readonly runCommand?: (cmd: string, args: readonly string[]) => boolean;
+}): Promise<number> {
+  const platform = options.platform ?? process.platform;
+  const home = options.home ?? homedir();
+  const nodeBin = options.execPath ?? process.execPath;
+  const entry = options.entryPath ?? process.argv[1];
+  const envFile = join(options.agencHome, "gateway", "env");
+  const run =
+    options.runCommand ??
+    ((cmd: string, args: readonly string[]): boolean =>
+      spawnSync(cmd, args, { stdio: "ignore" }).status === 0);
+
+  if (platform === "linux") {
+    const unitDir = join(home, ".config", "systemd", "user");
+    const unitPath = join(unitDir, "agenc-gateway.service");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(
+      unitPath,
+      [
+        "[Unit]",
+        "Description=AgenC channel gateway",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        `ExecStart=${nodeBin} ${entry} gateway run`,
+        `EnvironmentFile=-${envFile}`,
+        "Restart=on-failure",
+        "RestartSec=5",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+      ].join("\n"),
+    );
+    options.stdout(`Wrote ${unitPath}`);
+    const reloaded = run("systemctl", ["--user", "daemon-reload"]);
+    const enabled =
+      reloaded &&
+      run("systemctl", ["--user", "enable", "--now", "agenc-gateway"]);
+    if (enabled) {
+      options.stdout("Gateway service enabled and started.");
+      options.stdout("  status: systemctl --user status agenc-gateway");
+      options.stdout("  logs:   journalctl --user -u agenc-gateway -f");
+      return 0;
+    }
+    options.stderr(
+      "Unit written, but systemctl --user did not succeed. Enable it manually:",
+    );
+    options.stderr("  systemctl --user daemon-reload");
+    options.stderr("  systemctl --user enable --now agenc-gateway");
+    return 1;
+  }
+
+  if (platform === "darwin") {
+    const agentsDir = join(home, "Library", "LaunchAgents");
+    const plistPath = join(agentsDir, "dev.agenc.gateway.plist");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(
+      plistPath,
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>Label</key>",
+        "  <string>dev.agenc.gateway</string>",
+        "  <key>ProgramArguments</key>",
+        "  <array>",
+        `    <string>${nodeBin}</string>`,
+        `    <string>${entry}</string>`,
+        "    <string>gateway</string>",
+        "    <string>run</string>",
+        "  </array>",
+        "  <key>RunAtLoad</key>",
+        "  <true/>",
+        "  <key>KeepAlive</key>",
+        "  <true/>",
+        "</dict>",
+        "</plist>",
+        "",
+      ].join("\n"),
+    );
+    options.stdout(`Wrote ${plistPath}`);
+    options.stdout(
+      "(launchd does not read env files — gateway run loads gateway/env itself.)",
+    );
+    const loaded = run("launchctl", ["load", "-w", plistPath]);
+    if (loaded) {
+      options.stdout("Gateway service loaded.");
+      return 0;
+    }
+    options.stderr("Plist written; load it manually:");
+    options.stderr(`  launchctl load -w ${plistPath}`);
+    return 1;
+  }
+
+  options.stderr(
+    `install-service supports linux (systemd --user) and macOS (launchd); on ${platform} run the gateway directly: agenc gateway run`,
+  );
+  return 1;
 }

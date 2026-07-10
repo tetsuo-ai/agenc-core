@@ -176,6 +176,23 @@ describe("security audit against a temp home", () => {
     ).toBe("warn");
   });
 
+  test("group-readable gateway secrets (env/tokens) are critical; --fix chmods", async () => {
+    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, "gateway", "env"), "AGENC_TELEGRAM_BOT_TOKEN=x");
+    chmodSync(join(home, "gateway", "env"), 0o644);
+    const before = await buildSecurityAuditReport({ env });
+    expect(
+      before.findings.find((f) => f.id === "sensitive-file-perms:gateway/env")
+        ?.severity,
+    ).toBe("critical");
+    const fixed = await buildSecurityAuditReport({ env, applyFixes: true });
+    expect(
+      fixed.findings.find((f) => f.id === "sensitive-file-perms:gateway/env")
+        ?.fixed,
+    ).toBe(true);
+    expect(statSync(join(home, "gateway", "env")).mode & 0o777).toBe(0o600);
+  });
+
   test("hooks enabled WITHOUT a token is critical (task 17 acceptance)", async () => {
     mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
     writeFileSync(

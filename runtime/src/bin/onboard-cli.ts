@@ -16,6 +16,15 @@
  * `shouldShowFirstRunOnboarding` — and never persists anything to config.
  */
 import { resolveAgencHome } from "../config/env.js";
+import { createTerminalActIO, type ActIO } from "../onboarding/acts/io.js";
+import { runIdentityAct } from "../onboarding/acts/identity.js";
+import { runChannelAct } from "../onboarding/acts/channel.js";
+import { runAutonomyAct } from "../onboarding/acts/autonomy.js";
+import { runRecap } from "../onboarding/acts/recap.js";
+import {
+  readOnboardingActs,
+  type OnboardingActsState,
+} from "../onboarding/acts/state.js";
 import {
   readOnboardingState,
   resetFirstRunOnboarding,
@@ -30,6 +39,7 @@ export type AgenCOnboardCliCommand =
   | { readonly kind: "launch" }
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "reset" }
+  | { readonly kind: "act"; readonly act: "identity" | "channel" | "autonomy" | "recap" }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -40,6 +50,13 @@ export function formatAgenCOnboardCliHelpText(): string {
     "Usage:",
     "  agenc onboard            Launch the interactive setup wizard (re-runs",
     "                           even after a completed first run)",
+    "  agenc onboard identity   Act 2a — name your agent (persona workspace +",
+    "                           the one-time naming ritual)",
+    "  agenc onboard channel    Act 2b — connect Telegram/Discord/Slack/WebChat",
+    "                           with live token checks + the pairing walkthrough",
+    "  agenc onboard autonomy   Act 3 — budget cap, heartbeat, cron, webhooks",
+    "                           (guardrails first, always)",
+    "  agenc onboard recap      Posture summary + starter prompts",
     "  agenc onboard --status   Print wizard completion + daemon status",
     "                           (non-interactive, for scripts)",
     "  agenc onboard --json     With --status: emit the report as JSON",
@@ -61,6 +78,20 @@ export function parseAgenCOnboardCliArgs(
   argv: readonly string[],
 ): AgenCOnboardCliCommand | null {
   if (argv[0] !== "onboard") return null;
+  if (
+    argv[1] === "identity" ||
+    argv[1] === "channel" ||
+    argv[1] === "autonomy" ||
+    argv[1] === "recap"
+  ) {
+    if (argv.length > 2) {
+      return {
+        kind: "error",
+        message: `onboard ${argv[1]} does not accept extra arguments`,
+      };
+    }
+    return { kind: "act", act: argv[1] };
+  }
   let status = false;
   let json = false;
   let reset = false;
@@ -114,6 +145,8 @@ export interface OnboardStatusReport {
     readonly selectedProvider?: string;
     readonly selectedModel?: string;
   };
+  /** Act-level completion — the local, consent-free onboarding funnel. */
+  readonly acts: OnboardingActsState["acts"];
   readonly daemon: OnboardDaemonStatus;
 }
 
@@ -122,6 +155,12 @@ export interface OnboardCliDeps {
   readonly isPidRunning?: (pid: number) => boolean;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
+  /** Test seams for the interactive acts. */
+  readonly actIO?: ActIO;
+  readonly runIdentityActFn?: typeof runIdentityAct;
+  readonly runChannelActFn?: typeof runChannelAct;
+  readonly runAutonomyActFn?: typeof runAutonomyAct;
+  readonly runRecapFn?: typeof runRecap;
 }
 
 function defaultIsPidRunning(pid: number): boolean {
@@ -158,6 +197,7 @@ export async function buildOnboardStatusReport(
   );
   return {
     agencHome,
+    acts: readOnboardingActs(agencHome).acts,
     onboarding: {
       completed: state.completed,
       ...(state.completedAt !== undefined
@@ -203,10 +243,26 @@ export function formatOnboardStatusText(report: OnboardStatusReport): string {
         : "not running"
     }`,
   );
+  const actLabel = (act: "identity" | "channel" | "autonomy"): string => {
+    const record = report.acts[act];
+    return record !== undefined ? `done (${record.completedAt})` : "not yet";
+  };
+  lines.push(`  Identity:  ${actLabel("identity")}`);
+  lines.push(`  Channel:   ${actLabel("channel")}`);
+  lines.push(`  Autonomy:  ${actLabel("autonomy")}`);
   lines.push("");
+  const nextAct = report.acts.identity === undefined
+    ? "agenc onboard identity"
+    : report.acts.channel === undefined
+      ? "agenc onboard channel"
+      : report.acts.autonomy === undefined
+        ? "agenc onboard autonomy"
+        : null;
   lines.push(
     report.onboarding.completed
-      ? "  Re-run the wizard with: agenc onboard"
+      ? nextAct !== null
+        ? `  Next: ${nextAct}`
+        : "  All acts complete — recap with: agenc onboard recap"
       : "  Start the wizard with: agenc onboard",
   );
   return lines.join("\n");
@@ -229,6 +285,26 @@ export async function runAgenCOnboardCli(
     case "help":
       stdout(command.text);
       return 0;
+    case "act": {
+      const env = deps.env ?? process.env;
+      const agencHome = resolveAgencHome(env);
+      const io = deps.actIO ?? createTerminalActIO();
+      try {
+        switch (command.act) {
+          case "identity":
+            return await (deps.runIdentityActFn ?? runIdentityAct)({ agencHome, io, env });
+          case "channel":
+            return await (deps.runChannelActFn ?? runChannelAct)({ agencHome, io, env });
+          case "autonomy":
+            return await (deps.runAutonomyActFn ?? runAutonomyAct)({ agencHome, io, env });
+          case "recap":
+            return await (deps.runRecapFn ?? runRecap)({ agencHome, io, env });
+        }
+        return 1;
+      } finally {
+        io.close();
+      }
+    }
     case "error":
       stderr(`agenc: ${command.message}`);
       return 1;

@@ -165,6 +165,10 @@ const KNOWN_SENSITIVE_ENTRIES = [
   "onboarding.json",
   "trusted-projects.json",
   "credentials",
+  // Gateway secrets (channel tokens, webhook/webchat bearer tokens).
+  "gateway/env",
+  "gateway/hooks-token",
+  "gateway/webchat-token",
 ];
 
 const checkSensitiveFilePerms: SecurityCheck = (ctx) => {

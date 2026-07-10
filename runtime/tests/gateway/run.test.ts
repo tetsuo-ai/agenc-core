@@ -113,6 +113,20 @@ describe("startGateway", () => {
     expect(sanitized.AGENC_SLACK_APP_TOKEN).toBeUndefined();
   });
 
+  test("hooks-only run is valid (a trigger surface counts as a reason to run)", async () => {
+    writeConfig({});
+    const client = new FakeClient();
+    const handle = await startGateway({
+      agencHome: home,
+      hooks: true,
+      hooksPort: 0,
+      clientFactory: async () => client,
+    });
+    expect(handle.hooksPort).toBeGreaterThan(0);
+    expect(handle.channels).toEqual([]);
+    await handle.stop();
+  });
+
   test("no channels enabled → throws before touching the daemon client", async () => {
     let factoryCalled = false;
     await expect(
