@@ -4,18 +4,27 @@ BUFFER uses embedded Neovim when AgenC can find a usable `nvim` executable.
 Neovim owns Vim editing semantics through `nvim --embed`; AgenC owns process
 supervision, pane rendering, file safety, and lifecycle cleanup.
 
-## Provider Selection
+Implementation lives under
+`runtime/src/tui/workbench/buffer/providers/`
+(`selectBufferEditorProvider.ts`, Neovim / inline / external providers).
 
-- `AGENC_BUFFER_PROVIDER=auto` selects embedded Neovim when discovery succeeds.
-- `AGENC_BUFFER_PROVIDER=neovim` requests embedded Neovim and reports a visible fallback reason when discovery fails.
-- `AGENC_BUFFER_PROVIDER=inline` selects the basic inline BUFFER fallback.
-- `AGENC_BUFFER_PROVIDER=external` selects the explicit external-editor handoff provider.
-- `AGENC_BUFFER_NVIM=/path/to/nvim` overrides executable discovery.
-- `AGENC_BUFFER_NVIM_TIMEOUT_MS=1200` controls the discovery probe timeout.
+## Provider selection
+
+| Mode | Env | Behavior |
+| --- | --- | --- |
+| `auto` (default) | `AGENC_BUFFER_PROVIDER=auto` | Prefer embedded Neovim when discovery succeeds; otherwise fall back |
+| `neovim` | `AGENC_BUFFER_PROVIDER=neovim` | Request embedded Neovim; show a visible fallback reason when discovery fails |
+| `inline` | `AGENC_BUFFER_PROVIDER=inline` | Basic inline BUFFER fallback (not exact Vim) |
+| `external` | `AGENC_BUFFER_PROVIDER=external` | Explicit external-editor handoff provider |
+
+Additional env knobs:
+
+- `AGENC_BUFFER_NVIM=/path/to/nvim` — override executable discovery.
+- `AGENC_BUFFER_NVIM_TIMEOUT_MS=1200` — discovery probe timeout.
 - By default, embedded BUFFER prefers user init loading so your normal Neovim
   configuration, plugins, and syntax behavior are available.
-- `AGENC_BUFFER_NVIM_USE_INIT=0` disables user init loading and starts clean
-  embedded mode: `nvim --embed --clean -n`.
+- `AGENC_BUFFER_NVIM_USE_INIT=0` — disable user init; starts clean embedded
+  mode: `nvim --embed --clean -n`.
 - When the default user-init probe fails, AgenC falls back to clean embedded
   mode so BUFFER remains usable and reports the selected provider in the header.
 
@@ -23,7 +32,7 @@ Inline mode is a basic fallback. It keeps file editing available when embedded
 Neovim cannot start, and it does not claim exact Vim behavior. External editor
 handoff remains explicit through the BUFFER keybinding for external editing.
 
-## Fallback Reasons
+## Fallback reasons
 
 The BUFFER header shows the active provider and any fallback reason. Common
 reasons are a missing executable, a failed version probe, a probe timeout, or a
@@ -31,10 +40,14 @@ version below the embedded provider requirement.
 
 Troubleshooting:
 
-- Missing executable: install Neovim or set `AGENC_BUFFER_NVIM=/absolute/path/to/nvim`. Inline mode remains a basic fallback and does not provide exact Vim behavior.
-- Failed version probe: run the configured binary with `--version`; fix permissions, wrapper scripts, or stderr failures reported in the BUFFER header.
-- Probe timeout: raise `AGENC_BUFFER_NVIM_TIMEOUT_MS` only after confirming the binary starts normally from the same shell.
-- Unsupported version: embedded BUFFER requires `nvim 0.9.0` or newer and shows `Embedded Neovim requires nvim 0.9.0 or newer` before falling back.
+- Missing executable: install Neovim or set `AGENC_BUFFER_NVIM=/absolute/path/to/nvim`.
+  Inline mode remains a basic fallback and does not provide exact Vim behavior.
+- Failed version probe: run the configured binary with `--version`; fix
+  permissions, wrapper scripts, or stderr failures reported in the BUFFER header.
+- Probe timeout: raise `AGENC_BUFFER_NVIM_TIMEOUT_MS` only after confirming the
+  binary starts normally from the same shell.
+- Unsupported version: embedded BUFFER requires **`nvim 0.9.0` or newer** and
+  shows `Embedded Neovim requires nvim 0.9.0 or newer` before falling back.
 
 ## Cleanup
 
@@ -71,10 +84,31 @@ Use these gates for this surface:
 ```bash
 npm run typecheck
 npm run check:unused:production --workspace=@tetsuo-ai/runtime
-npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/buffer-provider-boundary.contract.test.ts tests/tui/workbench/buffer-neovim-provider.contract.test.ts tests/tui/workbench/buffer-neovim-discovery.contract.test.ts tests/tui/workbench/buffer-neovim-rpc.contract.test.ts tests/tui/workbench/buffer-neovim-grid.contract.test.ts tests/tui/workbench/buffer-neovim-input.contract.test.ts tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts tests/tui/workbench/buffer-file-safety.contract.test.ts tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx tests/tui/workbench/buffer-surface.test.tsx tests/tui/workbench/buffer-fallback-inline.contract.test.ts tests/tui/workbench/buffer-external-editor-provider.contract.test.ts tests/tui/workbench/buffer-external-editor.test.ts tests/tui/workbench/buffer-neovim-e2e-contract.test.ts tests/tui/workbench/buffer-docs-config.contract.test.ts --reporter=dot
+npm --workspace=@tetsuo-ai/runtime exec -- vitest run \
+  tests/tui/workbench/buffer-provider-boundary.contract.test.ts \
+  tests/tui/workbench/buffer-neovim-provider.contract.test.ts \
+  tests/tui/workbench/buffer-neovim-discovery.contract.test.ts \
+  tests/tui/workbench/buffer-neovim-rpc.contract.test.ts \
+  tests/tui/workbench/buffer-neovim-grid.contract.test.ts \
+  tests/tui/workbench/buffer-neovim-input.contract.test.ts \
+  tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts \
+  tests/tui/workbench/buffer-file-safety.contract.test.ts \
+  tests/tui/workbench/buffer-workbench-rendering.contract.test.tsx \
+  tests/tui/workbench/buffer-surface.test.tsx \
+  tests/tui/workbench/buffer-fallback-inline.contract.test.ts \
+  tests/tui/workbench/buffer-external-editor-provider.contract.test.ts \
+  tests/tui/workbench/buffer-external-editor.test.ts \
+  tests/tui/workbench/buffer-neovim-e2e-contract.test.ts \
+  tests/tui/workbench/buffer-docs-config.contract.test.ts \
+  --reporter=dot
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke
 npm run build
 npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup
 node scripts/check-embedded-neovim-buffer.mjs
 ```
+
+## Related
+
+- TUI / workbench overview: [`reference/tui-workbench.md`](reference/tui-workbench.md)
+- In-tree TUI notes: [`runtime/src/tui/README.md`](../runtime/src/tui/README.md)

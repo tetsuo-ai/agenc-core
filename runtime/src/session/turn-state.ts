@@ -244,8 +244,8 @@ export type TokenBudgetDecision =
  *
  * All fields mutate in place during a turn. The phase machine contract
  * is: phases take `(state, ctx, session, signal)` and return a
- * mutated-or-replaced TurnState. See `docs/plan/architecture.md` §Phase
- * Machine for the pure-phase-function invariant (I-89, proposed).
+ * mutated-or-replaced TurnState. See `docs/ARCHITECTURE.md` (phase
+ * machine / pure-phase-function invariant, historically I-89).
  *
  * Field-name mapping to agenc `query.ts:315` destructure:
  *   toolUseContext    → handled via TurnContext + streamingToolExecutor

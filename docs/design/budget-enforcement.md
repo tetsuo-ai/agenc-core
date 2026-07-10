@@ -1,9 +1,12 @@
 # Cost-bounded autonomy: budget enforcement design
 
 **Task 15.** A daemon-owned budget layer that bounds what an autonomous agent
-(heartbeat, cron, background) can spend, so AgenC never reproduces the OpenClaw
+(heartbeat, cron, hooks, background) can spend, so AgenC never reproduces the
 idle-burn failure mode. This note records the SOTA research the design is
 grounded in and the decisions that follow from it.
+
+Operator-facing summary of live surfaces:
+[`../reference/autonomy.md`](../reference/autonomy.md).
 
 ## What the literature says (2023-2026)
 
@@ -72,16 +75,14 @@ end; the load-bearing findings:
 
 ## Design decisions (what we build)
 
-A self-contained daemon subsystem, `runtime/src/budget/`, exposing a
-`BudgetEnforcer` that autonomous surfaces (background agents now; heartbeat +
-cron when they land) call around each turn.
+A self-contained subsystem, `runtime/src/budget/`, exposing a
+`BudgetEnforcer` that autonomous surfaces call around each turn.
 
 - **Config `[budget]`** (env > config > default, mirroring `transaction-guard`):
   per-agent `daily_usd` / `monthly_usd` hard caps, optional token caps, a
   `soft_threshold` fraction (default 0.8) for the warn-a-human tier, and an
   `enabled` flag. **Disabled by default** → zero behavior change until an
-  operator opts in, so the interactive turn loop and the 14k-test suite are
-  untouched.
+  operator opts in.
 - **Ledger** — per-agent, per-window (calendar day + calendar month) cumulative
   spend, persisted to `<agencHome>/budget/ledger.json` (0600), atomic writes.
   Windows roll by date key so "daily/monthly budget" means what a user expects.
@@ -96,9 +97,9 @@ cron when they land) call around each turn.
   (`paused` state), emit a notification once, and surface the typed error; the
   operator raises the cap or resets to resume. Crossing the soft threshold
   emits a one-shot warning. **Never** silently downgrades the model (§5).
-- **Scope** — enforcement applies to autonomous turns (`autonomousMode`) by
-  default; interactive turns are unaffected unless a global cap is set. This is
-  the `turn-context.autonomousMode` seam.
+- **Scope** — enforcement applies to autonomous turns (`autonomous: true` on
+  admit) by default; interactive turns are unaffected unless
+  `enforce_interactive` / `AGENC_BUDGET_ENFORCE_INTERACTIVE` is set.
 - **CLI** — `agenc budget status` (per-agent spend vs caps, window, state),
   read-only; `agenc budget reset <agent>` for the operator.
 
@@ -113,34 +114,64 @@ no per-run cap can. The two compose: a per-run cap stops one runaway loop; the
 daily/monthly cap stops the *aggregate* idle burn. We do not duplicate per-run
 enforcement.
 
-### Scoped for this task vs. deferred (grounded follow-ups)
+Default `[agent.budget]` is **empty** (no token/dollar/wall-clock caps) so long
+foreground-style sessions are not killed by a hidden ceiling; operators who
+want per-run caps set them explicitly.
 
-**In task 15:** the enforcer primitive (admit/reconcile/pause/notify), the
-persistent per-agent daily+monthly ledger, the `[budget]` config, the
-model-price adapter, and the `agenc budget` CLI — all fully unit-tested,
-including the research-grounded invariants (worst-case debit, reconcile refund,
-fail-closed on both windows, pause-and-notify, one-shot soft warning, never
-silent downgrade). Enforcement granularity is **per turn** (admit before an
-autonomous turn, reconcile its usage).
+## Live wire-up (current as of 0.3.0)
 
-**The live wire-in into the autonomous loop lands with task 14 (heartbeat)** —
-that is the loop that actually fires autonomously and needs pausing; wiring
-pre-flight enforcement now, against a surface that does not yet tick on its own,
-would be speculative plumbing. Task 15 delivers the primitive the heartbeat
-consumes, which is exactly how the roadmap sequences it (budgets before
-heartbeat, because heartbeat-without-budget is the token furnace).
+The enforcer primitive is **implemented and live** on the autonomous gateway
+surfaces. Callers construct a `BudgetEnforcer` with
+`resolveBudgetPolicy` + `BudgetLedger` + `createModelPriceResolver`, then
+`admit` → turn → `reconcile`. When budget is disabled, admit is a no-op hold.
 
-**Deferred, each traceable to the research:**
-- *Per-model-call* pre-flight gate on the single call path (§3, the stricter
-  ideal) — needs `stream-model` plumbing; per-turn is the pragmatic first cut.
-- *Velocity circuit-breaker* (spend-rate window) and *loop/duplicate-turn
-  detector* — the fast-loop catchers the daily cap misses (governance report).
-- *Delegation conservation* — sub-agent budget debited from parent (Agent
-  Contracts §2); lands with the team-budget work.
-- *Cheap-utility-model routing + outcome-based escalation* (§6) — the
-  cost-reduction tier; pairs with heartbeat (task 14), which is where a
-  utility-model default first matters.
-- *Reasoning-token budget forcing* (§7, s1/TALE) — a per-call knob for later.
+### Wired (cumulative ledger)
+
+| Surface | Path | Agent id | On refuse |
+| --- | --- | --- | --- |
+| **Heartbeat** | `heartbeat/wire.ts` builds enforcer; `heartbeat/runner.ts` admits before the turn and reconciles after | policy `agent` (default `default`) | Deliver pause notice to heartbeat target; skip turn (`budget_paused`) |
+| **Cron delivery** | `gateway/cron-delivery.ts` | `cron:<taskId>` | Log + optional channel pause notice; skip turn |
+| **Hooks HTTP** | `gateway/hooks.ts` | `hook:<name>` | HTTP **429** with budget error; no turn |
+
+All three mark turns `autonomous: true` and **deny** tool permission requests.
+Rough token estimates use chars/4; max output for pre-flight defaults to
+**2048** tokens on these paths.
+
+### Not cumulative-wired
+
+| Surface | What bounds spend today |
+| --- | --- |
+| Interactive TUI / print turns | Session-level cost tools only unless `enforce_interactive` is enabled **and** a caller actually invokes `BudgetEnforcer` on that path (the interactive turn loop is **not** currently admit/reconcile-wired) |
+| Background agent runs (`background-agent-runner`) | **Per-run** `AgentBudgetConfig` only (`token_cap` / `dollar_cap` / `wall_clock_seconds`) — does **not** call `BudgetEnforcer` |
+
+So: enabling `[budget]` protects heartbeat / cron delivery / hooks. It does
+**not** by itself put a daily envelope around interactive chat or
+`agent.create` background jobs. Operators who need those bounds use
+`[agent.budget]`, session `max_budget_usd`, and/or future wire-ups.
+
+### Primitive modules
+
+| Module | Role |
+| --- | --- |
+| `budget/enforcer.ts` | `admit` / `reconcile` / pause / soft-warn |
+| `budget/ledger.ts` | Persistent per-agent windows → `budget/ledger.json` |
+| `budget/config.ts` | env > config > default policy resolution |
+| `budget/pricing.ts` | Model price resolver for worst-case debit |
+| `bin/budget-cli.ts` | `agenc budget status\|reset` |
+
+### Deferred (still accurate)
+
+- *Per-model-call* pre-flight gate on the single LLM call path (§3) — needs
+  `stream-model` plumbing; per-turn is the pragmatic cut in production today.
+- *Velocity circuit-breaker* and *loop/duplicate-turn detector*.
+- *Delegation conservation* — sub-agent debit from parent (Agent Contracts §2).
+- *Cheap-utility-model routing + outcome-based escalation* (§6) — heartbeat
+  carries `policy.model` but full per-turn model override on the daemon session
+  is still a cost-reduction follow-up; the **cap** is the safety boundary and
+  is live.
+- *Reasoning-token budget forcing* (§7).
+- Cumulative wire-up for interactive turns and background-agent runs (when
+  product wants one ledger across all spend, not only gateway autonomy).
 
 ## Citations
 

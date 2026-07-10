@@ -1,6 +1,6 @@
 /**
  * Gateway secrets file — `<agencHome>/gateway/env` (task O-3/O-4 of
- * docs/onboarding-plan-2026-07.md).
+ * docs/onboarding.md; historical plan: docs/archive/onboarding-plan-2026-07.md).
  *
  * Channel tokens (Telegram/Discord/Slack, webchat/hooks overrides) need a
  * home that works for BOTH `agenc gateway run` and the gateway service

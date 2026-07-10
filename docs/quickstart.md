@@ -1,8 +1,15 @@
 # AgenC in 5 minutes (your agent in 15)
 
-Prerequisites: Node.js >= 25, `tar`, and one model-provider credential (an
-xAI/OpenAI/Anthropic/OpenRouter key, or a local Ollama/LM Studio endpoint —
-16 providers are supported).
+**Current release: 0.3.0.**
+
+Prerequisites: Node.js ≥ 25, `tar`, and a way to reach a model — BYOK
+(xAI / OpenAI / Anthropic / OpenRouter / …), a local Ollama or LM Studio
+endpoint, or an AgenC login for managed OpenRouter (including free hosted
+`:free` routes). Sixteen built-in providers are supported.
+
+Related: [install](install.md) · [onboarding](onboarding.md) ·
+[gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·
+[remote control](remote-control.md) · [VPS](deploy/vps.md).
 
 ## 1. Install
 
@@ -10,19 +17,36 @@ xAI/OpenAI/Anthropic/OpenRouter key, or a local Ollama/LM Studio endpoint —
 curl -fsSL https://get.agenc.ag/install.sh | sh
 ```
 
-This verifies the runtime tarball's sha256, installs the `agenc` wrapper into
+Verifies the runtime tarball sha256, installs the `agenc` wrapper into
 `~/.local/bin`, and starts the daemon as a user service. Other paths (npm,
-Docker, Windows): [`install.md`](install.md).
+Docker, Windows): [install.md](install.md). Update later with `agenc update`.
 
-## 2. Guided setup
+## 2. Act 1 — first conversation
 
 ```bash
 agenc onboard
 ```
 
-The wizard walks provider → API key (verified live) → theme → connection
-check → security defaults, then drops you into the chat. Re-run it any time;
-`agenc onboard --status` reports setup state for scripts.
+First-run wizard order:
+
+1. **preflight**
+2. **theme**
+3. **provider**
+4. **api-key** (live-verified when required)
+5. **connection-test**
+6. **security**
+7. **terminal-setup**
+
+Then you land in chat. Re-run any time; scripts use:
+
+```bash
+agenc onboard --status
+agenc onboard --reset    # show the wizard again on next interactive start
+```
+
+Optional: `agenc login` for remote auth + managed models
+([managed-openrouter.md](managed-openrouter.md)). BYOK env keys always win
+over managed vending.
 
 ## 3. Check your posture
 
@@ -30,51 +54,70 @@ check → security defaults, then drops you into the chat. Re-run it any time;
 agenc security audit
 ```
 
-Fresh installs audit green. If you ever see a critical finding, `--fix`
-applies the safe permission fixes; exposure findings (non-loopback daemon
-overrides) list their manual remediation. `agenc doctor` diagnoses the
-installation itself.
+Fresh installs audit green. Critical findings: `--fix` applies safe
+permission fixes; exposure findings (non-loopback daemon overrides) list
+manual remediation. `agenc doctor` diagnoses the installation itself.
 
 ## 4. Use it
 
 ```bash
 agenc                                  # interactive TUI
 agenc "summarize this repository"      # TUI with a first prompt
-agenc --no-tui "run the tests and report failures"   # headless one-shot
-agenc daemon status                    # the daemon owns sessions/agents
+agenc --no-tui "run the tests"         # headless one-shot
+agenc daemon status                    # daemon owns sessions/agents
 ```
 
-From here: `/help` inside the TUI lists slash commands; background agents run
-via `agenc agent start <objective>`; sessions resume with `--continue` /
-`--resume`.
+Inside the TUI: `/help` lists slash commands. Background agents:
+`agenc agent start <objective>`. Resume with `--continue` / `--resume`.
 
-## 5. Make it YOUR agent (Act 2)
+## 5. Act 2 — make it YOUR agent
 
 ```bash
-agenc onboard identity     # name your agent: persona workspace + naming ritual
-agenc onboard channel      # Telegram/Discord/Slack/WebChat, token checked live,
-                           # pairing walkthrough ends with a reply on your phone
-agenc gateway install-service   # keep the gateway always-on (systemd/launchd)
+agenc onboard identity     # SOUL.md / USER.md + one-time naming ritual → IDENTITY.md
+agenc onboard channel      # Telegram / Discord / Slack / WebChat
+                           # live token checks, secrets in gateway/env (0600), pairing walkthrough
+agenc gateway install-service   # always-on gateway (systemd/launchd)
 ```
 
-`identity` scaffolds `SOUL.md` / `USER.md` and runs a one-time naming ritual —
-the agent chooses its own name and writes `IDENTITY.md`. Editing those files
-IS the API. `channel` validates your bot token before anything persists,
-stores it 0600 in `gateway/env`, and walks you through pairing: strangers who
-find your bot get a code, not your agent.
+Editing persona files **is** the API. Channel setup never weakens the
+pairing-default posture: strangers who find your bot get a code, not your
+agent. Details: [onboarding.md](onboarding.md), [gateway.md](gateway.md).
 
-## 6. Bounded autonomy (Act 3)
+## 6. Act 3 — bounded autonomy
 
 ```bash
-agenc onboard autonomy     # budget cap FIRST, then heartbeat, cron, webhooks
+agenc onboard autonomy     # budget FIRST, then heartbeat → cron → hooks
 agenc onboard recap        # posture summary + things to try
 ```
 
-The order is the design: nothing autonomous enables before a spend cap
-exists. When a cap is hit, autonomy pauses and tells you — never silently
-spends or silently stops. `agenc onboard --status` shows how far you are at
-any time.
+Nothing autonomous enables before a spend cap exists (or you visibly choose
+"no cap"). When a cap is hit, autonomy pauses and tells you — never silent
+spend, never silent stop.
 
-Coming from another assistant? See
-[Migrate from OpenClaw](migrate-from-openclaw.md) and
-[Migrate from Hermes](migrate-from-hermes.md).
+Heartbeat is **live** (`agenc gateway run --heartbeat` or `[heartbeat]` config).
+Hooks: `agenc gateway run --hooks` / `hooks.enabled` → loopback
+`POST /hooks/agent` with header-only bearer auth.
+
+## 7. Optional: phone remote control
+
+```bash
+agenc login
+agenc remote on            # code + QR; needs remote auth session
+agenc remote status
+agenc remote off
+```
+
+Daemon default: `ws://127.0.0.1:7766`. Full flow: [remote-control.md](remote-control.md).
+
+## Migrating
+
+Coming from another assistant?
+
+- [Migrate from OpenClaw](migrate-from-openclaw.md)
+- [Migrate from Hermes](migrate-from-hermes.md)
+
+## Not shipped (do not expect these yet)
+
+Signal, WhatsApp, email channel, and browser automation are not in 0.3.0.
+Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
+`agenc gateway`.

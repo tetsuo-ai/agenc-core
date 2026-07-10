@@ -3,8 +3,8 @@
 The AgenC runtime can run a local CourtGuard-style SLM check before executing
 Solana transaction-like tool calls. The guard is designed for prompt-injection
 defense: it builds a normalized, redacted "docket" of the transaction/tool
-intent and runs it through a local Ollama-hosted model, then fails closed before
-the tool is allowed to sign or submit.
+intent and runs it through a local Ollama-hosted model, then **fails closed**
+before the tool is allowed to sign or submit.
 
 Classification is a four-prompt court pipeline against Ollama's `/api/chat`
 endpoint (temperature 0): a defense and a prosecution argument over the docket,
@@ -49,19 +49,17 @@ export AGENC_TRANSACTION_GUARD_FAIL_MODE=closed
 export AGENC_TRANSACTION_GUARD_TIMEOUT_MS=120000
 ```
 
-`agenc doctor` reports the effective guard status (enabled/disabled, the
-source of that decision, model, endpoint) and probes endpoint reachability
-with a short timeout, warning when the guard is enabled but its endpoint is
-down.
+`agenc doctor` reports the effective guard status (enabled/disabled, the source
+of that decision, model, endpoint) and probes endpoint reachability with a short
+timeout, warning when the guard is enabled but its endpoint is down.
 
-When enabled with the default `fail_mode = "closed"`, malformed verdicts,
-model timeouts, and Ollama errors all resolve to an `unavailable` decision
-that blocks the transaction-like action before execution (fail-closed).
-Sensitive-looking fields (keys, secrets, mnemonics, seeds, tokens, passwords,
-authorization headers) are redacted before the intent is serialized into the
-docket.
+When enabled with the default `fail_mode = "closed"`, malformed verdicts, model
+timeouts, and Ollama errors all resolve to an `unavailable` decision that blocks
+the transaction-like action before execution (fail-closed). Sensitive-looking
+fields (keys, secrets, mnemonics, seeds, tokens, passwords, authorization
+headers) are redacted before the intent is serialized into the docket.
 
-## What Is Guarded
+## What is guarded
 
 The guard evaluates mutating Solana-like calls before `Tool.execute()`,
 including shell and dynamic tool invocations that look like:
@@ -78,7 +76,7 @@ A dynamic or MCP tool is also evaluated when its metadata declares a Solana
 Read-only lookups such as `solana balance`, `solana address`, and
 `solana config get` are not evaluated.
 
-## DevNet Live Validation
+## DevNet live validation
 
 Live tests must never rely on ambient Solana CLI defaults. This machine's
 default CLI config may point at mainnet-beta, so the live suite refuses any RPC
@@ -104,3 +102,8 @@ npm --workspace=@tetsuo-ai/runtime run test:transaction-guard:live
 The live suite checks DevNet balance, requests a small DevNet airdrop only when
 needed, proves an adversarial transaction command is blocked before execution,
 and then submits one bounded DevNet transfer through the guarded path.
+
+## Related
+
+- Budget bounds for autonomous spend: [`../design/budget-enforcement.md`](../design/budget-enforcement.md)
+- Tools / permissions / sandbox overview: [`../reference/tools-permissions-sandbox.md`](../reference/tools-permissions-sandbox.md)
