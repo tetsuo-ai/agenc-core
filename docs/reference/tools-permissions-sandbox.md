@@ -124,6 +124,7 @@ path. Model-facing search is `WebSearch`.
 | --- | --- |
 | `AskUserQuestion` | Multi-choice questions (TUI picker) |
 | `request_user_input` | Elicitation / free-form user input |
+| `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `Brief` | Short progress message to the user |
 | `SendUserMessage` | Alias of Brief-style progress message |
 | `Sleep` | Sleep / yield |
@@ -261,6 +262,31 @@ The daemon permission overlay classifies low / medium / destructive requests.
 Destructive requests require typed confirmation; low/medium use engine
 allow/reject callbacks and `confirm:yes` keybinding shortcuts.
 
+### Mobile session-wide approval
+
+Remote clients may settle the currently pending request with
+`scope: "session", allowAllToolsForSession: true`. This is an explicit opt-in
+that transactionally promotes the owning daemon session to
+`bypassPermissions`; it is not implied by ordinary session-scoped approval.
+If the pending request is stale or settlement throws, Core restores the prior
+permission context. The mode is session-local and does not authorize another
+session or remove OS sandbox boundaries.
+
+### `@ledger` turn policy
+
+`request_ledger_transfer` is a privileged interaction tool with no
+model-directed filesystem writes. It is available only when the exact active
+root-human turn contains `@ledger`, and one atomic claim permits a single call
+for that turn. Subagents and synthetic/autonomous turns cannot inherit the
+token from prompt text or durable history.
+
+During that turn, the router denies every other tool unless it is explicitly
+read-only and has no mutating, interactive, or side-effecting metadata. The
+tool accepts only a Solana recipient, positive decimal lamports, and an optional
+short note, then emits a typed client action for a capable Android phone.
+Physical approval and receipt validation are described in
+[`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
+
 ### Rules, trust, unattended
 
 - Rule evaluation / sources: `runtime/src/permissions/rules.ts`,
@@ -281,6 +307,14 @@ OS-level confinement for shell execution lives in `runtime/src/sandbox/`:
 | --- | --- |
 | Linux | bubblewrap + Landlock helpers (`engine/bwrap.ts`, `engine/landlock.ts`, `linux-launcher/`) |
 | macOS | Seatbelt policies (`engine/seatbelt.ts`, `engine/policies/*.sbpl`) |
+
+Runtime `read_only` and `workspace_write` profiles use a full-disk read
+baseline. Explicit deny-read entries still override it. `read_only` grants no
+write entries; `workspace_write` grants writes only to the workspace, approved
+temporary paths, and explicit policy roots. Resolved write targets are checked
+through the canonical permission profile before execution. This preserves the
+agent's ability to inspect dependencies and toolchains outside the checkout
+without granting writes there.
 
 Related:
 

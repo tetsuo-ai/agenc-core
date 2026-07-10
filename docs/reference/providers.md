@@ -22,6 +22,31 @@ Grok API key resolution order:
 2. `GROK_API_KEY`
 3. `AGENC_XAI_API_KEY`
 
+### Grok 4.5 catalog entry
+
+`grok-4.5` is selectable but does **not** replace the global `grok-4.3`
+default. The runtime catalog exposes:
+
+| Property | Value |
+| --- | --- |
+| Context window | 500,000 tokens |
+| Input modalities | text and image |
+| Runtime features | function tools, parallel tool calls, structured output, search integration |
+| Reasoning effort | `low`, `medium`, `high`; model default `high` |
+| Standard token rates | $2.00 / 1M input, $0.50 / 1M cached input, $6.00 / 1M output |
+
+The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, and the documented
+4.20 multi-agent family may receive the provider parameter; unknown variants
+have it stripped instead of inheriting support from a name prefix. Grok 4.3's
+catalog default effort is `low`; Grok 4.5's is `high`.
+
+Sources checked for this catalog entry on 2026-07-10:
+[xAI Grok 4.5](https://docs.x.ai/developers/grok-4-5),
+[models](https://docs.x.ai/developers/models), and
+[pricing](https://docs.x.ai/developers/pricing). Model access can still depend
+on account and region; the runtime reports the provider error without replacing
+the configured model.
+
 ## Built-in providers (16)
 
 | Slug | Display name | Default model | Base URL | API key env (primary) |

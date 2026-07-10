@@ -145,6 +145,25 @@ Optional trajectory export writes redacted rollout items via
 | Embedding SDK | `@tetsuo-ai/agenc-sdk` `connect()` | Typed JSON-RPC client; also `promptViaSubprocess()` |
 | Remote control | `agenc remote` / remote auth backend | See [`remote-control.md`](remote-control.md) |
 
+### Attachment and capability delivery
+
+Most conversation notifications are attachment-bound: a client attaches to a
+session and receives its transcript/tool stream. Authenticated initialize
+capabilities add two deliberate exceptions for mobile clients:
+
+- `portal.mobile.status.push.v1` fans out global `event.agent_status` frames so
+  a background phone can observe completion without attaching every chat;
+- `portal.ledger.solana.sign.v1` selects one capable phone for a typed client
+  action and keeps a bounded replay while the daemon session is live.
+
+The client multiplexer deduplicates logical registrations by physical delivery
+key. Status is an observer feed; Ledger is a single-consumer action. Interactive
+responses (`tool.approve`, `tool.deny`, `elicitation.respond`) bypass the normal
+per-connection FIFO because they may unblock its head request, but they remain
+subject to ordinary overload limits. Details:
+[`remote-control.md`](remote-control.md) and
+[`security/mobile-ledger-transfer.md`](security/mobile-ledger-transfer.md).
+
 ## Tools, permissions & sandbox
 
 Model tools live in `runtime/src/tools`. Before a tool runs, the permission
@@ -167,6 +186,15 @@ layer resolves an approval decision from the active mode and rule set.
 When enabled, the OS sandbox confines shell execution at the kernel level.
 `--yolo` / bypass waives approval prompts — it does **not** enable kernel
 confinement unless the sandbox is explicitly on.
+
+The `read_only` and `workspace_write` runtime profiles retain a full-disk read
+baseline, matching the live policy's empty allow-read semantics. Explicit
+deny-read entries still win. `workspace_write` grants writes only to the
+workspace, approved temporary paths, and other explicit write entries; write
+checks run against the canonical permission profile on every resolved target.
+On macOS the profile is enforced by Seatbelt, and on Linux by the configured
+platform helper. This is a read-scope compatibility fix, not full-disk write
+authority.
 
 Mutating tools are guarded: file edits enforce read-before-write + mtime-drift
 checks; `apply_patch` applies multi-file patches transactionally.
@@ -225,6 +253,11 @@ Default provider is **`grok`** (xAI), default model **`grok-4.3`**
 (`config` defaults and `BUILT_IN_PROVIDER_DEFAULT_MODELS` in
 `runtime/src/llm/registry/provider-info.ts`). API key resolution for grok:
 `XAI_API_KEY` → `GROK_API_KEY` → `AGENC_XAI_API_KEY`.
+
+`grok-4.5` is a selectable catalog entry (500k context, text/image, tools,
+structured output, low/medium/high effort with high default). It does not
+change the global default. Model metadata and cost assumptions are documented
+in [`reference/providers.md`](reference/providers.md).
 
 There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
 [`reference/providers.md`](reference/providers.md).

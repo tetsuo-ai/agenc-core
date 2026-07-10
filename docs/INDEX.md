@@ -35,6 +35,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | BUFFER providers, nvim trust boundary, env knobs |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess) |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
+| [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
 
 ## Reference
 

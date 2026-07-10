@@ -1,8 +1,9 @@
 # Remote control & device pairing
 
 Drive AgenC coding sessions running on your computer from the
-[AgenC iOS app](https://github.com/tetsuo-ai/agenc-ios) — on the same network
-or over cellular, through a signed relay.
+[AgenC iOS app](https://github.com/tetsuo-ai/agenc-ios) or
+[AgenC Android app](https://github.com/tetsuo-ai/agenc-android) — on the same
+network or over cellular, through a signed relay.
 
 Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 [install](install.md).
@@ -16,6 +17,7 @@ Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 | **Relay** | Cloudflare Worker + per-room Durable Object ([`tetsuo-ai/agenc-relay`](https://github.com/tetsuo-ai/agenc-relay)). Routes frames by ticket room; each pairing is an isolated room keyed by `pairingId`. |
 | **Backend** | [`tetsuo-ai/agenc-backend`](https://github.com/tetsuo-ai/agenc-backend) (`id.agenc.ag`). Mints every relay ticket (sole holder of `RELAY_TICKET_SECRET`) and runs device-pairing endpoints. |
 | **iOS app** | [`tetsuo-ai/agenc-ios`](https://github.com/tetsuo-ai/agenc-ios). Pairs with code/QR, then connects through the relay. |
+| **Android app** | [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android). Remote session control, background completion delivery, and optional Ledger Flex approval over BLE. |
 
 ## Prerequisites
 
@@ -95,9 +97,107 @@ never calls `process.exit` (that would kill the session).
   (read-only). A still-running terminal holds an exclusive rollout lock, so
   those `conv-` sessions stay read-only until the terminal exits.
 
+## Authenticated mobile capabilities
+
+After the relay bridge authenticates `initialize`, a phone may advertise
+capabilities in addition to attaching to individual sessions:
+
+| Capability | Delivery semantics |
+| --- | --- |
+| `portal.mobile.status.push.v1` | Observer fan-out for global `event.agent_status` frames, including completion while the phone is not attached to that session |
+| `portal.ledger.solana.sign.v1` | Single-consumer typed Ledger action routing to the newest capable phone |
+
+The daemon registers capability clients during initialize, before any
+`session.attach`. Logical registrations on one physical socket share a delivery
+key, preventing duplicate status notifications. Status replay comes from each
+session's ordinary bounded buffer and contains status frames only; joining chat
+history still requires `session.attach`/`session.transcript`.
+
+Ledger actions use a separate one-consumer replay buffer so two capable phones
+cannot both receive the same signing request. See
+[mobile Ledger transfer](security/mobile-ledger-transfer.md).
+
+## Background completion and attention delivery
+
+Android keeps the authenticated relay/Core socket alive with a foreground
+`remoteMessaging` service only while all three conditions are true: the app is
+backgrounded, the user is signed in, and a Mac is paired. The Activity remains
+the owner in the foreground; moving between the two does not deliberately tear
+down the socket. Ticket refreshes reuse the normal single-flight reconnect and
+backoff path.
+
+Global status push lets the phone notify about a session without keeping every
+chat attached. Android deduplicates event ids and terminal turns, applies the
+user's completion/attention settings, mute, quiet-hours, and optional duration
+threshold, and suppresses notifications for the session currently visible in
+the foreground. Tapping a notification deep-links to that exact session.
+
+The persistent foreground-service notification is operational state, not a
+task-completion alert. It is silent, low priority, and uses the AgenC mark.
+
+## Account identity reconciliation
+
+`auth.whoami` now exposes the remote account identity plus the persisted
+subscription tier. The phone reconciles its authenticated bearer identity with
+the Core `/login` identity:
+
+- stable account ids are authoritative when both sides provide them;
+- older records may link through an exact normalized email/handle match;
+- conflicting ids are shown as a mismatch and never overwrite the phone
+  account;
+- the runtime tier is used only when Core marks it as verified.
+
+This means a user already logged in through `/login` sees the linked account in
+Android without creating a second runtime identity.
+
+## Permission and elicitation replies
+
+Interactive replies are dispatched outside the connection's ordinary FIFO so
+they can resolve a tool or elicitation currently blocking the request at the
+front of that FIFO:
+
+- `tool.approve`
+- `tool.deny`
+- `elicitation.respond`
+
+They still count against the connection's normal overload limits. Cancellation
+controls retain their separate overload exemption.
+
+An Android **Allow for session** action sends:
+
+```json
+{
+  "sessionId": "session-id",
+  "requestId": "permission-request-id",
+  "scope": "session",
+  "allowAllToolsForSession": true
+}
+```
+
+Core atomically promotes that daemon session to `bypassPermissions` before
+releasing the blocked tool. If the request disappeared or settlement fails, it
+rolls the permission context back. Plain `scope: "session"` without the opt-in
+flag keeps the older, narrower equivalent-rule cache semantics.
+
+## Compatibility and rollout
+
+Capabilities are opt-in and old clients continue to use attachment-bound
+events. Deploy Core before relying on Android background status or `@ledger`:
+
+| Combination | Result |
+| --- | --- |
+| New Core + old phone | Existing pairing/chat works; new capabilities are simply absent |
+| Old Core + new phone | Pairing/chat works, but no global status push, typed Ledger action, or all-tools session promotion |
+| New Core + new Android | Full background notification, identity, permission, and Ledger protocol |
+
+Provider credentials and model execution remain on the Mac. The phone does not
+receive `XAI_API_KEY` or another provider secret.
+
 ## Related
 
 - iOS app + UX — [`tetsuo-ai/agenc-ios`](https://github.com/tetsuo-ai/agenc-ios)
+- Android app + UX — [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android)
 - Relay — [`tetsuo-ai/agenc-relay`](https://github.com/tetsuo-ai/agenc-relay)
 - Backend pairing API — [`tetsuo-ai/agenc-backend`](https://github.com/tetsuo-ai/agenc-backend)
+- Mobile Ledger security contract — [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md)
 - Provider tool-schema compatibility — [provider-tool-compat.md](provider-tool-compat.md)
