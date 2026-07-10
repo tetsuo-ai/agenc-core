@@ -31,7 +31,7 @@ sanitized/framed as untrusted content before they reach the model.
 | Heartbeat | `runtime/src/heartbeat/` (`wire.ts`, `runner.ts`) | policy `agent` (default `default`) | **Wired** |
 | Cron delivery | `runtime/src/gateway/cron-delivery.ts` | `cron:<taskId>` | **Wired** |
 | Hooks HTTP | `runtime/src/gateway/hooks.ts` | `hook:<name>` | **Wired** (HTTP **429** on refuse) |
-| Interactive TUI / print | `session/` turn loop | n/a | **Not** cumulative-wired (opt-in only via `enforce_interactive`) |
+| Interactive TUI / print | `session/` turn loop | n/a | **Not** cumulative-wired — no `BudgetEnforcer.admit` on this path today |
 | Background agents | `app-server/background-agent-runner.ts` | n/a | **Not** cumulative-wired — **per-run** `[agent.budget]` only |
 
 Defaults: **budget disabled**, **heartbeat disabled**. Enabling either is an
@@ -54,7 +54,7 @@ monthly_usd = 50.0
 # daily_tokens = 2_000_000
 # monthly_tokens = 20_000_000
 soft_threshold = 0.8          # warn at 80% of a dollar window
-enforce_interactive = false   # keep false unless you want TUI gated too
+enforce_interactive = false   # reserved flag — interactive path not wired yet
 ```
 
 | Env | Effect |
@@ -65,7 +65,7 @@ enforce_interactive = false   # keep false unless you want TUI gated too
 | `AGENC_BUDGET_DAILY_TOKENS` | Daily token hard cap |
 | `AGENC_BUDGET_MONTHLY_TOKENS` | Monthly token hard cap |
 | `AGENC_BUDGET_SOFT_THRESHOLD` | Soft-warning fraction in `[0,1)` |
-| `AGENC_BUDGET_ENFORCE_INTERACTIVE` | Also gate interactive turns |
+| `AGENC_BUDGET_ENFORCE_INTERACTIVE` | Sets policy flag only; **TUI/print still do not call** `BudgetEnforcer` |
 
 ### Ledger
 
@@ -79,7 +79,9 @@ one-shot soft-warning markers. Windows roll by date keys (`YYYY-MM-DD` /
 
 `BudgetEnforcer.admit({ agentId, model, autonomous, estInputTokens, maxOutputTokens })`:
 
-- Out of scope when disabled or non-autonomous without `enforce_interactive`.
+- Out of scope when disabled or when the call is non-autonomous and
+  `enforce_interactive` is false. Interactive turns still never call admit
+  today even if the flag is true.
 - Refuses if already `paused` or worst-case debit would exceed **any** set cap
   (fail closed on both day and month).
 - Debits worst-case **est input + max output** priced via the model price

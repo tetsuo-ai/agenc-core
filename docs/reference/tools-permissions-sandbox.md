@@ -7,14 +7,20 @@ can stop them.
 
 | Surface | Location | Who sees it |
 | --- | --- | --- |
-| **LIVE model-facing registry** | `runtime/src/tool-registry.ts` + `runtime/src/bin/model-facing-tools.ts` + `runtime/src/tools/` | The model / daemon turn loop |
-| **TUI tool pool** | historical `src/tools.ts` / TUI-side catalog notes | UI presentation — **confirm which catalog you are editing** |
-| **MCP bridge tools** | `runtime/src/mcp-client/tools.ts` | Namespaced `mcp.<server>.<tool>` on the LIVE surface |
+| **LIVE model-facing registry** | `runtime/src/tool-registry.ts` + `runtime/src/bin/model-facing-tools.ts` + `runtime/src/tools/system/*` | The model / daemon turn loop (`toLLMTools()` → provider payload; `dispatch()` → execution) |
+| **TUI tool pool** | `runtime/src/tools.ts` (`getAllBaseTools()`) | Historical / TUI-side presentation pool — **not** the LIVE catalog. Overlaps names with LIVE but omits many LIVE tools and uses donor-era shapes (`CanonicalBashTool`, etc.) |
+| **MCP bridge tools** | `runtime/src/mcp-client/tools.ts` via `mcpToolsProvider` on the registry | Namespaced `mcp.<server>.<tool>` on the LIVE surface (usually deferred until `system.searchTools`) |
 
-Built-in families under `runtime/src/tools/` include: Bash / PowerShell,
-file read/write/edit, `apply_patch`, Glob/Grep, WebFetch/WebSearch, LSP, MCP
-helpers, multi-agent v2 (`spawn_agent` …), Task\*, Skill, cron schedule tools,
-plan mode enter/exit, worktree enter/exit, and more.
+**Rule of thumb:** if you are changing what the model can call in a real turn,
+edit the LIVE path (`buildToolRegistry` / `createModelFacingTools` /
+`tools/system/*`). Editing `tools.ts` alone does **not** register a LIVE tool.
+
+Assembly wiring:
+
+1. `bin/bootstrap-tool-registry.ts` → `createModelFacingTools()` + `buildToolRegistry()`
+2. `tool-registry.ts` registers system groups + injects model-facing tools
+3. Provider payload = request-scoped visible set; deferred tools appear after
+   discovery (`system.searchTools` / `discoverToolNames`)
 
 Unified execution path: `runtime/src/tools/execution.ts` (`runToolUse`) —
 permissions, transaction guard, then `Tool.execute()`.
@@ -24,6 +30,209 @@ Web search provider selection:
 
 Provider tool-schema normalization (strict OpenAI-compatible roots):
 [`../provider-tool-compat.md`](../provider-tool-compat.md).
+
+---
+
+## LIVE tool catalog (by family)
+
+Names below are the **registered** LIVE tool names from
+`buildToolRegistry()` and `createModelFacingTools()`. Visibility is
+request-scoped: a smaller default-visible set is advertised every turn;
+deferred / hidden tools stay in the catalog and load via
+`system.searchTools` (or config / discovery). Config
+(`[tools]` / `toolsConfig`) can disable individual tools.
+
+Do **not** treat the TUI pool (`tools.ts`) as authoritative for this list.
+
+### Files (first-class)
+
+| Name | Notes |
+| --- | --- |
+| `FileRead` | Canonical read |
+| `Edit` | Single-file edit (read-before-write + mtime drift) |
+| `MultiEdit` | Multi-hunk edit on one file |
+| `Write` | Create / overwrite |
+| `Glob` | Path glob |
+| `Grep` | Content search (prefer over shell `rg`/`grep`) |
+| `Orient` | Workspace orientation helper |
+| `apply_patch` | Multi-file transactional patch |
+
+### Filesystem compatibility (`tools/system/filesystem.ts`)
+
+Legacy `system.*` utilities (not the primary edit surface):
+
+| Name |
+| --- |
+| `system.listDir` |
+| `system.stat` |
+| `system.mkdir` |
+| `system.delete` |
+| `system.move` |
+
+### Shell / process
+
+| Name | Notes |
+| --- | --- |
+| `exec_command` | **Canonical** shell (unified-exec) |
+| `write_stdin` | Write to a running unified-exec process |
+| `kill_process` | Kill a managed process |
+| `system.bash` | Direct/shell fallback — **deferred** by default; prefer `exec_command` |
+| `PowerShell` | Registered only when `pwsh`/`powershell` is on `PATH` **and** a unified-exec manager is available; **deferred** |
+
+### Search / discovery / code intel
+
+| Name | Notes |
+| --- | --- |
+| `system.searchTools` | Discover deferred tools into the visible catalog |
+| `system.repoInventory` | Deferred code-intel |
+| `system.gitStatus` | Deferred |
+| `system.gitDiff` | Deferred |
+| `system.gitShow` | Deferred |
+| `system.gitBranchInfo` | Deferred |
+| `system.gitChangeSummary` | Deferred |
+| `system.gitWorktreeList` | Deferred |
+| `system.gitWorktreeCreate` | Deferred |
+| `system.gitWorktreeRemove` | Deferred |
+| `system.gitWorktreeStatus` | Deferred |
+| `system.symbolSearch` | Deferred |
+| `system.symbolDefinition` | Deferred |
+| `system.symbolReferences` | Deferred |
+| `LSP` | Language-server diagnostics / definition / references / symbols |
+| `WebSearch` | Web search (provider-native Grok path when available, else configured endpoint / DuckDuckGo) |
+| `web_fetch` | Fetch URL → text/markdown |
+| `WebFetch` | Legacy alias of `web_fetch` |
+
+There is **no** separate LIVE tool named `web_search`; that string is only a
+provider-native server-side tool id used internally by the Grok web-search
+path. Model-facing search is `WebSearch`.
+
+### Planning / workflow
+
+| Name | Notes |
+| --- | --- |
+| `TodoWrite` | Checklist / todo list |
+| `EnterPlanMode` | Enter plan permission posture |
+| `ExitPlanMode` | Exit plan mode (approval path) |
+| `VerifyPlanExecution` | Compare plan vs progress summary |
+| `WorkflowTool` | Agent workflow runner |
+| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`) |
+| `RemoteTrigger` | Deferred; inspect local scheduled defs only |
+
+### Interaction / user input
+
+| Name | Notes |
+| --- | --- |
+| `AskUserQuestion` | Multi-choice questions (TUI picker) |
+| `request_user_input` | Elicitation / free-form user input |
+| `Brief` | Short progress message to the user |
+| `SendUserMessage` | Alias of Brief-style progress message |
+| `Sleep` | Sleep / yield |
+| `Monitor` | Monitor a background command/process |
+
+### Worktree
+
+| Name |
+| --- |
+| `EnterWorktree` |
+| `ExitWorktree` |
+
+### Notebook
+
+| Name |
+| --- |
+| `NotebookRead` |
+| `NotebookEdit` |
+
+### Skill
+
+| Name | Notes |
+| --- | --- |
+| `Skill` | Invoke a skill by name (`skill` / `name` + optional `args`) |
+
+### Task board / background tasks
+
+| Name | Notes |
+| --- | --- |
+| `TaskCreate` | Task board |
+| `TaskGet` | Task board |
+| `TaskUpdate` | Task board |
+| `TaskList` | Task board |
+| `TaskOutput` | Background task output |
+| `TaskStop` | Stop background task |
+
+### Multi-agent v2 + jobs
+
+Canonical v2 surface (`runtime/src/agents/v2/`). Details:
+[`agents.md`](agents.md).
+
+| Name | Notes |
+| --- | --- |
+| `spawn_agent` | Spawn worker |
+| `wait_agent` | Wait for worker result |
+| `close_agent` | Tear down worker |
+| `assign_task` | New task (triggers turn) |
+| `send_message` | Follow-up (no turn trigger) |
+| `list_agents` | Inspect agent tree |
+| `spawn_agents_on_csv` | Batch CSV agent jobs |
+| `report_agent_job_result` | Record CSV job item result |
+
+### MCP helpers (built-in) + bridge
+
+| Name | Notes |
+| --- | --- |
+| `ListMcpResourcesTool` / `ListMcpResources` | List MCP resources (deferred) |
+| `ReadMcpResourceTool` / `ReadMcpResource` | Read MCP resource (deferred) |
+| `mcp.<server>.<tool>` | Live tools from configured MCP servers (usually deferred until discovery) |
+
+### Structured output / code-mode
+
+| Name | Notes |
+| --- | --- |
+| `StructuredOutput` | Schema-bound when session has `outputSchema`; otherwise deferred passthrough |
+| `exec` | Code-mode JS exec — only when code-mode service enabled |
+| `wait` | Code-mode wait — only when code-mode service enabled |
+
+### Default-visible vs deferred (high level)
+
+Exact visibility is request-scoped and config-dependent. As coded in
+`buildToolRegistry` defaults:
+
+- **Typically advertised early:** `exec_command`, `write_stdin`, `kill_process`,
+  `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
+  `AskUserQuestion`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`,
+  `system.searchTools`, plus non-deferred model-facing tools (web, multi-agent
+  v2, tasks, Skill, etc.).
+- **Deferred / discoverable examples:** `system.bash`, git/symbol `system.*`
+  intel tools, MCP tools when `deferMcpTools` is on, MCP resource helpers,
+  `RemoteTrigger`, passthrough `StructuredOutput`, and other tools marked
+  `metadata.deferred`.
+
+Coordinator mode further **allowlists** orchestration tools only — see
+[`agents.md`](agents.md).
+
+---
+
+## TUI pool (`tools.ts`) — dual catalog note
+
+`runtime/src/tools.ts` still exports a donor-era **TUI / presentation** pool
+via `getAllBaseTools()`. It is useful for UI filtering and historical parity,
+but it is **not** what `buildToolRegistry` advertises to the model.
+
+Notable differences (non-exhaustive):
+
+| Topic | LIVE | TUI pool |
+| --- | --- | --- |
+| Shell | `exec_command` (+ deferred `system.bash`) | `CanonicalBashTool` (bash-shaped) |
+| Files | `FileRead` / `Edit` / `Write` / `MultiEdit` / `apply_patch` | Canonical read/edit/write/notebook set |
+| Multi-agent | `spawn_agent` family | Not assembled here (Team\* gated) |
+| Discovery | `system.searchTools` + deferred system intel | Optional `ToolSearchTool` |
+| Code-mode | `exec` / `wait` when enabled | Not in pool |
+| Authority | Daemon turn loop | Presentation / legacy |
+
+When docs or code comments say “registered tools”, assume LIVE unless they
+explicitly cite `tools.ts`.
+
+---
 
 ## Permission modes
 

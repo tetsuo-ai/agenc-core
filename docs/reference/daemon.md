@@ -21,10 +21,16 @@ Autostart is **on by default**. Disable with:
 AGENC_DAEMON_AUTOSTART=0
 ```
 
-Ready-wait timeout for clients that start the daemon:
+Ready-wait timeout for clients that start the daemon
+(`AGENC_DAEMON_READY_TIMEOUT_MS`):
+
+| Client | Default |
+| --- | --- |
+| Published launcher (`packages/agenc`) | **2000** ms |
+| Runtime daemon autostart / `agenc daemon` / SDK socket connect | **45000** ms |
 
 ```bash
-AGENC_DAEMON_READY_TIMEOUT_MS=2000   # default 2000
+AGENC_DAEMON_READY_TIMEOUT_MS=45000
 ```
 
 Detached daemon V8 heap cap (MB):

@@ -171,6 +171,54 @@ confinement unless the sandbox is explicitly on.
 Mutating tools are guarded: file edits enforce read-before-write + mtime-drift
 checks; `apply_patch` applies multi-file patches transactionally.
 
+Full LIVE tool name catalog (by family), dual-catalog warning (LIVE vs TUI
+pool), and sandbox details:
+[`reference/tools-permissions-sandbox.md`](reference/tools-permissions-sandbox.md).
+
+## Turn phases (`runtime/src/phases`)
+
+One sampling iteration of the turn loop (`session/run-turn.ts`) runs an ordered
+phase machine. Module files under `runtime/src/phases/` own the heavy steps;
+`TurnState` documents the same numbering.
+
+| # | Stage | Module / site | Role |
+| --- | --- | --- | --- |
+| 1 | `prepareContext` | inline in `session/run-turn.ts` | Build messages for query, attachments, compact, request contract |
+| 2 | `streamModel` | `phases/stream-model.ts` | Stream provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
+| 3 | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors |
+| 4 | `continuationNudge` | `phases/continuation-nudge.ts` | Nudge re-entry when the model stopped without required follow-up |
+| 5 | `executeTools` | `phases/execute-tools.ts` | Drain / finalize tool dispatch → tool results |
+| 6 | `commit` | `phases/commit.ts` | Terminal commit for the iteration; may re-enter via stop-hooks |
+
+`phases/stop-hooks.ts` is not a separate numbered stage: stop-hook blocking is
+evaluated from `commit` (and can set `transition` so the outer loop re-enters).
+`phases/events.ts` is the phase-yielded event envelope for the TUI / clients.
+
+Continue reasons and terminal reasons live on `session/turn-state.ts`
+(`ContinueReason`, `TerminalReason`).
+
+## Recovery ladder (`runtime/src/recovery`)
+
+When the last assistant message (or stream error) matches more than one
+recovery condition, triggers are evaluated in a **fixed priority order**
+(I-10). Source of truth: `recovery/triggers.ts` (`I10_TRIGGER_ORDER` /
+`buildDefaultTriggerOrder`). Orchestration + re-entry cap:
+`recovery/fallback-ladder.ts` (`RecoveryLadder`, `MAX_RECOVERY_REENTRIES = 5`).
+
+| Order | Trigger name | Intent |
+| --- | --- | --- |
+| 1 | `isWithheld413` | Prompt-too-long → collapse / reactive recovery |
+| 2 | `isWithheldMedia` | Media-too-large → reactive recovery (skips collapse) |
+| 3 | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation |
+| 4 | `stopHookBlocking` | Stop-hook inject + re-enter |
+| 5 | `streamingFallbackOccured` | Streaming fallback tombstone + recreate executor |
+| 6 | `FallbackTriggeredError` | Model fallback swap |
+
+Related modules: `api-errors.ts` (match predicates), `model-fallback.ts`,
+`max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
+`withhold-cascading.ts`. Do not reorder the trigger array without updating
+the I-10 tests that pin `I10_TRIGGER_ORDER`.
+
 ## LLM / providers
 
 Default provider is **`grok`** (xAI), default model **`grok-4.3`**
@@ -193,7 +241,7 @@ Autonomous surfaces share one design: **fail closed, never silent spend**.
 | Heartbeat ticks | `heartbeat/` (wired from gateway run) | **Yes** (`wire.ts` + `runner.ts`) |
 | Cron delivery | `gateway/cron-delivery.ts` | **Yes** (agent id `cron:<taskId>`) |
 | Hooks HTTP | `gateway/hooks.ts` | **Yes** (agent id `hook:<name>`; 429 on refuse) |
-| Interactive TUI / print turns | `session/` | **No** (unless `enforce_interactive`) |
+| Interactive TUI / print turns | `session/` | **No** (`enforce_interactive` is reserved; path not admit-wired) |
 | Background agent runs | `app-server/background-agent-runner.ts` | **No** — **per-run** `[agent.budget]` only |
 
 Budget primitive: `runtime/src/budget/`. Defaults **disabled**. Ledger:
@@ -241,4 +289,4 @@ npm run validate:runtime
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with
 budget gating, and the public launcher/SDK packages are in place. Remaining
-pre-GA work is tracked in `TODO.md`.
+pre-GA product backlog is tracked in [`roadmap.md`](roadmap.md); local engineers may keep a gitignored `TODO.md`.

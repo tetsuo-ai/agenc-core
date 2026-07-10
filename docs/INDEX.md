@@ -1,7 +1,7 @@
 # AgenC documentation index
 
 Canonical map of docs under `docs/`. Product overview and install entry:
-[`../README.md`](../README.md). Contributor loop: [`../AGENTS.md`](../AGENTS.md).
+[`../README.md`](../README.md).
 
 Version in tree: **runtime / launcher 0.3.0** (pre-release); embedding SDK
 **0.2.0**. Default provider **grok**, default model **grok-4.3**.
@@ -41,19 +41,24 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | Doc | Summary |
 | --- | --- |
 | [reference/cli.md](reference/cli.md) | Full CLI: top-level flags, all subcommands |
+| [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs |
-| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks |
+| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry: names, aliases, purpose |
+| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents + multi-agent v2 tools |
+| [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server |
-| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | Tools catalog, permission modes, OS sandbox |
+| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces |
+| [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
+| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, OS sandbox |
 | [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench, BUFFER summary |
 
 ## Explanation
 
 | Doc | Summary |
 | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, on-disk state |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
 | [design/budget-enforcement.md](design/budget-enforcement.md) | Why/how cost-bounded autonomy is enforced |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
@@ -75,16 +80,21 @@ shipped. See [`archive/README.md`](archive/README.md).
 
 ## Outside `docs/` (still useful)
 
+Tracked in the repo (safe for GitHub clones):
+
 | Path | Summary |
 | --- | --- |
 | [`../README.md`](../README.md) | Product README (0.3.0) |
-| [`../AGENTS.md`](../AGENTS.md) | Contributor / agent working rules |
-| [`../TODO.md`](../TODO.md) | Active engineering backlog for assistants |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
 | [`../runtime/src/mcp-client/README.md`](../runtime/src/mcp-client/README.md) | Outbound MCP client notes |
 | [`../runtime/src/agents/v2/PARITY.md`](../runtime/src/agents/v2/PARITY.md) | Multi-agent v2 tool parity |
 | [`../runtime/src/tools/WebSearchTool/README_SEARCH_PROVIDERS.md`](../runtime/src/tools/WebSearchTool/README_SEARCH_PROVIDERS.md) | Web-search provider config |
+| [`../runtime/src/llm/providers/openai-compatible/README.md`](../runtime/src/llm/providers/openai-compatible/README.md) | Provider naming note |
 | [`../parity/agent-surface-contract.reviews/README.md`](../parity/agent-surface-contract.reviews/README.md) | Agent-surface contract reviews |
 | [`../parity/embedded-neovim-buffer.reviews/README.md`](../parity/embedded-neovim-buffer.reviews/README.md) | Embedded-Neovim contract reviews |
+
+Local-only (gitignored — not shipped on GitHub): contributor working files such
+as `AGENTS.md` and `TODO.md`. Product backlog for public readers is
+[roadmap.md](roadmap.md).
