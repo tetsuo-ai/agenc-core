@@ -160,6 +160,11 @@ import {
   runAgenCSecurityCli,
 } from "./security-cli.js";
 import {
+  formatAgenCUpdateCliHelpText,
+  parseAgenCUpdateCliArgs,
+  runAgenCUpdateCli,
+} from "./update-cli.js";
+import {
   formatAgenCGatewayCliHelpText,
   parseAgenCGatewayCliArgs,
   runAgenCGatewayCli,
@@ -324,6 +329,7 @@ export function formatCliHelpText(): string {
     "       agenc -p|--print [options] [PROMPT]",
     "       agenc help [command]",
     "       agenc onboard [--status [--json] | --reset]",
+    "       agenc update [--check] [--json]",
     "       agenc security audit [--json] [--fix]",
     "       agenc gateway <status|pairing> [args]",
     "       agenc budget <status|reset> [args]",
@@ -347,6 +353,7 @@ export function formatCliHelpText(): string {
     "",
     "Commands:",
     "  onboard                                 Set up AgenC: provider, key, theme, first chat",
+    "  update                                  Update the runtime to the latest release",
     "  security                                Audit local exposure; --fix applies safe fixes",
     "  gateway                                 Inspect/operate the channel gateway (pairing)",
     "  budget                                  Inspect/operate cost-bounded autonomy",
@@ -428,6 +435,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCOnboardCliHelpText();
     case "security":
       return formatAgenCSecurityCliHelpText();
+    case "update":
+      return formatAgenCUpdateCliHelpText();
     case "gateway":
       return formatAgenCGatewayCliHelpText();
     case "budget":
@@ -4083,6 +4092,10 @@ export async function main(): Promise<number> {
   const securityCommand = parseAgenCSecurityCliArgs(argv);
   if (securityCommand !== null) {
     return runAgenCSecurityCli(securityCommand);
+  }
+  const updateCommand = parseAgenCUpdateCliArgs(argv);
+  if (updateCommand !== null) {
+    return runAgenCUpdateCli(updateCommand);
   }
   const gatewayCommand = parseAgenCGatewayCliArgs(argv);
   if (gatewayCommand !== null) {
