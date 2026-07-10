@@ -26,7 +26,7 @@ Reuse the same provider credential you used with OpenClaw (BYOK env vars or
 | `MEMORY.md` + daily notes | `memory/` + memdir | Automatic project/session memory with aging + retrieval |
 | Skills (`SKILL.md` dirs, ClawHub) | Skills + plugins | Bundled + local skills; plugins add commands/tools/hooks/MCP via `agenc plugin` and `/plugins`. No public registry yet — by design until publishing is signed + attested |
 | Cron (`openclaw cron`) | Cron tools + live scheduler | Create/list/delete from the agent; jobs re-arm on daemon restart. Delivery-routed jobs (`announceChannel`/`webhook` on CronCreate) run in isolated gateway sessions and post their result to a channel or webhook |
-| Webhooks (`/hooks/agent`) | Roadmap | Planned with header-only bearer auth |
+| Webhooks (`/hooks/agent`) | Shipped | Same endpoint shape: `agenc gateway run --hooks` (or gateway config `hooks.enabled`) serves loopback `POST /hooks/agent` with header-only bearer auth — query-string tokens are rejected outright. `message`/`name`/`agent`/`sessionKey`/`deliver` params; `deliver` streams the result to any running channel, no `deliver` returns it in the response. Payloads ride the untrusted-content framing and the `[budget]` envelope; `agenc security audit` flags enabled-without-token |
 | `SOUL.md` / `IDENTITY.md` persona | Shipped | Same convention, same filenames — see "Persona workspace files" below |
 | Heartbeat (`HEARTBEAT.md`) | Shipped | `agenc gateway run --heartbeat` (or `[heartbeat]` config): periodic turns read `HEARTBEAT.md`, deliver only non-OK results to a channel, and every tick is gated by the `[budget]` daily/monthly spend envelope — a refusal pauses instead of silently burning |
 | Channels (Telegram, WhatsApp, …) | Shipped (Telegram, Discord, Slack, WebChat, stdio) | `agenc gateway run`; pairing-gated, with in-channel token approvals and untrusted-content framing. Discord rides the official Gateway WS + REST (`AGENC_DISCORD_BOT_TOKEN`); Slack rides Socket Mode — no inbound listener (`AGENC_SLACK_BOT_TOKEN` + `AGENC_SLACK_APP_TOKEN`); guild/channel messages are mention-gated by default. Signal and WhatsApp still roadmap |
@@ -72,7 +72,7 @@ ritual completion apply from the next new conversation. Copy your existing
 
 ## What you lose today (roadmap, in priority order)
 
-Webhooks, browser automation, a mobile app, and channel breadth beyond
+Browser automation, a mobile app, and channel breadth beyond
 Telegram/Discord/Slack/WebChat (Signal, WhatsApp). If any of these is your
 daily driver, run both: several of the gaps are next on the roadmap, and the
 daemon architecture is built for exactly those clients.

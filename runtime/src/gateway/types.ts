@@ -177,12 +177,27 @@ export interface GatewayDaemonClient {
 // Gateway configuration
 // ---------------------------------------------------------------------------
 
+/**
+ * Inbound webhook endpoint config (task 17). Disabled unless `enabled` is
+ * explicitly true; the endpoint additionally requires a bearer token at
+ * start time and `agenc security audit` flags enabled-without-token.
+ */
+export interface GatewayHooksConfig {
+  readonly enabled: boolean;
+  readonly host?: string;
+  readonly port?: number;
+  /** Explicit opt-in required for any non-loopback bind. */
+  readonly allowNonLoopback?: boolean;
+}
+
 export interface GatewayConfig {
   /** Per-channel policy; a missing entry means the fail-closed default. */
   readonly channels: Readonly<Record<string, GatewayChannelPolicy>>;
   readonly bindings: readonly GatewayBinding[];
   /** Default agent label when no binding matches. */
   readonly defaultAgent: string;
+  /** Inbound webhooks; absent = disabled. */
+  readonly hooks?: GatewayHooksConfig;
 }
 
 /** Fail-closed defaults: pairing-gated DMs, empty allowlist. */
