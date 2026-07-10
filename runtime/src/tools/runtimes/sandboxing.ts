@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   externalFileSystemPolicy,
   canReadPathWithCwd,
+  canWritePathWithCwd,
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
@@ -21,7 +22,6 @@ import {
 } from "../../sandbox/engine/policy-transforms.js";
 import {
   SandboxDeniedError,
-  isPathWritable,
   type SandboxPolicy,
 } from "../../permissions/sandbox.js";
 import type { SandboxMode } from "../orchestrator.js";
@@ -63,6 +63,15 @@ function projectRootEntry(
   };
 }
 
+function rootEntry(
+  access: FileSystemSandboxEntry["access"],
+): FileSystemSandboxEntry {
+  return {
+    path: { kind: "special", value: { kind: "root" } },
+    access,
+  };
+}
+
 function tmpdirEntry(): FileSystemSandboxEntry {
   return {
     path: { kind: "special", value: { kind: "tmpdir" } },
@@ -88,7 +97,7 @@ export function permissionProfileForSandboxMode(
       );
     case "read_only":
       return permissionProfileFromRuntimePermissions(
-        restrictedFileSystemPolicy([projectRootEntry("read")], {
+        restrictedFileSystemPolicy([rootEntry("read")], {
           includePlatformDefaults: true,
         }),
         network,
@@ -96,7 +105,7 @@ export function permissionProfileForSandboxMode(
     case "workspace_write":
       return permissionProfileFromRuntimePermissions(
         restrictedFileSystemPolicy(
-          [projectRootEntry("write"), tmpdirEntry()],
+          [rootEntry("read"), projectRootEntry("write"), tmpdirEntry()],
           { includePlatformDefaults: true },
         ),
         network,
@@ -352,7 +361,7 @@ export function enforceRuntimeSandboxAttempt(
   }
 
   for (const target of writes.targets) {
-    if (!isPathWritable(policy, target, cwd)) {
+    if (!canWritePathWithCwd(profile.fileSystem, target, cwd)) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
         {
@@ -535,6 +544,10 @@ function adaptLiveFileSystemPolicy(
   const denyWrite = new Set(policy.denyWrite.map((value) => path.resolve(cwd, value)));
   const denyRead = new Set(policy.denyRead.map((value) => path.resolve(cwd, value)));
   const entries: FileSystemSandboxEntry[] = [];
+
+  if (policy.allowRead.length === 0) {
+    entries.push(rootEntry("read"));
+  }
 
   if (mode === "read_only") {
     entries.push(projectRootEntry("read"));

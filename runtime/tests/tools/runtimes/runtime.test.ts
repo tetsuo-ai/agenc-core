@@ -4,13 +4,19 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
+import {
+  canReadPathWithCwd,
+  hasFullDiskReadAccess,
+} from "../../sandbox/engine/index.js";
 import { EventLog } from "../../session/event-log.js";
+import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { LLMToolCall } from "../../llm/types.js";
 import { ToolRouter } from "../router.js";
 import type { Tool } from "../types.js";
@@ -63,6 +69,16 @@ function tracker() {
     snapshot: () => [],
     clear: () => {},
   };
+}
+
+function expectShellAttemptToRespectPlatformAvailability(
+  attempt: () => void,
+): void {
+  if (process.platform === "darwin") {
+    expect(attempt).not.toThrow();
+    return;
+  }
+  expect(attempt).toThrow(/without platform sandbox context/);
 }
 
 function makeExecutableSandboxHelper(): string {
@@ -175,6 +191,7 @@ describe("tools/runtimes", () => {
     expect(readOnly.fileSystem.kind).toBe("restricted");
     expect(readOnly.fileSystem.entries.every((entry) => entry.access !== "write"))
       .toBe(true);
+    expect(hasFullDiskReadAccess(readOnly.fileSystem)).toBe(true);
     expect(readOnly.network).toBe("disabled");
 
     const workspaceWrite = permissionProfileForSandboxMode("workspace_write", {
@@ -183,6 +200,7 @@ describe("tools/runtimes", () => {
     expect(workspaceWrite.fileSystem.kind).toBe("restricted");
     expect(workspaceWrite.fileSystem.entries.some((entry) => entry.access === "write"))
       .toBe(true);
+    expect(hasFullDiskReadAccess(workspaceWrite.fileSystem)).toBe(true);
     expect(workspaceWrite.network).toBe("disabled");
 
     const full = permissionProfileForSandboxMode("danger_full_access", {
@@ -197,6 +215,95 @@ describe("tools/runtimes", () => {
     expect(external.fileSystem.kind).toBe("external_sandbox");
     expect(external.network).toBe("restricted");
   });
+
+  test("live default workspace-write policy preserves unrestricted reads", () => {
+    const profile = permissionProfileForRuntimeContext(
+      {
+        sandboxMode: "workspace_write",
+        invocation: {
+          turn: {
+            cwd: "/repo",
+            fileSystemSandboxPolicy: {
+              allowWrite: ["/repo"],
+              denyWrite: [],
+              allowRead: [],
+              denyRead: [],
+            },
+          },
+        },
+      } as never,
+      { cwd: "/repo" },
+    );
+
+    expect(hasFullDiskReadAccess(profile.fileSystem)).toBe(true);
+  });
+
+  test("live deny-read paths still override the unrestricted read baseline", () => {
+    const profile = permissionProfileForRuntimeContext(
+      {
+        sandboxMode: "workspace_write",
+        invocation: {
+          turn: {
+            cwd: "/repo",
+            fileSystemSandboxPolicy: {
+              allowWrite: ["/repo"],
+              denyWrite: [],
+              allowRead: [],
+              denyRead: ["/repo/private"],
+            },
+          },
+        },
+      } as never,
+      { cwd: "/repo" },
+    );
+
+    expect(canReadPathWithCwd(profile.fileSystem, "/etc/passwd", "/repo"))
+      .toBe(true);
+    expect(canReadPathWithCwd(profile.fileSystem, "/repo/private/key", "/repo"))
+      .toBe(false);
+  });
+
+  test.runIf(process.platform === "darwin")(
+    "live default workspace-write policy launches pwd through macOS Seatbelt",
+    async () => {
+      const cwd = process.cwd();
+      const profile = permissionProfileForRuntimeContext(
+        {
+          sandboxMode: "workspace_write",
+          invocation: {
+            turn: {
+              cwd,
+              fileSystemSandboxPolicy: {
+                allowWrite: [cwd],
+                denyWrite: [],
+                allowRead: [],
+                denyRead: [],
+              },
+            },
+          },
+        } as never,
+        { cwd },
+      );
+      const manager = new UnifiedExecProcessManager({ cwd });
+
+      try {
+        const result = await manager.execCommand({
+          cmd: "pwd",
+          yield_time_ms: 1_000,
+          runtimeSandbox: {
+            permissionProfile: profile,
+            sandboxPolicyCwd: cwd,
+            preference: "require",
+          },
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout.trim()).toBe(cwd);
+      } finally {
+        await manager.closeAll("test cleanup");
+      }
+    },
+  );
 
   test("runtime sandbox enforcement denies read-only writes and outside-workspace writes", () => {
     const mutatingTool: Tool = {
@@ -321,7 +428,7 @@ describe("tools/runtimes", () => {
       metadata: { mutating: true },
       execute: async () => ({ content: "not reached" }),
     };
-    expect(() =>
+    expectShellAttemptToRespectPlatformAvailability(() =>
       enforceRuntimeSandboxAttempt({
         context: {
           ...base,
@@ -334,8 +441,7 @@ describe("tools/runtimes", () => {
         },
         tool: shellTool,
         args: { cmd: "ls -la" },
-      }),
-    ).toThrow(/without platform sandbox context/);
+      }));
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -488,7 +594,7 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/could not verify (read|write) targets/);
 
-    expect(() =>
+    expectShellAttemptToRespectPlatformAvailability(() =>
       enforceRuntimeSandboxAttempt({
         context: {
           ...base,
@@ -501,8 +607,7 @@ describe("tools/runtimes", () => {
         },
         tool: shellTool,
         args: { cmd: "python -c \"open('/etc/agenc-outside', 'w').write('x')\"" },
-      }),
-    ).toThrow(/without platform sandbox context/);
+      }));
     for (const cmd of ["npm test", "node script.js", "python -m pytest", "make"]) {
       expect(() =>
         enforceRuntimeSandboxAttempt({
@@ -513,7 +618,7 @@ describe("tools/runtimes", () => {
       ).not.toThrow();
     }
 
-    expect(() =>
+    expectShellAttemptToRespectPlatformAvailability(() =>
       enforceRuntimeSandboxAttempt({
         context: {
           ...sandboxedWorkspaceContext,
@@ -521,10 +626,9 @@ describe("tools/runtimes", () => {
         },
         tool: shellTool,
         args: { cmd: "node script.js" },
-      }),
-    ).toThrow(/without platform sandbox context/);
+      }));
 
-    expect(() =>
+    expectShellAttemptToRespectPlatformAvailability(() =>
       enforceRuntimeSandboxAttempt({
         context: {
           ...base,
@@ -537,8 +641,7 @@ describe("tools/runtimes", () => {
         },
         tool: shellTool,
         args: { cmd: "ls", shell: "/bin/sh" },
-      }),
-    ).toThrow(/without platform sandbox context/);
+      }));
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -890,25 +993,23 @@ describe("tools/runtimes", () => {
       metadata: { mutating: true },
       execute: async () => ({ content: "not reached" }),
     };
-    expect(() =>
+    expectShellAttemptToRespectPlatformAvailability(() =>
       enforceRuntimeSandboxAttempt({
         context: attempt("workspace_write"),
         tool: shellTool,
         args: { cmd: "node script.js" },
-      }),
-    ).toThrow(/without platform sandbox context|could not verify write targets/);
+      }));
 
     const flaggedShellTool: Tool = {
       ...shellTool,
       metadata: { mutating: true, virtualNoFsWrites: true },
     };
-    expect(() =>
+    expectShellAttemptToRespectPlatformAvailability(() =>
       enforceRuntimeSandboxAttempt({
         context: attempt("workspace_write"),
         tool: flaggedShellTool,
         args: { cmd: "node script.js" },
-      }),
-    ).toThrow(/without platform sandbox context|could not verify write targets/);
+      }));
 
     // (4) The resolved-writeTargets path stays intact for unflagged tools: an
     // UNFLAGGED real writer with a resolved outside-workspace target still
@@ -1150,9 +1251,23 @@ describe("tools/runtimes", () => {
         sandboxMode: "read_only",
       },
     );
-    expect(noHelperStdin.isError).toBe(true);
-    expect(noHelperStdin.content).toContain("write_stdin");
-    expect(writeStdin).not.toHaveBeenCalled();
+    if (process.platform === "darwin") {
+      expect(noHelperStdin.isError).toBeFalsy();
+      expect(writeStdin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session_id: 7,
+          chars: "",
+          runtimeSandbox: expect.objectContaining({
+            sandboxPolicyCwd: workspaceRoot,
+          }),
+        }),
+      );
+      writeStdin.mockClear();
+    } else {
+      expect(noHelperStdin.isError).toBe(true);
+      expect(noHelperStdin.content).toContain("write_stdin");
+      expect(writeStdin).not.toHaveBeenCalled();
+    }
 
     const readOnlyStdin = await router.dispatchModelToolCall(
       {
@@ -1265,7 +1380,9 @@ describe("tools/runtimes", () => {
     );
   });
 
-  test("actual exec_command denies restricted shell commands without a platform helper", async () => {
+  test.runIf(process.platform !== "darwin")(
+    "actual exec_command denies restricted shell commands without a platform helper",
+    async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-real-exec-"));
     const router = new ToolRouter([
       {
@@ -1305,7 +1422,8 @@ describe("tools/runtimes", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("without platform sandbox context");
-  });
+    },
+  );
 
   test.runIf(process.platform === "linux")(
     "actual exec_command validates linux sandbox helper before dispatch",
@@ -1386,7 +1504,9 @@ describe("tools/runtimes", () => {
     },
   );
 
-  test("actual exec_command denies shell envelopes without a platform helper", async () => {
+  test.runIf(process.platform !== "darwin")(
+    "actual exec_command denies shell envelopes without a platform helper",
+    async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-shell-env-"));
     const execCommand = vi.fn(async () => ({
       output: "ok\n",
@@ -1453,7 +1573,8 @@ describe("tools/runtimes", () => {
     expect(loginShell.isError).toBe(true);
     expect(loginShell.content).toContain("without platform sandbox context");
     expect(execCommand).not.toHaveBeenCalled();
-  });
+    },
+  );
 
   test("actual Write handler obeys per-attempt workspace-write preflight", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-write-"));
@@ -1560,7 +1681,7 @@ describe("tools/runtimes", () => {
       });
     const recordRead = (filePath: string, content: string): void => {
       const fileStats = statSync(filePath);
-      recordSessionRead(sessionId, filePath, {
+      recordSessionRead(sessionId, realpathSync(filePath), {
         content,
         rawContent: content,
         timestamp: fileStats.mtimeMs,
