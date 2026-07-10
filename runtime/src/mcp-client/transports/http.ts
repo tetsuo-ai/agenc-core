@@ -9,6 +9,7 @@
  * @module
  */
 
+import { VERSION } from "../../version.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
@@ -56,7 +57,7 @@ export async function createHttpMCPConnection(
   });
 
   const client = new Client(
-    { name: "agenc-runtime", version: "0.2.0" },
+    { name: "agenc-runtime", version: VERSION },
     {
       capabilities: buildMcpHostClientCapabilities(
         elicitationHandlers === undefined ? "none" : "form-url",

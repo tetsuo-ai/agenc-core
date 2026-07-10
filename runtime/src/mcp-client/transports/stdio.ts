@@ -13,6 +13,7 @@
  *     surface in this subsystem yet.
  */
 
+import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -345,7 +346,7 @@ export async function createStdioMCPConnection(
   const timeout = config.timeout ?? 30_000;
   const transport = createStdioMCPTransport(config, logger);
   const client = new Client(
-    { name: "agenc-runtime", version: "0.2.0" },
+    { name: "agenc-runtime", version: VERSION },
     {
       capabilities: buildMcpHostClientCapabilities(
         elicitationHandlers === undefined ? "none" : "form-url",

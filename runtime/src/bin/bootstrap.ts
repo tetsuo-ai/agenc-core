@@ -1,3 +1,4 @@
+import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -1411,7 +1412,7 @@ export async function bootstrapLocalRuntimeSession(
         const rolloutStore = new RolloutStore({
           cwd: workspaceRoot,
           sessionId: conversationId,
-          agencVersion: "0.2.0",
+          agencVersion: VERSION,
           ...(resumeConversation ? { resume: true } : {}),
           ...(sessionProjectRootMarkers !== undefined
             ? { projectRootMarkers: sessionProjectRootMarkers }
@@ -1422,7 +1423,7 @@ export async function bootstrapLocalRuntimeSession(
           timestamp: new Date().toISOString(),
           cwd: workspaceRoot,
           originator: "agenc-cli",
-          agencVersion: "0.2.0",
+          agencVersion: VERSION,
           model,
           modelProvider: resolvedProvider,
         });
