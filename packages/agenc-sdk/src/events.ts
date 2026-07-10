@@ -49,6 +49,7 @@ export type AgencPromptEvent =
       readonly serverName?: string;
       readonly questions?: readonly JsonObject[];
       readonly request?: JsonObject;
+      readonly clientAction?: JsonObject;
     }
   | {
       readonly type: "status";
@@ -267,6 +268,9 @@ export function promptEventFromNotification(
       kind: "request_user_input",
       requestId: params.requestId,
       questions,
+      ...(isJsonObject(params.clientAction)
+        ? { clientAction: params.clientAction }
+        : {}),
     };
   }
 

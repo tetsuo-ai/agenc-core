@@ -76,11 +76,11 @@ describe("xAI model options", () => {
     expect(getDefaultMainLoopModelSetting()).toBe("grok-4.3");
 
     const options = getModelOptions(false);
-    // The grok picker is now derived from REGISTERED_MODEL_CATALOG. The new
-    // grok-build-0.1 entry leads (highest priority) ahead of the migrated
-    // grok models.
+    // The grok picker is derived from REGISTERED_MODEL_CATALOG, with the
+    // current frontier model leading the older catalog entries.
     expect(options.map((option) => option.value)).toEqual([
       null,
+      "grok-4.5",
       "grok-build-0.1",
       "grok-4.3",
       "grok-4.20-0309-reasoning",

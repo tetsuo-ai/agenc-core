@@ -131,6 +131,33 @@ Examples: `event.message_chunk`, `event.tool_request`,
 `event.mcp_elicitation_request`, `event.agent_status`,
 `event.session_event`, `commandExec.outputDelta`, realtime deltas.
 
+`initialize.capabilities` can opt an authenticated connection into delivery
+outside ordinary session attachment:
+
+| Capability | Behavior |
+| --- | --- |
+| `portal.mobile.status.push.v1` | Global `event.agent_status` observer feed, deduplicated by physical connection and replayed from bounded session status buffers |
+| `portal.ledger.solana.sign.v1` | Single-consumer `event.user_input_request.clientAction` delivery to the newest capable phone, with bounded live-session replay |
+
+Generic SDK clients advertise no such capabilities by default. Conversation
+messages and transcripts remain attachment-bound.
+
+`tool.approve`, `tool.deny`, and `elicitation.respond` are preemptive dispatch
+methods: they run outside the ordinary per-connection FIFO so they can unblock
+its head request. They are not overload-exempt. `request.cancel` and other
+control messages keep their existing overload-control semantics.
+
+`tool.approve` accepts `allowAllToolsForSession: true` only with
+`scope: "session"`. Core switches the owning live session to
+`bypassPermissions` before releasing the pending request and rolls the mode
+back if settlement fails or the request disappeared. Without the flag,
+session scope remains the narrower equivalent-rule cache.
+
+`event.user_input_request.clientAction` and
+`elicitation.respond.clientResult` carry typed client-only interactions. The
+current Ledger action is documented in
+[`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
+
 ## What the daemon owns
 
 - **Sessions** — create/attach, multi-turn transcripts, rollouts under the
@@ -140,6 +167,8 @@ Examples: `event.message_chunk`, `event.tool_request`,
   `[agent.budget]`, not the cumulative ledger).
 - **Permissions** — routes permission requests to the attached client; print
   mode / unattended embeds deny when no handler is registered.
+- **Capability delivery** — global mobile status observers and single-consumer
+  typed client actions, independent from transcript attachment.
 - **Command exec / PTY** — `commandExec.*` for interactive shell surfaces.
 - **Health & recovery** — `health.*`, startup recovery of in-flight tool
   calls and agent runs (`runtime/src/state/recovery.ts`), pruning policies.

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgenCDelegateBackgroundAgentRunner,
   daemonEventFromUnboundSessionEvent,
+  notificationFromDaemonEvent,
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
 } from "./background-agent-runner.js";
@@ -184,6 +185,44 @@ function makeTopLevelRunner(opts: {
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("preserves the trusted Ledger clientAction through the session-event bridge", () => {
+    const clientAction = {
+      type: "ledger_solana_transfer_v1",
+      source: "agenc-core",
+      targetCapability: "portal.ledger.solana.sign.v1",
+      network: "mainnet-beta",
+      intentId: "ledger-action-1",
+      responseNonce: "response-nonce-ledger-action-1",
+      to: "11111111111111111111111111111111",
+      lamports: "1",
+      expiresAt: "2026-07-10T10:10:00.000Z",
+    };
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      id: "ledger-event",
+      msg: {
+        type: "request_user_input",
+        payload: {
+          requestId: "ledger-request",
+          callId: "ledger-call",
+          turnId: "ledger-turn",
+          questions: [],
+          clientAction,
+        },
+      },
+    });
+
+    expect(daemonEvent).toMatchObject({
+      type: "request_user_input",
+      payload: { clientAction },
+    });
+    expect(
+      notificationFromDaemonEvent("session-1", "agent-1", daemonEvent!),
+    ).toMatchObject({
+      method: "event.user_input_request",
+      params: { sessionId: "session-1", clientAction },
+    });
+  });
+
   it("bridges collab subagent lifecycle session events into daemon session notifications", () => {
     expect(
       daemonEventFromUnboundSessionEvent({

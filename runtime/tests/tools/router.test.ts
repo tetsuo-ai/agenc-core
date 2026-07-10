@@ -56,6 +56,107 @@ function makeInvocation(
 }
 
 describe("ToolRouter", () => {
+  test("@ledger turn fails closed for every non-read-only model tool except the Ledger handoff", async () => {
+    const readExecute = vi.fn(async () => ({ content: "read-ok" }));
+    const writeExecute = vi.fn(async () => ({ content: "write-ok" }));
+    const unclassifiedExecute = vi.fn(async () => ({ content: "unknown-ok" }));
+    const ledgerExecute = vi.fn(async () => ({ content: "ledger-ok" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "safe.read",
+          description: "",
+          inputSchema: {},
+          isReadOnly: true,
+          recoveryCategory: "idempotent",
+          metadata: { mutating: false },
+          execute: readExecute,
+        },
+        supportsParallelToolCalls: true,
+      },
+      {
+        tool: {
+          name: "danger.write",
+          description: "",
+          inputSchema: {},
+          isReadOnly: false,
+          recoveryCategory: "side-effecting",
+          metadata: { mutating: true },
+          execute: writeExecute,
+        },
+        supportsParallelToolCalls: false,
+      },
+      {
+        tool: {
+          name: "unclassified.tool",
+          description: "",
+          inputSchema: {},
+          metadata: { mutating: false },
+          execute: unclassifiedExecute,
+        },
+        supportsParallelToolCalls: false,
+      },
+      {
+        tool: {
+          name: "request_ledger_transfer",
+          description: "",
+          inputSchema: {},
+          isReadOnly: false,
+          recoveryCategory: "interactive",
+          metadata: { mutating: true },
+          execute: ledgerExecute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const session = {
+      eventLog: new EventLog(),
+      services: {},
+      currentRootHumanTurn: () => ({
+        turnId: "turn-ledger",
+        text: "@LEDGER send exactly 1 lamport",
+      }),
+    } as never;
+    const opts = {
+      session,
+      turn: { subId: "turn-ledger" } as never,
+      tracker: {
+        appendFileDiff: () => {},
+        snapshot: () => [],
+        clear: () => {},
+      },
+      approvalPolicy: "never" as const,
+      sandboxMode: "danger_full_access" as const,
+    };
+
+    const read = await router.dispatchModelToolCall(
+      { id: "read", name: "safe.read", arguments: "{}" },
+      opts,
+    );
+    const write = await router.dispatchModelToolCall(
+      { id: "write", name: "danger.write", arguments: "{}" },
+      opts,
+    );
+    const unclassified = await router.dispatchModelToolCall(
+      { id: "unknown", name: "unclassified.tool", arguments: "{}" },
+      opts,
+    );
+    const ledger = await router.dispatchModelToolCall(
+      { id: "ledger", name: "request_ledger_transfer", arguments: "{}" },
+      opts,
+    );
+
+    expect(read).toMatchObject({ content: "read-ok" });
+    expect(write).toMatchObject({ isError: true });
+    expect(write.content).toContain("request_ledger_transfer");
+    expect(unclassified).toMatchObject({ isError: true });
+    expect(ledger).toMatchObject({ content: "ledger-ok" });
+    expect(readExecute).toHaveBeenCalledOnce();
+    expect(writeExecute).not.toHaveBeenCalled();
+    expect(unclassifiedExecute).not.toHaveBeenCalled();
+    expect(ledgerExecute).toHaveBeenCalledOnce();
+  });
+
   test("findSpec matches by full name", () => {
     const router = new ToolRouter([
       { tool: readTool, supportsParallelToolCalls: true },

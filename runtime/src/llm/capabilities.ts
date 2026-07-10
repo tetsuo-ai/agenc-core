@@ -217,10 +217,9 @@ function resolveGrokImageHistory(model: string): boolean {
 }
 
 function resolveGrokReasoningEffort(model: string): boolean {
-  // Only `grok-4.20-multi-agent*` accepts the `reasoning_effort` param;
-  // all other Grok models reject it. Delegate to the single source of
-  // truth so inherited effort is stripped for unsupported models instead
-  // of flowing through to the adapter (which would otherwise reject it).
+  // Delegate the xAI model allowlist to the single source of truth so
+  // supported 4.3/4.5 requests retain their depth control while inherited
+  // effort is stripped from unknown or explicitly non-reasoning models.
   return supportsXaiReasoningEffortParam(model);
 }
 

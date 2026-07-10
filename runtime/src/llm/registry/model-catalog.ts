@@ -74,10 +74,13 @@ const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
 const NO_REASONING_LEVELS = Object.freeze(
   [] as const satisfies readonly ReasoningEffort[],
 );
-// grok-4.20-multi-agent* is the only Grok family that accepts the
-// `reasoning_effort` request parameter (see supportsXaiReasoningEffortParam
-// in structured-output.ts). All other Grok 4 models reason automatically and
-// reject the parameter, so they expose no selectable reasoning levels.
+// Grok 4.3 and 4.5 accept these depth controls. The multi-agent family uses
+// the same values to control agent count rather than thinking depth.
+const GROK_REASONING_LEVELS = Object.freeze([
+  "low",
+  "medium",
+  "high",
+] as const satisfies readonly ReasoningEffort[]);
 const GROK_MULTI_AGENT_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
@@ -259,8 +262,29 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "hide",
     },
     {
+      provider: "grok",
+      model: "grok-4.5",
+      displayName: "Grok 4.5",
+      contextWindow: 500_000,
+      maxContextWindow: 500_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: GROK_REASONING_LEVELS,
+      defaultReasoningLevel: "high",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 30,
+      visibility: "list",
+    },
+    {
       // New model — added as a single registry entry. Sorts first within the
-      // grok family (lowest priority number) so it leads the picker.
+      // pre-4.5 grok family entries.
       provider: "grok",
       model: "grok-build-0.1",
       displayName: "Grok Build 0.1",
@@ -277,7 +301,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: NO_REASONING_LEVELS,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
-      priority: 30,
+      priority: 31,
       visibility: "list",
     },
     {
@@ -300,10 +324,10 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "none",
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none",
-      // grok-4.3 reasons automatically and rejects reasoning_effort.
-      supportedReasoningLevels: NO_REASONING_LEVELS,
+      supportedReasoningLevels: GROK_REASONING_LEVELS,
+      defaultReasoningLevel: "low",
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
-      priority: 31,
+      priority: 32,
       visibility: "list",
     },
     {
@@ -323,7 +347,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: NO_REASONING_LEVELS,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
-      priority: 32,
+      priority: 33,
       visibility: "list",
     },
     {
@@ -343,12 +367,11 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: NO_REASONING_LEVELS,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
-      priority: 33,
+      priority: 34,
       visibility: "list",
     },
     {
-      // The only Grok family that accepts reasoning_effort; keep the
-      // supportsXaiReasoningEffortParam gating intact by exposing levels here.
+      // Here reasoning_effort controls agent count, not reasoning depth.
       provider: "grok",
       model: "grok-4.20-multi-agent-0309",
       displayName: "grok-4.20-multi-agent-0309",
@@ -365,7 +388,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: GROK_MULTI_AGENT_REASONING_LEVELS,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
-      priority: 34,
+      priority: 35,
       visibility: "list",
     },
   ]);

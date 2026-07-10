@@ -934,6 +934,13 @@ async function maybeBridgeDaemonElicitation(
         callId: payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions) as unknown as RequestUserInputEvent["questions"],
+        ...(isJsonObject(payload.clientAction)
+          ? {
+              clientAction: payload.clientAction as unknown as NonNullable<
+                RequestUserInputEvent["clientAction"]
+              >,
+            }
+          : {}),
       });
     } catch {
       response = null;
@@ -1111,6 +1118,9 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
         callId: params.callId,
         turnId: params.turnId,
         questions: jsonObjectArray(params.questions),
+        ...(isJsonObject(params.clientAction)
+          ? { clientAction: params.clientAction }
+          : {}),
       },
     };
   }

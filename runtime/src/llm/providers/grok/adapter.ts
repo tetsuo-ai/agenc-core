@@ -111,6 +111,8 @@ type ProviderFallbackWaitDecision = Extract<
 
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
+  "grok-4.5",
+  "grok-4.5-latest",
   "grok-4-0709",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
@@ -1813,11 +1815,9 @@ export class GrokProvider implements LLMProvider {
     }
     const reasoningEffort =
       options?.reasoningEffort ?? this.config.reasoningEffort;
-    // Only `grok-4.20-multi-agent*` accepts `reasoning_effort`; every other
-    // Grok model rejects it with an API error. Strip the field for
-    // unsupported models (matching the chat-completions wire strip) rather
-    // than throwing, so an inherited/config effort doesn't hard-fail a
-    // request on a model that simply reasons automatically.
+    // Send `reasoning.effort` only for documented xAI models. Strip the field
+    // for unsupported models (matching the chat-completions wire strip) so an
+    // inherited config cannot hard-fail an otherwise valid request.
     if (reasoningEffort && supportsXaiReasoningEffortParam(model)) {
       params.reasoning = { effort: reasoningEffort };
     }

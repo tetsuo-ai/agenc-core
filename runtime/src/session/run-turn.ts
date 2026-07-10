@@ -62,6 +62,10 @@ import {
 } from "../llm/content-conversion.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { safeStringify } from "../tools/types.js";
+import {
+  hasExactLedgerMention,
+  LEDGER_ROOT_TURN_ROUTING_GUIDANCE,
+} from "../elicitation/request-ledger-transfer.js";
 import type {
   CompactionResult,
   RuntimeMessage,
@@ -122,6 +126,7 @@ import {
   modelContextWindow,
   toTurnContextItem,
   type ModelInfo,
+  type SessionSource,
   type TurnContext,
   type TurnContextItem,
 } from "./turn-context.js";
@@ -182,6 +187,12 @@ export interface RunTurnOptions {
    * internal meta turns such as autonomous keepalive ticks.
    */
   readonly displayUserMessage?: string | null;
+  /**
+   * Trusted root-human text for runtimes that render the transcript outside
+   * runTurn and therefore pass displayUserMessage:null to suppress duplicates.
+   * Never model-supplied; daemon turn drivers derive it from Session.submit.
+   */
+  readonly rootHumanTurnText?: string;
   /**
    * GOAL #4b Stage 1 — durable-turn resume. When set, the kernel re-enters
    * the drain loop CONTINUING an interrupted turn from the last completed
@@ -1030,6 +1041,11 @@ function isInlineQueuedCommand(command: QueuedCommand): boolean {
 
 function isMainThreadQueueSource(querySource: string): boolean {
   return querySource.startsWith("repl_main_thread") || querySource === "sdk";
+}
+
+function isSubagentSessionSource(source: SessionSource): boolean {
+  return source === "cli_subagent" ||
+    (typeof source === "object" && source.kind === "subagent");
 }
 
 function textFromQueuedCommandValue(value: QueuedCommand["value"]): string {
@@ -3192,6 +3208,28 @@ export async function* runTurnKernel(
     userMessage,
     pendingInputMessages,
   );
+  const authorizationQuerySource = sessionQuerySourceForTurn(
+    session,
+    opts.querySource,
+  );
+  // Some compatibility adapters used by compaction/tests provide only the
+  // session-owned runTurn surface. A missing source is the legacy root-session
+  // shape; only an explicitly subagent source must lose root-human authority.
+  const configuredSessionSource = session.sessionConfiguration?.sessionSource;
+  const isRootHumanTurn =
+    isMainThreadQueueSource(authorizationQuerySource) &&
+    (configuredSessionSource === undefined ||
+      !isSubagentSessionSource(configuredSessionSource)) &&
+    (opts.rootHumanTurnText !== undefined || opts.displayUserMessage !== null);
+  const rootHumanTurnText = isRootHumanTurn
+    ? (opts.rootHumanTurnText ??
+      opts.displayUserMessage ??
+      userContentDisplayText(userContent))
+    : undefined;
+  const ledgerRootTurnGuidance =
+    rootHumanTurnText !== undefined && hasExactLedgerMention(rootHumanTurnText)
+      ? LEDGER_ROOT_TURN_ROUTING_GUIDANCE
+      : undefined;
 
   // agenc runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
@@ -3225,6 +3263,7 @@ export async function* runTurnKernel(
     turnContext: ctx,
     autoStart: false,
     startedAtMs: turnStartedAt,
+    ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
   });
   const codeModeTurnWorker = startCodeModeTurnWorker(session);
   const signalCleanups: Array<() => void> = [];
@@ -3243,6 +3282,9 @@ export async function* runTurnKernel(
         emitTurnAborted,
         referenceContextItem,
         sessionOwner,
+        ...(ledgerRootTurnGuidance !== undefined
+          ? { ledgerRootTurnGuidance }
+          : {}),
         signalCleanups,
       },
     );
@@ -3272,6 +3314,8 @@ interface RunTurnKernelCommons {
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
   };
+  /** Trusted, non-durable system guidance scoped to an exact root @ledger turn. */
+  readonly ledgerRootTurnGuidance?: string;
   // Disposers for the merged abort signals built inside the kernel. The
   // outer `runTurnKernel` finally invokes these so listeners on long-lived
   // signals (the session-level abort) are removed on every turn exit.
@@ -3308,9 +3352,17 @@ async function* runTurnKernelInner(
       : undefined;
   const rawSystemPrompt =
     opts.systemPrompt !== undefined ? opts.systemPrompt : ctxBaseInstructions;
+  const systemPromptWithTrustedTurnGuidance =
+    commons.ledgerRootTurnGuidance === undefined
+      ? rawSystemPrompt
+      : [rawSystemPrompt, commons.ledgerRootTurnGuidance]
+          .filter((value): value is string =>
+            typeof value === "string" && value.length > 0
+          )
+          .join("\n\n");
   const effectiveSystemPrompt =
-    rawSystemPrompt !== undefined
-      ? resolveModelInstructionsForTurn(ctx, rawSystemPrompt)
+    systemPromptWithTrustedTurnGuidance !== undefined
+      ? resolveModelInstructionsForTurn(ctx, systemPromptWithTrustedTurnGuidance)
       : undefined;
   const { system, prior, user } = buildSeedMessages(
     effectiveSystemPrompt !== undefined
@@ -4399,6 +4451,7 @@ export function runTurn(
         signal?: AbortSignal;
         querySource?: string;
         displayUserMessage?: string | null;
+        rootHumanTurnText?: string;
       },
     ) => AsyncGenerator<PhaseEvent, Terminal>;
   };
@@ -4410,6 +4463,7 @@ export function runTurn(
       signal: opts.signal,
       querySource: opts.querySource,
       displayUserMessage: opts.displayUserMessage,
+      rootHumanTurnText: opts.rootHumanTurnText,
     });
   }
   return runTurnKernel(session, ctx, userMessage, opts);

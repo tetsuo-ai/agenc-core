@@ -245,6 +245,28 @@ describe("tasks.ts primitives", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("Session.spawnTask registry lifecycle", () => {
+  it("binds root human text to the exact active turn and drops it on replacement", async () => {
+    const session = buildSession();
+    await session.spawnTask({
+      subId: "turn-ledger",
+      kind: "regular",
+      rootHumanTurnText: "@ledger send 1 lamport",
+    });
+    expect(session.currentRootHumanTurn()).toEqual({
+      turnId: "turn-ledger",
+      text: "@ledger send 1 lamport",
+    });
+    await expect(
+      session.claimLedgerTransferAuthorization("turn-ledger"),
+    ).resolves.toBe(true);
+    await expect(
+      session.claimLedgerTransferAuthorization("turn-ledger"),
+    ).resolves.toBe(false);
+
+    await session.spawnTask({ subId: "turn-next", kind: "regular" });
+    expect(session.currentRootHumanTurn()).toBeNull();
+  });
+
   it("starts SessionTask.run when a concrete task is supplied", async () => {
     const session = buildSession();
     let ran = false;

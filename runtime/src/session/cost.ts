@@ -169,6 +169,14 @@ const COST_TIER_GROK_4X_NON_REASONING: Readonly<ModelCostEntry> = Object.freeze(
   webSearchUsdPerRequest: 0.01,
 });
 
+/** Official Grok 4.5 token pricing, including prompt-cache reads. */
+const COST_TIER_GROK_45: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.002,
+  outputUsdPer1K: 0.006,
+  cachedInputUsdPer1K: 0.0005,
+  webSearchUsdPerRequest: 0.01,
+});
+
 /** Register a grok model under both its `xai:`-qualified and bare slug. */
 function grokCostAliases(
   model: string,
@@ -220,10 +228,12 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       reasoningOutputUsdPer1K: 0.012,
       webSearchUsdPerRequest: 0.01,
     },
-    // Default + catalog grok variants that do NOT bill a reasoning surcharge.
+    // Default + catalog grok variants that do NOT bill a separate reasoning
+    // surcharge. Grok 4.5 reasoning tokens are covered by its output rate.
     // grok-4.3 is the grok provider default (provider-info.ts); pricing these
     // explicitly stops the blanket grok-4* → reasoning collapse from charging
     // them the reasoning rate and skewing dollar_cap budget enforcement.
+    ...grokCostAliases("grok-4.5", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.3", COST_TIER_GROK_4X_NON_REASONING),
     ...grokCostAliases("grok-build-0.1", COST_TIER_GROK_4X_NON_REASONING),
     ...grokCostAliases(
@@ -502,6 +512,7 @@ function canonicalModel(model: string): string {
   // Non-reasoning grok-4.x variants are priced explicitly below; route them to
   // their own keys so they are NOT collapsed onto the reasoning entry (which
   // would wrongly add the reasoning surcharge and skew dollar_cap budgets).
+  if (unqualified.startsWith("grok-4.5")) return "grok-4.5";
   if (unqualified.startsWith("grok-4.3")) return "grok-4.3";
   if (unqualified.startsWith("grok-4.20-0309-non-reasoning")) {
     return "grok-4.20-0309-non-reasoning";

@@ -12,6 +12,12 @@ Node ≥ 25 · ESM only · plain `tsc` build · no runtime dependencies.
 | `promptViaSubprocess()` | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process. |
 | `client.request(method, params)` | Raw typed JSON-RPC for all **41** public daemon methods (mirrored in `./protocol`). |
 
+The protocol mirror preserves trusted `event.user_input_request.clientAction`
+objects, typed `elicitation.respond.clientResult` receipts,
+`ToolApproveParams.allowAllToolsForSession`, and remote subscription-tier
+identity fields. `connect()` advertises no mobile capabilities by default: it
+does not opt a generic embedder into global status or Ledger signing delivery.
+
 ```js
 import { connect, promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";
 

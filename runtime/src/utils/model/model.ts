@@ -651,6 +651,7 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
       'gemini-3-flash-preview': 'Gemini 3 Flash',
       'gemini-2.5-pro': 'Gemini 2.5 Pro',
+      'grok-4.5': 'Grok 4.5',
       'grok-4.3': 'Grok 4.3',
       'grok-4.20-0309-reasoning': 'Grok 4.20 reasoning',
       'grok-4.20-0309-non-reasoning': 'Grok 4.20 non-reasoning',

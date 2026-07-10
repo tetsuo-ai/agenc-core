@@ -15,14 +15,15 @@
 
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
-import type {
-  AgenCDaemonSessionNotification,
-  JsonObject,
-  SessionAttachResult,
-  SessionDetachParams,
-  SessionDetachResult,
-  SessionTerminateParams,
-  SessionTerminateResult,
+import {
+  AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  type AgenCDaemonSessionNotification,
+  type JsonObject,
+  type SessionAttachResult,
+  type SessionDetachParams,
+  type SessionDetachResult,
+  type SessionTerminateParams,
+  type SessionTerminateResult,
 } from "./protocol/index.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 
@@ -94,7 +95,11 @@ export interface AgenCClientRegistration {
 
 export interface RegisterAgenCClientOptions {
   readonly clientId?: string;
+  /** Physical delivery identity; logical clients on one socket share this key. */
+  readonly deliveryKey?: string;
   readonly send: AgenCClientSend;
+  /** Capabilities authenticated/recorded during this connection's initialize. */
+  readonly capabilities?: JsonObject;
 }
 
 export interface AgenCSessionBroadcastFailure extends JsonObject {
@@ -110,6 +115,7 @@ export interface AgenCSessionBroadcastResult extends JsonObject {
 
 interface MutableClient {
   clientId: string;
+  deliveryKey: string;
   send: AgenCClientSend;
   sessionIds: Set<string>;
   deliveryQueue: Promise<void>;
@@ -130,6 +136,12 @@ interface MutableClient {
    * enqueued for it and it is removed/detached as a slow consumer.
    */
   evicted: boolean;
+  capabilities: Set<string>;
+}
+
+interface BufferedCapabilityEvent {
+  readonly sessionId: string;
+  readonly event: JsonObject;
 }
 
 interface MutableSessionRoute {
@@ -141,6 +153,13 @@ interface MutableSessionRoute {
 interface MultiplexerState {
   clients: Map<string, MutableClient>;
   sessions: Map<string, MutableSessionRoute>;
+  capabilityBuffers: Map<string, BufferedCapabilityEvent[]>;
+  /**
+   * One registering client at a time may drain a capability replay buffer. This
+   * prevents two phones initializing concurrently from both receiving the same
+   * one-shot Ledger action before the first replay delivery settles.
+   */
+  capabilityReplayInFlight: Set<string>;
 }
 
 interface EnqueuedDelivery {
@@ -159,6 +178,8 @@ export class AgenCDaemonClientMultiplexer {
   readonly #state = new AsyncLock<MultiplexerState>({
     clients: new Map(),
     sessions: new Map(),
+    capabilityBuffers: new Map(),
+    capabilityReplayInFlight: new Set(),
   });
 
   constructor(options: AgenCClientMultiplexerOptions) {
@@ -185,7 +206,14 @@ export class AgenCDaemonClientMultiplexer {
     options: RegisterAgenCClientOptions,
   ): Promise<AgenCClientRegistration> {
     const clientId = options.clientId ?? this.#createClientId();
-    return this.#state.with((state) => {
+    const replayEvictedClientIds: string[] = [];
+    const {
+      registration,
+      replay,
+      replayCounts,
+      statusReplay,
+      statusReplayEvents,
+    } = await this.#state.with((state) => {
       if (state.clients.has(clientId)) {
         throw new AgenCClientMultiplexerError(
           "CLIENT_ALREADY_REGISTERED",
@@ -193,17 +221,126 @@ export class AgenCDaemonClientMultiplexer {
         );
       }
 
-      state.clients.set(clientId, {
+      const client: MutableClient = {
         clientId,
+        deliveryKey: options.deliveryKey ?? clientId,
         send: options.send,
         sessionIds: new Set(),
         deliveryQueue: Promise.resolve(),
         pendingDeliveryBytes: 0,
         pendingDeliveryCount: 0,
         evicted: false,
-      });
-      return { clientId };
+        capabilities: advertisedCapabilities(options.capabilities),
+      };
+      state.clients.set(clientId, client);
+
+      const replay: EnqueuedDelivery[] = [];
+      const replayCounts = new Map<string, number>();
+      for (const capability of client.capabilities) {
+        if (state.capabilityReplayInFlight.has(capability)) continue;
+        const buffered = state.capabilityBuffers.get(capability) ?? [];
+        if (buffered.length === 0) continue;
+        state.capabilityReplayInFlight.add(capability);
+        replayCounts.set(capability, buffered.length);
+        for (const item of buffered) {
+          const delivery = enqueueDelivery(
+            client,
+            item.event,
+            this.#maxBufferedBytesPerSession,
+            this.#maxBufferedEventsPerSession,
+            replayEvictedClientIds,
+            false,
+          );
+          if (delivery !== null) replay.push(delivery);
+        }
+      }
+
+      // Mobile status is a fan-out observer capability, not a Ledger-style
+      // single-consumer client action. Replay only status frames from each
+      // session's ordinary bounded buffer; leave transcript/tool events for a
+      // later explicit session.attach. One registering observer leases this
+      // replay batch at a time so concurrent phones cannot both drain it.
+      const statusReplay: EnqueuedDelivery[] = [];
+      const statusReplayEvents = new Map<string, JsonObject[]>();
+      if (
+        client.capabilities.has(AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY) &&
+        !state.capabilityReplayInFlight.has(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        )
+      ) {
+        for (const route of state.sessions.values()) {
+          const bufferedStatuses = route.bufferedEvents.filter(
+            isMobileStatusPushEvent,
+          );
+          if (bufferedStatuses.length === 0) continue;
+          statusReplayEvents.set(route.sessionId, bufferedStatuses);
+          for (const event of bufferedStatuses) {
+            const delivery = enqueueDelivery(
+              client,
+              event,
+              this.#maxBufferedBytesPerSession,
+              this.#maxBufferedEventsPerSession,
+              replayEvictedClientIds,
+              false,
+            );
+            if (delivery !== null) statusReplay.push(delivery);
+          }
+        }
+        if (statusReplay.length > 0) {
+          state.capabilityReplayInFlight.add(
+            AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+          );
+        }
+      }
+      return {
+        registration: { clientId },
+        replay,
+        replayCounts,
+        statusReplay,
+        statusReplayEvents,
+      };
     });
+
+    if (replay.length > 0) {
+      const replayResult = await settleDeliveries(replay);
+      await this.#state.with((state) => {
+        for (const capability of replayCounts.keys()) {
+          state.capabilityReplayInFlight.delete(capability);
+        }
+        if (replayResult.failed.length === 0) {
+          for (const [capability, count] of replayCounts) {
+            const buffered = state.capabilityBuffers.get(capability);
+            if (buffered === undefined) continue;
+            buffered.splice(0, count);
+            if (buffered.length === 0) {
+              state.capabilityBuffers.delete(capability);
+            }
+          }
+        }
+      });
+    }
+
+    if (statusReplay.length > 0) {
+      const statusReplayResult = await settleDeliveries(statusReplay);
+      await this.#state.with((state) => {
+        state.capabilityReplayInFlight.delete(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        );
+        // All-or-nothing removal deliberately favors duplicate replay over
+        // loss. Android deduplicates eventIds and turnIds after reconnect.
+        if (statusReplayResult.failed.length > 0) return;
+        for (const [sessionId, replayedEvents] of statusReplayEvents) {
+          const route = state.sessions.get(sessionId);
+          if (route === undefined) continue;
+          const replayed = new Set(replayedEvents);
+          route.bufferedEvents = route.bufferedEvents.filter(
+            (event) => !replayed.has(event),
+          );
+          deleteRouteIfEmpty(state, route);
+        }
+      });
+    }
+    return registration;
   }
 
   async attachClientToSession(
@@ -314,6 +451,16 @@ export class AgenCDaemonClientMultiplexer {
           state.clients.get(clientId)?.sessionIds.delete(params.sessionId);
         }
       }
+      for (const [capability, buffered] of state.capabilityBuffers) {
+        const retained = buffered.filter(
+          (item) => item.sessionId !== params.sessionId,
+        );
+        if (retained.length === 0) {
+          state.capabilityBuffers.delete(capability);
+        } else if (retained.length !== buffered.length) {
+          state.capabilityBuffers.set(capability, retained);
+        }
+      }
       return terminated;
     });
   }
@@ -369,18 +516,47 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     event: JsonObject,
   ): Promise<AgenCSessionBroadcastResult> {
+    const targetCapability = targetCapabilityFromEvent(event);
+    if (targetCapability !== null) {
+      return this.broadcastCapabilityEvent(
+        sessionId,
+        targetCapability,
+        event,
+      );
+    }
     const evictedClientIds: string[] = [];
-    const deliveries = await this.#state.with(async (state) => {
+    const isMobileStatus = isMobileStatusPushEvent(event);
+    const { deliveries, hadLiveTargets, bufferedWithoutTarget } =
+      await this.#state.with(async (state) => {
       const existingRoute = state.sessions.get(sessionId);
 
-      const activeClientIds =
+      const attachedClients =
         existingRoute === undefined
           ? []
-          : [...existingRoute.clientAttachmentIds.keys()].filter((clientId) =>
-              state.clients.has(clientId),
-            );
+          : [...existingRoute.clientAttachmentIds.keys()]
+              .map((clientId) => state.clients.get(clientId))
+              .filter((client): client is MutableClient => client !== undefined);
 
-      if (activeClientIds.length === 0) {
+      // Status observers are initialized connection-level clients. Union them
+      // with explicit session attachments by PHYSICAL delivery key, preferring
+      // the attached logical client when both represent the same socket.
+      const targetsByDeliveryKey = new Map<string, MutableClient>();
+      if (isMobileStatus) {
+        for (const client of state.clients.values()) {
+          if (
+            !client.evicted &&
+            client.capabilities.has(AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY)
+          ) {
+            targetsByDeliveryKey.set(client.deliveryKey, client);
+          }
+        }
+      }
+      for (const client of attachedClients) {
+        if (!client.evicted) targetsByDeliveryKey.set(client.deliveryKey, client);
+      }
+      const activeClients = [...targetsByDeliveryKey.values()];
+
+      if (activeClients.length === 0) {
         // No attached client to deliver to. Only buffer (creating a route on
         // demand) when the session is still live: a terminated/unknown session
         // can never gain a client to drain the buffer, and its buffer-only
@@ -389,7 +565,11 @@ export class AgenCDaemonClientMultiplexer {
         // unbounded on a long-lived daemon. Dropping late events for a dead
         // session is correct — nobody can ever replay them.
         if (existingRoute === undefined && !(await this.#isSessionLive(sessionId))) {
-          return [];
+          return {
+            deliveries: [] as EnqueuedDelivery[],
+            hadLiveTargets: false,
+            bufferedWithoutTarget: false,
+          };
         }
         const route = existingRoute ?? getOrCreateRoute(state, sessionId);
         bufferSessionEvent(
@@ -398,13 +578,18 @@ export class AgenCDaemonClientMultiplexer {
           this.#maxBufferedEventsPerSession,
           this.#maxBufferedBytesPerSession,
         );
-        return [];
+        return {
+          deliveries: [] as EnqueuedDelivery[],
+          hadLiveTargets: false,
+          bufferedWithoutTarget: true,
+        };
       }
 
-      return activeClientIds
-        .map((clientId) =>
+      return {
+        deliveries: activeClients
+        .map((client) =>
           enqueueDelivery(
-            state.clients.get(clientId),
+            client,
             event,
             this.#maxPendingDeliveryBytesPerClient,
             this.#maxPendingDeliveryCountPerClient,
@@ -413,14 +598,122 @@ export class AgenCDaemonClientMultiplexer {
             true,
           ),
         )
-        .filter((delivery): delivery is EnqueuedDelivery => delivery !== null);
+        .filter((delivery): delivery is EnqueuedDelivery => delivery !== null),
+        hadLiveTargets: true,
+        bufferedWithoutTarget: false,
+      };
     });
 
     await this.#evictSlowClients(evictedClientIds);
+    const settled = await settleDeliveries(deliveries);
 
+    // If every live status delivery failed (or was cap-evicted), retain the
+    // frame in the same bounded per-session buffer used for disconnected
+    // clients. A later observer registration replays it without exposing any
+    // non-status transcript events.
+    if (
+      isMobileStatus &&
+      hadLiveTargets &&
+      !bufferedWithoutTarget &&
+      settled.deliveredClientIds.length === 0
+    ) {
+      await this.#state.with(async (state) => {
+        const existingRoute = state.sessions.get(sessionId);
+        if (
+          existingRoute === undefined &&
+          !(await this.#isSessionLive(sessionId))
+        ) {
+          return;
+        }
+        bufferSessionEvent(
+          existingRoute ?? getOrCreateRoute(state, sessionId),
+          event,
+          this.#maxBufferedEventsPerSession,
+          this.#maxBufferedBytesPerSession,
+        );
+      });
+    }
+
+    return { sessionId, ...settled };
+  }
+
+  /**
+   * Deliver a client action to initialized clients advertising an exact
+   * capability, independently of transcript/session attachment. A Ledger action
+   * is financial one-shot work, so exactly one deterministic client receives a
+   * live delivery: the most recently registered capable client. With no live
+   * target, or when that sole delivery fails, retain a bounded replay buffer for
+   * the next capable reconnect rather than falling through to another phone.
+   */
+  async broadcastCapabilityEvent(
+    sessionId: string,
+    capability: string,
+    event: JsonObject,
+  ): Promise<AgenCSessionBroadcastResult> {
+    const evictedClientIds: string[] = [];
+    const { deliveries, bufferAfterDelivery } = await this.#state.with(
+      async (state) => {
+        // Map iteration order is registration order. Retaining the last match
+        // makes selection deterministic and prefers the newest live phone.
+        let target: MutableClient | undefined;
+        for (const client of state.clients.values()) {
+          if (client.capabilities.has(capability) && !client.evicted) {
+            target = client;
+          }
+        }
+        if (target === undefined) {
+          if (!(await this.#isSessionLive(sessionId))) return {
+            deliveries: [] as EnqueuedDelivery[],
+            bufferAfterDelivery: false,
+          };
+          const buffered = state.capabilityBuffers.get(capability) ?? [];
+          buffered.push({ sessionId, event });
+          boundCapabilityBuffer(
+            buffered,
+            this.#maxBufferedEventsPerSession,
+            this.#maxBufferedBytesPerSession,
+          );
+          state.capabilityBuffers.set(capability, buffered);
+          return {
+            deliveries: [] as EnqueuedDelivery[],
+            bufferAfterDelivery: false,
+          };
+        }
+        const delivery = enqueueDelivery(
+          target,
+          event,
+          this.#maxPendingDeliveryBytesPerClient,
+          this.#maxPendingDeliveryCountPerClient,
+          evictedClientIds,
+          true,
+        );
+        return {
+          deliveries: delivery === null ? [] : [delivery],
+          // A cap-triggered eviction returns no delivery. Preserve the action
+          // just like an asynchronous socket-send failure below.
+          bufferAfterDelivery: delivery === null,
+        };
+      },
+    );
+    await this.#evictSlowClients(evictedClientIds);
+    const result = await settleDeliveries(deliveries);
+    if (bufferAfterDelivery || result.failed.length > 0) {
+      await this.#state.with(async (state) => {
+        if (!(await this.#isSessionLive(sessionId))) return [];
+        const buffered = state.capabilityBuffers.get(capability) ?? [];
+        buffered.push({ sessionId, event });
+        boundCapabilityBuffer(
+          buffered,
+          this.#maxBufferedEventsPerSession,
+          this.#maxBufferedBytesPerSession,
+        );
+        state.capabilityBuffers.set(capability, buffered);
+        return [];
+      });
+    }
     return {
       sessionId,
-      ...(await settleDeliveries(deliveries)),
+      ...result,
     };
   }
 
@@ -643,6 +936,61 @@ function bufferSessionEvent(
     );
   }
   evictBufferedEventsByBytes(route.bufferedEvents, maxBufferedBytes);
+}
+
+function advertisedCapabilities(capabilities: JsonObject | undefined): Set<string> {
+  if (capabilities === undefined) return new Set();
+  return new Set(
+    Object.entries(capabilities)
+      .filter(([, enabled]) => enabled === true)
+      .map(([capability]) => capability),
+  );
+}
+
+function isMobileStatusPushEvent(event: JsonObject): boolean {
+  return event.method === "event.agent_status";
+}
+
+function targetCapabilityFromEvent(event: JsonObject): string | null {
+  if (event.method !== "event.user_input_request") return null;
+  const params = event.params;
+  if (params === null || typeof params !== "object" || Array.isArray(params)) {
+    return null;
+  }
+  const clientAction = (params as JsonObject).clientAction;
+  if (
+    clientAction === null ||
+    typeof clientAction !== "object" ||
+    Array.isArray(clientAction)
+  ) {
+    return null;
+  }
+  const targetCapability = (clientAction as JsonObject).targetCapability;
+  return (clientAction as JsonObject).type === "ledger_solana_transfer_v1" &&
+    typeof targetCapability === "string" &&
+    targetCapability.length > 0
+    ? targetCapability
+    : null;
+}
+
+function boundCapabilityBuffer(
+  buffered: BufferedCapabilityEvent[],
+  maxBufferedEvents: number,
+  maxBufferedBytes: number,
+): void {
+  if (buffered.length > maxBufferedEvents) {
+    buffered.splice(0, buffered.length - maxBufferedEvents);
+  }
+  if (maxBufferedBytes <= 0 || buffered.length === 0) return;
+  let total = buffered.reduce(
+    (sum, item) => sum + bufferedEventByteSize(item.event),
+    0,
+  );
+  while (total > maxBufferedBytes && buffered.length > 1) {
+    const removed = buffered.shift();
+    if (removed === undefined) break;
+    total -= bufferedEventByteSize(removed.event);
+  }
 }
 
 /**

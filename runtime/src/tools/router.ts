@@ -104,6 +104,10 @@ import {
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
 import { withSignedAllowedRoots } from "./system/filesystem.js";
+import {
+  hasExactLedgerMention,
+  REQUEST_LEDGER_TRANSFER_TOOL_NAME,
+} from "../elicitation/request-ledger-transfer.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -493,6 +497,7 @@ export class ToolRouter {
         isError: true,
       };
     }
+
     try {
       // SECURITY: strip any `__agenc*` keys reaching this dispatch
       // boundary (e.g. code_mode js_repl helper calls). These are a
@@ -716,6 +721,27 @@ export class ToolRouter {
     if (!spec) {
       return {
         content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
+        isError: true,
+      };
+    }
+
+    if (ledgerTurnBlocksTool(opts, spec.tool)) {
+      const message =
+        `@ledger routes this turn's transfer through ${REQUEST_LEDGER_TRANSFER_TOOL_NAME}; ` +
+        `blocked non-read-only tool ${spec.tool.name}`;
+      await recordToolPolicyAudit(opts, {
+        decision: "denied",
+        source: "ledger-turn-policy",
+        reasonCode: "ledger_turn_non_read_only_tool_denied",
+        toolName: spec.tool.name,
+        callId: toolCall.id,
+      });
+      emitErrorEvent(opts.session.eventLog, toolCall.id, {
+        cause: "ledger_turn_non_read_only_tool_denied",
+        message,
+      });
+      return {
+        content: `<tool_use_error>${message}</tool_use_error>`,
         isError: true,
       };
     }
@@ -1146,6 +1172,37 @@ export class ToolRouter {
       typeof toolName === "string" ? toolName : nameDisplay(toolName),
     );
   }
+}
+
+function ledgerTurnBlocksTool(
+  opts: LiveToolDispatchOptions,
+  tool: Tool,
+): boolean {
+  const session = opts.session as Session & {
+    currentRootHumanTurn?: () => {
+      readonly turnId: string;
+      readonly text: string;
+    } | null;
+  };
+  const humanTurn = session.currentRootHumanTurn?.();
+  if (
+    humanTurn === null ||
+    humanTurn === undefined ||
+    humanTurn.turnId !== opts.turn.subId ||
+    !hasExactLedgerMention(humanTurn.text)
+  ) {
+    return false;
+  }
+  if (tool.name === REQUEST_LEDGER_TRANSFER_TOOL_NAME) return false;
+
+  // Fail closed: an explicit isReadOnly=true is the minimum trustworthy
+  // classification. Any contradictory mutating/side-effect metadata wins.
+  return !(
+    tool.isReadOnly === true &&
+    tool.metadata?.mutating !== true &&
+    tool.recoveryCategory !== "side-effecting" &&
+    tool.recoveryCategory !== "interactive"
+  );
 }
 
 function directDispatchTurnId(invocation: ToolInvocation): string {

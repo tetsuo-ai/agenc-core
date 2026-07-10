@@ -237,6 +237,60 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it.each(["tool.approve", "tool.deny", "elicitation.respond"])(
+    "dispatches %s ahead of the in-flight message it must unblock",
+    async (decisionMethod) => {
+      const events: string[] = [];
+      let releaseMessage: (() => void) | undefined;
+      let resolveStarted: () => void = () => {};
+      const messageStarted = new Promise<void>((resolve) => {
+        resolveStarted = resolve;
+      });
+      const server = new AgenCWebSocketServer({
+        onMessage: async (message) => {
+          if (message.method === "message.send") {
+            events.push("message:start");
+            resolveStarted();
+            await new Promise<void>((resolve) => {
+              releaseMessage = resolve;
+            });
+            events.push("message:end");
+          } else if (message.method === decisionMethod) {
+            events.push(decisionMethod);
+          }
+        },
+      });
+
+      const address = await server.listen();
+      const client = new WebSocket(address.url);
+      await once(client, "open");
+      client.send('{"jsonrpc":"2.0","id":1,"method":"message.send"}');
+      await messageStarted;
+      client.send(
+        JSON.stringify({
+          jsonrpc: JSON_RPC_VERSION,
+          id: 2,
+          method: decisionMethod,
+        }),
+      );
+
+      await delay(40);
+      const eventsWhileMessageBlocked = [...events];
+      releaseMessage?.();
+      await delay(40);
+
+      expect(eventsWhileMessageBlocked).toEqual([
+        "message:start",
+        decisionMethod,
+      ]);
+      expect(events).toEqual(["message:start", decisionMethod, "message:end"]);
+
+      client.close();
+      await nextClose(client);
+      await server.close();
+    },
+  );
+
   it("rejects normal requests beyond the per-connection queue cap", async () => {
     let releaseFirst: (() => void) | undefined;
     let resolveStarted: () => void = () => {};
@@ -462,17 +516,23 @@ describe("AgenC websocket app-server transport", () => {
     await neverStarted.close();
 
     const closedConnectionIds: number[] = [];
+    let resolveServerClose: () => void = () => {};
+    const serverClose = new Promise<void>((resolve) => {
+      resolveServerClose = resolve;
+    });
     const server = new AgenCWebSocketServer({
       onMessage: () => {},
       onConnectionClosed: (connectionId) => {
         closedConnectionIds.push(connectionId);
+        resolveServerClose();
       },
     });
     const address = await server.listen();
     const client = new WebSocket(address.url);
     await once(client, "open");
+    const clientClose = nextClose(client);
     client.close();
-    await nextClose(client);
+    await Promise.all([clientClose, serverClose]);
 
     expect(closedConnectionIds).toEqual([1]);
     await server.close();

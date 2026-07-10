@@ -68,6 +68,7 @@ import {
 } from "./structured-output-tool.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
+import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionResult,
@@ -3097,6 +3098,7 @@ export function createModelFacingTools(
     createNotebookReadTool(opts),
     createNotebookEditTool(opts),
     createLspTool(opts),
+    createRequestLedgerTransferTool(opts),
     createRequestUserInputTool(opts),
     ...createPlanAndMessageTools(opts),
     ...createTaskTools(opts),

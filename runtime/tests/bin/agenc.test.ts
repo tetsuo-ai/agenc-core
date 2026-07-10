@@ -574,9 +574,9 @@ describe("initializeCliRuntime", () => {
 
 describe("PROVIDER_MODEL_CATALOG", () => {
   it("advertises grok models including the default grok-4.3", () => {
-    // The grok catalog is now derived from REGISTERED_MODEL_CATALOG; the new
-    // grok-build-0.1 entry leads ahead of the previously hand-listed models.
+    // The grok catalog is derived from REGISTERED_MODEL_CATALOG.
     expect(PROVIDER_MODEL_CATALOG.grok).toEqual([
+      "grok-4.5",
       "grok-build-0.1",
       "grok-4.3",
       "grok-4.20-0309-reasoning",

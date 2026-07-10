@@ -115,9 +115,9 @@ export function assertProviderStructuredOutputCompatibility(input: {
 /**
  * Fail-closed gate for the xAI `reasoning_effort` request parameter.
  *
- * Per xAI docs, only `grok-4.20-multi-agent*` accepts `reasoning_effort`
- * (and there it controls agent count, not thinking depth). Every other
- * current Grok 4 model returns an API error when the field is sent.
+ * Per xAI docs, Grok 4.3 and Grok 4.5 accept `reasoning_effort` as a
+ * reasoning-depth control. `grok-4.20-multi-agent*` accepts the same field
+ * as an agent-count control. Unknown model families remain fail-closed.
  *
  * Rather than let the request hit xAI and bounce with a provider error
  * that the tool loop would then bake into history (wasted round-trip,
@@ -138,7 +138,7 @@ export function assertXaiReasoningEffortCompatibility(input: {
   }
   throw new LLMProviderError(
     input.providerName,
-    `xAI reasoning_effort is only supported on grok-4.20-multi-agent models; requested ${input.model ?? "unknown model"}. Remove reasoningEffort from the llm config or switch to a multi-agent variant.`,
+    `xAI reasoning_effort is not supported by ${input.model ?? "unknown model"}. Remove reasoningEffort from the llm config or switch to Grok 4.3, Grok 4.5, or a Grok 4.20 multi-agent variant.`,
     400,
   );
 }

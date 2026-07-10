@@ -52,8 +52,12 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   Design: [`docs/design/budget-enforcement.md`](docs/design/budget-enforcement.md).
 - **Guided onboarding** — `agenc onboard` plus acts: `identity`, `channel`,
   `autonomy`, `recap` (personas, channels, budget/heartbeat/webhooks).
-- **Remote control** — pair a computer to the AgenC phone app
-  (`agenc remote on|off|status`). See [`docs/remote-control.md`](docs/remote-control.md).
+- **Remote control** — pair iOS or Android with `agenc remote on|off|status`;
+  co-drive chats, receive background completion/attention events, and settle
+  permissions from the phone. Android can route an explicit, physically
+  approved `@ledger` SOL transfer to a Ledger Flex. See
+  [`docs/remote-control.md`](docs/remote-control.md) and the
+  [Ledger security contract](docs/security/mobile-ledger-transfer.md).
 - **Built-in tools** — Bash, file read/write/edit, transactional `apply_patch`,
   web fetch/search, LSP, MCP, sub-agents; read-before-write and atomic-patch safety.
 - **MCP** — outbound MCP client and MCP server (`agenc mcp serve|…`), including
@@ -63,7 +67,9 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 - **In-terminal workbench** — project explorer, code preview, and editable
   `BUFFER` (embedded `nvim --embed` preferred). See
   [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md).
-- **16 built-in providers** — default **grok** / model **grok-4.3**; also
+- **16 built-in providers** — default **grok** / model **grok-4.3**; selectable
+  **Grok 4.5** adds a 500k context catalog entry with low/medium/high reasoning
+  (high by default for that model), vision, tools, and structured output; also
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
   deepseek, gemini, mistral, nvidia-nim, minimax, github, amazon-bedrock, agenc.
 - **Embedding SDK** — `@tetsuo-ai/agenc-sdk` for socket / subprocess embedding.
@@ -300,6 +306,12 @@ Permission modes gate shell and file mutation; OS sandbox is opt-in. Mutating
 file tools enforce read-before-write / mtime checks; `apply_patch` is
 transactional. Optional SLM transaction guard for Solana-like tool calls:
 [`docs/security/slm-transaction-guard.md`](docs/security/slm-transaction-guard.md).
+
+Restricted runtime modes keep broad read access while `workspace_write`
+continues to constrain writes to the workspace and approved temporary paths.
+Explicit deny-read rules still override that read baseline. Mobile Ledger
+requests add a separate current-turn, one-shot route plus physical device
+approval; they do not weaken filesystem or generic tool approval rules.
 
 Service templates under `packaging/` run `agenc daemon start --foreground`.
 SBOM: `npm run sbom`, `npm run check:sbom`.

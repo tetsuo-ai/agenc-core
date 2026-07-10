@@ -248,6 +248,60 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
+  it.each(["tool.approve", "tool.deny", "elicitation.respond"])(
+    "dispatches %s ahead of the in-flight message it must unblock",
+    async (decisionMethod) => {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const events: string[] = [];
+      let releaseMessage: (() => void) | undefined;
+      let resolveStarted: () => void = () => {};
+      const messageStarted = new Promise<void>((resolve) => {
+        resolveStarted = resolve;
+      });
+      const transport = new AgenCStdioTransport({
+        input,
+        output,
+        onMessage: async (message) => {
+          if (message.method === "message.send") {
+            events.push("message:start");
+            resolveStarted();
+            await new Promise<void>((resolve) => {
+              releaseMessage = resolve;
+            });
+            events.push("message:end");
+          } else if (message.method === decisionMethod) {
+            events.push(decisionMethod);
+          }
+        },
+      });
+      transport.start();
+
+      input.write('{"jsonrpc":"2.0","id":1,"method":"message.send"}\n');
+      await messageStarted;
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: JSON_RPC_VERSION,
+          id: 2,
+          method: decisionMethod,
+        })}\n`,
+      );
+
+      await delay(20);
+      const eventsWhileMessageBlocked = [...events];
+      releaseMessage?.();
+      await delay(20);
+
+      expect(eventsWhileMessageBlocked).toEqual([
+        "message:start",
+        decisionMethod,
+      ]);
+      expect(events).toEqual(["message:start", decisionMethod, "message:end"]);
+
+      await transport.close();
+    },
+  );
+
   it("rejects normal requests beyond the per-connection queue cap", async () => {
     const input = new PassThrough();
     const output = new PassThrough();

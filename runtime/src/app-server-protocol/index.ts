@@ -17,6 +17,7 @@
 
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
+  AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   JSON_RPC_VERSION,
   type AgentCreateParams,
   type AgentListParams,
@@ -65,6 +66,7 @@ export type AgenCPortalMethod = (typeof AGENC_PORTAL_METHODS)[number];
 export const AGENC_PORTAL_CLIENT_CAPABILITIES = [
   "portal.dashboard.read",
   "portal.mobile.status.read",
+  AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   "portal.auth.read",
   "portal.auth.login",
   "portal.auth.logout",
@@ -83,6 +85,7 @@ export type AgenCPortalClientCapability =
 export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.dashboard.read": true,
   "portal.mobile.status.read": true,
+  [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true,
   "portal.auth.read": true,
   "portal.auth.login": true,
   "portal.auth.logout": true,

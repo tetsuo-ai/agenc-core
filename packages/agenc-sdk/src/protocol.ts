@@ -282,6 +282,12 @@ export interface ToolApproveParams extends JsonObject {
   readonly sessionId: string;
   readonly requestId: string;
   readonly scope?: "once" | "session" | "agent";
+  /**
+   * Promote this approval to bypass-permissions mode for the owning daemon
+   * session. This is intentionally opt-in: plain `scope: "session"` keeps its
+   * existing, narrower cache semantics for semantically-equivalent calls.
+   */
+  readonly allowAllToolsForSession?: boolean;
   readonly exitPlan?: ExitPlanApprovalPayload;
 }
 
@@ -641,6 +647,7 @@ export interface AuthWhoamiResult extends JsonObject {
   readonly authenticated: boolean;
   readonly provider?: string;
   readonly identity?: JsonObject;
+  readonly subscriptionTier?: "free" | "pro" | "team" | "enterprise";
 }
 
 export interface AuthLoginResult extends JsonObject {
@@ -736,6 +743,7 @@ export interface EventUserInputRequestParams extends AgencEventBaseParams {
   readonly callId: string;
   readonly turnId: string;
   readonly questions: readonly JsonObject[];
+  readonly clientAction?: JsonObject;
 }
 
 export interface EventMcpElicitationRequestParams extends AgencEventBaseParams {

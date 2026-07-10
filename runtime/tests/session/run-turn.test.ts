@@ -603,6 +603,82 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     );
   });
 
+  test("compat adapter preserves trusted root-human text when transcript emission is suppressed", async () => {
+    const delegatedOptions: unknown[] = [];
+    const session = {
+      runTurn: (
+        _message: string | readonly LLMContentPart[],
+        options: unknown,
+      ) => {
+        delegatedOptions.push(options);
+        return (async function* (): AsyncGenerator<never, Terminal> {
+          return { reason: "completed" };
+        })();
+      },
+    } as unknown as Session;
+
+    await drain(
+      runTurn(session, mkCtx(), "@ledger send 1 lamport", {
+        querySource: "sdk",
+        displayUserMessage: null,
+        rootHumanTurnText: "@ledger send 1 lamport",
+      }),
+    );
+
+    expect(delegatedOptions).toHaveLength(1);
+    expect(delegatedOptions[0]).toMatchObject({
+      querySource: "sdk",
+      displayUserMessage: null,
+      rootHumanTurnText: "@ledger send 1 lamport",
+    });
+  });
+
+  test("adds trusted Ledger routing guidance only for an exact root-human @ledger turn", async () => {
+    const captureSystemPrompt = async (rootHumanTurnText: string): Promise<string> => {
+      const seenMessages: LLMMessage[][] = [];
+      const provider: LLMProvider = {
+        ...mkProvider({ content: "done" }),
+        chatStream: async (messages) => {
+          seenMessages.push(messages.map((message) => ({ ...message })));
+          return {
+            content: "done",
+            toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      };
+      const { session } = mkSession({ provider, registry: mkRegistry() });
+      const ctx = mkCtx();
+      (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
+        "BASE_SYSTEM_INSTRUCTIONS";
+      await drain(runTurn(session, ctx, rootHumanTurnText, {
+        querySource: "sdk",
+        displayUserMessage: null,
+        rootHumanTurnText,
+      }));
+      return seenMessages[0]
+        ?.filter((message) => message.role === "system")
+        .map(testMessageText)
+        .join("\n") ?? "";
+    };
+
+    const routed = await captureSystemPrompt(
+      "@ledger send 1 SOL to 11111111111111111111111111111111",
+    );
+    expect(routed).toContain("BASE_SYSTEM_INSTRUCTIONS");
+    expect(routed).toContain("call request_ledger_transfer exactly once");
+    expect(routed).toContain("1 SOL = 1,000,000,000 lamports");
+    expect(routed).toContain("never describe submitted as confirmed");
+
+    const ordinary = await captureSystemPrompt(
+      "describe ledger hardware without routing a transfer",
+    );
+    expect(ordinary).toContain("BASE_SYSTEM_INSTRUCTIONS");
+    expect(ordinary).not.toContain("request_ledger_transfer");
+  });
+
   test("session memory post-sampling uses prepared context and warns on failure", async () => {
     const ctx = mkCtx();
     (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
