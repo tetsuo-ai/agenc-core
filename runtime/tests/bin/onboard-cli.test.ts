@@ -120,7 +120,8 @@ describe("onboard status/reset against a temp home", () => {
     const text = formatOnboardStatusText(report);
     expect(text).toContain("completed (2026-07-01T00:00:00.000Z)");
     expect(text).toContain("Provider:  grok (grok-4)");
-    expect(text).toContain("Re-run the wizard with: agenc onboard");
+    // Wizard complete + no acts done → the status points at the next act.
+    expect(text).toContain("Next: agenc onboard identity");
   });
 
   test("status --json emits the report as JSON via the runner", async () => {

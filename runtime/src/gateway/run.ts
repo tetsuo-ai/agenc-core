@@ -531,7 +531,8 @@ export async function startGateway(
     adapters.push(adapter);
   }
 
-  // A heartbeat-only run (proactive ticks, no channel) is valid.
+  // A heartbeat-only run (proactive ticks, no channel) is valid, and so is
+  // a hooks-only run (the webhook endpoint is a trigger surface).
   const heartbeatRequested =
     options.heartbeat === true ||
     resolveHeartbeatPolicy(
@@ -539,9 +540,11 @@ export async function startGateway(
         .heartbeat,
       env,
     ).enabled;
-  if (adapters.length === 0 && !heartbeatRequested) {
+  const hooksRequested =
+    options.hooks === true || loaded.hooks?.enabled === true;
+  if (adapters.length === 0 && !heartbeatRequested && !hooksRequested) {
     throw new Error(
-      "gateway run: no channels enabled — pass --stdio, --webchat, --heartbeat, set AGENC_TELEGRAM_BOT_TOKEN, or configure a channel",
+      "gateway run: no channels enabled — pass --stdio, --webchat, --heartbeat, --hooks, set AGENC_TELEGRAM_BOT_TOKEN, or configure a channel",
     );
   }
 
