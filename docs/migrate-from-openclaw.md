@@ -87,7 +87,12 @@ Guided scaffold + live ritual: `agenc onboard identity`.
 
 ## What you lose today (roadmap, in priority order)
 
-Browser automation, and channel breadth beyond
-Telegram/Discord/Slack/WebChat/stdio (Signal, WhatsApp). If any of these is
-your daily driver, run both: several of the gaps are next on the roadmap, and
-the daemon architecture is built for exactly those clients.
+Channel breadth beyond Telegram/Discord/Slack/WebChat/stdio (Signal, WhatsApp).
+If either is your daily driver, run both: several of the gaps are next on the
+roadmap, and the daemon architecture is built for exactly those clients.
+
+Browser automation is **now shipped** — the `Browser` tool drives an isolated
+Chromium over a CDP pipe with accessibility-ref actions (navigate, click, type,
+screenshot, tabs), and every request is routed through an SSRF proxy that blocks
+private/loopback/metadata addresses by default. Unlike OpenClaw's, it runs
+inside AgenC's permission and sandbox model.

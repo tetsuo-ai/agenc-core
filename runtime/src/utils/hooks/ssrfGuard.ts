@@ -130,7 +130,7 @@ function isBlockedV6(address: string): boolean {
  * well-formed (the caller has already validated with isIP, so this is
  * defensive).
  */
-function expandIPv6Groups(addr: string): number[] | null {
+export function expandIPv6Groups(addr: string): number[] | null {
   // Handle trailing dotted-decimal IPv4 (e.g. ::ffff:169.254.169.254).
   // Replace it with its two hex groups so the rest of the expansion is uniform.
   let tailHextets: number[] = []
@@ -184,7 +184,7 @@ function expandIPv6Groups(addr: string): number[] | null {
  * hex groups, or trailing dotted-decimal. Returns null if the address is
  * not an IPv4-mapped IPv6 address.
  */
-function extractMappedIPv4(addr: string): string | null {
+export function extractMappedIPv4(addr: string): string | null {
   const g = expandIPv6Groups(addr)
   if (!g) return null
   // IPv4-mapped: first 80 bits zero, next 16 bits ffff, last 32 bits = IPv4

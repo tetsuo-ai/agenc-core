@@ -137,6 +137,27 @@ path. Model-facing search is `WebSearch`.
 | `EnterWorktree` |
 | `ExitWorktree` |
 
+### Browser
+
+| Name | Notes |
+| --- | --- |
+| `Browser` | Deferred. Drives an isolated Chromium (CDP over `--remote-debugging-pipe`) with a single `action` param: `navigate`, `snapshot`, `click`, `type`, `press_key`, `scroll`, `screenshot`, `get_text`, `new_tab`, `tabs`, `select_tab`, `close_tab`. Elements are addressed by stable `[ref=eN]` accessibility refs, never CSS selectors. |
+
+All browser egress is forced through an in-process loopback proxy that resolves
+each host once and connects to that exact IP (no DNS-rebinding window); private,
+loopback, and cloud-metadata addresses are blocked by default (`[browser]
+allow_private_network` opts in for local-dev targets; metadata stays blocked
+regardless, in every address representation). Non-proxied WebRTC UDP is disabled
+so it cannot open a side channel around the proxy. The browser uses a dedicated profile under
+`<agenc_home>/browser/profile`, never the user's real profile, and launches
+lazily on first use. `snapshot` / `screenshot` / `get_text` / `tabs` are
+read-only and auto-approved; `navigate` and acting actions prompt in default
+mode (`navigate` can be granted a persistent per-domain allow rule). Config:
+`[browser]` (`executable_path`, `headless`, `allow_private_network`,
+`profile_dir`, `no_sandbox`, `navigation_timeout_ms`) + `AGENC_BROWSER_*` env.
+See the bundled `browser-automation` skill for the snapshot→act→re-snapshot
+workflow.
+
 ### Notebook
 
 | Name |

@@ -79,6 +79,7 @@ import type {
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
+import { closeAllBrowserManagers } from "../browser/manager.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 import { summarizeAgenCShutdown } from "../lifecycle/shutdown-message.js";
 import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
@@ -1660,6 +1661,9 @@ async function runAgenCDaemonForeground(
   });
   cleanup.register("daemon-command-exec", async () => {
     await commandExec.closeAll("daemon_shutdown");
+  });
+  cleanup.register("daemon-browser", async () => {
+    await closeAllBrowserManagers();
   });
   cleanup.register("daemon-thread-store", async () => {
     threadStore.close();

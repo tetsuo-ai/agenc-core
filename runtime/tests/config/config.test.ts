@@ -25,6 +25,7 @@ import {
   InvalidPluginsConfigError,
   InvalidProviderConfigError,
   InvalidHooksConfigError,
+  InvalidBrowserConfigError,
   InvalidPermissionsConfigError,
   InvalidStatusLineConfigError,
   InvalidTuiConfigError,
@@ -41,6 +42,7 @@ import {
   validateHooksConfig,
   validateStatusLineConfig,
   validateTuiConfig,
+  validateBrowserConfig,
   validateOutputStyleConfig,
   KNOWN_CONFIG_KEYS,
   DEFERRED_SETTINGS_KEYS,
@@ -284,6 +286,31 @@ describe("schema: normalizeRawConfig", () => {
     expect(() => validateTuiConfig({ vimMode: "yes" })).toThrow(
       InvalidTuiConfigError,
     );
+  });
+
+  test("validates browser config shape and rejects non-boolean toggles", () => {
+    expect(
+      validateBrowserConfig({ allow_private_network: true, headless: false }),
+    ).toEqual({ allow_private_network: true, headless: false });
+    // A mistyped string toggle must be rejected, not coerced to a truthy value
+    // that would silently disable SSRF private-network blocking.
+    expect(() =>
+      validateBrowserConfig({ allow_private_network: "off" }),
+    ).toThrow(InvalidBrowserConfigError);
+    expect(() => validateBrowserConfig({ no_sandbox: "yes" })).toThrow(
+      InvalidBrowserConfigError,
+    );
+    expect(() =>
+      validateBrowserConfig({ navigation_timeout_ms: -1 }),
+    ).toThrow(InvalidBrowserConfigError);
+  });
+
+  test("validateAgenCConfigBlocks rejects a non-boolean browser toggle", () => {
+    expect(() =>
+      validateAgenCConfigBlocks({
+        browser: { allow_private_network: "off" },
+      } as never),
+    ).toThrow(InvalidBrowserConfigError);
   });
 
   test("preserves configVersion on the typed path", () => {
