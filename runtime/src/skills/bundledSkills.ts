@@ -8,6 +8,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { getBundledSkillsRoot } from '../utils/permissions/filesystem.js'
 import type { HooksSettings } from '../utils/settings/types.js'
 // Pure data (type-only back-reference to this module — no runtime cycle).
+import { AGENC_MARKETPLACE_KIT_INSTALLER_SKILL } from './bundled/agencMarketplaceKitInstaller.js'
 import { BROWSER_AUTOMATION_SKILL } from './bundled/browserAutomation.js'
 
 /**
@@ -223,3 +224,4 @@ function prependBaseDir(
 
 // Register in-tree bundled skills once, at module load.
 registerBundledSkill(BROWSER_AUTOMATION_SKILL)
+registerBundledSkill(AGENC_MARKETPLACE_KIT_INSTALLER_SKILL)
