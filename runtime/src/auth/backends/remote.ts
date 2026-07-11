@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
@@ -24,6 +25,7 @@ import {
   resolveAgencHome,
   type EnvSnapshot,
 } from "../../config/env.js";
+import * as lockfile from "../../utils/lockfile.js";
 
 const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://id.agenc.ag/v1/auth/llm-credential" as const;
@@ -31,6 +33,8 @@ const DEFAULT_REMOTE_AUTH_LOGIN_START_URL =
   "https://id.agenc.ag/v1/auth/login/start" as const;
 const DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL =
   "https://id.agenc.ag/v1/auth/login/poll" as const;
+const DEFAULT_REMOTE_AUTH_ME_URL =
+  "https://id.agenc.ag/v1/auth/me" as const;
 const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
   "https://id.agenc.ag/v1/auth/infer-model" as const;
 const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
@@ -45,11 +49,20 @@ const REMOTE_AUTH_LOGIN_START_URL_ENV =
   "AGENC_REMOTE_AUTH_LOGIN_START_URL" as const;
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV =
   "AGENC_REMOTE_AUTH_LOGIN_POLL_URL" as const;
+const REMOTE_AUTH_ME_URL_ENV = "AGENC_REMOTE_AUTH_ME_URL" as const;
 const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
 const REMOTE_AUTH_STATE_VERSION = 1 as const;
 const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
 const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
+const REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS = 3;
+const REMOTE_AUTH_STATE_LOCK_OPTIONS = {
+  retries: {
+    retries: 30,
+    minTimeout: 5,
+    maxTimeout: 100,
+  },
+} as const;
 
 interface RemoteAuthDiskState {
   readonly version: typeof REMOTE_AUTH_STATE_VERSION;
@@ -106,8 +119,22 @@ export type RemoteAuthLoginFlow = (
   request: RemoteAuthLoginRequest,
 ) => RemoteAuthLoginFlowResult | Promise<RemoteAuthLoginFlowResult>;
 
+export type RemoteAuthAccountSnapshot =
+  | {
+      readonly authenticated: true;
+      readonly identity: AuthIdentity;
+      readonly subscriptionTier: AuthSubscriptionTier;
+    }
+  | { readonly authenticated: false };
+
+export type RemoteAuthAccountSnapshotResolver = (
+  request: AuthSessionRef,
+  token: string,
+) => RemoteAuthAccountSnapshot | Promise<RemoteAuthAccountSnapshot>;
+
 export interface RemoteAuthBackendOptions {
   readonly agencHome?: string;
+  readonly accountSnapshotResolver?: RemoteAuthAccountSnapshotResolver;
   readonly authFilePath?: string;
   readonly keyVendor?: RemoteAuthKeyVendor;
   readonly loginFlow?: RemoteAuthLoginFlow;
@@ -122,6 +149,7 @@ export interface RemoteAuthBackendOptions {
   readonly loginPollEndpoint?: string;
   readonly loginStartEndpoint?: string;
   readonly managedKeysEnabled?: boolean;
+  readonly meEndpoint?: string;
   readonly modelEndpoint?: string;
   readonly nowMs?: () => number;
   readonly now?: () => Date;
@@ -140,6 +168,7 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly kind = "remote";
 
   readonly #authFilePath: string;
+  readonly #accountSnapshotResolver: RemoteAuthAccountSnapshotResolver;
   readonly #keyVendor: RemoteAuthKeyVendor;
   readonly #loginFlow: RemoteAuthLoginFlow;
   readonly #modelInferer: RemoteAuthModelInferer;
@@ -153,6 +182,9 @@ export class RemoteAuthBackend implements AuthBackend {
 
   constructor(options: RemoteAuthBackendOptions = {}) {
     this.#authFilePath = remoteAuthFilePath(options);
+    this.#accountSnapshotResolver =
+      options.accountSnapshotResolver ??
+      createHttpRemoteAuthAccountSnapshotResolver(options);
     this.#keyVendor = options.keyVendor ?? createHttpRemoteAuthKeyVendor(options);
     this.#loginFlow = options.loginFlow ?? createHttpRemoteAuthLoginFlow(options);
     this.#modelInferer =
@@ -176,18 +208,20 @@ export class RemoteAuthBackend implements AuthBackend {
     const result = normalizeRemoteAuthLoginResult(
       await this.#loginFlow(params),
     );
-    await writeRemoteAuthState(this.#authFilePath, {
-      version: REMOTE_AUTH_STATE_VERSION,
-      provider: "remote",
-      token: result.token,
-      createdAt: this.#now().toISOString(),
-      ...(result.identity !== undefined ? { identity: result.identity } : {}),
-      ...(result.subscriptionTier !== undefined
-        ? { subscriptionTier: result.subscriptionTier }
-        : {}),
-      ...(result.expiresAt !== undefined ? { expiresAt: result.expiresAt } : {}),
+    await withRemoteAuthStateLock(this.#authFilePath, async () => {
+      await writeRemoteAuthState(this.#authFilePath, {
+        version: REMOTE_AUTH_STATE_VERSION,
+        provider: "remote",
+        token: result.token,
+        createdAt: this.#now().toISOString(),
+        ...(result.identity !== undefined ? { identity: result.identity } : {}),
+        ...(result.subscriptionTier !== undefined
+          ? { subscriptionTier: result.subscriptionTier }
+          : {}),
+        ...(result.expiresAt !== undefined ? { expiresAt: result.expiresAt } : {}),
+      });
+      this.#vendedKeys.clear();
     });
-    this.#vendedKeys.clear();
     return {
       authenticated: true,
       provider: "remote",
@@ -198,35 +232,69 @@ export class RemoteAuthBackend implements AuthBackend {
   }
 
   async logout(_params: AuthLogoutParams = {}): Promise<AuthLogoutResult> {
-    await rm(this.#authFilePath, { force: true });
-    this.#vendedKeys.clear();
+    await withRemoteAuthStateLock(this.#authFilePath, async () => {
+      await rm(this.#authFilePath, { force: true });
+      this.#vendedKeys.clear();
+    });
     return { authenticated: false };
   }
 
-  async whoami(_params: AuthWhoamiParams = {}): Promise<AuthWhoamiResult> {
-    const state = await readRemoteAuthState(this.#authFilePath);
-    if (state !== null) {
-      const identity = state.identity === undefined
-        ? undefined
-        : {
-            ...state.identity,
-            // Older login responses kept the authoritative tier beside identity. Surface it in
-            // both the typed top-level field and the compatibility `identity.plan` field so mobile
-            // clients can render one complete account snapshot after `/login`.
-            ...(state.subscriptionTier !== undefined && state.identity.plan === undefined
-              ? { plan: state.subscriptionTier }
-              : {}),
-          };
-      return {
-        authenticated: true,
-        provider: "remote",
-        ...(identity !== undefined ? { identity } : {}),
-        ...(state.subscriptionTier !== undefined
-          ? { subscriptionTier: state.subscriptionTier }
-          : {}),
-      };
+  async whoami(params: AuthWhoamiParams = {}): Promise<AuthWhoamiResult> {
+    for (
+      let attempt = 0;
+      attempt < REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const state = await withRemoteAuthStateLock(
+        this.#authFilePath,
+        () => readRemoteAuthState(this.#authFilePath),
+      );
+      if (state === null) {
+        return { authenticated: false, provider: "remote" };
+      }
+
+      // A persisted bearer is not proof that it is still valid. Bind the
+      // request to the exact captured bearer, then compare-and-swap under the
+      // cross-process state lock so a concurrent login/logout always wins.
+      const snapshot = normalizeRemoteAuthAccountSnapshot(
+        await this.#accountSnapshotResolver(
+          params.sessionId === undefined ? {} : { sessionId: params.sessionId },
+          state.token,
+        ),
+      );
+      const committed = await withRemoteAuthStateLock(
+        this.#authFilePath,
+        async (): Promise<"authenticated" | "retry" | "signed-out"> => {
+          const current = await readRemoteAuthState(this.#authFilePath);
+          if (current === null) return "signed-out";
+          if (!sameRemoteAuthSession(current, state)) return "retry";
+          if (!snapshot.authenticated) {
+            await rm(this.#authFilePath, { force: true });
+            this.#vendedKeys.clear();
+            return "signed-out";
+          }
+          await writeRemoteAuthState(this.#authFilePath, {
+            ...current,
+            identity: snapshot.identity,
+            subscriptionTier: snapshot.subscriptionTier,
+          });
+          return "authenticated";
+        },
+      );
+      if (committed === "retry") continue;
+      if (committed === "signed-out") {
+        return { authenticated: false, provider: "remote" };
+      }
+      if (!snapshot.authenticated) {
+        throw new Error(
+          "RemoteAuthBackend account snapshot commit invariant failed",
+        );
+      }
+      return remoteAuthWhoamiResult(snapshot);
     }
-    return { authenticated: false, provider: "remote" };
+    throw new Error(
+      "RemoteAuthBackend account changed repeatedly during account snapshot lookup",
+    );
   }
 
   vendKey(
@@ -343,16 +411,39 @@ export class RemoteAuthBackend implements AuthBackend {
   async #requestSubscriptionTier(
     params: AuthSessionRef,
   ): Promise<AuthSubscriptionTier> {
-    const tier = await this.#subscriptionTierResolver(params);
-    const normalized = normalizeRequiredSubscriptionTier(tier);
-    const state = await readRemoteAuthState(this.#authFilePath);
-    if (state !== null && state.subscriptionTier !== normalized) {
-      await writeRemoteAuthState(this.#authFilePath, {
-        ...state,
-        subscriptionTier: normalized,
-      });
+    for (
+      let attempt = 0;
+      attempt < REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const state = await withRemoteAuthStateLock(
+        this.#authFilePath,
+        () => readRemoteAuthState(this.#authFilePath),
+      );
+      const normalized = normalizeRequiredSubscriptionTier(
+        await this.#subscriptionTierResolver(params),
+      );
+      if (state === null) return normalized;
+      const committed = await withRemoteAuthStateLock(
+        this.#authFilePath,
+        async (): Promise<boolean> => {
+          const current = await readRemoteAuthState(this.#authFilePath);
+          if (current === null) return true;
+          if (!sameRemoteAuthSession(current, state)) return false;
+          if (current.subscriptionTier !== normalized) {
+            await writeRemoteAuthState(this.#authFilePath, {
+              ...current,
+              subscriptionTier: normalized,
+            });
+          }
+          return true;
+        },
+      );
+      if (committed) return normalized;
     }
-    return normalized;
+    throw new Error(
+      "RemoteAuthBackend account changed repeatedly during subscription tier lookup",
+    );
   }
 
   async #requestLlmUsage(params: AuthSessionRef): Promise<AuthLlmUsage> {
@@ -376,6 +467,40 @@ async function resolveRemoteAuthToken(
   const explicit = trimNonEmpty(options.token) ??
     trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
   return explicit;
+}
+
+function createHttpRemoteAuthAccountSnapshotResolver(
+  options: RemoteAuthBackendOptions,
+): RemoteAuthAccountSnapshotResolver {
+  const env = options.env ?? process.env;
+  const endpoint =
+    trimNonEmpty(options.meEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_ME_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_ME_URL;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  return async (request, token) => {
+    if (fetchImpl === undefined) {
+      throw new Error(
+        "RemoteAuthBackend requires fetch for remote account snapshot lookup",
+      );
+    }
+    const response = await remoteAuthFetch(fetchImpl, endpoint, {
+      method: "POST",
+      headers: remoteAuthJsonHeaders(token),
+      body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
+    }, "account snapshot lookup");
+    if (response.status === 401 || response.status === 403) {
+      return { authenticated: false };
+    }
+    if (!response.ok) {
+      throw new Error(
+        `RemoteAuthBackend account snapshot lookup failed with HTTP ${response.status}`,
+      );
+    }
+    return parseRemoteAuthAccountSnapshotResponse(
+      await readRemoteAuthJsonResponse(response, "account snapshot lookup"),
+    );
+  };
 }
 
 function createHttpRemoteAuthKeyVendor(
@@ -891,6 +1016,79 @@ function parseRemoteAuthModelInferenceResponse(
   );
 }
 
+function parseRemoteAuthAccountSnapshotResponse(
+  value: unknown,
+): RemoteAuthAccountSnapshot {
+  return normalizeRemoteAuthAccountSnapshot(value);
+}
+
+function normalizeRemoteAuthAccountSnapshot(
+  value: unknown,
+): RemoteAuthAccountSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "RemoteAuthBackend account snapshot lookup returned a non-object response",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  if (record.authenticated === false) return { authenticated: false };
+  if (record.authenticated !== true) {
+    throw new Error(
+      "RemoteAuthBackend account snapshot response missing authenticated state",
+    );
+  }
+  if (
+    !record.identity ||
+    typeof record.identity !== "object" ||
+    Array.isArray(record.identity)
+  ) {
+    throw new Error(
+      "RemoteAuthBackend account snapshot response missing identity",
+    );
+  }
+  const identityRecord = record.identity as Record<string, unknown>;
+  const accountId = readTrimmedString(identityRecord.accountId);
+  if (accountId === undefined) {
+    throw new Error(
+      "RemoteAuthBackend account snapshot response missing identity.accountId",
+    );
+  }
+  const subscriptionTier =
+    typeof record.subscriptionTier === "string"
+      ? normalizeSubscriptionTier(record.subscriptionTier)
+      : undefined;
+  if (subscriptionTier === undefined) {
+    throw new Error(
+      "RemoteAuthBackend account snapshot response has invalid subscriptionTier",
+    );
+  }
+  return {
+    authenticated: true,
+    identity: {
+      accountId,
+      ...optionalString("email", identityRecord.email),
+      ...optionalString("displayName", identityRecord.displayName),
+    },
+    subscriptionTier,
+  };
+}
+
+function remoteAuthWhoamiResult(
+  snapshot: Extract<RemoteAuthAccountSnapshot, { readonly authenticated: true }>,
+): AuthWhoamiResult {
+  return {
+    authenticated: true,
+    provider: "remote",
+    identity: {
+      ...snapshot.identity,
+      // Keep the compatibility plan field for clients that have not moved to
+      // the typed top-level subscriptionTier yet.
+      plan: snapshot.subscriptionTier,
+    },
+    subscriptionTier: snapshot.subscriptionTier,
+  };
+}
+
 function parseRemoteAuthSubscriptionTierResponse(
   value: unknown,
 ): AuthSubscriptionTier {
@@ -1152,15 +1350,43 @@ async function readRemoteAuthState(
   }
 }
 
+function sameRemoteAuthSession(
+  left: RemoteAuthDiskState,
+  right: RemoteAuthDiskState,
+): boolean {
+  return left.token === right.token && left.createdAt === right.createdAt;
+}
+
+async function withRemoteAuthStateLock<T>(
+  path: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const release = await lockfile.lock(directory, {
+    ...REMOTE_AUTH_STATE_LOCK_OPTIONS,
+    lockfilePath: `${path}.lock`,
+  });
+  try {
+    return await fn();
+  } finally {
+    await release();
+  }
+}
+
 async function writeRemoteAuthState(
   path: string,
   state: RemoteAuthDiskState,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(tmp, path);
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await rename(tmp, path);
+  } finally {
+    await rm(tmp, { force: true });
+  }
 }

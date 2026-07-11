@@ -49,7 +49,9 @@ export function createAgenCDaemonAuthHandlers(
   backend: AgenCDaemonAuthBackend,
 ): AgenCDaemonAuthHandlers {
   return {
-    "auth.login": () => Promise.resolve(backend.login()),
+    "auth.login": async () => sanitizeAuthLoginResult(
+      await Promise.resolve(backend.login()),
+    ),
     "auth.whoami": async (context = {}) => {
       const result = await Promise.resolve(
         context.daemonConnection === undefined
@@ -61,6 +63,37 @@ export function createAgenCDaemonAuthHandlers(
       return attachDaemonSocketIdentity(result, context.daemonConnection);
     },
     "auth.logout": () => Promise.resolve(backend.logout()),
+  };
+}
+
+function sanitizeAuthLoginResult(result: AuthLoginResult): AuthLoginResult {
+  // Concrete backends return their persisted bearer to in-process CLI callers.
+  // Daemon clients only need the public login state, so cross this trust
+  // boundary with an explicit allowlist (including the nested identity).
+  const identity = result.identity === undefined
+    ? undefined
+    : {
+        ...(typeof result.identity.accountId === "string"
+          ? { accountId: result.identity.accountId }
+          : {}),
+        ...(typeof result.identity.email === "string"
+          ? { email: result.identity.email }
+          : {}),
+        ...(typeof result.identity.handle === "string"
+          ? { handle: result.identity.handle }
+          : {}),
+        ...(typeof result.identity.displayName === "string"
+          ? { displayName: result.identity.displayName }
+          : {}),
+        ...(typeof result.identity.plan === "string"
+          ? { plan: result.identity.plan }
+          : {}),
+      };
+  return {
+    authenticated: true,
+    ...(result.provider !== undefined ? { provider: result.provider } : {}),
+    ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}),
+    ...(identity !== undefined ? { identity } : {}),
   };
 }
 

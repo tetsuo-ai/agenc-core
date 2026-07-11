@@ -49,7 +49,17 @@ describe("AgenC daemon auth surface", () => {
     const backend: Pick<AuthBackend, "login" | "whoami" | "logout"> = {
       login: () => {
         calls.push("login");
-        return { authenticated: true, provider: "local" };
+        return {
+          authenticated: true,
+          provider: "local",
+          token: "daemon-bearer-secret",
+          refreshToken: "daemon-refresh-secret",
+          identity: {
+            accountId: "acct-1",
+            displayName: "Daemon User",
+            bearer: "nested-bearer-secret",
+          },
+        };
       },
       whoami: (params = {}) => {
         calls.push(`whoami:${params.daemonConnection?.cookie ?? ""}`);
@@ -65,6 +75,10 @@ describe("AgenC daemon auth surface", () => {
     await expect(handlers["auth.login"]()).resolves.toEqual({
       authenticated: true,
       provider: "local",
+      identity: {
+        accountId: "acct-1",
+        displayName: "Daemon User",
+      },
     });
     await expect(
       handlers["auth.whoami"]({ daemonConnection }),

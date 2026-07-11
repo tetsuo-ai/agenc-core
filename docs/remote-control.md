@@ -21,9 +21,14 @@ Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 
 ## Prerequisites
 
-Remote pairing requires a **signed-in AgenC account**. If the TUI/CLI has no
-valid remote login session, `agenc remote on` and `/remote on` stop before
-creating a code, calling the backend, or opening the relay.
+Remote pairing requires a **signed-in AgenC account on the computer**. If the
+TUI/CLI has no valid remote login session, `agenc remote on` and `/remote on`
+stop before creating a code, calling the backend, or opening the relay.
+
+That computer login is also the mobile sign-in authority. The Android app does
+not start Google OAuth and does not require a second hosted-account login. The
+one-time code from `/remote on` signs the app into the same account and pairs it
+with this computer in one claim.
 
 ```bash
 # sign in first
@@ -48,22 +53,53 @@ agenc remote off       # forget this machine's pairing locally
 
 Production routing pairs by *device*, not by account room:
 
-1. Sign in with `/login` or `AGENC_AUTH_BACKEND=remote agenc login`.
-2. Run `agenc remote on`; the connector sends the remote auth bearer to the
-   backend, prints an 8-char code, and shows a QR encoding
-   `agenc://pair?c=<code>`.
-3. The connector registers the pairing (random 128-bit `pairingId` + hashed
-   host secret) and bridges on room `pairingId`.
-4. In the app: scan the QR or type the code → `/v1/pair/claim` (bearer-gated)
-   → backend marks the pairing active and issues a signed *client ticket* for
-   the same room.
-5. Both sides share one isolated relay room. The QR surface auto-closes when
+1. Sign in on the computer with `/login` or
+   `AGENC_AUTH_BACKEND=remote agenc login`. Google OAuth, when configured, is
+   completed here in the browser opened by Core.
+2. Run `agenc remote on`; the connector sends that remote auth bearer to
+   authenticated `POST /v1/pair/start`. The backend binds the pending pairing
+   to the logged-in account, and Core prints an 8-character code plus a QR
+   encoding `agenc://pair?c=<code>`.
+3. The connector receives a random 128-bit `pairingId` and hashed host-secret
+   credential, then bridges on room `pairingId`.
+4. Android starts at its code/QR screen. Scanning or typing the code calls
+   `POST /v1/pair/claim` with `{ code, appLabel }`; the phone does not send a
+   pre-existing bearer and does not launch Google.
+5. The backend atomically consumes the one-time code, activates the pairing,
+   and returns the existing pairing fields plus nested mobile authentication:
+
+   ```json
+   {
+     "pairingId": "pr_...",
+     "machineName": "workstation",
+     "clientTicket": "...",
+     "relayUrl": "wss://...",
+     "expiresAt": "...",
+     "auth": {
+       "token": "...",
+       "identity": {
+         "accountId": "...",
+         "displayName": "..."
+       },
+       "subscriptionTier": "free",
+       "expiresAt": "..."
+     }
+   }
+   ```
+
+   The `auth` token belongs to the same account that authorized
+   `/v1/pair/start`; Android stores it for `/v1/auth/me`, ticket refresh, and
+   later authenticated operations. Legacy app versions may still send their
+   bearer to `/v1/pair/claim`; the additive response remains decodable by them.
+6. Both sides share one isolated relay room. The QR surface auto-closes when
    the phone connects.
 
 **Security:** the backend mints every ticket; pair creation requires the
-computer's remote auth bearer; the host is gated by its secret; claim is gated
-by the app bearer; the code is single-use; rooms are 128-bit and isolated;
-there is no server-side pairing list to enumerate.
+computer's remote auth bearer and records that account as owner; the host is
+gated by its secret; the short-lived, single-use code authorizes exactly one
+mobile session for that owner; rooms are 128-bit and isolated; there is no
+server-side pairing list to enumerate. Core never sends its bearer through the
+daemon or relay to the phone.
 
 Local state: `~/.agenc/remote/pair.json` (`0600`). The connector injects the
 loopback daemon cookie into the phone's `initialize` so the phone never holds
@@ -137,9 +173,23 @@ task-completion alert. It is silent, low priority, and uses the AgenC mark.
 
 ## Account identity reconciliation
 
-`auth.whoami` now exposes the remote account identity plus the persisted
-subscription tier. The phone reconciles its authenticated bearer identity with
-the Core `/login` identity:
+For the remote backend, every `auth.whoami` revalidates the persisted login
+bearer with `POST https://id.agenc.ag/v1/auth/me` and returns the canonical
+account identity plus subscription tier. Override that endpoint with
+`AGENC_REMOTE_AUTH_ME_URL` when running a compatible identity service. A
+successful lookup refreshes the identity/tier snapshot in `auth.json`; HTTP
+401/403 clears the rejected session and returns signed out. Network, server,
+and invalid-response failures surface as RPC errors instead of presenting the
+previous snapshot as verified.
+
+The bearer remains private to the Core auth backend. `auth.login` persists it
+for subsequent remote calls but the app-server response only exposes the
+non-secret login state and identity.
+
+Because `/v1/pair/claim` bootstraps the phone from the authenticated Core code,
+new pairings start with the same account identity. The phone still reconciles
+its mobile bearer identity with the Core `/login` identity to detect expired,
+legacy, or mismatched state:
 
 - stable account ids are authoritative when both sides provide them;
 - older records may link through an exact normalized email/handle match;
