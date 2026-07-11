@@ -68,6 +68,10 @@ when enabled), ACP editor integration, the self-improving curator loop, remote
 execution backends (docker/ssh/modal targets), and channel breadth beyond
 Telegram/Discord/Slack/WebChat/stdio (no Signal, WhatsApp, or email yet).
 
+Browser automation is **shipped**: the `Browser` tool drives an isolated
+Chromium over a CDP pipe with accessibility-ref actions, SSRF-proxied egress,
+and a dedicated profile — inside AgenC's permission/sandbox model.
+
 If those are your daily drivers, run both while the gap closes. Persona files
 (`SOUL.md` / `USER.md` / `IDENTITY.md`) and budget-before-autonomy onboarding
 map cleanly if you are already thinking in "named agent on my phone."

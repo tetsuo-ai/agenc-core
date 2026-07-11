@@ -27,6 +27,8 @@ shipped / open summary.
 - LIVE tool registry: shell, files, patch, search, web, LSP, MCP, tasks, skills, …
 - Permissions modes + OS sandbox (bubblewrap / Seatbelt)
 - MCP client + server, plugins, skills, hooks
+- Browser automation tool (`Browser`): isolated Chromium over a CDP pipe,
+  accessibility-ref actions, SSRF-proxy egress control (task 18)
 - Multi-agent v2: `spawn_agent`, `wait_agent`, `close_agent`, `assign_task`,
   `send_message`, `list_agents`
 - Background agents over the 41-method daemon protocol
@@ -80,9 +82,10 @@ Grouped to match current product priority. Detail + acceptance criteria live in
 
 ### Hands / execution
 
-- **Browser automation** tool (dedicated Chromium profile, CDP, ARIA-ref
-  actions, SSRF policy) — not shipped
-- Remote CDP + user-profile browser modes (rides browser tool)
+- ~~Browser automation tool (dedicated Chromium profile, CDP, ARIA-ref actions,
+  SSRF policy)~~ — **shipped** (task 18): `Browser` tool, CDP over
+  `--remote-debugging-pipe`, loopback SSRF proxy
+- Remote CDP + user-profile browser modes (rides browser tool) — **open** (task 19)
 - Docker sandbox driver + SSH exec target
 - Computer-use (OS screen/input) — deferred, highest risk
 

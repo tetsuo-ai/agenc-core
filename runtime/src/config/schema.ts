@@ -559,6 +559,30 @@ export interface HeartbeatConfig {
 }
 
 /**
+ * `[browser]` — built-in browser tool (task 18). Operational settings for the
+ * isolated Chromium instance the `Browser` tool drives. Enable/disable the
+ * tool itself via `tools_config`; this block only tunes how it runs.
+ * `AGENC_BROWSER_*` env vars override (see `browser/config.ts`).
+ */
+export interface BrowserConfig {
+  /** Absolute path to a Chromium-family binary; auto-detected when absent. */
+  readonly executable_path?: string;
+  /** Run headless (default true). */
+  readonly headless?: boolean;
+  /**
+   * Permit private/loopback destinations (default false). Cloud-metadata
+   * endpoints stay blocked regardless. Only enable for local-dev targets.
+   */
+  readonly allow_private_network?: boolean;
+  /** Dedicated profile dir; defaults to `<agenc_home>/browser/profile`. */
+  readonly profile_dir?: string;
+  /** Pass Chromium `--no-sandbox` (default false; needed in some containers). */
+  readonly no_sandbox?: boolean;
+  /** Navigation timeout in ms (default 30000). */
+  readonly navigation_timeout_ms?: number;
+}
+
+/**
  * `[budget]` — cost-bounded autonomy (task 15). Per-agent hard spend caps
  * enforced daemon-side around autonomous turns. Disabled by default; a cap of
  * 0/absent means no cap. `AGENC_BUDGET*` env vars override
@@ -660,6 +684,12 @@ export interface AgenCConfig {
    * `AGENC_BUDGET*` env vars override. See `budget/config.ts`.
    */
   readonly budget?: BudgetConfig;
+  /**
+   * Built-in browser tool (`[browser]`). Optional — operational settings for
+   * the isolated Chromium the `Browser` tool drives; `AGENC_BROWSER_*` env
+   * vars override. See `browser/config.ts`.
+   */
+  readonly browser?: BrowserConfig;
   /**
    * Proactive heartbeat (`[heartbeat]`). Optional — disabled by default;
    * `AGENC_HEARTBEAT*` env vars override. See `heartbeat/config.ts`.
@@ -803,6 +833,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "coordinator_mode",
   "transaction_guard",
   "budget",
+  "browser",
   "heartbeat",
   "agenc_home",
   "workspace",
@@ -2123,6 +2154,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     out.tui = validateTuiConfig(config.tui);
     changed = true;
   }
+  if (config.browser !== undefined) {
+    out.browser = validateBrowserConfig(config.browser);
+    changed = true;
+  }
   if (config.transaction_guard !== undefined) {
     out.transaction_guard = validateTransactionGuardConfig(
       config.transaction_guard,
@@ -2175,6 +2210,58 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
     out.vimMode = raw.vimMode;
   }
   return Object.freeze(out as TuiConfig);
+}
+
+export class InvalidBrowserConfigError extends Error {
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid browser.${field}: ${detail}`);
+    this.name = "InvalidBrowserConfigError";
+    this.field = field;
+  }
+}
+
+/**
+ * Validate the `[browser]` block. Reject non-boolean security toggles so a
+ * mistyped `allow_private_network = "off"` cannot survive as a truthy string
+ * and silently disable SSRF private-network blocking (see `browser/config.ts`).
+ */
+export function validateBrowserConfig(raw: unknown): BrowserConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new InvalidBrowserConfigError("", "expected plain object");
+  }
+  const out: { -readonly [K in keyof BrowserConfig]: BrowserConfig[K] } = {};
+  for (const key of ["headless", "allow_private_network", "no_sandbox"] as const) {
+    if (raw[key] !== undefined) {
+      if (typeof raw[key] !== "boolean") {
+        throw new InvalidBrowserConfigError(key, "expected boolean");
+      }
+      out[key] = raw[key];
+    }
+  }
+  for (const key of ["executable_path", "profile_dir"] as const) {
+    if (raw[key] !== undefined) {
+      if (typeof raw[key] !== "string") {
+        throw new InvalidBrowserConfigError(key, "expected string");
+      }
+      out[key] = raw[key];
+    }
+  }
+  if (raw.navigation_timeout_ms !== undefined) {
+    if (
+      typeof raw.navigation_timeout_ms !== "number" ||
+      !Number.isInteger(raw.navigation_timeout_ms) ||
+      raw.navigation_timeout_ms <= 0
+    ) {
+      throw new InvalidBrowserConfigError(
+        "navigation_timeout_ms",
+        "expected positive integer",
+      );
+    }
+    out.navigation_timeout_ms = raw.navigation_timeout_ms;
+  }
+  return Object.freeze(out as BrowserConfig);
 }
 
 // ─────────────────────────────────────────────────────────────────────

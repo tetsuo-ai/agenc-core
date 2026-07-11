@@ -49,6 +49,7 @@ import { createFileWriteTool, FILE_WRITE_TOOL_NAME } from "./tools/system/file-w
 import { createGlobTool, GLOB_TOOL_NAME } from "./tools/system/glob.js";
 import { createGrepTool, GREP_TOOL_NAME } from "./tools/system/grep.js";
 import { createOrientTool, ORIENT_TOOL_NAME } from "./tools/system/orient.js";
+import { createBrowserTool } from "./tools/BrowserTool/tool.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/planning.js";
 import { UnifiedExecProcessManager } from "./unified-exec/process-manager.js";
@@ -659,6 +660,10 @@ export function buildToolRegistry(
       ? { workflowController: options.workflowController }
       : {}),
   });
+  // Browser tool (task 18). Registered deferred (metadata.deferred=true) so it
+  // is discovered on demand via system.searchTools, keeping the default
+  // per-turn catalog small. The manager launches Chromium lazily on first use.
+  const browserTools = [createBrowserTool()] as const;
   const registryModelFacingTools = readToolList(options.modelFacingTools);
   const modelFacingProviderNativeSurface = {
     webFetch: "web_fetch",
@@ -760,6 +765,12 @@ export function buildToolRegistry(
       id: "interaction",
       tools: interactionTools,
       visibleByDefault: ["AskUserQuestion"],
+    },
+    {
+      id: "browser",
+      tools: browserTools,
+      // No visibleByDefault: the Browser tool's metadata.deferred keeps it out
+      // of the default advertised set until system.searchTools discovery.
     },
     {
       id: "planning",

@@ -56,6 +56,11 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   (`agenc remote on|off|status`). See [`docs/remote-control.md`](docs/remote-control.md).
 - **Built-in tools** — Bash, file read/write/edit, transactional `apply_patch`,
   web fetch/search, LSP, MCP, sub-agents; read-before-write and atomic-patch safety.
+- **Browser automation** — the `Browser` tool drives an isolated Chromium over a
+  CDP pipe with stable accessibility refs (navigate, snapshot, click, type,
+  screenshot, tabs). All egress routes through an SSRF proxy that blocks
+  private/loopback/metadata addresses by default; dedicated profile, never your
+  real one.
 - **MCP** — outbound MCP client and MCP server (`agenc mcp serve|…`), including
   enterprise XAA (SEP-990).
 - **Layered safety** — permission modes, opt-in OS sandbox (bubblewrap/Landlock
@@ -239,7 +244,8 @@ socket, config, sessions, gateway, budget ledger, logs.
 | `AGENC_DAEMON_AUTOSTART=0` | Disable launcher daemon autostart |
 | `AGENC_DAEMON_READY_TIMEOUT_MS` | Launcher daemon-ready timeout |
 | `AGENC_TRAJECTORY_EXPORT_DIR` / `_PATH` | Opt-in local trajectory JSONL |
-| `config.toml` (`agenc config`) | Providers, MCP, permissions, budget, plugins |
+| `AGENC_BROWSER_*` | Browser tool: `_EXECUTABLE`, `_HEADLESS`, `_ALLOW_PRIVATE_NETWORK`, `_PROFILE_DIR`, `_NO_SANDBOX`, `_NAV_TIMEOUT_MS` |
+| `config.toml` (`agenc config`) | Providers, MCP, permissions, budget, browser, plugins |
 
 Trajectory export is off by default; when enabled it writes redacted local JSONL
 after the primary session log is durable.
