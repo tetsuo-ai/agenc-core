@@ -114,6 +114,15 @@ describe("AgenC auth CLI", () => {
   it("persists remote login state through RemoteAuthBackend", async () => {
     const agencHome = await tempAgencHome();
     const backend = new RemoteAuthBackend({
+      accountSnapshotResolver: () => ({
+        authenticated: true,
+        identity: {
+          accountId: "acct-1",
+          email: "user@agenc.tech",
+          displayName: "Remote User",
+        },
+        subscriptionTier: "pro",
+      }),
       agencHome,
       loginFlow: () => ({
         token: "remote-token",

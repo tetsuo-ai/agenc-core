@@ -51,9 +51,9 @@ describe("AgenC portal AuthBackend contract", () => {
       result: {
         authenticated: true,
         provider: "local",
-        token: "portal-auth-token",
       },
     });
+    expect(JSON.stringify(loginResponse)).not.toContain("portal-auth-token");
     await expect(
       readAuthToken(join(agencHome, "auth.json")),
     ).resolves.toBe("portal-auth-token");
