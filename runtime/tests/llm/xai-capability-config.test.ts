@@ -104,18 +104,20 @@ describe("resolveXaiCapabilityExtra", () => {
     ).toEqual({});
   });
 
-  it("default profile enables webSearch only", () => {
+  it("default profile does not continuous-inject search tools (Pattern A)", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
       baseURL: "https://api.x.ai/v1",
       llmXai: resolveLlmXaiConfig(undefined),
     });
-    expect(extra.webSearch).toBe(true);
+    // LIVE WebSearch/XSearch one-shots own the search tools — main-loop extra
+    // stays free of continuous web_search / x_search (G19 dual-bill guard).
+    expect(extra.webSearch).toBeUndefined();
     expect(extra.xSearch).toBeUndefined();
     expect(extra.codeExecution).toBeUndefined();
   });
 
-  it("honors x_search and code_execution when enabled", () => {
+  it("honors code_execution continuous injection when enabled", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
       llmXai: {
@@ -124,8 +126,8 @@ describe("resolveXaiCapabilityExtra", () => {
         code_execution: true,
       },
     });
-    expect(extra.webSearch).toBe(true);
-    expect(extra.xSearch).toBe(true);
+    expect(extra.webSearch).toBeUndefined();
+    expect(extra.xSearch).toBeUndefined();
     expect(extra.codeExecution).toBe(true);
   });
 
@@ -165,18 +167,18 @@ describe("resolveXaiCapabilityExtra", () => {
     });
   });
 
-  it("env AGENC_XAI_X_SEARCH forces xSearch on", () => {
+  it("env AGENC_XAI_CODE_EXECUTION forces continuous code_interpreter", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: { x_search: false },
-      env: { AGENC_XAI_X_SEARCH: "1" },
+      llmXai: { code_execution: false },
+      env: { AGENC_XAI_CODE_EXECUTION: "1" },
     });
-    expect(extra.xSearch).toBe(true);
+    expect(extra.codeExecution).toBe(true);
   });
 });
 
 describe("G6 end-to-end: extra drives GrokProvider native tools", () => {
-  it("createProvider with resolved extra attaches server tools for grok-4.5", () => {
+  it("createProvider with resolved extra attaches code_interpreter not search", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
       llmXai: {
@@ -201,9 +203,10 @@ describe("G6 end-to-end: extra drives GrokProvider native tools", () => {
     const tools = plan.params.tools ?? [];
     const types = tools.map((t) => t.type);
     expect(types).toContain("function");
-    expect(types).toContain("web_search");
-    expect(types).toContain("x_search");
     expect(types).toContain("code_interpreter");
+    // Search stays on LIVE tools (Pattern A) — not continuous main-loop.
+    expect(types).not.toContain("web_search");
+    expect(types).not.toContain("x_search");
   });
 
   it("openrouter never gets xAI server tools via resolver", () => {
@@ -217,5 +220,106 @@ describe("G6 end-to-end: extra drives GrokProvider native tools", () => {
       },
     });
     expect(extra).toEqual({});
+  });
+});
+
+describe("G2/G7/G8 productize via [llm.xai] flags", () => {
+  it("G2: code_execution flag injects code_interpreter only when on", () => {
+    const off = resolveXaiCapabilityExtra({
+      provider: "grok",
+      llmXai: { code_execution: false },
+    });
+    expect(off.codeExecution).toBeUndefined();
+
+    const on = resolveXaiCapabilityExtra({
+      provider: "grok",
+      llmXai: { code_execution: true },
+    });
+    const provider = createProvider("grok", {
+      apiKey: "k",
+      model: "grok-4.5",
+      tools: [],
+      extra: on,
+    });
+    const plan = (
+      provider as unknown as {
+        buildRequestPlan: (
+          m: unknown[],
+        ) => { params: { tools?: readonly Record<string, unknown>[] } };
+      }
+    ).buildRequestPlan([{ role: "user", content: "calc" }]);
+    expect(plan.params.tools?.some((t) => t.type === "code_interpreter")).toBe(
+      true,
+    );
+  });
+
+  it("G7: collections config injects file_search with vector_store_ids", () => {
+    const extra = resolveXaiCapabilityExtra({
+      provider: "grok",
+      llmXai: {
+        collections: {
+          enabled: true,
+          vector_store_ids: ["collection_1"],
+          max_num_results: 3,
+        },
+      },
+    });
+    const provider = createProvider("grok", {
+      apiKey: "k",
+      model: "grok-4.5",
+      tools: [],
+      extra,
+    });
+    const plan = (
+      provider as unknown as {
+        buildRequestPlan: (
+          m: unknown[],
+        ) => { params: { tools?: readonly Record<string, unknown>[] } };
+      }
+    ).buildRequestPlan([{ role: "user", content: "search docs" }]);
+    const fileSearch = plan.params.tools?.find((t) => t.type === "file_search");
+    expect(fileSearch).toMatchObject({
+      type: "file_search",
+      vector_store_ids: ["collection_1"],
+      max_num_results: 3,
+    });
+  });
+
+  it("G8: remote_mcp injects type mcp server tools", () => {
+    const extra = resolveXaiCapabilityExtra({
+      provider: "grok",
+      llmXai: {
+        remote_mcp: {
+          enabled: true,
+          servers: [
+            {
+              server_url: "https://example.com/mcp",
+              server_label: "docs",
+              allowed_tools: ["search"],
+            },
+          ],
+        },
+      },
+    });
+    const provider = createProvider("grok", {
+      apiKey: "k",
+      model: "grok-4.5",
+      tools: [],
+      extra,
+    });
+    const plan = (
+      provider as unknown as {
+        buildRequestPlan: (
+          m: unknown[],
+        ) => { params: { tools?: readonly Record<string, unknown>[] } };
+      }
+    ).buildRequestPlan([{ role: "user", content: "mcp" }]);
+    const mcp = plan.params.tools?.find((t) => t.type === "mcp");
+    expect(mcp).toMatchObject({
+      type: "mcp",
+      server_url: "https://example.com/mcp",
+      server_label: "docs",
+      allowed_tools: ["search"],
+    });
   });
 });

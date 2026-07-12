@@ -196,24 +196,19 @@ export function resolveXaiCapabilityExtra(
         }
       : undefined;
 
+  // Pattern A (G19 dual-bill guard): web_search / x_search flags enable the
+  // LIVE one-shot tools (WebSearch / XSearch). They must NOT continuously
+  // inject server search tools on every main-loop turn — that double-bills
+  // when the model also calls the LIVE tools. Continuous injection is only
+  // for code_execution / collections / remote_mcp (no LIVE wrappers).
+  // Options still flow to LIVE one-shots via factory extra when explicitly
+  // requested by those tools (they force webSearch/xSearch on the one-shot).
+  void webSearch;
+  void xSearch;
+  void webSearchOptions;
+  void xSearchOptions;
+
   return {
-    ...(webSearch
-      ? {
-          webSearch: true as const,
-          searchMode: "auto" as const,
-          ...(Object.keys(webSearchOptions).length > 0
-            ? { webSearchOptions }
-            : {}),
-        }
-      : {}),
-    ...(xSearch
-      ? {
-          xSearch: true as const,
-          ...(Object.keys(xSearchOptions).length > 0
-            ? { xSearchOptions }
-            : {}),
-        }
-      : {}),
     ...(codeExecution ? { codeExecution: true as const } : {}),
     ...(collectionsSearch !== undefined
       ? { collectionsSearch }
