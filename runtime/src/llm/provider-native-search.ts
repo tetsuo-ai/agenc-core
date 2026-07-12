@@ -58,9 +58,13 @@ export function isGrokMultiAgentModel(model: string | undefined): boolean {
   return /^grok-4[.-]20-multi-agent(?:$|[-_.])/.test(unqualified);
 }
 
+/**
+ * Fail-closed: empty/unknown/unnormalizable models never enable xAI server
+ * tools. Only explicit Grok 4 family IDs (after alias normalize) qualify.
+ */
 export function supportsGrokServerSideTools(model: string | undefined): boolean {
   const normalized = normalizeGrokModel(model)?.trim().toLowerCase();
-  if (!normalized) return true;
+  if (!normalized) return false;
   return normalized.startsWith(GROK_SERVER_SIDE_TOOL_PREFIX);
 }
 
