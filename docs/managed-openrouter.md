@@ -8,13 +8,13 @@ requests to the AgenC LiteLLM/OpenRouter gateway.
 Related: [onboarding](onboarding.md) · [quickstart](quickstart.md) ·
 [install](install.md).
 
-## Defaults (0.3.0)
+## Defaults (0.4.1)
 
 | Setting | Value |
 |---|---|
 | `auth.backend` | `remote` (default) |
 | `auth.managedKeys.enabled` | **`true`** (default) |
-| Default paid managed model | `openrouter` / `x-ai/grok-4.3` |
+| Default paid managed model | `openrouter` / `x-ai/grok-4.5` |
 | Free-tier managed routes | OpenRouter `:free` models (see below) |
 | **Managed OpenRouter default max output** | **`2_048`** (`MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS` in `session.ts` / `bootstrap.ts`) |
 | Generic openai-compatible catalog default | `32_000` (`DEFAULT_MAX_OUTPUT_TOKENS`) — **not** the managed path |
@@ -45,7 +45,7 @@ enabled = false
 3. Free-tier accounts may use the **hosted free OpenRouter routes** only
    (models listed in `runtime/src/llm/registry/openrouter-free-models.ts`).
    Paid tiers (`pro` / `team` / `enterprise`) see the full hosted OpenRouter
-   list, defaulting to `x-ai/grok-4.3`.
+   list, defaulting to `x-ai/grok-4.5`.
 4. `/provider` prioritizes OpenRouter for managed sessions; `/model` opens on
    the hosted list for that tier.
 5. `/usage` reads hosted allowance, spend, remaining included usage, and reset
@@ -73,9 +73,9 @@ These free pools are rate-limited and change over time — treat the live
 evaluation and light use, not as a substitute for a paid tier or BYOK when you
 need capacity guarantees.
 
-Paid managed catalog (non-exhaustive) includes `x-ai/grok-4.3`,
-`x-ai/grok-build-0.1`, and common OpenRouter IDs for OpenAI/Anthropic/Google/
-DeepSeek/Qwen/Mistral/Meta/etc. Full list:
+Paid managed catalog (non-exhaustive) includes `x-ai/grok-4.5` (paid default),
+`x-ai/grok-4.3`, `x-ai/grok-build-0.1`, and common OpenRouter IDs for
+OpenAI/Anthropic/Google/DeepSeek/Qwen/Mistral/Meta/etc. Full list:
 `runtime/src/commands/subscription-managed-models.ts`.
 
 ## TUI behavior
@@ -83,7 +83,7 @@ DeepSeek/Qwen/Mistral/Meta/etc. Full list:
 After a successful `/login`:
 
 - If the session was still on the default `grok` provider, login can switch to
-  managed `openrouter / x-ai/grok-4.3` (paid) or the tier's first free model
+  managed `openrouter / x-ai/grok-4.5` (paid) or the tier's first free model
   (free) and point you at `/model` for the rest of the hosted list.
 - If you intentionally configured another provider, login keeps that provider
   and notes that `/provider openrouter` is available.

@@ -1,6 +1,6 @@
 # Onboarding AgenC (operator guide)
 
-**Current release: 0.3.0.** This is the live product guide for first-run and
+**Current release: 0.4.1.** This is the live product guide for first-run and
 the multi-act setup path. Historical implementation notes live under
 [archive/onboarding-plan-2026-07.md](archive/onboarding-plan-2026-07.md)
 (archived — not product truth).
@@ -73,7 +73,7 @@ Then you are in chat. Flags:
 Credentials: BYOK env keys, pasted keys, local Ollama/LM Studio, or
 `agenc login` for remote auth + managed OpenRouter (default
 `auth.managedKeys.enabled = true`). Free accounts can use hosted `:free`
-routes; paid default model is `x-ai/grok-4.3`. See
+routes; paid default model is `x-ai/grok-4.5`. See
 [managed-openrouter.md](managed-openrouter.md).
 
 ## Act 2a — identity
@@ -123,8 +123,10 @@ agenc gateway install-service
 
 Full channel reference: [gateway.md](gateway.md).
 
-**Not in this act / not shipped:** Signal, WhatsApp, email, browser
-automation.
+**Not in this act:** Signal, WhatsApp, and email channels (not shipped). The
+act does not configure the **Browser** tool either — that is a LIVE coding-agent
+tool (isolated Chromium + SSRF proxy), not a messaging channel; see
+[browser.md](browser.md) and [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md).
 
 ## Act 3 — autonomy (hard order)
 

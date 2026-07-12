@@ -2290,6 +2290,21 @@ export function adaptTranscriptEvents(
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error"));
+        // Terminal for the turn. An error-terminated daemon turn never
+        // arrives as `turn_complete`: run-turn's turn_complete(stopReason:
+        // "error") is remapped to run_error → agent_status:error → this
+        // `error` event. Without clearing the streaming state here,
+        // `isStreaming` latches true and the "Working…" spinner never stops
+        // (bug-audit-2026-07-11.md #13) — noteDaemonActivity already treats
+        // `error` as turn-ending; this mirrors it in the reducer. Preserve
+        // any partial text like `turn_aborted` does.
+        persistAssistantText(streamingText);
+        streamingText = "";
+        streamingThinking = null;
+        streamingToolUses.length = 0;
+        pendingToolInputDeltas.clear();
+        isStreaming = false;
+        currentTurnId = null;
         break;
       case "slash_result": {
         // Format SlashCommandResult based on its kind instead of

@@ -1,6 +1,6 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.3.0**). For the
+A current map of how `agenc` is put together (runtime **0.4.1**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
@@ -108,7 +108,8 @@ Everything past the launcher lives in the single runtime workspace
 | `protocol/` | Shared protocol helpers |
 | `bootstrap/` / `lifecycle/` / `conversation/` | Bootstrap state, shutdown/signals, conversation token-budget and realtime |
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities |
-| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.3.0`), public barrel |
+| `browser/` | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool |
+| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.4.1`), public barrel |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -249,15 +250,22 @@ the I-10 tests that pin `I10_TRIGGER_ORDER`.
 
 ## LLM / providers
 
-Default provider is **`grok`** (xAI), default model **`grok-4.3`**
-(`config` defaults and `BUILT_IN_PROVIDER_DEFAULT_MODELS` in
-`runtime/src/llm/registry/provider-info.ts`). API key resolution for grok:
-`XAI_API_KEY` → `GROK_API_KEY` → `AGENC_XAI_API_KEY`.
+Default provider is **`grok`** (xAI). Model defaults are dual-sourced:
 
-`grok-4.5` is a selectable catalog entry (500k context, text/image, tools,
-structured output, low/medium/high effort with high default). It does not
-change the global default. Model metadata and cost assumptions are documented
-in [`reference/providers.md`](reference/providers.md).
+| Source | Grok default | Evidence |
+| --- | --- | --- |
+| Fresh `defaultConfig().model` | **`grok-4.3`** | `runtime/src/config/schema.ts` |
+| Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | **`grok-4.5`** | `runtime/src/llm/registry/provider-info.ts` |
+| Managed OpenRouter paid first model | **`x-ai/grok-4.5`** | `subscription-managed-models.ts` |
+
+Bare interactive startup with an empty/fresh config uses the **config** default
+(`grok-4.3`). Provider-only fallbacks and paid managed OpenRouter use **4.5**.
+API key resolution for grok: `XAI_API_KEY` → `GROK_API_KEY` →
+`AGENC_XAI_API_KEY`.
+
+`grok-4.5` is also a full catalog entry (500k context, text/image, tools,
+structured output, low/medium/high effort with high default). Model metadata
+and cost assumptions: [`reference/providers.md`](reference/providers.md).
 
 There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
 [`reference/providers.md`](reference/providers.md).
@@ -317,7 +325,7 @@ npm test
 npm run validate:runtime
 ```
 
-## Current status (0.3.0)
+## Current status (0.4.1)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

@@ -3,8 +3,10 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.3.0** (pre-release); embedding SDK
-**0.2.0**. Default provider **grok**, default model **grok-4.3**.
+Version in tree: **runtime / launcher 0.4.1** (pre-release); embedding SDK
+**0.2.0**. Default provider **grok**; fresh-config session model **grok-4.3**
+(provider-map / managed-OpenRouter paid defaults use **grok-4.5** /
+`x-ai/grok-4.5` — see [providers.md](reference/providers.md)).
 
 Layout follows a Diataxis-ish split: tutorials (start here), how-to, reference,
 explanation. Prefer linked pages over archive notes when they disagree.
@@ -35,6 +37,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [agent-eval-reports.md](agent-eval-reports.md) | Local agent-eval suite, reports, and regression gate |
 | [provider-tool-compat.md](provider-tool-compat.md) | Tool JSON-schema root-type requirements for strict providers |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | BUFFER providers, nvim trust boundary, env knobs |
+| [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess) |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
@@ -87,7 +90,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.3.0) |
+| [`../README.md`](../README.md) | Product README (0.4.1) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

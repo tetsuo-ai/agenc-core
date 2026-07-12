@@ -4,7 +4,7 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-pre--release-orange)
-![version](https://img.shields.io/badge/version-0.3.0-blue)
+![version](https://img.shields.io/badge/version-0.4.1-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2025-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.3.0` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.3.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.4.1` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.4.1` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -72,11 +72,15 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 - **In-terminal workbench** — project explorer, code preview, and editable
   `BUFFER` (embedded `nvim --embed` preferred). See
   [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md).
-- **16 built-in providers** — default **grok** / model **grok-4.3**; selectable
+- **16 built-in providers** — default provider **grok**; fresh-config session
+  model **grok-4.3** (provider-map fallback **grok-4.5**). Selectable
   **Grok 4.5** adds a 500k context catalog entry with low/medium/high reasoning
   (high by default for that model), vision, tools, and structured output; also
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
   deepseek, gemini, mistral, nvidia-nim, minimax, github, amazon-bedrock, agenc.
+  See [`docs/reference/providers.md`](docs/reference/providers.md).
+- **Grok OAuth** — sign in with X via `/grok-login` for subscription Grok access
+  without an API key ([`docs/grok-oauth.md`](docs/grok-oauth.md)).
 - **Embedding SDK** — `@tetsuo-ai/agenc-sdk` for socket / subprocess embedding.
   See [`docs/sdk.md`](docs/sdk.md).
 - **Durable sessions** — append-only rollout logs + SQLite state; `--continue` /
@@ -85,15 +89,15 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**0.3.0 pre-release.** Runtime and launcher are versioned `0.3.0`; the embedding
-SDK package is `0.2.0`. The public launcher is
+**0.4.1 pre-release.** Runtime and launcher are versioned `0.4.1`; the embedding
+SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is a private monorepo. Type-clean: **0** `@ts-nocheck`. MIT licensed
 ([`LICENSE`](LICENSE)).
 
-Shipped in this line: multi-channel gateway, heartbeat, budget envelope
-(heartbeat/cron/hooks), personas (onboard identity), hooks webhooks, onboard
-acts 2–3, `agenc update`, remote pairing, SDK.
+Shipped in this line: multi-channel gateway, Browser tool, heartbeat, budget
+envelope (heartbeat/cron/hooks), personas (onboard identity), hooks webhooks,
+onboard acts 2–3, `agenc update`, remote pairing, Grok OAuth, SDK.
 
 ## Requirements
 

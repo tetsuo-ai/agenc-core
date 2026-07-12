@@ -118,6 +118,6 @@ Coming from another assistant?
 
 ## Not shipped (do not expect these yet)
 
-Signal, WhatsApp, and email channel are not in 0.4.0.
+Signal, WhatsApp, and email channel are not in 0.4.1.
 Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
 `agenc gateway`.
