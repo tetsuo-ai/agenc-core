@@ -84,6 +84,7 @@ import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
 import { createImagineImageTool } from "../tools/system/imagine-image.js";
+import { createImagineVideoTool } from "../tools/system/imagine-video.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionResult,
@@ -3604,16 +3605,22 @@ export function createModelFacingTools(
   // Credentials = BYOK **or** /grok-login OAuth (subscription Grok Build).
   // Execute-time refuses remain as defense-in-depth.
   const grokDirect = isGrokDirectXaiSession(opts);
-  const includeImagine = grokDirect && hasXaiCredentials(opts.env);
+  // Image + video Imagine surface (same credential probe as Hermes).
+  const includeImagineMedia = grokDirect && hasXaiCredentials(opts.env);
 
   return [
     ...createMultiAgentV2RuntimeTools(opts),
     ...createMcpResourceTools(opts),
     createSkillInvocationRuntimeTool(opts),
     ...createWebTools(opts),
-    ...(includeImagine
+    ...(includeImagineMedia
       ? [
           createImagineImageTool({
+            workspaceRoot: opts.workspaceRoot,
+            getSession: opts.getSession,
+            ...(opts.env !== undefined ? { env: opts.env } : {}),
+          }),
+          createImagineVideoTool({
             workspaceRoot: opts.workspaceRoot,
             getSession: opts.getSession,
             ...(opts.env !== undefined ? { env: opts.env } : {}),

@@ -4,7 +4,7 @@
  * Gate stack (fail-closed):
  * 1. Session provider === "grok"
  * 2. Direct xAI host (not OpenRouter)
- * 3. BYOK API key (OAuth-only media is refused until empirically verified)
+ * 3. /grok-login OAuth (wins) or BYOK aliases
  *
  * @module
  */
