@@ -74,12 +74,32 @@ similarly, with a 5 MiB per-resource byte cap.
 
 ### Model-facing MCP tools
 
-Built-in tools that help the agent work with MCP:
+There is **no** LIVE tool named `MCPTool`. External MCP tools appear as deferred
+registry entries under the namespace **`mcp.<server>.<tool>`**.
 
-- `MCPTool` / MCP auth helpers
-- `ListMcpResourcesTool` / `ReadMcpResourceTool`
+Built-in helpers that help the agent work with MCP resources:
+
+- `ListMcpResources` / `ListMcpResourcesTool`
+- `ReadMcpResource` / `ReadMcpResourceTool`
+
+(`McpAuthTool` exists as a donor-style OAuth helper in the tools tree; it is
+not the primary LIVE bridge surface.)
 
 Slash: `/mcp` opens the MCP connection menu in the TUI.
+
+### CLI
+
+```bash
+agenc mcp serve [--transport stdio|sse]
+agenc mcp add|list|get|remove|add-json|add-from-agenc-desktop
+agenc mcp reset-project-choices
+agenc mcp doctor
+agenc mcp xaa
+```
+
+`serve` transport defaults and host/port for network modes come from config
+`[mcp.server]` (the CLI rejects inventing `--host`/`--port` flags on the
+command line). Full flag tables: [cli.md](cli.md).
 
 ### Sampling & roots
 
@@ -89,9 +109,14 @@ unavailable result. Host roots are advertised per the MCP connection.
 
 ## Inbound server
 
-`runtime/src/mcp-server/` hosts the framework, stdio and HTTP/SSE entrypoints,
-and tool exposure so external hosts can call into AgenC-shaped tools. Prefer
-config `[mcp.server]` and the `agenc mcp` CLI surfaces rather than importing
+Two related layers:
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| Framework | `runtime/src/mcp-server/` | Protocol handlers, stdio/HTTP/SSE adapters |
+| Config start entry | `runtime/src/mcp/server/start.ts` | What the CLI / daemon actually starts from `[mcp.server]` |
+
+Prefer config `[mcp.server]` and the `agenc mcp` CLI rather than importing
 framework modules from embedders.
 
 ## Security notes

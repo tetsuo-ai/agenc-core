@@ -1,9 +1,11 @@
 # Cost-bounded autonomy: budget enforcement design
 
-**Task 15.** A daemon-owned budget layer that bounds what an autonomous agent
-(heartbeat, cron, hooks, background) can spend, so AgenC never reproduces the
-idle-burn failure mode. This note records the SOTA research the design is
-grounded in and the decisions that follow from it.
+**Task 15.** A daemon-owned budget layer that bounds what **cumulative-wired
+autonomous surfaces** (heartbeat, cron delivery, hooks HTTP) can spend, so AgenC
+never reproduces the idle-burn failure mode. Background agent runs use
+**per-run** caps only (not this cumulative ledger) — see Live wire-up below.
+This note records the SOTA research the design is grounded in and the decisions
+that follow from it.
 
 Operator-facing summary of live surfaces:
 [`../reference/autonomy.md`](../reference/autonomy.md).
@@ -118,7 +120,7 @@ Default `[agent.budget]` is **empty** (no token/dollar/wall-clock caps) so long
 foreground-style sessions are not killed by a hidden ceiling; operators who
 want per-run caps set them explicitly.
 
-## Live wire-up (current as of 0.3.0)
+## Live wire-up (current as of 0.4.1)
 
 The enforcer primitive is **implemented and live** on the autonomous gateway
 surfaces. Callers construct a `BudgetEnforcer` with

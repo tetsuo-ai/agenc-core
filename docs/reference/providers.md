@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.3.0**. Source of truth:
+Built-in model providers for AgenC **0.4.1**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs).
 
@@ -12,9 +12,16 @@ CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 | Setting | Value |
 | --- | --- |
 | Default provider | `grok` (xAI; alias `xai` normalizes to `grok`) |
-| Default model | `grok-4.3` |
+| Fresh-config session model | `grok-4.3` (`defaultConfig().model`) |
+| Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | `grok-4.5` |
+| Managed OpenRouter paid default | `x-ai/grok-4.5` |
 | Config keys | `model_provider`, `model` in `config.toml` |
 | Env overrides | `AGENC_PROVIDER`, `AGENC_MODEL` |
+
+Bare interactive startup with a fresh install uses the **config** default
+(`grok-4.3`). When only a provider slug is resolved without an explicit model
+(or when managed OpenRouter picks its paid default), the registry uses
+**`grok-4.5`** / **`x-ai/grok-4.5`**.
 
 Grok API key resolution order:
 
@@ -24,8 +31,9 @@ Grok API key resolution order:
 
 ### Grok 4.5 catalog entry
 
-`grok-4.5` is selectable but does **not** replace the global `grok-4.3`
-default. The runtime catalog exposes:
+`grok-4.5` is the provider-map default for `grok` and a full catalog entry.
+Fresh `config.toml` still seeds `model = "grok-4.3"` until you change it. The
+runtime catalog for Grok 4.5 exposes:
 
 | Property | Value |
 | --- | --- |
@@ -51,13 +59,13 @@ the configured model.
 
 | Slug | Display name | Default model | Base URL | API key env (primary) |
 | --- | --- | --- | --- | --- |
-| `grok` | xAI Grok | `grok-4.3` | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `grok` | xAI Grok | `grok-4.5` (map); session seed `grok-4.3` | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
 | `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none required)_ |
 | `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) |
 | `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY` |
-| `openrouter` | OpenRouter | `x-ai/grok-4.3` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
 | `deepseek` | DeepSeek | `deepseek-reasoner` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
 | `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
@@ -102,7 +110,7 @@ model = "grok-4.3"
 
 ```bash
 export AGENC_PROVIDER=openrouter
-export AGENC_MODEL=x-ai/grok-4.3
+export AGENC_MODEL=x-ai/grok-4.5
 export OPENROUTER_API_KEY=…
 ```
 

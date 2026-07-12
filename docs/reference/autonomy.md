@@ -1,7 +1,7 @@
 # Autonomy reference
 
 Operator and developer guide for **cost-bounded autonomous surfaces** in
-AgenC **0.3.0**: cumulative budget enforcement, heartbeat, cron delivery, and
+AgenC **0.4.1**: cumulative budget enforcement, heartbeat, cron delivery, and
 hooks HTTP.
 
 Design background: [`../design/budget-enforcement.md`](../design/budget-enforcement.md).

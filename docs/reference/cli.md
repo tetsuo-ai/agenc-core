@@ -11,7 +11,8 @@ dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
 wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
-Version: **0.3.0**. Default session provider **grok**, default model **grok-4.3**.
+Version: **0.4.1**. Default session provider **grok**, fresh-config session model
+**grok-4.3** (provider-map fallback **grok-4.5** — see [providers.md](providers.md)).
 
 ---
 
@@ -423,7 +424,8 @@ agenc trajectories export [options]
 
 Curates redacted trajectory exports written by the session sink (enable with
 `AGENC_TRAJECTORY_EXPORT_DIR=<dir>`, then run sessions) into training-data JSONL.
-Local file processing only — no network.
+If the dir env is unset, `--dir` can also fall back to the parent of
+`AGENC_TRAJECTORY_EXPORT_PATH`. Local file processing only — no network.
 
 Only trajectories that completed at least one turn with no error event, no
 abort/interrupt, and no user tool-use rejection are kept.

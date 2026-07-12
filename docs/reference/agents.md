@@ -13,7 +13,8 @@ AgenC runs concurrent agent work on two related surfaces:
 Implementation: `runtime/src/agents/v2/`. Parity notes:
 [`runtime/src/agents/v2/PARITY.md`](../../runtime/src/agents/v2/PARITY.md).
 
-Registered by `createMultiAgentV2Tools()`:
+Registered by `createMultiAgentV2Tools()` (plus CSV job tools from the same
+LIVE multi-agent surface):
 
 | Tool | Role |
 | --- | --- |
@@ -23,6 +24,8 @@ Registered by `createMultiAgentV2Tools()`:
 | `assign_task` | Give a running worker a new task (**triggers a turn**) |
 | `send_message` | Follow-up to a running worker (**does not** trigger a turn) |
 | `list_agents` | Inspect workers in the agent tree |
+| `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator) |
+| `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator |
 
 ### Behavior invariants
 
@@ -64,7 +67,20 @@ See `getLiveCoordinatorSystemPrompt()` for the model-facing instructions.
 
 ## Background agents (daemon)
 
-Daemon methods (SDK + JSON-RPC):
+### CLI
+
+```bash
+agenc agent start <objective> [--unattended-allow …] [--unattended-deny …]
+agenc agent list
+agenc agent attach <id>
+agenc agent stop <id>
+agenc agent logs <id>
+```
+
+Source: `runtime/src/app-server/agent-cli.ts` (dispatched from `bin/agenc.ts`).
+See also [cli.md](cli.md).
+
+### Daemon methods (SDK + JSON-RPC)
 
 | Method | Purpose |
 | --- | --- |
@@ -79,7 +95,7 @@ SDK helpers on `AgencClient`: `spawnAgent`, `listAgents`, `attachAgent`,
 
 Background agents use the **unattended** permission policy when no interactive
 client is attached (internal mode; not a user-facing CLI default). Unattended
-allow/deny lists can be supplied at create time.
+allow/deny lists can be supplied at create time via CLI flags or the RPC.
 
 The channel gateway provisions passive agents
 (`initialContent: []` suppresses an objective turn) and adopts each agent's

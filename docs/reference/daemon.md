@@ -1,6 +1,6 @@
 # Daemon reference
 
-The local **app-server** control plane for AgenC **0.3.0**. One daemon per
+The local **app-server** control plane for AgenC **0.4.1**. One daemon per
 `AGENC_HOME`. Clients (TUI, print CLI, gateway, remote, SDK, background
 agents) attach over a local socket and speak JSON-RPC.
 

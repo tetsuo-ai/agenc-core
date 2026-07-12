@@ -155,6 +155,7 @@ read-only and auto-approved; `navigate` and acting actions prompt in default
 mode (`navigate` can be granted a persistent per-domain allow rule). Config:
 `[browser]` (`executable_path`, `headless`, `allow_private_network`,
 `profile_dir`, `no_sandbox`, `navigation_timeout_ms`) + `AGENC_BROWSER_*` env.
+Operator guide (SSRF, env, profile): [`../browser.md`](../browser.md).
 See the bundled `browser-automation` skill for the snapshot→act→re-snapshot
 workflow.
 

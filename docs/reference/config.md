@@ -1,6 +1,6 @@
 # Config reference
 
-Operator config for AgenC **0.3.0**. Sources of truth:
+Operator config for AgenC **0.4.1**. Sources of truth:
 
 | Concern | Path |
 | --- | --- |
@@ -91,7 +91,12 @@ coordinator_mode = false
 | `AGENC_MAX_OUTPUT_TOKENS` | `max_output_tokens` |
 | `AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS` | `capped_default_max_output_tokens` |
 | `AGENC_MAX_BUDGET_USD` | `max_budget_usd` |
-| `AGENC_COORDINATOR_MODE` | `coordinator_mode` (truthy) |
+
+`AGENC_COORDINATOR_MODE` is **not** applied via `applyEnvOverrides`. It is a
+runtime feature-gated env read by `coordinator/coordinatorMode.ts` (and the
+`/coordinator` slash command); set `coordinator_mode` in TOML for the config
+field, or use the env for runtime toggle when the `COORDINATOR_MODE` feature
+flag is on.
 
 API keys are **not** written into the config snapshot; resolve via provider envs
 (see [providers.md](providers.md)).
@@ -281,25 +286,23 @@ snapshot_max_bytes = 67108864
 
 Default `agent.budget` is empty (no per-run cap).
 
-### `durableTurns`
+### `durableTurns` (typed, not a known TOML key today)
 
-Typed shape on `AgenCConfig` (`DurableTurnsConfig`) for checkpointed turns:
+`DurableTurnsConfig` is typed on `AgenCConfig` and used by the turn loop
+(`session/run-turn.ts`, `session/durable-turns`), but **`durableTurns` is not
+in `KNOWN_CONFIG_KEYS`**. A `[durableTurns]` block in `config.toml` is currently
+preserved under `_unknown` rather than applied as typed config.
 
-```toml
-# Shape from schema (Stage 1: checkpoint write cheap; resume policy "safe" only)
-[durableTurns.checkpoint]
-enabled = true
-minIntervalMs = 0
+Operational control is primarily via env:
 
-[durableTurns.resume]
-onRestart = false
-policy = "safe"
-requireLease = true
-buildPinning = true
-```
+| Env | Effect |
+| --- | --- |
+| `AGENC_DURABLE_TURNS` | Enable/disable durable-turn checkpointing |
+| `AGENC_DURABLE_TURNS_RESUME` | Resume-on-restart policy control |
 
-Used by the turn loop (`session/run-turn.ts`, `session/durable-turns`). Prefer
-`agenc config validate` after edits.
+Runtime defaults (when enabled programmatically / via env) treat resume-on-restart
+as **on** unless disabled. Prefer env + tests over inventing TOML until the key
+lands in `KNOWN_CONFIG_KEYS`.
 
 ### `[daemon]`
 
@@ -349,6 +352,31 @@ hooks = [
   { type = "command", command = "echo pre-tool", timeout_ms = 5000 },
 ]
 ```
+
+### `[browser]`
+
+Operational settings for the LIVE `Browser` tool (isolated Chromium). Enable
+the tool via `tools_config`; this block only tunes how it runs. Full guide:
+[browser.md](../browser.md). Source: `runtime/src/browser/config.ts`.
+
+```toml
+[browser]
+# executable_path = "/usr/bin/chromium"
+headless = true
+allow_private_network = false   # SSRF: private/loopback blocked by default
+# profile_dir = "~/.agenc/browser/profile"
+no_sandbox = false              # set true in some containers
+navigation_timeout_ms = 30000
+```
+
+| Env | Effect |
+| --- | --- |
+| `AGENC_BROWSER_EXECUTABLE` | Chromium binary path |
+| `AGENC_BROWSER_HEADLESS` | on/off (default on) |
+| `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK` | on/off (default off) |
+| `AGENC_BROWSER_PROFILE_DIR` | dedicated profile dir |
+| `AGENC_BROWSER_NO_SANDBOX` | Chromium `--no-sandbox` |
+| `AGENC_BROWSER_NAV_TIMEOUT_MS` | navigation timeout ms |
 
 ### Other known blocks
 

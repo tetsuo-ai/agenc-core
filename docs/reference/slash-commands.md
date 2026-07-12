@@ -24,6 +24,8 @@ Order matches `buildDefaultRegistry`.
 | `/whoami` | `account` | Show the signed-in AgenC account |
 | `/subscription` | `billing` | Show your AgenC plan and billing URL |
 | `/usage` | | Show hosted model usage for your AgenC plan |
+| `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow) |
+| `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
 | `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
@@ -57,11 +59,11 @@ Order matches `buildDefaultRegistry`.
 | `/exit` | `quit` | Shut down the session cleanly and exit |
 
 Sources: `runtime/src/commands/*.ts(x)` modules imported by the registry
-(`help`, `status`, `auth`, `cost`, `model`, `provider`, `permissions`, `plan`,
-`agent-management`, `tasks`, `todos`, `config`, `hooks`, `skills`, `mcp`,
-`remote`, `plugins`, `memory/slash`, `resume`, `rewind`, `init`,
+(`help`, `status`, `auth`, `xai-auth`, `cost`, `model`, `provider`,
+`permissions`, `plan`, `agent-management`, `tasks`, `todos`, `config`, `hooks`,
+`skills`, `mcp`, `remote`, `plugins`, `memory/slash`, `resume`, `rewind`, `init`,
 `output-style`, `clear`, `session-compact`, `coordinator`, `diff`, `protocol`,
-`exit`).
+`exit`). Related how-to: [grok-oauth.md](../grok-oauth.md).
 
 ---
 
