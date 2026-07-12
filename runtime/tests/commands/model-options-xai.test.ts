@@ -72,8 +72,8 @@ afterEach(async () => {
 });
 
 describe("xAI model options", () => {
-  it("uses grok-4.3 as the default and hides legacy Anthropic picker rows", () => {
-    expect(getDefaultMainLoopModelSetting()).toBe("grok-4.3");
+  it("uses grok-4.5 as the default and hides legacy Anthropic picker rows", () => {
+    expect(getDefaultMainLoopModelSetting()).toBe("grok-4.5");
 
     const options = getModelOptions(false);
     // The grok picker is derived from REGISTERED_MODEL_CATALOG, with the
@@ -86,6 +86,7 @@ describe("xAI model options", () => {
       "grok-4.20-0309-reasoning",
       "grok-4.20-0309-non-reasoning",
       "grok-4.20-multi-agent-0309",
+      "grok-composer-2.5-fast",
     ]);
     expect(options.map((option) => option.label)).not.toEqual(
       expect.arrayContaining(["Sonnet", "Opus", "Haiku"]),

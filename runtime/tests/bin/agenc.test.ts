@@ -573,7 +573,7 @@ describe("initializeCliRuntime", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("PROVIDER_MODEL_CATALOG", () => {
-  it("advertises grok models including the default grok-4.3", () => {
+  it("advertises grok models including the default grok-4.5", () => {
     // The grok catalog is derived from REGISTERED_MODEL_CATALOG.
     expect(PROVIDER_MODEL_CATALOG.grok).toEqual([
       "grok-4.5",
@@ -582,6 +582,7 @@ describe("PROVIDER_MODEL_CATALOG", () => {
       "grok-4.20-0309-reasoning",
       "grok-4.20-0309-non-reasoning",
       "grok-4.20-multi-agent-0309",
+      "grok-composer-2.5-fast",
     ]);
   });
 });

@@ -116,7 +116,7 @@ describe("LLM registry", () => {
     expect(resolveBuiltInProviderInfo("xai")).toMatchObject({
       id: "grok",
       name: "xAI Grok",
-      defaultModel: "grok-4.3",
+      defaultModel: "grok-4.5",
       apiKeyEnvVar: "XAI_API_KEY",
       requestMaxRetries: 4,
       streamMaxRetries: 5,

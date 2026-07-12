@@ -54,11 +54,11 @@ test('getDefaultMainLoopModel reflects config.model for the active xai provider'
   expect(getDefaultMainLoopModel()).toBe('grok-build-0.1')
 })
 
-test('getDefaultMainLoopModel still defaults to grok-4.3 when config.model is unset', () => {
+test('getDefaultMainLoopModel still defaults to grok-4.5 when config.model is unset', () => {
   process.env.XAI_API_KEY = 'xai-test'
   setActiveConfigModel(undefined)
 
-  expect(getDefaultMainLoopModel()).toBe('grok-4.3')
+  expect(getDefaultMainLoopModel()).toBe('grok-4.5')
 })
 
 test('grok-4.3 keeps working when it is the configured model', () => {
@@ -81,5 +81,5 @@ test('config model for a different provider does not leak into xai default', () 
   // Published selection is for openai, but the active provider is xai.
   setActiveConfigModel({ provider: 'openai', model: 'gpt-5' })
 
-  expect(getDefaultMainLoopModel()).toBe('grok-4.3')
+  expect(getDefaultMainLoopModel()).toBe('grok-4.5')
 })

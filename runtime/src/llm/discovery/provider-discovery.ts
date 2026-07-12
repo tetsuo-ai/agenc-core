@@ -15,6 +15,7 @@ import { loadConfig } from "../../config/loader.js";
 import { resolveAgencHome } from "../../config/env.js";
 import { resolveProviderSettings } from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
+import { readXaiOauthAccessToken } from "../../utils/xaiOauthCredentials.js";
 import {
   BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -451,6 +452,17 @@ function resolveProviderCredential(params: {
     }
   }
   const settingsApiKey = firstNonEmptyString(params.settingsApiKey);
+  if (settingsApiKey === undefined && params.provider === "grok") {
+    // Sign in with X / xAI OAuth: a stored subscription bearer counts as a
+    // present credential so grok reports usable without XAI_API_KEY.
+    const oauthBearer = readXaiOauthAccessToken();
+    if (oauthBearer !== undefined) {
+      return {
+        apiKey: oauthBearer,
+        primaryEnvVar: configuredEnvVar ?? candidates[0],
+      };
+    }
+  }
   return {
     ...(settingsApiKey !== undefined ? { apiKey: settingsApiKey } : {}),
     primaryEnvVar: configuredEnvVar ?? candidates[0] ??

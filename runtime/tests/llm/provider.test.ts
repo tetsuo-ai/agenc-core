@@ -1961,7 +1961,7 @@ describe("createProvider", () => {
       () => createProvider("grok", { apiKey: "test-key" }),
     );
 
-    expect(readProviderFactoryOptions(provider).model).toBe("grok-4.3");
+    expect(readProviderFactoryOptions(provider).model).toBe("grok-4.5");
   });
 
   test("'openai' without apiKey throws explanatory error", () => {
@@ -1986,7 +1986,7 @@ describe("createProvider", () => {
       () => createProvider("openrouter", { apiKey: "or-test" }),
     );
 
-    expect(readProviderFactoryOptions(provider).model).toBe("x-ai/grok-4.3");
+    expect(readProviderFactoryOptions(provider).model).toBe("x-ai/grok-4.5");
   });
 
   test("'lmstudio' uses the registry default model without an override", () => {

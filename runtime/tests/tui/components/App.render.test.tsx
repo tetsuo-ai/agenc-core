@@ -84,6 +84,7 @@ vi.mock("src/utils/debug.js", () => ({
 
 vi.mock("src/utils/envUtils.js", () => ({
   isEnvTruthy: () => false,
+  isBareMode: () => false,
 }));
 
 vi.mock("../context/fpsMetrics.js", async () => {
@@ -257,6 +258,7 @@ vi.mock("../../utils/thinking.js", () => ({
 
 vi.mock("../../utils/envUtils.js", () => ({
   isEnvTruthy: () => false,
+  isBareMode: () => false,
 }));
 
 vi.mock("../../utils/fullscreen.js", () => ({

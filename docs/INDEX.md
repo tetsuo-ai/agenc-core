@@ -26,6 +26,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [gateway.md](gateway.md) | Channel gateway: Telegram, Discord, Slack, WebChat, stdio; pairing; heartbeat/hooks |
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
+| [grok-oauth.md](grok-oauth.md) | Sign in with X — Grok subscription access without an API key |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |

@@ -33,6 +33,8 @@ const MINIMAL_NAMES = [
   "whoami",
   "subscription",
   "usage",
+  "grok-login",
+  "grok-logout",
   "cost",
   "model",
   "provider",

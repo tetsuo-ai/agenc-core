@@ -311,7 +311,7 @@ describe("first-run onboarding wizard", () => {
       const state = createInitialFirstRunOnboardingState(context);
 
       expect(state.selectedProvider).toBe("openrouter");
-      expect(state.selectedModel).toBe("x-ai/grok-4.3");
+      expect(state.selectedModel).toBe("x-ai/grok-4.5");
       expect(detailLinesForStep({ ...state, currentStepId: "provider" }, context)[0]).toBe(
         "1. openrouter (current)",
       );

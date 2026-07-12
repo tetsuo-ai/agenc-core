@@ -137,7 +137,7 @@ export function getSmallFastModel(): ModelName {
   }
   // xAI — OPENAI_MODEL carries the active Grok model.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4.3'
+    return process.env.OPENAI_MODEL || 'grok-4.5'
   }
   return getDefaultHaikuModel()
 }
@@ -251,7 +251,7 @@ export function getDefaultOpusModel(): ModelName {
   }
   // xAI — flagship Grok model for "opus"-equivalent.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4.3'
+    return process.env.OPENAI_MODEL || 'grok-4.5'
   }
   // Other third-party provider API modes may lag firstParty model launches, so
   // keep their generic fallback on Opus 4.6 until they roll out 4.7.
@@ -296,7 +296,7 @@ export function getDefaultSonnetModel(): ModelName {
   }
   // xAI — flagship Grok model for "sonnet"-equivalent.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4.3'
+    return process.env.OPENAI_MODEL || 'grok-4.5'
   }
   // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
   if (getAPIProvider() !== 'firstParty') {
@@ -341,7 +341,7 @@ export function getDefaultHaikuModel(): ModelName {
   // xAI — use the current Grok model for "haiku"-equivalent. Older fast
   // Grok aliases retired, so do not fall back to stale model IDs here.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4.3'
+    return process.env.OPENAI_MODEL || 'grok-4.5'
   }
 
   // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
@@ -419,12 +419,12 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
       'gpt-5.5'
     )
   }
-  // xAI provider: env model, then AgenC config.model, then default (grok-4.3)
+  // xAI provider: env model, then AgenC config.model, then default (grok-4.5)
   if (getAPIProvider() === 'xai') {
     return (
       process.env.OPENAI_MODEL ||
       getConfigModelForApiProvider('xai') ||
-      'grok-4.3'
+      'grok-4.5'
     )
   }
   if (getAPIProvider() === 'nvidia-nim') {
@@ -652,6 +652,7 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       'gemini-3-flash-preview': 'Gemini 3 Flash',
       'gemini-2.5-pro': 'Gemini 2.5 Pro',
       'grok-4.5': 'Grok 4.5',
+      'grok-composer-2.5-fast': 'Grok Composer 2.5 fast',
       'grok-4.3': 'Grok 4.3',
       'grok-4.20-0309-reasoning': 'Grok 4.20 reasoning',
       'grok-4.20-0309-non-reasoning': 'Grok 4.20 non-reasoning',

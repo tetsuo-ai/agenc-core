@@ -336,7 +336,7 @@ function clearLocalAuthNotice(ctx: SlashCommandContext): void {
   });
 }
 
-async function openUrlInBrowser(url: string): Promise<void> {
+export async function openUrlInBrowser(url: string): Promise<void> {
   const { command, args } = browserOpenCommand(url);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {

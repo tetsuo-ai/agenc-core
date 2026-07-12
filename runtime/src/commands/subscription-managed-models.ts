@@ -15,6 +15,7 @@ const HIDDEN_SUBSCRIPTION_MANAGED_MODEL_IDS = new Set<string>([
 ]);
 
 const OPENROUTER_PAID_MODELS = [
+  "x-ai/grok-4.5",
   "x-ai/grok-4.3",
   "x-ai/grok-build-0.1",
   "openai/gpt-4o-mini",

@@ -283,6 +283,32 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     {
+      // Served ONLY through ACP (the Grok Build CLI, `grok agent stdio`) per
+      // xAI — the factory routes composer models to GrokAcpProvider, never
+      // to the direct inference endpoints. No agenc tool use: the CLI runs
+      // its own loop and agenc keeps workspace authority.
+      provider: "grok",
+      model: "grok-composer-2.5-fast",
+      displayName: "Grok Composer 2.5 fast",
+      contextWindow: 200_000,
+      maxContextWindow: 200_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: false,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      // Sorts after the direct-inference grok family: it is a specialty
+      // ACP-only route, not a general chat pick.
+      priority: 36,
+      visibility: "list",
+    },
+    {
       // New model — added as a single registry entry. Sorts first within the
       // pre-4.5 grok family entries.
       provider: "grok",

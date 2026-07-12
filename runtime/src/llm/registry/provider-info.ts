@@ -50,13 +50,13 @@ const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 
 export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
-  grok: "grok-4.3",
+  grok: "grok-4.5",
   openai: "gpt-5",
   anthropic: "claude-opus-4-7",
   ollama: "llama3.3",
   lmstudio: "gpt-4o-mini",
   "openai-compatible": "local-model",
-  openrouter: "x-ai/grok-4.3",
+  openrouter: "x-ai/grok-4.5",
   groq: "llama-3.3-70b-versatile",
   deepseek: "deepseek-reasoner",
   gemini: "gemini-2.5-pro",
@@ -130,6 +130,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   lmstudio: Object.freeze(["gpt-4o-mini"]),
   "openai-compatible": Object.freeze(["local-model"]),
   openrouter: Object.freeze([
+    "x-ai/grok-4.5",
     "x-ai/grok-4.3",
     "x-ai/grok-build-0.1",
     "x-ai/grok-4.20",

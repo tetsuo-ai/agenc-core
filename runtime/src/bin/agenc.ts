@@ -12,7 +12,7 @@
  *
  * Env:
  *   XAI_API_KEY        required — xAI API key (also accepts GROK_API_KEY)
- *   AGENC_MODEL        optional — model override (default: grok-4.3)
+ *   AGENC_MODEL        optional — model override (default: grok-4.5)
  *   AGENC_WORKSPACE    optional — project root (default: process.cwd())
  *   AGENC_HOME         optional — state dir (default: $HOME/.agenc)
  *

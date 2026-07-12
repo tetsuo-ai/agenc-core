@@ -15,6 +15,7 @@ import type {
   ProviderConfig,
   ProviderFallbackTargetConfig,
 } from "./schema.js";
+import { readXaiOauthAccessToken } from "../utils/xaiOauthCredentials.js";
 
 export {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -105,7 +106,10 @@ export function resolveProviderSettings(
   const apiKeyEnvVar = providerConfig?.api_key_env?.trim() || undefined;
   const apiKey =
     (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
-    resolveEnvProviderApiKey(slug, env);
+    resolveEnvProviderApiKey(slug, env) ??
+    // Sign in with X / xAI OAuth: env keys win, but a stored subscription
+    // bearer makes grok usable without XAI_API_KEY.
+    (slug === "grok" ? readXaiOauthAccessToken() : undefined);
   const envBaseURL = resolveEnvProviderBaseURL(slug, env);
   const configuredBaseURL = providerConfig?.base_url?.trim();
   const baseURL = envBaseURL ?? configuredBaseURL;

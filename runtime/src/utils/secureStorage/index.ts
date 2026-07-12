@@ -47,6 +47,18 @@ export interface SecureStorageData {
   mcpXaaIdpConfig?: Record<string, { clientSecret: string }>
   trustedDeviceToken?: string
   pluginSecrets?: Record<string, Record<string, string>>
+  /** xAI OAuth (Sign in with X / Grok subscription) tokens. */
+  xaiOauth?: {
+    accessToken: string
+    refreshToken?: string
+    idToken?: string
+    expiresAt?: number
+    tokenEndpoint?: string
+    accountLabel?: string
+    lastRefreshAt?: number
+    quarantinedAt?: number
+    quarantineReason?: string
+  }
 }
 
 export interface SecureStorage {

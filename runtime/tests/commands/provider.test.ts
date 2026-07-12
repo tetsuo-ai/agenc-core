@@ -385,7 +385,8 @@ describe("providerCommand", () => {
         authState: "managed",
         auth: "subscription",
       });
-      expect(openrouter?.models.slice(0, 19)).toEqual([
+      expect(openrouter?.models.slice(0, 20)).toEqual([
+        "x-ai/grok-4.5",
         "x-ai/grok-4.3",
         "x-ai/grok-build-0.1",
         "openai/gpt-4o-mini",
@@ -408,7 +409,7 @@ describe("providerCommand", () => {
       ]);
       expect(openrouter?.models).not.toContain("openrouter/free");
       expect(openrouter?.models).toContain("openai/gpt-oss-20b:free");
-      expect(openrouter?.models.length).toBeGreaterThan(19);
+      expect(openrouter?.models.length).toBeGreaterThan(20);
       expect(openrouter?.credentialSource).toContain("subscription-managed key");
     } finally {
       if (previous === undefined) {
@@ -438,7 +439,7 @@ describe("providerCommand", () => {
           provider: "openrouter",
           authState: "managed",
           auth: "subscription",
-          model: "x-ai/grok-4.3",
+          model: "x-ai/grok-4.5",
         });
         expect(snapshot.rows[snapshot.activeIndex]?.provider).toBe("openrouter");
         expect(snapshot.currentProvider).toBe("grok");

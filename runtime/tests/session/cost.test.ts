@@ -293,7 +293,7 @@ describe("cost helpers", () => {
 
     // The grok provider default specifically must be a known cost.
     const defaultModel = BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
-    expect(defaultModel).toBe("grok-4.3");
+    expect(defaultModel).toBe("grok-4.5");
     expect(
       resolveModelCostEntry(
         { model: defaultModel, provider: "grok" },

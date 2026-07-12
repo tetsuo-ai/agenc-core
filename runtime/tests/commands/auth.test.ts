@@ -140,8 +140,8 @@ describe("auth slash commands", () => {
         "Billing: https://id.agenc.ag/subscription\n" +
         "Managed models: enabled\n" +
         "Model access: hosted by AgenC\n" +
-        "Available models: 41 managed OpenRouter routes\n" +
-        "Default route: /model openrouter:x-ai/grok-4.3\n" +
+        "Available models: 42 managed OpenRouter routes\n" +
+        "Default route: /model openrouter:x-ai/grok-4.5\n" +
         "Choose/switch models with /provider.",
     );
     expect(text).not.toContain(" or /model ");

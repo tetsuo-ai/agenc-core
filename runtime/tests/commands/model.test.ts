@@ -460,8 +460,11 @@ describe("modelCommand", () => {
       .filter(row => row.provider === "openrouter")
       .map(row => row.model);
 
-    expect(openrouterModels.slice(0, 19)).toEqual([
+    // The session's active model (grok-4.3) is hoisted above the default
+    // ordering, which now leads with grok-4.5.
+    expect(openrouterModels.slice(0, 20)).toEqual([
       "x-ai/grok-4.3",
+      "x-ai/grok-4.5",
       "x-ai/grok-build-0.1",
       "openai/gpt-4o-mini",
       "openai/gpt-5-nano",
@@ -483,7 +486,7 @@ describe("modelCommand", () => {
     ]);
     expect(openrouterModels).not.toContain("openrouter/free");
     expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
-    expect(openrouterModels.length).toBeGreaterThan(19);
+    expect(openrouterModels.length).toBeGreaterThan(20);
     expect(snapshot.rows.every(row => row.provider === "openrouter")).toBe(true);
     });
   });
@@ -504,12 +507,12 @@ describe("modelCommand", () => {
 
         expect(snapshot.rows[0]).toMatchObject({
           provider: "openrouter",
-          model: "x-ai/grok-4.3",
+          model: "x-ai/grok-4.5",
           detail: "default hosted subscription model",
         });
         expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
           provider: "openrouter",
-          model: "x-ai/grok-4.3",
+          model: "x-ai/grok-4.5",
         });
         expect(snapshot.rows.some(row => row.provider === "grok")).toBe(true);
       } finally {
@@ -544,7 +547,7 @@ describe("modelCommand", () => {
         text: expect.stringContaining("not enabled for subscription-managed openrouter"),
       });
       if (res.kind === "text") {
-        expect(res.text).toContain("Try /model openrouter:x-ai/grok-4.3");
+        expect(res.text).toContain("Try /model openrouter:x-ai/grok-4.5");
         expect(res.text).toContain("open /model to pick a hosted route");
         expect(res.text).not.toContain(" or /model openrouter:openai/gpt-4o-mini");
       }

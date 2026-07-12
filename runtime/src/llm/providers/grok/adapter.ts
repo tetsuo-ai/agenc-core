@@ -775,6 +775,22 @@ export class GrokProvider implements LLMProvider {
     return this;
   }
 
+  /**
+   * Swap the bearer after an OAuth refresh. The in-flight `run(plan)`
+   * closures hold the already-constructed SDK client, so the new key must
+   * land on that instance too — nulling the cache alone would only fix
+   * requests that construct a fresh client.
+   */
+  applyRefreshedBearer(bearer: string): void {
+    (this.config as { apiKey: string }).apiKey = bearer;
+    const client = this.client as { apiKey?: string } | null;
+    if (client && typeof client === "object" && "apiKey" in client) {
+      client.apiKey = bearer;
+    } else {
+      this.client = null;
+    }
+  }
+
   /** Drop the tracker registration (used on provider swap / session shutdown). */
   dispose(): void {
     this.unregisterIncrementalTracker();

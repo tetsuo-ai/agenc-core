@@ -7,6 +7,10 @@
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
+import {
+  GrokAcpProvider,
+  isGrokComposerModel,
+} from "./providers/grok/acp-adapter.js";
 import type { GrokProviderConfig } from "./providers/grok/types.js";
 import { OllamaProvider } from "./providers/ollama/adapter.js";
 import type { OllamaProviderConfig } from "./providers/ollama/types.js";
@@ -47,6 +51,12 @@ import {
   type BuiltInProviderSlug,
 } from "./registry/provider-info.js";
 import { getGeminiAuthMode, getGeminiProjectIdHint } from "../utils/geminiAuth.js";
+import {
+  forceRefreshXaiOauthCredentials,
+  isXaiOauthBearer,
+  readXaiOauthAccessToken,
+} from "../utils/xaiOauthCredentials.js";
+import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 
 export type ProviderName = BuiltInProviderSlug;
 
@@ -1323,7 +1333,38 @@ export function createProvider(
       return provider;
     }
     case "grok": {
-      const apiKey = requireFactoryApiKey("grok", opts);
+      const grokRequestedModel =
+        opts.model?.trim() || process.env.AGENC_MODEL?.trim() || undefined;
+      if (isGrokComposerModel(grokRequestedModel)) {
+        // Per xAI: composer models are served ONLY through ACP (the Grok
+        // Build CLI), never by direct inference calls. Auth belongs to the
+        // CLI (cached `grok` login or XAI_API_KEY) — no factory key needed.
+        const acpProvider = new GrokAcpProvider({
+          model: grokRequestedModel as string,
+          ...(extra.contextWindowTokens !== undefined
+            ? { contextWindowTokens: extra.contextWindowTokens }
+            : {}),
+          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        });
+        return markFactoryProvider(acpProvider, {
+          provider: "grok",
+          options: {
+            model: grokRequestedModel as string,
+            ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          },
+        });
+      }
+      // Sign in with X / xAI OAuth: with no real API key, fall back to the
+      // stored subscription bearer. The bearer refreshes via the adapter's
+      // I-14 401-recovery hook below, so an expired stored token still
+      // constructs a working provider.
+      const factoryApiKey = resolveFactoryApiKey(opts);
+      const oauthBearer =
+        factoryApiKey === undefined ? readXaiOauthAccessToken() : undefined;
+      const usesXaiOauth =
+        oauthBearer !== undefined || isXaiOauthBearer(factoryApiKey);
+      const apiKey =
+        factoryApiKey ?? oauthBearer ?? requireFactoryApiKey("grok", opts);
       const model = requireModel(
         "grok",
         opts.model,
@@ -1360,7 +1401,35 @@ export function createProvider(
           : {}),
         ...(extra.remoteMcp ? { remoteMcp: extra.remoteMcp } : {}),
       };
-      return markFactoryProvider(new GrokProvider(cfg), {
+      if (usesXaiOauth && !isTrustedXaiOauthInferenceBaseUrl(cfg.baseURL)) {
+        throw new Error(
+          "grok provider: refusing to send the xAI OAuth bearer to a " +
+            `non-xAI base URL (${cfg.baseURL}). Unset the base URL override ` +
+            "or set XAI_API_KEY to use an API key with custom gateways.",
+        );
+      }
+      const grokProvider = new GrokProvider(cfg);
+      if (usesXaiOauth) {
+        // I-14: first real consumer of the adapter's auth-refresh seam.
+        // On 401, force a single-flight refresh of the stored OAuth grant,
+        // swap the bearer on the live SDK client, and retry.
+        grokProvider.withAuthRefreshCallbacks({
+          refreshBearer: async () => {
+            const refreshed = await forceRefreshXaiOauthCredentials();
+            if (refreshed === undefined) {
+              return {
+                kind: "exhausted",
+                reason:
+                  "xAI OAuth refresh failed — run /grok-login to sign in again, " +
+                  "or set XAI_API_KEY to use API-key billing",
+              };
+            }
+            grokProvider.applyRefreshedBearer(refreshed.accessToken);
+            return { kind: "refreshed", bearer: refreshed.accessToken };
+          },
+        });
+      }
+      return markFactoryProvider(grokProvider, {
         provider: "grok",
         options: {
           apiKey,
