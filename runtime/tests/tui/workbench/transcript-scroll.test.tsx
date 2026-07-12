@@ -130,7 +130,9 @@ describe("workbench transcript scroll ownership", () => {
       expect(scrollBox?.style.flexGrow).toBe(1);
       expect(scrollBox?.style.flexDirection).toBe("column");
       expect(scrollBox?.attributes.stickyScroll).toBe(true);
-      expect(output()).toContain("TRANSCRIPT");
+      // No standalone TRANSCRIPT header: the workbench status bar announces
+      // the active surface, so the surface itself stays label-free.
+      expect(output()).not.toContain("TRANSCRIPT");
       expect(output()).toContain("transcript-scroll-anchor");
 
       root.unmount();
@@ -166,7 +168,7 @@ describe("workbench transcript scroll ownership", () => {
       );
 
       expect(findScrollBox(getRootNode(stdout))).toBeNull();
-      expect(output()).toContain("TRANSCRIPT");
+      expect(output()).not.toContain("TRANSCRIPT");
       expect(output()).toContain("transcript-fallback-anchor");
     } finally {
       root.unmount();

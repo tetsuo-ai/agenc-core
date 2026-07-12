@@ -91,7 +91,12 @@ export function WorkbenchLayout({
   return (
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
       {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={columns} /> : null}
-      <Box flexDirection="row" flexGrow={1} overflow="hidden">
+      {/* On the cold-start welcome the surface row sizes to its content so the
+          composer sits directly under the welcome panel instead of pinned to
+          the bottom of a tall terminal with a dead gulf between them; the
+          spacer after the footer absorbs the remaining rows. Once messages
+          arrive the row grows again and the composer returns to the bottom. */}
+      <Box flexDirection="row" flexGrow={atWelcome ? 0 : 1} flexShrink={1} overflow="hidden">
         {showExplorer ? (
           <NoSelect flexShrink={0} width={explorerWidth} height="100%">
             <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} />
@@ -119,6 +124,7 @@ export function WorkbenchLayout({
       </Box>
       <PromptDialogOverlay />
       {rows >= 5 ? <WorkbenchFooter /> : null}
+      {atWelcome ? <Box flexGrow={1} /> : null}
       {layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
         <Box position="absolute" right={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
           <NoSelect width={Math.min(34, columns)} height="100%">

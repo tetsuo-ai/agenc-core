@@ -10,6 +10,7 @@ import Box from '../../ink/components/Box.js'
 import wrapText from '../../ink/wrap-text.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 
 type ThemeColor = keyof Theme
 
@@ -773,6 +774,45 @@ function useWelcomeCardWidth(): number {
   return Math.min(capped, usable)
 }
 
+// The welcome hint line drops WHOLE segments when the pane is narrow instead
+// of ellipsizing mid-word ("@ to atta…" taught nothing). Segments are ordered
+// by teaching value; the first ones survive narrow panes. "? for shortcuts" is
+// deliberately absent — the composer footer already shows it, and the welcome
+// screen was saying it twice.
+const WELCOME_HINT_SEGMENTS = [
+  'type a task and press ↵',
+  '/ for commands',
+  '@ to attach',
+] as const
+const WELCOME_HINT_SEPARATOR = '  ·  '
+
+export function fitHintSegments(
+  segments: readonly string[],
+  available: number,
+  separator: string = WELCOME_HINT_SEPARATOR,
+): string {
+  let line = ''
+  for (const segment of segments) {
+    const candidate = line === '' ? segment : `${line}${separator}${segment}`
+    if (stringWidth(candidate) > available) break
+    line = candidate
+  }
+  // Never render an empty row: fall back to the single most valuable segment
+  // and let the Text truncate it (only reachable on absurdly narrow panes).
+  return line === '' ? (segments[0] ?? '') : line
+}
+
+function WelcomeHintLine(): React.ReactNode {
+  const contentWidth = useContentWidth()
+  const frameColumns = React.useContext(TerminalFrameColumnsContext)
+  const available = Math.max(1, (contentWidth ?? frameColumns) - WELCOME_CARD_INSET)
+  return (
+    <ThemedText color="inactive" wrap="truncate-end">
+      {fitHintSegments(WELCOME_HINT_SEGMENTS, available)}
+    </ThemedText>
+  )
+}
+
 function WelcomeMetaRow({
   label,
   value,
@@ -859,7 +899,11 @@ export function WelcomeColdPanel({
           flexDirection="column"
           width={cardWidth}
           borderStyle="single"
-          borderColor="lineSoft"
+          // The resume list is the most likely next action on a cold start, so
+          // it carries the one accent border on this screen — the info card
+          // above stays lineSoft. Two identically-dim boxes gave the eye
+          // nowhere to land.
+          borderColor={visibleSessions.length > 0 ? 'agenc' : 'lineSoft'}
           paddingX={1}
           paddingY={1}
         >
@@ -879,7 +923,10 @@ export function WelcomeColdPanel({
                 <ThemedText color="muted3">] </ThemedText>
               </Box>
               <Box flexShrink={1} minWidth={0} flexDirection="row">
-                <ThemedText color="text2" wrap="truncate-end">{session.title}</ThemedText>
+                {/* Titles at full text intensity, metadata dim: the previous
+                    text2-on-muted3 pairing read as one gray blur, hiding the
+                    only word the user actually scans for. */}
+                <ThemedText color="text" wrap="truncate-end">{session.title}</ThemedText>
                 <ThemedText color="muted3" wrap="truncate-end"> · {session.detail}</ThemedText>
               </Box>
             </Box>
@@ -889,9 +936,7 @@ export function WelcomeColdPanel({
         </ThemedBox>
       </Box>
 
-      <ThemedText color="inactive" wrap="truncate-end">
-        type a task and press ↵  ·  / for commands  ·  @ to attach  ·  ? for shortcuts
-      </ThemedText>
+      <WelcomeHintLine />
     </Box>
   )
 }

@@ -117,9 +117,22 @@ describe('v2 primitives', () => {
     // First-action guidance so the cold-start screen says HOW to begin.
     expect(output).toContain('type a task and press')
     expect(output).toContain('/ for commands')
-    expect(output).toContain('? for shortcuts')
+    expect(output).toContain('@ to attach')
+    // "? for shortcuts" moved out of this line: the composer footer already
+    // shows it, and the welcome screen was saying it twice.
+    expect(output).not.toContain('? for shortcuts')
     // Resume affordance on the recent box so the [1]-[3] numbers read as shortcuts.
     expect(output).toContain('press 1-3 to resume')
+  })
+
+  it('drops whole hint segments on a narrow pane instead of cutting mid-word', async () => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 44, rows: 24 })
+
+    // The first segment always survives…
+    expect(output).toContain('type a task and press')
+    // …and narrower panes lose trailing segments whole: no mid-word ellipsis
+    // like "@ to atta…" (the literal regression this guards against).
+    expect(output).not.toMatch(/@ to att\S*…/)
   })
 
   it('omits the resume affordance when there are no recent sessions', async () => {
