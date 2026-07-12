@@ -39,6 +39,36 @@ const LOCAL_KEYLESS_PROVIDERS = new Set<BuiltInProviderSlug>([
   "lmstudio",
 ]);
 
+/**
+ * Default timeout for the one-time provider key checks. Live probes put a
+ * cold TLS handshake plus the models round trip at 0.8–1.6s on a healthy
+ * connection (OpenRouter alone exceeded the previous 1.5s default), so the
+ * first-run check gets a comfortable margin instead of aborting on
+ * perfectly good keys.
+ */
+export const DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS = 5_000;
+
+/**
+ * Providers that reject bad API keys with HTTP 400 instead of 401/403 on
+ * their models endpoint (verified live): x.ai returns 400 for both
+ * malformed and well-formed-but-wrong keys, and Gemini's OpenAI-compat
+ * surface does the same. For these, 400 on a bare authenticated GET means
+ * "key rejected", not "request malformed".
+ */
+const PROVIDERS_REJECTING_KEYS_WITH_400 = new Set<BuiltInProviderSlug>([
+  "grok",
+  "gemini",
+]);
+
+/** True when the HTTP status means the provider rejected this API key. */
+export function isKeyRejectedStatus(
+  provider: BuiltInProviderSlug,
+  status: number,
+): boolean {
+  if (status === 401 || status === 403) return true;
+  return status === 400 && PROVIDERS_REJECTING_KEYS_WITH_400.has(provider);
+}
+
 export async function verifyApiKey(
   params: VerifyApiKeyParams,
 ): Promise<ApiKeyVerificationResult> {
@@ -73,18 +103,21 @@ export async function verifyApiKey(
   );
   const baseURL = settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 1_500);
+  const timer = setTimeout(
+    () => controller.abort(),
+    params.timeoutMs ?? DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
+  );
   if (typeof (timer as { unref?: () => void }).unref === "function") {
     (timer as { unref: () => void }).unref();
   }
   try {
-    const response = await fetchImpl(remoteModelsUrl(provider, baseURL), {
+    const response = await fetchImpl(providerVerificationUrl(provider, baseURL), {
       method: "GET",
       headers: apiKeyHeaders(provider, apiKey),
       signal: controller.signal,
     });
     if (response.ok) return { status: "valid" };
-    if (response.status === 401 || response.status === 403) {
+    if (isKeyRejectedStatus(provider, response.status)) {
       return { status: "invalid", error: "Provider rejected this API key." };
     }
     return {
@@ -136,8 +169,21 @@ export function useApiKeyVerification(
   return result;
 }
 
-function remoteModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string {
+/**
+ * URL used to verify a provider API key. This is the models listing for
+ * most providers, with two exceptions: Gemini keys are checked against the
+ * OpenAI-compat surface, and OpenRouter's models endpoint is PUBLIC (it
+ * returns 200 for any Authorization header, verified live) so its key-info
+ * endpoint `/auth/key` is used instead — that one actually authenticates.
+ */
+export function providerVerificationUrl(
+  provider: BuiltInProviderSlug,
+  baseURL: string,
+): string {
   const trimmed = baseURL.replace(/\/+$/, "");
+  if (provider === "openrouter" && !/\/auth\/key$/i.test(trimmed)) {
+    return `${trimmed}/auth/key`;
+  }
   if (provider === "gemini" && !/\/openai$/i.test(trimmed)) {
     return `${trimmed}/openai/models`;
   }
