@@ -32,10 +32,12 @@ export function renderPlaceholder({
     } else {
       renderedPlaceholder = chalk.dim(placeholder)
 
-      // Show inverse cursor only when both input and terminal are focused
+      // Show inverse cursor only when both input and terminal are focused.
+      // The cursor gets its own cell BEFORE the ghost text: inverting the
+      // placeholder's first letter fused cursor and hint into what read like
+      // a typo ("❯ D■escribe…") instead of a cursor beside a hint.
       if (showCursor && focus && terminalFocus) {
-        renderedPlaceholder =
-          invert(placeholder[0]!) + chalk.dim(placeholder.slice(1))
+        renderedPlaceholder = invert(' ') + chalk.dim(placeholder)
       }
     }
   }

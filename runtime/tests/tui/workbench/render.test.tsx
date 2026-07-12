@@ -688,7 +688,10 @@ describe("workbench render contract", () => {
       { columns: 120, rows: 30 },
     );
 
-    expect(output).toContain("TRANSCRIPT");
+    // The surface no longer prints its own TRANSCRIPT header — the workbench
+    // status bar announces the active surface one row above, and the duplicate
+    // label was the same word twice in the top three rows of the screen.
+    expect(output).not.toContain("TRANSCRIPT");
     expect(output).toContain("hello transcript");
   });
 

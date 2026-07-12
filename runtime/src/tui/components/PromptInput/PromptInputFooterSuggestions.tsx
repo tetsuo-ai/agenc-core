@@ -201,9 +201,12 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       lineContent = `${selectionPrefix}${icon} ${displayText}`
     }
   } else {
-    const maxNameWidth = Math.max(1, Math.floor(width * 0.4))
+    // The name column may take up to 45% of the row; the description owns the
+    // rest. The previous 40% cap plus 4 columns of slack starved descriptions
+    // ("Install the signed AgenC M…") while the row still had spare width.
+    const maxNameWidth = Math.max(1, Math.floor(width * 0.45))
     const displayTextWidth = Math.max(1, Math.min(
-      maxColumnWidth ?? stringWidth(item.displayText) + 5,
+      maxColumnWidth ?? stringWidth(item.displayText) + 2,
       maxNameWidth,
     ))
 
@@ -221,7 +224,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     const tagWidth = stringWidth(tagText)
     const descriptionWidth = Math.max(
       0,
-      width - prefixWidth - displayTextWidth - tagWidth - 4,
+      width - prefixWidth - displayTextWidth - tagWidth - 1,
     )
     const truncatedDescription = item.description
       ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
@@ -270,7 +273,7 @@ export function PromptInputFooterSuggestions({
 
   const maxColumnWidth =
     maxColumnWidthProp ??
-    Math.max(...suggestions.map(item => stringWidth(item.displayText))) + 5
+    Math.max(...suggestions.map(item => stringWidth(item.displayText))) + 2
 
   const startIndex = Math.max(
     0,
@@ -281,6 +284,13 @@ export function PromptInputFooterSuggestions({
   )
   const endIndex = Math.min(startIndex + maxVisibleItems, suggestions.length)
   const visibleItems = suggestions.slice(startIndex, endIndex)
+  // Size the name column to the widest VISIBLE row, not the widest row in the
+  // whole result set: one long command anywhere in a 40-entry list was padding
+  // every rendered page's name column and starving the descriptions.
+  const visibleColumnWidth = Math.min(
+    maxColumnWidth,
+    Math.max(...visibleItems.map(item => stringWidth(item.displayText))) + 2,
+  )
   // Round-2 MD-NEW8: when the suggestion list is longer than the
   // visible window (e.g. tab-completing inside a directory with 200
   // entries), show the count of items hidden below the fold so the
@@ -347,7 +357,7 @@ export function PromptInputFooterSuggestions({
           >
             <SuggestionItemRow
               item={item}
-              maxColumnWidth={maxColumnWidth}
+              maxColumnWidth={visibleColumnWidth}
               isSelected={isSelected}
               width={contentWidth}
             />

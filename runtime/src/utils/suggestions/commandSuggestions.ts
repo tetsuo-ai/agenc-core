@@ -1,7 +1,6 @@
 import Fuse from 'fuse.js'
 import {
   type Command,
-  formatDescriptionWithSource,
   getCommand,
   getCommandName,
 } from '../../commands.js'
@@ -268,6 +267,22 @@ function findMatchedAlias(
  * Creates a suggestion item from a command.
  * Only shows the matched alias in parentheses if the user typed an alias.
  */
+// Provenance as a short tag rather than a "(source)" description SUFFIX: the
+// suffix was the first thing truncated away on long descriptions — exactly the
+// rows where knowing "is this a builtin or something a project installed?"
+// matters most. Tags render before the description and survive truncation.
+function commandSourceTag(cmd: Command): string | undefined {
+  if (cmd.type !== 'prompt') return undefined
+  const source = cmd.source
+  if (source === 'userSettings' || source === 'localSettings') return 'user'
+  if (source === 'projectSettings') return 'project'
+  if (source === 'policySettings') return 'policy'
+  if (source === 'bundled') return 'bundled'
+  if (source === 'plugin')
+    return cmd.pluginInfo?.pluginManifest?.name ?? 'plugin'
+  return undefined
+}
+
 function createCommandSuggestionItem(
   cmd: Command,
   matchedAlias?: string,
@@ -279,15 +294,13 @@ function createCommandSuggestionItem(
   const isWorkflow = cmd.type === 'prompt' && cmd.kind === 'workflow'
   const isProtocol = cmd.kind === 'protocol'
   const fullDescription =
-    sanitizeSuggestionMetadataText(
-      isWorkflow ? cmd.description : formatDescriptionWithSource(cmd),
-    ) +
+    sanitizeSuggestionMetadataText(cmd.description ?? '') +
     (cmd.type === 'prompt' ? formatCommandArgumentHint(cmd.argNames) : '')
 
   return {
     id: getCommandId(cmd),
     displayText: `/${commandName}${aliasText}`,
-    tag: isWorkflow ? 'workflow' : isProtocol ? '◆' : undefined,
+    tag: isProtocol ? '◆' : isWorkflow ? 'workflow' : commandSourceTag(cmd),
     description: fullDescription,
     metadata: cmd,
     color: isProtocol ? 'worker' : undefined,

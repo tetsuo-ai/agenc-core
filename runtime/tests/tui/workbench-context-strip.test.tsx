@@ -160,16 +160,24 @@ describe("selectStripSegments degradation", () => {
 });
 
 describe("WorkbenchStatusBar context strip rendering", () => {
-  test("shows model, permission mode, and a compact cwd at a wide width", async () => {
+  test("shows model, a non-default permission mode, and a compact cwd at a wide width", async () => {
     const { getCwdState } = await import("../../src/bootstrap/state.js");
-    const out = await renderStatusBar(120, { mode: "default" });
+    const out = await renderStatusBar(120, { mode: "plan" });
     expect(out).toContain(TEST_MODEL);
-    expect(out).toContain("default");
+    expect(out).toContain("plan");
     // Compact cwd: the basename of the session cwd (the same stable source the
     // strip reads) is present; the strip never shows the full long path raw.
     const expectedCwd = compactCwd(getCwdState());
     const tail = basenameOf(expectedCwd);
     expect(out).toContain(tail);
+  });
+
+  test("hides the permission-mode segment entirely in the default mode", async () => {
+    // "· default ·" in the header answered a question nobody asked; only
+    // non-default modes carry signal.
+    const out = await renderStatusBar(120, { mode: "default" });
+    expect(out).toContain(TEST_MODEL);
+    expect(out).not.toContain("default");
   });
 
   test("shows the dangerous mode label (bypass) when elevated", async () => {
@@ -213,12 +221,14 @@ describe("WorkbenchContextStrip dangerous-mode styling (ANSI)", () => {
     // Dark theme 'warning' resolves to truecolor amber (rgb(255,151,72)).
     const WARNING_SGR = "\u001b[38;2;255;151;72m";
     const dangerous = await renderStripAnsi("bypassPermissions");
-    const normal = await renderStripAnsi("default");
+    // "plan" is the non-default comparison mode: the default mode no longer
+    // renders a mode segment at all, so it cannot carry styling either way.
+    const normal = await renderStripAnsi("plan");
 
     // Both render the model + mode label; only the dangerous one styles the
     // mode segment in the warning color.
     expect(dangerous).toContain("bypass");
-    expect(normal).toContain("default");
+    expect(normal).toContain("plan");
     expect(dangerous).toContain(WARNING_SGR);
     expect(normal).not.toContain(WARNING_SGR);
     // The warning styling is *extra*, so the dangerous render has more SGR codes.

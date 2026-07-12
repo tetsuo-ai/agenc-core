@@ -111,11 +111,13 @@ export function TranscriptSurface({
     </Box>
   );
 
+  // No pane-header row here: the workbench status bar already announces the
+  // active surface ("AgenC Workbench | TRANSCRIPT" one row above), so a second
+  // TRANSCRIPT label rendered the same word twice in the top three rows of the
+  // screen. Other surfaces keep their own headers because their titles carry
+  // real information (file paths, diff targets); this one was pure duplication.
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
-      <Box height={1} flexShrink={0}>
-        <Text color="text2">TRANSCRIPT</Text>
-      </Box>
       {body}
     </Box>
   );

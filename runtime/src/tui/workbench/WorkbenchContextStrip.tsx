@@ -129,16 +129,21 @@ export function selectStripSegments(
     return w;
   };
 
+  // An empty mode label means "nothing worth showing" (the default permission
+  // mode carries no signal — rendering the word "default" in the header only
+  // raised the question of what it referred to). Normalize it to null so no
+  // candidate renders an empty segment between separators.
+  const modeLabel = parts.modeLabel.length > 0 ? parts.modeLabel : null;
+
   // Candidates in descending richness; first that fits wins.
   const candidates: ReadonlyArray<{
     readonly model: string;
     readonly modeLabel: string | null;
     readonly cwd: string | null;
   }> = [
-    { model: parts.model, modeLabel: parts.modeLabel, cwd: parts.cwd },
-    { model: parts.model, modeLabel: parts.modeLabel, cwd: parts.cwdBasename },
-    { model: parts.model, modeLabel: parts.modeLabel, cwd: null },
-    { model: parts.model, modeLabel: parts.modeLabel.length > 0 ? parts.modeLabel : null, cwd: null },
+    { model: parts.model, modeLabel, cwd: parts.cwd },
+    { model: parts.model, modeLabel, cwd: parts.cwdBasename },
+    { model: parts.model, modeLabel, cwd: null },
     { model: parts.model, modeLabel: null, cwd: null },
   ];
 
@@ -194,7 +199,11 @@ export function WorkbenchContextStrip({
   const mode = useAppStateMaybeOutsideOfProvider(selectMode) ?? "default";
 
   const modelLabel = renderModelName(parseUserSpecifiedModel(modelSetting));
-  const modeLabel = permissionModeShortTitle(mode).toLowerCase();
+  // The default permission mode is noise in the header ("· default ·" answered
+  // a question nobody asked); non-default modes ARE signal and stay visible,
+  // dangerous ones in the warning color below.
+  const modeLabel =
+    mode === "default" ? "" : permissionModeShortTitle(mode).toLowerCase();
   const dangerous = isDangerousPermissionMode(mode);
   const cwdDisplay = compactCwd(sessionCwd());
 

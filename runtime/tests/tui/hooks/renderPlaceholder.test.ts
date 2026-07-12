@@ -61,17 +61,20 @@ describe('renderPlaceholder', () => {
     expect(rendered.showPlaceholder).toBe(false)
   })
 
-  test('renders inverse cursor on the first placeholder character only when focused', () => {
-    expect(
-      renderPlaceholder({
-        placeholder: 'hello',
-        value: '',
-        showCursor: true,
-        focus: true,
-        terminalFocus: true,
-        invert,
-      }).renderedPlaceholder,
-    ).toContain('[h]')
+  test('renders the cursor as its own cell before the ghost text only when focused', () => {
+    // The cursor must NOT swallow the placeholder's first letter — inverting
+    // it fused cursor and hint into what read like a typo ("D■escribe…").
+    const focused = renderPlaceholder({
+      placeholder: 'hello',
+      value: '',
+      showCursor: true,
+      focus: true,
+      terminalFocus: true,
+      invert,
+    }).renderedPlaceholder
+    expect(focused).toContain('[ ]')
+    expect(focused).toContain('hello')
+    expect(focused).not.toContain('[h]')
 
     expect(
       renderPlaceholder({
@@ -82,7 +85,7 @@ describe('renderPlaceholder', () => {
         terminalFocus: true,
         invert,
       }).renderedPlaceholder,
-    ).not.toContain('[h]')
+    ).not.toContain('[ ]')
 
     expect(
       renderPlaceholder({
@@ -93,6 +96,6 @@ describe('renderPlaceholder', () => {
         terminalFocus: false,
         invert,
       }).renderedPlaceholder,
-    ).not.toContain('[h]')
+    ).not.toContain('[ ]')
   })
 })
