@@ -36,6 +36,7 @@ import {
 } from "../utils/cronTasks.js";
 import { SessionRouter } from "./session-router.js";
 import type { ChannelAdapter, GatewayDaemonClient } from "./types.js";
+import { frameChannelMessage } from "./untrusted.js";
 
 /** Upper bound on one sleep so externally-added tasks are noticed. */
 export const CRON_DELIVERY_SCAN_CAP_MS = 5 * 60 * 1000;
@@ -80,7 +81,65 @@ export interface CronDeliveryHandle {
   stop(): Promise<void>;
 }
 
+/**
+ * Fail-closed SSRF gate for cron webhooks (todo-111). Blocks private,
+ * loopback, link-local, and metadata destinations after DNS resolve.
+ */
+export async function assertCronWebhookUrlSafe(url: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("cron webhook: invalid URL");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("cron webhook: URL must be http(s)");
+  }
+  // Prefer https; allow http only for explicit local testing is still gated.
+  const host = parsed.hostname.startsWith("[")
+    ? parsed.hostname.slice(1, -1)
+    : parsed.hostname;
+  const lower = host.toLowerCase().replace(/\.$/, "");
+  if (lower === "localhost" || lower.endsWith(".localhost")) {
+    throw new Error("cron webhook: localhost blocked");
+  }
+  const { isIP } = await import("node:net");
+  const { lookup } = await import("node:dns/promises");
+  const checkIp = (address: string): void => {
+    const v = isIP(address);
+    if (v === 4) {
+      const parts = address.split(".").map(Number);
+      const [a, b] = parts;
+      if (
+        a === 127 ||
+        a === 0 ||
+        a === 10 ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b !== undefined && b >= 16 && b <= 31) ||
+        (a === 100 && b !== undefined && b >= 64 && b <= 127) ||
+        (a === 192 && b === 168)
+      ) {
+        throw new Error(`cron webhook: private/link-local address blocked (${address})`);
+      }
+    } else if (v === 6) {
+      const l = address.toLowerCase();
+      if (l === "::1" || l === "::" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe80")) {
+        throw new Error(`cron webhook: private/link-local address blocked (${address})`);
+      }
+    }
+  };
+  if (isIP(host) !== 0) {
+    checkIp(host);
+    return;
+  }
+  const addresses = await lookup(host, { all: true });
+  for (const { address } of addresses) {
+    checkIp(address);
+  }
+}
+
 async function defaultPostWebhook(url: string, body: unknown): Promise<void> {
+  await assertCronWebhookUrlSafe(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
@@ -161,7 +220,7 @@ export function startCronDelivery(
       typeof options.config.model === "string" &&
       options.config.model.trim().length > 0
         ? options.config.model.trim()
-        : "grok-4.3";
+        : "grok-4.5";
     const admit = enforcer.admit({
       agentId: `cron:${task.id}`,
       model: admitModel,
@@ -180,13 +239,19 @@ export function startCronDelivery(
       return;
     }
 
+    // Frame scheduled prompts as untrusted work data (parity with hooks/channels, todo-126).
+    const framedPrompt = frameChannelMessage({
+      channelId: "cron",
+      peerId: `cron:${task.id}`,
+      text: task.prompt,
+    });
     const result = await router.runTurn({
       key: SessionRouter.conversationKey({
         channelId: "cron",
         agent: "default",
         conversationId: task.id,
       }),
-      text: task.prompt,
+      text: framedPrompt,
       adapter: routeAdapter,
       conversationId,
       // Autonomous, no human watching → deny permission requests (fail safe).

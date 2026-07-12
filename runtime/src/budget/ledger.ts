@@ -10,10 +10,13 @@
  */
 
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -91,6 +94,52 @@ export class BudgetLedger {
   }
 
   /**
+   * Cross-process exclusive lock for multi-instance ledger writers
+   * (heartbeat / hooks / cron each construct their own BudgetLedger — todo-110).
+   * Re-loads disk state under the lock so concurrent addSpend merges.
+   */
+  #withDiskLock(mutate: () => void): void {
+    const lockPath = `${this.#path}.lock`;
+    mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+    const deadline = Date.now() + 5_000;
+    let fd: number | undefined;
+    while (fd === undefined) {
+      try {
+        fd = openSync(lockPath, "wx");
+      } catch {
+        if (Date.now() > deadline) {
+          // Fail open to local mutate if lock stuck (still better than hang).
+          mutate();
+          this.#save();
+          return;
+        }
+        // Busy-wait briefly for the lock holder.
+        const start = Date.now();
+        while (Date.now() - start < 10) {
+          /* spin */
+        }
+      }
+    }
+    try {
+      // Merge: re-read disk then apply mutate against this.#file.
+      this.#file = this.#load();
+      mutate();
+      this.#save();
+    } finally {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
    * Get the agent's state, rolling any window whose date key changed (a new
    * day/month resets that window's spend + soft-warn flag). Mutates + persists
    * on roll.
@@ -136,35 +185,39 @@ export class BudgetLedger {
 
   /** Add spend to both windows and persist. */
   addSpend(agentId: string, usd: number, tokens: number): void {
-    const s = this.#stateRolled(agentId);
-    s.day.usd += usd;
-    s.day.tokens += tokens;
-    s.month.usd += usd;
-    s.month.tokens += tokens;
-    this.#save();
+    this.#withDiskLock(() => {
+      const s = this.#stateRolled(agentId);
+      s.day.usd += usd;
+      s.day.tokens += tokens;
+      s.month.usd += usd;
+      s.month.tokens += tokens;
+    });
   }
 
   setPaused(agentId: string, paused: boolean): void {
-    const s = this.#stateRolled(agentId);
-    if (s.paused !== paused) {
-      s.paused = paused;
-      this.#save();
-    }
+    this.#withDiskLock(() => {
+      const s = this.#stateRolled(agentId);
+      if (s.paused !== paused) {
+        s.paused = paused;
+      }
+    });
   }
 
   markSoftWarned(agentId: string, window: "day" | "month"): void {
-    const s = this.#stateRolled(agentId);
-    if (!s.softWarned[window]) {
-      s.softWarned[window] = true;
-      this.#save();
-    }
+    this.#withDiskLock(() => {
+      const s = this.#stateRolled(agentId);
+      if (!s.softWarned[window]) {
+        s.softWarned[window] = true;
+      }
+    });
   }
 
   /** Operator reset: clear an agent's spend, pause flag, and warn flags. */
   reset(agentId: string): void {
-    const { dayKey, monthKey } = windowKeys(this.#now());
-    this.#file.agents[agentId] = emptyState(agentId, dayKey, monthKey);
-    this.#save();
+    this.#withDiskLock(() => {
+      const { dayKey, monthKey } = windowKeys(this.#now());
+      this.#file.agents[agentId] = emptyState(agentId, dayKey, monthKey);
+    });
   }
 
   /** All agents with a ledger entry (windows rolled). */

@@ -111,7 +111,7 @@ export class HeartbeatRunner {
     let hold: unknown = null;
     if (this.#o.budget !== undefined) {
       // Prefer policy model; never admit as "unknown" under USD caps (todo-104).
-      const admitModel = model.length > 0 ? model : "grok-4.3";
+      const admitModel = model.length > 0 ? model : "grok-4.5";
       const admit = this.#o.budget.admit({
         agentId: policy.agentId,
         model: admitModel,

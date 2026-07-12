@@ -167,7 +167,7 @@ export class HooksServer {
       typeof options.config.model === "string" &&
       options.config.model.trim().length > 0
         ? options.config.model.trim()
-        : "grok-4.3";
+        : "grok-4.5";
     if (!isLoopbackHost(this.#host) && options.allowNonLoopback !== true) {
       throw new Error(
         `hooks: refusing non-loopback host '${this.#host}' without allowNonLoopback (prefer a tailnet/SSH tunnel)`,

@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -113,11 +114,14 @@ export class SessionRouter {
 
   #save(): void {
     mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+    // Atomic replace (todo-128): tmp + rename, same pattern as budget ledger.
+    const tmp = `${this.#path}.tmp`;
     writeFileSync(
-      this.#path,
+      tmp,
       `${JSON.stringify(this.#persisted, null, 2)}\n`,
       { mode: 0o600 },
     );
+    renameSync(tmp, this.#path);
   }
 
   static conversationKey(options: {

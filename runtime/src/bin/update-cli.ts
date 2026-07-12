@@ -38,6 +38,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { gt as semverGt } from "../utils/semver.js";
 import { delimiter, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -400,7 +401,12 @@ export async function installRuntimeFromManifest(options: {
       );
     }
     rmSync(installDir, { recursive: true, force: true });
-    mkdirSync(installDir, { recursive: true });
+    mkdirSync(installDir, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(installDir, 0o700);
+    } catch {
+      // best-effort on platforms without chmod
+    }
     const res = spawnSync("tar", ["-xzf", tmp, "-C", installDir], {
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -467,11 +473,37 @@ export async function runAgenCUpdateCli(
   }
 
   const latestVersion = manifest.runtimeVersion;
-  const updateAvailable = latestVersion !== currentVersion;
+  // Unpinned updates only when remote is semver-greater (todo-121).
+  // --pin installs that exact release even if lower.
+  const pinned =
+    "pin" in command &&
+    typeof (command as { pin?: string }).pin === "string" &&
+    (command as { pin: string }).pin.length > 0;
+  let updateAvailable = false;
+  try {
+    updateAvailable = pinned
+      ? latestVersion !== currentVersion
+      : semverGt(latestVersion, currentVersion);
+  } catch {
+    updateAvailable = latestVersion !== currentVersion;
+  }
 
   if (!updateAvailable) {
     if (command.json) {
-      stdout(JSON.stringify({ currentVersion, latestVersion, updateAvailable: false }));
+      stdout(
+        JSON.stringify({
+          currentVersion,
+          latestVersion,
+          updateAvailable: false,
+        }),
+      );
+    } else if (
+      !pinned &&
+      latestVersion !== currentVersion
+    ) {
+      stdout(
+        `agenc ${currentVersion} is newer than or equal to remote ${latestVersion}; not downgrading. Use --pin ${latestVersion} to force.`,
+      );
     } else {
       stdout(`agenc ${currentVersion} is up to date.`);
     }
