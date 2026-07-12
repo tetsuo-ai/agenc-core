@@ -266,7 +266,12 @@ export async function startGateway(
     adapters.push(new StdioChannelAdapter());
   }
 
-  const xaiKey = env.XAI_API_KEY?.trim();
+  // G11: full BYOK alias chain (same as CLI), not only XAI_API_KEY.
+  const xaiKey =
+    env.XAI_API_KEY?.trim() ||
+    env.GROK_API_KEY?.trim() ||
+    env.AGENC_XAI_API_KEY?.trim() ||
+    undefined;
   const memeEnabled =
     envFlag(env.AGENC_GATEWAY_MEME_ENABLED) &&
     xaiKey !== undefined &&
