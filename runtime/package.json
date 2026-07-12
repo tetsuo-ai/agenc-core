@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/runtime",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "private": true,
   "description": "AgenC lean coding CLI",
   "type": "module",
