@@ -109,21 +109,24 @@ async function executeGrokLogin(
     const who = blob.accountLabel ?? login.identity.sub ?? "xAI account";
     const lines = [`Signed in to xAI as ${who}.`];
 
+    // OAuth always wins over env BYOK — switch to grok regardless of keys.
+    const switchSummary = await applyProviderSwitch(ctx.session, "grok");
+    lines.push(switchSummary);
+    lines.push("Run /model to pick a Grok model (e.g. grok-4.5).");
+    lines.push(
+      "This sign-in takes precedence over any XAI_API_KEY / GROK_API_KEY " +
+        "in the environment (subscription Grok Build access).",
+    );
     const envKey = resolveApiKey(process.env);
     if (envKey !== undefined) {
       lines.push(
-        "Note: XAI_API_KEY (or an alias) is set and takes precedence over " +
-          "this sign-in. Unset it to use your subscription instead of API billing.",
+        "Note: an API key is also set in the environment but is ignored " +
+          "while you are signed in. /grok-logout to fall back to API-key billing.",
       );
-    } else {
-      const switchSummary = await applyProviderSwitch(ctx.session, "grok");
-      lines.push(switchSummary);
-      lines.push("Run /model to pick a Grok model (e.g. grok-4.5).");
     }
     lines.push(
       "If requests fail with 403 'no active Grok subscription', make sure " +
-        "your X and grok.com accounts use the same email, or set XAI_API_KEY " +
-        "to use API-key billing.",
+        "your X and grok.com accounts use the same email.",
     );
     return { kind: "text", text: lines.join("\n") };
   });

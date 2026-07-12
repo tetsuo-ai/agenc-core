@@ -15,7 +15,7 @@ import type {
   ProviderConfig,
   ProviderFallbackTargetConfig,
 } from "./schema.js";
-import { readXaiOauthAccessToken } from "../utils/xaiOauthCredentials.js";
+import { resolveGrokProviderApiKey } from "../llm/xai-capability-config.js";
 
 export {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -104,12 +104,17 @@ export function resolveProviderSettings(
   if (!slug) return undefined;
   const providerConfig = readProviderConfig(config, slug);
   const apiKeyEnvVar = providerConfig?.api_key_env?.trim() || undefined;
+  // Grok: /grok-login OAuth ALWAYS wins over env BYOK (dead keys in the shell
+  // must not shadow subscription access). Other providers: env as before.
   const apiKey =
-    (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
-    resolveEnvProviderApiKey(slug, env) ??
-    // Sign in with X / xAI OAuth: env keys win, but a stored subscription
-    // bearer makes grok usable without XAI_API_KEY.
-    (slug === "grok" ? readXaiOauthAccessToken() : undefined);
+    slug === "grok"
+      ? resolveGrokProviderApiKey(
+          (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
+            resolveEnvProviderApiKey(slug, env),
+          env,
+        )
+      : ((apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
+        resolveEnvProviderApiKey(slug, env));
   const envBaseURL = resolveEnvProviderBaseURL(slug, env);
   const configuredBaseURL = providerConfig?.base_url?.trim();
   const baseURL = envBaseURL ?? configuredBaseURL;

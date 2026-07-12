@@ -43,14 +43,19 @@ export function isDirectXaiInferenceHost(
   }
 }
 
+/**
+ * Full Grok capability profile. Subscription + BYOK users get the whole
+ * surface enabled by default; operators can still turn individual flags off
+ * under `[llm.xai]`.
+ */
 export function defaultLlmXaiConfig(): Readonly<LlmXaiConfig> {
   return Object.freeze({
     web_search: true,
-    x_search: false,
-    code_execution: false,
-    enable_image_search: false,
-    enable_image_understanding: false,
-    enable_video_understanding: false,
+    x_search: true,
+    code_execution: true,
+    enable_image_search: true,
+    enable_image_understanding: true,
+    enable_video_understanding: true,
   });
 }
 
@@ -59,7 +64,7 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 /**
- * Merge operator `[llm.xai]` over deliberate defaults.
+ * Merge operator `[llm.xai]` over full-surface defaults.
  */
 export function resolveLlmXaiConfig(
   raw: LlmXaiConfig | undefined | null,
@@ -68,16 +73,22 @@ export function resolveLlmXaiConfig(
   if (!raw || typeof raw !== "object") return defaults;
   return Object.freeze({
     web_search: asBoolean(raw.web_search, defaults.web_search === true),
-    x_search: asBoolean(raw.x_search, false),
-    code_execution: asBoolean(raw.code_execution, false),
-    enable_image_search: asBoolean(raw.enable_image_search, false),
+    x_search: asBoolean(raw.x_search, defaults.x_search === true),
+    code_execution: asBoolean(
+      raw.code_execution,
+      defaults.code_execution === true,
+    ),
+    enable_image_search: asBoolean(
+      raw.enable_image_search,
+      defaults.enable_image_search === true,
+    ),
     enable_image_understanding: asBoolean(
       raw.enable_image_understanding,
-      false,
+      defaults.enable_image_understanding === true,
     ),
     enable_video_understanding: asBoolean(
       raw.enable_video_understanding,
-      false,
+      defaults.enable_video_understanding === true,
     ),
     ...(raw.collections !== undefined
       ? { collections: raw.collections }
@@ -264,35 +275,57 @@ export function isXaiLiveXSearchEnabled(
 /**
  * Hermes-style credential probe for xAI media/tools availability.
  *
- * True when **either** BYOK (`XAI_API_KEY` / aliases) **or** a stored
- * `/grok-login` OAuth access token is present. Subscription Grok Build /
- * SuperGrok users authenticate via OAuth — must not require a metered API key.
+ * True when **either** a stored `/grok-login` OAuth token **or** BYOK
+ * (`XAI_API_KEY` / aliases) is present.
  *
  * Cheap path only (no network refresh); actual 401 recovery is on the request.
  */
 export function hasXaiCredentials(
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): boolean {
-  if (resolveApiKey(env as NodeJS.ProcessEnv | undefined) !== undefined) {
-    return true;
-  }
-  return readXaiOauthAccessToken() !== undefined;
+  if (readXaiOauthAccessToken() !== undefined) return true;
+  return resolveApiKey(env as NodeJS.ProcessEnv | undefined) !== undefined;
 }
 
 /**
- * Resolve a bearer for direct xAI REST (Imagine, etc.).
+ * Resolve a bearer for direct xAI REST / Grok inference.
  *
- * Precedence matches CLI provider resolve: **BYOK env always wins** over
- * OAuth subscription tokens (same note as `/grok-login`).
+ * **Product rule:** `/grok-login` OAuth **always wins** over env BYOK.
+ * Signing in with X means the user wants subscription Grok Build access —
+ * leftover `XAI_API_KEY` in the shell must not shadow that.
+ *
+ * Precedence:
+ * 1. Stored OAuth access token (`/grok-login`)
+ * 2. Session/factory bearer (often the same OAuth token after resolve)
+ * 3. BYOK env (`XAI_API_KEY` → `GROK_API_KEY` → `AGENC_XAI_API_KEY`)
  */
 export function resolveXaiBearerToken(
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
   sessionApiKey?: string,
 ): string | undefined {
-  const byok = resolveApiKey(env as NodeJS.ProcessEnv | undefined);
-  if (byok !== undefined) return byok;
   const oauth = readXaiOauthAccessToken();
   if (oauth !== undefined) return oauth;
   const session = sessionApiKey?.trim();
-  return session && session.length > 0 ? session : undefined;
+  if (session && session.length > 0) {
+    // Prefer session bearer before raw env when it is the OAuth token, but
+    // OAuth was already checked. Session key may be BYOK injected by factory.
+    // Still prefer OAuth-first: if no oauth, session then BYOK.
+    return session;
+  }
+  return resolveApiKey(env as NodeJS.ProcessEnv | undefined);
+}
+
+/**
+ * Resolve the Grok provider API key: OAuth login always beats env BYOK.
+ * Used by factory + resolve-provider so one rule owns the product.
+ */
+export function resolveGrokProviderApiKey(
+  explicitApiKey: string | undefined,
+  env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const oauth = readXaiOauthAccessToken();
+  if (oauth !== undefined) return oauth;
+  const explicit = explicitApiKey?.trim();
+  if (explicit) return explicit;
+  return resolveApiKey(env as NodeJS.ProcessEnv | undefined);
 }

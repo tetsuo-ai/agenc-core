@@ -929,16 +929,16 @@ export function defaultConfig(): AgenCConfig {
     permissions: Object.freeze({
       default_mode: "on-request",
     }) as PermissionsConfig,
-    // Grok server-tool profile: web_search on (LIVE native path); expensive
-    // capabilities off until operators enable them under [llm.xai].
+    // Full Grok surface on by default (subscription + BYOK). Operators can
+    // still set individual flags false under [llm.xai].
     llm: Object.freeze({
       xai: Object.freeze({
         web_search: true,
-        x_search: false,
-        code_execution: false,
-        enable_image_search: false,
-        enable_image_understanding: false,
-        enable_video_understanding: false,
+        x_search: true,
+        code_execution: true,
+        enable_image_search: true,
+        enable_image_understanding: true,
+        enable_video_understanding: true,
       }) as LlmXaiConfig,
     }) as LlmConfig,
     project_root_markers: Object.freeze([

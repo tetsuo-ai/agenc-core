@@ -51,19 +51,22 @@ describe("isDirectXaiInferenceHost", () => {
 });
 
 describe("resolveLlmXaiConfig defaults", () => {
-  it("defaults web_search on and expensive flags off", () => {
+  it("defaults full Grok surface on", () => {
     const d = defaultLlmXaiConfig();
     expect(d.web_search).toBe(true);
-    expect(d.x_search).toBe(false);
-    expect(d.code_execution).toBe(false);
-    expect(d.enable_image_search).toBe(false);
+    expect(d.x_search).toBe(true);
+    expect(d.code_execution).toBe(true);
+    expect(d.enable_image_search).toBe(true);
+    expect(d.enable_image_understanding).toBe(true);
+    expect(d.enable_video_understanding).toBe(true);
   });
 
-  it("defaultConfig seeds [llm.xai] with same deliberate defaults", () => {
+  it("defaultConfig seeds [llm.xai] with full surface on", () => {
     const cfg = defaultConfig();
     expect(cfg.llm?.xai?.web_search).toBe(true);
-    expect(cfg.llm?.xai?.x_search).toBe(false);
-    expect(cfg.llm?.xai?.code_execution).toBe(false);
+    expect(cfg.llm?.xai?.x_search).toBe(true);
+    expect(cfg.llm?.xai?.code_execution).toBe(true);
+    expect(cfg.llm?.xai?.enable_image_search).toBe(true);
   });
 
   it("normalizeRawConfig keeps llm.xai on typed path", () => {
@@ -108,17 +111,17 @@ describe("resolveXaiCapabilityExtra", () => {
     ).toEqual({});
   });
 
-  it("default profile does not continuous-inject search tools (Pattern A)", () => {
+  it("default profile continuous-injects code_execution only (Pattern A search)", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
       baseURL: "https://api.x.ai/v1",
       llmXai: resolveLlmXaiConfig(undefined),
     });
-    // LIVE WebSearch/XSearch one-shots own the search tools — main-loop extra
-    // stays free of continuous web_search / x_search (G19 dual-bill guard).
+    // LIVE WebSearch/XSearch one-shots own search — no continuous web/x.
     expect(extra.webSearch).toBeUndefined();
     expect(extra.xSearch).toBeUndefined();
-    expect(extra.codeExecution).toBeUndefined();
+    // Full-surface default enables code_interpreter continuously.
+    expect(extra.codeExecution).toBe(true);
   });
 
   it("honors code_execution continuous injection when enabled", () => {
@@ -181,31 +184,33 @@ describe("resolveXaiCapabilityExtra", () => {
   });
 });
 
-describe("hasXaiCredentials / resolveXaiBearerToken (subscription + BYOK)", () => {
-  it("treats BYOK env as credentials", () => {
+describe("hasXaiCredentials / resolveXaiBearerToken (OAuth wins)", () => {
+  it("treats BYOK env as credentials when not logged in", () => {
     expect(hasXaiCredentials({ XAI_API_KEY: "k" })).toBe(true);
+    // Without stored OAuth, BYOK is the bearer.
     expect(resolveXaiBearerToken({ XAI_API_KEY: "byok" })).toBe("byok");
   });
 
-  it("falls back to session bearer when env has no BYOK", () => {
-    // Session apiKey is what createProvider holds after /grok-login.
-    expect(
-      resolveXaiBearerToken({}, "session-oauth-token"),
-    ).toBe("session-oauth-token");
+  it("falls back to session bearer when no OAuth store and no BYOK", () => {
+    expect(resolveXaiBearerToken({}, "session-token")).toBe("session-token");
   });
 
-  it("BYOK wins over session bearer", () => {
+  it("session bearer is used before env BYOK when OAuth store empty", () => {
+    // OAuth store empty in unit test; session key still preferred over env
+    // only after OAuth check — product path: OAuth store > session > BYOK.
     expect(
-      resolveXaiBearerToken({ XAI_API_KEY: "byok" }, "session-oauth"),
-    ).toBe("byok");
+      resolveXaiBearerToken({ XAI_API_KEY: "byok" }, "session-token"),
+    ).toBe("session-token");
   });
 });
 
 describe("G5 [llm.xai].enable_image_search product path", () => {
-  it("resolveXaiLiveWebSearchOptions surfaces image flags from config", () => {
-    expect(
-      resolveXaiLiveWebSearchOptions({ enable_image_search: true }),
-    ).toEqual({ enableImageSearch: true });
+  it("resolveXaiLiveWebSearchOptions surfaces image flags from full defaults", () => {
+    // Full-surface defaults: empty/partial config still enables image flags.
+    expect(resolveXaiLiveWebSearchOptions(undefined)).toEqual({
+      enableImageSearch: true,
+      enableImageUnderstanding: true,
+    });
     expect(
       resolveXaiLiveWebSearchOptions({
         enable_image_search: true,
@@ -215,7 +220,13 @@ describe("G5 [llm.xai].enable_image_search product path", () => {
       enableImageSearch: true,
       enableImageUnderstanding: true,
     });
-    expect(resolveXaiLiveWebSearchOptions({})).toBeUndefined();
+    // Explicit off stays off.
+    expect(
+      resolveXaiLiveWebSearchOptions({
+        enable_image_search: false,
+        enable_image_understanding: false,
+      }),
+    ).toBeUndefined();
   });
 
   it("config flag reaches wire payload via LIVE one-shot options (shipped path)", () => {

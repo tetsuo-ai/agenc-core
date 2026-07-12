@@ -266,12 +266,25 @@ export async function startGateway(
     adapters.push(new StdioChannelAdapter());
   }
 
-  // G11: full BYOK alias chain (same as CLI), not only XAI_API_KEY.
-  const xaiKey =
-    env.XAI_API_KEY?.trim() ||
-    env.GROK_API_KEY?.trim() ||
-    env.AGENC_XAI_API_KEY?.trim() ||
-    undefined;
+  // Grok credentials: /grok-login OAuth wins over env BYOK (same product rule
+  // as CLI). Lazy-read OAuth so gateway cold start does not require secure
+  // storage when only BYOK is used.
+  let xaiKey: string | undefined;
+  try {
+    const { readXaiOauthAccessToken } = await import(
+      "../utils/xaiOauthCredentials.js"
+    );
+    xaiKey = readXaiOauthAccessToken();
+  } catch {
+    xaiKey = undefined;
+  }
+  if (xaiKey === undefined || xaiKey.length === 0) {
+    xaiKey =
+      env.XAI_API_KEY?.trim() ||
+      env.GROK_API_KEY?.trim() ||
+      env.AGENC_XAI_API_KEY?.trim() ||
+      undefined;
+  }
   const memeEnabled =
     envFlag(env.AGENC_GATEWAY_MEME_ENABLED) &&
     xaiKey !== undefined &&

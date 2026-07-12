@@ -433,19 +433,19 @@ Applied only when `model_provider = "grok"` and the base URL is direct xAI
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `web_search` | `true` | Allow LIVE `WebSearch` native one-shot |
-| `x_search` | `false` | Allow LIVE `XSearch` native one-shot |
-| `code_execution` | `false` | Continuous native `code_interpreter` |
-| `enable_image_search` | `false` | web_search image embeds |
-| `enable_image_understanding` | `false` | view_image during search |
-| `enable_video_understanding` | `false` | X video understanding |
+| `x_search` | `true` | Allow LIVE `XSearch` native one-shot |
+| `code_execution` | `true` | Continuous native `code_interpreter` |
+| `enable_image_search` | `true` | web_search image embeds |
+| `enable_image_understanding` | `true` | view_image during search |
+| `enable_video_understanding` | `true` | X video understanding |
 | `collections` | off | native `file_search` when enabled + IDs |
 | `remote_mcp` | off | xAI server-side MCP tools |
 
 ```toml
 [llm.xai]
 web_search = true
-x_search = false
-code_execution = false
+x_search = true
+code_execution = true
 
 # [llm.xai.collections]
 # enabled = true
