@@ -41,12 +41,12 @@ import type {
 } from "../llm/types.js";
 import type { LlmXaiConfig } from "../config/schema.js";
 import {
+  hasXaiCredentials,
   isDirectXaiInferenceHost,
   isXaiLiveXSearchEnabled,
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
-import { resolveApiKey } from "../config/env.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
@@ -3601,10 +3601,10 @@ export function createModelFacingTools(
 ): readonly Tool[] {
   // Hermes-style catalog gates: xAI-only LIVE tools are omitted unless the
   // session is Grok on a direct xAI host (and credentials/config allow).
+  // Credentials = BYOK **or** /grok-login OAuth (subscription Grok Build).
   // Execute-time refuses remain as defense-in-depth.
   const grokDirect = isGrokDirectXaiSession(opts);
-  const includeImagine =
-    grokDirect && resolveApiKey(opts.env ?? process.env) !== undefined;
+  const includeImagine = grokDirect && hasXaiCredentials(opts.env);
 
   return [
     ...createMultiAgentV2RuntimeTools(opts),

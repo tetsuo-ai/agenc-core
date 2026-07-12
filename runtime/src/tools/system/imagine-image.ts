@@ -18,8 +18,10 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../../llm/provider.js";
-import { isDirectXaiInferenceHost } from "../../llm/xai-capability-config.js";
-import { resolveApiKey } from "../../config/env.js";
+import {
+  isDirectXaiInferenceHost,
+  resolveXaiBearerToken,
+} from "../../llm/xai-capability-config.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
@@ -66,7 +68,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
   return {
     name: "ImagineImage",
     description:
-      "Generate an image with xAI Grok Imagine (POST /v1/images/generations). Only available when the session provider is grok with a BYOK XAI_API_KEY (or alias). Saves the image under the workspace and returns the path.",
+      "Generate an image with xAI Grok Imagine (POST /v1/images/generations). Only available when the session provider is grok on api.x.ai with either XAI_API_KEY/aliases or /grok-login subscription OAuth. Saves the image under the workspace and returns the path.",
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
@@ -111,25 +113,21 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         );
       }
 
-      // BYOK only for media REST (OAuth-only refused until verified).
-      const envKey = resolveApiKey(opts.env ?? process.env);
-      const apiKey =
-        envKey ??
-        (typeof factory.apiKey === "string" && factory.apiKey.length > 0
-          ? factory.apiKey
-          : undefined);
-      // OAuth bearers may live in factory.apiKey when no env key; product rule:
-      // refuse if no env BYOK key is present (clear operator message).
-      if (!envKey) {
+      // Hermes-style: BYOK env wins, else /grok-login OAuth, else session bearer.
+      // Subscription Grok Build users authenticate via OAuth — do not require
+      // a metered XAI_API_KEY for Imagine.
+      const sessionKey =
+        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+      const bearer = resolveXaiBearerToken(opts.env ?? process.env, sessionKey);
+      if (!bearer) {
         return json(
           {
             error:
-              "ImagineImage requires BYOK credentials (XAI_API_KEY / GROK_API_KEY / AGENC_XAI_API_KEY). OAuth-only media is not enabled until verified.",
+              "ImagineImage needs xAI credentials: set XAI_API_KEY (or GROK_API_KEY / AGENC_XAI_API_KEY), or run /grok-login for subscription access.",
           },
           true,
         );
       }
-      void apiKey;
 
       const prompt = stringValue(args.prompt);
       if (!prompt) return json({ error: "prompt is required" }, true);
@@ -184,7 +182,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         const res = await fetchImpl(`${baseURL}/images/generations`, {
           method: "POST",
           headers: {
-            authorization: `Bearer ${envKey}`,
+            authorization: `Bearer ${bearer}`,
             "content-type": "application/json",
           },
           body: JSON.stringify(body),

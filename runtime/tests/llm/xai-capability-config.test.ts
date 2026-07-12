@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig, normalizeRawConfig } from "../../src/config/schema.js";
 import {
   defaultLlmXaiConfig,
+  hasXaiCredentials,
   isDirectXaiInferenceHost,
   resolveLlmXaiConfig,
+  resolveXaiBearerToken,
   resolveXaiCapabilityExtra,
   resolveXaiLiveWebSearchOptions,
 } from "../../src/llm/xai-capability-config.js";
@@ -176,6 +178,26 @@ describe("resolveXaiCapabilityExtra", () => {
       env: { AGENC_XAI_CODE_EXECUTION: "1" },
     });
     expect(extra.codeExecution).toBe(true);
+  });
+});
+
+describe("hasXaiCredentials / resolveXaiBearerToken (subscription + BYOK)", () => {
+  it("treats BYOK env as credentials", () => {
+    expect(hasXaiCredentials({ XAI_API_KEY: "k" })).toBe(true);
+    expect(resolveXaiBearerToken({ XAI_API_KEY: "byok" })).toBe("byok");
+  });
+
+  it("falls back to session bearer when env has no BYOK", () => {
+    // Session apiKey is what createProvider holds after /grok-login.
+    expect(
+      resolveXaiBearerToken({}, "session-oauth-token"),
+    ).toBe("session-oauth-token");
+  });
+
+  it("BYOK wins over session bearer", () => {
+    expect(
+      resolveXaiBearerToken({ XAI_API_KEY: "byok" }, "session-oauth"),
+    ).toBe("byok");
   });
 });
 

@@ -13,6 +13,8 @@
  */
 
 import type { LlmXaiConfig } from "../config/schema.js";
+import { resolveApiKey } from "../config/env.js";
+import { readXaiOauthAccessToken } from "../utils/xaiOauthCredentials.js";
 import type { ProviderRuntimeExtra } from "./provider.js";
 
 const DIRECT_XAI_HOST_SUFFIXES = [".x.ai", ".grok.com"] as const;
@@ -257,4 +259,40 @@ export function isXaiLiveXSearchEnabled(
 ): boolean {
   if (envFlagTrue(env, "AGENC_XAI_X_SEARCH")) return true;
   return resolveLlmXaiConfig(llmXai).x_search === true;
+}
+
+/**
+ * Hermes-style credential probe for xAI media/tools availability.
+ *
+ * True when **either** BYOK (`XAI_API_KEY` / aliases) **or** a stored
+ * `/grok-login` OAuth access token is present. Subscription Grok Build /
+ * SuperGrok users authenticate via OAuth — must not require a metered API key.
+ *
+ * Cheap path only (no network refresh); actual 401 recovery is on the request.
+ */
+export function hasXaiCredentials(
+  env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+): boolean {
+  if (resolveApiKey(env as NodeJS.ProcessEnv | undefined) !== undefined) {
+    return true;
+  }
+  return readXaiOauthAccessToken() !== undefined;
+}
+
+/**
+ * Resolve a bearer for direct xAI REST (Imagine, etc.).
+ *
+ * Precedence matches CLI provider resolve: **BYOK env always wins** over
+ * OAuth subscription tokens (same note as `/grok-login`).
+ */
+export function resolveXaiBearerToken(
+  env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+  sessionApiKey?: string,
+): string | undefined {
+  const byok = resolveApiKey(env as NodeJS.ProcessEnv | undefined);
+  if (byok !== undefined) return byok;
+  const oauth = readXaiOauthAccessToken();
+  if (oauth !== undefined) return oauth;
+  const session = sessionApiKey?.trim();
+  return session && session.length > 0 ? session : undefined;
 }

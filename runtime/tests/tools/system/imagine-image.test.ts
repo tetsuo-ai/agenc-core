@@ -22,7 +22,7 @@ describe("ImagineImage tool", () => {
     expect(tools.some((t) => t.name === "ImagineImage")).toBe(false);
   });
 
-  it("is catalog-registered only for grok + direct xAI + BYOK", () => {
+  it("is catalog-registered for grok + direct xAI with BYOK or any credential probe", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
@@ -31,15 +31,6 @@ describe("ImagineImage tool", () => {
       env: { XAI_API_KEY: "key" },
     });
     expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
-
-    const noKey = createModelFacingTools({
-      workspaceRoot: process.cwd(),
-      getSession: () => null,
-      sessionProvider: "grok",
-      sessionBaseURL: "https://api.x.ai/v1",
-      env: {},
-    });
-    expect(noKey.some((t) => t.name === "ImagineImage")).toBe(false);
   });
 
   it("refuses non-grok sessions at execute time (defense-in-depth)", async () => {
@@ -56,20 +47,36 @@ describe("ImagineImage tool", () => {
     expect(result.content).toMatch(/session provider is grok/i);
   });
 
-  it("refuses without BYOK env key", async () => {
+  it("accepts session OAuth bearer when BYOK env is unset (subscription path)", async () => {
+    // Session provider already holds /grok-login bearer as factory apiKey —
+    // same as Grok Build subscription users without a metered XAI_API_KEY.
+    const root = await mkdtemp(join(tmpdir(), "imagine-oauth-"));
     const provider = createProvider("grok", {
-      apiKey: "oauth-looking-token",
+      apiKey: "oauth-subscription-bearer",
       model: "grok-4.5",
+      baseURL: "https://api.x.ai/v1",
     });
+    const b64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ b64_json: b64 }] }),
+    })) as unknown as typeof fetch;
+
     const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
+      workspaceRoot: root,
       getSession: () =>
         ({ services: { provider } }) as unknown as Session,
-      env: {},
+      env: {}, // no BYOK
+      fetchImpl,
     });
     const result = await tool.execute({ prompt: "a cat" });
-    expect(result.isError).toBe(true);
-    expect(result.content).toMatch(/BYOK/i);
+    expect(result.isError).toBeUndefined();
+    const auth = (
+      (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+        .calls[0]?.[1] as { headers: { authorization: string } }
+    ).headers.authorization;
+    expect(auth).toBe("Bearer oauth-subscription-bearer");
   });
 
   it("calls /images/generations and saves b64 image under workspace", async () => {
