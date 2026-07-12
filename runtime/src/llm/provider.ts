@@ -90,7 +90,7 @@ export interface ProviderRuntimeState {
   readonly options: ProviderFactoryOptions;
 }
 
-type ProviderRuntimeExtra = Partial<
+export type ProviderRuntimeExtra = Partial<
   Omit<LLMProviderConfig, "model" | "tools" | "timeoutMs">
 > & {
   readonly organization?: string;
