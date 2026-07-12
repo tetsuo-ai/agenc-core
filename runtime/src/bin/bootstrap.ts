@@ -611,6 +611,23 @@ function transcriptMessagesFrom(
 }
 
 /**
+ * Map operator `max_turns` (schema / TOML) onto turn-loop `maxTurns`.
+ * Exported so tests can prove the mapping without booting a full session.
+ */
+export function maxTurnsFromAgenCConfig(
+  config: Pick<AgenCConfig, "max_turns">,
+): number | undefined {
+  if (
+    typeof config.max_turns === "number" &&
+    Number.isFinite(config.max_turns) &&
+    config.max_turns > 0
+  ) {
+    return config.max_turns;
+  }
+  return undefined;
+}
+
+/**
  * Structural `Config` shape for the live local-runtime session. The fields
  * below are the runtime-owned config snapshot consumed by the active shell.
  */
@@ -623,6 +640,7 @@ function buildDeferredConfig(
     config.reasoning_effort === "minimal"
       ? "low"
       : config.reasoning_effort;
+  const maxTurns = maxTurnsFromAgenCConfig(config);
   return {
     model,
     ...(config.review_model !== undefined
@@ -646,6 +664,8 @@ function buildDeferredConfig(
     ...(config.autonomous_mode !== undefined
       ? { autonomousMode: config.autonomous_mode }
       : {}),
+    // Snake config key → camel turn Config (todo-105). Schema default is 50.
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
       : {}),
