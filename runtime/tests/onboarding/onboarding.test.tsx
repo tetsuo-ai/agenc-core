@@ -609,6 +609,8 @@ describe("first-run onboarding wizard", () => {
     const context = {
       config,
       env: { XAI_API_KEY: "xai-bad-env-key" },
+      // x.ai rejects bad keys with HTTP 400 (verified live), which now
+      // classifies as auth-failed rather than provider-unreachable.
       fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
         new Response("bad request", { status: 400 }),
       ),
@@ -642,6 +644,28 @@ describe("first-run onboarding wizard", () => {
     );
     expect(result.state.currentStepId).toBe("security");
     expect(result.state.connection).toMatchObject({
+      ok: false,
+      status: "auth-failed",
+      keyEnvVar: "XAI_API_KEY",
+    });
+  });
+
+  test("marks a genuinely unreachable provider as provider-unreachable, not auth-failed", async () => {
+    const config = defaultConfig();
+    const context = {
+      config,
+      env: { XAI_API_KEY: "xai-env-key" },
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("bad gateway", { status: 502 }),
+      ),
+      checkLocalProviders: false,
+    };
+    const connection = await checkOnboardingProviderConnection(
+      context,
+      "grok",
+      "grok-4",
+    );
+    expect(connection).toMatchObject({
       ok: false,
       status: "provider-unreachable",
       keyEnvVar: "XAI_API_KEY",

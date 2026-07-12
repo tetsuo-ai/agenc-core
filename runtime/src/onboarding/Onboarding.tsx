@@ -46,6 +46,9 @@ import {
 import { OnboardingBox as Box, OnboardingText as Text } from "./elements.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
+  DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
+  isKeyRejectedStatus,
+  providerVerificationUrl,
   verifyApiKey,
   type VerificationStatus,
 } from "./useApiKeyVerification.js";
@@ -556,18 +559,6 @@ function localModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string 
   return `${trimmed}/v1/models`;
 }
 
-function remoteModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string {
-  const trimmed = baseURL.replace(/\/+$/, "");
-  if (provider === "gemini" && !/\/openai$/i.test(trimmed)) {
-    return `${trimmed}/openai/models`;
-  }
-  if (trimmed.endsWith("/models")) return trimmed;
-  if (/\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)) {
-    return `${trimmed}/models`;
-  }
-  return `${trimmed}/v1/models`;
-}
-
 function remoteProviderHeaders(
   provider: BuiltInProviderSlug,
   apiKey: string,
@@ -620,13 +611,16 @@ async function probeRemoteProvider(params: {
   const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   if (fetchImpl === undefined) return { ok: false };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 1_500);
+  const timer = setTimeout(
+    () => controller.abort(),
+    params.timeoutMs ?? DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
+  );
   if (typeof (timer as { unref?: () => void }).unref === "function") {
     (timer as { unref: () => void }).unref();
   }
   try {
     const response = await fetchImpl(
-      remoteModelsUrl(params.provider, params.baseURL),
+      providerVerificationUrl(params.provider, params.baseURL),
       {
         method: "GET",
         headers: remoteProviderHeaders(params.provider, params.apiKey),
@@ -742,7 +736,8 @@ export async function checkOnboardingProviderConnection(
       fetchImpl: context.fetchImpl,
     });
     if (!remote.ok) {
-      const authFailed = remote.status === 401 || remote.status === 403;
+      const authFailed =
+        remote.status !== undefined && isKeyRejectedStatus(provider, remote.status);
       return {
         provider,
         model,
