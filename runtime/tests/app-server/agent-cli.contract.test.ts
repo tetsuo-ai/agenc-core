@@ -1281,12 +1281,27 @@ autostart = false
             capabilities: {},
           },
         });
-        for (let index = 0; index < 25; index += 1) {
+        // First event is a real user_message; flood deltas after it so the
+        // pre-subscribe buffer must trim without dropping the first YOU.
+        await context.send({
+          jsonrpc: "2.0",
+          method: "event.session_event",
+          sessionId: "session_buffered",
+          params: {
+            sessionId: "session_buffered",
+            event: {
+              id: "user-initial",
+              type: "user_message",
+              payload: { message: "hello", displayText: "hello" },
+            },
+          },
+        });
+        for (let index = 0; index < 1005; index += 1) {
           await context.send({
             jsonrpc: "2.0",
-            method: "event.session_event",
+            method: "event.message_chunk",
             sessionId: "session_buffered",
-            params: { index },
+            params: { sessionId: "session_buffered", index, delta: `d${index}` },
           });
         }
       },
@@ -1298,7 +1313,7 @@ autostart = false
       authCookie: "buffer-cap-cookie",
     });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const replayed: JsonObject[] = [];
       const unsubscribe = client.subscribeToSessionEvents(
         "session_buffered",
@@ -1307,9 +1322,14 @@ autostart = false
         },
       );
       unsubscribe();
-      expect(replayed).toHaveLength(20);
-      expect(replayed[0]?.params).toEqual({ index: 5 });
-      expect(replayed.at(-1)?.params).toEqual({ index: 24 });
+      expect(replayed.length).toBe(1000);
+      expect(replayed[0]).toMatchObject({
+        method: "event.session_event",
+        params: { event: { type: "user_message" } },
+      });
+      expect(replayed.some((event) => event.method === "event.message_chunk")).toBe(
+        true,
+      );
     } finally {
       await client.close();
       await server.close();
