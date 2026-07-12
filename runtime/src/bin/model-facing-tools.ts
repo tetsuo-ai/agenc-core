@@ -76,6 +76,7 @@ import {
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
+import { createImagineImageTool } from "../tools/system/imagine-image.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionResult,
@@ -3524,6 +3525,11 @@ export function createModelFacingTools(
     ...createMcpResourceTools(opts),
     createSkillInvocationRuntimeTool(opts),
     ...createWebTools(opts),
+    createImagineImageTool({
+      workspaceRoot: opts.workspaceRoot,
+      getSession: opts.getSession,
+      ...(opts.env !== undefined ? { env: opts.env } : {}),
+    }),
     createNotebookReadTool(opts),
     createNotebookEditTool(opts),
     createLspTool(opts),
