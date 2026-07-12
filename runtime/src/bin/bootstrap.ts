@@ -8,6 +8,7 @@ import {
   normalizeProviderName,
   type ProviderName,
 } from "../llm/provider.js";
+import { resolveXaiCapabilityExtra } from "../llm/xai-capability-config.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
@@ -1135,7 +1136,22 @@ export async function bootstrapLocalRuntimeSession(
             enabled_tools: [...LIVE_COORDINATOR_ALLOWED_TOOLS],
           }
         : baseToolsConfig,
+      // G1/G3 Hermes-style catalog gates: pass session provider + host so
+      // XSearch / ImagineImage are not advertised to Claude/GPT/OpenRouter.
+      ...(startup.config.llm?.xai !== undefined
+        ? { llmXai: startup.config.llm.xai }
+        : {}),
+      sessionProvider: resolvedProvider,
+      ...(selectedBaseURL !== undefined
+        ? { sessionBaseURL: selectedBaseURL }
+        : {}),
     },
+  });
+  const xaiCapabilityExtra = resolveXaiCapabilityExtra({
+    provider: resolvedProvider,
+    baseURL: selectedBaseURL,
+    llmXai: startup.config.llm?.xai,
+    env: env as Readonly<Record<string, string | undefined>>,
   });
   const provider: LLMProvider = createProvider(
     resolvedProvider as ProviderName,
@@ -1171,6 +1187,9 @@ export async function bootstrapLocalRuntimeSession(
           : {}),
         ...(hasManagedCredential ? { managedCredential: true } : {}),
         ...(managedKey.baseURL !== undefined ? { managedGateway: true } : {}),
+        // Grok-only server-tool profile from [llm.xai]; empty for non-Grok /
+        // non-direct-xAI hosts so other providers never get xAI payloads.
+        ...xaiCapabilityExtra,
       },
     },
   );

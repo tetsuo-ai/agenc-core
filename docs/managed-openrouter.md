@@ -121,3 +121,23 @@ When debugging production, check in order:
 7. OpenRouter workspace has credits / free-pool capacity.
 8. Request `max_tokens` matches intent: managed default is **2048** unless
    you set an explicit max; generic 32k/8k paths are for non-managed routes.
+
+
+## Grok server tools and Imagine on OpenRouter (honesty matrix)
+
+Managed OpenRouter `x-ai/grok-*` routes **do not** receive AgenC's direct xAI
+server-tool payloads (`web_search`, `x_search`, `code_interpreter`, collections
+`file_search`, remote `mcp`) or Imagine REST. Those surfaces require provider
+slug **`grok`** with a direct `api.x.ai` base URL and BYOK (`XAI_API_KEY` /
+aliases) or `/grok-login` for chat.
+
+| Capability | Direct `grok` + api.x.ai | OpenRouter `x-ai/grok-*` |
+| --- | --- | --- |
+| Chat / coding tools | Yes | Yes (gateway-dependent) |
+| LIVE WebSearch → native `web_search` | Yes | No (client fallback only) |
+| LIVE XSearch → native `x_search` | Yes when `[llm.xai].x_search` | No |
+| Native `code_interpreter` | Yes when `[llm.xai].code_execution` | No |
+| ImagineImage REST | Yes with BYOK | No |
+| Gateway meme / x_search / TTS | Yes with BYOK aliases | N/A |
+
+See `grok-todo.md` and `[llm.xai]` in config for the direct-xAI capability profile.

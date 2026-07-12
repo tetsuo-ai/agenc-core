@@ -38,6 +38,7 @@ import {
 } from "../../provider-capabilities.js";
 import {
   getProviderNativeToolDefinitions,
+  isGrokMultiAgentModel,
   type ProviderNativeToolDefinition,
 } from "../../provider-native-search.js";
 import {
@@ -109,7 +110,11 @@ type ProviderFallbackWaitDecision = Extract<
   { readonly kind: "wait" }
 >;
 
-/** Vision models known to support function-calling alongside image understanding. */
+/**
+ * Vision models known to support client-side function-calling alongside image
+ * understanding. Multi-agent models are intentionally excluded: xAI rejects
+ * client function tools on that family (built-ins + remote MCP only).
+ */
 const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4.5",
   "grok-4.5-latest",
@@ -118,7 +123,6 @@ const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4-1-fast-non-reasoning",
   "grok-4.20-0309-reasoning",
   "grok-4.20-0309-non-reasoning",
-  "grok-4.20-multi-agent-0309",
 ]);
 
 interface ProviderResponseTraceMeta {
@@ -1936,45 +1940,57 @@ export class GrokProvider implements LLMProvider {
     toolChoice?: LLMToolChoice,
     requestTools?: readonly LLMTool[],
   ): ToolSelectionDiagnostics {
+    // xAI multi-agent: no client-side function tools — built-ins + remote MCP only.
+    const multiAgentNoClientTools = isGrokMultiAgentModel(this.config.model);
     const rawRequestTools = requestTools ? [...requestTools] : undefined;
-    const requestToolCatalog = rawRequestTools
-      ? slimTools(rawRequestTools).tools
-      : undefined;
-    const responseTools = requestToolCatalog
-      ? toXaiResponsesTools(requestToolCatalog)
-      : this.responseTools;
-    const rawToolsByName = rawRequestTools
-      ? new Map(rawRequestTools.map((tool) => [tool.function.name, tool]))
-      : this.rawToolsByName;
-    const responseToolsByName = requestToolCatalog
-      ? new Map(
-          responseTools
-            .map((tool, index) => {
-              const name = requestToolCatalog[index]?.function?.name;
-              return name ? [name, tool] : undefined;
-            })
-            .filter(
-              (
-                entry,
-              ): entry is [string, Record<string, unknown>] =>
-                entry !== undefined,
-            ),
-        )
-      : this.responseToolsByName;
-    const responseToolCharsByName = requestToolCatalog
-      ? new Map(
-          responseTools
-            .map((tool, index) => {
-              const name = requestToolCatalog[index]?.function?.name;
-              return name ? [name, JSON.stringify(tool).length] : undefined;
-            })
-            .filter(
-              (
-                entry,
-              ): entry is [string, number] => entry !== undefined,
-            ),
-        )
-      : this.responseToolCharsByName;
+    const requestToolCatalog = multiAgentNoClientTools
+      ? undefined
+      : rawRequestTools
+        ? slimTools(rawRequestTools).tools
+        : undefined;
+    const responseTools = multiAgentNoClientTools
+      ? []
+      : requestToolCatalog
+        ? toXaiResponsesTools(requestToolCatalog)
+        : this.responseTools;
+    const rawToolsByName = multiAgentNoClientTools
+      ? new Map<string, LLMTool>()
+      : rawRequestTools
+        ? new Map(rawRequestTools.map((tool) => [tool.function.name, tool]))
+        : this.rawToolsByName;
+    const responseToolsByName = multiAgentNoClientTools
+      ? new Map<string, Record<string, unknown>>()
+      : requestToolCatalog
+        ? new Map(
+            responseTools
+              .map((tool, index) => {
+                const name = requestToolCatalog[index]?.function?.name;
+                return name ? [name, tool] : undefined;
+              })
+              .filter(
+                (
+                  entry,
+                ): entry is [string, Record<string, unknown>] =>
+                  entry !== undefined,
+              ),
+          )
+        : this.responseToolsByName;
+    const responseToolCharsByName = multiAgentNoClientTools
+      ? new Map<string, number>()
+      : requestToolCatalog
+        ? new Map(
+            responseTools
+              .map((tool, index) => {
+                const name = requestToolCatalog[index]?.function?.name;
+                return name ? [name, JSON.stringify(tool).length] : undefined;
+              })
+              .filter(
+                (
+                  entry,
+                ): entry is [string, number] => entry !== undefined,
+              ),
+          )
+        : this.responseToolCharsByName;
     const providerNativeTools = this.providerNativeTools;
     const providerCatalogToolCount =
       responseTools.length + providerNativeTools.length;
@@ -2002,18 +2018,28 @@ export class GrokProvider implements LLMProvider {
       }
       return {
         tools: fullCatalogTools,
-        chars: rawRequestTools
+        chars: multiAgentNoClientTools
           ? fullCatalogTools.reduce(
               (sum, tool) => sum + JSON.stringify(tool).length,
               0,
             )
-          : this.toolChars,
+          : rawRequestTools
+            ? fullCatalogTools.reduce(
+                (sum, tool) => sum + JSON.stringify(tool).length,
+                0,
+              )
+            : this.toolChars,
         requestedToolNames: [],
         resolvedToolNames: providerCatalogToolNames,
         missingRequestedToolNames: [],
         providerCatalogToolCount,
-        toolResolution: "all_tools_no_filter",
+        toolResolution: multiAgentNoClientTools
+          ? "multi_agent_server_tools_only"
+          : "all_tools_no_filter",
         toolsAttached: false,
+        ...(multiAgentNoClientTools
+          ? { toolSuppressionReason: "multi_agent_no_client_function_tools" }
+          : {}),
       };
     }
 

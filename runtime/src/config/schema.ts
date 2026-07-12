@@ -475,6 +475,51 @@ export interface ProviderConfig {
   readonly fallback?: ProviderFallbackConfig;
 }
 
+/**
+ * `[llm.xai]` — Grok/xAI server-tool capability profile.
+ * Applied only when session provider is grok on a direct xAI host.
+ * See `runtime/src/llm/xai-capability-config.ts`.
+ */
+export interface LlmXaiCollectionsConfig {
+  readonly enabled?: boolean;
+  readonly vector_store_ids?: readonly string[];
+  readonly max_num_results?: number;
+}
+
+export interface LlmXaiRemoteMcpServerConfig {
+  readonly server_url: string;
+  readonly server_label: string;
+  readonly server_description?: string;
+  readonly allowed_tools?: readonly string[];
+  readonly authorization?: string;
+}
+
+export interface LlmXaiRemoteMcpConfig {
+  readonly enabled?: boolean;
+  readonly servers?: readonly LlmXaiRemoteMcpServerConfig[];
+}
+
+export interface LlmXaiConfig {
+  /** Prefer native web_search for LIVE WebSearch (default true). */
+  readonly web_search?: boolean;
+  /** Enable native x_search (default false). */
+  readonly x_search?: boolean;
+  /** Enable native code_interpreter (default false). */
+  readonly code_execution?: boolean;
+  /** Top-level web_search enable_image_search (default false). */
+  readonly enable_image_search?: boolean;
+  /** Image understanding for web/x search (default false). */
+  readonly enable_image_understanding?: boolean;
+  /** Video understanding for x_search (default false). */
+  readonly enable_video_understanding?: boolean;
+  readonly collections?: LlmXaiCollectionsConfig;
+  readonly remote_mcp?: LlmXaiRemoteMcpConfig;
+}
+
+export interface LlmConfig {
+  readonly xai?: LlmXaiConfig;
+}
+
 export type AuthBackendConfigKind = "local" | "remote";
 
 export interface AuthManagedKeysConfig {
@@ -695,6 +740,11 @@ export interface AgenCConfig {
    * `AGENC_HEARTBEAT*` env vars override. See `heartbeat/config.ts`.
    */
   readonly heartbeat?: HeartbeatConfig;
+  /**
+   * LLM provider capability profiles (`[llm]`). Today only `[llm.xai]` for
+   * Grok server-side tools; applied when provider is grok on direct xAI.
+   */
+  readonly llm?: LlmConfig;
   readonly agenc_home?: string;
   readonly workspace?: string;
   readonly simpleMode?: boolean;
@@ -835,6 +885,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "budget",
   "browser",
   "heartbeat",
+  "llm",
   "durableTurns",
   "agenc_home",
   "workspace",
@@ -878,6 +929,18 @@ export function defaultConfig(): AgenCConfig {
     permissions: Object.freeze({
       default_mode: "on-request",
     }) as PermissionsConfig,
+    // Full Grok surface on by default (subscription + BYOK). Operators can
+    // still set individual flags false under [llm.xai].
+    llm: Object.freeze({
+      xai: Object.freeze({
+        web_search: true,
+        x_search: true,
+        code_execution: true,
+        enable_image_search: true,
+        enable_image_understanding: true,
+        enable_video_understanding: true,
+      }) as LlmXaiConfig,
+    }) as LlmConfig,
     project_root_markers: Object.freeze([
       ".git",
       "package.json",

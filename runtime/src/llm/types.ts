@@ -437,6 +437,11 @@ export interface LLMWebSearchConfig {
   readonly excludedDomains?: readonly string[];
   /** Enable server-side image understanding during web search. */
   readonly enableImageUnderstanding?: boolean;
+  /**
+   * Enable image search results embedded as Markdown images.
+   * Top-level field on the Responses `web_search` tool (not under filters).
+   */
+  readonly enableImageSearch?: boolean;
 }
 
 export interface LLMXSearchConfig {

@@ -12,7 +12,7 @@ wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
 Version: **0.4.1**. Default session provider **grok**, fresh-config session model
-**grok-4.3** (provider-map fallback **grok-4.5** — see [providers.md](providers.md)).
+**grok-4.5** (see [providers.md](providers.md)).
 
 ---
 

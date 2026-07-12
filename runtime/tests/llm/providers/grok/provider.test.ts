@@ -89,6 +89,58 @@ describe("providers/grok entrypoint", () => {
     );
   });
 
+  test("G0: multi-agent strips client function tools; keeps server built-ins", () => {
+    const multiAgent = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.20-multi-agent-0309",
+      tools: [TEST_TOOL],
+      webSearch: true,
+      xSearch: true,
+    });
+    const request = (multiAgent as any).buildRequestPlan([
+      { role: "user", content: "research quantum computing" },
+    ]);
+    const tools = (request.params.tools ?? []) as Record<string, unknown>[];
+
+    // No client function tools (FileRead) on the wire.
+    expect(tools.some((t) => t.type === "function")).toBe(false);
+    expect(JSON.stringify(tools)).not.toContain("FileRead");
+
+    // Server built-ins still allowed when configured.
+    expect(tools).toContainEqual(expect.objectContaining({ type: "web_search" }));
+    expect(tools).toContainEqual(expect.objectContaining({ type: "x_search" }));
+    expect(request.toolSelection.toolResolution).toBe(
+      "multi_agent_server_tools_only",
+    );
+  });
+
+  test("G0: multi-agent with only client tools yields empty tools array", () => {
+    const multiAgent = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.20-multi-agent",
+      tools: [TEST_TOOL],
+    });
+    const request = (multiAgent as any).buildRequestPlan([
+      { role: "user", content: "hello" },
+    ]);
+    const tools = request.params.tools ?? [];
+    expect(tools).toEqual([]);
+  });
+
+  test("G0: grok-4.5 still attaches client function tools", () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.5",
+      tools: [TEST_TOOL],
+    });
+    const request = (provider as any).buildRequestPlan([
+      { role: "user", content: "read a file" },
+    ]);
+    const tools = (request.params.tools ?? []) as Record<string, unknown>[];
+    expect(tools.some((t) => t.type === "function")).toBe(true);
+    expect(JSON.stringify(tools)).toContain("FileRead");
+  });
+
   test("rejects structured outputs with tools outside the Grok 4 family", () => {
     const provider = new GrokProvider({
       apiKey: "test-key",

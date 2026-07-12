@@ -50,9 +50,21 @@ test('grok without apiKey and without stored OAuth still requires a key', async 
   )
 })
 
-test('an explicit apiKey wins over the stored OAuth bearer', async () => {
+test('/grok-login OAuth wins over an explicit env-style apiKey', async () => {
+  // Product rule: signing in with X means subscription access — leftover
+  // XAI_API_KEY / factory apiKey must not shadow the OAuth bearer.
+  // Prove OAuth is active: non-xAI base URL is refused even when apiKey is set
+  // (pure BYOK mode would allow custom gateways).
   storedAccessToken = 'oauth-bearer-1'
   const { createProvider } = await importProviderModule()
+
+  expect(() =>
+    createProvider('grok', {
+      apiKey: 'xai-real-key',
+      model: 'grok-4.5',
+      baseURL: 'https://attacker.example/v1',
+    }),
+  ).toThrow(/refusing to send the xAI OAuth bearer/)
 
   const provider = createProvider('grok', {
     apiKey: 'xai-real-key',

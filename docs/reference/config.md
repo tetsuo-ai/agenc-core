@@ -39,7 +39,7 @@ dropped. TOML aliases remapped before normalize:
 
 | Key | Default |
 | --- | --- |
-| `model` | `grok-4.3` |
+| `model` | `grok-4.5` |
 | `model_provider` | `grok` |
 | `approval_policy` | `on-request` |
 | `sandbox_mode` / `sandbox.mode` | `workspace-write` |
@@ -68,7 +68,7 @@ dropped. TOML aliases remapped before normalize:
 ### Top-level model / runtime
 
 ```toml
-model = "grok-4.3"
+model = "grok-4.5"
 model_provider = "grok"
 approval_policy = "on-request"   # untrusted | on-failure | on-request | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access
@@ -333,7 +333,7 @@ Named override bundles. Only these keys apply (others silently ignored):
 
 ```toml
 [profiles.yolo]
-model = "grok-4.3"
+model = "grok-4.5"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 ```
@@ -423,3 +423,33 @@ agenc config validate
 ```
 
 TUI: `/config` (alias `/settings`). Full CLI map: [cli.md](cli.md).
+
+
+## `[llm.xai]` — Grok server-tool profile
+
+Applied only when `model_provider = "grok"` and the base URL is direct xAI
+(`api.x.ai`). OpenRouter does not receive these payloads.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `web_search` | `true` | Allow LIVE `WebSearch` native one-shot |
+| `x_search` | `true` | Allow LIVE `XSearch` native one-shot |
+| `code_execution` | `true` | Continuous native `code_interpreter` |
+| `enable_image_search` | `true` | web_search image embeds |
+| `enable_image_understanding` | `true` | view_image during search |
+| `enable_video_understanding` | `true` | X video understanding |
+| `collections` | off | native `file_search` when enabled + IDs |
+| `remote_mcp` | off | xAI server-side MCP tools |
+
+```toml
+[llm.xai]
+web_search = true
+x_search = true
+code_execution = true
+
+# [llm.xai.collections]
+# enabled = true
+# vector_store_ids = ["collection_…"]
+```
+
+Env overrides: `AGENC_XAI_X_SEARCH`, `AGENC_XAI_CODE_EXECUTION`, etc.

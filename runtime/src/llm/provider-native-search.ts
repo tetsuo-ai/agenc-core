@@ -18,7 +18,7 @@ type GatewayLLMConfig = ContextGatewayLLMConfig & {
 };
 
 export const PROVIDER_NATIVE_WEB_SEARCH_TOOL = "web_search";
-const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
+export const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
 const PROVIDER_NATIVE_CODE_INTERPRETER_TOOL = "code_interpreter";
 const PROVIDER_NATIVE_FILE_SEARCH_TOOL = "file_search";
 const PROVIDER_NATIVE_MCP_TOOL_PREFIX = "mcp:";
@@ -39,9 +39,32 @@ type ProviderNativeToolConfig = Pick<
 > &
   LLMXaiCapabilitySurface;
 
+/**
+ * xAI multi-agent models do not support client-side function calling — only
+ * built-in server tools and remote MCP. Detect those model IDs (including
+ * aliases and provider-prefixed forms) so adapters can strip LIVE tools.
+ *
+ * @see https://docs.x.ai/developers/model-capabilities/text/multi-agent
+ */
+export function isGrokMultiAgentModel(model: string | undefined): boolean {
+  if (typeof model !== "string") return false;
+  const trimmed = model.trim().toLowerCase();
+  if (trimmed.length === 0) return false;
+  const normalized =
+    normalizeGrokModel(trimmed)?.trim().toLowerCase() ?? trimmed;
+  const unqualified = normalized.slice(
+    Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf(":")) + 1,
+  );
+  return /^grok-4[.-]20-multi-agent(?:$|[-_.])/.test(unqualified);
+}
+
+/**
+ * Fail-closed: empty/unknown/unnormalizable models never enable xAI server
+ * tools. Only explicit Grok 4 family IDs (after alias normalize) qualify.
+ */
 export function supportsGrokServerSideTools(model: string | undefined): boolean {
   const normalized = normalizeGrokModel(model)?.trim().toLowerCase();
-  if (!normalized) return true;
+  if (!normalized) return false;
   return normalized.startsWith(GROK_SERVER_SIDE_TOOL_PREFIX);
 }
 
@@ -67,6 +90,22 @@ export function supportsProviderNativeWebSearch(
   return resolveProviderNativeSearchMode(llmConfig) !== "off";
 }
 
+/**
+ * Native x_search is available only when the session is grok, the model
+ * supports server tools, and xSearch is explicitly enabled (default off).
+ */
+export function supportsProviderNativeXSearch(
+  llmConfig:
+    | (Pick<GatewayLLMConfig, "provider" | "model"> & {
+        readonly xSearch?: boolean;
+      })
+    | undefined,
+): boolean {
+  if (!llmConfig || llmConfig.provider !== "grok") return false;
+  if (llmConfig.xSearch !== true) return false;
+  return supportsGrokServerSideTools(llmConfig.model);
+}
+
 function buildWebSearchPayload(
   options: LLMWebSearchConfig | undefined,
 ): Record<string, unknown> {
@@ -85,6 +124,10 @@ function buildWebSearchPayload(
   }
   if (options?.enableImageUnderstanding === true) {
     payload.enable_image_understanding = true;
+  }
+  if (options?.enableImageSearch === true) {
+    // Top-level tool field per xAI docs — not nested under filters.
+    payload.enable_image_search = true;
   }
   return payload;
 }

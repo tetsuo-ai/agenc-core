@@ -90,7 +90,7 @@ export interface ProviderRuntimeState {
   readonly options: ProviderFactoryOptions;
 }
 
-type ProviderRuntimeExtra = Partial<
+export type ProviderRuntimeExtra = Partial<
   Omit<LLMProviderConfig, "model" | "tools" | "timeoutMs">
 > & {
   readonly organization?: string;
@@ -1354,17 +1354,17 @@ export function createProvider(
           },
         });
       }
-      // Sign in with X / xAI OAuth: with no real API key, fall back to the
-      // stored subscription bearer. The bearer refreshes via the adapter's
-      // I-14 401-recovery hook below, so an expired stored token still
-      // constructs a working provider.
+      // /grok-login OAuth ALWAYS wins over env/factory BYOK. Signing in with
+      // X means subscription access; leftover XAI_API_KEY must not shadow it.
+      // Bearer refreshes via the adapter's I-14 401-recovery hook.
       const factoryApiKey = resolveFactoryApiKey(opts);
-      const oauthBearer =
-        factoryApiKey === undefined ? readXaiOauthAccessToken() : undefined;
+      const oauthBearer = readXaiOauthAccessToken();
       const usesXaiOauth =
         oauthBearer !== undefined || isXaiOauthBearer(factoryApiKey);
       const apiKey =
-        factoryApiKey ?? oauthBearer ?? requireFactoryApiKey("grok", opts);
+        oauthBearer ??
+        factoryApiKey ??
+        requireFactoryApiKey("grok", opts);
       const model = requireModel(
         "grok",
         opts.model,

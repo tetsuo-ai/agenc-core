@@ -12,14 +12,14 @@ CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 | Setting | Value |
 | --- | --- |
 | Default provider | `grok` (xAI; alias `xai` normalizes to `grok`) |
-| Fresh-config session model | `grok-4.3` (`defaultConfig().model`) |
+| Fresh-config session model | `grok-4.5` (`defaultConfig().model`) |
 | Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | `grok-4.5` |
 | Managed OpenRouter paid default | `x-ai/grok-4.5` |
 | Config keys | `model_provider`, `model` in `config.toml` |
 | Env overrides | `AGENC_PROVIDER`, `AGENC_MODEL` |
 
 Bare interactive startup with a fresh install uses the **config** default
-(`grok-4.3`). When only a provider slug is resolved without an explicit model
+(`grok-4.5`). When only a provider slug is resolved without an explicit model
 (or when managed OpenRouter picks its paid default), the registry uses
 **`grok-4.5`** / **`x-ai/grok-4.5`**.
 
@@ -32,7 +32,7 @@ Grok API key resolution order:
 ### Grok 4.5 catalog entry
 
 `grok-4.5` is the provider-map default for `grok` and a full catalog entry.
-Fresh `config.toml` still seeds `model = "grok-4.3"` until you change it. The
+Fresh `config.toml` seeds `model = "grok-4.5"`. The
 runtime catalog for Grok 4.5 exposes:
 
 | Property | Value |
@@ -59,7 +59,7 @@ the configured model.
 
 | Slug | Display name | Default model | Base URL | API key env (primary) |
 | --- | --- | --- | --- | --- |
-| `grok` | xAI Grok | `grok-4.5` (map); session seed `grok-4.3` | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `grok` | xAI Grok | `grok-4.5` | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
 | `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none required)_ |
@@ -102,7 +102,7 @@ See `runtime/src/auth/` and `runtime/src/llm/discovery/provider-discovery.ts`.
 ```toml
 # ~/.agenc/config.toml (illustrative)
 model_provider = "grok"
-model = "grok-4.3"
+model = "grok-4.5"
 
 [providers.openrouter]
 # provider-specific overrides live under [providers.<slug>] when configured
