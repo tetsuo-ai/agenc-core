@@ -35,8 +35,14 @@ export type AgenCGatewayCliCommand =
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "install-service" }
   | { readonly kind: "pairing-list"; readonly json: boolean }
+  | { readonly kind: "pairing-pending"; readonly json: boolean }
   | {
       readonly kind: "pairing-revoke";
+      readonly channelId: string;
+      readonly peerId: string;
+    }
+  | {
+      readonly kind: "pairing-approve";
       readonly channelId: string;
       readonly peerId: string;
     }
@@ -62,6 +68,10 @@ export function formatAgenCGatewayCliHelpText(): string {
     "  agenc gateway status [--json]         Channels, DM policies, bindings,",
     "                                        paired-sender counts",
     "  agenc gateway pairing list [--json]   Paired senders per channel",
+    "  agenc gateway pairing pending [--json]",
+    "                                        Host-only pending codes (never DM'd)",
+    "  agenc gateway pairing approve <channel> <peerId>",
+    "                                        Host-side pair without a code",
     "  agenc gateway pairing revoke <channel> <peerId>",
     "                                        Remove a paired sender",
     "",
@@ -101,6 +111,20 @@ export function parseAgenCGatewayCliArgs(
     if (positional[1] === "list") {
       return { kind: "pairing-list", json };
     }
+    if (positional[1] === "pending") {
+      return { kind: "pairing-pending", json };
+    }
+    if (positional[1] === "approve") {
+      const channelId = positional[2];
+      const peerId = positional[3];
+      if (channelId === undefined || peerId === undefined) {
+        return {
+          kind: "error",
+          message: "pairing approve needs <channel> <peerId>",
+        };
+      }
+      return { kind: "pairing-approve", channelId, peerId };
+    }
     if (positional[1] === "revoke") {
       const channelId = positional[2];
       const peerId = positional[3];
@@ -114,7 +138,8 @@ export function parseAgenCGatewayCliArgs(
     }
     return {
       kind: "error",
-      message: "unknown pairing subcommand (expected: list, revoke)",
+      message:
+        "unknown pairing subcommand (expected: list, pending, approve, revoke)",
     };
   }
   return {
@@ -291,6 +316,28 @@ export async function runAgenCGatewayCli(
         for (const peer of entry.paired) stdout(`  ${peer}`);
       }
       if (!any) stdout("No paired senders.");
+      return 0;
+    }
+    case "pairing-pending": {
+      const pending = store.listPending();
+      if (command.json) {
+        stdout(JSON.stringify(pending, null, 2));
+        return 0;
+      }
+      if (pending.length === 0) {
+        stdout("No pending pairing requests.");
+        return 0;
+      }
+      for (const p of pending) {
+        stdout(
+          `${p.channelId}  peer=${p.peerId}  code=${p.code}  expiresAt=${new Date(p.expiresAt).toISOString()}`,
+        );
+      }
+      return 0;
+    }
+    case "pairing-approve": {
+      store.approve(command.channelId, command.peerId);
+      stdout(`Approved ${command.peerId} on ${command.channelId}.`);
       return 0;
     }
     case "pairing-revoke": {

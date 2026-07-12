@@ -60,19 +60,27 @@ describe("PairingStore", () => {
     expect(store.isPaired("tg", "alice")).toBe(false);
   });
 
-  test("pending pairing state is never written to disk", () => {
+  test("pending pairing codes are durable for host CLI (todo-103)", () => {
     const store = new PairingStore({
       agencHome: home,
       generateCode: () => "SECRET7",
     });
     store.challenge("tg", { peerId: "alice" });
-    // No redemption yet → no file, or a file with no code in it.
-    try {
-      const raw = readFileSync(join(home, "gateway", "pairing.json"), "utf8");
-      expect(raw).not.toContain("SECRET7");
-    } catch {
-      // No file yet is also fine.
-    }
+    // Host-only durable pending so `agenc gateway pairing pending` works
+    // across processes; codes must never be DM'd (gateway message path).
+    const raw = readFileSync(join(home, "gateway", "pairing.json"), "utf8");
+    expect(raw).toContain("SECRET7");
+    const pending = store.listPending();
+    expect(pending).toEqual([
+      expect.objectContaining({
+        channelId: "tg",
+        peerId: "alice",
+        code: "SECRET7",
+      }),
+    ]);
+    store.approve("tg", "alice");
+    expect(store.isPaired("tg", "alice")).toBe(true);
+    expect(store.listPending()).toHaveLength(0);
   });
 
   test("revoke removes a pairing", () => {

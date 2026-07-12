@@ -169,19 +169,24 @@ export class ChannelGateway {
         return;
       }
       if (access.kind === "pairing_challenge") {
-        // A pending challenge exists (or was just minted). An exact code
-        // reply redeems it; anything else re-renders the challenge.
+        // Host-gated pairing (todo-103): never DM the secret code. Operator
+        // reads it via gateway logs or `agenc gateway pairing pending`, then
+        // either tells the user out-of-band or runs `pairing approve`.
         if (this.#pairing.redeem(message.channelId, message.sender, message.text)) {
           await reply(
             "Paired. This conversation now reaches your AgenC agent — send a message to begin.",
           );
           return;
         }
+        this.#log(
+          `gateway: pairing pending channel=${message.channelId} peer=${message.sender.peerId} code=${access.code} (host-only — not sent in-channel)`,
+        );
         await reply(
           [
             "This agent is pairing-protected.",
-            `Your pairing code: ${access.code}`,
-            "Confirm it on the gateway host (agenc gateway pairing list), then reply with the code to pair.",
+            "A pairing request was sent to the gateway host.",
+            "Ask the operator for the one-time code (or host approve), then reply with that code to pair.",
+            "Host: agenc gateway pairing pending | agenc gateway pairing approve <channel> <peerId>",
           ].join("\n"),
         );
         return;

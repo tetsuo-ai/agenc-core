@@ -39,10 +39,16 @@ interface PairingState {
   readonly version: 1;
   /** channelId → peerId[] of paired senders. */
   paired: Record<string, string[]>;
+  /**
+   * Durable pending challenges so host CLI (`pairing pending` / `approve`)
+   * can see codes without the secret ever being DM'd (todo-103).
+   * key = `${channelId}\u0000${peerId}` → { code, expiresAt }.
+   */
+  pending?: Record<string, { code: string; expiresAt: number }>;
 }
 
 function emptyState(): PairingState {
-  return { version: 1, paired: {} };
+  return { version: 1, paired: {}, pending: {} };
 }
 
 export interface PairingStoreOptions {
@@ -63,8 +69,6 @@ export class PairingStore {
   readonly #generateCode: () => string;
   readonly #ttlMs: number;
   #state: PairingState;
-  /** key = `${channelId}\u0000${peerId}` — in-memory only, never persisted. */
-  readonly #pending = new Map<string, PendingPairing>();
 
   constructor(options: PairingStoreOptions) {
     this.#path = join(options.agencHome, "gateway", "pairing.json");
@@ -95,7 +99,24 @@ export class PairingStore {
             );
           }
         }
-        return { version: 1, paired };
+        const pending: Record<string, PendingPairing> = {};
+        const rawPending = (raw as PairingState).pending;
+        if (typeof rawPending === "object" && rawPending !== null) {
+          for (const [key, value] of Object.entries(rawPending)) {
+            if (
+              typeof value === "object" &&
+              value !== null &&
+              typeof (value as PendingPairing).code === "string" &&
+              typeof (value as PendingPairing).expiresAt === "number"
+            ) {
+              pending[key] = {
+                code: (value as PendingPairing).code,
+                expiresAt: (value as PendingPairing).expiresAt,
+              };
+            }
+          }
+        }
+        return { version: 1, paired, pending };
       }
     } catch {
       // Corrupt state fails closed: nobody is paired.
@@ -105,6 +126,7 @@ export class PairingStore {
 
   #save(): void {
     mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+    // pairing.json holds paired peers + host-only pending codes (0600).
     writeFileSync(this.#path, `${JSON.stringify(this.#state, null, 2)}\n`, {
       mode: 0o600,
     });
@@ -112,6 +134,26 @@ export class PairingStore {
 
   #key(channelId: string, peerId: string): string {
     return `${channelId}\u0000${peerId}`;
+  }
+
+  #pendingMap(): Record<string, PendingPairing> {
+    if (this.#state.pending === undefined) {
+      this.#state.pending = {};
+    }
+    return this.#state.pending;
+  }
+
+  #pruneExpiredPending(): void {
+    const now = this.#now();
+    const pending = this.#pendingMap();
+    let dirty = false;
+    for (const [key, entry] of Object.entries(pending)) {
+      if (entry.expiresAt <= now) {
+        delete pending[key];
+        dirty = true;
+      }
+    }
+    if (dirty) this.#save();
   }
 
   isPaired(channelId: string, peerId: string): boolean {
@@ -131,39 +173,92 @@ export class PairingStore {
   }
 
   /**
+   * Host-only view of pending challenges (codes never DM'd — todo-103).
+   * Durable so a separate CLI process can list/approve.
+   */
+  listPending(): readonly {
+    readonly channelId: string;
+    readonly peerId: string;
+    readonly code: string;
+    readonly expiresAt: number;
+  }[] {
+    this.#pruneExpiredPending();
+    const out: {
+      channelId: string;
+      peerId: string;
+      code: string;
+      expiresAt: number;
+    }[] = [];
+    for (const [key, pending] of Object.entries(this.#pendingMap())) {
+      const sep = key.indexOf("\u0000");
+      if (sep < 0) continue;
+      out.push({
+        channelId: key.slice(0, sep),
+        peerId: key.slice(sep + 1),
+        code: pending.code,
+        expiresAt: pending.expiresAt,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Host-side approve: pair without the remote party seeing a code (todo-103).
+   * Clears any pending challenge for the peer.
+   */
+  approve(channelId: string, peerId: string): void {
+    const pending = this.#pendingMap();
+    delete pending[this.#key(channelId, peerId)];
+    const peers = this.#state.paired[channelId] ?? [];
+    if (!peers.includes(peerId)) {
+      this.#state.paired[channelId] = [...peers, peerId];
+    }
+    this.#save();
+  }
+
+  /**
    * Begin (or refresh) a pairing challenge for a sender. Reuses the live
    * code when one is pending so repeated messages don't rotate it.
    */
   challenge(channelId: string, sender: ChannelSender): string {
+    this.#pruneExpiredPending();
     const key = this.#key(channelId, sender.peerId);
-    const existing = this.#pending.get(key);
+    const pending = this.#pendingMap();
+    const existing = pending[key];
     if (existing !== undefined && existing.expiresAt > this.#now()) {
       return existing.code;
     }
     const code = this.#generateCode();
-    this.#pending.set(key, { code, expiresAt: this.#now() + this.#ttlMs });
+    pending[key] = { code, expiresAt: this.#now() + this.#ttlMs };
+    this.#save();
     return code;
   }
 
   /**
    * Attempt to redeem a pairing code. Exact match, unexpired, same sender,
    * single-use. Successful redemption persists the pairing.
+   *
+   * Codes are disclosed only on the gateway host (`listPending` / logs), not
+   * in the channel DM (todo-103).
    */
   redeem(channelId: string, sender: ChannelSender, input: string): boolean {
+    this.#pruneExpiredPending();
     const key = this.#key(channelId, sender.peerId);
-    const pending = this.#pending.get(key);
-    if (pending === undefined) return false;
-    if (pending.expiresAt <= this.#now()) {
-      this.#pending.delete(key);
+    const pending = this.#pendingMap();
+    const entry = pending[key];
+    if (entry === undefined) return false;
+    if (entry.expiresAt <= this.#now()) {
+      delete pending[key];
+      this.#save();
       return false;
     }
-    if (input.trim().toUpperCase() !== pending.code) return false;
-    this.#pending.delete(key);
+    if (input.trim().toUpperCase() !== entry.code) return false;
+    delete pending[key];
     const peers = this.#state.paired[channelId] ?? [];
     if (!peers.includes(sender.peerId)) {
       this.#state.paired[channelId] = [...peers, sender.peerId];
-      this.#save();
     }
+    this.#save();
     return true;
   }
 }
