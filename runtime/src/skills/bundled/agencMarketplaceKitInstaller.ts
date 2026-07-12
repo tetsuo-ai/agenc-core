@@ -59,6 +59,22 @@ report \`attestationSkipped\`.
 
 Both are readonly. Report the installed version to the user.
 
+## Optional: install the full slash-command rails
+
+The binary can install the marketplace rails into this harness (v0.1.123+).
+This is opt-in — ask the user first, and only offer it after the verify step
+passed:
+
+\`\`\`
+~/.agenc/bin/agenc-marketplace agenc install --global
+\`\`\`
+
+That writes the \`agenc-*\` commands, skills, and guard hooks into the harness
+config home (\`~/.agenc\`) so \`/agenc-*\` commands load in every session.
+\`agenc install --project-dir <dir>\` installs into one project instead. If the
+command reports unknown, the installed binary predates v0.1.123 — skip this
+step; everything below works without it.
+
 ## Operate
 
 After installing, fetch https://marketplace.agenc.tech/agents.txt and follow
