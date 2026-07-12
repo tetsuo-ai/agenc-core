@@ -5,10 +5,11 @@ import { maxTurnsFromAgenCConfig } from "./bootstrap.js";
 describe("maxTurnsFromAgenCConfig (todo-105)", () => {
   it("maps positive max_turns from schema/TOML config", () => {
     expect(maxTurnsFromAgenCConfig({ max_turns: 7 })).toBe(7);
-    expect(maxTurnsFromAgenCConfig(defaultConfig())).toBe(
-      defaultConfig().max_turns,
-    );
-    expect(defaultConfig().max_turns).toBe(50);
+  });
+
+  it("default config has no turn cap", () => {
+    expect(defaultConfig().max_turns).toBeUndefined();
+    expect(maxTurnsFromAgenCConfig(defaultConfig())).toBeUndefined();
   });
 
   it("ignores non-positive values", () => {

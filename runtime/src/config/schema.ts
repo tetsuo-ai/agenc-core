@@ -886,7 +886,10 @@ export function defaultConfig(): AgenCConfig {
     ]) as readonly string[],
     project_doc_max_bytes: 32_768,
     stream_watchdog_timeout_ms: 30_000,
-    max_turns: 50,
+    // No default turn cap. Interactive / long-running agents stop on the
+    // model’s own stop signal (or explicit cancel / budget). Operators who
+    // want a runaway-loop backstop can set `max_turns` or AGENC_MAX_TURNS.
+    // max_turns intentionally unset.
     // NOTE: `autoUpdates` is intentionally NOT defaulted here. The effective
     // auto-update state is governed solely by the global config
     // (`GlobalConfig.autoUpdates`, default undefined = enabled-unless-disabled)

@@ -664,7 +664,7 @@ function buildDeferredConfig(
     ...(config.autonomous_mode !== undefined
       ? { autonomousMode: config.autonomous_mode }
       : {}),
-    // Snake config key → camel turn Config (todo-105). Schema default is 50.
+    // Snake config key → camel turn Config (todo-105). Unset = no iteration cap.
     ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }

@@ -141,7 +141,11 @@ const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_DAEMON_STREAM_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
-const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
+// Must hold the full attach-time replay (user_message + early tool/stream
+// events) until the TUI calls subscribeToSessionEvents. The prior cap of 20
+// dropped the oldest events under a fast first turn — which is almost always
+// the user's first prompt — so the YOU bubble never rendered on cold open.
+const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 1000;
 // Cap the per-connection read buffer so a daemon (or anything impersonating
 // the socket) that streams bytes without ever emitting a newline cannot grow
 // client memory unbounded. Mirrors the daemon transport's max-line / max
@@ -468,6 +472,10 @@ async function createReconnectableDaemonTuiClient(options: {
 }): Promise<AgenCJsonLineDaemonTuiClient> {
   const { socketPath, timeoutMs, initializeParams } = options;
   const sessionListeners = new Map<string, Set<(event: JsonObject) => void>>();
+  // Mirror the persistent client's pre-subscribe buffer so agent.attach
+  // replay that arrives before the TUI wires subscribeToSessionEvents is not
+  // dropped at this outer layer either.
+  const bufferedSessionEvents = new Map<string, JsonObject[]>();
   // gaphunt3 #2: the daemon multiplexer drops a client's session routes when
   // its socket closes (disconnectClient detaches every session), so a stable
   // clientId that merely re-runs `initialize` on a new socket receives no
@@ -502,7 +510,15 @@ async function createReconnectableDaemonTuiClient(options: {
   };
   const dispatchSessionEvent = (sessionId: string, event: JsonObject): void => {
     const listeners = sessionListeners.get(sessionId);
-    if (listeners === undefined) return;
+    if (listeners === undefined || listeners.size === 0) {
+      const buffered = getBoundedBufferedSessionEvents(
+        bufferedSessionEvents,
+        sessionId,
+      );
+      buffered.push(event);
+      trimBufferedSessionEvents(buffered);
+      return;
+    }
     for (const listener of listeners) {
       notifyDaemonListener(listener, event);
     }
@@ -691,6 +707,14 @@ async function createReconnectableDaemonTuiClient(options: {
       }
       listeners.add(cb);
       subscribeInnerSession(sessionId);
+      // Flush any outer-layer buffer that accumulated before this listener.
+      const buffered = bufferedSessionEvents.get(sessionId);
+      if (buffered !== undefined) {
+        bufferedSessionEvents.delete(sessionId);
+        for (const event of buffered) {
+          notifyDaemonListener(cb, event);
+        }
+      }
       return () => {
         listeners?.delete(cb);
         if (listeners?.size === 0) {
@@ -714,6 +738,7 @@ async function createReconnectableDaemonTuiClient(options: {
       const current = innerClient;
       detachInnerClient();
       innerClient = null;
+      bufferedSessionEvents.clear();
       setConnectionState({
         status: "disconnected",
         message: "Daemon connection closed",
@@ -1251,15 +1276,48 @@ function handlePersistentDaemonMessage(
       sessionId,
     );
     buffered.push(message);
-    while (buffered.length > MAX_BUFFERED_SESSION_EVENTS_PER_SESSION) {
-      buffered.shift();
-    }
+    trimBufferedSessionEvents(buffered);
     bufferedSessionEvents.set(sessionId, buffered);
     return;
   }
   for (const listener of listeners) {
     notifyDaemonListener(listener, message);
   }
+}
+
+/**
+ * Bound the pre-subscribe event buffer without discarding the first user
+ * prompt. Fast first turns can emit far more than the old 20-event cap before
+ * the TUI attaches; FIFO drop of the oldest event was removing `user_message`
+ * while later assistant deltas survived — the classic "first YOU never shows".
+ *
+ * Exported for unit tests.
+ */
+export function trimBufferedSessionEvents(
+  buffered: JsonObject[],
+  maxEvents: number = MAX_BUFFERED_SESSION_EVENTS_PER_SESSION,
+): void {
+  while (buffered.length > maxEvents) {
+    const dropIndex = buffered.findIndex(
+      (event) => !isSessionUserMessageNotification(event),
+    );
+    if (dropIndex < 0) {
+      // Pathological: only user messages remain. Keep the newest cap window.
+      buffered.shift();
+      continue;
+    }
+    buffered.splice(dropIndex, 1);
+  }
+}
+
+export function isSessionUserMessageNotification(event: JsonObject): boolean {
+  const params = event.params;
+  if (!isJsonObject(params)) return false;
+  if (event.method === "event.session_event" && isJsonObject(params.event)) {
+    return params.event.type === "user_message";
+  }
+  const msg = event.msg;
+  return isJsonObject(msg) && msg.type === "user_message";
 }
 
 function getBoundedBufferedSessionEvents(

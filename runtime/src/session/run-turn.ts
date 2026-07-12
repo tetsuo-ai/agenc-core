@@ -2926,13 +2926,11 @@ export function isRetryableStreamError(error: unknown): boolean {
 }
 
 /**
- * D1 fix: resolve the outer-loop iteration cap. agenc runtime terminates on
- * the model's stop-signal, not on an iteration count; AgenC keeps the
- * cap as a safety net so a buggy provider can't spin forever. The
- * default is raised from 100 to 1000 (deep agent plans routinely cross
- * 100 tool iterations) and an env override lets ops dial it per
- * deployment without rebuilding. `ctx.config.maxTurns` still wins when
- * present so explicit session configuration is authoritative.
+ * Outer model↔tool loop iteration cap. Default is **no cap** — the turn ends
+ * when the model stops tool-calling (or cancel / budget / behavioral
+ * backstop fires). An explicit `max_turns` / `maxTurns` config value or
+ * `AGENC_MAX_TURNS` is the only way to force a hard iteration ceiling
+ * (optional runaway-loop backstop for ops).
  */
 function resolveMaxTurns(ctx: TurnContext): number {
   const cfg = ctx.config as unknown as {
@@ -2958,9 +2956,8 @@ function resolveMaxTurns(ctx: TurnContext): number {
     const parsed = Number.parseInt(envRaw, 10);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
-  // No config: historical safety net. Fresh defaultConfig seeds max_turns=50
-  // which bootstrap maps to maxTurns so real sessions honor the schema default.
-  return 1000;
+  // Unbounded: model stop-signal / cancel / budget owns termination.
+  return Number.POSITIVE_INFINITY;
 }
 
 function appendInterruptedAssistantToolCalls(
