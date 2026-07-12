@@ -341,7 +341,9 @@ function resolveOrchestratorSessionPolicy(
       })
     | undefined;
   return {
-    approvalPolicy: (ctxApproval ?? "never") as OrchestratorApprovalPolicy,
+    // Fail closed when TurnContext omitted approval (todo-131): default
+    // on_request rather than never.
+    approvalPolicy: (ctxApproval ?? "on_request") as OrchestratorApprovalPolicy,
     sandboxMode: (ctxSandbox ?? "workspace_write") as SandboxMode,
     permissionHooks: services?.permissionRequestHooks,
     guardianApprovalReviewer: services?.guardianApprovalReviewer,

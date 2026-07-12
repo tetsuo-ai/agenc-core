@@ -3488,7 +3488,9 @@ describe("model-facing tools", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(result.content).toBe("");
+      expect(JSON.parse(String(result.content))).toMatchObject({
+        ok: true,
+      });
       expect(sendInterAgentCommunication).toHaveBeenCalledWith("agent-1", {
         author: "/root",
         recipient: "/root/task_1",
@@ -3640,7 +3642,9 @@ describe("model-facing tools", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(result.content).toBe("");
+      expect(JSON.parse(String(result.content))).toMatchObject({
+        ok: true,
+      });
       expect(mailboxSend).toHaveBeenCalledWith(
         expect.objectContaining({
           author: "/root/worker",
