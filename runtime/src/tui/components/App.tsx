@@ -57,7 +57,7 @@ import { RealtimePanel } from "../realtime/RealtimePanel.js";
 import { useRealtimeState } from "../realtime/useRealtimeState.js";
 import { AgenCPermissionOverlay as PermissionOverlay, buildToolUseConfirmQueue, usePermissionRequests } from "../permission-requests.js";
 import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
-import { findCommand, listTuiCommandList } from "../../commands.js";
+import { findCommand, getCommands, isCommandEnabled, listTuiCommandList } from "../../commands.js";
 import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
 import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
@@ -1622,7 +1622,42 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       setGlobalCommandRegistry(null);
     };
   }, [commandRegistry]);
-  const commands = useMemo(() => listTuiCommandList(commandRegistry), [commandRegistry]);
+  const builtinTuiCommands = useMemo(() => listTuiCommandList(commandRegistry), [commandRegistry]);
+  // The slash palette (and findCommand execution) previously saw ONLY built-in
+  // commands: dir commands (.agenc/commands), skills (.agenc/skills), bundled
+  // skills, and plugin commands were loaded for the model but never surfaced
+  // in the composer. Load the full command set for this workspace and merge
+  // it in, keeping registry built-ins authoritative on name collisions.
+  const dynamicCommandsCwd =
+    props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd();
+  const [dynamicTuiCommands, setDynamicTuiCommands] = useState<readonly Command[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void getCommands(dynamicCommandsCwd, config)
+      .then((all) => {
+        if (cancelled) return;
+        setDynamicTuiCommands(
+          all.filter(
+            (cmd) =>
+              cmd.userInvocable !== false &&
+              cmd.isHidden !== true &&
+              isCommandEnabled(cmd),
+          ),
+        );
+      })
+      .catch(() => {
+        // Palette degrades to built-ins only; command loading errors are
+        // already logged by the loaders themselves.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dynamicCommandsCwd, config]);
+  const commands = useMemo(() => {
+    const seen = new Set(builtinTuiCommands.map((cmd) => cmd.name.toLowerCase()));
+    const extras = dynamicTuiCommands.filter((cmd) => !seen.has(cmd.name.toLowerCase()));
+    return [...builtinTuiCommands, ...extras];
+  }, [builtinTuiCommands, dynamicTuiCommands]);
   const agents = useMemo(() => listAgentRoleDefinitions(), []);
   const appTasks = useAppState(s => s.tasks);
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
@@ -1863,6 +1898,52 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // Slash commands route through the canonical registry. Unrecognized names go
     // through the dispatcher so the TUI matches the daemon/CLI slash path.
     if (parsedSlashCommand !== null) {
+      // Prompt commands (markdown rails under a commands dir, skills, and
+      // plugins) live in the full `commands` list, not the built-in
+      // `commandRegistry`. dispatchSlashCommand only knows the registry, so
+      // a `/agenc-*` rail would come back as "Unknown command" even though
+      // it shows in the palette. Resolve `/name` against `commands` first and
+      // expand it into the turn exactly like `$skill` — this is what makes
+      // `.agenc/commands/*.md` rails and skills invocable via `/`. Built-in
+      // registry commands (they answer `commandRegistry.find`) are left to
+      // the dispatcher below and are never intercepted here.
+      const slashPromptCommand = findCommand(
+        parsedSlashCommand.name,
+        commands as unknown as Command[],
+      );
+      if (
+        commandRegistry.find(parsedSlashCommand.name) === undefined &&
+        slashPromptCommand?.type === "prompt" &&
+        slashPromptCommand.userInvocable !== false &&
+        isCommandEnabled(slashPromptCommand)
+      ) {
+        try {
+          const loaded = await loadDollarSkillCommandForTurn(
+            {
+              commandName: parsedSlashCommand.name,
+              args: parsedSlashCommand.argsRaw,
+            },
+            slashPromptCommand,
+            getToolUseContext(
+              transcriptMessagesRef.current as any[],
+              [],
+              new AbortController(),
+            ) as PromptInputContext,
+          );
+          props.session.enqueueIdleInput?.(loaded.metadata);
+          props.session.enqueueIdleInput?.({ content: loaded.blocks });
+          startPendingSubmission();
+          await submitToSession("", { displayUserMessage: text_0 });
+        } catch (err_slash_prompt) {
+          const message_slash_prompt =
+            err_slash_prompt instanceof Error
+              ? err_slash_prompt.message
+              : String(err_slash_prompt);
+          showTransientResult(message_slash_prompt, { display: "error" });
+          setPendingSubmission(false);
+        }
+        return;
+      }
       try {
         // Echo the slash-command input to the transcript so the user
         // sees what they typed. Without this the dispatcher

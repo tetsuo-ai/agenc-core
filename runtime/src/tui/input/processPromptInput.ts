@@ -460,7 +460,7 @@ async function processRegistrySlashInput(
   }
   const command = findCommand(parsed.commandName, context.options.commands)
 
-  if (!command || command.type !== 'local') {
+  if (!command || (command.type !== 'local' && command.type !== 'prompt')) {
     return localCommandResultToPromptInputResult(
       inputString,
       precedingInputBlocks,
@@ -477,6 +477,23 @@ async function processRegistrySlashInput(
       attachmentMessages,
       uuid,
       { type: 'text', value: `/${getCommandName(command)} is not available` },
+    )
+  }
+
+  // Prompt commands (markdown rails under a commands dir, skills, plugins)
+  // invoked via `/` expand into the turn exactly like `$skill`. Slash
+  // execution had been narrowed to `type: 'local'`, which left every
+  // `.agenc/commands/*.md` rail and skill visible in the palette but
+  // non-invocable from the composer ("Unknown command"). Routing them
+  // through the shared prompt loader restores `/command` expansion without
+  // widening tool/hook scope beyond what `$` already grants.
+  if (command.type === 'prompt') {
+    return processDollarSkillInput(
+      parsed,
+      command,
+      context,
+      uuid,
+      attachmentMessages,
     )
   }
 
