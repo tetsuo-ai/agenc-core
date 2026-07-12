@@ -10,6 +10,7 @@ import { McpToolRegistry, mcpDefinitionFromAgenCTool, mcpToolRegistryFromAgenCTo
 const SAMPLE_TOOL: Tool = {
   name: "sample.echo",
   description: "Echo text back to the caller.",
+  isReadOnly: true,
   inputSchema: {
     type: "object",
     properties: { text: { type: "string" } },

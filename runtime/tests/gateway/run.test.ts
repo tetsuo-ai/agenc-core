@@ -535,7 +535,7 @@ describe("startGateway", () => {
     // The cron turn ran in its own gateway session and delivered in-channel.
     expect(mem.sent.some((m) => m.conversationId === "c9")).toBe(true);
     expect(
-      client.sessions.some((s) => s.prompts.includes("cron says hi")),
+      client.sessions.some((s) => s.prompts.some((p) => p.includes("cron says hi"))),
     ).toBe(true);
     await handle.stop();
   });

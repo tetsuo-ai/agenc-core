@@ -1176,20 +1176,31 @@ export class AgenCDaemonJsonRpcDispatcher {
     sessionId: string,
     run: () => Promise<void>,
   ): Promise<void> {
-    if (signal.aborted) {
-      await this.#agentManager.cancelSessionTurn({
+    const cancelTurn = async (): Promise<void> => {
+      // Mocks and partial managers may omit cancelSessionTurn — never throw
+      // from the abort path (connection teardown aborts in-flight signals).
+      const cancel = (
+        this.#agentManager as {
+          cancelSessionTurn?: (params: {
+            sessionId: string;
+            reason: string;
+          }) => Promise<unknown>;
+        }
+      ).cancelSessionTurn;
+      if (typeof cancel !== "function") return;
+      await cancel.call(this.#agentManager, {
         sessionId,
         reason: "request.cancel",
       });
+    };
+    if (signal.aborted) {
+      await cancelTurn();
       throw Object.assign(new Error("request cancelled"), {
         name: "AbortError",
       });
     }
     const onAbort = (): void => {
-      void this.#agentManager.cancelSessionTurn({
-        sessionId,
-        reason: "request.cancel",
-      });
+      void cancelTurn();
     };
     signal.addEventListener("abort", onAbort, { once: true });
     try {

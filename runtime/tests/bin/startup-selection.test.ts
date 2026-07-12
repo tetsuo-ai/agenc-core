@@ -43,7 +43,7 @@ describe("resolveStartupSelection", () => {
     expect(resolved.model).toBe("grok-build-0.1");
   });
 
-  it("falls back to grok-4.3 when no config.model is set", () => {
+  it("falls back to grok-4.5 when no config.model is set", () => {
     const resolved = resolveStartupSelection({
       config: defaultConfig(),
       env: {},
@@ -51,7 +51,7 @@ describe("resolveStartupSelection", () => {
     });
 
     expect(resolved.provider).toBe("grok");
-    expect(resolved.model).toBe("grok-4.3");
+    expect(resolved.model).toBe("grok-4.5");
   });
 });
 

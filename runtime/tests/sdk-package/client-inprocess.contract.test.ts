@@ -80,12 +80,48 @@ async function createFakeDaemon(options: {
   let daemon!: FakeDaemon;
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager: {
-      createAgent: async () => {
-        throw new Error("createAgent should not be called");
+      // todo-133: createSession prefers agent.create + attach for a live agent
+      createAgent: async (params: JsonObject) => {
+        const agentId = "agent_1";
+        const session = await sessionManager.createSession({
+          agentId,
+          initialPrompt:
+            typeof params.objective === "string"
+              ? params.objective
+              : "Interactive session",
+        });
+        return {
+          agentId,
+          objective:
+            typeof params.objective === "string"
+              ? params.objective
+              : "Interactive session",
+          status: "running" as const,
+          createdAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          lastActiveAt: new Date().toISOString(),
+          sessionIds: [session.sessionId],
+        };
       },
       listAgents: async () => ({ agents: [] }),
-      attachAgent: async () => {
-        throw new Error("attachAgent should not be called");
+      attachAgent: async (params: JsonObject) => {
+        const agentId = String(params.agentId ?? "agent_1");
+        const listed = await sessionManager.listSessions();
+        const match =
+          listed.sessions.find((s) => s.agentId === agentId) ??
+          listed.sessions[0];
+        const sessionId = match?.sessionId ?? "session_1";
+        const attachment = await sessionManager.attachSession({
+          sessionId,
+          ...(params.clientId !== undefined
+            ? { clientId: String(params.clientId) }
+            : {}),
+        });
+        return {
+          agentId,
+          attachmentId: attachment.attachmentId,
+          sessionIds: [sessionId],
+        };
       },
       stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
       getAgentLogs: async () => ({

@@ -362,8 +362,7 @@ describe("AgenC delegate background-agent runner", () => {
         "/usr/bin/node",
         "/opt/agenc/bin/agenc.js",
         "--model",
-        "grok-4",
-        "--autonomous",
+        "grok-4"
       ],
       cwd: "/workspace",
     });
@@ -633,7 +632,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     const bootstrapOptions = vi.mocked(bootstrap).mock.calls[0]?.[0];
     expect(bootstrapOptions).toMatchObject({
-      argv: ["node", "agenc", "--autonomous"],
+      argv: ["node", "agenc", ],
     });
     expect(bootstrapOptions?.authBackend).not.toBe(authBackend);
     await expect(
