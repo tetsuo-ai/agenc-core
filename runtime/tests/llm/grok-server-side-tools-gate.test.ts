@@ -78,3 +78,30 @@ describe("getProviderNativeToolDefinitions empty-model gate", () => {
     expect(defs).toEqual([]);
   });
 });
+
+describe("G5 enable_image_search payload", () => {
+  it("emits top-level enable_image_search on web_search tool", () => {
+    const defs = getProviderNativeToolDefinitions({
+      provider: "grok",
+      model: "grok-4.5",
+      webSearch: true,
+      webSearchOptions: {
+        enableImageSearch: true,
+        enableImageUnderstanding: true,
+        allowedDomains: ["example.com"],
+      },
+    });
+    const web = defs.find((d) => d.toolType === "web_search");
+    expect(web?.payload).toMatchObject({
+      type: "web_search",
+      enable_image_search: true,
+      enable_image_understanding: true,
+      filters: { allowed_domains: ["example.com"] },
+    });
+    // Must not nest image flags under filters.
+    expect(
+      (web?.payload.filters as Record<string, unknown> | undefined)
+        ?.enable_image_search,
+    ).toBeUndefined();
+  });
+});
