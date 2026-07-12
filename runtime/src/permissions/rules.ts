@@ -147,9 +147,23 @@ export interface ToolLike {
   };
 }
 
+/**
+ * Shell-exec family: LIVE default shell is `exec_command`; legacy / TUI /
+ * unattended names must collapse for deny/ask/allow rules (parity with
+ * unattended-policy.ts TOOL_ALIASES).
+ */
+export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
+  "system.bash",
+  "Bash",
+  "bash",
+  "exec_command",
+  "desktop.bash",
+  "shell",
+]);
+
 const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =
   new Map<string, readonly string[]>([
-    ["system.bash", Object.freeze(["system.bash", "Bash"] as const)],
+    ["system.bash", SHELL_TOOL_FAMILY],
     ["FileRead", Object.freeze(["FileRead", "Read"] as const)],
     ["Edit", Object.freeze(["Edit", "FileEdit"] as const)],
     ["Write", Object.freeze(["Write", "FileWrite"] as const)],
