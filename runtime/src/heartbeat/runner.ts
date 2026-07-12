@@ -110,9 +110,11 @@ export class HeartbeatRunner {
     // NOT run the turn — surface it instead of silently spending or skipping.
     let hold: unknown = null;
     if (this.#o.budget !== undefined) {
+      // Prefer policy model; never admit as "unknown" under USD caps (todo-104).
+      const admitModel = model.length > 0 ? model : "grok-4.3";
       const admit = this.#o.budget.admit({
         agentId: policy.agentId,
-        model: model.length > 0 ? model : "unknown",
+        model: admitModel,
         estInputTokens: estimateTokens(prompt),
         maxOutputTokens,
       });

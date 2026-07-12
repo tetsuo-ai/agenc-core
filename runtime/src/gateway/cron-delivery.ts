@@ -157,9 +157,14 @@ export function startCronDelivery(
 
     // Budget pre-flight: cron fires are autonomous turns. A refusal delivers
     // a paused notice instead of running the turn (never silent).
+    const admitModel =
+      typeof options.config.model === "string" &&
+      options.config.model.trim().length > 0
+        ? options.config.model.trim()
+        : "grok-4.3";
     const admit = enforcer.admit({
       agentId: `cron:${task.id}`,
-      model: "unknown",
+      model: admitModel,
       autonomous: true,
       estInputTokens: estimateTokens(task.prompt),
       maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,

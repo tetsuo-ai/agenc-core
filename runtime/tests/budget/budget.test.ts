@@ -243,10 +243,11 @@ describe("BudgetEnforcer", () => {
     if (!r.ok) expect(r.reason).toBe("daily_tokens");
   });
 
-  test("unpriced model passes dollar caps (documented limitation)", () => {
+  test("unpriced model refuses dollar caps (fail-closed, todo-104)", () => {
     const enf = make({ caps: { dailyUsd: 0.0000001 } });
     const r = enf.admit(autoReq({ model: "unpriced" }));
-    expect(r.ok).toBe(true); // no price → dollar cap can't gate
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("unpriced_model");
   });
 
   test("soft warning fires once when a window crosses the threshold", () => {
