@@ -219,7 +219,7 @@ describe("remote subscription gating", () => {
         "grok",
         expect.objectContaining({
           apiKey: "byok-key",
-          model: "grok-4.3",
+          model: "grok-4.5",
         }),
       );
       expect(keyVendor).not.toHaveBeenCalled();

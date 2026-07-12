@@ -381,10 +381,9 @@ function checkModeGate(
   const appState = context.getAppState();
   const mode = appState.toolPermissionContext.mode;
 
-  const shouldBypass =
-    mode === "bypassPermissions" ||
-    (mode === "plan" &&
-      appState.toolPermissionContext.isBypassPermissionsModeAvailable === true);
+  // Only pure bypassPermissions mode full-allows (todo-130). Plan mode must
+  // not inherit auto-allow merely because bypass is "available".
+  const shouldBypass = mode === "bypassPermissions";
 
   if (shouldBypass) {
     return {

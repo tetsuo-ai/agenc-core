@@ -255,8 +255,23 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     };
     const ctx = buildCtxWithRules([deny]);
     expect(getDenyRuleForTool(ctx, "Bash")?.source).toBe("userSettings");
+    // LIVE shell tool name must share the Bash deny (todo-102).
+    expect(getDenyRuleForTool(ctx, "exec_command")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "desktop.bash")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "system.bash")?.source).toBe("userSettings");
     expect(getDenyRuleForTool(ctx, "Read")).toBeNull();
     expect(getAskRuleForTool(ctx, "Bash")).toBeNull();
+  });
+
+  test("deny exec_command also covers Bash legacy name", () => {
+    const deny: PermissionRule = {
+      source: "userSettings",
+      ruleBehavior: "deny",
+      ruleValue: { toolName: "exec_command" },
+    };
+    const ctx = buildCtxWithRules([deny]);
+    expect(getDenyRuleForTool(ctx, "Bash")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "exec_command")?.source).toBe("userSettings");
   });
 
   test("renamed builtin tool rules match legacy and canonical names", () => {

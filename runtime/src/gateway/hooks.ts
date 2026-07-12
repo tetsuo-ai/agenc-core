@@ -152,6 +152,8 @@ export class HooksServer {
   readonly #adaptersById: Map<string, ChannelAdapter>;
   readonly #enforcer: BudgetEnforcer;
   readonly #defaultAgent: string;
+  /** Model id used for budget admit pricing (operator config default). */
+  readonly #admitModel: string;
   #server: Server | null = null;
   #boundPort = 0;
 
@@ -161,6 +163,11 @@ export class HooksServer {
     this.#port = options.port ?? HOOKS_DEFAULT_PORT;
     this.#log = options.log ?? (() => {});
     this.#defaultAgent = options.defaultAgent ?? "default";
+    this.#admitModel =
+      typeof options.config.model === "string" &&
+      options.config.model.trim().length > 0
+        ? options.config.model.trim()
+        : "grok-4.5";
     if (!isLoopbackHost(this.#host) && options.allowNonLoopback !== true) {
       throw new Error(
         `hooks: refusing non-loopback host '${this.#host}' without allowNonLoopback (prefer a tailnet/SSH tunnel)`,
@@ -279,9 +286,10 @@ export class HooksServer {
 
     // Budget pre-flight: hook turns are autonomous spend. A refusal is a
     // visible 429, never a silent skip.
+    // Use the operator default model so USD caps can price (todo-104).
     const admit = this.#enforcer.admit({
       agentId: `hook:${parsed.name}`,
-      model: "unknown",
+      model: this.#admitModel,
       autonomous: true,
       estInputTokens: estimateTokens(parsed.message),
       maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,

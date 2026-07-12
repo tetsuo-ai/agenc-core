@@ -1145,7 +1145,8 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       expect.any(Error),
       expect.objectContaining({
         eventKind: "policy_outcome",
-        reasonCode: "policy_never_skipped",
+        // todo-131: default approval is on_request, not never
+        reasonCode: "policy_on_request_skipped",
       }),
     );
     expect(warnings).toContain("permission_audit_log_failed");

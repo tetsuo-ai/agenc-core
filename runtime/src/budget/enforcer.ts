@@ -94,16 +94,22 @@ export class BudgetEnforcer {
     }
 
     const price = this.#priceOf(request.model);
-    // Worst-case: full estimated input + the output cap. If we can't price the
-    // model, we can still enforce token caps; dollar caps can't gate an
-    // unpriced model, so those pass (documented limitation).
+    const caps = this.#policy.caps;
+    // Worst-case: full estimated input + the output cap. Unpriced models can
+    // still hit token caps; when any USD cap is configured, fail closed so
+    // autonomous surfaces cannot unbounded-spend via model: "unknown" (todo-104).
     const estTokens = request.estInputTokens + request.maxOutputTokens;
+    if (
+      price === null &&
+      (caps.dailyUsd !== undefined || caps.monthlyUsd !== undefined)
+    ) {
+      return this.#refuse("unpriced_model", request.agentId, 0, estTokens);
+    }
     const estUsd =
       price !== null
         ? priceTokens(price, request.estInputTokens, request.maxOutputTokens)
         : 0;
 
-    const caps = this.#policy.caps;
     // Dollar caps.
     if (caps.dailyUsd !== undefined && state.day.usd + estUsd > caps.dailyUsd) {
       return this.#refuse("daily_usd", request.agentId, estUsd, estTokens);
@@ -150,7 +156,9 @@ export class BudgetEnforcer {
     estTokens: number,
   ): AdmitResult {
     // A hard-cap refusal pauses autonomy (fail closed) and notifies once.
-    if (reason !== "paused") {
+    // unpriced_model is a configuration/pricing gate — do not pause the agent
+    // (operator can fix the model id without agenc budget reset).
+    if (reason !== "paused" && reason !== "unpriced_model") {
       this.#pause(agentId, reason);
     }
     void estUsd;
@@ -162,7 +170,9 @@ export class BudgetEnforcer {
       message:
         reason === "paused"
           ? `agent ${agentId} autonomy is paused by a budget cap; raise the cap or run \`agenc budget reset ${agentId}\``
-          : `agent ${agentId} would exceed its ${reason.replace("_", " ")} budget cap`,
+          : reason === "unpriced_model"
+            ? `agent ${agentId} cannot admit under USD budget caps: model has no known price (pass a priced model id or use token caps)`
+            : `agent ${agentId} would exceed its ${reason.replace("_", " ")} budget cap`,
     };
   }
 

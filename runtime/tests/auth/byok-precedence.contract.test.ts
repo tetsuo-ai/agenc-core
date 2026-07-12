@@ -101,7 +101,7 @@ describe("BYOK precedence", () => {
         "grok",
         expect.objectContaining({
           apiKey: "env-key",
-          model: "grok-4.3",
+          model: "grok-4.5",
         }),
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-byok"]);

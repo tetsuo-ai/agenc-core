@@ -8,7 +8,10 @@ import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
 import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
-import { createModelFacingTools } from "./model-facing-tools.js";
+import {
+  createModelFacingTools,
+  __setLiveWebFetchDnsAllLookupForTests,
+} from "./model-facing-tools.js";
 import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
@@ -1317,6 +1320,10 @@ describe("model-facing tools", () => {
   });
 
   it("web_fetch returns structured errors for invalid URLs and fetch failures", async () => {
+    __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
+      callback(null, [{ address: "1.1.1.1", family: 4 }]);
+    });
+
     const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
     const previousFetch = globalThis.fetch;
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -1364,6 +1371,39 @@ describe("model-facing tools", () => {
       expect(failed.isError).toBe(true);
       expect(JSON.parse(failed.content).error).toContain("network down");
     } finally {
+      __setLiveWebFetchDnsAllLookupForTests(undefined);
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch denies hostnames that DNS-resolve to private or metadata addresses", async () => {
+    // Mixed public + private must fail closed (any blocked address).
+    __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
+      callback(null, [
+        { address: "8.8.8.8", family: 4 },
+        { address: "169.254.169.254", family: 4 },
+      ]);
+    });
+
+    const fetchMock = vi.fn();
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("web_fetch")!.execute({
+        url: "https://evil-rebinding.example/latest/meta-data/",
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toMatch(
+        /private|loopback|link-local|resolves/i,
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      __setLiveWebFetchDnsAllLookupForTests(undefined);
       globalThis.fetch = previousFetch;
     }
   });
@@ -2202,6 +2242,8 @@ describe("model-facing tools", () => {
         taskPrompt: "review game.py",
         agentName: "reviewer",
         runInBackground: true,
+        // todo-106: collab workers stay alive for later assign_task
+        keepAlive: true,
         forkMode: { kind: "full_history" },
       }),
     );
@@ -3446,7 +3488,9 @@ describe("model-facing tools", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(result.content).toBe("");
+      expect(JSON.parse(String(result.content))).toMatchObject({
+        ok: true,
+      });
       expect(sendInterAgentCommunication).toHaveBeenCalledWith("agent-1", {
         author: "/root",
         recipient: "/root/task_1",
@@ -3598,7 +3642,9 @@ describe("model-facing tools", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(result.content).toBe("");
+      expect(JSON.parse(String(result.content))).toMatchObject({
+        ok: true,
+      });
       expect(mailboxSend).toHaveBeenCalledWith(
         expect.objectContaining({
           author: "/root/worker",

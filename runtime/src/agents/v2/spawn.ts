@@ -622,6 +622,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         depthCap: depthOfAgentPath(current.agentPath) + 1,
         ...(forkMode !== undefined ? { forkMode } : {}),
         runInBackground: true,
+        // Keep collab workers alive so assign_task after first completion
+        // has a consumer (todo-106). close_agent still tears them down.
+        keepAlive: true,
         ...(role !== undefined ? { role } : {}),
         ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
         ...(effectiveReasoningEffort !== undefined

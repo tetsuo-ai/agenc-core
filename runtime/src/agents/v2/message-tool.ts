@@ -93,5 +93,10 @@ export async function handleMessageStringTool(
       true,
     );
   }
-  return { content: "" };
+  return json({
+    ok: true,
+    mode: mode === "trigger_turn" ? "assign_task" : "send_message",
+    target: receiverAgentPath,
+    status,
+  });
 }

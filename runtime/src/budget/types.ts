@@ -92,6 +92,7 @@ export type BudgetRefusalReason =
   | "monthly_usd"
   | "daily_tokens"
   | "monthly_tokens"
+  | "unpriced_model"
   | "paused";
 
 export type AdmitResult =

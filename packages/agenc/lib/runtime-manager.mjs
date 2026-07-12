@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   createReadStream,
   createWriteStream,
   existsSync,
@@ -115,7 +116,8 @@ async function download(url, dest, fetchImpl = globalThis.fetch) {
 }
 
 function extractTarGz(archive, destDir) {
-  mkdirSync(destDir, { recursive: true });
+  mkdirSync(destDir, { recursive: true, mode: 0o700 });
+  try { chmodSync(destDir, 0o700); } catch { /* ignore */ }
   const res = spawnSync("tar", ["-xzf", archive, "-C", destDir], {
     stdio: ["ignore", "ignore", "inherit"],
   });
@@ -135,6 +137,13 @@ export async function ensureRuntime({
   log = (m) => process.stderr.write(m + "\n"),
 } = {}) {
   const home = resolveAgenCHome(env, userHome);
+  // Owner-only home (todo-120); install.sh already chmods 700.
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(home, 0o700);
+  } catch {
+    /* ignore */
+  }
   const version = manifest.runtimeVersion;
   const artifact = selectArtifact(manifest, slug);
   const installDir = runtimeInstallDir(home, version);

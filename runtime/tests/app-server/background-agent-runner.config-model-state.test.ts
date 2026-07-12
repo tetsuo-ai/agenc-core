@@ -173,9 +173,10 @@ describe("daemon config/model state refresh + atomicity", () => {
     });
 
     expect(result.applied).toBe(true);
+    // todo-115: daemon no longer writes process-global activeConfigModel
     expect(getActiveConfigModel()).toEqual({
       provider: "openai",
-      model: "switched-model",
+      model: "startup-model",
     });
   });
 
@@ -198,9 +199,10 @@ describe("daemon config/model state refresh + atomicity", () => {
     });
 
     expect(result.applied).toBe(true);
+    // Still must not clobber the process-global with the switch (todo-115).
     expect(getActiveConfigModel()).toEqual({
       provider: "openai",
-      model: "switched-model",
+      model: "startup-model",
     });
   });
 
@@ -259,9 +261,10 @@ describe("daemon config/model state refresh + atomicity", () => {
     });
 
     expect(result.applied).toBe(true);
+    // Profile switch is session-local; process-global stays at startup (todo-115).
     expect(getActiveConfigModel()).toEqual({
       provider: "openai",
-      model: "fast-model",
+      model: "startup-model",
     });
   });
 

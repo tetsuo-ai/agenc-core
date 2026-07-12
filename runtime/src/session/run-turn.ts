@@ -2935,7 +2935,17 @@ export function isRetryableStreamError(error: unknown): boolean {
  * present so explicit session configuration is authoritative.
  */
 function resolveMaxTurns(ctx: TurnContext): number {
-  const explicit = (ctx.config as unknown as { maxTurns?: number }).maxTurns;
+  const cfg = ctx.config as unknown as {
+    maxTurns?: number;
+    max_turns?: number;
+  };
+  // Prefer camel (bootstrap maps max_turns → maxTurns); accept snake as fallback.
+  const explicit =
+    typeof cfg.maxTurns === "number"
+      ? cfg.maxTurns
+      : typeof cfg.max_turns === "number"
+        ? cfg.max_turns
+        : undefined;
   if (
     typeof explicit === "number" &&
     Number.isFinite(explicit) &&
@@ -2948,6 +2958,8 @@ function resolveMaxTurns(ctx: TurnContext): number {
     const parsed = Number.parseInt(envRaw, 10);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
+  // No config: historical safety net. Fresh defaultConfig seeds max_turns=50
+  // which bootstrap maps to maxTurns so real sessions honor the schema default.
   return 1000;
 }
 

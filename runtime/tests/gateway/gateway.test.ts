@@ -145,7 +145,7 @@ describe("channel gateway", () => {
     return gw;
   }
 
-  test("pairing default: unknown DM sender gets a code and NO agent access", async () => {
+  test("pairing default: unknown DM sender gets a challenge and NO agent access", async () => {
     await gateway({}, { pairingCode: "CODE1234" });
     await adapter.receive(dmMessage("alice", "hello"));
 
@@ -153,7 +153,9 @@ describe("channel gateway", () => {
     expect(client.sessions).toHaveLength(0);
     const reply = adapter.lastText();
     expect(reply).toContain("pairing-protected");
-    expect(reply).toContain("CODE1234");
+    // todo-103: code is host-only (logs / pairing pending), never DM'd.
+    expect(reply).not.toContain("CODE1234");
+    expect(reply).toContain("gateway host");
   });
 
   test("pairing redemption: exact code pairs, then a turn runs", async () => {

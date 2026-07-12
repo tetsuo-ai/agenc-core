@@ -64,14 +64,19 @@ interface PairFile {
   createdAt: string;
 }
 
+function resolveAgencHome(): string {
+  const env = process.env.AGENC_HOME?.trim();
+  if (env && env.length > 0) return env;
+  return join(homedir(), ".agenc");
+}
 function remoteDir(): string {
-  return join(homedir(), ".agenc", "remote");
+  return join(resolveAgencHome(), "remote");
 }
 function pairPath(): string {
   return join(remoteDir(), "pair.json");
 }
 function cookiePath(): string {
-  return join(homedir(), ".agenc", "daemon.cookie");
+  return join(resolveAgencHome(), "daemon.cookie");
 }
 function backendUrl(): string {
   const env = process.env.AGENC_BACKEND_URL;

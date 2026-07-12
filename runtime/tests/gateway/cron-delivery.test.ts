@@ -187,7 +187,9 @@ describe("startCronDelivery", () => {
     expect(mem.lastText("ops")).toBe("all quiet");
     // Turn ran in an ISOLATED gateway session labeled for the task.
     expect(client.labels).toEqual(["cron|default|cronch01"]);
-    expect(client.sessions[0].prompts).toEqual(["summarize the day"]);
+    // todo-126: cron prompts are untrusted-framed like channel/hooks text
+    expect(client.sessions[0].prompts[0]).toContain("summarize the day");
+    expect(client.sessions[0].prompts[0]).toContain('trust="external"');
     // lastFiredAt persisted → restart will not replay this occurrence.
     const persisted = await readCronTasks(ws);
     expect(persisted[0].lastFiredAt).toBeGreaterThanOrEqual(startMs);

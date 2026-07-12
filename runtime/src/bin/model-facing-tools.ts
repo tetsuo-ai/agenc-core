@@ -11,7 +11,10 @@ import {
   join,
   resolve,
 } from "node:path";
+import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
+import type { LookupFunction } from "node:net";
+import type * as undici from "undici";
 import {
   ROOT_AGENT_PATH,
   type AgentPath,
@@ -328,6 +331,152 @@ function isRedirectStatus(status: number): boolean {
   );
 }
 
+type LiveWebFetchDnsAllLookup = (
+  hostname: string,
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    addresses: ReadonlyArray<{ address: string; family: number }>,
+  ) => void,
+) => void;
+
+/** Default DNS: node dns.lookup({ all: true }). Overridable in tests. */
+let liveWebFetchDnsAllLookup: LiveWebFetchDnsAllLookup = (hostname, callback) => {
+  dnsLookup(hostname, { all: true }, callback);
+};
+
+/** @internal test seam for DNS rebinding / private-resolve coverage */
+export function __setLiveWebFetchDnsAllLookupForTests(
+  impl: LiveWebFetchDnsAllLookup | undefined,
+): void {
+  liveWebFetchDnsAllLookup =
+    impl ??
+    ((hostname, callback) => {
+      dnsLookup(hostname, { all: true }, callback);
+    });
+  liveWebFetchSsrfDispatcher = undefined;
+}
+
+/**
+ * LIVE web_fetch SSRF lookup: resolves DNS and fails closed if *any* address is
+ * private/loopback/link-local/metadata. Used as undici connect.lookup so the
+ * validated IP is the one dialed (no rebinding window). Stricter than the hook
+ * ssrfGuard (which allows loopback for local dev servers).
+ */
+function liveWebFetchSsrfLookup(
+  hostname: string,
+  options: object,
+  callback: (
+    err: Error | null,
+    address: string | { address: string; family: 4 | 6 }[],
+    family?: number,
+  ) => void,
+): void {
+  const wantsAll = "all" in options && (options as { all?: boolean }).all === true;
+  const unwrapped =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+
+  if (isBlockedWebFetchHostname(unwrapped)) {
+    callback(
+      new Error(
+        `URL targets a private, loopback, or link-local address (${unwrapped})`,
+      ),
+      "",
+    );
+    return;
+  }
+
+  const ipVersion = isIP(unwrapped);
+  if (ipVersion !== 0) {
+    // Literal already passed isBlockedWebFetchHostname above.
+    const family = ipVersion === 6 ? 6 : 4;
+    if (wantsAll) {
+      callback(null, [{ address: unwrapped, family }]);
+    } else {
+      callback(null, unwrapped, family);
+    }
+    return;
+  }
+
+  liveWebFetchDnsAllLookup(unwrapped, (err, addresses) => {
+    if (err) {
+      callback(err, "");
+      return;
+    }
+    for (const { address } of addresses) {
+      if (isBlockedWebFetchResolvedAddress(address)) {
+        callback(
+          new Error(
+            `URL resolves to a private, loopback, or link-local address (${address})`,
+          ),
+          "",
+        );
+        return;
+      }
+    }
+    const first = addresses[0];
+    if (!first) {
+      callback(
+        Object.assign(new Error(`ENOTFOUND ${unwrapped}`), {
+          code: "ENOTFOUND",
+          hostname: unwrapped,
+        }),
+        "",
+      );
+      return;
+    }
+    const family = first.family === 6 ? 6 : 4;
+    if (wantsAll) {
+      callback(
+        null,
+        addresses.map((a) => ({
+          address: a.address,
+          family: (a.family === 6 ? 6 : 4) as 4 | 6,
+        })),
+      );
+    } else {
+      callback(null, first.address, family);
+    }
+  });
+}
+
+let liveWebFetchSsrfDispatcher: undici.Dispatcher | undefined;
+
+function getLiveWebFetchSsrfDispatcher(): undici.Dispatcher {
+  if (!liveWebFetchSsrfDispatcher) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const undiciMod = require("undici") as typeof undici;
+    liveWebFetchSsrfDispatcher = new undiciMod.Agent({
+      connect: {
+        lookup: liveWebFetchSsrfLookup as unknown as LookupFunction,
+      },
+    });
+  }
+  return liveWebFetchSsrfDispatcher;
+}
+
+/** @internal test seam — reset memoized dispatcher between tests */
+export function __resetLiveWebFetchSsrfDispatcherForTests(): void {
+  liveWebFetchSsrfDispatcher = undefined;
+}
+
+/**
+ * Assert hostname is safe for LIVE web_fetch before dial. IP/localhost
+ * literals use isBlockedWebFetchHostname; other names are resolved with
+ * fail-closed "any blocked address" policy.
+ */
+export async function assertLiveWebFetchHostAllowed(
+  hostname: string,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    liveWebFetchSsrfLookup(hostname, { all: true }, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 async function fetchWithTimeout(
   url: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -355,9 +504,15 @@ async function fetchWithTimeout(
     let currentUrl = validateWebFetchFinalUrl(url);
     let redirects = 0;
     while (true) {
+      // Fail closed on DNS before dial, then pin via undici lookup so the
+      // validated address is the one connected (no rebinding window).
+      await assertLiveWebFetchHostAllowed(new URL(currentUrl).hostname);
       const response = await fetch(currentUrl, {
         signal: controller.signal,
         redirect: "manual",
+        // Node's fetch is undici; dispatcher pins DNS through our lookup.
+        // @ts-expect-error dispatcher is undici-specific
+        dispatcher: getLiveWebFetchSsrfDispatcher(),
         headers: {
           "user-agent": "agenc-runtime/0.2",
           accept: "text/html,text/plain,application/json,*/*",
@@ -810,6 +965,14 @@ function isBlockedWebFetchHostname(hostname: string): boolean {
   if (ipVersion === 4) return isBlockedWebFetchIPv4(unwrapped);
   if (ipVersion === 6) return isBlockedWebFetchIPv6(unwrapped);
   return false;
+}
+
+/** True when a *resolved* IP (or IP literal) is blocked for LIVE web_fetch. */
+function isBlockedWebFetchResolvedAddress(address: string): boolean {
+  const ipVersion = isIP(address);
+  if (ipVersion === 4) return isBlockedWebFetchIPv4(address);
+  if (ipVersion === 6) return isBlockedWebFetchIPv6(address);
+  return true;
 }
 
 function isBlockedWebFetchIPv4(address: string): boolean {

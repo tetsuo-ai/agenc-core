@@ -85,7 +85,7 @@ describe("schema: defaultConfig", () => {
   test("returns frozen snapshot with sane defaults", () => {
     const cfg = defaultConfig();
     expect(cfg.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
-    expect(cfg.model).toBe("grok-4.3");
+    expect(cfg.model).toBe("grok-4.5");
     expect(cfg.model_provider).toBe("grok");
     expect(resolveProviderSelection({ config: cfg })).toBe("grok");
     expect(cfg.approval_policy).toBe("on-request");
@@ -675,13 +675,13 @@ describe("provider resolution (T13)", () => {
 
   test("configuredModelForProvider: explicit config.model for the active provider wins over providers.<p>.default_model", () => {
     // Regression: `agenc config set model grok-build-0.1` writes the top-level
-    // model, but a `[providers.grok] default_model = "grok-4.3"` used to shadow
+    // model, but a `[providers.grok] default_model = "grok-4.5"` used to shadow
     // it, so the configured model never actually ran (the daemon session was
     // seeded with grok-4.3 every turn).
     const config = mergeConfigs(defaultConfig(), {
       model: "grok-build-0.1",
       model_provider: "grok",
-      providers: { grok: { default_model: "grok-4.3" } },
+      providers: { grok: { default_model: "grok-4.5" } },
     });
 
     expect(configuredModelForProvider(config, "grok")).toBe("grok-build-0.1");
@@ -1159,14 +1159,14 @@ describe("schema: closed config block validators (CF-13)", () => {
       normalizeRawConfig({
         auth: { backend: "local" },
         agent: { retention: { completed_days: 7 } },
-        providers: { grok: { default_model: "grok-4.3" } },
+        providers: { grok: { default_model: "grok-4.5" } },
         plugins: { enabled: { local: true } },
         mcp: { server: { enabled: true, transport: "sse", port: 4444 } },
       }),
     );
     expect(out.auth?.backend).toBe("local");
     expect(out.agent?.retention?.completed_days).toBe(7);
-    expect(out.providers?.grok?.default_model).toBe("grok-4.3");
+    expect(out.providers?.grok?.default_model).toBe("grok-4.5");
     expect(out.plugins?.plugins?.local).toBe(true);
     expect(out.mcp?.server).toEqual({
       enabled: true,
@@ -1358,7 +1358,7 @@ describe("loader: parseToml", () => {
     const out = parseToml(
       `
 # comment
-model = "grok-4.3"
+model = "grok-4.5"
 max_turns = 100
 
 [tools_config]
@@ -1366,7 +1366,7 @@ web_search = true
 view_image = false
       `,
     );
-    expect(out.model).toBe("grok-4.3");
+    expect(out.model).toBe("grok-4.5");
     expect(out.max_turns).toBe(100);
     expect((out.tools_config as Record<string, unknown>).web_search).toBe(true);
   });
@@ -1419,12 +1419,12 @@ matcher = "edit"
     const out = parseToml(
       `
 [profiles.fast]
-model = "grok-4.3"
+model = "grok-4.5"
 approval_policy = "never"
       `,
     );
     const profiles = out.profiles as Record<string, Record<string, unknown>>;
-    expect(profiles.fast?.model).toBe("grok-4.3");
+    expect(profiles.fast?.model).toBe("grok-4.5");
     expect(profiles.fast?.approval_policy).toBe("never");
   });
 
@@ -1508,7 +1508,7 @@ describe("loader: loadConfig", () => {
   test("missing file returns defaults with exists:false", async () => {
     const out = await loadConfig({ home: dir });
     expect(out.exists).toBe(false);
-    expect(out.config.model).toBe("grok-4.3");
+    expect(out.config.model).toBe("grok-4.5");
   });
 
   test("corrupt TOML warns + falls back to defaults with parseError set", async () => {
@@ -1518,7 +1518,7 @@ describe("loader: loadConfig", () => {
     expect(out.exists).toBe(true);
     expect(out.parseError).toBeTruthy();
     expect(warnings.length).toBeGreaterThan(0);
-    expect(out.config.model).toBe("grok-4.3"); // defaulted
+    expect(out.config.model).toBe("grok-4.5"); // defaulted
   });
 
   test("valid TOML merges onto defaults", async () => {
@@ -1531,7 +1531,7 @@ experimental_realtime_start_instructions = "custom realtime handoff"
 experimental_realtime_ws_backend_prompt = "custom realtime backend"
 
 [profiles.fast]
-model = "grok-4.3"
+model = "grok-4.5"
       `,
     );
     const out = await loadConfig({ home: dir });
@@ -1547,7 +1547,7 @@ model = "grok-4.3"
       .toBe(true);
     expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_ws_backend_prompt"))
       .toBe(true);
-    expect(out.config.profiles?.fast?.model).toBe("grok-4.3");
+    expect(out.config.profiles?.fast?.model).toBe("grok-4.5");
   });
 
   test("migrates config.json before loading config.toml", async () => {
@@ -1601,7 +1601,7 @@ replBridgeEnabled = true
 provider = "xai"
 
 [providers.xai]
-default_model = "grok-4.3"
+default_model = "grok-4.5"
       `,
     );
 
@@ -1610,7 +1610,7 @@ default_model = "grok-4.3"
     expect(out.config.remoteControlAtStartup).toBe(true);
     expect(out.config.profiles?.fast?.model_provider).toBe("grok");
     expect(out.config.providers).toEqual({
-      grok: { default_model: "grok-4.3" },
+      grok: { default_model: "grok-4.5" },
     });
     expect(out.config._unknown?.provider).toBeUndefined();
     expect(out.config._unknown?.replBridgeEnabled).toBeUndefined();
@@ -1957,7 +1957,7 @@ web_search = true
   test("duplicate key warns via onWarn, keeps last-write-wins", async () => {
     writeFileSync(
       join(dir, "config.toml"),
-      `model = "grok-3"\nmodel = "grok-4.3"\n`,
+      `model = "grok-3"\nmodel = "grok-4.5"\n`,
     );
     const warnings: string[] = [];
     const out = await loadConfig({
@@ -1966,7 +1966,7 @@ web_search = true
     });
     expect(out.exists).toBe(true);
     expect(out.parseError).toBeUndefined();
-    expect(out.config.model).toBe("grok-4.3");
+    expect(out.config.model).toBe("grok-4.5");
     expect(
       warnings.some(
         (w) => w.includes("duplicate key") && w.includes(`"model"`),

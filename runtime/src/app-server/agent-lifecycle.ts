@@ -1664,6 +1664,7 @@ export class AgenCDaemonAgentManager {
 
   async rewindConversationToMessage(
     params: SessionRewindConversationToMessageParams,
+    signal?: AbortSignal,
   ): Promise<SessionRewindConversationToMessageResult> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -1677,6 +1678,9 @@ export class AgenCDaemonAgentManager {
         "session.rewindConversationToMessage requires a background runner",
       );
     }
+    if (signal?.aborted) {
+      throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
+    }
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
       { allowConversationRewind: true },
@@ -1684,6 +1688,7 @@ export class AgenCDaemonAgentManager {
     return await this.#runner.rewindConversationToMessage(agentId, {
       sessionId: params.sessionId,
       messageOrdinal: params.messageOrdinal,
+      ...(signal !== undefined ? { signal } : {}),
     });
   }
 

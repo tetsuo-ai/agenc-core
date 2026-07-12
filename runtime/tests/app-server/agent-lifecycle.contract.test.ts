@@ -4541,10 +4541,10 @@ describe("AgenC background agent lifecycle", () => {
     });
     expect(rewindConversationToMessage).toHaveBeenCalledWith(
       "agent_rpc_rewind",
-      {
+      expect.objectContaining({
         sessionId: "session_rpc_rewind",
         messageOrdinal: 1,
-      },
+      }),
     );
   });
 

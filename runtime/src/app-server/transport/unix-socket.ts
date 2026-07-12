@@ -106,6 +106,8 @@ export class AgenCUnixSocketServer {
     });
     this.#server = server;
 
+    // chmod inside the listen callback (todo-120) so the socket is not left
+    // briefly world-accessible under a loose umask before mode 0600 applies.
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
         server.off("error", onError);
@@ -114,11 +116,14 @@ export class AgenCUnixSocketServer {
       server.once("error", onError);
       server.listen(socketPath, () => {
         server.off("error", onError);
-        resolve();
+        void chmod(socketPath, AGENC_DAEMON_SOCKET_MODE).then(
+          () => resolve(),
+          (error: unknown) =>
+            reject(error instanceof Error ? error : new Error(String(error))),
+        );
       });
     });
 
-    await chmod(socketPath, AGENC_DAEMON_SOCKET_MODE);
     this.#privateSocketOwnerUid =
       await resolveAgenCPrivateUnixSocketOwnerUid(socketPath);
     const nativePeerCredential = loadAgenCNativePeerCredentialBinding({

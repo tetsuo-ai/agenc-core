@@ -67,7 +67,7 @@ import {
 import { applyModelSwitch, readSessionSelection } from "../commands/model.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
-import { setActiveConfigModel } from "../bootstrap/state.js";
+
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
 import {
@@ -235,6 +235,8 @@ export interface AgenCBackgroundAgentPartialCompactParams {
 export interface AgenCBackgroundAgentConversationRewindParams {
   readonly sessionId: string;
   readonly messageOrdinal: number;
+  /** When aborted (request.cancel), refuse mid-flight rewind work (todo-108). */
+  readonly signal?: AbortSignal;
 }
 
 export interface AgenCBackgroundAgentSetModelParams {
@@ -1022,6 +1024,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.lastActiveAt = this.#now();
       throw stopError;
     }
+    this.#abortPendingToolDecisions(agentId);
     this.#active.delete(agentId);
     this.#pendingEvents.delete(agentId);
     this.#assistantTextByAgent.delete(agentId);
@@ -1408,6 +1411,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     agentId: string,
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindConversationToMessageResult> {
+    if (params.signal?.aborted) {
+      throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
+    }
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
@@ -1530,20 +1536,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       summary.startsWith("Model switch staged:") ||
       summary.startsWith("Provider switched ") ||
       summary.startsWith("Provider switch staged:");
-    // GAP #4: the util-layer model helpers (web-search gating/transport +
-    // auto-mode permission classifier) read the process-global
-    // activeConfigModel, which is otherwise only seeded once at startup. When
-    // the daemon stages a real model/provider switch, refresh it so those
-    // helpers reflect the live selection instead of the stale startup model.
+    // todo-115: do NOT write process-global activeConfigModel here. The daemon
+    // hosts N concurrent agents; last-writer-wins poisoned sibling sessions.
+    // Util helpers must take explicit session selection (session-local paths).
     if (applied) {
-      const selection = this.#resolveEffectiveConfigModel(
+      void this.#resolveEffectiveConfigModel(
         session,
         params.model,
         params.provider,
       );
-      if (selection !== undefined) {
-        setActiveConfigModel(selection);
-      }
     }
     return { applied, summary };
   }
@@ -1830,11 +1831,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       } else {
         changes.push(`model ${targetModel}`);
       }
-      // GAP #4: keep the process-global activeConfigModel (read by the
-      // util-layer web-search/transport gating + auto-mode permission
-      // classifier) in step with the staged switch instead of the stale
-      // startup model.
-      setActiveConfigModel({ provider: stageProvider, model: targetModel });
+      // todo-115: avoid process-global setActiveConfigModel (multi-session).
       applied = true;
     }
 
@@ -2058,21 +2055,40 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const agentId = readApprovalAgentId(ctx);
     if (agentId === null) return DENIED;
     const requestId = ctx.callId;
+    // todo-109: default timeout so unattended pauses cannot hang forever.
+    const timeoutMsRaw = process.env.AGENC_PERMISSION_TIMEOUT_MS;
+    const timeoutMsParsed =
+      timeoutMsRaw !== undefined ? Number.parseInt(timeoutMsRaw, 10) : NaN;
+    const timeoutMs =
+      Number.isFinite(timeoutMsParsed) && timeoutMsParsed > 0
+        ? timeoutMsParsed
+        : 5 * 60 * 1000;
     const decision = new Promise<ReviewDecision>((resolve) => {
       let pendingForAgent = this.#pendingToolDecisions.get(agentId);
       if (pendingForAgent === undefined) {
         pendingForAgent = new Map();
         this.#pendingToolDecisions.set(agentId, pendingForAgent);
       }
-      pendingForAgent.set(requestId, resolve);
-      const abort = (): void => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (value: ReviewDecision): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
         pendingForAgent!.delete(requestId);
         if (pendingForAgent!.size === 0) {
           this.#pendingToolDecisions.delete(agentId);
         }
-        resolve(ABORT);
+        resolve(value);
+      };
+      pendingForAgent.set(requestId, (value) => settle(value));
+      const abort = (): void => {
+        settle(ABORT);
       };
       ctx.signal?.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => {
+        settle(DENIED);
+      }, timeoutMs);
     });
     const input = approvalInputFromPayload(ctx.invocation.payload);
     await this.#emitOrBufferAgentEvent(agentId, {
@@ -2089,6 +2105,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       },
     });
     return decision;
+  }
+
+  /** Force-resolve all pending permission decisions for an agent (todo-109). */
+  #abortPendingToolDecisions(agentId: string): void {
+    const pending = this.#pendingToolDecisions.get(agentId);
+    if (pending === undefined) return;
+    for (const resolve of pending.values()) {
+      resolve(ABORT);
+    }
+    this.#pendingToolDecisions.delete(agentId);
   }
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
@@ -4424,9 +4450,10 @@ function buildBootstrapArgv(
   ) {
     argv.push("--permission-mode", params.permissionMode);
   }
-  if (!argv.includes("--autonomous") && !argv.includes("--proactive")) {
-    argv.push("--autonomous");
-  }
+  // todo-114: do not force --autonomous on every daemon agent. Unattended
+  // permission policy is installed separately; keepalive ticks only exist on
+  // the TUI contract path. Forcing autonomous here made models expect ticks
+  // that never arrived and defaulted empty unattended allowlists to pause-all.
   return argv;
 }
 

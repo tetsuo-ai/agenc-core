@@ -113,3 +113,26 @@ describe("gaphunt3 #37: unconsumed value flags are no longer silently swallowed"
     });
   });
 });
+
+describe("todo-122: --continue requires a TTY (mirror --resume)", () => {
+  it("rejects -c in a non-TTY context", () => {
+    const plan = classifyCLI({
+      argv: [NODE, SCRIPT, "-c"],
+      isTTY: false,
+      isStdoutTTY: false,
+    });
+    expect(plan.kind).toBe("errorAndExit");
+    if (plan.kind !== "errorAndExit") throw new Error("expected error");
+    expect(plan.message).toMatch(/--continue requires an interactive terminal/);
+    expect(plan.exitCode).toBe(2);
+  });
+
+  it("accepts -c in a TTY", () => {
+    const plan = classifyCLI({
+      argv: [NODE, SCRIPT, "-c"],
+      isTTY: true,
+      isStdoutTTY: true,
+    });
+    expect(plan.kind).toBe("continueTUI");
+  });
+});

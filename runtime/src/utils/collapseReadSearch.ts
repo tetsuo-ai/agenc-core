@@ -393,7 +393,7 @@ function nonCollapsibleToolUseKey(msg: RenderableMessage): string | null {
     | { file_path?: string; path?: string; command?: string }
     | undefined
   const target = input?.file_path ?? input?.path ?? input?.command ?? ''
-  return `${content.name} ${target}`
+  return `${content.name}\u0000${target}`
 }
 
 /**

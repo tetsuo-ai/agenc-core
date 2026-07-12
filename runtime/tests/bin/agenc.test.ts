@@ -801,7 +801,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     });
     expect(result.reloaded).toBe(true);
     if (result.reloaded) {
-      expect(result.previous.model).toBe("grok-4.3");
+      expect(result.previous.model).toBe("grok-4.5");
       expect(result.next.model).toBe("grok-4");
     }
     expect(latch.requested).toBe(false);
@@ -836,7 +836,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     const arg = emit.mock.calls[0]![0];
     expect(arg.msg.type).toBe("warning");
     expect(arg.msg.payload.cause).toBe("config_reloaded");
-    expect(arg.msg.payload.message).toMatch(/grok-4.3/);
+    expect(arg.msg.payload.message).toMatch(/grok-4\.5/);
     expect(arg.msg.payload.message).toMatch(/grok-4/);
   });
 
@@ -1211,7 +1211,7 @@ describe("ConfigStore integration shape", () => {
       const store = new ConfigStore({ home, env: {} });
       await store.reload();
       const cur = store.current();
-      expect(cur.model).toBe("grok-4.3");
+      expect(cur.model).toBe("grok-4.5");
       // AgenCConfig is deep-frozen — direct writes should throw in strict.
       expect(Object.isFrozen(cur)).toBe(true);
     } finally {

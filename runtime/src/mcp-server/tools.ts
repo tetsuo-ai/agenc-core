@@ -62,6 +62,24 @@ function registeredToolFromAgenCTool(
   return {
     definition: mcpDefinitionFromAgenCTool(tool),
     async call(params, context) {
+      // Fail closed for mutating tools unless operator opts in (todo-118).
+      // Full session permission/sandbox pipeline remains a follow-up; this
+      // removes the previous always-execute path for write/shell tools.
+      const readOnly = tool.isReadOnly === true;
+      const allowMutations =
+        process.env.AGENC_MCP_ALLOW_MUTATIONS === "1" ||
+        process.env.AGENC_MCP_ALLOW_MUTATIONS === "true";
+      if (!readOnly && !allowMutations) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `MCP tool '${tool.name}' is not read-only; set AGENC_MCP_ALLOW_MUTATIONS=1 to permit mutating tools over MCP serve (todo-118).`,
+            },
+          ],
+          isError: true,
+        };
+      }
       const toolCall: LLMToolCall = {
         id: String(context.requestId ?? `${tool.name}-mcp-call`),
         name: params.name,

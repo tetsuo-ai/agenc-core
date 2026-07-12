@@ -392,8 +392,16 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
 
   // 2. `--continue` / `-c` is explicit resume of the latest project
   //    session. It is deliberately separate from plain `agenc`, which
-  //    must always start a fresh conversation.
+  //    must always start a fresh conversation. Same TTY requirement as
+  //    --resume (todo-122): Ink cannot drive a non-interactive continue.
   if (hasContinueFlag) {
+    if (!opts.isTTY) {
+      return {
+        kind: "errorAndExit",
+        message: `agenc --continue requires an interactive terminal. Use 'agenc -p <prompt>' for headless one-shot calls.`,
+        exitCode: 2,
+      };
+    }
     return { kind: "continueTUI", args: {} };
   }
 

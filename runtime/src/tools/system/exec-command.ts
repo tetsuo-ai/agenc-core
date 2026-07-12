@@ -354,6 +354,52 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
 
+      // Constrain workdir to allowedPaths / workspace root (todo-132).
+      if (workdir !== undefined && workdir.trim().length > 0) {
+        const { resolve: pathResolve, isAbsolute } = await import("node:path");
+        const { realpathSync, existsSync } = await import("node:fs");
+        let resolvedWorkdir = isAbsolute(workdir)
+          ? workdir
+          : pathResolve(config?.cwd ?? process.cwd(), workdir);
+        try {
+          if (existsSync(resolvedWorkdir)) {
+            resolvedWorkdir = realpathSync(resolvedWorkdir);
+          }
+        } catch {
+          /* keep resolvedWorkdir */
+        }
+        const roots = (
+          config?.allowedPaths ??
+          (config?.cwd !== undefined ? [config.cwd] : [])
+        ).map((r) => {
+          try {
+            return existsSync(r) ? realpathSync(r) : r;
+          } catch {
+            return r;
+          }
+        });
+        if (roots.length > 0) {
+          const allowed = roots.some(
+            (root) =>
+              resolvedWorkdir === root ||
+              resolvedWorkdir.startsWith(
+                root.endsWith("/") || root.endsWith("\\") ? root : `${root}/`,
+              ) ||
+              resolvedWorkdir.startsWith(
+                root.endsWith("/") || root.endsWith("\\") ? root : `${root}\\`,
+              ),
+          );
+          if (!allowed) {
+            return {
+              content: safeStringify({
+                error: `workdir is outside allowed workspace paths: ${workdir}`,
+              }),
+              isError: true,
+            };
+          }
+        }
+      }
+
       if (isMcpShellPlaceholderCommand(cmd)) {
         return {
           content: safeStringify({

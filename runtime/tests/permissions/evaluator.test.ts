@@ -587,7 +587,7 @@ describe("hasPermissionsToUseTool — step 2a bypassPermissions", () => {
     }
   });
 
-  it("allows in plan mode when bypassPermissions is available", async () => {
+  it("does not full-bypass in plan mode merely because bypass is available (todo-130)", async () => {
     const { context } = buildHarness({
       mode: "plan",
       isBypassPermissionsModeAvailable: true,
@@ -597,7 +597,8 @@ describe("hasPermissionsToUseTool — step 2a bypassPermissions", () => {
       {},
       context,
     );
-    expect(result.behavior).toBe("allow");
+    // Plan isolation stays active; only mode === bypassPermissions auto-allows.
+    expect(result.behavior).not.toBe("allow");
   });
 });
 
