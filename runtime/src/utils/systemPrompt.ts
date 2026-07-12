@@ -66,11 +66,16 @@ export function buildEffectiveSystemPrompt({
     !mainThreadAgentDefinition
   ) {
     // Lazy require to avoid circular dependency at module load time
-    const { getCoordinatorSystemPrompt } =
+    // Prefer LIVE coordinator prompt (todo-119) so tool names match MultiAgentV2.
+    const { getLiveCoordinatorSystemPrompt, getCoordinatorSystemPrompt } =
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js')
+    const live =
+      typeof getLiveCoordinatorSystemPrompt === 'function'
+        ? getLiveCoordinatorSystemPrompt()
+        : getCoordinatorSystemPrompt()
     return asSystemPrompt([
-      getCoordinatorSystemPrompt(),
+      live,
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
     ])
   }
