@@ -40,6 +40,11 @@ import type {
   LLMXSearchConfig,
 } from "../llm/types.js";
 import type { LlmXaiConfig } from "../config/schema.js";
+import {
+  isXaiLiveXSearchEnabled,
+  resolveXaiLiveWebSearchOptions,
+  resolveXaiLiveXSearchOptions,
+} from "../llm/xai-capability-config.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
@@ -637,10 +642,17 @@ function webSearchFilters(args: Record<string, unknown>): WebSearchFilters {
 
 function webSearchConfigFromFilters(
   filters: WebSearchFilters,
+  llmXai?: LlmXaiConfig,
+  env?: NodeJS.ProcessEnv,
 ): LLMWebSearchConfig | undefined {
+  const fromLlm = resolveXaiLiveWebSearchOptions(
+    llmXai,
+    env as Readonly<Record<string, string | undefined>> | undefined,
+  );
   if (
     filters.allowedDomains.length === 0 &&
-    filters.blockedDomains.length === 0
+    filters.blockedDomains.length === 0 &&
+    fromLlm === undefined
   ) {
     return undefined;
   }
@@ -650,6 +662,12 @@ function webSearchConfigFromFilters(
       : {}),
     ...(filters.blockedDomains.length > 0
       ? { excludedDomains: filters.blockedDomains }
+      : {}),
+    ...(fromLlm?.enableImageSearch === true
+      ? { enableImageSearch: true }
+      : {}),
+    ...(fromLlm?.enableImageUnderstanding === true
+      ? { enableImageUnderstanding: true }
       : {}),
   };
 }
@@ -811,7 +829,11 @@ function buildGrokNativeWebSearchProvider(
   ) {
     return undefined;
   }
-  const webSearchOptions = webSearchConfigFromFilters(filters);
+  const webSearchOptions = webSearchConfigFromFilters(
+    filters,
+    opts.llmXai,
+    opts.env,
+  );
   const extra: ProviderFactoryOptions["extra"] = {
     ...(factoryOptions.extra ?? {}),
     webSearch: true,
@@ -964,12 +986,13 @@ function xSearchOptionsFromArgs(
 }
 
 function isXSearchEnabledForSession(opts: ModelFacingToolOptions): boolean {
-  if (opts.llmXai?.x_search === true) return true;
-  if (opts.env?.AGENC_XAI_X_SEARCH?.trim()) {
-    const raw = opts.env.AGENC_XAI_X_SEARCH.trim().toLowerCase();
-    if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
-      return true;
-    }
+  if (
+    isXaiLiveXSearchEnabled(
+      opts.llmXai,
+      opts.env as Readonly<Record<string, string | undefined>> | undefined,
+    )
+  ) {
+    return true;
   }
   const currentProvider = currentSessionProvider(opts);
   if (!currentProvider) return false;
@@ -998,12 +1021,30 @@ function buildGrokNativeXSearchProvider(
   ) {
     return undefined;
   }
+  const fromLlm = resolveXaiLiveXSearchOptions(
+    opts.llmXai,
+    opts.env as Readonly<Record<string, string | undefined>> | undefined,
+  );
+  const mergedXSearchOptions: LLMXSearchConfig | undefined = (() => {
+    if (xSearchOptions === undefined && fromLlm === undefined) return undefined;
+    return {
+      ...(xSearchOptions ?? {}),
+      ...(fromLlm?.enableImageUnderstanding === true
+        ? { enableImageUnderstanding: true }
+        : {}),
+      ...(fromLlm?.enableVideoUnderstanding === true
+        ? { enableVideoUnderstanding: true }
+        : {}),
+    };
+  })();
   const extra: ProviderFactoryOptions["extra"] = {
     ...(factoryOptions.extra ?? {}),
     // One-shot only: native x_search, no dual continuous web search spam.
     webSearch: false,
     xSearch: true,
-    ...(xSearchOptions !== undefined ? { xSearchOptions } : {}),
+    ...(mergedXSearchOptions !== undefined
+      ? { xSearchOptions: mergedXSearchOptions }
+      : {}),
   };
   const providerFactory = opts.providerFactory ?? createProvider;
   try {

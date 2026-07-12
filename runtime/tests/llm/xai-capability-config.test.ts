@@ -10,8 +10,10 @@ import {
   isDirectXaiInferenceHost,
   resolveLlmXaiConfig,
   resolveXaiCapabilityExtra,
+  resolveXaiLiveWebSearchOptions,
 } from "../../src/llm/xai-capability-config.js";
 import { createProvider } from "../../src/llm/provider.js";
+import { getProviderNativeToolDefinitions } from "../../src/llm/provider-native-search.js";
 import type { LLMTool } from "../../src/llm/types.js";
 
 const CLIENT_TOOL: LLMTool = {
@@ -174,6 +176,85 @@ describe("resolveXaiCapabilityExtra", () => {
       env: { AGENC_XAI_CODE_EXECUTION: "1" },
     });
     expect(extra.codeExecution).toBe(true);
+  });
+});
+
+describe("G5 [llm.xai].enable_image_search product path", () => {
+  it("resolveXaiLiveWebSearchOptions surfaces image flags from config", () => {
+    expect(
+      resolveXaiLiveWebSearchOptions({ enable_image_search: true }),
+    ).toEqual({ enableImageSearch: true });
+    expect(
+      resolveXaiLiveWebSearchOptions({
+        enable_image_search: true,
+        enable_image_understanding: true,
+      }),
+    ).toEqual({
+      enableImageSearch: true,
+      enableImageUnderstanding: true,
+    });
+    expect(resolveXaiLiveWebSearchOptions({})).toBeUndefined();
+  });
+
+  it("config flag reaches wire payload via LIVE one-shot options (shipped path)", () => {
+    // Product path: [llm.xai].enable_image_search → resolveXaiLiveWebSearchOptions
+    // → webSearchOptions on one-shot provider → getProviderNativeToolDefinitions.
+    const liveOpts = resolveXaiLiveWebSearchOptions({
+      enable_image_search: true,
+      enable_image_understanding: true,
+    });
+    expect(liveOpts).toBeDefined();
+
+    const defs = getProviderNativeToolDefinitions({
+      provider: "grok",
+      model: "grok-4.5",
+      webSearch: true,
+      webSearchOptions: {
+        enableImageSearch: liveOpts!.enableImageSearch,
+        enableImageUnderstanding: liveOpts!.enableImageUnderstanding,
+      },
+    });
+    const web = defs.find((d) => d.toolType === "web_search");
+    expect(web?.payload).toMatchObject({
+      type: "web_search",
+      enable_image_search: true,
+      enable_image_understanding: true,
+    });
+    // Top-level, not under filters.
+    expect(
+      (web?.payload.filters as Record<string, unknown> | undefined)
+        ?.enable_image_search,
+    ).toBeUndefined();
+  });
+
+  it("createProvider one-shot with LIVE options emits enable_image_search", () => {
+    const liveOpts = resolveXaiLiveWebSearchOptions({
+      enable_image_search: true,
+    });
+    const provider = createProvider("grok", {
+      apiKey: "k",
+      model: "grok-4.5",
+      tools: [],
+      extra: {
+        webSearch: true,
+        searchMode: "on",
+        webSearchOptions: {
+          enableImageSearch: liveOpts?.enableImageSearch === true,
+        },
+      },
+    });
+    const plan = (
+      provider as unknown as {
+        buildRequestPlan: (
+          m: unknown[],
+        ) => { params: { tools?: readonly Record<string, unknown>[] } };
+      }
+    ).buildRequestPlan([{ role: "user", content: "images" }]);
+    const web = plan.params.tools?.find((t) => t.type === "web_search");
+    expect(web).toMatchObject({
+      type: "web_search",
+      enable_image_search: true,
+    });
   });
 });
 

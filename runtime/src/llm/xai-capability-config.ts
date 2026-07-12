@@ -122,40 +122,11 @@ export function resolveXaiCapabilityExtra(
   const cfg = resolveLlmXaiConfig(input.llmXai);
   const env = input.env;
 
-  const webSearch =
-    envFlagTrue(env, "AGENC_XAI_WEB_SEARCH") || cfg.web_search === true;
-  const xSearch =
-    envFlagTrue(env, "AGENC_XAI_X_SEARCH") || cfg.x_search === true;
+  // Search enable flags are consumed by LIVE WebSearch/XSearch (Pattern A),
+  // not continuous main-loop injection — see resolveXaiLive* helpers.
   const codeExecution =
     envFlagTrue(env, "AGENC_XAI_CODE_EXECUTION") ||
     cfg.code_execution === true;
-
-  const enableImageSearch =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_SEARCH") ||
-    cfg.enable_image_search === true;
-  const enableImageUnderstanding =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_UNDERSTANDING") ||
-    cfg.enable_image_understanding === true;
-  const enableVideoUnderstanding =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_VIDEO_UNDERSTANDING") ||
-    cfg.enable_video_understanding === true;
-
-  const webSearchOptions: Record<string, unknown> = {};
-  if (enableImageSearch) {
-    // G5 will map this onto the wire; include early so config is complete.
-    webSearchOptions.enableImageSearch = true;
-  }
-  if (enableImageUnderstanding) {
-    webSearchOptions.enableImageUnderstanding = true;
-  }
-
-  const xSearchOptions: Record<string, unknown> = {};
-  if (enableImageUnderstanding) {
-    xSearchOptions.enableImageUnderstanding = true;
-  }
-  if (enableVideoUnderstanding) {
-    xSearchOptions.enableVideoUnderstanding = true;
-  }
 
   const collections = cfg.collections;
   const collectionsSearch =
@@ -196,18 +167,11 @@ export function resolveXaiCapabilityExtra(
         }
       : undefined;
 
-  // Pattern A (G19 dual-bill guard): web_search / x_search flags enable the
-  // LIVE one-shot tools (WebSearch / XSearch). They must NOT continuously
-  // inject server search tools on every main-loop turn — that double-bills
-  // when the model also calls the LIVE tools. Continuous injection is only
-  // for code_execution / collections / remote_mcp (no LIVE wrappers).
-  // Options still flow to LIVE one-shots via factory extra when explicitly
-  // requested by those tools (they force webSearch/xSearch on the one-shot).
-  void webSearch;
-  void xSearch;
-  void webSearchOptions;
-  void xSearchOptions;
-
+  // Pattern A (G19 dual-bill guard): do NOT continuous-inject web_search /
+  // x_search on the main-loop provider — LIVE WebSearch/XSearch one-shots own
+  // those. Continuous injection is only for code_execution / collections /
+  // remote_mcp. LIVE tools read image/search options via
+  // resolveXaiLiveWebSearchOptions / resolveXaiLiveXSearchOptions.
   return {
     ...(codeExecution ? { codeExecution: true as const } : {}),
     ...(collectionsSearch !== undefined
@@ -215,4 +179,82 @@ export function resolveXaiCapabilityExtra(
       : {}),
     ...(remoteMcpExtra !== undefined ? { remoteMcp: remoteMcpExtra } : {}),
   };
+}
+
+/**
+ * Options for LIVE WebSearch one-shot native `web_search` (Pattern A).
+ * Reads `[llm.xai]` image flags without enabling continuous main-loop search.
+ */
+export function resolveXaiLiveWebSearchOptions(
+  llmXai: LlmXaiConfig | undefined | null,
+  env?: Readonly<Record<string, string | undefined>>,
+): {
+  readonly enableImageSearch?: boolean;
+  readonly enableImageUnderstanding?: boolean;
+} | undefined {
+  const cfg = resolveLlmXaiConfig(llmXai);
+  const enableImageSearch =
+    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_SEARCH") ||
+    cfg.enable_image_search === true;
+  const enableImageUnderstanding =
+    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_UNDERSTANDING") ||
+    cfg.enable_image_understanding === true;
+  if (!enableImageSearch && !enableImageUnderstanding) return undefined;
+  return {
+    ...(enableImageSearch ? { enableImageSearch: true as const } : {}),
+    ...(enableImageUnderstanding
+      ? { enableImageUnderstanding: true as const }
+      : {}),
+  };
+}
+
+/**
+ * Options for LIVE XSearch one-shot native `x_search` (Pattern A).
+ */
+export function resolveXaiLiveXSearchOptions(
+  llmXai: LlmXaiConfig | undefined | null,
+  env?: Readonly<Record<string, string | undefined>>,
+): {
+  readonly enableImageUnderstanding?: boolean;
+  readonly enableVideoUnderstanding?: boolean;
+} | undefined {
+  const cfg = resolveLlmXaiConfig(llmXai);
+  const enableImageUnderstanding =
+    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_UNDERSTANDING") ||
+    cfg.enable_image_understanding === true;
+  const enableVideoUnderstanding =
+    envFlagTrue(env, "AGENC_XAI_ENABLE_VIDEO_UNDERSTANDING") ||
+    cfg.enable_video_understanding === true;
+  if (!enableImageUnderstanding && !enableVideoUnderstanding) return undefined;
+  return {
+    ...(enableImageUnderstanding
+      ? { enableImageUnderstanding: true as const }
+      : {}),
+    ...(enableVideoUnderstanding
+      ? { enableVideoUnderstanding: true as const }
+      : {}),
+  };
+}
+
+/**
+ * Whether LIVE WebSearch should prefer native xAI web_search (default on for
+ * Grok via [llm.xai].web_search).
+ */
+export function isXaiLiveWebSearchEnabled(
+  llmXai: LlmXaiConfig | undefined | null,
+  env?: Readonly<Record<string, string | undefined>>,
+): boolean {
+  if (envFlagTrue(env, "AGENC_XAI_WEB_SEARCH")) return true;
+  return resolveLlmXaiConfig(llmXai).web_search === true;
+}
+
+/**
+ * Whether LIVE XSearch is enabled ([llm.xai].x_search default false).
+ */
+export function isXaiLiveXSearchEnabled(
+  llmXai: LlmXaiConfig | undefined | null,
+  env?: Readonly<Record<string, string | undefined>>,
+): boolean {
+  if (envFlagTrue(env, "AGENC_XAI_X_SEARCH")) return true;
+  return resolveLlmXaiConfig(llmXai).x_search === true;
 }
