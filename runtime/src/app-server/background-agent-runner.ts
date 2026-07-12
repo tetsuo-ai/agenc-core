@@ -235,6 +235,8 @@ export interface AgenCBackgroundAgentPartialCompactParams {
 export interface AgenCBackgroundAgentConversationRewindParams {
   readonly sessionId: string;
   readonly messageOrdinal: number;
+  /** When aborted (request.cancel), refuse mid-flight rewind work (todo-108). */
+  readonly signal?: AbortSignal;
 }
 
 export interface AgenCBackgroundAgentSetModelParams {
@@ -1408,6 +1410,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     agentId: string,
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindConversationToMessageResult> {
+    if (params.signal?.aborted) {
+      throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
+    }
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);

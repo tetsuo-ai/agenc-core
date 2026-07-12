@@ -711,6 +711,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.rewindConversationToMessage(
             validateSessionRewindConversationToMessageParams(params),
+            signal,
           ),
         );
       case "session.previewFileRewind":
@@ -772,9 +773,9 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "message.send":
-        return this.#sendMessage(id, params);
+        return this.#sendMessage(id, params, signal);
       case "message.stream":
-        return this.#streamMessage(id, params);
+        return this.#streamMessage(id, params, signal);
       case "thread/realtime/start":
         return successResponse(
           id,
@@ -1115,19 +1116,22 @@ export class AgenCDaemonJsonRpcDispatcher {
   async #sendMessage(
     id: RequestId,
     params: JsonObject,
+    signal: AbortSignal,
   ): Promise<AgenCDaemonResponse> {
     const sendParams = validateMessageSendParams(params);
     const messageId = sendParams.clientMessageId ?? this.#createMessageId();
     const acceptedAt = this.#now();
-    await this.#agentManager.streamAgentMessage({
-      sessionId: sendParams.sessionId,
-      content: sendParams.content,
-      ...displayUserMessageFromMetadata("message.send", sendParams.metadata),
-      messageId,
-      streamId: messageId,
-      acceptedAt,
-      methodName: "message.send",
-    });
+    await this.#runMessageWithCancel(signal, sendParams.sessionId, () =>
+      this.#agentManager.streamAgentMessage({
+        sessionId: sendParams.sessionId,
+        content: sendParams.content,
+        ...displayUserMessageFromMetadata("message.send", sendParams.metadata),
+        messageId,
+        streamId: messageId,
+        acceptedAt,
+        methodName: "message.send",
+      }),
+    );
     return successResponse(id, {
       messageId,
       acceptedAt,
@@ -1137,24 +1141,67 @@ export class AgenCDaemonJsonRpcDispatcher {
   async #streamMessage(
     id: RequestId,
     params: JsonObject,
+    signal: AbortSignal,
   ): Promise<AgenCDaemonResponse> {
     const streamParams = validateMessageStreamParams(params);
     const messageId = streamParams.clientMessageId ?? this.#createMessageId();
     const streamId = streamParams.streamId ?? messageId;
     const acceptedAt = this.#now();
-    await this.#agentManager.streamAgentMessage({
-      sessionId: streamParams.sessionId,
-      content: streamParams.content,
-      ...displayUserMessageFromMetadata("message.stream", streamParams.metadata),
-      messageId,
-      streamId,
-      acceptedAt,
-    });
+    await this.#runMessageWithCancel(signal, streamParams.sessionId, () =>
+      this.#agentManager.streamAgentMessage({
+        sessionId: streamParams.sessionId,
+        content: streamParams.content,
+        ...displayUserMessageFromMetadata(
+          "message.stream",
+          streamParams.metadata,
+        ),
+        messageId,
+        streamId,
+        acceptedAt,
+      }),
+    );
     return successResponse(id, {
       messageId,
       streamId,
       acceptedAt,
     });
+  }
+
+  /**
+   * Await a full-turn message RPC while honoring request.cancel (todo-107).
+   * On abort, interrupt the session turn so tools/model work stop promptly.
+   */
+  async #runMessageWithCancel(
+    signal: AbortSignal,
+    sessionId: string,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    if (signal.aborted) {
+      await this.#agentManager.cancelSessionTurn({
+        sessionId,
+        reason: "request.cancel",
+      });
+      throw Object.assign(new Error("request cancelled"), {
+        name: "AbortError",
+      });
+    }
+    const onAbort = (): void => {
+      void this.#agentManager.cancelSessionTurn({
+        sessionId,
+        reason: "request.cancel",
+      });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      await run();
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+    if (signal.aborted) {
+      throw Object.assign(new Error("request cancelled"), {
+        name: "AbortError",
+      });
+    }
   }
 }
 
@@ -1355,7 +1402,10 @@ function methodSupportsRequestCancellation(method: AgenCDaemonKnownMethod): bool
   return (
     method === "fs.fuzzy_search" ||
     method === "commandExec.start" ||
-    method === "session.partialCompactFromMessage"
+    method === "session.partialCompactFromMessage" ||
+    method === "session.rewindConversationToMessage" ||
+    method === "message.stream" ||
+    method === "message.send"
   );
 }
 
