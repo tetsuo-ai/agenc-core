@@ -1076,6 +1076,8 @@ function buildGrokNativeXSearchProvider(
     return providerFactory("grok", {
       ...factoryOptions,
       tools: [],
+      // Native x_search agentic loops can exceed the default 120s request timeout.
+      timeoutMs: Math.max(factoryOptions.timeoutMs ?? 0, 300_000),
       extra,
     });
   } catch {
