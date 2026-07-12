@@ -7,11 +7,42 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createImagineImageTool } from "../../../src/tools/system/imagine-image.js";
+import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
 
 describe("ImagineImage tool", () => {
-  it("refuses non-grok sessions", async () => {
+  it("is not catalog-registered for non-Grok (Claude/OpenAI) sessions", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "openai",
+      env: { XAI_API_KEY: "key" },
+    });
+    expect(tools.some((t) => t.name === "ImagineImage")).toBe(false);
+  });
+
+  it("is catalog-registered only for grok + direct xAI + BYOK", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "grok",
+      sessionBaseURL: "https://api.x.ai/v1",
+      env: { XAI_API_KEY: "key" },
+    });
+    expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
+
+    const noKey = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "grok",
+      sessionBaseURL: "https://api.x.ai/v1",
+      env: {},
+    });
+    expect(noKey.some((t) => t.name === "ImagineImage")).toBe(false);
+  });
+
+  it("refuses non-grok sessions at execute time (defense-in-depth)", async () => {
     const tool = createImagineImageTool({
       workspaceRoot: process.cwd(),
       getSession: () =>

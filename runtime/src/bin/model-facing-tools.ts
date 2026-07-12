@@ -41,10 +41,12 @@ import type {
 } from "../llm/types.js";
 import type { LlmXaiConfig } from "../config/schema.js";
 import {
+  isDirectXaiInferenceHost,
   isXaiLiveXSearchEnabled,
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
+import { resolveApiKey } from "../config/env.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
@@ -124,6 +126,28 @@ export interface ModelFacingToolOptions {
   };
   /** `[llm.xai]` capability profile for Grok-native LIVE tools (XSearch). */
   readonly llmXai?: LlmXaiConfig;
+  /**
+   * Session provider slug at registry build time (e.g. `grok`, `openai`).
+   * Used for Hermes-style *catalog* gating: xAI-only LIVE tools must not be
+   * advertised to non-Grok models (execute-time refuse is defense-in-depth).
+   */
+  readonly sessionProvider?: string;
+  /** Session inference base URL — OpenRouter/custom hosts are not "direct xAI". */
+  readonly sessionBaseURL?: string;
+}
+
+/**
+ * Hermes-style availability: only advertise xAI-native LIVE tools when the
+ * session is actually Grok on a first-party xAI host. Mirrors Hermes
+ * `is_available()` + `is_xai_responses` scoping (do not register for Claude/GPT).
+ */
+export function isGrokDirectXaiSession(opts: {
+  readonly sessionProvider?: string;
+  readonly sessionBaseURL?: string;
+}): boolean {
+  const provider = (opts.sessionProvider ?? "").trim().toLowerCase();
+  if (provider !== "grok" && provider !== "xai") return false;
+  return isDirectXaiInferenceHost(opts.sessionBaseURL);
 }
 
 interface StoredCron {
@@ -2623,7 +2647,7 @@ async function runDuckDuckGoHtmlSearch(
 }
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
-  return [
+  const tools: Tool[] = [
     createWebFetchTool(WEB_FETCH_TOOL_NAME, opts),
     createWebFetchTool(LEGACY_WEB_FETCH_TOOL_NAME, opts),
     {
@@ -2762,6 +2786,20 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       },
     },
   ];
+
+  // Catalog gate (Hermes is_available): only register XSearch when session is
+  // Grok+direct-xAI AND [llm.xai].x_search is enabled. Non-Grok models must
+  // never see this tool in the schema list.
+  const includeXSearch =
+    isGrokDirectXaiSession(opts) &&
+    isXaiLiveXSearchEnabled(
+      opts.llmXai,
+      opts.env as Readonly<Record<string, string | undefined>> | undefined,
+    );
+  if (!includeXSearch) {
+    return tools.filter((t) => t.name !== "XSearch");
+  }
+  return tools;
 }
 
 function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
@@ -3561,16 +3599,27 @@ function createRemoteTriggerTool(opts: ModelFacingToolOptions): Tool {
 export function createModelFacingTools(
   opts: ModelFacingToolOptions,
 ): readonly Tool[] {
+  // Hermes-style catalog gates: xAI-only LIVE tools are omitted unless the
+  // session is Grok on a direct xAI host (and credentials/config allow).
+  // Execute-time refuses remain as defense-in-depth.
+  const grokDirect = isGrokDirectXaiSession(opts);
+  const includeImagine =
+    grokDirect && resolveApiKey(opts.env ?? process.env) !== undefined;
+
   return [
     ...createMultiAgentV2RuntimeTools(opts),
     ...createMcpResourceTools(opts),
     createSkillInvocationRuntimeTool(opts),
     ...createWebTools(opts),
-    createImagineImageTool({
-      workspaceRoot: opts.workspaceRoot,
-      getSession: opts.getSession,
-      ...(opts.env !== undefined ? { env: opts.env } : {}),
-    }),
+    ...(includeImagine
+      ? [
+          createImagineImageTool({
+            workspaceRoot: opts.workspaceRoot,
+            getSession: opts.getSession,
+            ...(opts.env !== undefined ? { env: opts.env } : {}),
+          }),
+        ]
+      : []),
     createNotebookReadTool(opts),
     createNotebookEditTool(opts),
     createLspTool(opts),

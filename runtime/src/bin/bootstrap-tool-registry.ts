@@ -41,6 +41,12 @@ export function buildBootstrapToolRegistry(
     ...(options.toolRegistryOptions?.llmXai !== undefined
       ? { llmXai: options.toolRegistryOptions.llmXai }
       : {}),
+    ...(options.toolRegistryOptions?.sessionProvider !== undefined
+      ? { sessionProvider: options.toolRegistryOptions.sessionProvider }
+      : {}),
+    ...(options.toolRegistryOptions?.sessionBaseURL !== undefined
+      ? { sessionBaseURL: options.toolRegistryOptions.sessionBaseURL }
+      : {}),
     ...(options.toolRegistryOptions?.outputSchema !== undefined
       ? { outputSchema: options.toolRegistryOptions.outputSchema }
       : {}),

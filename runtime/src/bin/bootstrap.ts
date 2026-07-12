@@ -1136,9 +1136,14 @@ export async function bootstrapLocalRuntimeSession(
             enabled_tools: [...LIVE_COORDINATOR_ALLOWED_TOOLS],
           }
         : baseToolsConfig,
-      // G1: XSearch LIVE tool gates on [llm.xai].x_search.
+      // G1/G3 Hermes-style catalog gates: pass session provider + host so
+      // XSearch / ImagineImage are not advertised to Claude/GPT/OpenRouter.
       ...(startup.config.llm?.xai !== undefined
         ? { llmXai: startup.config.llm.xai }
+        : {}),
+      sessionProvider: resolvedProvider,
+      ...(selectedBaseURL !== undefined
+        ? { sessionBaseURL: selectedBaseURL }
         : {}),
     },
   });

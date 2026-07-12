@@ -526,6 +526,10 @@ export interface BuildToolRegistryOptions {
    * LIVE tools (XSearch) so Pattern A one-shots can gate on config.
    */
   readonly llmXai?: import("./config/schema.js").LlmXaiConfig;
+  /** Session provider slug for catalog-gating xAI-only LIVE tools. */
+  readonly sessionProvider?: string;
+  /** Session inference base URL for direct-xAI host checks. */
+  readonly sessionBaseURL?: string;
   /**
    * Runtime integration seam: extra tools to register beyond the default
    * coding-profile catalog. The CLI uses this for model-facing tools such

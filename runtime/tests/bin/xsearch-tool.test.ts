@@ -51,62 +51,48 @@ describe("supportsProviderNativeXSearch", () => {
   });
 });
 
-describe("LIVE XSearch tool", () => {
-  it("is registered in the model-facing catalog", () => {
+describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
+  it("is NOT registered for non-Grok sessions (openai)", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
-    });
-    expect(tools.some((t) => t.name === "XSearch")).toBe(true);
-  });
-
-  it("hard-refuses when session provider is not grok", async () => {
-    const tools = createModelFacingTools({
-      workspaceRoot: process.cwd(),
-      getSession: () =>
-        ({
-          services: {
-            provider: { name: "openai" } as LLMProvider,
-          },
-        }) as unknown as Session,
+      sessionProvider: "openai",
       llmXai: { x_search: true },
     });
-    const xsearch = findTool(tools as never, "XSearch");
-    const result = (await xsearch.execute({ query: "xai" })) as {
-      content: string;
-      isError?: boolean;
-    };
-    expect(result.isError).toBe(true);
-    expect(result.content).toMatch(/only available when the session provider is grok/i);
+    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
   });
 
-  it("refuses when x_search is disabled (default off)", async () => {
-    const provider = {
-      name: "grok",
-    } as LLMProvider;
-    // mark as factory-backed so identity + factory options resolve
-    const { createProvider } = await import("../../src/llm/provider.js");
-    const real = createProvider("grok", {
-      apiKey: "test-key",
-      model: "grok-4.5",
-      tools: [],
-    });
+  it("is NOT registered for OpenRouter host even if provider slug is grok", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: () =>
-        ({
-          services: { provider: real },
-        }) as unknown as Session,
+      getSession: () => null,
+      sessionProvider: "grok",
+      sessionBaseURL: "https://openrouter.ai/api/v1",
+      llmXai: { x_search: true },
+    });
+    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
+  });
+
+  it("is NOT registered when x_search is disabled (default)", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "grok",
+      sessionBaseURL: "https://api.x.ai/v1",
       llmXai: { x_search: false },
     });
-    const xsearch = findTool(tools as never, "XSearch");
-    const result = (await xsearch.execute({ query: "xai" })) as {
-      content: string;
-      isError?: boolean;
-    };
-    expect(result.isError).toBe(true);
-    expect(result.content).toMatch(/x_search = true/i);
-    void provider;
+    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
+  });
+
+  it("is registered only for grok + direct xAI + x_search on", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "grok",
+      sessionBaseURL: "https://api.x.ai/v1",
+      llmXai: { x_search: true },
+    });
+    expect(tools.some((t) => t.name === "XSearch")).toBe(true);
   });
 
   it("one-shots native x_search when enabled (mocked provider factory)", async () => {
@@ -144,6 +130,8 @@ describe("LIVE XSearch tool", () => {
         ({
           services: { provider: sessionProvider },
         }) as unknown as Session,
+      sessionProvider: "grok",
+      sessionBaseURL: "https://api.x.ai/v1",
       llmXai: { x_search: true },
       providerFactory: factory as typeof createProvider,
     });
