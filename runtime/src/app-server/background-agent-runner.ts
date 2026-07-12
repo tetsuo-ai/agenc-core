@@ -67,7 +67,7 @@ import {
 import { applyModelSwitch, readSessionSelection } from "../commands/model.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
-import { setActiveConfigModel } from "../bootstrap/state.js";
+
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
 import {
@@ -1536,20 +1536,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       summary.startsWith("Model switch staged:") ||
       summary.startsWith("Provider switched ") ||
       summary.startsWith("Provider switch staged:");
-    // GAP #4: the util-layer model helpers (web-search gating/transport +
-    // auto-mode permission classifier) read the process-global
-    // activeConfigModel, which is otherwise only seeded once at startup. When
-    // the daemon stages a real model/provider switch, refresh it so those
-    // helpers reflect the live selection instead of the stale startup model.
+    // todo-115: do NOT write process-global activeConfigModel here. The daemon
+    // hosts N concurrent agents; last-writer-wins poisoned sibling sessions.
+    // Util helpers must take explicit session selection (session-local paths).
     if (applied) {
-      const selection = this.#resolveEffectiveConfigModel(
+      void this.#resolveEffectiveConfigModel(
         session,
         params.model,
         params.provider,
       );
-      if (selection !== undefined) {
-        setActiveConfigModel(selection);
-      }
     }
     return { applied, summary };
   }
@@ -1836,11 +1831,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       } else {
         changes.push(`model ${targetModel}`);
       }
-      // GAP #4: keep the process-global activeConfigModel (read by the
-      // util-layer web-search/transport gating + auto-mode permission
-      // classifier) in step with the staged switch instead of the stale
-      // startup model.
-      setActiveConfigModel({ provider: stageProvider, model: targetModel });
+      // todo-115: avoid process-global setActiveConfigModel (multi-session).
       applied = true;
     }
 
@@ -4459,9 +4450,10 @@ function buildBootstrapArgv(
   ) {
     argv.push("--permission-mode", params.permissionMode);
   }
-  if (!argv.includes("--autonomous") && !argv.includes("--proactive")) {
-    argv.push("--autonomous");
-  }
+  // todo-114: do not force --autonomous on every daemon agent. Unattended
+  // permission policy is installed separately; keepalive ticks only exist on
+  // the TUI contract path. Forcing autonomous here made models expect ticks
+  // that never arrived and defaulted empty unattended allowlists to pause-all.
   return argv;
 }
 
