@@ -18,7 +18,7 @@ type GatewayLLMConfig = ContextGatewayLLMConfig & {
 };
 
 export const PROVIDER_NATIVE_WEB_SEARCH_TOOL = "web_search";
-const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
+export const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
 const PROVIDER_NATIVE_CODE_INTERPRETER_TOOL = "code_interpreter";
 const PROVIDER_NATIVE_FILE_SEARCH_TOOL = "file_search";
 const PROVIDER_NATIVE_MCP_TOOL_PREFIX = "mcp:";
@@ -90,6 +90,22 @@ export function supportsProviderNativeWebSearch(
   return resolveProviderNativeSearchMode(llmConfig) !== "off";
 }
 
+/**
+ * Native x_search is available only when the session is grok, the model
+ * supports server tools, and xSearch is explicitly enabled (default off).
+ */
+export function supportsProviderNativeXSearch(
+  llmConfig:
+    | (Pick<GatewayLLMConfig, "provider" | "model"> & {
+        readonly xSearch?: boolean;
+      })
+    | undefined,
+): boolean {
+  if (!llmConfig || llmConfig.provider !== "grok") return false;
+  if (llmConfig.xSearch !== true) return false;
+  return supportsGrokServerSideTools(llmConfig.model);
+}
+
 function buildWebSearchPayload(
   options: LLMWebSearchConfig | undefined,
 ): Record<string, unknown> {
@@ -108,6 +124,10 @@ function buildWebSearchPayload(
   }
   if (options?.enableImageUnderstanding === true) {
     payload.enable_image_understanding = true;
+  }
+  if (options?.enableImageSearch === true) {
+    // Top-level tool field per xAI docs — not nested under filters.
+    payload.enable_image_search = true;
   }
   return payload;
 }

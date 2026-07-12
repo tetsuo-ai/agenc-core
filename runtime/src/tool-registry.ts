@@ -522,6 +522,11 @@ export interface BuildToolRegistryOptions {
    */
   readonly toolsConfig?: ToolsConfig;
   /**
+   * `[llm.xai]` Grok capability profile. Passed through to model-facing
+   * LIVE tools (XSearch) so Pattern A one-shots can gate on config.
+   */
+  readonly llmXai?: import("./config/schema.js").LlmXaiConfig;
+  /**
    * Runtime integration seam: extra tools to register beyond the default
    * coding-profile catalog. The CLI uses this for model-facing tools such
    * as `spawn_agent`.
@@ -669,7 +674,9 @@ export function buildToolRegistry(
     webFetch: "web_fetch",
     legacyWebFetch: "WebFetch",
     webSearch: "WebSearch",
+    xSearch: "XSearch",
     webSearchNativeTool: "web_search",
+    xSearchNativeTool: "x_search",
   } as const;
   const modelFacingTaskSurface = {
     taskCreate: "TaskCreate",
@@ -692,6 +699,7 @@ export function buildToolRegistry(
     [modelFacingProviderNativeSurface.webFetch]: "url",
     [modelFacingProviderNativeSurface.legacyWebFetch]: "url",
     [modelFacingProviderNativeSurface.webSearch]: "query",
+    [modelFacingProviderNativeSurface.xSearch]: "query",
     [spawnToolName]: "message",
     [skillToolInvocationName]: "skill",
     NotebookRead: "notebook_path",

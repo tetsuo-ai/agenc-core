@@ -1136,6 +1136,10 @@ export async function bootstrapLocalRuntimeSession(
             enabled_tools: [...LIVE_COORDINATOR_ALLOWED_TOOLS],
           }
         : baseToolsConfig,
+      // G1: XSearch LIVE tool gates on [llm.xai].x_search.
+      ...(startup.config.llm?.xai !== undefined
+        ? { llmXai: startup.config.llm.xai }
+        : {}),
     },
   });
   const xaiCapabilityExtra = resolveXaiCapabilityExtra({
