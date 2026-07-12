@@ -3476,7 +3476,14 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       try {
         const agent = await deps.findAgentBySessionId(daemonClient, args.resumeId);
         if (agent === null) {
-          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+          // todo-113: cold disk sessions are not yet auto-restored into a live
+          // daemon agent (restoreAgent is crash-recovery only). Surface that
+          // distinction so operators know the rollout may still exist on disk.
+          process.stderr.write(
+            `agenc: no live daemon agent for session '${args.resumeId}'. ` +
+              `Disk rollouts after a clean exit are not cold-resumed yet; ` +
+              `start a new agent or keep the prior process attached.\n`,
+          );
           return 1;
         }
         transferred = true;
@@ -3846,7 +3853,14 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
           resolved.sessionId,
         );
         if (agent === null) {
-          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+          // todo-113: cold disk sessions are not yet auto-restored into a live
+          // daemon agent (restoreAgent is crash-recovery only). Surface that
+          // distinction so operators know the rollout may still exist on disk.
+          process.stderr.write(
+            `agenc: no live daemon agent for session '${args.resumeId}'. ` +
+              `Disk rollouts after a clean exit are not cold-resumed yet; ` +
+              `start a new agent or keep the prior process attached.\n`,
+          );
           return 1;
         }
         transferred = true;

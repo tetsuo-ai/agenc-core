@@ -132,7 +132,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
     const strict = strictArgs(args, {
-      allowed: new Set(["timeout_ms"]),
+      allowed: new Set(["timeout_ms", "target"]),
     });
     if (strict) return strict;
     if (
@@ -181,7 +181,17 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       );
     }
     const timedOut = !mailboxChanged;
-    const updates = timedOut ? [] : drainMailboxUpdates(sessionOrError);
+    let updates = timedOut ? [] : drainMailboxUpdates(sessionOrError);
+    const targetFilter =
+      typeof args.target === "string" && args.target.trim().length > 0
+        ? args.target.trim()
+        : undefined;
+    if (targetFilter !== undefined && updates.length > 0) {
+      updates = updates.filter((u) => {
+        const s = JSON.stringify(u);
+        return s.includes(targetFilter);
+      });
+    }
     emit(sessionOrError, {
       type: "collab_waiting_end",
       payload: {

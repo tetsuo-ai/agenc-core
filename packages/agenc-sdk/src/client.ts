@@ -367,8 +367,34 @@ export class AgencClient {
     return result;
   }
 
-  /** Create a daemon-owned session and attach this client to it. */
+  /**
+   * Create a runnable daemon session and attach this client to it.
+   * Prefer gateway-style `agent.create` first so `message.send` has a live
+   * agent (todo-133). Falls back to bare `session.create` when `agentId` is
+   * already supplied.
+   */
   async createSession(params: SessionCreateParams = {}): Promise<AgencSession> {
+    const existingAgentId =
+      typeof (params as { agentId?: unknown }).agentId === "string"
+        ? String((params as { agentId: string }).agentId).trim()
+        : "";
+    if (existingAgentId.length === 0) {
+      const agent = await this.spawnAgent({
+        objective:
+          typeof (params as { objective?: unknown }).objective === "string" &&
+          String((params as { objective: string }).objective).trim().length > 0
+            ? String((params as { objective: string }).objective).trim()
+            : "Interactive session",
+        ...(typeof (params as { cwd?: unknown }).cwd === "string"
+          ? { cwd: String((params as { cwd: string }).cwd) }
+          : {}),
+        initialContent: [],
+      } as AgentCreateParams);
+      const attached = await this.attachAgent(agent.agentId);
+      if (attached.session !== null) {
+        return attached.session;
+      }
+    }
     const created = await this.request("session.create", params);
     await this.#attachSession(created.sessionId);
     return new AgencSession(this, created.sessionId, created.agentId);
