@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/agenc",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Public AgenC CLI launcher package",
   "license": "MIT",
   "type": "module",
