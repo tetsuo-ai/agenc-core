@@ -1024,6 +1024,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.lastActiveAt = this.#now();
       throw stopError;
     }
+    this.#abortPendingToolDecisions(agentId);
     this.#active.delete(agentId);
     this.#pendingEvents.delete(agentId);
     this.#assistantTextByAgent.delete(agentId);
@@ -2063,21 +2064,40 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const agentId = readApprovalAgentId(ctx);
     if (agentId === null) return DENIED;
     const requestId = ctx.callId;
+    // todo-109: default timeout so unattended pauses cannot hang forever.
+    const timeoutMsRaw = process.env.AGENC_PERMISSION_TIMEOUT_MS;
+    const timeoutMsParsed =
+      timeoutMsRaw !== undefined ? Number.parseInt(timeoutMsRaw, 10) : NaN;
+    const timeoutMs =
+      Number.isFinite(timeoutMsParsed) && timeoutMsParsed > 0
+        ? timeoutMsParsed
+        : 5 * 60 * 1000;
     const decision = new Promise<ReviewDecision>((resolve) => {
       let pendingForAgent = this.#pendingToolDecisions.get(agentId);
       if (pendingForAgent === undefined) {
         pendingForAgent = new Map();
         this.#pendingToolDecisions.set(agentId, pendingForAgent);
       }
-      pendingForAgent.set(requestId, resolve);
-      const abort = (): void => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (value: ReviewDecision): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
         pendingForAgent!.delete(requestId);
         if (pendingForAgent!.size === 0) {
           this.#pendingToolDecisions.delete(agentId);
         }
-        resolve(ABORT);
+        resolve(value);
+      };
+      pendingForAgent.set(requestId, (value) => settle(value));
+      const abort = (): void => {
+        settle(ABORT);
       };
       ctx.signal?.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => {
+        settle(DENIED);
+      }, timeoutMs);
     });
     const input = approvalInputFromPayload(ctx.invocation.payload);
     await this.#emitOrBufferAgentEvent(agentId, {
@@ -2094,6 +2114,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       },
     });
     return decision;
+  }
+
+  /** Force-resolve all pending permission decisions for an agent (todo-109). */
+  #abortPendingToolDecisions(agentId: string): void {
+    const pending = this.#pendingToolDecisions.get(agentId);
+    if (pending === undefined) return;
+    for (const resolve of pending.values()) {
+      resolve(ABORT);
+    }
+    this.#pendingToolDecisions.delete(agentId);
   }
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
