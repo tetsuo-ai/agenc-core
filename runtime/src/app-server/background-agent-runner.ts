@@ -1570,11 +1570,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       (current?.provider !== undefined && current.provider !== "unknown"
         ? current.provider
         : undefined);
+    // Backfill the model from the live session ONLY when it belongs to the
+    // same provider we are resolving for. A provider-only switch is staged
+    // and consumed on the NEXT turn, so `current` still reports the
+    // pre-switch selection here — backfilling it produced mixed pairs like
+    // {provider: "grok", model: "qwen3-coder-next-fp8"} in the process-global
+    // activeConfigModel, which later daemon sessions then inherited and sent
+    // to the wrong API (bug-audit-2026-07-11.md #10).
+    const currentModelUsable =
+      current !== undefined &&
+      current.model !== "unknown" &&
+      current.provider !== "unknown" &&
+      (paramProvider === undefined || current.provider === paramProvider);
     const model =
-      paramModel ??
-      (current?.model !== undefined && current.model !== "unknown"
-        ? current.model
-        : undefined);
+      paramModel ?? (currentModelUsable ? current!.model : undefined);
     if (provider === undefined || model === undefined) return undefined;
     return { provider, model };
   }

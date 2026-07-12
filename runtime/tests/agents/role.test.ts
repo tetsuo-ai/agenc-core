@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -206,6 +206,97 @@ describe("role registry", () => {
     expect(role.config.systemPrompt).toBe("Review the current project changes.");
     expect(role.config.allowlist).toEqual(["Read"]);
     expect(role.config.reasoningEffort).toBe("high");
+  });
+
+  it("resolves same-named markdown roles independently per cwd", () => {
+    const roots: string[] = [];
+    for (const label of ["a", "b"] as const) {
+      const root = mkdtempSync(join(tmpdir(), `agenc-md-role-${label}-`));
+      const dir = join(root, ".agenc", "agents");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "reviewer.md"),
+        [
+          "---",
+          "name: shared-reviewer",
+          `description: Reviewer ${label}`,
+          "---",
+          `Reviewer ${label} prompt.`,
+        ].join("\n"),
+      );
+      roots.push(root);
+    }
+    const [rootA, rootB] = roots;
+
+    loadMarkdownAgentRoles(rootA);
+    loadMarkdownAgentRoles(rootB);
+
+    expect(getAgentRole("shared-reviewer", rootA)?.config.description).toBe(
+      "Reviewer a",
+    );
+    expect(getAgentRole("shared-reviewer", rootB)?.config.description).toBe(
+      "Reviewer b",
+    );
+    expect(requireAgentRole("shared-reviewer", rootA).config.systemPrompt).toBe(
+      "Reviewer a prompt.",
+    );
+
+    // Per-cwd listings surface the cwd's own role definition.
+    const listedA = listAgentRoles(rootA).find(
+      (role) => role.name === "shared-reviewer",
+    );
+    const listedB = listAgentRoles(rootB).find(
+      (role) => role.name === "shared-reviewer",
+    );
+    expect(listedA?.config.description).toBe("Reviewer a");
+    expect(listedB?.config.description).toBe("Reviewer b");
+
+    // cwd-less lookups keep the legacy process-global fallback: the most
+    // recently loaded cwd wins.
+    expect(getAgentRole("shared-reviewer")?.config.description).toBe(
+      "Reviewer b",
+    );
+  });
+
+  it("reloads a cwd's markdown roles on a fresh load after the file changes", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-md-role-reload-"));
+    const dir = join(root, ".agenc", "agents");
+    mkdirSync(dir, { recursive: true });
+    const filePath = join(dir, "editable.md");
+    writeFileSync(
+      filePath,
+      [
+        "---",
+        "name: editable-role",
+        "description: Before edit",
+        "---",
+        "Old prompt.",
+      ].join("\n"),
+    );
+
+    loadMarkdownAgentRoles(root);
+    expect(getAgentRole("editable-role", root)?.config.description).toBe(
+      "Before edit",
+    );
+
+    writeFileSync(
+      filePath,
+      [
+        "---",
+        "name: editable-role",
+        "description: After edit",
+        "---",
+        "New prompt.",
+      ].join("\n"),
+    );
+    // Force a visible mtime bump even on filesystems with coarse timestamps.
+    const future = new Date(Date.now() + 5_000);
+    utimesSync(filePath, future, future);
+
+    loadMarkdownAgentRoles(root);
+    const reloaded = getAgentRole("editable-role", root);
+    expect(reloaded?.config.description).toBe("After edit");
+    expect(reloaded?.config.systemPrompt).toBe("New prompt.");
   });
 });
 

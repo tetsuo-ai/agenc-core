@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { cwd as processCwd } from "node:process";
 import {
+  collectDaemonClientEnvOverrides,
   createAgenCJsonLineDaemonClient,
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
@@ -37,6 +38,7 @@ import type {
 } from "../tui/session-types.js";
 
 export {
+  collectDaemonClientEnvOverrides,
   createAgenCJsonLineDaemonClient,
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
@@ -61,8 +63,6 @@ export interface AgenCDaemonPromptAgentOptions {
     | "bypassPermissions";
 }
 
-const DAEMON_PROMPT_ENV_OVERRIDE_KEYS = ["AGENC_MCP_SERVERS"] as const;
-
 export interface StopAgenCDaemonPromptAgentOptions {
   readonly agentId: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -79,7 +79,7 @@ export async function startAgenCDaemonPromptAgent(
   const env = options.env ?? process.env;
   await defaultEnsureDaemonReady(env)();
   const client = createAgenCJsonLineDaemonClient({ env });
-  const envOverrides = collectDaemonPromptEnvOverrides(env);
+  const envOverrides = collectDaemonClientEnvOverrides(env);
   return client.createAgent({
     objective: prompt,
     instructions: prompt,
@@ -99,19 +99,6 @@ export async function startAgenCDaemonPromptAgent(
       ...(options.metadata ?? {}),
     },
   });
-}
-
-function collectDaemonPromptEnvOverrides(
-  env: NodeJS.ProcessEnv,
-): Record<string, string> {
-  const overrides: Record<string, string> = {};
-  for (const key of DAEMON_PROMPT_ENV_OVERRIDE_KEYS) {
-    const value = env[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      overrides[key] = value;
-    }
-  }
-  return overrides;
 }
 
 export async function stopAgenCDaemonPromptAgent(

@@ -27,6 +27,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
 | [grok-oauth.md](grok-oauth.md) | Sign in with X — Grok subscription access without an API key |
+| [bug-audit-2026-07-11.md](bug-audit-2026-07-11.md) | Daemon/session lifecycle bug audit: /resume freeze, workspace pinning, global-state family |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |

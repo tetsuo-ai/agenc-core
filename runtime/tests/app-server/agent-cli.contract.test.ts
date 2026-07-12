@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
   createAgenCJsonLineDaemonClient,
   defaultEnsureDaemonReady,
@@ -214,6 +215,9 @@ describe("agenc agent start CLI", () => {
         },
         {
           cwd: "/workspace",
+          // Empty env: no allowlisted overrides get collected, so the
+          // create params stay exactly minimal.
+          env: {},
           ensureDaemonReady: async () => {},
           io,
           client: {
@@ -250,6 +254,57 @@ describe("agenc agent start CLI", () => {
         unattendedDeny: ["exec_command"],
       },
     ]);
+  });
+
+  it("forwards allowlisted client env overrides with agent start", async () => {
+    const io = createIo();
+    const requests: AgentCreateParams[] = [];
+
+    await expect(
+      runAgenCAgentCli(
+        {
+          kind: "start",
+          objective: "audit the repo",
+          unattendedAllow: [],
+          unattendedDeny: [],
+        },
+        {
+          cwd: "/workspace",
+          env: {
+            XAI_API_KEY: "rotated-key",
+            PATH: "/project/.venv/bin:/usr/bin",
+            AGENC_WORKSPACE: "/should/not/forward",
+            SHOULD_NOT_FORWARD: "ignored",
+          },
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async (params) => {
+              requests.push(params);
+              return {
+                agentId: "agent_env",
+                objective: params.objective,
+                status: "running",
+                createdAt: "2026-05-01T12:00:00.000Z",
+              };
+            },
+            listAgents: async () => ({ agents: [] }),
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.envOverrides).toEqual({
+      XAI_API_KEY: "rotated-key",
+      PATH: "/project/.venv/bin:/usr/bin",
+    });
   });
 
   it("prints active agent list rows with the required columns", async () => {
@@ -1410,6 +1465,138 @@ autostart = false
     }
   });
 
+  it.each([
+    "session.partialCompactFromMessage",
+    "session.rewindConversationToMessage",
+  ] as const)(
+    "keeps %s requests alive beyond the generic daemon timeout",
+    async (longRunningMethod) => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-agent-compact-timeout-"));
+      const socketPath = join(dir, "daemon.sock");
+      const server = new AgenCUnixSocketServer({
+        socketPath,
+        onMessage: async (message, context) => {
+          if (message.method === "initialize") {
+            await context.send({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                type: "initialized",
+                protocolVersion: "1.0.0",
+                capabilities: {},
+              },
+            });
+            return;
+          }
+          if (message.method === longRunningMethod) {
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            await context.send({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: { status: "ok" },
+            });
+          }
+        },
+      });
+
+      await server.listen();
+      const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+        socketPath,
+        authCookie: "timeout-cookie",
+        timeoutMs: 50,
+      });
+      try {
+        // Compact/rewind are internal methods reached through the TUI
+        // daemon-session wrapper, which widens the request overloads.
+        const request = client.request as (
+          method: string,
+          params?: Record<string, unknown>,
+        ) => Promise<unknown>;
+        await expect(
+          request(longRunningMethod, {
+            sessionId: "session_compact",
+            messageOrdinal: 3,
+          }),
+        ).resolves.toEqual({ status: "ok" });
+      } finally {
+        await client.close();
+        await server.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("sends request.cancel to the daemon when a persistent request times out", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-timeout-cancel-"));
+    const socketPath = join(dir, "daemon.sock");
+    const received: Array<{
+      readonly id?: unknown;
+      readonly method?: unknown;
+      readonly params?: Record<string, unknown>;
+    }> = [];
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        received.push(
+          message as {
+            readonly id?: unknown;
+            readonly method?: unknown;
+            readonly params?: Record<string, unknown>;
+          },
+        );
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+        }
+        // Never answer anything else: the request must time out client-side.
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "timeout-cancel-cookie",
+      timeoutMs: 50,
+    });
+    try {
+      await expect(
+        client.request("thread/realtime/start", {
+          threadId: "agent_timeout_cancel",
+          transport: { type: "websocket" },
+          outputModality: "audio",
+        }),
+      ).rejects.toThrow(
+        "Timed out waiting for daemon response to thread/realtime/start",
+      );
+      await waitFor(
+        () => received.some((message) => message.method === "request.cancel"),
+        "daemon received request.cancel after client timeout",
+      );
+      const timedOutRequest = received.find(
+        (message) => message.method === "thread/realtime/start",
+      );
+      const cancel = received.find(
+        (message) => message.method === "request.cancel",
+      );
+      expect(timedOutRequest).toBeDefined();
+      expect(cancel?.params).toMatchObject({
+        requestId: timedOutRequest?.id,
+        reason: expect.stringContaining("client timeout after"),
+      });
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("notifies persistent TUI clients when the daemon socket drops", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-agent-connection-state-"));
     const socketPath = join(dir, "daemon.sock");
@@ -1650,5 +1837,68 @@ autostart = false
     expect(io.stderrText()).toContain(
       "Daemon connection closed before response",
     );
+  });
+});
+
+describe("collectDaemonClientEnvOverrides", () => {
+  it("forwards allowlisted keys that are set in the client env", () => {
+    const overrides = collectDaemonClientEnvOverrides({
+      XAI_API_KEY: "rotated-xai-key",
+      OPENAI_API_KEY: "rotated-openai-key",
+      OPENAI_BASE_URL: "http://localhost:8000/v1",
+      AGENC_MODEL: "qwen3-coder-next-fp8",
+      AGENC_PROVIDER: "openai-compatible",
+      AGENC_PROFILE: "fast",
+      AGENC_MCP_SERVERS: '[{"name":"audit"}]',
+      HTTP_PROXY: "http://proxy:3128",
+      no_proxy: "localhost",
+      PATH: "/project/.venv/bin:/usr/bin",
+    });
+
+    expect(overrides).toEqual({
+      XAI_API_KEY: "rotated-xai-key",
+      OPENAI_API_KEY: "rotated-openai-key",
+      OPENAI_BASE_URL: "http://localhost:8000/v1",
+      AGENC_MODEL: "qwen3-coder-next-fp8",
+      AGENC_PROVIDER: "openai-compatible",
+      AGENC_PROFILE: "fast",
+      AGENC_MCP_SERVERS: '[{"name":"audit"}]',
+      HTTP_PROXY: "http://proxy:3128",
+      no_proxy: "localhost",
+      PATH: "/project/.venv/bin:/usr/bin",
+    });
+  });
+
+  it("does not emit entries for keys unset in the client env", () => {
+    // Unset client keys must be absent from the overrides entirely: the
+    // daemon merges {...daemonEnv, ...overrides}, so an absent key lets
+    // the daemon's own value win instead of being force-deleted.
+    const overrides = collectDaemonClientEnvOverrides({
+      XAI_API_KEY: "only-this-one",
+    });
+
+    expect(overrides).toEqual({ XAI_API_KEY: "only-this-one" });
+    expect(Object.keys(overrides)).not.toContain("OPENAI_API_KEY");
+    expect(Object.keys(overrides)).not.toContain("PATH");
+  });
+
+  it("treats empty and whitespace-only values as unset", () => {
+    expect(
+      collectDaemonClientEnvOverrides({
+        XAI_API_KEY: "",
+        OPENAI_API_KEY: "   ",
+      }),
+    ).toEqual({});
+  });
+
+  it("excludes AGENC_WORKSPACE and non-allowlisted keys", () => {
+    const overrides = collectDaemonClientEnvOverrides({
+      AGENC_WORKSPACE: "/somewhere/else",
+      AGENC_HOME: "/custom/agenc-home",
+      SOME_RANDOM_SECRET: "must-not-forward",
+      PATH: "/usr/bin",
+    });
+
+    expect(overrides).toEqual({ PATH: "/usr/bin" });
   });
 });

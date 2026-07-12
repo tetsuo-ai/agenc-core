@@ -14,9 +14,8 @@
  * @module
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { basename } from "node:path";
-import type { RolloutItem } from "../session/rollout-item.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import {
   safeExecute,
@@ -26,8 +25,11 @@ import {
 } from "./types.js";
 import { openResumeMenu } from "./resume-menu.js";
 
-const MAX_SCAN_FILES = 10_000;
+const MAX_SCAN_FILES = 2_000;
 const DEFAULT_LIST_LIMIT = 20;
+/** Preview reads are bounded: at most this many bytes / parsed lines. */
+const PREVIEW_MAX_BYTES = 256 * 1024;
+const PREVIEW_MAX_LINES = 64;
 
 export interface RolloutEntry {
   readonly filePath: string;
@@ -62,29 +64,58 @@ export function sessionIdFromFilename(name: string): string | null {
   return parts[parts.length - 1] ?? null;
 }
 
-/** Read the first user-role message text from a rollout JSONL file.
- *  Kept bounded — only scans the first 64 lines. */
+/**
+ * Read the first user-role message text from a rollout JSONL file.
+ * Bounded in BYTES as well as lines: rollout transcripts run to tens of MB,
+ * and this used to `readFileSync` the whole file per picker row — the
+ * dominant cost of the /resume freeze (bug-audit-2026-07-11.md #1). Now
+ * streams at most PREVIEW_MAX_BYTES / PREVIEW_MAX_LINES.
+ */
 export function readFirstUserPreview(path: string): string {
+  let fd: number | undefined;
   try {
-    const raw = readFileSync(path, "utf8");
-    const lines = raw.split("\n");
-    const limit = Math.min(lines.length, 64);
-    for (let i = 0; i < limit; i++) {
-      const line = lines[i]!.trim();
-      if (!line) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
+    fd = openSync(path, "r");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let carry = "";
+    let bytesConsumed = 0;
+    let linesSeen = 0;
+    while (bytesConsumed < PREVIEW_MAX_BYTES && linesSeen < PREVIEW_MAX_LINES) {
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      bytesConsumed += bytesRead;
+      carry += buffer.toString("utf8", 0, bytesRead);
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() ?? "";
+      for (const line of lines) {
+        if (linesSeen >= PREVIEW_MAX_LINES) break;
+        linesSeen += 1;
+        const preview = previewFromLine(line);
+        if (preview !== null) return preview;
       }
-      const previewFromItem = extractUserText(parsed);
-      if (previewFromItem) return truncate(previewFromItem, 80);
+    }
+    if (linesSeen < PREVIEW_MAX_LINES) {
+      const preview = previewFromLine(carry);
+      if (preview !== null) return preview;
     }
   } catch {
     /* unreadable — caller falls back to "" */
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
   return "";
+}
+
+function previewFromLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  const previewFromItem = extractUserText(parsed);
+  return previewFromItem ? truncate(previewFromItem, 80) : null;
 }
 
 function extractUserText(item: unknown): string | null {
@@ -153,14 +184,11 @@ export function listResumableSessions(
         } catch {
           if (!Number.isFinite(mtimeMs)) continue;
         }
-        const read = store.readThread({
-          threadId: thread.threadId,
-          includeArchived: false,
-          includeHistory: true,
-        });
-        const firstUserPreview =
-          previewFromHistory(read.history?.items ?? []) ||
-          readFirstUserPreview(thread.rolloutPath);
+        // Preview comes from a bounded streaming read of the rollout head.
+        // Never load the thread history here: `readThread({includeHistory})`
+        // parses the ENTIRE transcript per row and re-reads the registry per
+        // call — the /resume freeze (bug-audit-2026-07-11.md #1).
+        const firstUserPreview = readFirstUserPreview(thread.rolloutPath);
         // Skip rollouts that never recorded a user message — those
         // sessions were opened and closed before the user typed
         // anything. They're not useful to resume to (there's no
@@ -183,14 +211,6 @@ export function listResumableSessions(
 
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return entries.slice(0, limit);
-}
-
-function previewFromHistory(items: ReadonlyArray<RolloutItem>): string {
-  for (const item of items) {
-    const preview = extractUserText(item);
-    if (preview) return truncate(preview, 80);
-  }
-  return "";
 }
 
 function formatEntries(entries: ReadonlyArray<RolloutEntry>): string {

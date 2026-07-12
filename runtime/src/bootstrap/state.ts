@@ -154,7 +154,8 @@ type State = {
     sessionId: string | null
   } | null
   // Track invoked skills for preservation across compaction
-  // Keys are composite: `${agentId ?? ''}:${skillName}` to prevent cross-agent overwrites
+  // Keys are composite: `${sessionId ?? ''}:${agentId ?? ''}:${skillName}`
+  // to prevent cross-session and cross-agent overwrites
   invokedSkills: Map<
     string,
     {
@@ -163,6 +164,7 @@ type State = {
       content: string
       invokedAt: number
       agentId: string | null
+      sessionId: string | null
     }
   >
   // Track slow operations for dev bar display (internal-only)
@@ -1366,6 +1368,7 @@ export type InvokedSkillInfo = {
   content: string
   invokedAt: number
   agentId: string | null
+  sessionId: string | null
 }
 
 export function addInvokedSkill(
@@ -1373,14 +1376,18 @@ export function addInvokedSkill(
   skillPath: string,
   content: string,
   agentId: string | null = null,
+  sessionId: string | null = null,
 ): void {
-  const key = `${agentId ?? ''}:${skillName}`
+  // Key by session first so concurrent sessions sharing this process
+  // never collide on the same `${agentId}:${skillName}` entry.
+  const key = `${sessionId ?? ''}:${agentId ?? ''}:${skillName}`
   STATE.invokedSkills.set(key, {
     skillName,
     skillPath,
     content,
     invokedAt: Date.now(),
     agentId,
+    sessionId,
   })
 }
 
@@ -1390,13 +1397,18 @@ export function getInvokedSkills(): Map<string, InvokedSkillInfo> {
 
 export function getInvokedSkillsForAgent(
   agentId: string | undefined | null,
+  sessionId?: string | null,
 ): Map<string, InvokedSkillInfo> {
   const normalizedId = agentId ?? null
   const filtered = new Map<string, InvokedSkillInfo>()
   for (const [key, skill] of STATE.invokedSkills) {
-    if (skill.agentId === normalizedId) {
-      filtered.set(key, skill)
+    if (skill.agentId !== normalizedId) continue
+    // Omitting sessionId keeps the legacy cross-store view; passing one
+    // (including null for the main session) filters to that session.
+    if (sessionId !== undefined && skill.sessionId !== (sessionId ?? null)) {
+      continue
     }
+    filtered.set(key, skill)
   }
   return filtered
 }

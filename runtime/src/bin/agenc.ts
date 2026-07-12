@@ -102,6 +102,7 @@ import {
   runAgenCRemoteCli,
 } from "./remote-cli.js";
 import {
+  collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
   formatAgenCAgentCliHelpText,
@@ -2022,6 +2023,7 @@ async function runDaemonOneShotPrompt(params: {
   const collectedEvents: unknown[] = [];
 
   try {
+    const envOverrides = collectDaemonClientEnvOverrides(params.env);
     const createParams: AgentCreateParams = {
       objective: params.prompt,
       instructions: params.prompt,
@@ -2035,6 +2037,7 @@ async function runDaemonOneShotPrompt(params: {
       ...(params.permissionMode !== undefined
         ? { permissionMode: params.permissionMode }
         : {}),
+      ...(Object.keys(envOverrides).length > 0 ? { envOverrides } : {}),
       metadata: {
         source: "agenc.prompt",
         mode: "one-shot",

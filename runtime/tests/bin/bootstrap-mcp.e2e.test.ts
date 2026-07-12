@@ -211,7 +211,10 @@ async function expectLiveMcpEndToEnd(params: {
       apiKey: "test-key",
       env: params.env,
       ...(params.argv !== undefined ? { argv: [...params.argv] } : {}),
-      cwd: "/ignored-by-env",
+      // The explicit cwd now beats AGENC_WORKSPACE (bug-audit #2), so the
+      // session cwd must be the real workspace; the precedence itself is
+      // guarded in bootstrap.test.ts.
+      cwd: params.env.AGENC_WORKSPACE as string,
     });
 
     pid = await readPid(params.pidFile);
@@ -439,7 +442,8 @@ describe("bootstrapLocalRuntimeSession deferred built-in tool discovery", () => 
           AGENC_MCP_SERVERS: "",
           HOME: home,
         },
-        cwd: "/ignored-by-env",
+        // Explicit cwd beats AGENC_WORKSPACE since bug-audit #2.
+        cwd: workspace,
       });
 
       expect(boot.registry.tools.map((tool) => tool.name)).toContain(

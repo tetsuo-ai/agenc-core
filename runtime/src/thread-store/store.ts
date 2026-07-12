@@ -368,6 +368,8 @@ export class FileThreadStore implements ThreadStore {
   private readonly threadIndex: StateThreadRepository;
   private readonly liveRecorders = new Map<ThreadId, RolloutStore>();
   private closed = false;
+  /** One legacy sessions-dir import per store instance (see readRegistryUnlocked). */
+  private legacyImportDone = false;
 
   constructor(opts: FileThreadStoreOpts = {}) {
     const cwd = opts.cwd ?? process.cwd();
@@ -1086,6 +1088,14 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private readRegistry(includeLegacy = true): Map<ThreadId, RegistryEntry> {
+    // Index-only reads touch nothing but SQLite (which provides its own
+    // consistency) — taking the exclusive directory lock here would let a
+    // daemon writing a rollout stall a read-only caller (e.g. the /resume
+    // picker) for up to the full 30s acquisition window
+    // (bug-audit-2026-07-11.md #1).
+    if (!includeLegacy) {
+      return this.readRegistryUnlocked(false);
+    }
     return this.withRegistryLock(() =>
       this.readRegistryUnlocked(includeLegacy),
     );
@@ -1113,11 +1123,21 @@ export class FileThreadStore implements ThreadStore {
       return result;
     }
 
+    // The legacy import walks sessions/ + archived_sessions/ and stats every
+    // rollout — and every imported entry is upserted into the SQLite index,
+    // so later reads see it from `threadIndex.listThreads()` above. Running
+    // it once per store instance is therefore sufficient; before this guard
+    // it re-ran per readRegistry call (O(N²) directory walks when listing N
+    // threads — bug-audit-2026-07-11.md #1).
+    if (this.legacyImportDone) {
+      return result;
+    }
     for (const [threadId, entry] of this.importLegacyRegistry()) {
       const merged = mergeLegacyEntry(result.get(threadId), entry);
       result.set(threadId, merged);
       this.threadIndex.upsertThread(merged);
     }
+    this.legacyImportDone = true;
     return result;
   }
 

@@ -27,7 +27,9 @@ function projectAgentRole(role: AgentRole): AgentRoleDefinition {
   return definition;
 }
 
-export function listAgentRoleDefinitions(): readonly AgentRoleDefinition[] {
-  loadMarkdownAgentRoles();
-  return listAgentRoles().map(projectAgentRole);
+export function listAgentRoleDefinitions(
+  cwd?: string,
+): readonly AgentRoleDefinition[] {
+  loadMarkdownAgentRoles(cwd);
+  return listAgentRoles(cwd).map(projectAgentRole);
 }

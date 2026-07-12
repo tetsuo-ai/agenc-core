@@ -343,14 +343,54 @@ const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
 
 const registry = new Map<string, AgentRole>();
 for (const role of BUILT_INS) registry.set(role.name, role);
-const loadedMarkdownRoleCwds = new Set<string>();
+
+interface MarkdownRoleNamespace {
+  readonly roles: Map<string, AgentRole>;
+  readonly signature: string;
+}
+
+// Markdown-loaded roles are namespaced by the requesting cwd so two projects
+// with same-named `.agenc/agents/<name>.md` roles resolve independently
+// inside one daemon process. Map insertion order doubles as load order for
+// the cwd-less fallback lookup (most recently loaded cwd wins, matching the
+// old single-registry last-write-wins behavior).
+const markdownRolesByCwd = new Map<string, MarkdownRoleNamespace>();
 
 export function registerAgentRole(role: AgentRole): void {
   registry.set(role.name, freezeRole(role));
 }
 
-export function getAgentRole(name: string): AgentRole | undefined {
-  return registry.get(name) ?? registry.get(canonicalAgentRoleName(name));
+export function getAgentRole(name: string, cwd?: string): AgentRole | undefined {
+  return (
+    lookupRoleByExactName(name, cwd) ??
+    lookupRoleByExactName(canonicalAgentRoleName(name), cwd)
+  );
+}
+
+function lookupRoleByExactName(
+  name: string,
+  cwd: string | undefined,
+): AgentRole | undefined {
+  return lookupMarkdownRole(name, cwd) ?? registry.get(name);
+}
+
+function lookupMarkdownRole(
+  name: string,
+  cwd: string | undefined,
+): AgentRole | undefined {
+  if (cwd !== undefined) {
+    loadMarkdownAgentRoles(cwd);
+    return markdownRolesByCwd.get(resolve(cwd))?.roles.get(name);
+  }
+  // No requesting cwd available at this call site: preserve the legacy
+  // process-global behavior by searching every loaded namespace, most
+  // recently loaded first.
+  const namespaces = [...markdownRolesByCwd.values()];
+  for (let i = namespaces.length - 1; i >= 0; i--) {
+    const role = namespaces[i].roles.get(name);
+    if (role !== undefined) return role;
+  }
+  return undefined;
 }
 
 export function getDefaultAgentRole(): AgentRole {
@@ -364,15 +404,32 @@ class AgentRoleNotFoundError extends Error {
   }
 }
 
-export function requireAgentRole(name: string | undefined): AgentRole {
+export function requireAgentRole(
+  name: string | undefined,
+  cwd?: string,
+): AgentRole {
   if (!name) return DEFAULT_ROLE;
-  const role = getAgentRole(name);
+  const role = getAgentRole(name, cwd);
   if (!role) throw new AgentRoleNotFoundError(name);
   return role;
 }
 
-export function listAgentRoles(): ReadonlyArray<AgentRole> {
-  return Array.from(registry.values());
+export function listAgentRoles(cwd?: string): ReadonlyArray<AgentRole> {
+  const merged = new Map<string, AgentRole>(registry);
+  if (cwd !== undefined) {
+    loadMarkdownAgentRoles(cwd);
+    const namespace = markdownRolesByCwd.get(resolve(cwd));
+    if (namespace) {
+      for (const role of namespace.roles.values()) merged.set(role.name, role);
+    }
+  } else {
+    // Legacy cwd-less listing: union across loaded namespaces in load
+    // order so a more recently loaded cwd wins same-named roles.
+    for (const namespace of markdownRolesByCwd.values()) {
+      for (const role of namespace.roles.values()) merged.set(role.name, role);
+    }
+  }
+  return Array.from(merged.values());
 }
 
 export function defaultAgentNicknameCandidates(): ReadonlyArray<string> {
@@ -380,25 +437,60 @@ export function defaultAgentNicknameCandidates(): ReadonlyArray<string> {
 }
 
 export function _resetAgentRolesForTesting(): void {
-  loadedMarkdownRoleCwds.clear();
+  markdownRolesByCwd.clear();
   registry.clear();
   for (const role of BUILT_INS) registry.set(role.name, role);
 }
 
 export function loadMarkdownAgentRoles(cwd = process.cwd()): void {
   const key = resolve(cwd);
-  if (loadedMarkdownRoleCwds.has(key)) return;
+  // Cheap mtime/size-based invalidation: stat the candidate role dirs and
+  // files on every load so editing a role .md takes effect for new sessions
+  // without a daemon restart. Only when the signature changes do we re-read
+  // and re-parse the files.
+  const signature = markdownAgentRoleSignature(key);
+  const existing = markdownRolesByCwd.get(key);
+  if (existing !== undefined && existing.signature === signature) return;
 
+  const roles = new Map<string, AgentRole>();
   for (const file of readMarkdownAgentRoleFiles(key)) {
     const role = markdownAgentRoleFromFile(file);
-    if (role) registerAgentRole(role);
+    if (role) roles.set(role.name, freezeRole(role));
   }
-  loadedMarkdownRoleCwds.add(key);
+  // Delete-then-set so the most recently (re)loaded cwd wins the cwd-less
+  // fallback lookup, matching the old single-registry behavior.
+  markdownRolesByCwd.delete(key);
+  markdownRolesByCwd.set(key, { roles, signature });
 }
 
-export function resolveAgentRole(name: string | undefined): AgentRole {
+function markdownAgentRoleSignature(cwd: string): string {
+  const parts: string[] = [];
+  for (const dir of markdownAgentRoleDirs(cwd)) {
+    parts.push(`${dir}\u0000${statSignature(dir)}`);
+    // A directory's mtime does not change when a contained file is edited
+    // in place, so include each markdown file's own mtime/size too.
+    for (const filePath of collectMarkdownFiles(dir)) {
+      parts.push(`${filePath}\u0000${statSignature(filePath)}`);
+    }
+  }
+  return parts.join("\n");
+}
+
+function statSignature(path: string): string {
+  try {
+    const stats = statSync(path);
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return "missing";
+  }
+}
+
+export function resolveAgentRole(
+  name: string | undefined,
+  cwd?: string,
+): AgentRole {
   if (!name) return DEFAULT_ROLE;
-  return getAgentRole(name) ?? DEFAULT_ROLE;
+  return getAgentRole(name, cwd) ?? DEFAULT_ROLE;
 }
 
 /**
@@ -410,9 +502,10 @@ export function resolveAgentRole(name: string | undefined): AgentRole {
  */
 export function tryResolveRoleConfig(
   name: string | undefined,
+  cwd?: string,
 ): AgentRoleConfig | undefined {
   if (!name) return undefined;
-  return getAgentRole(name)?.config;
+  return getAgentRole(name, cwd)?.config;
 }
 
 // ─────────────────────────────────────────────────────────────────────

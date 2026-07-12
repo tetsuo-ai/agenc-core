@@ -163,6 +163,7 @@ import type {
   SessionStartHookInput,
   SessionStartSource as HookSessionStartSource,
 } from "../llm/hooks/types.js";
+import type { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type { HookResultMessage } from "../types/message.js";
 import type {
   McpElicitationRequestEvent,
@@ -583,6 +584,14 @@ export interface AgentIdentityManager {
 /** agenc runtime `Hooks`; implemented by `runtime/src/llm/hooks/`. */
 export interface Hooks {
   startupWarnings(): ReadonlyArray<string>;
+  /**
+   * This session's own lifecycle hook registry
+   * (PreCompact/PostCompact/SessionStart/SubagentStop/SessionEnd/
+   * Notification). Configured per-session lifecycle hooks land here — not
+   * in the process-global registry — so concurrent daemon sessions never
+   * fire each other's hooks. Dispatch sites pass it to the dispatcher.
+   */
+  readonly lifecycleHooks?: LifecycleHookRegistry;
   readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
   processSessionStart?(
     input: SessionStartHookInput,
@@ -614,8 +623,9 @@ export interface SkillsManager {
     readonly content: string;
     readonly invokedAt: number;
     readonly agentId?: string;
+    readonly sessionId?: string;
   }): void;
-  getInvokedSkillsForAgent?(agentId?: string): ReadonlyMap<
+  getInvokedSkillsForAgent?(agentId?: string, sessionId?: string): ReadonlyMap<
     string,
     {
       readonly skillName: string;
@@ -623,9 +633,10 @@ export interface SkillsManager {
       readonly content: string;
       readonly invokedAt: number;
       readonly agentId?: string;
+      readonly sessionId?: string;
     }
   >;
-  clearInvokedSkillsForAgent?(agentId?: string): void;
+  clearInvokedSkillsForAgent?(agentId?: string, sessionId?: string): void;
   clearSkillCaches?(): void;
   discoverSkillDirsForPaths?(
     paths: readonly string[],
@@ -3894,13 +3905,20 @@ export class Session {
       const hookTimeout = new Promise<void>((resolveTimeout) => {
         setTimeout(resolveTimeout, MAX_DRAIN_MS).unref?.();
       });
+      const lifecycleHooks = this.services.hooks?.lifecycleHooks;
       await Promise.race([
-        dispatchSessionEnd({
-          hook_event_name: "SessionEnd",
-          reason: "exit",
-          session_id: this.conversationId,
-          cwd: this.state.unsafePeek().sessionConfiguration?.cwd,
-        }),
+        dispatchSessionEnd(
+          {
+            hook_event_name: "SessionEnd",
+            reason: "exit",
+            session_id: this.conversationId,
+            cwd: this.state.unsafePeek().sessionConfiguration?.cwd,
+          },
+          // Dispatch against THIS session's registry (plus process-global
+          // hooks); shutdown runs outside the turn ALS scope, so ambient
+          // resolution cannot identify the session on its own.
+          lifecycleHooks !== undefined ? { registry: lifecycleHooks } : {},
+        ),
         hookTimeout,
       ]);
     } catch {

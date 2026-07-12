@@ -841,8 +841,13 @@ export async function bootstrapLocalRuntimeSession(
     env,
   });
   await configStore.reload();
+  // The explicit per-session cwd must beat AGENC_WORKSPACE: in the daemon,
+  // `env` is the process env frozen at daemon start, and a stale
+  // AGENC_WORKSPACE from the first launch shell would pin every later
+  // session to that folder (bug-audit-2026-07-11.md #2). Matches the
+  // precedence already used by project-trust resolution.
   const workspaceRoot =
-    resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
+    options.cwd ?? resolveWorkspaceFromEnv(env) ?? process.cwd();
   const configMigrations = await runStartupConfigMigrations({
     home: agencHome,
     cwd: workspaceRoot,

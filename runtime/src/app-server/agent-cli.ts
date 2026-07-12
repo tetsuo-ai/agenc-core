@@ -25,6 +25,7 @@ import {
   JSON_RPC_VERSION,
   type AgentAttachParams,
   type AgentAttachResult,
+  type AgenCDaemonKnownMethod,
   type AgenCDaemonMethod,
   type AgenCDaemonResultByMethod,
   type AgentCreateParams,
@@ -146,9 +147,115 @@ const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
 // client memory unbounded. Mirrors the daemon transport's max-line / max
 // payload bound (16 MiB).
 const MAX_DAEMON_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
-const LONG_RUNNING_DAEMON_METHODS: ReadonlySet<AgenCDaemonMethod> = new Set([
-  "message.stream",
-]);
+const LONG_RUNNING_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> =
+  new Set([
+    "message.stream",
+    // Compact and rewind both run an LLM summarization pass on the daemon,
+    // which easily exceeds the generic 30s RPC timeout on large transcripts
+    // or slow models. Give them the same long-running budget as streaming.
+    // (These are internal methods reached through the TUI daemon-session
+    // wrapper, which widens the persistent client's request overloads.)
+    "session.partialCompactFromMessage",
+    "session.rewindConversationToMessage",
+  ]);
+
+/**
+ * Client-env keys forwarded to the daemon as `agent.create` envOverrides.
+ *
+ * The daemon resolves providers/keys/proxies/PATH from the env frozen at
+ * daemon start, so without this allowlist a rotated API key or a new
+ * shell's venv/nvm PATH is invisible to daemon sessions until the daemon
+ * is restarted (audit 2026-07-11 finding 4).
+ *
+ * Semantics: a key is forwarded only when set (non-empty) in the client
+ * process env at agent.create time. Unset keys are NOT forwarded, so the
+ * daemon's own values keep winning as the fallback — the merge on the
+ * daemon side is `{...daemonEnv, ...envOverrides}`
+ * (background-agent-runner.ts startAgent).
+ *
+ * AGENC_WORKSPACE is deliberately excluded: the workspace must come from
+ * the `cwd` create param, not ambient env (audit finding 2).
+ *
+ * These values travel over the local daemon socket only (same trust
+ * boundary as the existing AGENC_MCP_SERVERS override, which can already
+ * carry credentials in server configs) and are not logged by the daemon
+ * dispatcher or transports.
+ */
+const DAEMON_CLIENT_ENV_OVERRIDE_KEYS = [
+  "AGENC_MCP_SERVERS",
+  // Model/provider selection (env beats config.toml per config/env.ts).
+  "AGENC_MODEL",
+  "AGENC_PROVIDER",
+  "AGENC_PROFILE",
+  // Provider API keys — cross-checked against config/env.ts EnvSnapshot
+  // and llm/discovery/provider-discovery.ts providerApiKeyEnvCandidates.
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+  "AGENC_XAI_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_COMPATIBLE_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "LMSTUDIO_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GROQ_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "MISTRAL_API_KEY",
+  "NVIDIA_API_KEY",
+  "MINIMAX_API_KEY",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "AWS_BEDROCK_ACCESS_KEY_ID",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_BEDROCK_SECRET_ACCESS_KEY",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_BEDROCK_SESSION_TOKEN",
+  "AWS_SESSION_TOKEN",
+  // Provider base URLs / regions / compatible-model overrides.
+  "OPENAI_BASE_URL",
+  "OPENAI_COMPATIBLE_BASE_URL",
+  "OPENAI_COMPATIBLE_MODEL",
+  "ANTHROPIC_BASE_URL",
+  "LMSTUDIO_BASE_URL",
+  "OPENROUTER_BASE_URL",
+  "GROQ_BASE_URL",
+  "DEEPSEEK_BASE_URL",
+  "GEMINI_BASE_URL",
+  "OLLAMA_BASE_URL",
+  "AWS_BEDROCK_BASE_URL",
+  "AWS_BEDROCK_MODEL",
+  "AWS_BEDROCK_REGION",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  // Proxy configuration (both spellings are honored by Node tooling).
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  // Tool resolution for spawned processes (venv/nvm activation).
+  "PATH",
+] as const;
+
+/**
+ * Collect the allowlisted client env values to forward with `agent.create`.
+ * Only keys set (non-empty) in the given env are included; everything else
+ * is left to the daemon's own environment.
+ */
+export function collectDaemonClientEnvOverrides(
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  for (const key of DAEMON_CLIENT_ENV_OVERRIDE_KEYS) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      overrides[key] = value;
+    }
+  }
+  return overrides;
+}
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -673,6 +780,9 @@ async function startAgenCAgent(
   return runAgenCAgentCliOperation(io, options, async () => {
     const client = resolveAgenCAgentCliDaemonClient(options);
     const objective = command.objective;
+    const envOverrides = collectDaemonClientEnvOverrides(
+      options.env ?? process.env,
+    );
     const result = await client.createAgent({
       objective,
       instructions: objective,
@@ -684,6 +794,7 @@ async function startAgenCAgent(
       ...(command.unattendedDeny.length > 0
         ? { unattendedDeny: command.unattendedDeny }
         : {}),
+      ...(Object.keys(envOverrides).length > 0 ? { envOverrides } : {}),
     });
     io.stdout.write(`${result.agentId}\n`);
     return 0;
@@ -845,7 +956,7 @@ function defaultAgenCAgentAttachClientId(): string {
 }
 
 function requestTimeoutMsForMethod(
-  method: AgenCDaemonMethod,
+  method: AgenCDaemonKnownMethod,
   timeoutMs: number,
 ): number {
   return LONG_RUNNING_DAEMON_METHODS.has(method)
@@ -929,7 +1040,7 @@ function connectPersistentDaemonClient(
         };
         return new Promise<unknown>((requestResolve, requestReject) => {
           let removeAbortListener: (() => void) | undefined;
-          const sendCancel = (): void => {
+          const sendCancel = (reason: string): void => {
             if (!pending.has(id) || closed) return;
             const cancelId = nextRequestId;
             nextRequestId += 1;
@@ -940,16 +1051,25 @@ function connectPersistentDaemonClient(
                 method: "request.cancel",
                 params: {
                   requestId: id,
-                  reason: String(options.signal?.reason ?? "request.cancel"),
+                  reason,
                 },
               })}\n`,
             );
+          };
+          const sendAbortCancel = (): void => {
+            sendCancel(String(options.signal?.reason ?? "request.cancel"));
           };
           const requestTimeoutMs = requestTimeoutMsForMethod(
             method,
             timeoutMs,
           );
           const requestTimeout = setTimeout(() => {
+            // Tell the daemon to stop the orphaned work before rejecting
+            // locally: without request.cancel the daemon keeps running the
+            // request (e.g. a compact) and a retry hits "a turn is
+            // currently in flight". Must run before pending.delete(id) —
+            // sendCancel no-ops once the request is no longer pending.
+            sendCancel(`client timeout after ${requestTimeoutMs}ms`);
             pending.delete(id);
             removeAbortListener?.();
             requestReject(
@@ -969,9 +1089,11 @@ function connectPersistentDaemonClient(
             },
             timeout: requestTimeout,
           });
-          options.signal?.addEventListener("abort", sendCancel, { once: true });
+          options.signal?.addEventListener("abort", sendAbortCancel, {
+            once: true,
+          });
           removeAbortListener = () => {
-            options.signal?.removeEventListener("abort", sendCancel);
+            options.signal?.removeEventListener("abort", sendAbortCancel);
           };
           socket.write(`${JSON.stringify(request)}\n`);
         }) as Promise<AgenCDaemonResultByMethod[typeof method]>;

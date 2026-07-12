@@ -101,6 +101,10 @@ export interface InvokedSkillRecord {
   readonly content: string;
   readonly invokedAt: number;
   readonly agentId?: string;
+  /** Owning session/conversation id. When absent, the record is scoped to
+   *  the recording skills-service instance's default session key so
+   *  single-session CLI paths keep working unchanged. */
+  readonly sessionId?: string;
 }
 
 export interface LocalSkillsSnapshot {
@@ -113,6 +117,10 @@ export interface LocalSkillsSnapshot {
 export interface LocalSkillsServiceOptions {
   readonly agencHome: string;
   readonly workspaceRoot: string;
+  /** Session/conversation id owning this skills-service instance. Used to
+   *  scope invoked-skill tracking per session in the daemon; when absent,
+   *  the instance uses a stable single-session default key. */
+  readonly sessionId?: string;
   readonly config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">;
   readonly fileWatcher?: FileWatcher;
   readonly skillChangeDetector?: SkillChangeDetector;
@@ -186,7 +194,12 @@ const SKIP_DIRS = new Set([
   ".pnpm-store",
 ]);
 
-const invokedSkillsByAgent = new Map<string, Map<string, InvokedSkillRecord>>();
+// Invoked-skill tracking, keyed by `${sessionKey}\u0000${agentKey}` so
+// concurrent daemon sessions do not leak invocations into each other's
+// skill snapshots. `sessionKey` is the record's explicit sessionId when
+// provided (the Skill tool stamps the conversation id), otherwise the
+// recording skills-service instance's default key.
+const invokedSkillsByScope = new Map<string, Map<string, InvokedSkillRecord>>();
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
@@ -1087,28 +1100,49 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 1)}…`;
 }
 
-function recordInvokedSkill(record: InvokedSkillRecord): void {
-  const key = record.agentId ?? INVOKED_MAIN_AGENT_ID;
-  let skills = invokedSkillsByAgent.get(key);
+function invokedSkillsScopeKey(sessionKey: string, agentId?: string): string {
+  return `${sessionKey}\u0000${agentId ?? INVOKED_MAIN_AGENT_ID}`;
+}
+
+function recordInvokedSkillInScope(
+  sessionKey: string,
+  record: InvokedSkillRecord,
+): void {
+  const key = invokedSkillsScopeKey(sessionKey, record.agentId);
+  let skills = invokedSkillsByScope.get(key);
   if (!skills) {
     skills = new Map<string, InvokedSkillRecord>();
-    invokedSkillsByAgent.set(key, skills);
+    invokedSkillsByScope.set(key, skills);
   }
   skills.set(record.skillName, record);
 }
 
-function getInvokedSkillsForAgent(
+function getInvokedSkillsForScopes(
+  sessionKeys: readonly string[],
   agentId?: string,
 ): ReadonlyMap<string, InvokedSkillRecord> {
-  return new Map(invokedSkillsByAgent.get(agentId ?? INVOKED_MAIN_AGENT_ID));
+  const merged = new Map<string, InvokedSkillRecord>();
+  for (const sessionKey of sessionKeys) {
+    const skills = invokedSkillsByScope.get(
+      invokedSkillsScopeKey(sessionKey, agentId),
+    );
+    if (!skills) continue;
+    for (const [name, record] of skills) merged.set(name, record);
+  }
+  return merged;
 }
 
-function clearInvokedSkillsForAgent(agentId?: string): void {
-  invokedSkillsByAgent.delete(agentId ?? INVOKED_MAIN_AGENT_ID);
+function clearInvokedSkillsForScopes(
+  sessionKeys: readonly string[],
+  agentId?: string,
+): void {
+  for (const sessionKey of sessionKeys) {
+    invokedSkillsByScope.delete(invokedSkillsScopeKey(sessionKey, agentId));
+  }
 }
 
 export function clearInvokedSkills(): void {
-  invokedSkillsByAgent.clear();
+  invokedSkillsByScope.clear();
 }
 
 function extractActivePaths(input: unknown, fsArg: unknown): string[] {
@@ -1153,6 +1187,42 @@ export function createLocalSkillsServices(
   let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
   let activePaths = new Set<string>();
   let watcherStarted = false;
+  // Session scoping for invoked-skill tracking. Records stamped with an
+  // explicit sessionId (the Skill tool stamps the conversation id) land in
+  // that session's scope; unstamped records use this instance's default
+  // key so single-session CLI paths keep the pre-session behavior. Reads
+  // without an explicit sessionId cover every scope this instance has
+  // recorded into — instances are created per session in the daemon, so
+  // another session's records never appear here.
+  const defaultInvokedSkillsSessionKey =
+    options.sessionId?.trim() || INVOKED_MAIN_AGENT_ID;
+  const invokedSkillsSessionKeys = new Set<string>([
+    defaultInvokedSkillsSessionKey,
+  ]);
+  const recordInvokedSkill = (record: InvokedSkillRecord): void => {
+    const sessionKey =
+      record.sessionId?.trim() || defaultInvokedSkillsSessionKey;
+    invokedSkillsSessionKeys.add(sessionKey);
+    recordInvokedSkillInScope(sessionKey, record);
+  };
+  const getInvokedSkillsForAgent = (
+    agentId?: string,
+    sessionId?: string,
+  ): ReadonlyMap<string, InvokedSkillRecord> => {
+    const sessionKeys = sessionId?.trim()
+      ? [sessionId.trim()]
+      : [...invokedSkillsSessionKeys];
+    return getInvokedSkillsForScopes(sessionKeys, agentId);
+  };
+  const clearInvokedSkillsForAgent = (
+    agentId?: string,
+    sessionId?: string,
+  ): void => {
+    const sessionKeys = sessionId?.trim()
+      ? [sessionId.trim()]
+      : [...invokedSkillsSessionKeys];
+    clearInvokedSkillsForScopes(sessionKeys, agentId);
+  };
   const detector = options.skillChangeDetector ?? createSkillChangeDetector();
   const eventSink = options.skillChangeEventSink ?? skillChangeDetector;
   const load = (

@@ -223,14 +223,30 @@ describe("app-server-client daemon helpers", () => {
         env: {
           ...process.env,
           AGENC_MCP_SERVERS: mcpServers,
+          XAI_API_KEY: "rotated-key",
+          PATH: "/custom/bin:/usr/bin",
+          AGENC_WORKSPACE: "/should/not/forward",
           SHOULD_NOT_FORWARD: "ignored",
         },
       });
 
       expect(createAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          envOverrides: { AGENC_MCP_SERVERS: mcpServers },
+          envOverrides: expect.objectContaining({
+            AGENC_MCP_SERVERS: mcpServers,
+            XAI_API_KEY: "rotated-key",
+            PATH: "/custom/bin:/usr/bin",
+          }),
         }),
+      );
+      const createParams = createAgent.mock.calls[0]?.[0] as {
+        readonly envOverrides?: Record<string, string>;
+      };
+      // Workspace must come from the cwd param, never ambient env; and
+      // non-allowlisted keys must not leak to the daemon.
+      expect(createParams.envOverrides).not.toHaveProperty("AGENC_WORKSPACE");
+      expect(createParams.envOverrides).not.toHaveProperty(
+        "SHOULD_NOT_FORWARD",
       );
     } finally {
       vi.doUnmock("../app-server/agent-cli.js");

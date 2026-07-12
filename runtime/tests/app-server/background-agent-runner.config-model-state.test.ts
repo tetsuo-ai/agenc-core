@@ -204,6 +204,40 @@ describe("daemon config/model state refresh + atomicity", () => {
     });
   });
 
+  // bug-audit-2026-07-11.md #10: a provider-only switch is staged for the
+  // NEXT turn, so the live session still reports the pre-switch selection.
+  // Backfilling that model produced mixed pairs like {provider: "grok",
+  // model: "qwen3-coder-next-fp8"} in the process-global, which later daemon
+  // sessions inherited and sent to the wrong API.
+  it("setAgentModel does NOT poison activeConfigModel with the pre-switch model on a provider-only switch", async () => {
+    setActiveConfigModel({ provider: "openai-compatible", model: "qwen-local" });
+    const { runner } = makeRunnerHarness({
+      configStore: {
+        current: () => ({
+          model: "qwen-local",
+          model_provider: "openai-compatible",
+        }),
+      },
+      sessionConfiguration: {
+        collaborationMode: { model: "qwen-local" },
+        provider: { slug: "openai-compatible" },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    const result = await runner.setAgentModel("parent-session", {
+      sessionId: "session_1",
+      provider: "grok",
+    });
+
+    expect(result.applied).toBe(true);
+    // The pre-switch qwen model must never be paired with the new provider.
+    expect(getActiveConfigModel()).not.toEqual({
+      provider: "grok",
+      model: "qwen-local",
+    });
+  });
+
   it("applyAgentConfig refreshes activeConfigModel when a profile stages a switch", async () => {
     setActiveConfigModel({ provider: "openai", model: "startup-model" });
     const { runner } = makeRunnerHarness({

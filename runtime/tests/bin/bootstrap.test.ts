@@ -537,15 +537,19 @@ describe("bootstrapLocalRuntimeSession", () => {
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
+      // The explicit per-session cwd must beat AGENC_WORKSPACE: in the
+      // daemon, env is frozen at daemon start and a stale AGENC_WORKSPACE
+      // pinned every session to the first launch folder
+      // (bug-audit-2026-07-11.md #2).
       const boot = await bootstrapLocalRuntimeSession({
         apiKey: "test-key",
         env: {
           ...process.env,
           AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
+          AGENC_WORKSPACE: "/stale-daemon-workspace-ignored",
           HOME: home,
         },
-        cwd: "/ignored-by-env",
+        cwd: workspace,
         toolRegistryOptions: {
           extraTools: [extraTool],
         },

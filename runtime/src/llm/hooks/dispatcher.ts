@@ -23,9 +23,10 @@
  * @module
  */
 import type { HookResultMessage } from "../../types/message.js";
+import { peekAmbientRuntimeSession } from "../../session/current-session.js";
 import {
   getLifecycleHookRegistry,
-  type LifecycleHookRegistry,
+  LifecycleHookRegistry,
 } from "./registry.js";
 import type {
   HookResult,
@@ -50,6 +51,17 @@ export const HOOK_EXECUTION_TIMEOUT_MS = 60_000;
 
 interface DispatchOpts<H> {
   readonly hooks?: ReadonlyArray<H>;
+  /**
+   * The dispatching session's lifecycle hook registry. Configured
+   * per-session hooks (SessionStart/SessionEnd/PreCompact/…) live in the
+   * session's own registry — NOT the process-global one — so concurrent
+   * daemon sessions never fire each other's hooks. When omitted, the
+   * dispatcher resolves the ambient session's registry (AsyncLocalStorage
+   * turn scope, falling back to the module-level session only when the
+   * process has a single one). Hooks in the process-global registry fire
+   * for every session in addition to the session's own.
+   */
+  readonly registry?: LifecycleHookRegistry;
   readonly signal?: AbortSignal;
 }
 
@@ -92,7 +104,8 @@ export async function dispatchPreCompact(
       | undefined
   > = {},
 ): Promise<PreCompactDispatchResult> {
-  const hooks = opts.hooks ?? getRegistryHooks("PreCompact");
+  const hooks =
+    opts.hooks ?? resolveHooks((r) => r.getPreCompact(), opts.registry);
   if (hooks.length === 0) return {};
 
   const results: HookResult[] = [];
@@ -137,7 +150,8 @@ export async function dispatchPostCompact(
       | undefined
   > = {},
 ): Promise<PostCompactDispatchResult> {
-  const hooks = opts.hooks ?? getRegistryHooks("PostCompact");
+  const hooks =
+    opts.hooks ?? resolveHooks((r) => r.getPostCompact(), opts.registry);
   if (hooks.length === 0) return {};
 
   const results: HookResult[] = [];
@@ -163,7 +177,8 @@ export async function dispatchSessionStart(
       | undefined
   > = {},
 ): Promise<HookResultMessage[]> {
-  const hooks = opts.hooks ?? getRegistryHooks("SessionStart");
+  const hooks =
+    opts.hooks ?? resolveHooks((r) => r.getSessionStart(), opts.registry);
   if (hooks.length === 0) return [];
 
   const out: HookResultMessage[] = [];
@@ -201,48 +216,37 @@ function formatDisplayLine(label: string, r: HookResult): string {
   return trimmed ? `${label} [${cmd}] failed: ${trimmed}` : `${label} [${cmd}] failed`;
 }
 
-function getRegistryHooks(
-  event: "PreCompact",
-): ReturnType<LifecycleHookRegistry["getPreCompact"]>;
-function getRegistryHooks(
-  event: "PostCompact",
-): ReturnType<LifecycleHookRegistry["getPostCompact"]>;
-function getRegistryHooks(
-  event: "SessionStart",
-): ReturnType<LifecycleHookRegistry["getSessionStart"]>;
-function getRegistryHooks(
-  event: "SubagentStop",
-): ReturnType<LifecycleHookRegistry["getSubagentStop"]>;
-function getRegistryHooks(
-  event: "SessionEnd",
-): ReturnType<LifecycleHookRegistry["getSessionEnd"]>;
-function getRegistryHooks(
-  event: "Notification",
-): ReturnType<LifecycleHookRegistry["getNotification"]>;
-function getRegistryHooks(
-  event:
-    | "PreCompact"
-    | "PostCompact"
-    | "SessionStart"
-    | "SubagentStop"
-    | "SessionEnd"
-    | "Notification",
-): ReadonlyArray<unknown> {
-  const r = getLifecycleHookRegistry();
-  switch (event) {
-    case "PreCompact":
-      return r.getPreCompact();
-    case "PostCompact":
-      return r.getPostCompact();
-    case "SessionStart":
-      return r.getSessionStart();
-    case "SubagentStop":
-      return r.getSubagentStop();
-    case "SessionEnd":
-      return r.getSessionEnd();
-    case "Notification":
-      return r.getNotification();
+/** Resolve the lifecycle hook registry owned by the ambient session, if
+ *  any. Returns `undefined` outside a session scope, when the ambient
+ *  session is ambiguous (multiple sessions bootstrapped, no turn scope),
+ *  or when the session carries no per-session registry. */
+function ambientSessionRegistry(): LifecycleHookRegistry | undefined {
+  const registry =
+    peekAmbientRuntimeSession()?.services?.hooks?.lifecycleHooks;
+  return registry instanceof LifecycleHookRegistry ? registry : undefined;
+}
+
+/** Collect the hooks to run for one event: the dispatching session's own
+ *  hooks (explicit `registry` from the dispatch opts, else the ambient
+ *  session's) followed by process-global registry hooks, which fire for
+ *  every session. */
+function resolveHooks<H>(
+  pick: (registry: LifecycleHookRegistry) => ReadonlyArray<H>,
+  registry: LifecycleHookRegistry | undefined,
+): ReadonlyArray<H> {
+  const sessionRegistry = registry ?? ambientSessionRegistry();
+  const globalHooks = pick(getLifecycleHookRegistry());
+  if (
+    sessionRegistry === undefined ||
+    sessionRegistry === getLifecycleHookRegistry()
+  ) {
+    return globalHooks;
   }
+  const sessionHooks = pick(sessionRegistry);
+  if (sessionHooks.length === 0) return globalHooks;
+  return globalHooks.length === 0
+    ? sessionHooks
+    : [...sessionHooks, ...globalHooks];
 }
 
 export interface SubagentStopDispatchResult {
@@ -267,7 +271,8 @@ export async function dispatchSubagentStop(
       | undefined
   > = {},
 ): Promise<SubagentStopDispatchResult> {
-  const hooks = opts.hooks ?? getRegistryHooks("SubagentStop");
+  const hooks =
+    opts.hooks ?? resolveHooks((r) => r.getSubagentStop(), opts.registry);
   if (hooks.length === 0) return {};
   const feedbackParts: string[] = [];
   for (const h of hooks) {
@@ -298,7 +303,8 @@ export async function dispatchSessionEnd(
       | undefined
   > = {},
 ): Promise<void> {
-  const hooks = opts.hooks ?? getRegistryHooks("SessionEnd");
+  const hooks =
+    opts.hooks ?? resolveHooks((r) => r.getSessionEnd(), opts.registry);
   for (const h of hooks) {
     if (opts.signal?.aborted) break;
     await safeRun(h, input, opts.signal, "SessionEnd");
@@ -317,7 +323,8 @@ export async function dispatchNotification(
       | undefined
   > = {},
 ): Promise<void> {
-  const hooks = opts.hooks ?? getRegistryHooks("Notification");
+  const hooks =
+    opts.hooks ?? resolveHooks((r) => r.getNotification(), opts.registry);
   for (const h of hooks) {
     if (opts.signal?.aborted) break;
     await safeRun(h, input, opts.signal, "Notification");

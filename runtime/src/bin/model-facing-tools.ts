@@ -1446,6 +1446,7 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
         skillPath: rendered.skill.path,
         content: rendered.content,
         invokedAt: Date.now(),
+        sessionId: sessionOrError.conversationId,
       });
       return { content };
     },

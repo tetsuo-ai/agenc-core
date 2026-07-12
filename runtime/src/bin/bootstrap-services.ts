@@ -61,14 +61,15 @@ import {
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import { dispatchPostCompact, dispatchPreCompact, dispatchSessionStart } from "../llm/hooks/dispatcher.js";
-import {
-  registerNotificationHook,
-  registerPostCompactHook,
-  registerPreCompactHook,
-  registerSessionEndHook,
-  registerSessionStartHook,
-  registerSubagentStopHook,
-} from "../llm/hooks/registry.js";
+import { LifecycleHookRegistry } from "../llm/hooks/registry.js";
+import type {
+  NotificationHook,
+  PostCompactHook,
+  PreCompactHook,
+  SessionEndHook,
+  SessionStartHook,
+  SubagentStopHook,
+} from "../llm/hooks/types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import {
@@ -334,7 +335,7 @@ class BootstrapAgentIdentityManager {
   }
 }
 
-function createHooksService(): Hooks & {
+export function createHooksService(): Hooks & {
   readonly stopHooks: StopHookHandler[];
   readonly stopFailureHooks: StopHookHandler[];
   readonly preToolUseHooks: PreToolUseHook[];
@@ -342,24 +343,13 @@ function createHooksService(): Hooks & {
   readonly failureToolUseHooks: PostToolUseFailureHook[];
   readonly permissionDecisionHooks: PermissionDecisionHook[];
   readonly userPromptSubmitHooks: UserPromptSubmitHook[];
-  addPreCompactHook(
-    hook: Parameters<typeof registerPreCompactHook>[0],
-  ): void;
-  addPostCompactHook(
-    hook: Parameters<typeof registerPostCompactHook>[0],
-  ): void;
-  addSessionStartHook(
-    hook: Parameters<typeof registerSessionStartHook>[0],
-  ): void;
-  addSubagentStopHook(
-    hook: Parameters<typeof registerSubagentStopHook>[0],
-  ): void;
-  addSessionEndHook(
-    hook: Parameters<typeof registerSessionEndHook>[0],
-  ): void;
-  addNotificationHook(
-    hook: Parameters<typeof registerNotificationHook>[0],
-  ): void;
+  readonly lifecycleHooks: LifecycleHookRegistry;
+  addPreCompactHook(hook: PreCompactHook): void;
+  addPostCompactHook(hook: PostCompactHook): void;
+  addSessionStartHook(hook: SessionStartHook): void;
+  addSubagentStopHook(hook: SubagentStopHook): void;
+  addSessionEndHook(hook: SessionEndHook): void;
+  addNotificationHook(hook: NotificationHook): void;
   clearConfiguredLifecycleHooks(): void;
   processSessionStart(
     ...args: Parameters<typeof dispatchSessionStart>
@@ -372,7 +362,11 @@ function createHooksService(): Hooks & {
   const failureToolUseHooks: PostToolUseFailureHook[] = [];
   const permissionDecisionHooks: PermissionDecisionHook[] = [];
   const userPromptSubmitHooks: UserPromptSubmitHook[] = [];
-  const lifecycleUnregisters: Array<() => void> = [];
+  // Session-owned lifecycle hook registry. Configured lifecycle hooks
+  // (SessionStart/SessionEnd/PreCompact/…) close over THIS session's
+  // cwd/shell, so they must never land in the process-global registry —
+  // concurrent daemon sessions would fire each other's hooks.
+  const lifecycleHooks = new LifecycleHookRegistry();
 
   return {
     stopHooks,
@@ -382,28 +376,27 @@ function createHooksService(): Hooks & {
     failureToolUseHooks,
     permissionDecisionHooks,
     userPromptSubmitHooks,
+    lifecycleHooks,
     addPreCompactHook: (hook) => {
-      lifecycleUnregisters.push(registerPreCompactHook(hook));
+      lifecycleHooks.addPreCompact(hook);
     },
     addPostCompactHook: (hook) => {
-      lifecycleUnregisters.push(registerPostCompactHook(hook));
+      lifecycleHooks.addPostCompact(hook);
     },
     addSessionStartHook: (hook) => {
-      lifecycleUnregisters.push(registerSessionStartHook(hook));
+      lifecycleHooks.addSessionStart(hook);
     },
     addSubagentStopHook: (hook) => {
-      lifecycleUnregisters.push(registerSubagentStopHook(hook));
+      lifecycleHooks.addSubagentStop(hook);
     },
     addSessionEndHook: (hook) => {
-      lifecycleUnregisters.push(registerSessionEndHook(hook));
+      lifecycleHooks.addSessionEnd(hook);
     },
     addNotificationHook: (hook) => {
-      lifecycleUnregisters.push(registerNotificationHook(hook));
+      lifecycleHooks.addNotification(hook);
     },
     clearConfiguredLifecycleHooks: () => {
-      for (const unregister of lifecycleUnregisters.splice(0)) {
-        unregister();
-      }
+      lifecycleHooks.clear();
     },
     startupWarnings: () => [],
     executePreCompact: async (...args: unknown[]) => {
@@ -416,7 +409,7 @@ function createHooksService(): Hooks & {
             stringOrNull(first.customInstructions) ??
             stringOrNull(first.custom_instructions),
         },
-        { signal: abortSignalOrUndefined(args[1]) },
+        { signal: abortSignalOrUndefined(args[1]), registry: lifecycleHooks },
       );
     },
     executePostCompact: async (...args: unknown[]) => {
@@ -430,7 +423,7 @@ function createHooksService(): Hooks & {
             stringOrNull(first.compact_summary) ??
             "",
         },
-        { signal: abortSignalOrUndefined(args[1]) },
+        { signal: abortSignalOrUndefined(args[1]), registry: lifecycleHooks },
       );
     },
     executeStop: async (...args: unknown[]) => {
@@ -453,7 +446,8 @@ function createHooksService(): Hooks & {
         );
       }
     },
-    processSessionStart: (...args) => dispatchSessionStart(...args),
+    processSessionStart: (input, opts) =>
+      dispatchSessionStart(input, { ...opts, registry: lifecycleHooks }),
   };
 }
 

@@ -746,3 +746,106 @@ All=$ARGUMENTS
     ).resolves.toEqual([join(nested, ".agenc", "skills")]);
   });
 });
+
+describe("invoked-skill session scoping", () => {
+  it("keeps invoked skills recorded under different session ids independent", async () => {
+    clearInvokedSkills();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "repo-docs");
+
+    const sessionA = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      sessionId: "session-a",
+      env: {},
+    });
+    const sessionB = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      sessionId: "session-b",
+      env: {},
+    });
+
+    sessionA.skillsManager.recordInvokedSkill?.({
+      skillName: "skill-a",
+      skillPath: "/tmp/skill-a/SKILL.md",
+      content: "body-a",
+      invokedAt: 1,
+      sessionId: "session-a",
+    });
+    sessionB.skillsManager.recordInvokedSkill?.({
+      skillName: "skill-b",
+      skillPath: "/tmp/skill-b/SKILL.md",
+      content: "body-b",
+      invokedAt: 2,
+      sessionId: "session-b",
+    });
+
+    const outcomeA = await sessionA.skillsManager.skillsForConfig({}, null);
+    const outcomeB = await sessionB.skillsManager.skillsForConfig({}, null);
+
+    expect(outcomeA.invokedSkills).toEqual(["skill-a"]);
+    expect(outcomeB.invokedSkills).toEqual(["skill-b"]);
+    expect(outcomeB.invokedSkills).not.toContain("skill-a");
+    clearInvokedSkills();
+  });
+
+  it("isolates stamped session records even when instances have no configured session id", async () => {
+    clearInvokedSkills();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+
+    // Mirrors the daemon today: bootstrap wiring does not pass a session id
+    // into the skills services, but the Skill tool stamps the conversation
+    // id on every record.
+    const sessionA = createLocalSkillsServices({ agencHome, workspaceRoot, env: {} });
+    const sessionB = createLocalSkillsServices({ agencHome, workspaceRoot, env: {} });
+
+    sessionA.skillsManager.recordInvokedSkill?.({
+      skillName: "skill-a",
+      skillPath: "/tmp/skill-a/SKILL.md",
+      content: "body-a",
+      invokedAt: 1,
+      sessionId: "conversation-a",
+    });
+    sessionB.skillsManager.recordInvokedSkill?.({
+      skillName: "skill-b",
+      skillPath: "/tmp/skill-b/SKILL.md",
+      content: "body-b",
+      invokedAt: 2,
+      sessionId: "conversation-b",
+    });
+
+    const outcomeA = await sessionA.skillsManager.skillsForConfig({}, null);
+    const outcomeB = await sessionB.skillsManager.skillsForConfig({}, null);
+    expect(outcomeA.invokedSkills).toEqual(["skill-a"]);
+    expect(outcomeB.invokedSkills).toEqual(["skill-b"]);
+
+    // An explicit per-session read targets exactly that session's scope.
+    const forA = sessionA.skillsManager.getInvokedSkillsForAgent?.(
+      undefined,
+      "conversation-a",
+    );
+    expect([...(forA?.keys() ?? [])]).toEqual(["skill-a"]);
+    clearInvokedSkills();
+  });
+
+  it("keeps the single-session default scope for records without a session id", async () => {
+    clearInvokedSkills();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const services = createLocalSkillsServices({ agencHome, workspaceRoot, env: {} });
+
+    services.skillsManager.recordInvokedSkill?.({
+      skillName: "legacy-skill",
+      skillPath: "/tmp/legacy-skill/SKILL.md",
+      content: "body",
+      invokedAt: 1,
+    });
+
+    const outcome = await services.skillsManager.skillsForConfig({}, null);
+    expect(outcome.invokedSkills).toEqual(["legacy-skill"]);
+    clearInvokedSkills();
+  });
+});
